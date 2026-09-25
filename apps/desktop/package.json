@@ -68,6 +68,7 @@
     "@sigstore/verify": "4.1.2",
     "electron-updater": "^6.8.9",
     "node-pty": "^1.2.0-beta.15",
+    "opencli-mcp": "0.0.18",
     "qrcode": "^1.5.4",
     "ws": "^8.21.3",
     "zod": "^4.6.5"

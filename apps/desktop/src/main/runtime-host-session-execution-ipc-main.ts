@@ -112,6 +112,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "compactContext"
   | "copySession"
   | "getSession"
+  | "generatePromptSuggestion"
   | "ingestAttachment"
   | "interruptTurn"
   | "openSession"
@@ -388,6 +389,10 @@ export function registerRuntimeHostSessionExecutionIpc(
       }
       return { resolutions };
     },
+  );
+
+  ipcMain.handle('sessions:generatePromptSuggestion', async (_event, sessionId: unknown) =>
+    deps.client.generatePromptSuggestion(requiredId(sessionId, 'Session')),
   );
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>

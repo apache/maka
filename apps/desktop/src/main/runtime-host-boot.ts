@@ -57,7 +57,6 @@ import {
   listRuntimeHostWslDistributions,
   runtimeHostProfileAccess,
   RuntimeHostProfileConnectionError,
-  type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import {
   openRuntimeHostPeerMeshComponent,
@@ -137,7 +136,7 @@ import {
   readWithFallback,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
-import type { DesktopRuntimeHostIdentity } from "../preload/bridge-contract.js";
+import type { DesktopRuntimeHostProfileChangedEvent } from "../preload/bridge-contract.js";
 import {
   defaultRuntimeHostRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
@@ -145,6 +144,7 @@ import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
 import { createMcpExclusiveLane, registerMcpIpcMain } from "./mcp-ipc-main.js";
+import { createOpencliChrome } from "./opencli-chrome.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import {
@@ -347,6 +347,7 @@ function activeRuntimeHostRef(): DesktopTargetScope | undefined {
 const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
 const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
+const opencliChrome = createOpencliChrome(userDataDir, (url) => shell.openExternal(url));
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
@@ -980,6 +981,20 @@ registerNotificationsIpc({
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
+function runtimeHostTargetEvent(
+  state: RuntimeHostDesktopTargetState,
+): DesktopRuntimeHostProfileChangedEvent {
+  return {
+    epoch: state.epoch,
+    profileId: state.target.profile.id,
+    profileName: state.target.profile.name,
+    profileKind: state.target.profile.kind,
+    profileAccess: runtimeHostProfileAccess(state.target.profile),
+    hostId: state.hostId,
+    readiness: state.readiness,
+    isDefault: runtimeHostManager?.defaultProfileId() === state.target.profile.id,
+  };
+}
 const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
   {
     rootPath: workspaceRoot,
@@ -1167,20 +1182,9 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
         if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') sessionLocal.purge(localTarget);
       }
       sessionLocal.wake();
-      const profileAccess = runtimeHostProfileAccess(state.target.profile);
-      mainWindowController.send("runtime-host-profiles:changed", {
-        epoch: state.epoch,
-        profileId: state.target.profile.id,
-        profileName: state.target.profile.name,
-        profileKind: state.target.profile.kind,
-        profileAccess,
-        hostId: state.hostId,
-        readiness: state.readiness,
-        isDefault:
-          (runtimeHostManager?.defaultProfileId() ??
-            runtimeHostStartup.preferences.defaultProfileId) === state.target.profile.id,
-      });
-      if (profileAccess === 'session_guest') {
+      const event = runtimeHostTargetEvent(state);
+      mainWindowController.send("runtime-host-profiles:changed", event);
+      if (event.profileAccess === 'session_guest') {
         void guestSessionMountService
           .connectionChanged(
             state.target.profile.id,
@@ -1221,16 +1225,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       const localTarget = localSessionTarget(state);
       if (localTarget) sessionLocal.purge(localTarget);
       mainWindowController.send("runtime-host-profiles:changed", {
-        epoch: state.epoch,
-        profileId: state.target.profile.id,
-        profileName: state.target.profile.name,
-        profileKind: state.target.profile.kind,
-        profileAccess: runtimeHostProfileAccess(state.target.profile),
-        hostId: state.hostId,
+        ...runtimeHostTargetEvent(state),
         readiness: "unavailable",
-        isDefault:
-          (runtimeHostManager?.defaultProfileId() ??
-            runtimeHostStartup.preferences.defaultProfileId) === state.target.profile.id,
         removed: true,
       });
       void browserIpc.retireTarget({ hostId: state.hostId, targetEpoch: state.epoch }).catch((error) =>
@@ -1241,16 +1237,17 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       const state = runtimeHostManager?.entries().find(
         (candidate) => candidate.target.profile.id === profileId,
       );
-      mainWindowController.send("runtime-host-profiles:changed", {
-        epoch: state?.epoch ?? randomUUID(),
-        profileId,
-        profileName: state?.target.profile.name ?? profileId,
-        profileKind: state?.target.profile.kind ?? "remote",
-        profileAccess: state ? runtimeHostProfileAccess(state.target.profile) : "owner",
-        ...(state ? { hostId: state.hostId } : {}),
-        readiness: state?.readiness ?? "unavailable",
-        isDefault: true,
-      });
+      mainWindowController.send("runtime-host-profiles:changed", state
+        ? runtimeHostTargetEvent(state)
+        : {
+            epoch: randomUUID(),
+            profileId,
+            profileName: profileId,
+            profileKind: "remote",
+            profileAccess: "owner",
+            readiness: "unavailable",
+            isDefault: true,
+          });
     },
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
     resolveStartupRepair: (error, signal) => localRuntimeHostRemoteAccess.resolveStartupRepair(error, signal),
@@ -1293,21 +1290,17 @@ const runtimeHostStart = shellEnvReady.then(() => runtimeHostManager?.start());
 void runtimeHostStart.catch((error: unknown) =>
   console.error('[runtime-host] startup failed:', error),
 );
-// Scoped renderer calls use this stable gate before invoking a target-owned
-// channel.  The target router only installs those channels once its candidate
-// is ready, so first paint can proceed without turning a slow Host start into
-// a splash screen while still avoiding Electron's missing-handler error.
-ipcMain.handle('runtime-host:awaitReady', async (_event, value?: unknown) => {
-  const manager = runtimeHostManager;
-  if (!manager) return { ready: false };
-  if (value === undefined) {
-    await runtimeHostStart;
-    return { ready: Boolean(manager.current()?.candidate) };
-  }
-  const scope = requireDesktopTargetScope(value);
-  await manager.waitUntilReadyForScope(scope, AbortSignal.timeout(RUNTIME_HOST_TARGET_READY_TIMEOUT_MS));
-  return { ready: true };
-});
+// Scoped renderer calls wait here before invoking a target-owned channel: the
+// router has no Electron handler for a channel until some candidate registers
+// it, and it rejects an epoch the manager has not activated yet. Only the
+// manager knows when a candidate is fully assembled.
+const readinessManager = runtimeHostManager;
+ipcMain.handle('runtime-host:awaitReady', (_event, value: unknown) =>
+  readinessManager.waitUntilReadyForScope(
+    requireDesktopTargetScope(value),
+    AbortSignal.timeout(RUNTIME_HOST_TARGET_READY_TIMEOUT_MS),
+  ),
+);
 // Runtime Host is the only schema-migration authority for its State Root.
 // Work Board remains a Desktop-owned table, but it opens only while a ready
 // Host has verified the schema — including a Local Host that only becomes
@@ -1601,6 +1594,8 @@ function registerHostClientIpc(
     emitChanged: (statuses) =>
       sendToRenderer("mcp:changed", statuses),
   });
+  scopedIpc.handle("mcp:chromeStatus", () => opencliChrome.status());
+  scopedIpc.handle("mcp:connectChrome", () => opencliChrome.connect());
   registerRuntimeHostConnectionsIpc({
     ipcMain: scopedIpc,
     client,
@@ -1940,38 +1935,10 @@ function registerPersistentClientIpc(): void {
       );
     },
   );
-  const projectRuntimeHostIdentity = (
-    epoch: string,
-    target: ResolvedRuntimeHostProfile,
-    readiness: 'ready' | 'reconnecting',
-    hostId: string,
-  ): DesktopRuntimeHostIdentity => ({
-    hostId,
-    targetEpoch: epoch,
-    profileId: target.profile.id,
-    profileName: target.profile.name,
-    profileKind: target.profile.kind,
-    profileAccess: runtimeHostProfileAccess(target.profile),
-    readiness,
-  });
-  ipcMain.handle("runtime-host:activeIdentity", () => {
-    const current = runtimeHostManager?.current();
-    if (!current) {
-      throw new Error("Desktop Runtime Host identity is unavailable");
-    }
-    return projectRuntimeHostIdentity(
-      current.epoch,
-      current.target,
-      current.readiness,
-      current.hostId,
-    );
-  });
   ipcMain.handle("runtime-host:identities", () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {
       if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
-      return [
-        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness === 'ready' ? 'ready' : 'reconnecting', state.hostId),
-      ];
+      return [runtimeHostTargetEvent(state)];
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });

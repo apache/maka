@@ -110,6 +110,9 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS core_interaction_pending
       ON core_interaction_requests(session_id, created_at, request_id);
 
+    CREATE INDEX IF NOT EXISTS core_interaction_requests_by_turn
+      ON core_interaction_requests(session_id, turn_id, created_at, request_id);
+
     CREATE TABLE IF NOT EXISTS core_interaction_outcomes (
       request_id TEXT PRIMARY KEY,
       record_json TEXT NOT NULL,

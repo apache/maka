@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
@@ -24,6 +25,7 @@ import {
   PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
+import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
@@ -388,6 +390,40 @@ export function createHostDailyReviewModel(
       }
     },
   });
+}
+
+export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (
+    source: import('./prompt-suggestion.js').PromptSuggestionSource,
+    abortSignal: AbortSignal,
+  ): Promise<string | undefined> => {
+    const result = await runHostAuxiliaryModelCall(authority, {
+      transportContextId: source.sessionId,
+      telemetrySessionId: source.sessionId,
+      header: { ...source.header, thinkingLevel: 'off' },
+      callKind: 'prompt_suggestion',
+      callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
+      abortSignal,
+      buildRequest: (target) => {
+        const variants = thinkingVariantsForConnection(target.connection, target.model);
+        if (variants.length && !variants.includes('off')) {
+          throw new AuxiliaryModelCallConfigurationError(
+            'Prompt suggestions require a model that can disable reasoning',
+          );
+        }
+        return {
+          prompt: buildPromptSuggestionPrompt(
+            source.messages,
+            source.header.role === 'workhub_coordination',
+          ),
+          maxOutputTokens: 128,
+          maxRetries: 0,
+        };
+      },
+    });
+    return result.finishReason === 'length' ? undefined : result.text;
+  };
 }
 
 /** Creates tool-free Session title and recap calls on canonical Host model authority. */

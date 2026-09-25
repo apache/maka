@@ -209,7 +209,7 @@ test('reseeds an evicted replica on the same live subscription', async () => {
   await owner.close();
 });
 
-test('a reseed superseded by subscription recovery does not displace the new replica', async () => {
+for (const reason of ['slow_consumer', 'transcript_changed'] as const) test(`a reseed superseded by subscription recovery does not displace the new replica (${reason})`, async () => {
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
   const reseedFetch = deferred<void>();
@@ -270,7 +270,7 @@ test('a reseed superseded by subscription recovery does not displace the new rep
     hostEpoch: 'host-1',
     subscriptionId: 'subscription-1',
     sequence: 1,
-    reason: 'slow_consumer',
+    reason,
   });
   await pollFor(() => opens === 2);
   reseedFetch.resolve(undefined);

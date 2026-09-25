@@ -91,7 +91,7 @@ function describeBrowserValue(value) {
   return String(value);
 }
 
-function installStorybookRenderProbe({ storyId }) {
+export function installStorybookRenderProbe({ storyId }) {
   const smoke = {
     finished: false,
     failures: [],
@@ -130,7 +130,13 @@ function installStorybookRenderProbe({ storyId }) {
         smoke.finished = true;
       }
     });
-    for (const eventName of ['storyErrored', 'storyThrewException', 'storyMissing']) {
+    for (const eventName of [
+      'storyErrored',
+      'storyThrewException',
+      'storyMissing',
+      'playFunctionThrewException',
+      'unhandledErrorsWhilePlaying',
+    ]) {
       channel.on(eventName, (payload) => {
         if (belongsToStory(payload)) {
           smoke.failures.push(`${eventName}: ${eventMessage(payload)}`);
@@ -169,6 +175,18 @@ export function catalogJobs(
             forcedColors: 'none',
             palette: 'default',
             locale,
+            viewport,
+          })),
+        );
+      }
+      if (entry.id === 'product-workhub--next-prompt-suggestion') {
+        return COLOR_SCHEMES.flatMap((colorScheme) =>
+          [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
+            storyId: entry.id,
+            colorScheme,
+            forcedColors: 'none',
+            palette: 'default',
+            locale: 'zh-CN',
             viewport,
           })),
         );
