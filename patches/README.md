@@ -30,6 +30,26 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `virtua@0.50.6`
+
+Consecutive ResizeObserver batches can correct row heights before the browser
+reports the first scroll write. Both corrections use the last reported offset,
+so the second overwrites the first. This caused a 365px reading-position jump
+in the mixed-Turn geometry gate on both main and #5314.
+
+The React ESM and CJS bundles retain the cumulative unacknowledged correction in
+`_flushedJump`. `_flushJump` returns both the new delta and that total: the new
+delta decides whether to write, while the total determines the destination.
+Keeping those separate also handles opposite corrections whose sum is zero.
+The existing scroll-event handler clears the total when the browser reports
+the resulting offset. No public Virtualizer option controls this bookkeeping.
+
+`packages/ui/src/__tests__/virtualizer-resize-compensation.test.tsx` exercises
+both installed entry points with consecutive measurements and delayed scroll
+events. The existing `scripts/perf/geometry-ablation.mjs --assert-stable` gate
+checks real Electron scrolling. Remove the patch when upstream preserves
+consecutive corrections and both regressions pass without it.
+
 ## `electron-updater@6.8.9`
 
 GitHub can continue serving a withdrawn prerelease in `releases.atom` after
