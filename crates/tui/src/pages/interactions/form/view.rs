@@ -276,7 +276,7 @@ impl Form {
         }
         if !choices.is_empty() {
             entry.push(
-                Node::scroll("choices", Node::column("rows", choices))
+                Node::scroll("choices", Node::column("rows", choices).focus_group())
                     .size(Size::Upto(height.saturating_sub(18).max(3))),
             );
         }

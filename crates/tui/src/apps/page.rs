@@ -429,7 +429,7 @@ fn directory(app: &App, width: u16) -> Node<Message> {
             key,
             vec![
                 Node::text("title", vec![(i18n.text(title), Tone::Muted)]),
-                Node::column("rows", rows).gap(1),
+                Node::column("rows", rows).gap(1).focus_group(),
             ],
         ));
     }

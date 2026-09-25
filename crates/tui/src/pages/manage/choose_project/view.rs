@@ -85,8 +85,10 @@ pub(in crate::pages::manage) fn sheet(app: &App, dialog: &Dialog) -> Sheet<Actio
             .collect();
         let height = app.frame_size.map_or(24, |(_, height)| height);
         let visible = (catalog.items.len() as u16).min(height.saturating_sub(16).max(3));
-        sheet =
-            sheet.body(Node::scroll("list", Node::column("rows", rows)).size(Size::Fixed(visible)));
+        sheet = sheet.body(
+            Node::scroll("list", Node::column("rows", rows).focus_group())
+                .size(Size::Fixed(visible)),
+        );
     }
     let (note, tone) = if busy {
         ("session-saving", Tone::Subtle)

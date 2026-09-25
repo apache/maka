@@ -110,8 +110,10 @@ pub(in crate::pages::manage) fn sheet(app: &App, dialog: &Dialog) -> Sheet<Actio
     if !rows.is_empty() {
         let height = app.frame_size.map_or(24, |(_, height)| height);
         let visible = lines.min(height.saturating_sub(18).max(4));
-        sheet =
-            sheet.body(Node::scroll("list", Node::column("rows", rows)).size(Size::Fixed(visible)));
+        sheet = sheet.body(
+            Node::scroll("list", Node::column("rows", rows).focus_group())
+                .size(Size::Fixed(visible)),
+        );
     }
     if catalog.rows.is_empty() && !catalog.error {
         let key = match (catalog.ready(), catalog.can_previous()) {

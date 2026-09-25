@@ -160,6 +160,8 @@ Host 插件通过 `ctx.tui.app(name, { read, submit, recover? }, descriptor)` �
 
 `read(route, cx)` 返回用 `ctx.tui` 构造的 View v4 内容，包括列、行、分栏、标签、文本、Markdown、控件和字段，SDK 自动添加版本。稳定的同级 key 保留焦点与编辑状态；`cx.t(en, zhCN, zhTW)` 选择当前语言。外壳负责布局、本地输入、滚动、确认与草稿恢复；插件使用语义颜色，不输出终端转义序列。
 
+标签组和由 item 组成的列各占一个 Tab 停靠点，方向键在组内移动，重新进入时恢复上次焦点。列表列可包含文本、Markdown、代码、分隔线和进度；字段与按钮放在列表外，保持逐个 Tab 可达。仅移动焦点不会提交动作或进入插件路由。
+
 `submit({ route, revision, action, fields, grant }, cx)` 执行明确的用户操作，返回 `applied`、`conflict`、`rejected` 或 `consent`。使用 revision 做存储 CAS，并在 Host 检查领域权限。只有 `recover(route, cx)` 能查询持久结果时才声明 action 的 `recovery` 路由；外壳不会盲目重放结果未知的写入。
 
 实时刷新使用 `const changed = await ctx.tui.changes('changed')` 注册流，在 descriptor 设置 `changes: 'changed'`，数据提交后调用 `changed()`。失效通知会合并，外壳重新读取干净视图并保留已有草稿；订阅与控件随注册退休。

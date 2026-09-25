@@ -1471,6 +1471,79 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn plugin_lists_and_tabs_share_keyboard_groups_without_submitting_or_trapping_fields() {
+        let mut app = app();
+        let mut view = form();
+        let items = (0..64)
+            .map(|index| {
+                link(
+                    format!("item-{index}"),
+                    format!("Item {index}"),
+                    json!(index),
+                )
+                .current(index == 40)
+                .into()
+            })
+            .collect();
+        view.root = column(
+            "root",
+            vec![
+                tabs(
+                    "tabs",
+                    "all",
+                    vec![
+                        ("all".into(), "All".into(), json!("all")),
+                        ("mine".into(), "Mine".into(), json!("mine")),
+                    ],
+                ),
+                scroll("list", 5, column("items", items)),
+                column(
+                    "mixed",
+                    vec![
+                        link("other", "Other", json!("other")).into(),
+                        scroll("note", 3, text("text", "Read this first.", Tone::Normal)),
+                    ],
+                ),
+                input("enabled", "enabled", "Enabled"),
+                input("name", "name", "Name"),
+                button("save", "save", Role::Primary),
+            ],
+        );
+        view.validate().unwrap();
+        instance_mut(&mut app).view = Some(view);
+        let root = "app/body/frame/content/root";
+        for (width, height) in [(100, 32), (44, 24)] {
+            instance_mut(&mut app)
+                .surface
+                .focus(format!("{root}/tabs/tabs/all"));
+            draw(&mut app, width, height);
+            for (code, target) in [
+                (KeyCode::Right, "tabs/tabs/mine"),
+                (KeyCode::Tab, "list/items/item-40"),
+                (KeyCode::Tab, "mixed/other"),
+                (KeyCode::Tab, "mixed/note"),
+                (KeyCode::Tab, "enabled"),
+                (KeyCode::Tab, "name"),
+                (KeyCode::BackTab, "enabled"),
+                (KeyCode::BackTab, "mixed/note"),
+                (KeyCode::BackTab, "mixed/other"),
+                (KeyCode::BackTab, "list/items/item-40"),
+                (KeyCode::BackTab, "tabs/tabs/mine"),
+            ] {
+                app.input(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+                draw(&mut app, width, height);
+                let path = format!("{root}/{target}");
+                assert_eq!(instance(&app).surface.focused(), Some(path.as_str()));
+                assert!(!instance(&app).surface.rect(&path).unwrap().is_empty());
+                assert!(
+                    next(&mut app).is_none(),
+                    "focus does not execute plugin code"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_rich_view_navigates_routes_picks_choices_and_confirms_destructive_actions() {
         let mut app = app();
         let mut view = form();

@@ -251,6 +251,22 @@ impl<M> Builder<'_, M> {
         let key = node.key().to_owned();
         match node {
             wire::Node::Column { gap, children, .. } => {
+                // Item-only collections are lists. Decorative headings may
+                // sit among them; inputs and actions keep separate Tab stops.
+                let list = children
+                    .iter()
+                    .any(|child| matches!(child, wire::Node::Item { .. }))
+                    && children.iter().all(|child| {
+                        matches!(
+                            child,
+                            wire::Node::Item { .. }
+                                | wire::Node::Text { .. }
+                                | wire::Node::Rule { .. }
+                                | wire::Node::Markdown { .. }
+                                | wire::Node::Code { .. }
+                                | wire::Node::Progress { .. }
+                        )
+                    });
                 let children = children
                     .iter()
                     .map(|child| {
@@ -258,7 +274,8 @@ impl<M> Builder<'_, M> {
                         self.node(child, path, width, Axis::Column)
                     })
                     .collect();
-                Node::column(key, children).gap(u16::from(*gap))
+                let node = Node::column(key, children).gap(u16::from(*gap));
+                if list { node.focus_group() } else { node }
             }
             wire::Node::Row { gap, children, .. } => self.row(key, path, *gap, children, width),
             wire::Node::Text { spans, clip, .. } => text(key, spans, *clip),
@@ -295,7 +312,10 @@ impl<M> Builder<'_, M> {
                     .collect();
                 Node::column(
                     key,
-                    vec![Node::row("tabs", tabs).gap(3), Node::rule("rule")],
+                    vec![
+                        Node::row("tabs", tabs).gap(3).focus_group(),
+                        Node::rule("rule"),
+                    ],
                 )
             }
             wire::Node::Item {

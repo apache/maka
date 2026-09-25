@@ -101,7 +101,7 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
         sheet = sheet
             .text("heading", &app.i18n.text("onboard-models"), Tone::Normal)
             .body(
-                Node::scroll("list", Node::column("rows", rows))
+                Node::scroll("list", Node::column("rows", rows).focus_group())
                     .size(Size::Upto(height.saturating_sub(14).max(3))),
             );
     } else {

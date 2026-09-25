@@ -215,7 +215,7 @@ fn list(
         .enabled(app.attachment_enabled(&add)),
     );
     let mut sheet = sheet.body(
-        Node::scroll("list", Node::column("rows", rows))
+        Node::scroll("list", Node::column("rows", rows).focus_group())
             .size(Size::Upto(height.saturating_sub(14).max(4))),
     );
     let selected = items.get(dialog.selected);
@@ -318,7 +318,7 @@ fn browse(app: &App, dialog: &Dialog, sheet: Sheet<Action>, height: u16) -> Shee
     let empty = rows.is_empty();
     if !empty {
         sheet = sheet.body(
-            Node::scroll("list", Node::column("rows", rows))
+            Node::scroll("list", Node::column("rows", rows).focus_group())
                 .size(Size::Upto(height.saturating_sub(14).max(4))),
         );
     }

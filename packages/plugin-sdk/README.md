@@ -156,6 +156,8 @@ Host plugins use `ctx.tui.app(name, { read, submit, recover? }, descriptor)` to 
 
 `read(route, cx)` returns a View v4 body built with `ctx.tui` (columns, rows, splits, tabs, text, Markdown, controls and fields). The SDK adds the version. Stable sibling keys preserve focus and editing state; `cx.t(en, zhCN, zhTW)` selects the reader's language. The shell owns layout, local typing, scrolling, confirmation and draft recovery. Plugins use semantic tones and never emit terminal escapes.
 
+Tabs and columns of items each contribute one keyboard Tab stop; arrow keys move inside them. Reentering a group restores its last focused item. A list column may include decorative text, Markdown, code, rules or progress; put fields and buttons outside it so each remains reachable with Tab. Focus changes alone never submit an action or follow a plugin route.
+
 `submit({ route, revision, action, fields, grant }, cx)` applies an explicit user action and returns `applied`, `conflict`, `rejected`, or `consent`. Use the revision for storage CAS and enforce domain authority in the Host. Declare an action's `recovery` route only when `recover(route, cx)` can look up its durable outcome; the shell never blindly replays an uncertain write.
 
 For live updates, `const changed = await ctx.tui.changes('changed')` registers a stream. Set `changes: 'changed'` on the descriptor and call `changed()` after committing data. Invalidation is coalesced; the shell rereads clean views and preserves edited drafts. Subscriptions and controls retire with their registration.

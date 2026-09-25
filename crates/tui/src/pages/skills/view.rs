@@ -101,7 +101,7 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
             .collect();
         let height = app.frame_size.map_or(24, |(_, height)| height);
         sheet = sheet.body(
-            Node::scroll("list", Node::column("rows", nodes))
+            Node::scroll("list", Node::column("rows", nodes).focus_group())
                 .size(Size::Upto(height.saturating_sub(14).max(3))),
         );
     }

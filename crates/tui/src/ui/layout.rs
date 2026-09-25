@@ -42,6 +42,8 @@ pub(super) struct Item<M> {
     /// Ordinal of the nearest container: arrow keys along its axis move
     /// within it.
     pub group: usize,
+    /// An explicit list/tab group; unrelated form controls stay individual.
+    pub tab_group: Option<usize>,
     pub axis: Axis,
     pub on: On<M>,
     pub enabled: bool,
@@ -95,6 +97,7 @@ struct Scope {
     clip: Rect,
     axis: Axis,
     group: usize,
+    tab_group: Option<usize>,
     scroller: Option<usize>,
     /// Interaction styling of an enclosing interactive node.
     style: Option<Style>,
@@ -143,6 +146,7 @@ impl<'a, M> Pass<'a, M> {
             clip: area,
             axis: Axis::Vertical,
             group: 0,
+            tab_group: None,
             scroller: None,
             style: None,
         };
@@ -157,11 +161,16 @@ impl<'a, M> Pass<'a, M> {
             enabled,
             current,
             follow_focus,
+            focus_group,
             submit,
             hint,
             role,
             ..
         } = node;
+        if focus_group {
+            self.groups += 1;
+            scope.tab_group = Some(self.groups);
+        }
         let canvas = on.is_none() && matches!(kind, Kind::Slot);
         // Scrolled-out items stay registered with an empty visible rectangle:
         // the pointer cannot hit them, but the keyboard can still reach them.
@@ -193,6 +202,7 @@ impl<'a, M> Pass<'a, M> {
                 height: area.height,
                 scroller: scope.scroller,
                 group: scope.group,
+                tab_group: scope.tab_group,
                 axis: scope.axis,
                 on,
                 enabled,

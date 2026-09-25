@@ -447,6 +447,20 @@ pub(crate) mod tests {
             let request = app.skills_request().unwrap();
             assert_eq!(request.session, "b");
             page(&mut app, request, 32, true);
+            frame(&mut app, 80, 28);
+            app.input(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+            app.input(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+            assert_eq!(app.layer.focused_path(), Some("footer/close"));
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::BackTab,
+                KeyModifiers::SHIFT,
+            )));
+            assert_eq!(app.layer.focused_path(), Some("list/rows/1"));
+            assert!(
+                app.skills.saved.is_empty(),
+                "moving through a checklist never toggles it"
+            );
+            app.input(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
             for (width, height) in [(80, 28), (52, 22)] {
                 frame(&mut app, width, height);
                 let first = app.layer.rect("list/rows/0").unwrap();

@@ -259,12 +259,15 @@ impl Questions {
             .clamp(1, 3);
         // The written answer is the last choice, right under the others.
         vec![
-            Node::row("tabs", tabs).gap(1),
+            Node::row("tabs", tabs).focus_group().gap(1),
             Node::column(
                 "question",
                 vec![
-                    Node::scroll("choices", Node::column("rows", choices).gap(1))
-                        .size(Size::Upto(height.saturating_sub(16).max(4))),
+                    Node::scroll(
+                        "choices",
+                        Node::column("rows", choices).focus_group().gap(1),
+                    )
+                    .size(Size::Upto(height.saturating_sub(16).max(4))),
                     Node::row(
                         "answer",
                         vec![

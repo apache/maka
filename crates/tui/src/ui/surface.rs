@@ -452,9 +452,14 @@ impl<M: Clone> Surface<M> {
             self.focus_index = if last { usize::MAX } else { 0 };
             return;
         };
-        let mut stops = committed.items.iter().filter(|item| item.enabled);
-        let target = if last { stops.last() } else { stops.next() };
-        self.focus = target.map(|item| item.id.clone());
+        let stops = self.tab_stops();
+        let target = if last { stops.last() } else { stops.first() };
+        let id = target.map(|index| committed.items[*index].id.clone());
+        if let Some(id) = id {
+            self.move_focus(id);
+        } else {
+            self.focus = None;
+        }
     }
 
     /// A shell overlay drawn over this surface hides these cells from the
@@ -741,13 +746,17 @@ impl<M: Clone> Surface<M> {
         }
         let target = match (key.code, current) {
             (KeyCode::Tab | KeyCode::BackTab, _) => {
+                let tabs = self.tab_stops();
+                let current = tabs
+                    .iter()
+                    .position(|index| Some(&item(*index).id) == self.focus.as_ref());
                 let backwards =
                     key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
                 let next = match (current, backwards) {
-                    (None, false) => stops.first(),
-                    (None, true) => stops.last(),
-                    (Some(at), false) => stops.get(at + 1),
-                    (Some(at), true) => at.checked_sub(1).and_then(|at| stops.get(at)),
+                    (None, false) => tabs.first(),
+                    (None, true) => tabs.last(),
+                    (Some(at), false) => tabs.get(at + 1),
+                    (Some(at), true) => at.checked_sub(1).and_then(|at| tabs.get(at)),
                 };
                 // Past either end, focus leaves the page for the shell.
                 match next {
@@ -811,6 +820,42 @@ impl<M: Clone> Surface<M> {
             _ => return Outcome::ignored(),
         };
         self.focus_item(target)
+    }
+
+    /// A list contributes one stop at its position in reading order. Reentry
+    /// keeps the reader's cursor, then prefers a selected or visible item.
+    fn tab_stops(&self) -> Vec<usize> {
+        let Some(committed) = &self.committed else {
+            return vec![];
+        };
+        let priority = |item: &Item<M>| {
+            (
+                Some(&item.id) == self.focus.as_ref(),
+                self.recent.iter().rposition(|id| *id == item.id),
+                item.current,
+                !item.rect.is_empty(),
+            )
+        };
+        let mut stops = vec![];
+        let mut groups = HashMap::new();
+        for (index, item) in committed
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.enabled)
+        {
+            if let Some(group) = item.tab_group {
+                if let Some(at) = groups.get(&group).copied() {
+                    if priority(item) > priority(&committed.items[stops[at]]) {
+                        stops[at] = index;
+                    }
+                    continue;
+                }
+                groups.insert(group, stops.len());
+            }
+            stops.push(index);
+        }
+        stops
     }
 
     /// Next stop along the focused item's own group axis.
@@ -1188,6 +1233,74 @@ mod tests {
             !surface.input(&key(KeyCode::Esc)).consumed,
             "Esc belongs to the shell"
         );
+    }
+
+    #[test]
+    fn tab_crosses_long_lists_and_returns_to_the_cursor_without_skipping_fields() {
+        let tree = |reverse: bool, removed: Option<usize>| {
+            let mut rows: Vec<_> = (0..200)
+                .filter(|index| Some(*index) != removed)
+                .map(|index| {
+                    Node::text(
+                        index.to_string(),
+                        vec![(format!("Item {index}"), Tone::Normal)],
+                    )
+                    .on(On::Activate(Message::Pick(index)))
+                    .current(index == 150)
+                    .enabled(index != 151)
+                })
+                .collect();
+            if reverse {
+                rows.reverse();
+            }
+            Node::column(
+                "root",
+                vec![
+                    Node::slot("before", 1).on(On::Activate(Message::Choose("before"))),
+                    Node::scroll("list", Node::column("rows", rows).focus_group())
+                        .size(Size::Fixed(5)),
+                    Node::slot("after", 1).on(On::Activate(Message::Choose("after"))),
+                    Node::button("save", "Save".into(), Role::Primary)
+                        .on(On::Activate(Message::Choose("save"))),
+                ],
+            )
+            .map(&|message| message)
+        };
+        let mut surface = Surface::default();
+        draw(&mut surface, 40, 10, tree(false, None));
+        assert_eq!(surface.focused(), Some("root/before"));
+        assert!(surface.input(&key(KeyCode::Tab)).message.is_none());
+        assert_eq!(surface.focused(), Some("root/list/rows/150"));
+        draw(&mut surface, 40, 10, tree(false, None));
+        assert!(!surface.rect("root/list/rows/150").unwrap().is_empty());
+        surface.input(&key(KeyCode::Down));
+        assert_eq!(surface.focused(), Some("root/list/rows/152"));
+        surface.input(&key(KeyCode::Tab));
+        assert_eq!(surface.focused(), Some("root/after"));
+        surface.input(&key(KeyCode::BackTab));
+        assert_eq!(surface.focused(), Some("root/list/rows/152"));
+        surface.input(&key(KeyCode::Tab));
+        surface.input(&key(KeyCode::Tab));
+        assert_eq!(surface.focused(), Some("root/save"));
+        assert!(!surface.input(&key(KeyCode::Tab)).consumed);
+        surface.input(&key(KeyCode::BackTab));
+        draw(&mut surface, 40, 10, tree(true, None));
+        surface.input(&key(KeyCode::BackTab));
+        assert_eq!(
+            surface.focused(),
+            Some("root/list/rows/152"),
+            "identity survives reordering"
+        );
+        surface.input(&key(KeyCode::Tab));
+        draw(&mut surface, 40, 10, tree(true, Some(152)));
+        surface.input(&key(KeyCode::BackTab));
+        assert_eq!(
+            surface.focused(),
+            Some("root/list/rows/150"),
+            "a removed cursor falls back within its group"
+        );
+        surface.input(&key(KeyCode::BackTab));
+        assert_eq!(surface.focused(), Some("root/before"));
     }
 
     #[test]

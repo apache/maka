@@ -142,7 +142,9 @@ pub(in crate::pages::manage) fn sheet(app: &App, dialog: &Dialog) -> Sheet<Actio
             .collect();
         let height = app.frame_size.map_or(24, |(_, height)| height);
         let cap = height.saturating_sub(16 + references.len() as u16).max(3);
-        sheet = sheet.body(Node::scroll("list", Node::column("rows", rows)).size(Size::Upto(cap)));
+        sheet = sheet.body(
+            Node::scroll("list", Node::column("rows", rows).focus_group()).size(Size::Upto(cap)),
+        );
     }
     let note = if busy {
         Some(("session-saving", Tone::Subtle))

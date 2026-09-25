@@ -118,7 +118,7 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
                 "label",
                 vec![(app.i18n.text("theme-swatches"), Tone::Muted)],
             ),
-            Node::column("swatches", swatches),
+            Node::column("swatches", swatches).focus_group(),
             Node::row(
                 "hex",
                 vec![
@@ -140,7 +140,7 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
                 Node::column(
                     "roles",
                     vec![
-                        Node::scroll("list", Node::column("rows", roles))
+                        Node::scroll("list", Node::column("rows", roles).focus_group())
                             .size(Size::Upto(height.saturating_sub(16).clamp(5, 12))),
                     ],
                 )

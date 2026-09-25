@@ -242,6 +242,7 @@ fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
         }));
         children.push(
             Node::column("categories", categories)
+                .focus_group()
                 .size(Size::Fixed(CATEGORIES))
                 .gap(1),
         );

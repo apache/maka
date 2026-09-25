@@ -128,6 +128,9 @@ pub struct Node<M> {
     /// Keyboard focus arriving here also activates it, for lists whose
     /// selection follows the focus.
     pub follow_focus: bool,
+    /// Descendants share one Tab stop, with arrows moving inside the group.
+    /// Use for lists and tabs; form fields remain separate stops.
+    pub focus_group: bool,
     /// What Enter sends instead of the activation: a list row selects on
     /// click or arrow, and Enter commits the sheet's choice.
     pub submit: Option<M>,
@@ -146,6 +149,7 @@ impl<M> Node<M> {
             enabled: true,
             current: false,
             follow_focus: false,
+            focus_group: false,
             submit: None,
             hint: None,
             role: None,
@@ -234,6 +238,10 @@ impl<M> Node<M> {
         self.follow_focus = true;
         self
     }
+    pub fn focus_group(mut self) -> Self {
+        self.focus_group = true;
+        self
+    }
     pub fn submit(mut self, message: M) -> Self {
         self.submit = Some(message);
         self
@@ -281,6 +289,7 @@ impl<M> Node<M> {
             enabled: self.enabled,
             current: self.current,
             follow_focus: self.follow_focus,
+            focus_group: self.focus_group,
             submit: self.submit.map(f),
             hint: self.hint,
             role: self.role,

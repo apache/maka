@@ -196,7 +196,7 @@ fn tree(app: &App, orbit: Option<&'static str>, height: u16) -> Node<Message> {
     let mut children = vec![
         new.size(Size::Fixed(1)),
         Node::text("gap", vec![]).size(Size::Fixed(1)),
-        Node::scroll("list", Node::column("rows", rows)),
+        Node::scroll("list", Node::column("rows", rows).focus_group()),
     ];
     if height >= PINNED {
         children.extend(apps(app));
