@@ -1067,12 +1067,21 @@ function storedMessagesToTranscriptEntries(
   messages: readonly StoredMessage[],
 ): MakaPiTranscriptEntry[] {
   const entries: MakaPiTranscriptEntry[] = [];
+  const callTurnIdsByUseId = new Map<string, Set<string>>();
+  const resultsByUseId = new Map<string, Extract<StoredMessage, { type: 'tool_result' }>>();
   const resultsByTurnId = new Map<
     string,
     Map<string, Extract<StoredMessage, { type: 'tool_result' }>>
   >();
   for (const message of messages) {
+    if (message.type === 'tool_call') {
+      const turnIds = callTurnIdsByUseId.get(message.id);
+      if (turnIds) turnIds.add(message.turnId);
+      else callTurnIdsByUseId.set(message.id, new Set([message.turnId]));
+      continue;
+    }
     if (message.type !== 'tool_result') continue;
+    resultsByUseId.set(message.toolUseId, message);
     const turnResults = resultsByTurnId.get(message.turnId);
     if (turnResults) turnResults.set(message.toolUseId, message);
     else resultsByTurnId.set(message.turnId, new Map([[message.toolUseId, message]]));
@@ -1114,7 +1123,10 @@ function storedMessagesToTranscriptEntries(
         entries.push(
           storedToolToTranscriptEntry(
             message,
-            resultsByTurnId.get(message.turnId)?.get(message.id),
+            resultsByTurnId.get(message.turnId)?.get(message.id) ??
+              (callTurnIdsByUseId.get(message.id)?.size === 1
+                ? resultsByUseId.get(message.id)
+                : undefined),
             turnStatusById.get(message.turnId),
           ),
         );

@@ -2032,7 +2032,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(after.slice(0, viewportTop), before.slice(0, viewportTop));
   });
 
-  test('replays WriteStdin as a human-readable operation row while merging its PTY revision into Bash', () => {
+  test('replays a unique cross-turn WriteStdin result while merging its PTY revision into Bash', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/pty-1';
     const rawInput = 'echo hello\r';
@@ -2071,7 +2071,7 @@ describe('Maka Pi TUI transcript', () => {
       {
         type: 'tool_result',
         id: 'write-result',
-        turnId: 'turn-2',
+        turnId: 'turn-results',
         ts: 4,
         toolUseId: 'write-pty',
         isError: false,
@@ -2107,6 +2107,7 @@ describe('Maka Pi TUI transcript', () => {
       },
       size: { cols: 100, rows: 30 },
     });
+    assert.equal(toolStatus(tools[1]), 'done');
     assert.equal(tools[1]?.durationMs, undefined);
     refreshRunningShellRunElapsed(state, 3_000);
     assert.equal(tools[1]?.durationMs, undefined);
