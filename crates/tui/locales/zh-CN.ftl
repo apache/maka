@@ -311,6 +311,7 @@ review-expired = 此请求已过期。
 review-host-restarted = Host 已重启，此请求已关闭。
 review-provider-disconnected = 提供者已断开，此请求已关闭。
 interaction-close = 稍后
+interaction-done = 关闭
 interaction-check = 核对结果
 interaction-deny = 拒绝
 interaction-once = 允许一次

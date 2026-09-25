@@ -311,6 +311,7 @@ review-expired = This request expired.
 review-host-restarted = The Host restarted; this request is closed.
 review-provider-disconnected = The provider disconnected; this request is closed.
 interaction-close = Later
+interaction-done = Close
 interaction-check = Check outcome
 interaction-deny = Deny
 interaction-once = Allow once

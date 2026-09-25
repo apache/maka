@@ -32,8 +32,8 @@ fn action(command: Command) -> Action {
 
 /// Reviewing a pinned Host request: what it asks (permissions, a client
 /// capability, questions or a form), what has happened to it, and the
-/// decisions it allows. Every state opens on Later, which leaves the
-/// request pending; nothing is decided by Enter alone.
+/// decisions it allows. Initial focus only dismisses the sheet; nothing is
+/// decided by Enter alone. A settled request no longer asks to return later.
 pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
     if !app.interactions.visible {
         return None;
@@ -98,7 +98,17 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
         );
         app.i18n.text(state(review))
     };
-    let status = Node::text("status", vec![(status, Tone::Warning)]);
+    let status = Node::text(
+        "status",
+        vec![(
+            status,
+            if review.state == State::Resolved {
+                Tone::Subtle
+            } else {
+                Tone::Warning
+            },
+        )],
+    );
     let commands = review.commands();
     // A permission's decisions, from refusing to the widest grant.
     let decisions: Vec<_> = [
@@ -157,7 +167,11 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
     }
     sheet = sheet.button(
         "close",
-        app.i18n.text(Command::Close.label()),
+        app.i18n.text(if review.state == State::Resolved {
+            "interaction-done"
+        } else {
+            Command::Close.label()
+        }),
         Role::Normal,
         action(Command::Close),
         true,
