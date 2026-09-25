@@ -37,6 +37,7 @@ use maka_plugins::{
         view::{self, Action, Confirm, Node, Reply, Role, Tone, View, build::*},
     },
 };
+use maka_runtime::event::Invocation;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -128,11 +129,6 @@ struct Summary {
     control: Option<String>,
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Invocation {
-    session_id: String,
-}
-#[derive(Deserialize)]
 struct Delivery {
     receipt: Receipt,
 }
@@ -177,14 +173,10 @@ impl Hub {
                     assignment.request.content.text.chars().take(160).collect()
                 }
             },
-            source: Invocation {
-                session_id: assignment.request.source.session_id,
-            },
+            source: assignment.request.source,
             delivery: assignment.delivery.map(|delivery| Delivery {
                 receipt: Receipt {
-                    invocation: Invocation {
-                        session_id: delivery.invocation().session_id.clone(),
-                    },
+                    invocation: delivery.invocation().clone(),
                 },
             }),
             retired: assignment.retired,
@@ -624,10 +616,12 @@ fn assignment(
         // Only stable task/session identities cross the extension boundary.
         // A filler owns its own data; it receives no result text or authority.
         children.push(slot(
-            format!("extensions-{}", crate::repository::digest(&id).expect("assignment identity serializes")),
+            format!(
+                "extensions-{}",
+                crate::repository::digest(&id).expect("assignment identity serializes")
+            ),
             "workhub.task.detail",
-            json!({"assignmentId":id,"sourceSessionId":summary.source.session_id,
-                "sessionId":summary.delivery.as_ref().map(|delivery| &delivery.receipt.invocation.session_id)}),
+            json!({"assignmentId":id,"sourceSessionId":summary.source.session_id}),
         ));
     }
     let mut actions = vec![];
@@ -687,23 +681,33 @@ fn assignment(
 mod tests {
     use super::*;
 
+    fn invocation(session: &str) -> Invocation {
+        Invocation {
+            session_id: session.into(),
+            turn_id: format!("turn-{session}"),
+            run_id: format!("run-{session}"),
+            invocation_id: format!("invocation-{session}"),
+        }
+    }
+
     fn summary(id: &str) -> Summary {
-        Summary {
+        // Exercise the actual domain serialization consumed by Call::Assignments.
+        // Invocation is snake_case inside the otherwise camelCase summary.
+        let domain = crate::observation::Summary {
             operation_id: id.into(),
             title: format!("Task {id}"),
-            source: Invocation {
-                session_id: "coordinator".into(),
-            },
-            delivery: Some(Delivery {
-                receipt: Receipt {
-                    invocation: Invocation {
-                        session_id: format!("worker-{id}"),
-                    },
+            source: invocation("coordinator"),
+            delivery: Some(crate::assignment::Delivery::Submitted {
+                receipt: maka_plugins::execution::Receipt {
+                    invocation: invocation(&format!("worker-{id}")),
+                    message_id: format!("message-{id}"),
+                    content_digest: format!("digest-{id}"),
                 },
             }),
             retired: false,
             control: None,
-        }
+        };
+        serde_json::from_value(serde_json::to_value(domain).unwrap()).unwrap()
     }
 
     #[test]
@@ -770,7 +774,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             context,
-            &json!({"assignmentId":"a","sourceSessionId":"coordinator","sessionId":"worker-a"})
+            &json!({"assignmentId":"a","sourceSessionId":"coordinator"})
         );
         let slot_key = |view: &View| {
             let Node::Column { children, .. } = &view.root else {
@@ -779,11 +783,23 @@ mod tests {
             children
                 .iter()
                 .find_map(|node| match node {
-                    Node::Slot { key, .. } => Some(key.clone()),
+                    Node::Slot { key, context, .. } => Some((key.clone(), context.clone())),
                     _ => None,
                 })
                 .unwrap()
         };
+        // Delivery adds a session link, but the mounted child keeps the same
+        // origin while its draft or unknown write is retained.
+        let mut undelivered = summary("a");
+        undelivered.delivery = None;
+        let pending = assignment(&words, "a", Some(&undelivered), None);
+        pending.validate().unwrap();
+        assert_eq!(slot_key(&pending), slot_key(&detail));
+        assert!(
+            !serde_json::to_string(&pending)
+                .unwrap()
+                .contains("worker-a")
+        );
         let second = assignment(&words, "b", page.entries.get(1), feedback.get(1));
         second.validate().unwrap();
         assert_ne!(slot_key(&detail), slot_key(&second));

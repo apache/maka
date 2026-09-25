@@ -21,6 +21,71 @@ use crate::{Client, ClientError, RequestFailure};
 use maka_protocol::{Operation, plugin::*};
 
 impl Client {
+    /// Reads Host-accessible source bytes without installing or activating them.
+    pub async fn plugin_package_preview(
+        &self,
+        source_path: String,
+    ) -> Result<PackagePreview, RequestFailure> {
+        let value = self
+            .request(
+                Operation::PluginPackagePreview,
+                serde_json::json!({"sourcePath": source_path}),
+            )
+            .await?;
+        let result: PackagePreview = serde_json::from_value(value)
+            .map_err(|error| self.invalid_plugin_result(error.to_string()))?;
+        if result.source_path != source_path {
+            return Err(self.invalid_plugin_result("Package preview does not match its source"));
+        }
+        Ok(result)
+    }
+
+    pub async fn plugin_package_install(
+        &self,
+        input: PackageInstall,
+    ) -> Result<Installed, RequestFailure> {
+        let value = self
+            .request(
+                Operation::PluginPackageInstall,
+                serde_json::to_value(input).expect("wire input"),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|error| self.invalid_plugin_result(error.to_string()))
+    }
+
+    /// Restarts stored bytes; this does not read or update the original source.
+    pub async fn plugin_package_restart(
+        &self,
+        input: PackageTarget,
+    ) -> Result<Receipt, RequestFailure> {
+        self.plugin_receipt(Operation::PluginPackageReload, &input)
+            .await
+    }
+
+    pub async fn plugin_package_uninstall(
+        &self,
+        input: PackageTarget,
+    ) -> Result<Receipt, RequestFailure> {
+        self.plugin_receipt(Operation::PluginPackageUninstall, &input)
+            .await
+    }
+
+    pub async fn plugin_composition_apply(&self, input: Apply) -> Result<Receipt, RequestFailure> {
+        self.plugin_receipt(Operation::PluginCompositionApply, &input)
+            .await
+    }
+
+    async fn plugin_receipt(
+        &self,
+        operation: Operation,
+        input: &impl serde::Serialize,
+    ) -> Result<Receipt, RequestFailure> {
+        let value = self
+            .request(operation, serde_json::to_value(input).expect("wire input"))
+            .await?;
+        serde_json::from_value(value).map_err(|error| self.invalid_plugin_result(error.to_string()))
+    }
+
     pub async fn plugin_authorization(
         &self,
         input: AuthorizationInput,

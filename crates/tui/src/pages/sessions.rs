@@ -123,6 +123,12 @@ impl Sessions {
             self.refresh_detail();
         }
     }
+    pub fn invalidate_all(&mut self) {
+        self.refresh();
+        if self.detail.id().is_some() {
+            self.refresh_detail();
+        }
+    }
     pub fn updated(&mut self, item: Box<SessionCatalogProjection>) {
         self.invalidate(&item.id);
         if let Some(current) = self.items.iter_mut().find(|current| current.id == item.id)

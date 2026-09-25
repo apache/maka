@@ -80,6 +80,8 @@ impl UserFiles {
             Ok(Publisher {
                 skills,
                 transactions,
+                requests: private.requests,
+                receipts: private.receipts,
                 _lock: private._lock,
             })
         }

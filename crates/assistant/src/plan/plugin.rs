@@ -77,12 +77,12 @@ impl Plugin for Builtin {
                 )
                 .map_err(message)?;
             staged
-                .insert(PLANNING, SessionBehavior(Arc::new(behavior::Planning)))
+                .insert(PLANNING, SessionBehavior::new(Arc::new(behavior::Planning)))
                 .map_err(message)?;
             staged
                 .insert(
                     EXECUTION,
-                    SessionBehavior(Arc::new(behavior::Execute(owner.clone()))),
+                    SessionBehavior::new(Arc::new(behavior::Execute(owner.clone()))),
                 )
                 .map_err(message)?;
             tools::publish(owner.clone(), &mut staged)?;

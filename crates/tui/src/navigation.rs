@@ -33,6 +33,8 @@ pub enum Route {
     Workspace,
     Session(String),
     Settings,
+    /// Local-owner package and composition management, with shell history.
+    Plugins(crate::pages::plugins::Place),
     Projects,
     Connections,
     /// The directory of every plugin view.
@@ -42,13 +44,14 @@ pub enum Route {
 }
 
 impl Route {
-    pub const PAGE_COUNT: usize = Self::ALL.len() + 2;
+    pub const PAGE_COUNT: usize = Self::ALL.len() + 3;
     pub const ALL: [Self; 3] = [Self::Workspace, Self::Settings, Self::Projects];
     pub fn title(&self) -> &'static str {
         match self {
             Self::Workspace => "route-workspace",
             Self::Session(_) => "route-session",
             Self::Settings => "route-settings",
+            Self::Plugins(_) => "route-plugins",
             Self::Projects => "route-projects",
             Self::Connections => "route-connections",
             Self::Extensions | Self::App(_) => "route-extensions",
@@ -57,7 +60,7 @@ impl Route {
     pub fn section(&self) -> Self {
         match self {
             Self::Session(_) => Self::Workspace,
-            Self::Connections => Self::Settings,
+            Self::Connections | Self::Plugins(_) => Self::Settings,
             Self::Extensions => Self::Settings,
             Self::App(key) => Self::App(key.clone()),
             _ => self.clone(),

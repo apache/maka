@@ -222,10 +222,13 @@ impl Executions {
             let cancellation = self.shutdown.child_token();
             let _cancel = cancellation.clone().drop_guard();
             let stopping = behavior.owner.stopping().map_err(internal)?;
-            let prepare = behavior.value.0.prepare(maka_plugins::session::Request {
-                session: session.plugin_view(session_id.clone(), record.revision),
-                cancellation: cancellation.clone(),
-            });
+            let prepare = behavior
+                .value
+                .behavior
+                .prepare(maka_plugins::session::Request {
+                    session: session.plugin_view(session_id.clone(), record.revision),
+                    cancellation: cancellation.clone(),
+                });
             let preparation = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(failure(Code::HostDraining, "Host is draining")),
@@ -339,6 +342,16 @@ impl Executions {
 }
 
 impl Environment {
+    pub(in crate::execution) fn behavior_registration(&self) -> Option<uuid::Uuid> {
+        match &self.backend {
+            Backend::Model(model) => model
+                .behavior
+                .as_ref()
+                .map(|basis| basis.source.registration_id()),
+            Backend::Executor(_) => None,
+        }
+    }
+
     pub(in crate::execution) async fn expand(
         mut self,
         content: maka_runtime::input::MessageInput,

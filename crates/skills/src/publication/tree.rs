@@ -118,6 +118,94 @@ impl Tree {
             _ => None,
         }
     }
+    /// Complete path/type/content identity. Publication CAS also checks file modes.
+    pub fn digest(&self) -> Result<String, Error> {
+        let mut manifest = self.manifest();
+        for fact in manifest.values_mut() {
+            if let Fact::File { mode, .. } = fact {
+                *mode = 0;
+            }
+        }
+        Ok(content_digest(&serde_json::to_vec(&manifest)?))
+    }
+    pub(crate) async fn read_view(
+        files: &maka_plugins::filesystem::ReadDirectory,
+        path: &str,
+    ) -> Result<Self, Error> {
+        let base = path.to_owned();
+        files
+            .with_reader(move |reader| {
+                use maka_plugins::filesystem::{ReadViewInput, Symlinks, entries::ReadFile};
+                let mut tree = Tree::empty();
+                let mut stack = vec![String::new()];
+                let mut budget = MAX_TREE_BYTES;
+                while let Some(prefix) = stack.pop() {
+                    let directory = if prefix.is_empty() {
+                        base.clone()
+                    } else {
+                        format!("{base}/{prefix}")
+                    };
+                    reader.visit_directory(&directory, Symlinks::Reject, |entry| {
+                        let path = if prefix.is_empty() {
+                            entry.name.clone()
+                        } else {
+                            format!("{prefix}/{}", entry.name)
+                        };
+                        validate(&path)?;
+                        if tree.entries.len() == MAX_ENTRIES {
+                            return Err(Error::Invalid("Too many Skill resources".into()));
+                        }
+                        let value = match entry.kind {
+                            Kind::Directory => {
+                                stack.push(path.clone());
+                                Entry::Directory
+                            }
+                            Kind::File => {
+                                let mut bytes = Vec::new();
+                                loop {
+                                    let page = reader
+                                        .read(ReadViewInput {
+                                            file: ReadFile {
+                                                path: format!("{base}/{path}"),
+                                                offset: bytes.len() as u64,
+                                                limit: (MAX_FILE_BYTES.min(budget) + 1
+                                                    - bytes.len())
+                                                .min(1024 * 1024),
+                                            },
+                                            symlinks: Symlinks::Reject,
+                                        })
+                                        .map_err(read_error)?;
+                                    bytes.extend(page.bytes);
+                                    if bytes.len() > MAX_FILE_BYTES.min(budget) {
+                                        return Err(Error::Invalid(
+                                            "Skill resource tree exceeds limits".into(),
+                                        ));
+                                    }
+                                    if page.next_offset.is_none() {
+                                        break;
+                                    }
+                                }
+                                budget -= bytes.len();
+                                Entry::File { bytes, mode: 0o600 }
+                            }
+                            Kind::Other => {
+                                return Err(Error::Invalid(
+                                    "Skill resources contain a link or non-regular file".into(),
+                                ));
+                            }
+                        };
+                        tree.entries.insert(path, value);
+                        Ok::<_, Error>(())
+                    })?;
+                }
+                Ok(tree)
+            })
+            .await
+            .map_err(read_error)?
+    }
+    pub fn paths(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
     pub(super) fn manifest(&self) -> Manifest {
         self.entries
             .iter()
@@ -213,4 +301,17 @@ pub(super) fn validate(path: &str) -> Result<(), Error> {
         return Err(Error::Invalid("Invalid Skill resource path".into()));
     }
     Ok(())
+}
+
+fn read_error(error: maka_plugins::filesystem::ReadError) -> Error {
+    match error {
+        maka_plugins::filesystem::ReadError::Io(error) => Error::Io(error),
+        maka_plugins::filesystem::ReadError::Retired => Error::Cancelled,
+        other => Error::Invalid(other.to_string()),
+    }
+}
+impl From<maka_plugins::filesystem::ReadError> for Error {
+    fn from(error: maka_plugins::filesystem::ReadError) -> Self {
+        read_error(error)
+    }
 }

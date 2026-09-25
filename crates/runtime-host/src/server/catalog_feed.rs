@@ -56,7 +56,7 @@ impl CatalogFeed {
             .publish(&self.changes, Some(session_id))
     }
 
-    pub(super) async fn publish_all(&self) -> Result<(), HostError> {
+    pub(crate) async fn publish_all(&self) -> Result<(), HostError> {
         self.cursor.lock().await.publish(&self.changes, None)
     }
 

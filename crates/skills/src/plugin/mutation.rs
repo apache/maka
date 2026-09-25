@@ -40,7 +40,7 @@ impl Skills {
                 let _invalidation = skills.input_revision.invalidate().await;
                 let _notice = skills.notify_on_exit();
                 Ok(skills
-                    .mutate_inner(&input, workspace, workspace_files)
+                    .mutate_inner(&input, workspace, workspace_files, None, None)
                     .await)
             })
             .map_err(|_| Error::Retired)?;
@@ -50,11 +50,13 @@ impl Skills {
             .map_err(Error::OutcomeUnknown)?
     }
 
-    async fn mutate_inner(
+    pub(super) async fn mutate_inner(
         &self,
         input: &MutateInput,
         workspace: WorkspaceProjection,
         workspace_files: maka_plugins::filesystem::ReadDirectory,
+        operation: Option<&crate::publication::receipt::Operation>,
+        reviewed: Option<&str>,
     ) -> Result<MutationResult, Error> {
         let (sources, preferences) = self.governance(&workspace_files).await?;
         let revision =
@@ -78,7 +80,14 @@ impl Skills {
                 | Mutation::SetPreferences { .. }
         ) {
             return self
-                .mutate_files(input, workspace, workspace_files, sources, revision)
+                .mutate_files(
+                    input,
+                    workspace,
+                    workspace_files,
+                    sources,
+                    operation,
+                    reviewed,
+                )
                 .await;
         }
         let Some(preferences) = preferences else {
@@ -166,7 +175,8 @@ impl Skills {
         workspace: WorkspaceProjection,
         workspace_files: maka_plugins::filesystem::ReadDirectory,
         sources: crate::SourceCatalog,
-        current_revision: String,
+        operation: Option<&crate::publication::receipt::Operation>,
+        reviewed: Option<&str>,
     ) -> Result<MutationResult, Error> {
         let user = match (&input.mutation, input.grant) {
             (Mutation::Delete { reference }, Some(grant)) if reference.starts_with("user:") => {
@@ -182,15 +192,26 @@ impl Skills {
             .await
             .map_err(|error| Error::Source(error.to_string()))?
             .map_err(|error| Error::Source(error.to_string()))?;
-        let operation =
-            super::files::apply(publisher, user.as_ref(), &sources, &mutation, &cancellation)
-                .await
-                .map(|change| (change, sources));
+        let recorded = operation.is_some();
+        let operation = super::files::apply(
+            publisher,
+            user.as_ref(),
+            &sources,
+            &mutation,
+            operation,
+            reviewed,
+            &cancellation,
+        )
+        .await
+        .map(|change| (change, sources));
         if let Some(user) = user {
-            let settled = user
-                .finish()
-                .await
-                .map_err(|e| Error::Source(e.to_string()));
+            let settled = user.finish().await.map_err(|e| {
+                if recorded {
+                    Error::OutcomeUnknown(e.to_string())
+                } else {
+                    Error::Source(e.to_string())
+                }
+            });
             *self.user_recovery.lock().unwrap() = operation
                 .as_ref()
                 .err()
@@ -222,7 +243,7 @@ impl Skills {
                     catalog::revision(&input.context, &workspace, &sources, Some(&preferences))
                         .map_err(|error| Error::OutcomeUnknown(error.to_string()))?
                 } else {
-                    current_revision
+                    input.expected_revision.clone()
                 };
                 let entry = catalog::governance::items(&sources, Some(&preferences))
                     .into_iter()

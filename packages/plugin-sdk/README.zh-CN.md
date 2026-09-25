@@ -54,6 +54,8 @@ Prompt 回调通过 `call.workspace`、输入准备通过 `request.workspace` �
 
 `view.openFile({ path })` 固定普通文件及打开时的长度。`info` 包含长度与修改时间；`read({ offset, limit })` 每次至多读取 1 MiB，不包含后续追加内容。路径替换不会重定向句柄，但原地修改仍可见，需要多遍一致性的格式由消费者校验摘要。固定前缀内截断会明确失败。Rust `PinnedFile::with_reader` 在阻塞线程批量执行相同的有界读取；每批检查当前授权，回调结束或 Fiber 退休会关闭文件。`close()` 等待实际释放，每个获准根目录最多持有 32 个文件。
 
+`ctx.behaviors.register(name, prepare, { nativeInput: 'native_user_messages' })` 显式允许向同一包与作用域管理的模型会话发送原生用户消息，默认值为 `denied`。Host 在准入前检查当前行为注册与调用方权限；注册退休或替换会使在途准备失效。该策略保留原生消息 ID、附件、显式选择、队列位置与回执，不开放管理器专属的配置、修订或恢复操作；受管理会话的原生消息不能覆盖编排模式。
+
 `call.files.entries` 与 `ctx.data` 共用有界字节／目录操作：read、write、list、stat、createDirectory、sync、remove 和禁止覆盖目标的 rename。路径必须相对根目录，不跟随链接，父目录需已存在；写入支持 `createNew` 和普通权限位。读取／列目录观察退休信号，已准入写入继续结算。事务与崩溃恢复由插件负责。`{ kind: 'directory', path }` 授权只允许文件访问，不创建工作区标记；目录被替换后授权失效。`withAuthorization(id, (call, grant, boundary) => ...)` 同时提供当前授权的观察信息。只读视图的 `location()` 用于展示或提出授权申请，不授予路径访问权限。
 
 显式 `network` 授权独立于文件／进程沙箱：只读工作区可以使用 Host HTTP，但不会因此获得文件写入或进程权限。Agent HTTP 仍需自己的执行授权。重启恢复时重新检查当前授权；撤销后拒绝新请求。

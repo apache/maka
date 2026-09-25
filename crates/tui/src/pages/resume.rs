@@ -158,7 +158,7 @@ impl App {
         let Route::Session(session) = self.navigation.current() else {
             return None;
         };
-        if self.chat.removed {
+        if self.chat.removed || self.session_is_managed(&session) {
             return None;
         }
         Some(Target {

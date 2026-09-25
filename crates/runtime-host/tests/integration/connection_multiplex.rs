@@ -159,7 +159,9 @@ async fn slow_rpc_allows_same_connection_status_and_flushes_after_input_eof() {
             frame["kind"].as_str(),
             Some(
                 "plugin.client.changed"
+                    | "session.catalog.changed"
                     | "plugin.terminal.changed"
+                    | "plugin.platform.changed"
                     | "model.provider.catalog.changed"
             )
         ) {

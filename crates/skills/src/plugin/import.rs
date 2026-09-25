@@ -33,29 +33,9 @@ impl Skills {
         source: maka_plugins::filesystem::ReadDirectory,
     ) -> Result<ImportSourceResult, Error> {
         let admitted = self.basis.owner.admit().map_err(|_| Error::Retired)?;
-        let path = Path::new(&input.source_path);
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            return Ok(ImportSourceResult::Rejected {
-                reason: ImportRejection::BlockedPath,
-            });
-        };
-        let bytes = match source
-            .read(maka_plugins::filesystem::ReadViewInput {
-                file: maka_plugins::filesystem::entries::ReadFile {
-                    path: name.into(),
-                    offset: 0,
-                    limit: 1024 * 1024,
-                },
-                symlinks: maka_plugins::filesystem::Symlinks::Reject,
-            })
-            .await
-        {
-            Ok(page) if page.next_offset.is_none() => page.bytes,
-            _ => {
-                return Ok(ImportSourceResult::Rejected {
-                    reason: ImportRejection::BlockedPath,
-                });
-            }
+        let bytes = match read_source(&input.source_path, &source).await {
+            Ok(bytes) => bytes,
+            Err(reason) => return Ok(ImportSourceResult::Rejected { reason }),
         };
         let skills = self.clone();
         let receiver = self
@@ -87,6 +67,7 @@ impl Skills {
                         publisher,
                         Path::new(&input.source_path),
                         bytes,
+                        None,
                         &cancellation,
                     )
                     .await
@@ -111,10 +92,11 @@ impl Skills {
     }
 }
 
-async fn import(
+pub(super) async fn import(
     publisher: publication::Publisher,
     path: &Path,
     bytes: Vec<u8>,
+    operation: Option<&publication::receipt::Operation>,
     cancellation: &CancellationToken,
 ) -> Result<ImportSourceResult, Error> {
     use ImportRejection as Rejection;
@@ -140,7 +122,18 @@ async fn import(
     tree.insert("SKILL.md", bytes)
         .map_err(|e| Error::Source(e.to_string()))?;
     match publisher
-        .publish(&id, None, Some(&tree), cancellation)
+        .publish_operation(
+            &id,
+            None,
+            Some(&tree),
+            operation.map(|operation| {
+                (
+                    operation,
+                    publication::receipt::Destination::Source { id: id.clone() },
+                )
+            }),
+            cancellation,
+        )
         .await
     {
         Ok(()) => Ok(ImportSourceResult::Imported { source }),
@@ -167,4 +160,28 @@ fn source_id(path: &Path) -> Option<String> {
     let id = id.trim_matches(|c: char| !c.is_ascii_alphanumeric());
     let id = &id[..id.len().min(80)];
     crate::safe_source_id(id).then(|| id.into())
+}
+
+pub(super) async fn read_source(
+    path: &str,
+    source: &maka_plugins::filesystem::ReadDirectory,
+) -> Result<Vec<u8>, ImportRejection> {
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(ImportRejection::BlockedPath)?;
+    match source
+        .read(maka_plugins::filesystem::ReadViewInput {
+            file: maka_plugins::filesystem::entries::ReadFile {
+                path: name.into(),
+                offset: 0,
+                limit: 1024 * 1024,
+            },
+            symlinks: maka_plugins::filesystem::Symlinks::Reject,
+        })
+        .await
+    {
+        Ok(page) if page.next_offset.is_none() => Ok(page.bytes),
+        _ => Err(ImportRejection::BlockedPath),
+    }
 }

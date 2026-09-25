@@ -57,6 +57,7 @@ pub struct Snapshot {
     resume: Option<crate::pages::resume::Checkpoint>,
     revision: Option<crate::pages::revision::Checkpoint>,
     apps: Vec<crate::apps::Checkpoint>,
+    plugins: crate::pages::plugins::Checkpoint,
 }
 
 impl Snapshot {
@@ -69,7 +70,7 @@ impl Snapshot {
             .collect();
         unresolved.sort_by(|left, right| left.session.cmp(&right.session));
         Self {
-            version: 19,
+            version: 20,
             attachments: app.attachments.saved.clone(),
             directories: app.directories.clone(),
             skills: app.skills.saved.clone(),
@@ -98,6 +99,7 @@ impl Snapshot {
             resume: app.resume.checkpoint(),
             revision: app.revision.checkpoint(),
             apps: app.apps.checkpoints(root),
+            plugins: app.plugins.checkpoint(),
         }
     }
 
@@ -105,13 +107,13 @@ impl Snapshot {
         let id = |id: &str| {
             !id.is_empty() && id.encode_utf16().count() <= 256 && !id.chars().any(char::is_control)
         };
-        if self.version != 19
+        if self.version != 20
             || self.root != root
             || self.tabs.len() > LIMIT
             || self.drafts.len() > LIMIT
             || self.unresolved.len() > LIMIT
             || self.readings.len() > LIMIT
-            || self.pages.len() > LIMIT + Route::PAGE_COUNT
+            || self.pages.len() > crate::navigation::state::PAGE_LIMIT
         {
             return Err("Unsupported or mismatched TUI checkpoint".into());
         }
@@ -127,6 +129,7 @@ impl Snapshot {
         }
         let destination = |route: &Route| match route {
             Route::Session(key) => tabs.contains(key),
+            Route::Plugins(place) => place.valid(),
             _ => true,
         };
         let mut pages = Vec::new();
@@ -207,6 +210,7 @@ impl Snapshot {
         if self.apps.len() > crate::navigation::tabs::LIMIT {
             return Err("Too many plugin checkpoints".into());
         }
+        self.plugins.validate(root)?;
         for checkpoint in &self.apps {
             checkpoint.validate(root)?;
         }
@@ -240,6 +244,7 @@ impl Snapshot {
             app.revision.restore(revision);
         }
         app.apps.restore(self.apps)?;
+        app.plugins.restore(self.plugins);
         if let Some(recap) = self.recap {
             app.recap.restore(recap);
         }
@@ -457,7 +462,7 @@ mod tests {
         request.input().validate().unwrap();
         original.sending.get_mut("a").unwrap().request = request.clone();
         let saved = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
-        assert_eq!(saved["version"], 19);
+        assert_eq!(saved["version"], 20);
         let mut restored = app();
         serde_json::from_value::<Snapshot>(saved.clone())
             .unwrap()
@@ -628,5 +633,35 @@ mod tests {
                 "{pointer}"
             );
         }
+    }
+    #[test]
+    fn bounded_plugin_subroutes_leave_room_for_the_current_checkpoint_page() {
+        let mut original = app();
+        let limit = crate::navigation::state::PAGE_LIMIT;
+        for index in 0..(limit * 3) {
+            original.apply(Action::Visit(Route::Plugins(
+                crate::pages::plugins::Place::Package(format!("example.package-{index}")),
+            )));
+            let saved = Snapshot::capture(&original, "root");
+            saved.validate("root").unwrap();
+            assert!(saved.pages.len() <= limit);
+        }
+        let saved = Snapshot::capture(&original, "root");
+        assert_eq!(saved.pages.len(), limit);
+        let route = original.navigation.current();
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        let mut restored = app();
+        serde_json::from_slice::<Snapshot>(&bytes)
+            .unwrap()
+            .restore(&mut restored, false)
+            .unwrap();
+        assert_eq!(restored.navigation.current(), route);
+        Snapshot::capture(&restored, "root")
+            .validate("root")
+            .unwrap();
+        restored.apply(Action::Back);
+        Snapshot::capture(&restored, "root")
+            .validate("root")
+            .unwrap();
     }
 }

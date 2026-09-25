@@ -36,6 +36,30 @@ impl Platform {
             )),
             Input::Client(query) => encode(self.client_query(query)?),
             Input::Query(query) => self.query(query),
+            Input::Preview { source_path } => {
+                let package = read_source(source_path.clone()).await?;
+                // Source reads and the current installed target are independent;
+                // the precondition pins this single resulting authority snapshot.
+                let snapshot = self.snapshot();
+                let preview = encode(PackagePreview {
+                    source_path,
+                    expected: PackagePrecondition {
+                        base_generation: snapshot.ledger.generation,
+                        content_digest: snapshot
+                            .packages
+                            .get(&package.manifest().id)
+                            .map(|installed| installed.digest().into()),
+                    },
+                    package: package_projection(&snapshot, &package),
+                })?;
+                if serde_json::to_vec(&preview).map_err(internal)?.len() > 128 * 1024 {
+                    return Err(failure(
+                        Code::OperationUnavailable,
+                        "Package preview exceeds the protocol budget",
+                    ));
+                }
+                Ok(preview)
+            }
             Input::Export {
                 extension_id,
                 target_path,
@@ -56,15 +80,23 @@ impl Platform {
             input => {
                 let mut installed = None;
                 let mutation = match input {
-                    Input::Install { source_path } => {
-                        let package = tokio::task::spawn_blocking(move || {
-                            Package::read_from(std::path::Path::new(&source_path))
-                        })
-                        .await
-                        .map_err(internal)?
-                        .map_err(|e| failure(Code::SourceUnreadable, e.to_string()))?;
+                    Input::Install(PackageInstall {
+                        source_path,
+                        source_digest,
+                        expected,
+                    }) => {
+                        let package = read_source(source_path).await?;
+                        if source_digest
+                            .as_deref()
+                            .is_some_and(|digest| digest != package.digest())
+                        {
+                            return Err(failure(
+                                Code::OperationConflict,
+                                "Package source changed since preview",
+                            ));
+                        }
                         installed = Some(package.manifest().id.clone());
-                        Mutation::Install(package)
+                        Mutation::Install { package, expected }
                     }
                     Input::Apply(Apply {
                         base_generation,
@@ -73,13 +105,26 @@ impl Platform {
                         base_generation,
                         operations,
                     },
-                    Input::Uninstall { extension_id } => Mutation::Uninstall(extension_id),
-                    Input::Reload { extension_id } => Mutation::Reload(extension_id),
+                    Input::Uninstall(PackageTarget {
+                        extension_id,
+                        expected,
+                    }) => Mutation::Uninstall {
+                        id: extension_id,
+                        expected,
+                    },
+                    Input::Reload(PackageTarget {
+                        extension_id,
+                        expected,
+                    }) => Mutation::Reload {
+                        id: extension_id,
+                        expected,
+                    },
                     Input::Reconcile => Mutation::Reconcile,
                     Input::Remote(_)
                     | Input::Authorization(_)
                     | Input::Client(_)
                     | Input::Query(_)
+                    | Input::Preview { .. }
                     | Input::Export { .. } => unreachable!(),
                 };
                 let snapshot = self.mutate(mutation).await.map_err(mutation_error)?;
@@ -135,49 +180,7 @@ impl Platform {
             View::Packages => snapshot
                 .packages
                 .values()
-                .map(|package| {
-                    let manifest = package.manifest();
-                    encode(PackageProjection {
-                        extension_id: manifest.id.clone(),
-                        content_digest: package.digest().into(),
-                        display_name: if manifest.display_name.is_empty() {
-                            manifest.id.clone()
-                        } else {
-                            manifest.display_name.clone()
-                        },
-                        description: (!manifest.description.is_empty())
-                            .then(|| manifest.description.clone()),
-                        dependencies: manifest
-                            .dependencies
-                            .iter()
-                            .map(|dependency| dependency.id.clone())
-                            .collect(),
-                        structural_dependencies: manifest
-                            .composition
-                            .as_ref()
-                            .map(|composition| composition.structural_dependencies.clone())
-                            .unwrap_or_default(),
-                        required_by: snapshot
-                            .packages
-                            .values()
-                            .filter(|candidate| {
-                                candidate
-                                    .manifest()
-                                    .dependencies
-                                    .iter()
-                                    .any(|dependency| dependency.id == manifest.id)
-                                    || candidate.manifest().composition.as_ref().is_some_and(
-                                        |composition| {
-                                            composition
-                                                .structural_dependencies
-                                                .contains(&manifest.id)
-                                        },
-                                    )
-                            })
-                            .map(|candidate| candidate.manifest().id.clone())
-                            .collect(),
-                    })
-                })
+                .map(|package| encode(package_projection(&snapshot, package)))
                 .collect::<Result<Vec<_>, _>>()?,
             View::Entries => {
                 let mut items = Vec::new();
@@ -306,6 +309,60 @@ impl Platform {
     }
 }
 
+async fn read_source(source_path: String) -> Result<Package, OperationError> {
+    tokio::task::spawn_blocking(move || Package::read_from(std::path::Path::new(&source_path)))
+        .await
+        .map_err(internal)?
+        .map_err(|error| failure(Code::SourceUnreadable, error.to_string()))
+}
+
+fn package_projection(snapshot: &Snapshot, package: &Package) -> PackageProjection {
+    let manifest = package.manifest();
+    PackageProjection {
+        base_generation: snapshot.ledger.generation,
+        extension_id: manifest.id.clone(),
+        content_digest: package.digest().into(),
+        display_name: if manifest.display_name.is_empty() {
+            manifest.id.clone()
+        } else {
+            manifest.display_name.clone()
+        },
+        description: (!manifest.description.is_empty()).then(|| manifest.description.clone()),
+        dependencies: manifest
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.id.clone())
+            .collect(),
+        structural_dependencies: manifest
+            .composition
+            .as_ref()
+            .map(|composition| composition.structural_dependencies.clone())
+            .unwrap_or_default(),
+        required_by: snapshot
+            .packages
+            .values()
+            .filter(|candidate| {
+                candidate
+                    .manifest()
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency.id == manifest.id)
+                    || candidate
+                        .manifest()
+                        .composition
+                        .as_ref()
+                        .is_some_and(|composition| {
+                            composition.structural_dependencies.contains(&manifest.id)
+                        })
+            })
+            .map(|candidate| candidate.manifest().id.clone())
+            .collect(),
+        has_runtime: manifest.runtime.is_some(),
+        has_client: manifest.client.is_some(),
+        has_composition: manifest.composition.is_some(),
+    }
+}
+
 fn entries_view(
     snapshot: &Snapshot,
     scope: &Scope,
@@ -334,12 +391,21 @@ fn entries_view(
             }
         };
         output.push(encode(EntryProjection {
+            base_generation: snapshot.ledger.generation,
             id: entry.id.clone(),
             root_id: scope.clone(),
             parent_id: parent.map(str::to_owned),
             package_id: entry.package_id.clone(),
             config: entry.config.clone(),
+            local_disabled: entry.disabled,
             disabled,
+            inject: entry.inject.clone(),
+            isolate: entry.isolate.clone(),
+            intercept: entry.intercept.clone(),
+            required_services: match &entry.package_id {
+                Some(id) => snapshot.required_services.get(id).cloned().flatten(),
+                None => Some(Vec::new()),
+            },
             status,
             generation: live.and_then(|live| live.generation),
             waiting_for: live.map_or_else(Vec::new, |live| live.waiting_for.clone()),

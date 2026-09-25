@@ -27,6 +27,7 @@ mod directory;
 mod io;
 use directory::Directory;
 mod journal;
+pub mod receipt;
 mod tree;
 mod user;
 pub use tree::Tree;
@@ -51,6 +52,8 @@ pub enum Error {
 pub struct Publisher {
     skills: Directory,
     transactions: Directory,
+    requests: Directory,
+    receipts: Directory,
     _lock: std::sync::Arc<io::PublicationLock>,
 }
 impl Publisher {
@@ -61,10 +64,14 @@ impl Publisher {
         let lock = std::sync::Arc::new(io::lock(data)?);
         io::child(data, "skills")?;
         io::child(data, "transactions")?;
+        io::child(data, "operations")?;
+        io::child(data, "receipts")?;
         let root = Directory::private(data.try_clone()?, cancellation.clone());
         Ok(Self {
             skills: root.at("skills"),
             transactions: root.at("transactions"),
+            requests: root.at("operations"),
+            receipts: root.at("receipts"),
             _lock: lock,
         })
     }
@@ -90,16 +97,59 @@ impl Publisher {
         next: Option<&Tree>,
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
+        self.publish_operation(id, expected, next, None, cancellation)
+            .await
+    }
+
+    pub async fn reserve(
+        &self,
+        operation: &receipt::Operation,
+    ) -> Result<Option<receipt::Outcome>, Error> {
+        receipt::reserve(&self.requests, &self.receipts, operation).await
+    }
+
+    pub async fn complete(
+        &self,
+        operation: &receipt::Operation,
+        outcome: receipt::Outcome,
+    ) -> Result<(), Error> {
+        receipt::complete(&self.receipts, operation, outcome).await
+    }
+
+    pub async fn publish_operation(
+        &self,
+        id: &str,
+        expected: Option<&Tree>,
+        next: Option<&Tree>,
+        operation: Option<(&receipt::Operation, receipt::Destination)>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
         validate_id(id)?;
         if expected.is_none() && next.is_none() {
             return Err(Error::Invalid("Empty publication".into()));
         }
+        // Identity validation precedes recovery: a mismatched request cannot
+        // cause even the original pending operation to acquire new effects.
+        if let Some((operation, _)) = &operation
+            && let Some(outcome) = self.reserve(operation).await?
+        {
+            return recorded(outcome);
+        }
         self.recover().await?;
+        if let Some((operation, _)) = &operation
+            && let Some(outcome) = self.reserve(operation).await?
+        {
+            return recorded(outcome);
+        }
         let intent = journal::Intent {
             schema: 1,
             id: id.into(),
             expected: expected.map(Tree::manifest),
             next: next.map(Tree::manifest),
+            operation: operation.map(|(operation, destination)| receipt::Publication {
+                operation: operation.clone(),
+                destination,
+            }),
         };
         if self
             .capture(id, cancellation)
@@ -107,6 +157,7 @@ impl Publisher {
             .map(|tree| tree.manifest())
             != intent.expected
         {
+            self.record(&intent, false).await?;
             return Err(Error::Conflict);
         }
         let bytes = serde_json::to_vec(&intent)?;
@@ -138,12 +189,18 @@ impl Publisher {
         .await;
         drop(transaction);
         if matches!(result, Err(Error::Conflict)) {
+            self.record(&intent, false)
+                .await
+                .map_err(|error| Error::OutcomeUnknown(error.to_string()))?;
             self.collect(&name)
                 .await
                 .map_err(|error| Error::OutcomeUnknown(error.to_string()))?;
             return Err(Error::Conflict);
         }
         result.map_err(|error: Error| Error::OutcomeUnknown(error.to_string()))?;
+        self.record(&intent, true)
+            .await
+            .map_err(|error| Error::OutcomeUnknown(error.to_string()))?;
         self.collect(&name)
             .await
             .map_err(|error| Error::OutcomeUnknown(error.to_string()))
@@ -181,9 +238,18 @@ impl Publisher {
                     }
                     let intent: journal::Intent = serde_json::from_slice(&bytes)?;
                     intent.validate()?;
-                    match journal::replay(&self.skills, &transaction, &intent, &hash).await {
-                        Ok(()) | Err(Error::Conflict) => {}
-                        Err(error) => return Err(error),
+                    let recorded = match &intent.operation {
+                        Some(publication) => self.reserve(&publication.operation).await?.is_some(),
+                        None => false,
+                    };
+                    // A conflict receipt is final too. Collection may have crashed
+                    // after recording it; never retry that rejected intent.
+                    if !recorded {
+                        match journal::replay(&self.skills, &transaction, &intent, &hash).await {
+                            Ok(()) => self.record(&intent, true).await?,
+                            Err(Error::Conflict) => self.record(&intent, false).await?,
+                            Err(error) => return Err(error),
+                        }
                     }
                 }
                 Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -199,6 +265,22 @@ impl Publisher {
             }
             drop(transaction);
             self.collect(&name).await?;
+        }
+        Ok(())
+    }
+    async fn record(&self, intent: &journal::Intent, applied: bool) -> Result<(), Error> {
+        if let Some(publication) = &intent.operation {
+            self.complete(
+                &publication.operation,
+                if applied {
+                    receipt::Outcome::Applied {
+                        destination: publication.destination.clone(),
+                    }
+                } else {
+                    receipt::Outcome::Conflict
+                },
+            )
+            .await?;
         }
         Ok(())
     }
@@ -233,5 +315,15 @@ fn validate_transaction(name: &str) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::Invalid("Unknown publication directory".into()))
+    }
+}
+
+fn recorded(outcome: receipt::Outcome) -> Result<(), Error> {
+    match outcome {
+        receipt::Outcome::Applied { .. } => Ok(()),
+        receipt::Outcome::Conflict => Err(Error::Conflict),
+        receipt::Outcome::Rejected { .. } => {
+            Err(Error::Invalid("Skill operation was rejected".into()))
+        }
     }
 }

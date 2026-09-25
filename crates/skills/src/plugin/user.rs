@@ -41,9 +41,9 @@ pub(super) struct UserAccess {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Status {
-    target: Target,
-    grant: Option<Id>,
-    recovery: Option<String>,
+    pub(super) target: Target,
+    pub(super) grant: Option<Id>,
+    pub(super) recovery: Option<String>,
 }
 impl Skills {
     pub(super) fn user_target(&self) -> Result<Target, Error> {

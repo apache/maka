@@ -47,6 +47,7 @@ pub(crate) fn decode(value: &Value) -> Result<Notification> {
         | "project.catalog.changed"
         | "model.provider.catalog.changed"
         | "plugin.client.changed"
+        | "plugin.platform.changed"
         | "plugin.terminal.changed" => {
             codec::exact(row, &["kind", "revision"])?;
             None

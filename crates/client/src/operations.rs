@@ -41,13 +41,7 @@ impl OperationRegistry for Operations {
             )?)
             .map_err(|error| maka_protocol::ProtocolError::invalid(error.to_string()));
         }
-        if matches!(
-            operation,
-            Operation::PluginRemote
-                | Operation::PluginClientQuery
-                | Operation::PluginPlatformQuery
-                | Operation::PluginAuthorization
-        ) {
+        if maka_protocol::plugin::supports(operation) {
             maka_protocol::plugin::decode_input(operation, value)?;
             return Ok(value.clone());
         }
@@ -179,13 +173,7 @@ impl OperationRegistry for Operations {
             )?)
             .map_err(|error| maka_protocol::ProtocolError::invalid(error.to_string()));
         }
-        if matches!(
-            operation,
-            Operation::PluginRemote
-                | Operation::PluginClientQuery
-                | Operation::PluginPlatformQuery
-                | Operation::PluginAuthorization
-        ) {
+        if maka_protocol::plugin::supports(operation) {
             return maka_protocol::plugin::decode_output(operation, value);
         }
         if maka_protocol::artifact::supports(operation) {
@@ -286,13 +274,7 @@ impl OperationRegistry for Operations {
         if operation == Operation::RuntimePolicyMutate {
             return Some(maka_protocol::runtime_policy::MUTATION_ERRORS);
         }
-        if matches!(
-            operation,
-            Operation::PluginRemote
-                | Operation::PluginClientQuery
-                | Operation::PluginPlatformQuery
-                | Operation::PluginAuthorization
-        ) {
+        if maka_protocol::plugin::supports(operation) {
             return Some(maka_protocol::plugin::ERRORS);
         }
         if let Some(errors) = maka_protocol::artifact::errors(operation) {

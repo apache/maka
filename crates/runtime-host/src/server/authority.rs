@@ -164,7 +164,9 @@ impl Authority {
     pub(super) fn receives(&self, notice: &Value) -> bool {
         let operation = match notice["kind"].as_str() {
             Some("plugin.client.changed") => Operation::PluginClientQuery,
-            Some("plugin.terminal.changed") => Operation::PluginPlatformQuery,
+            Some("plugin.terminal.changed" | "plugin.platform.changed") => {
+                Operation::PluginPlatformQuery
+            }
             Some("model.provider.catalog.changed") => Operation::ModelProviderCatalogQuery,
             Some("configuration.changed") => Operation::RuntimePolicyQuery,
             Some("connection.catalog.changed") => Operation::ConnectionCatalogQuery,

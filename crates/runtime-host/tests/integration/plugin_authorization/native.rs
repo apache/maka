@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod scope;
+
 use super::{ClientFixture, Host, LocalListener, Peer, ready, success};
 use maka_client::{Client, Operations};
 use maka_plugins::authorization::{Capability, Request, Target};

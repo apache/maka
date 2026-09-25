@@ -46,6 +46,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod batch;
+mod managed;
 
 #[derive(Clone, Default)]
 struct Business(Arc<AtomicUsize>);
@@ -56,7 +57,10 @@ impl Plugin for Business {
         Box::pin(async move {
             let mut staged = Staged::default();
             staged
-                .insert("example.review", session::SessionBehavior(business.clone()))
+                .insert(
+                    "example.review",
+                    session::SessionBehavior::new(business.clone()),
+                )
                 .map_err(|e| e.to_string())?;
             staged
                 .insert("example.prepare", input::InputPreparation(business))

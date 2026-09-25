@@ -789,7 +789,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
               }
               continue;
             case 'plugin.terminal.changed':
-              // Terminal views belong to terminal shells; this client lists none.
+            case 'plugin.platform.changed':
+              // Native terminal shells own these directories.
               continue;
             case 'model.provider.catalog.changed':
               for (const listener of this.#modelProviderCatalogChangeListeners) {

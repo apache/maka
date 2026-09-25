@@ -184,6 +184,7 @@ operations! {
     PluginCompositionApply => ("plugin.composition.apply", Command, Ready),
     PluginPackageExport => ("plugin.package.export", Command, Ready),
     PluginPackageInstall => ("plugin.package.install", Command, Ready),
+    PluginPackagePreview => ("plugin.package.preview", Query, Ready),
     PluginPackageReload => ("plugin.package.reload", Command, Ready),
     PluginPackageUninstall => ("plugin.package.uninstall", Command, Ready),
     PluginPlatformQuery => ("plugin.platform.query", Query, Ready),

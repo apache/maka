@@ -40,6 +40,7 @@ pub struct State {
     oauth: Option<oauth::Request>,
     branch: Option<branch::Request>,
     recap: Option<recap::Request>,
+    plugins: Option<crate::pages::plugins::Request>,
     resume: Option<resume::Request>,
     revision: Option<revision::Request>,
     apps: Vec<crate::apps::Request>,
@@ -54,6 +55,7 @@ struct Writing {
     oauth: Option<oauth::Request>,
     branch: Option<branch::Request>,
     recap: Option<recap::Request>,
+    plugins: Option<crate::pages::plugins::Request>,
     resume: Option<resume::Request>,
     revision: Option<revision::Request>,
     apps: Vec<crate::apps::Request>,
@@ -67,6 +69,7 @@ pub struct Written {
     pub oauth: Option<oauth::Request>,
     pub branch: Option<branch::Request>,
     pub recap: Option<recap::Request>,
+    pub plugins: Option<crate::pages::plugins::Request>,
     pub resume: Option<resume::Request>,
     pub revision: Option<revision::Request>,
     pub apps: Vec<crate::apps::Request>,
@@ -103,6 +106,7 @@ impl State {
                     oauth: None,
                     branch: None,
                     recap: None,
+                    plugins: None,
                     resume: None,
                     revision: None,
                     apps: Vec::new(),
@@ -140,6 +144,7 @@ impl State {
         self.oauth = None;
         self.branch = None;
         self.recap = None;
+        self.plugins = None;
         self.resume = None;
         self.revision = None;
         self.apps.clear();
@@ -155,6 +160,10 @@ impl State {
     }
     pub fn submit_oauth(&mut self, request: oauth::Request) {
         self.oauth = Some(request);
+        self.force();
+    }
+    pub fn submit_plugins(&mut self, request: crate::pages::plugins::Request) {
+        self.plugins = Some(request);
         self.force();
     }
     pub fn submit_recap(&mut self, request: recap::Request) {
@@ -204,6 +213,7 @@ impl State {
             oauth: self.oauth.take(),
             branch: self.branch.take(),
             recap: self.recap.take(),
+            plugins: self.plugins.take(),
             resume: self.resume.take(),
             revision: self.revision.take(),
             apps: std::mem::take(&mut self.apps),
@@ -222,6 +232,11 @@ impl State {
         let job = self.job.take().expect("completed writer");
         Written {
             result,
+            plugins: if job.generation == self.generation {
+                job.plugins
+            } else {
+                None
+            },
             apps: if job.generation == self.generation {
                 job.apps
             } else {
@@ -298,6 +313,7 @@ mod tests {
             oauth: None,
             branch: None,
             recap: None,
+            plugins: None,
             resume: None,
             revision: None,
             apps: Vec::new(),
@@ -546,7 +562,7 @@ mod tests {
         assert_eq!(written.revision, Some(request.clone()));
         assert!(written.result.is_ok());
         let bytes = read(&directory);
-        assert_eq!(bytes["version"], 19);
+        assert_eq!(bytes["version"], 20);
         assert_eq!(bytes["revision"]["copy"]["targetSessionId"], "revised");
         assert_eq!(bytes["revision"]["inputs"][0]["content"]["text"], "edited");
         let mut incomplete = bytes.clone();

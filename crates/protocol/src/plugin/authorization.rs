@@ -76,7 +76,18 @@ impl AuthorizationInput {
                 }
                 super::remote::validate_binding(binding)?;
                 super::remote::validate_target(target)?;
-                binding.session_id()
+                // Remote discovery may select a Profile owner from a Session
+                // page. Only the Host knows the bound endpoint's actual scope.
+                if let Some(context) = binding.session_id()
+                    && let AuthorizationCommand::Approve { request } = self.command()
+                    && let Target::Session { session_id } = &request.target
+                    && session_id != context
+                {
+                    return Err(crate::ProtocolError::invalid(
+                        "authorization target differs from its Session context",
+                    ));
+                }
+                None
             }
         };
         if let AuthorizationCommand::Approve { request } = self.command() {
@@ -122,7 +133,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn remote_consent_has_no_caller_chosen_namespace_and_cannot_escape_session_context() {
+    fn remote_consent_separates_discovery_context_from_backend_scope() {
         let mut value = json!({
             "binding":{"packageId":"example.plugin","method":"terminal","sessionId":null},
             "target":{"entryId":"example.plugin","activation":uuid::Uuid::new_v4(),"registration":uuid::Uuid::new_v4()},
@@ -136,6 +147,11 @@ mod tests {
         assert!(serde_json::from_value::<AuthorizationInput>(value.clone()).is_err());
         value.as_object_mut().unwrap().remove("scope");
         value["binding"]["sessionId"] = json!("one");
+        serde_json::from_value::<AuthorizationInput>(value.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        value["command"]["request"]["target"] = json!({"kind":"session","sessionId":"two"});
         assert!(
             serde_json::from_value::<AuthorizationInput>(value.clone())
                 .unwrap()

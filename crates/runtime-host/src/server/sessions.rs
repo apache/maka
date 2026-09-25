@@ -27,8 +27,8 @@ pub(super) mod removal;
 pub(super) mod workspace;
 
 use crate::session::SessionConfiguration;
+use maka_event_log::StoreError;
 use maka_event_log::sessions::SessionRecord;
-use maka_event_log::{EventLog, StoreError};
 use maka_protocol::OperationErrorCode;
 use maka_protocol::session::*;
 use maka_protocol::{Operation, OperationError, ProtocolError};
@@ -181,7 +181,7 @@ pub(super) async fn execute(
             Ok(Output::Item(Box::new(item)))
         }
         Operation::SessionCatalogQuery => query(
-            log,
+            host,
             decode_session_catalog_query_input(value).map_err(invalid)?,
         )
         .await
@@ -246,17 +246,16 @@ pub(super) async fn execute(
 }
 
 async fn query(
-    log: &EventLog,
+    host: &super::Host,
     input: SessionCatalogQueryInput,
 ) -> Result<SessionCatalogQueryResult> {
+    let log = host.log.as_ref();
     if let SessionCatalogQueryInput::Get { session_id } = &input {
-        return Ok(SessionCatalogQueryResult::Session {
-            session: log
-                .get_session(session_id)
-                .await
-                .map_err(stored)?
-                .map(|record| Box::new(item(record))),
-        });
+        let session = match log.get_session(session_id).await.map_err(stored)? {
+            Some(record) => Some(Box::new(catalog_item(host, record).await?)),
+            None => None,
+        };
+        return Ok(SessionCatalogQueryResult::Session { session });
     }
     let (revision, cursor) = match &input {
         SessionCatalogQueryInput::ListContinue { revision, cursor }
@@ -294,7 +293,7 @@ async fn query(
     let mut sessions = Vec::new();
     for record in page.sessions {
         let id = record.id.clone();
-        sessions.push(item(record));
+        sessions.push(catalog_item(host, record).await?);
         let candidate =
             json!({"kind":"page","revision":page.revision,"sessions":sessions,"nextCursor":id});
         if candidate.to_string().len() > 48 * 1024 {
@@ -314,6 +313,19 @@ async fn query(
         sessions,
         next_cursor: page.next_cursor,
     })
+}
+
+async fn catalog_item(
+    host: &super::Host,
+    record: SessionRecord<SessionConfiguration>,
+) -> Result<SessionCatalogProjection> {
+    let native_input = host
+        .executions
+        .native_input_availability(&record.id, &record.configuration)
+        .await?;
+    let mut item = item(record);
+    item.native_input = native_input;
+    Ok(item)
 }
 
 fn item(record: SessionRecord<SessionConfiguration>) -> SessionCatalogProjection {

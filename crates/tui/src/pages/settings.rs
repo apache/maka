@@ -40,14 +40,16 @@ pub enum Category {
     Models,
     Sessions,
     Host,
+    Plugins,
 }
 impl Category {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Interface,
         Self::Models,
         Self::Sessions,
         Self::Host,
+        Self::Plugins,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -56,6 +58,7 @@ impl Category {
             Self::Models => "models",
             Self::Sessions => "sessions",
             Self::Host => "host",
+            Self::Plugins => "plugins",
         }
     }
     fn title(self) -> &'static str {
@@ -65,6 +68,7 @@ impl Category {
             Self::Models => "settings-models",
             Self::Sessions => "settings-sessions",
             Self::Host => "route-host",
+            Self::Plugins => "route-plugins",
         }
     }
 }
@@ -83,6 +87,7 @@ pub enum Message {
     Connect,
     Refresh,
     Apps,
+    Plugins,
     /// A plugin's settings pane.
     Pane(crate::apps::Key),
     App(crate::apps::Message),
@@ -421,6 +426,12 @@ fn section(app: &App, category: Category) -> Vec<Node<Message>> {
             Action::Visit(Route::Connections),
             Message::Connections,
         )],
+        Category::Plugins => vec![link(
+            app,
+            "plugins",
+            Action::Visit(Route::Plugins(Default::default())),
+            Message::Plugins,
+        )],
         Category::Host => vec![Node::column("host", host(app)).gap(1)],
         Category::Sessions => match app.sandbox_defaults_action() {
             Some(action) => vec![link(
@@ -653,6 +664,9 @@ impl App {
                 return self.apply(Action::Theme(crate::theme::editor::Command::Open));
             }
             Message::Connections => return self.apply(Action::Visit(Route::Connections)),
+            Message::Plugins => {
+                return self.apply(Action::Visit(Route::Plugins(Default::default())));
+            }
             Message::HostDetails => self.settings.host_details = !self.settings.host_details,
             Message::Connect => return self.apply(Action::Connect),
             Message::Refresh => return self.apply(Action::Refresh),

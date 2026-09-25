@@ -22,6 +22,9 @@ use crate::{
     navigation::Route,
 };
 
+/// Includes the current page captured alongside the retained past pages.
+pub(crate) const PAGE_LIMIT: usize = super::tabs::LIMIT + Route::PAGE_COUNT;
+
 pub struct State {
     focus: Focus,
     control: Option<Action>,
@@ -77,7 +80,11 @@ impl Saved {
             }
             Focus::Page => matches!(
                 route,
-                Route::Workspace | Route::Settings | Route::Extensions | Route::App(_)
+                Route::Workspace
+                    | Route::Settings
+                    | Route::Plugins(_)
+                    | Route::Extensions
+                    | Route::App(_)
             ),
             Focus::Queue => false,
         };
@@ -159,6 +166,11 @@ impl App {
                         _ => true,
                     }
             })
+            .rev()
+            .take(PAGE_LIMIT - 1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
             .map(|(route, state)| (route.clone(), state.saved(route, self)))
             .chain(std::iter::once((
                 current.clone(),
@@ -170,6 +182,7 @@ impl App {
     pub(crate) fn leave_page(&mut self) {
         let route = self.navigation.current();
         match route {
+            Route::Plugins(_) => self.plugins.leave(),
             Route::Settings => self.settings.surface.leave(),
             Route::Connections => self.connections.surface.leave(),
             Route::Projects => self.projects.surface.leave(),
@@ -184,12 +197,15 @@ impl App {
         let state = State::capture(self);
         self.page_states.retain(|(key, _)| *key != route);
         self.page_states.push_back((route, state));
-        while self.page_states.len() > super::tabs::LIMIT + Route::PAGE_COUNT {
+        while self.page_states.len() >= PAGE_LIMIT {
             self.page_states.pop_front();
         }
     }
     pub(crate) fn enter_page(&mut self) {
         let route = self.navigation.current();
+        if let Route::Plugins(place) = &route {
+            self.plugins.enter(place);
+        }
         if route == Route::Connections {
             self.connections.refresh();
         }

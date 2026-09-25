@@ -33,6 +33,16 @@ impl Skills {
         workspace_files: maka_plugins::filesystem::ReadDirectory,
     ) -> Result<CatalogResult, Error> {
         let _view = self.mutations.read().await;
+        self.query_inner(input, workspace, workspace_files).await
+    }
+
+    /// Called while the domain mutation lock is already held.
+    pub(super) async fn query_inner(
+        &self,
+        input: &CatalogInput,
+        workspace: WorkspaceProjection,
+        workspace_files: maka_plugins::filesystem::ReadDirectory,
+    ) -> Result<CatalogResult, Error> {
         let (sources, preferences) = self.governance(&workspace_files).await?;
         let governance = governance::items(&sources, preferences.as_ref());
         let revision = revision(input.context(), &workspace, &sources, preferences.as_ref())?;

@@ -49,7 +49,9 @@ impl MessageWriter for Writer {
             value["kind"].as_str(),
             Some(
                 "plugin.client.changed"
+                    | "session.catalog.changed"
                     | "plugin.terminal.changed"
+                    | "plugin.platform.changed"
                     | "model.provider.catalog.changed"
             )
         ) {
@@ -94,7 +96,9 @@ async fn receive_response(reader: &mut impl MessageReader) -> Value {
                 frame["kind"].as_str(),
                 Some(
                     "plugin.client.changed"
+                        | "session.catalog.changed"
                         | "plugin.terminal.changed"
+                        | "plugin.platform.changed"
                         | "model.provider.catalog.changed"
                 )
             ) {

@@ -191,7 +191,11 @@ impl App {
         let Route::Session(id) = self.navigation.current() else {
             return None;
         };
-        if self.chat.removed || self.chat.session.as_ref() != Some(&id) || self.chrome.details {
+        if self.chat.removed
+            || self.chat.session.as_ref() != Some(&id)
+            || self.chrome.details
+            || self.session_is_managed(&id)
+        {
             return None;
         }
         // Search previews have their own transcript; use only the canonical page.

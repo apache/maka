@@ -37,6 +37,10 @@ impl Executions {
         mut source: RootSourceMessage,
         root_id: &str,
         prepared: Option<crate::execution::input::PreparedMessageInput>,
+        native: (
+            &super::native::NativeInput,
+            &maka_config::plugin_authorization::Principal,
+        ),
     ) -> Result<SubmitResult> {
         if source.submitted_intent.is_some() {
             return Err(failure(
@@ -99,6 +103,10 @@ impl Executions {
             let revision = observation.message_queue.revision;
             observation.message_queue.entries.push(admission.clone());
             crate::server::messages::capacity::validate(epoch, observation)?;
+            let _native_admission = native
+                .0
+                .admit(self, &admission.invocation.session_id, native.1)
+                .await?;
             match self
                 .log
                 .admit_queued_message(epoch, revision, admission.clone())

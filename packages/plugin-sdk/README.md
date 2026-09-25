@@ -44,6 +44,8 @@ const activate: HostPlugin = async (ctx) => {
 export default activate;
 ```
 
+`ctx.behaviors.register(name, prepare, { nativeInput: 'native_user_messages' })` explicitly allows canonical user messages in model Sessions managed by that same package and scope. The default is `denied`. The Host checks the live behavior registration and current caller authority before admission; retirement or replacement invalidates an in-flight preparation. This policy preserves native message IDs, attachments, selections, queue placement and receipts, and does not enable manager-only configuration, revision or resume operations. Managed native messages cannot override orchestration mode.
+
 Bundle one ESM entrypoint without imports or top-level await. Set `runtime: { entry: "index.mjs", sdkVersion: 1, vm: "shared" }` in `maka.extension.json`; `dedicated` requests a separate VM for that package generation.
 
 Prompt providers receive a tagged Session or model-step context, never fabricated tool authority. Sections and dynamic context default to templates; use `format: 'plain'` for resolved or user-authored text. A `complete` section replaces other prompt Contributions, not explicit Session/child instructions. Physical retries reuse the same frozen composition.

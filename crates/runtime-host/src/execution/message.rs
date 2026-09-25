@@ -29,6 +29,7 @@ use maka_runtime::{
 };
 use uuid::Uuid;
 
+mod native;
 mod queued;
 mod submissions;
 pub(super) use submissions::Submissions;
@@ -40,9 +41,10 @@ impl Executions {
         connection_id: Uuid,
         root_id: &str,
         epoch: &str,
+        principal: &maka_config::plugin_authorization::Principal,
     ) -> Result<SubmitResult> {
         let _submission = self.submissions.track(&input.session_id, &input.message_id);
-        self.ordinary_session(&input.session_id).await?;
+        let mut native = None;
         let mut prepared = None;
         let mut queued: Option<(
             maka_runtime::event::Invocation,
@@ -140,6 +142,13 @@ impl Executions {
                     "Original steering admission receipt is unavailable",
                 ));
             }
+            if native.is_none() {
+                native = Some(native::NativeInput::capture(self, &input, principal).await?);
+            }
+            let native = native.as_ref().expect("captured native input authority");
+            // Revalidate even retries that need another preparation. A changed
+            // registration/configuration must fail, never rescue an old input.
+            drop(native.admit(self, &input.session_id, principal).await?);
             let source = RootSourceMessage {
                 unprepared_content: content.clone(),
                 message: DeliveredMessage {
@@ -159,11 +168,16 @@ impl Executions {
                 .find(|run| run.invocation.session_id == input.session_id)
                 .map(|run| run.invocation.clone());
             if let Some(invocation) = active {
+                native.check_active(self, &invocation).await?;
                 let (skills, _input_admission) = if source.submitted_intent.is_none() {
                     match queued.take() {
                         Some((owner, candidate)) if owner == invocation => {
+                            let candidate = candidate?;
+                            if let Some(environment) = candidate.environment() {
+                                native.check_environment(environment)?;
+                            }
                             let Some((candidate, admission)) =
-                                candidate?.commit(self, &input.session_id).await?
+                                candidate.commit(self, &input.session_id).await?
                             else {
                                 continue;
                             };
@@ -207,7 +221,14 @@ impl Executions {
                     (None, None)
                 };
                 return self
-                    .queue_message(epoch, invocation, source, root_id, skills)
+                    .queue_message(
+                        epoch,
+                        invocation,
+                        source,
+                        root_id,
+                        skills,
+                        (native, principal),
+                    )
                     .await;
             }
             if !self
@@ -255,6 +276,7 @@ impl Executions {
                 continue;
             };
             let (environment, content, selection) = candidate?;
+            native.check_environment(&environment)?;
             let Some((environment, _input_admission)) =
                 environment.commit(self, &input.session_id).await?
             else {
@@ -272,7 +294,7 @@ impl Executions {
             let mut run = self
                 .prepare_message(
                     TurnStartInput {
-                        session_id: input.session_id,
+                        session_id: input.session_id.clone(),
                         turn_id: Uuid::new_v4().to_string(),
                         content: content.clone().into(),
                         // Original input intent stays in the source identity.
@@ -290,6 +312,7 @@ impl Executions {
             run.message(content)?;
             // Opening and original source identity commit together before any model
             // or tool effect. There is no separately accepted, unstarted idle row.
+            let _native_admission = native.admit(self, &input.session_id, principal).await?;
             let turn = self.launch(run).await?;
             return Ok(SubmitResult::TurnStarted {
                 turn_id: turn.turn_id,

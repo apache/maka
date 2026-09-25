@@ -22,6 +22,7 @@
 mod attachments;
 mod board;
 mod branch;
+mod builtins;
 mod changes;
 mod connection_test;
 mod connections;
@@ -41,6 +42,7 @@ mod models;
 mod navigation;
 mod oauth;
 mod onboarding;
+mod plugins;
 mod projects;
 mod queue;
 mod reading;
@@ -57,6 +59,7 @@ mod startup;
 mod stopping;
 mod support;
 mod themes;
+mod workhub;
 
 use maka_process::terminal::Screen;
 use maka_runtime::terminal::TerminalSize;

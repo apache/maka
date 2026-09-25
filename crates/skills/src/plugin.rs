@@ -35,6 +35,7 @@ mod catalog;
 mod files;
 mod import;
 mod input;
+mod lifecycle;
 mod locations;
 mod mutation;
 mod page;

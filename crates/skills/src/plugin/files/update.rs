@@ -18,7 +18,14 @@
  */
 
 use super::{Change, Failure, artifacts, source_content, workspace_id};
-use crate::{OriginStatus, SourceCatalog, api::*, publication::Publisher};
+use crate::{
+    OriginStatus, SourceCatalog,
+    api::*,
+    publication::{
+        Publisher,
+        receipt::{Destination, Operation},
+    },
+};
 use maka_runtime::artifact::content_digest;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +33,7 @@ pub(super) async fn apply(
     publisher: &Publisher,
     sources: &SourceCatalog,
     update: &ManagedUpdate,
+    operation: Option<&Operation>,
     cancellation: &CancellationToken,
 ) -> Result<Change, Failure> {
     let id = workspace_id(&update.reference)?;
@@ -105,7 +113,20 @@ pub(super) async fn apply(
     let mut next = expected.clone();
     artifacts(&mut next, id, source_id, InstallSource::Managed, source)?;
     publisher
-        .publish(id, Some(&expected), Some(&next), cancellation)
+        .publish_operation(
+            id,
+            Some(&expected),
+            Some(&next),
+            operation.map(|operation| {
+                (
+                    operation,
+                    Destination::Skill {
+                        reference: update.reference.clone(),
+                    },
+                )
+            }),
+            cancellation,
+        )
         .await?;
     Ok(Change {
         changed: true,

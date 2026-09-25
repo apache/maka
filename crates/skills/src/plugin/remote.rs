@@ -246,6 +246,15 @@ impl Method for Service {
             if caller.cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
+            if request.requires_user_files() {
+                authorize_user(
+                    &skills,
+                    &caller,
+                    uuid::Uuid::new_v4(),
+                    "Manage user Skills".into(),
+                )
+                .await?;
+            }
             request.execute(&skills, view, target).await
         })
     }
@@ -299,6 +308,13 @@ impl Method for UserAuthorization {
             match decode::<UserAuthorizationRequest>(input)? {
                 UserAuthorizationRequest::Status => {}
                 UserAuthorizationRequest::Recover { grant } => {
+                    authorize_user(
+                        &skills,
+                        &caller,
+                        uuid::Uuid::new_v4(),
+                        "Resume user Skill publication".into(),
+                    )
+                    .await?;
                     skills.resume_user(grant).await.map_err(failure)?
                 }
             }
@@ -314,30 +330,64 @@ impl Method for Import {
                 return Err(Error::Cancelled);
             }
             let input: ImportSourceInput = decode(input)?;
-            let path = std::path::Path::new(&input.source_path);
-            let parent = path
-                .parent()
-                .filter(|_| path.is_absolute())
-                .and_then(|parent| parent.to_str())
-                .ok_or_else(|| Error::Invalid("Import requires an absolute file path".into()))?;
-            let source = caller
-                .views
-                .workspace(WorkspaceViewInput {
-                    workspace: WorkspaceTarget::HostPath {
-                        path: parent.into(),
-                    },
-                    sandbox_mode: SandboxMode::ReadOnly,
-                    collaboration_mode: CollaborationMode::Agent,
-                })
-                .await?;
-            encode(
-                skills
-                    .import_source(input, source.files)
-                    .await
-                    .map_err(failure)?,
+            authorize_user(
+                &skills,
+                &caller,
+                uuid::Uuid::new_v4(),
+                "Import local Skill source".into(),
             )
+            .await?;
+            let source = import_view(&caller, &input.source_path).await?;
+            encode(skills.import_source(input, source).await.map_err(failure)?)
         })
     }
+}
+/// A stored grant never substitutes for the current foreground caller.
+pub(super) async fn authorize_user(
+    skills: &Skills,
+    caller: &Caller,
+    operation_id: uuid::Uuid,
+    title: String,
+) -> Result<maka_plugins::authorization::Request, Error> {
+    use maka_plugins::authorization::{Capability, Request};
+    let request = Request {
+        operation_id,
+        title,
+        target: skills.user_target().map_err(failure)?,
+        capabilities: [Capability::ReadFiles, Capability::WriteFiles].into(),
+    };
+    request
+        .validate()
+        .map_err(message)
+        .map_err(Error::Invalid)?;
+    let authority = caller.views.authorize(request.clone()).await?;
+    authority
+        .finish()
+        .await
+        .map_err(|_| Error::CleanupUnconfirmed)?;
+    Ok(request)
+}
+pub(super) async fn import_view(
+    caller: &Caller,
+    path: &str,
+) -> Result<maka_plugins::filesystem::ReadDirectory, Error> {
+    let path = std::path::Path::new(path);
+    let parent = path
+        .parent()
+        .filter(|_| path.is_absolute())
+        .and_then(|parent| parent.to_str())
+        .ok_or_else(|| Error::Invalid("Import requires an absolute file path".into()))?;
+    Ok(caller
+        .views
+        .workspace(WorkspaceViewInput {
+            workspace: WorkspaceTarget::HostPath {
+                path: parent.into(),
+            },
+            sandbox_mode: SandboxMode::ReadOnly,
+            collaboration_mode: CollaborationMode::Agent,
+        })
+        .await?
+        .files)
 }
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
     serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))

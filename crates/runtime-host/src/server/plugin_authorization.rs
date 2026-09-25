@@ -44,15 +44,7 @@ pub(super) async fn execute(
     input: AuthorizationInput,
 ) -> Result<AuthorizationResult, OperationError> {
     input.validate().map_err(invalid)?;
-    let principal = match authority.credential() {
-        None => Principal::LocalUser {
-            client_instance_id: client.into(),
-        },
-        Some(credential) => Principal::Credential {
-            credential_id: credential.credential_id.clone(),
-            client_instance_id: client.into(),
-        },
-    };
+    let principal = principal(authority, client);
     let current = principal_authority(&host.configuration, &principal).await?;
     if !current.has_grant(Operation::PluginAuthorization) {
         return Err(denied());
@@ -163,6 +155,12 @@ fn subject(
                 return Err(denied());
             }
             let identity = bound.endpoint.owner.identity().map_err(invalid)?;
+            if let maka_plugins::composition::Scope::Session(id) = &identity.scope
+                && let AuthorizationCommand::Approve { request } = input.command()
+                && !matches!(&request.target, Target::Session { session_id } if session_id == id)
+            {
+                return Err(denied());
+            }
             // Storage authority follows the actual backend owner, not a scope
             // supplied by the application or inherited from a frontend entry.
             let namespace = Namespace::new(identity.package_id, identity.scope).map_err(invalid)?;
@@ -298,9 +296,6 @@ pub(crate) async fn validate_principal(
 }
 
 fn allow(authority: &Authority, request: &Request) -> Result<(), OperationError> {
-    if !authority.has_grant(Operation::PluginAuthorization) {
-        return Err(denied());
-    }
     if matches!(
         &request.target,
         Target::Workspace {
@@ -311,7 +306,17 @@ fn allow(authority: &Authority, request: &Request) -> Result<(), OperationError>
     {
         return Err(denied());
     }
-    for capability in &request.capabilities {
+    allow_capabilities(authority, request.capabilities.iter().copied())
+}
+
+fn allow_capabilities(
+    authority: &Authority,
+    capabilities: impl IntoIterator<Item = Capability>,
+) -> Result<(), OperationError> {
+    if !authority.has_grant(Operation::PluginAuthorization) {
+        return Err(denied());
+    }
+    for capability in capabilities {
         let required: &[Operation] = match capability {
             Capability::Executions => &[
                 Operation::SessionCreate,
@@ -346,6 +351,41 @@ fn allow(authority: &Authority, request: &Request) -> Result<(), OperationError>
         }
     }
     Ok(())
+}
+
+/// Native manager input retains the same caller standard as an Executions
+/// authorization through Remote, without creating or borrowing a stored grant.
+pub(crate) async fn validate_native_input(
+    configuration: &ConfigurationStore,
+    principal: &Principal,
+) -> Result<(), OperationError> {
+    let authority = principal_authority(configuration, principal)
+        .await
+        .map_err(|mut error| {
+            // Message admission exposes its own persistence/unknown vocabulary.
+            if error.code == Code::PersistenceFailed || error.code == Code::CommitOutcomeUnknown {
+                error.code = Code::InternalFailure;
+            }
+            error
+        })?;
+    if !authority.has_grant(Operation::PluginRemote)
+        || !authority.has_grant(Operation::TurnMessageSubmit)
+    {
+        return Err(denied());
+    }
+    allow_capabilities(&authority, [Capability::Executions])
+}
+
+pub(super) fn principal(authority: &Authority, client: &str) -> Principal {
+    match authority.credential() {
+        None => Principal::LocalUser {
+            client_instance_id: client.into(),
+        },
+        Some(credential) => Principal::Credential {
+            credential_id: credential.credential_id.clone(),
+            client_instance_id: client.into(),
+        },
+    }
 }
 
 pub(crate) async fn capture(

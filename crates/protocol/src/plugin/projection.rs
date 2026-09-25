@@ -17,13 +17,15 @@
  * under the License.
  */
 
-use maka_plugins::composition::Scope;
+use maka_plugins::composition::{Injection, Isolation, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageProjection {
+    pub base_generation: u64,
     pub extension_id: String,
     pub content_digest: String,
     pub display_name: String,
@@ -32,11 +34,16 @@ pub struct PackageProjection {
     pub dependencies: Vec<String>,
     pub structural_dependencies: Vec<String>,
     pub required_by: Vec<String>,
+    pub has_runtime: bool,
+    pub has_client: bool,
+    pub has_composition: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EntryProjection {
+    /// The ledger generation of this exact editable projection, not activation.
+    pub base_generation: u64,
     pub id: String,
     pub root_id: Scope,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,7 +51,14 @@ pub struct EntryProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_id: Option<String>,
     pub config: Value,
+    pub local_disabled: bool,
+    /// Includes disabled ancestors. Editing uses `local_disabled`.
     pub disabled: bool,
+    pub inject: Injection,
+    pub isolate: BTreeMap<String, Isolation>,
+    pub intercept: BTreeMap<String, Value>,
+    /// Unknown when the package definition could not be loaded.
+    pub required_services: Option<Vec<String>>,
     pub status: EntryPhase,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,

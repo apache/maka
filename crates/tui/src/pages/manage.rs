@@ -424,6 +424,7 @@ pub async fn execute(client: &Client, ticket: &Ticket) -> Result<Updated, Reques
 impl App {
     fn management_identity(&self, target: &Target) -> bool {
         matches!(&self.connection, ConnectionState::Connected {root_id, epoch} if *root_id == target.root && *epoch == target.epoch)
+            && !matches!(&target.entity, Entity::Session { id, .. } if self.session_is_managed(id))
     }
     pub fn management_commands(&self) -> Vec<(Action, &'static str)> {
         let ConnectionState::Connected { root_id, epoch } = &self.connection else {
@@ -474,6 +475,9 @@ impl App {
             }
             _ => return vec![],
         };
+        if item.native_input != maka_protocol::session::NativeInputAvailability::Ordinary {
+            return vec![];
+        }
         let target = Target {
             root: root_id.clone(),
             epoch: epoch.clone(),

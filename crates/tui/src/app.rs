@@ -72,6 +72,7 @@ pub enum Action {
     Recap(crate::pages::recap::Command),
     Resume(crate::pages::resume::Command),
     Settings(crate::pages::settings::Message),
+    Plugins(crate::pages::plugins::Command),
     Sidebar(crate::pages::sidebar::Message),
     Home(crate::pages::home::Message),
     Attachment(crate::pages::attachments::Command),
@@ -149,6 +150,7 @@ pub struct App {
     pub attachments: crate::pages::attachments::State,
     pub skills: crate::pages::skills::State,
     pub settings: crate::pages::settings::State,
+    pub plugins: crate::pages::plugins::State,
     pub help: bool,
     pub sidebar: crate::pages::sidebar::State,
     /// The modal layer presenting whichever overlay is a kernel sheet.
@@ -208,6 +210,7 @@ impl App {
             attachments: Default::default(),
             skills: Default::default(),
             settings: Default::default(),
+            plugins: Default::default(),
             help: false,
             sidebar: Default::default(),
             layer: Default::default(),
@@ -252,6 +255,10 @@ impl App {
             (Action::Host, "command-host"),
             (Action::Visit(Route::Settings), "command-settings"),
             (Action::Visit(Route::Connections), "route-connections"),
+            (
+                Action::Visit(Route::Plugins(Default::default())),
+                "route-plugins",
+            ),
             (
                 Action::Apps(crate::apps::Message::Directory),
                 "route-extensions",
@@ -455,7 +462,7 @@ impl App {
                 actions
             }
             // Settings controls live in its kernel surface, not page actions.
-            Route::Settings => vec![],
+            Route::Settings | Route::Plugins(_) => vec![],
         };
         if self.fullscreen() && self.inbox_attention() {
             actions.push(Action::Inbox);
@@ -467,6 +474,7 @@ impl App {
             && (!self.inbox.items.is_empty() || self.inbox.error.is_some())
     }
     pub fn begin_frame(&mut self, area: Rect) {
+        self.plugins.begin_frame();
         self.attachments.begin_frame();
         self.branch.invalidate_geometry();
         self.recap.invalidate_geometry();
@@ -530,6 +538,7 @@ impl App {
     }
     fn refresh_action(&self) -> Option<Action> {
         match self.navigation.current() {
+            Route::Plugins(_) => Some(Action::Plugins(crate::pages::plugins::Command::Refresh)),
             Route::Extensions => Some(Action::Apps(crate::apps::Message::Reload)),
             Route::App(key) => Some(Action::Apps(crate::apps::Message::Instance(
                 key,
@@ -624,6 +633,7 @@ impl App {
             Action::Recap(command) => return self.recap_action(command),
             Action::Resume(command) => return self.resume_action(command),
             Action::Settings(message) => return self.settings_action(message),
+            Action::Plugins(command) => return self.plugins_action(command),
             Action::Sidebar(message) => return self.sidebar_action(message),
             Action::Home(message) => return self.home_action(message),
             Action::Revision(command) => return self.revision_action(command),
@@ -806,6 +816,11 @@ impl App {
                 self.refreshing = true;
                 return Some(action);
             }
+            Action::Quit | Action::Detach if self.plugins.has_unsaved() => {
+                self.invalidate_editor_geometry();
+                self.plugins.review_exit(action == Action::Detach);
+                self.layer.close();
+            }
             Action::Quit | Action::Detach | Action::ConfirmQuit => return Some(action),
             Action::CancelQuit => {
                 self.shutdown = Default::default();
@@ -849,6 +864,9 @@ impl App {
         | Action::Home(crate::pages::home::Message::New) = action
         {
             return self.enabled(&Action::CreateSession);
+        }
+        if let Action::Plugins(command) = action {
+            return self.plugins_enabled(command);
         }
         if let Action::Settings(message) = action {
             use crate::pages::settings::Message;
@@ -957,6 +975,8 @@ impl App {
                     return false;
                 };
                 connected
+                    && self.native_input(&id)
+                        != maka_protocol::session::NativeInputAvailability::ManagedUnavailable
                     && !(self.chat.session.as_deref() == Some(&id) && self.chat.removed)
                     && !matches!(&self.sessions.detail, crate::pages::sessions::Detail::Missing { id: missing } if *missing == id)
                     && self.attachments.ready(&id)
@@ -1098,6 +1118,7 @@ impl App {
     }
 
     pub fn invalidate_editor_geometry(&mut self) {
+        self.plugins.invalidate_geometry();
         self.layer.invalidate();
         self.apps.invalidate_geometry();
         self.apps.invalidate_readers();
@@ -1224,6 +1245,7 @@ impl App {
         }
         let captures = match self.navigation.current() {
             Route::Settings => self.settings.surface.captures(),
+            Route::Plugins(_) => self.plugins.surface.captures(),
             Route::Workspace => self.home.surface.captures(),
             Route::Extensions | Route::App(_) => self
                 .apps_surface()
@@ -1242,6 +1264,12 @@ impl App {
             return None;
         }
         let outcome = match self.navigation.current() {
+            Route::Plugins(_) => {
+                if let Some(redraw) = self.plugins_field_input(event) {
+                    return Some((redraw, None));
+                }
+                self.plugins.surface.input(event).map(Action::Plugins)
+            }
             Route::Settings => {
                 if let Some(redraw) = self.settings_field_input(event) {
                     return Some((redraw, None));
@@ -1654,6 +1682,9 @@ impl App {
                                     self.projects.surface.enter(backwards)
                                 }
                                 (Focus::Inspector, _) => self.apps.inspector.enter(backwards),
+                                (Focus::Page, Route::Plugins(_)) => {
+                                    self.plugins.surface.enter(backwards)
+                                }
                                 (Focus::Page, Route::Settings) => {
                                     self.settings.surface.enter(backwards)
                                 }

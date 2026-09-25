@@ -37,6 +37,7 @@ pub(crate) enum Overlay {
     Shutdown,
     Consent,
     Confirm,
+    Plugins,
     Theme,
     Skills,
     Attachments,
@@ -65,6 +66,7 @@ impl Overlay {
         match self {
             Self::Shutdown => Action::CancelQuit,
             Self::Consent | Self::Confirm => app.apps.dismissal(),
+            Self::Plugins => Action::Plugins(crate::pages::plugins::Command::Cancel),
             Self::Theme => Action::Theme(crate::theme::editor::Command::Close),
             Self::Skills => Action::Skills(skills::Command::Close),
             Self::Attachments => Action::Attachment(attachments::Command::Close),
@@ -89,6 +91,7 @@ impl App {
         use Overlay::*;
         [
             (Shutdown, self.shutdown.prompt.is_some()),
+            (Plugins, self.plugins.confirm_visible()),
             (Consent, self.apps.consent_visible()),
             (Confirm, self.apps.confirm_visible()),
             (Theme, self.theme.editor.is_some()),
@@ -118,6 +121,7 @@ impl App {
             Overlay::Shutdown => crate::shutdown::sheet(self),
             Overlay::Consent => crate::apps::consent_sheet(self),
             Overlay::Confirm => crate::apps::confirm_sheet(self),
+            Overlay::Plugins => crate::pages::plugins::sheet(self),
             Overlay::Reference | Overlay::Management => crate::pages::manage::sheet(self),
             Overlay::QueueEdit => crate::pages::queue::edit::sheet(self),
             Overlay::Resume => crate::pages::resume::sheet(self),
@@ -140,6 +144,7 @@ impl App {
     fn present(&mut self, overlay: Overlay, shown: bool) {
         match overlay {
             Overlay::Consent => self.consent_presented(shown),
+            Overlay::Plugins => self.plugins.confirmation_shown = shown,
             Overlay::Reference | Overlay::Management => self.management.presented(shown),
             Overlay::Resume => self.resume.presented(shown),
             Overlay::Recap => self.recap.presented(shown),
@@ -213,7 +218,7 @@ impl App {
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('q'));
             return if quit && overlay != Overlay::Shutdown {
-                (true, Some(Action::Quit))
+                (true, self.apply(Action::Quit))
             } else {
                 (false, None)
             };

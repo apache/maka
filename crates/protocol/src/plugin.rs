@@ -58,6 +58,7 @@ pub fn supports(operation: Operation) -> bool {
             | Operation::PluginPlatformReconcile
             | Operation::PluginCompositionApply
             | Operation::PluginPackageInstall
+            | Operation::PluginPackagePreview
             | Operation::PluginPackageUninstall
             | Operation::PluginPackageReload
             | Operation::PluginPackageExport

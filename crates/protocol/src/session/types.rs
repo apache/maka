@@ -100,9 +100,21 @@ pub struct SessionSubagentProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
 }
+/// Current manager delegation, not permission to change Session configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeInputAvailability {
+    #[default]
+    Ordinary,
+    ManagedNative,
+    ManagedUnavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionCatalogProjection {
+    #[serde(default)]
+    pub native_input: NativeInputAvailability,
     pub id: String,
     pub revision: u64,
     pub workspace: WorkspaceProjection,

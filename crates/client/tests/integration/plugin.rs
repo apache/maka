@@ -263,3 +263,81 @@ async fn terminal_directory_rejects_a_different_valid_view_without_retrying() {
         );
     }
 }
+
+#[tokio::test]
+async fn management_requests_cross_the_client_registry_with_review_preconditions_intact() {
+    use maka_protocol::Operation;
+    let digest = format!("sha256-{}", "a".repeat(64));
+    let expected = json!({"baseGeneration":7,"contentDigest":null});
+    let receipt = json!({"authorityEpoch":8,"durability":"committed","convergence":"converged","cleanup":"complete","failures":[]});
+    let preview = json!({"sourcePath":"/reviewed/source","package":{
+        "baseGeneration":7,"extensionId":"example.notes","contentDigest":digest,"displayName":"Notes",
+        "dependencies":[],"structuralDependencies":[],"requiredBy":[],
+        "hasRuntime":true,"hasClient":false,"hasComposition":false},"expected":expected});
+    let cases = [
+        (
+            Operation::PluginPackagePreview,
+            json!({"sourcePath":"/reviewed/source"}),
+            preview,
+        ),
+        (
+            Operation::PluginPackageInstall,
+            json!({"sourcePath":"/reviewed/source","sourceDigest":digest,"expected":expected}),
+            {
+                let mut installed = receipt.clone();
+                installed["extensionId"] = json!("example.notes");
+                installed
+            },
+        ),
+        (
+            Operation::PluginPackageReload,
+            json!({"extensionId":"example.notes","expected":{"baseGeneration":8,"contentDigest":digest}}),
+            receipt.clone(),
+        ),
+        (
+            Operation::PluginCompositionApply,
+            json!({"baseGeneration":8,"operations":[{"type":"remove","entryId":"notes"}]}),
+            receipt.clone(),
+        ),
+        (
+            Operation::PluginPackageUninstall,
+            json!({"extensionId":"example.notes","expected":{"baseGeneration":8,"contentDigest":digest}}),
+            receipt,
+        ),
+    ];
+    let (client, _notices, mut reader, mut writer) = pair_with(maka_client::Operations).await;
+    for (operation, input, output) in cases {
+        let request = tokio::spawn({
+            let client = client.clone();
+            let input = input.clone();
+            async move { client.request(operation, input).await }
+        });
+        let frame = tokio::time::timeout(Duration::from_secs(5), reader.read())
+            .await
+            .expect("management request must reach the wire")
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame["operation"], operation.as_str());
+        assert_eq!(frame["input"], input);
+        writer.write(&json!({"requestId":frame["requestId"],"operation":frame["operation"],"ok":true,"result":output})).await.unwrap();
+        assert_eq!(request.await.unwrap().unwrap(), output);
+    }
+    let request = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client.request(Operation::PluginPackageReload, json!({"extensionId":"example.notes","expected":{"baseGeneration":1,"contentDigest":digest}})).await
+        }
+    });
+    let frame = reader.read().await.unwrap().unwrap();
+    writer
+        .write(
+            &json!({"requestId":frame["requestId"],"operation":frame["operation"],"ok":false,
+        "error":{"code":"operation_conflict","message":"Reviewed generation changed"}}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(request.await.unwrap(), Err(RequestFailure::Rejected(ClientError::Rejected(error))) if error.code == maka_protocol::OperationErrorCode::OperationConflict)
+    );
+    client.disconnect();
+}

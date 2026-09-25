@@ -29,6 +29,10 @@ The sidebar groups sessions by workspace. **Needs you** filters that directory w
 
 Chat and plugin transcripts share Markdown, selection, search and streaming presentation. New streamed text briefly fades to its final color without delaying the received content or changing its layout. Reduced motion and terminal-owned colors display it immediately.
 
+Settings → Plugins manages local packages, instances, configuration and service bindings. Changes are reviewed before submission; activation updates arrive automatically. Configuration drafts remain in memory, and an uncertain result is never retried automatically.
+
+A session's **Skill library** imports local Markdown, installs sources, reviews managed updates and confirms directory deletion. WorkHub configures new tasks and repairs unavailable models from its views; its coordinator accepts ordinary chat input. Other managed sessions enable native input only when their owning behavior explicitly supports it. Rust and JavaScript plugins can contribute pages, settings, panels and nested views through the same public components.
+
 - `maka-client` owns transport and protocol validation; the TUI owns presentation and input.
 - Provider setup consumes public descriptors, configuration and authentication contracts.
 - Local state stores drafts and recovery identities, never authentication input. Uncertain writes require observation, not automatic replay.

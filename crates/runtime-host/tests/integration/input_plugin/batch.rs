@@ -38,7 +38,7 @@ impl Plugin for Preparation {
             staged
                 .insert(
                     "example.review",
-                    session::SessionBehavior(Arc::new(Business::default())),
+                    session::SessionBehavior::new(Arc::new(Business::default())),
                 )
                 .unwrap();
             staged

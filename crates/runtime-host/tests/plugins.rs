@@ -31,6 +31,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+#[path = "plugins/management.rs"]
+mod management;
+
 struct Loader;
 impl PackageLoader for Loader {
     fn definition(&self, package: &Package) -> Result<Arc<Definition>, maka_plugins::Error> {
@@ -108,7 +111,10 @@ async fn accepted_plugin_mutations_survive_lost_waiters_and_activation_failure_i
     // Queue accepted, response receiver lost: the owner still commits and publishes.
     assert!(
         platform
-            .mutate(Mutation::Install(package()))
+            .mutate(Mutation::Install {
+                package: package(),
+                expected: None
+            })
             .now_or_never()
             .is_none()
     );

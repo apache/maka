@@ -101,8 +101,9 @@ impl Owner {
         let mut force_reload = None;
         let mut persist = true;
         let update = match mutation {
-            Mutation::Install(package) => {
+            Mutation::Install { package, expected } => {
                 let id = package.manifest().id.clone();
+                self.check_package(&id, expected.as_ref())?;
                 if self.builtins.contains_key(&id) {
                     return Err(invalid(
                         "built-in code is updated with Host, not package installation",
@@ -117,7 +118,8 @@ impl Owner {
                 packages.insert(id, package.clone());
                 Some(PackageUpdate::Install(package))
             }
-            Mutation::Uninstall(id) => {
+            Mutation::Uninstall { id, expected } => {
+                self.check_package(&id, expected.as_ref())?;
                 if self.builtins.contains_key(&id) {
                     return Err(invalid("built-in packages cannot be uninstalled"));
                 }
@@ -140,8 +142,13 @@ impl Owner {
                 }) {
                     return Err(invalid("package is required by another installed package"));
                 }
+                ledger = authority::without_package_layer(
+                    &ledger,
+                    &packages,
+                    &self.builtin_layers,
+                    &id,
+                )?;
                 packages.remove(&id);
-                ledger.package_layers.retain(|layer| *layer != id);
                 Some(PackageUpdate::Remove(id))
             }
             Mutation::Apply {
@@ -166,7 +173,8 @@ impl Owner {
                 ledger.extend(&operations);
                 None
             }
-            Mutation::Reload(id) => {
+            Mutation::Reload { id, expected } => {
+                self.check_package(&id, expected.as_ref())?;
                 if !packages.contains_key(&id) && !self.builtins.contains_key(&id) {
                     return Err(invalid("package not found"));
                 }
@@ -179,13 +187,14 @@ impl Owner {
             }
             Mutation::Reconcile => unreachable!(),
         };
-        let (desired, prepared) = authority::prepare(
+        let (desired, prepared, required_services) = authority::prepare(
             &ledger,
             &packages,
             &self.builtins,
             &self.builtin_layers,
             self.loader.as_ref(),
             &existing,
+            &self.required_services,
         )?;
         self.kernel.validate_change(&prepared)?;
         if persist {
@@ -201,6 +210,7 @@ impl Owner {
         }
         self.packages = packages;
         self.desired = desired;
+        self.required_services = required_services;
         self.kernel.install(prepared);
         if let Some(id) = force_reload {
             self.kernel.reload(&id);
@@ -209,11 +219,42 @@ impl Owner {
         Ok(self.updates.borrow().clone())
     }
 
+    fn check_package(
+        &self,
+        id: &str,
+        expected: Option<&maka_protocol::plugin::PackagePrecondition>,
+    ) -> Result<(), Error> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let actual = self.packages.get(id).map(|package| package.digest());
+        if expected.base_generation != self.ledger.generation {
+            return Err(StoreError::RevisionConflict {
+                expected: expected.base_generation.to_string(),
+                actual: self.ledger.generation.to_string(),
+            }
+            .into());
+        }
+        if expected.content_digest.as_deref() != actual {
+            return Err(StoreError::RevisionConflict {
+                expected: expected
+                    .content_digest
+                    .as_deref()
+                    .unwrap_or("absent")
+                    .into(),
+                actual: actual.unwrap_or("absent").into(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     fn tick(&mut self) -> Result<(), Error> {
         self.kernel.tick()?;
         let previous = self.updates.borrow().clone();
         if previous.runtime != self.kernel.status()
             || previous.ledger != self.ledger
+            || previous.required_services != self.required_services
             || previous.fence != self.fence
         {
             self.publish();
@@ -227,6 +268,7 @@ impl Owner {
             ledger: self.ledger.clone(),
             desired: self.desired.clone(),
             packages: self.packages.clone(),
+            required_services: self.required_services.clone(),
             runtime: self.kernel.status(),
             fence: self.fence.clone(),
         }));

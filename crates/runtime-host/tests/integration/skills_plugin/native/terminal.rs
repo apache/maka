@@ -40,7 +40,7 @@ pub(super) async fn exercise(client: &Client, session: &str) {
     let view = directory
         .items
         .into_iter()
-        .find(|view| view.package_id == "maka.skills")
+        .find(|view| view.package_id == "maka.skills" && view.method == "terminal")
         .unwrap();
     assert_eq!(view.descriptor.title.resolve("zh-CN"), "技能");
     let binding = RemoteBinding::Package {

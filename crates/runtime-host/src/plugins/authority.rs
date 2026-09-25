@@ -17,12 +17,14 @@
  * under the License.
  */
 
-use super::{Error, PackageLoader, invalid};
+use super::{Error, PackageLoader, RequiredServices, invalid};
+mod removal;
 use maka_plugins::{
     composition::{Composition, Ledger, Operation},
     kernel::{Definition, Definitions, Plugin, PluginContext, Prepared},
     package::Package,
 };
+pub(super) use removal::without_package_layer;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -35,8 +37,13 @@ pub(super) fn prepare(
     builtin_layers: &BTreeMap<String, Vec<Operation>>,
     loader: &dyn PackageLoader,
     existing: &Definitions,
-) -> Result<(Composition, Prepared), Error> {
+    existing_requirements: &RequiredServices,
+) -> Result<(Composition, Prepared, RequiredServices), Error> {
     let mut definitions = builtins.clone();
+    let mut requirements: BTreeMap<_, _> = builtins
+        .iter()
+        .map(|(id, definition)| (id.clone(), Some(definition.inject.clone())))
+        .collect();
     let mut layers = builtin_layers.clone();
     for (id, package) in packages {
         if builtins.contains_key(id) {
@@ -46,21 +53,30 @@ pub(super) fn prepare(
             .get(id)
             .filter(|definition| definition.revision == package.digest())
         {
-            Some(definition) => definition.clone(),
+            Some(definition) => {
+                requirements.insert(id.clone(), existing_requirements.get(id).cloned().flatten());
+                definition.clone()
+            }
             None => match loader.definition(package) {
-                Ok(definition) => definition,
-                Err(error) => Arc::new(Definition {
-                    id: id.clone(),
-                    revision: package.digest().into(),
-                    inject: Vec::new(),
-                    dependencies: package
-                        .manifest()
-                        .dependencies
-                        .iter()
-                        .map(|dependency| dependency.id.clone())
-                        .collect(),
-                    plugin: Arc::new(Unavailable(error.to_string())),
-                }),
+                Ok(definition) => {
+                    requirements.insert(id.clone(), Some(definition.inject.clone()));
+                    definition
+                }
+                Err(error) => {
+                    requirements.insert(id.clone(), None);
+                    Arc::new(Definition {
+                        id: id.clone(),
+                        revision: package.digest().into(),
+                        inject: Vec::new(),
+                        dependencies: package
+                            .manifest()
+                            .dependencies
+                            .iter()
+                            .map(|dependency| dependency.id.clone())
+                            .collect(),
+                        plugin: Arc::new(Unavailable(error.to_string())),
+                    })
+                }
             },
         };
         if definition.id != *id || definition.revision != package.digest() {
@@ -89,7 +105,7 @@ pub(super) fn prepare(
     }
     let desired = ledger.project(&layers)?;
     let prepared = Prepared::recover(&desired, definitions)?;
-    Ok((desired, prepared))
+    Ok((desired, prepared, requirements))
 }
 
 /// A stored but incompatible package is a failed Entry, not a failed Host.

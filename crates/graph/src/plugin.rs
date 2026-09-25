@@ -146,7 +146,7 @@ impl Plugin for Builtin {
                 staged
                     .insert(
                         id,
-                        SessionBehavior(Arc::new(session::GraphBehavior {
+                        SessionBehavior::new(Arc::new(session::GraphBehavior {
                             manager: manager.clone(),
                             mode,
                         })),

@@ -32,6 +32,18 @@ import {
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
+  test('preserves manager input availability and rejects unknown policy values', () => {
+    for (const nativeInput of ['ordinary', 'managed_native', 'managed_unavailable'] as const) {
+      const catalog = projection({ nativeInput });
+      assert.deepEqual(decodeSessionCatalogProjection(catalog), catalog);
+    }
+    for (const nativeInput of [null, true, 'unrestricted']) {
+      assert.throws(
+        () => decodeSessionCatalogProjection({ ...projection(), nativeInput }),
+        RuntimeHostProtocolError,
+      );
+    }
+  });
   test('publishes canonical catalog activity without the redundant last-used timestamp', () => {
     const catalog = projection();
 

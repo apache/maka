@@ -18,7 +18,10 @@
  */
 
 use maka_runtime::artifact::content_digest;
-use maka_skills::publication::{Error, Publisher, Tree};
+use maka_skills::publication::{
+    Error, Publisher, Tree,
+    receipt::{Destination, Operation, Outcome, Record},
+};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 use tokio_util::sync::CancellationToken;
@@ -48,8 +51,22 @@ async fn publication_replaces_complete_directories_preserves_resources_and_rejec
     );
     let cancellation = CancellationToken::new();
     let original = tree("old instructions");
+    let operation = Operation {
+        id: uuid::Uuid::new_v4(),
+        fingerprint: content_digest(b"install review"),
+        binding: content_digest(b"original view"),
+    };
+    let destination = Destination::Skill {
+        reference: "workspace:legacy:review".into(),
+    };
     publisher
-        .publish("review", None, Some(&original), &cancellation)
+        .publish_operation(
+            "review",
+            None,
+            Some(&original),
+            Some((&operation, destination.clone())),
+            &cancellation,
+        )
         .await
         .unwrap();
     let captured = publisher
@@ -136,6 +153,30 @@ async fn publication_replaces_complete_directories_preserves_resources_and_rejec
             .unwrap()
             .is_none()
     );
+    // Replaying the exact accepted operation cannot reinstall a subsequently deleted result.
+    publisher
+        .publish_operation(
+            "review",
+            None,
+            Some(&original),
+            Some((&operation, destination.clone())),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    assert!(!root.path().join("skills/review").exists());
+    assert_eq!(
+        publisher.reserve(&operation).await.unwrap(),
+        Some(Outcome::Applied { destination })
+    );
+    let changed = Operation {
+        fingerprint: content_digest(b"different request"),
+        ..operation
+    };
+    assert!(matches!(
+        publisher.reserve(&changed).await,
+        Err(Error::Invalid(_))
+    ));
     publisher.recover().await.unwrap();
     assert_eq!(
         std::fs::read_dir(root.path().join("transactions"))
@@ -177,10 +218,12 @@ fn write_tree(path: &Path, body: &str) {
 async fn recovery_finishes_each_publication_cut_and_preserves_edits_after_commit() {
     for cut in [
         "intent",
+        "mismatched_operation",
         "old_moved",
         "published",
         "committed",
         "conflict",
+        "conflict_recorded",
         "lost_intent",
     ] {
         let root = tempfile::tempdir().unwrap();
@@ -189,8 +232,18 @@ async fn recovery_finishes_each_publication_cut_and_preserves_edits_after_commit
         let publisher = Publisher::open(&data, &CancellationToken::new()).unwrap();
         let target = root.path().join("skills/review");
         write_tree(&target, "old");
+        let operation = Operation {
+            id: uuid::Uuid::new_v4(),
+            fingerprint: content_digest(b"update review"),
+            binding: content_digest(b"reviewed view"),
+        };
+        let destination = Destination::Skill {
+            reference: "workspace:legacy:review".into(),
+        };
+        assert!(publisher.reserve(&operation).await.unwrap().is_none());
         let intent = serde_json::to_vec(&json!({
-            "schema":1,"id":"review","expected":manifest("old"),"next":manifest("new")
+            "schema":1,"id":"review","expected":manifest("old"),"next":manifest("new"),
+            "operation":{"operation":operation,"destination":destination}
         }))
         .unwrap();
         let hash = content_digest(&intent);
@@ -207,6 +260,12 @@ async fn recovery_finishes_each_publication_cut_and_preserves_edits_after_commit
         if cut == "lost_intent" {
             std::fs::remove_file(transaction.join("intent.json")).unwrap();
             assert!(publisher.recover().await.is_err());
+            assert!(
+                !root
+                    .path()
+                    .join(format!("receipts/{}.json", operation.id))
+                    .exists()
+            );
             assert_eq!(
                 std::fs::read(transaction.join("old/SKILL.md")).unwrap(),
                 b"old"
@@ -219,10 +278,60 @@ async fn recovery_finishes_each_publication_cut_and_preserves_edits_after_commit
         } else if cut == "conflict" {
             std::fs::write(target.join("SKILL.md"), "edit before takeover").unwrap();
         }
+        if cut == "mismatched_operation" {
+            let mismatched = Operation {
+                fingerprint: content_digest(b"another accepted input"),
+                ..operation.clone()
+            };
+            assert!(matches!(
+                publisher
+                    .publish_operation(
+                        "review",
+                        Some(&tree("old")),
+                        Some(&tree("new")),
+                        Some((&mismatched, destination.clone())),
+                        &CancellationToken::new()
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            assert_eq!(
+                std::fs::read(target.join("SKILL.md")).unwrap(),
+                b"old",
+                "mismatched request must not recover another pending operation"
+            );
+            assert!(transaction.join("next").is_dir());
+            assert!(
+                !root
+                    .path()
+                    .join(format!("receipts/{}.json", operation.id))
+                    .exists()
+            );
+        }
+        if cut == "conflict_recorded" {
+            publisher
+                .complete(&operation, Outcome::Conflict)
+                .await
+                .unwrap();
+        }
         publisher.recover().await.unwrap();
+        let receipt: Record = serde_json::from_slice(
+            &std::fs::read(root.path().join(format!("receipts/{}.json", operation.id))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt.operation, operation);
+        assert_eq!(
+            receipt.outcome,
+            if matches!(cut, "conflict" | "conflict_recorded") {
+                Outcome::Conflict
+            } else {
+                Outcome::Applied { destination }
+            }
+        );
         let expected = match cut {
             "committed" => "edit after commit",
             "conflict" => "edit before takeover",
+            "conflict_recorded" => "old",
             _ => "new",
         };
         assert_eq!(

@@ -24,15 +24,35 @@ impl Platform {
     pub(crate) async fn publish_catalog_changes(
         self,
         changes: tokio::sync::broadcast::Sender<serde_json::Value>,
+        sessions: std::sync::Arc<crate::server::CatalogFeed>,
         shutdown: tokio_util::sync::CancellationToken,
     ) {
         let mut catalog = self.catalog.subscribe();
         let mut platform = self.subscribe();
         let mut previous = None;
+        let mut behaviors = None;
         let mut provider_revision = None;
         let mut terminal = None;
         let mut terminal_revision = 0u64;
+        let mut previous_platform = None;
+        let mut platform_revision = 0u64;
         loop {
+            // Consume the notification before taking snapshots so a concurrent
+            // publication stays unread and triggers another pass.
+            let revision = *catalog.borrow_and_update();
+            let snapshot = platform.borrow_and_update().clone();
+            if previous_platform
+                .as_ref()
+                .is_some_and(|previous| !std::sync::Arc::ptr_eq(previous, &snapshot))
+            {
+                if platform_revision == 9_007_199_254_740_991 {
+                    shutdown.cancel();
+                    break;
+                }
+                platform_revision += 1;
+                let _ = changes.send(serde_json::json!({"kind":"plugin.platform.changed","revision":platform_revision}));
+            }
+            previous_platform = Some(snapshot);
             // Shells list terminal views; any change to the set, a new
             // registration of one, or its descriptor makes them list again.
             let views = self.terminal_views();
@@ -41,7 +61,24 @@ impl Platform {
                 let _ = changes.send(serde_json::json!({"kind":"plugin.terminal.changed","revision":terminal_revision}));
             }
             terminal = Some(views);
-            let revision = *catalog.borrow_and_update();
+            // Managed native input depends on exact effective registrations,
+            // including Session-scoped shadows and retirements.
+            let mut current_behaviors: Vec<_> = self
+                .catalog
+                .all::<maka_plugins::session::SessionBehavior>()
+                .into_iter()
+                .map(|entry| entry.registration_id())
+                .collect();
+            current_behaviors.sort();
+            if behaviors
+                .as_ref()
+                .is_some_and(|previous| previous != &current_behaviors)
+                && sessions.publish_all().await.is_err()
+            {
+                shutdown.cancel();
+                break;
+            }
+            behaviors = Some(current_behaviors);
             if provider_revision != Some(revision) {
                 let _ = changes.send(serde_json::json!({"kind":"model.provider.catalog.changed","revision":revision}));
                 provider_revision = Some(revision);

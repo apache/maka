@@ -73,7 +73,7 @@ impl Plugin for Builtin {
         Box::pin(async move {
             let mut staged = Staged::default();
             staged
-                .insert("default", SessionBehavior(assistant.clone()))
+                .insert("default", SessionBehavior::new(assistant.clone()))
                 .map_err(|e| e.to_string())?;
             staged
                 .insert(

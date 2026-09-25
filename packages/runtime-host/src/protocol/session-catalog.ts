@@ -114,6 +114,7 @@ const PROJECTION_REQUIRED_FIELDS = [
 ] as const;
 const PROJECTION_FIELDS = [
   ...PROJECTION_REQUIRED_FIELDS,
+  'nativeInput',
   'lastMessageAt',
   'lastMessagePreview',
   'blockedReason',
@@ -221,6 +222,8 @@ export interface SessionCatalogLiveRunState {
 }
 
 export interface SessionCatalogProjection {
+  /** Current manager delegation; it does not grant manager configuration rights. */
+  readonly nativeInput?: 'ordinary' | 'managed_native' | 'managed_unavailable';
   readonly id: string;
   readonly revision: number;
   readonly workspace: WorkspaceProjection;
@@ -775,7 +778,18 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
   if (PROJECTION_REQUIRED_FIELDS.some((field) => !Object.hasOwn(record, field))) {
     throw invalidProtocolFrame('Invalid Session catalog projection fields');
   }
+  if (
+    record.nativeInput !== undefined &&
+    !['ordinary', 'managed_native', 'managed_unavailable'].includes(record.nativeInput as string)
+  ) {
+    throw invalidProtocolFrame('Invalid Session native input availability');
+  }
   const projection: SessionCatalogProjection = {
+    ...(record.nativeInput === undefined
+      ? {}
+      : {
+          nativeInput: record.nativeInput as NonNullable<SessionCatalogProjection['nativeInput']>,
+        }),
     id: requireEntityId(record.id, 'Session id'),
     revision: positiveRevision(record.revision, 'Session revision'),
     workspace: decodeWorkspaceProjection(record.workspace),

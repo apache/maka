@@ -102,6 +102,12 @@ impl Executions {
     }
 }
 impl PreparedMessageInput {
+    pub(in crate::execution) fn environment(
+        &self,
+    ) -> Option<&crate::execution::prepare::Environment> {
+        self.environment.as_ref()
+    }
+
     pub(crate) async fn commit(
         mut self,
         executions: &Executions,

@@ -328,11 +328,11 @@ impl Host {
         )
         .await?;
         let plugin_tasks = TaskTracker::new();
-        plugin_tasks.spawn(
-            plugins
-                .clone()
-                .publish_catalog_changes(changes.clone(), draining.clone()),
-        );
+        plugin_tasks.spawn(plugins.clone().publish_catalog_changes(
+            changes.clone(),
+            session_catalog.clone(),
+            draining.clone(),
+        ));
         let plugin_failure = draining.clone();
         plugin_tasks.spawn(async move {
             if let Err(error) = plugin_owner.await {

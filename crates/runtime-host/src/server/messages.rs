@@ -32,6 +32,7 @@ pub(super) use maka_protocol::message::{ERRORS, supports};
 pub(super) async fn execute(
     host: &Host,
     connection_id: uuid::Uuid,
+    principal: maka_config::plugin_authorization::Principal,
     operation: Operation,
     value: &Value,
 ) -> Result<Outcome, HostError> {
@@ -44,7 +45,13 @@ pub(super) async fn execute(
             .map(|result| Output::Interrupt(Box::new(result))),
         Input::Submit(input) => host
             .executions
-            .submit(*input, connection_id, host.root_id(), &host.epoch)
+            .submit(
+                *input,
+                connection_id,
+                host.root_id(),
+                &host.epoch,
+                &principal,
+            )
             .await
             .map(Output::Submit),
         Input::ExecutionQuery(input) => host

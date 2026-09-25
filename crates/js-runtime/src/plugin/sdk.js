@@ -1164,7 +1164,13 @@
             }),
         }),
         behaviors: Object.freeze({
-          register: (name, prepare) => register('behavior', { name }, prepare),
+          register: (name, prepare, options = {}) => {
+            const nativeInput = options.nativeInput ?? 'denied';
+            if (nativeInput !== 'denied' && nativeInput !== 'native_user_messages') {
+              throw new TypeError('Invalid native input policy');
+            }
+            return register('behavior', { name, nativeInput }, prepare);
+          },
         }),
         background: Object.freeze({
           pending: async (name, wake) => {

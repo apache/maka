@@ -47,6 +47,8 @@ pub(super) enum Registration {
     Behavior {
         name: String,
         callback: u32,
+        #[serde(default, rename = "nativeInput")]
+        native_input: maka_plugins::session::NativeInputPolicy,
     },
     InputPreparation {
         name: String,
@@ -218,18 +220,25 @@ pub(super) fn stage_entries(
                     )
                     .map_err(super::message)?;
             }
-            Registration::Behavior { name, callback } => {
+            Registration::Behavior {
+                name,
+                callback,
+                native_input,
+            } => {
                 validate_callback(callback)?;
                 staged
                     .insert(
                         name,
-                        maka_plugins::session::SessionBehavior(Arc::new(callbacks::Behavior {
-                            callback: Arc::new(callbacks::Callback {
-                                module: module.clone(),
-                                id: callback,
-                                calls: calls.clone(),
-                            }),
-                        })),
+                        maka_plugins::session::SessionBehavior::new(Arc::new(
+                            callbacks::Behavior {
+                                callback: Arc::new(callbacks::Callback {
+                                    module: module.clone(),
+                                    id: callback,
+                                    calls: calls.clone(),
+                                }),
+                            },
+                        ))
+                        .with_native_input(native_input),
                     )
                     .map_err(super::message)?;
             }

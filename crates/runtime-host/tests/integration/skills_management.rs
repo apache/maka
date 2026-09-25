@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod terminal;
+
 use super::{
     skills_plugin::{converged, disabled},
     support::{client_probe::ClientFixture, peer::Peer},
@@ -178,14 +180,25 @@ async fn discovery_locations(peer: &mut Peer, workspace: &std::path::Path) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_publication_and_confirmed_update_work_through_host_without_a_model() {
     let fixture = ClientFixture::new("maka-skill-management-");
+    // Browsing never executes a model; this unreachable fixture target only gives
+    // the real Session its normal model configuration.
+    let model = super::support::message_recovery::configure(&fixture, "http://127.0.0.1:1").await;
+    let mut terminal = terminal::History::default();
+    terminal::credential(&fixture).await;
     let home = fixture.workspace.parent().unwrap().join("home");
     let source = home.join(".maka/skill-sources/review");
     std::fs::create_dir_all(&home).unwrap();
     let original = document("Original");
     let updated = document("Updated");
     let local = document("Local edit");
-    let import_file = fixture.workspace.join("review.md");
+    let import_file = fixture.workspace.join("import-source/review.md");
+    std::fs::create_dir_all(import_file.parent().unwrap()).unwrap();
     std::fs::write(&import_file, &original).unwrap();
+    std::fs::write(
+        import_file.parent().unwrap().join("sibling.txt"),
+        b"not imported",
+    )
+    .unwrap();
     for (base, id) in [(".maka", "user-review"), (".agents", "agent-review")] {
         let directory = home.join(base).join("skills").join(id);
         std::fs::create_dir_all(&directory).unwrap();
@@ -216,15 +229,28 @@ async fn skill_publication_and_confirmed_update_work_through_host_without_a_mode
         ));
         let stop = CancellationToken::new();
         let cleanup = stop.clone().drop_guard();
+        let websocket = maka_runtime_host::server::websocket::WebSocketListener::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let address = websocket.local_addr().unwrap();
         let server = tokio::spawn(
             LocalListener::bind(&endpoint)
                 .unwrap()
-                .serve(host.clone(), stop),
+                .serve_with_websocket(websocket, host.clone(), stop),
         );
         let mut peer = Peer::new(host, "management").await;
         converged(&mut peer).await;
         if reopened {
             disabled(&mut peer, false).await;
+        } else {
+            let created = peer.rpc("session.create", json!({
+                "sessionId":"skill-library", "workspace":{"kind":"host_path","path":fixture.workspace},
+                "modelTarget":{"kind":"explicit","connectionId":model.connection_id,"connectionSlug":model.connection_slug,"model":model.model}
+            })).await;
+            assert_eq!(created["ok"], true, "{created}");
         }
         let namespace = std::fs::read_dir(root.join("plugin-data"))
             .unwrap()
@@ -255,20 +281,11 @@ async fn skill_publication_and_confirmed_update_work_through_host_without_a_mode
         }
         if !reopened {
             discovery_locations(&mut peer, &fixture.workspace).await;
-            approved = approve_user(&mut peer).await;
+            approved = terminal
+                .import(&mut peer, &import_file, &source, &namespace, &original)
+                .await;
             let grant = approved.clone();
-            let imported = super::skills_plugin::client::request(
-                &mut peer,
-                "import-source",
-                json!({"sourcePath":import_file,"grant":grant}),
-            )
-            .await;
-            assert_eq!(imported["kind"], "imported", "{imported}");
-            assert_eq!(imported["source"]["id"], "review");
-            assert_eq!(
-                std::fs::read(source.join("SKILL.md")).unwrap(),
-                original.as_bytes()
-            );
+            terminal.restricted(address, &mut peer, &source).await;
             let duplicate = super::skills_plugin::client::request(
                 &mut peer,
                 "import-source",
@@ -340,20 +357,7 @@ async fn skill_publication_and_confirmed_update_work_through_host_without_a_mode
             let again = mutate(&mut peer, &context, json!({"kind":"create_starter"})).await;
             assert_eq!(again["kind"], "unchanged", "{again}");
             assert_eq!(again["entry"]["ref"], starter["entry"]["ref"]);
-            let result = mutate(
-                &mut peer,
-                &context,
-                json!({"kind":"install","sourceType":"managed","sourceId":"review"}),
-            )
-            .await;
-            assert_eq!(
-                result["entry"]["managedUpdateStatus"], "up_to_date",
-                "{result}"
-            );
-            assert_eq!(
-                std::fs::read(installed.join("SKILL.md")).unwrap(),
-                original.as_bytes()
-            );
+            terminal.install(&mut peer, &installed, &original).await;
             std::fs::write(installed.join("notes.txt"), "keep my resource").unwrap();
             std::fs::write(installed.join("SKILL.md"), &local).unwrap();
             std::fs::write(source.join("SKILL.md"), &updated).unwrap();
@@ -367,58 +371,9 @@ async fn skill_publication_and_confirmed_update_work_through_host_without_a_mode
             )
             .await;
             assert_eq!(auto["reason"], "local_modified", "{auto}");
-            let basis = catalog(&mut peer, &context, "governance").await;
-            let preview = super::skills_plugin::client::workspace(&mut peer, &context["workspace"]["path"], json!({
-                "kind":"preview","expectedRevision":basis["revision"],"ref":"workspace:legacy:review"
-            })).await;
-            assert_eq!(
-                preview["expectedCurrentSha256"],
-                content_digest(local.as_bytes()),
-                "{preview}"
-            );
-            assert_eq!(
-                preview["expectedSourceSha256"],
-                content_digest(updated.as_bytes()),
-                "{preview}"
-            );
-            let stale = mutate(
-                &mut peer,
-                &context,
-                json!({
-                    "kind":"update_managed","ref":"workspace:legacy:review","force":true,
-                    "expectedCurrentSha256":content_digest(original.as_bytes()),
-                    "expectedSourceSha256":preview["expectedSourceSha256"]
-                }),
-            )
-            .await;
-            assert_eq!(stale["reason"], "source_changed", "{stale}");
-            let changed = mutate(
-                &mut peer,
-                &context,
-                json!({
-                    "kind":"update_managed","ref":"workspace:legacy:review","force":true,
-                    "expectedCurrentSha256":preview["expectedCurrentSha256"],
-                    "expectedSourceSha256":preview["expectedSourceSha256"]
-                }),
-            )
-            .await;
-            assert_eq!(changed["kind"], "committed", "{changed}");
-            assert_eq!(
-                changed["entry"]["managedUpdateStatus"], "up_to_date",
-                "{changed}"
-            );
-            assert_eq!(
-                std::fs::read(installed.join("SKILL.md")).unwrap(),
-                updated.as_bytes()
-            );
-            assert_eq!(
-                std::fs::read(installed.join(".maka/baseline/SKILL.md")).unwrap(),
-                updated.as_bytes()
-            );
-            assert_eq!(
-                std::fs::read(installed.join("notes.txt")).unwrap(),
-                b"keep my resource"
-            );
+            terminal
+                .update(&mut peer, &source, &installed, &updated, &local)
+                .await;
         } else {
             let page = catalog(&mut peer, &context, "governance").await;
             let review = page["items"]
@@ -428,21 +383,23 @@ async fn skill_publication_and_confirmed_update_work_through_host_without_a_mode
                 .find(|item| item["ref"] == "workspace:legacy:review")
                 .unwrap();
             assert_eq!(review["managedUpdateStatus"], "up_to_date");
-            let removed = mutate(
-                &mut peer,
-                &context,
-                json!({"kind":"delete","ref":"workspace:legacy:review"}),
-            )
-            .await;
-            assert_eq!(removed["kind"], "committed", "{removed}");
-            assert!(removed["entry"].is_null());
-            assert!(!installed.exists());
+            terminal.delete(&mut peer, &installed, &source).await;
+            terminal.recover(&mut peer, &approved).await;
             assert!(
-                source.join("SKILL.md").exists(),
-                "uninstall cannot delete the source library"
+                !installed.exists(),
+                "original install receipt never reinstalls a deleted skill"
             );
         }
         assert!(!root.join("skill-transactions").exists());
+        assert!(
+            !fixture.workspace.join(".maka/skills").exists(),
+            "installation is profile-private"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&import_file).unwrap(),
+            original,
+            "managed updates do not synchronize the import file"
+        );
         for journal in [
             ".maka/.skills-publication",
             ".agents/.skills-publication",

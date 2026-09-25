@@ -82,7 +82,12 @@ async fn unsolicited_frames_and_reversed_responses_reach_their_consumers() {
     });
     let a = reader.read().await.unwrap().unwrap();
     let b = reader.read().await.unwrap().unwrap();
-    for kind in ["configuration.changed", "model.provider.catalog.changed"] {
+    let kinds = [
+        "configuration.changed",
+        "model.provider.catalog.changed",
+        "plugin.platform.changed",
+    ];
+    for kind in kinds {
         writer
             .write(&json!({"kind":kind,"revision":5}))
             .await
@@ -92,7 +97,7 @@ async fn unsolicited_frames_and_reversed_responses_reach_their_consumers() {
     writer.write(&reply(&a)).await.unwrap();
     assert_eq!(first.await.unwrap().unwrap(), json!({}));
     assert_eq!(second.await.unwrap().unwrap(), json!({}));
-    for kind in ["configuration.changed", "model.provider.catalog.changed"] {
+    for kind in kinds {
         let maka_client::Notification::Catalog(notice) = notifications.recv().await.unwrap() else {
             panic!("expected catalog invalidation");
         };

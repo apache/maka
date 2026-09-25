@@ -55,21 +55,45 @@ pub struct Apply {
     pub operations: Vec<CompositionOperation>,
 }
 
+/// Preconditions captured together from a platform snapshot. `None` requires
+/// that no external package with this identity is installed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackagePrecondition {
+    pub base_generation: u64,
+    pub content_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageInstall {
+    pub source_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<PackagePrecondition>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageTarget {
+    pub extension_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<PackagePrecondition>,
+}
+
 pub enum Input {
     Authorization(Box<super::AuthorizationInput>),
     Remote(Box<super::RemoteRequest>),
     Client(super::ClientQuery),
     Query(Query),
     Apply(Apply),
-    Install {
+    Preview {
         source_path: String,
     },
-    Uninstall {
-        extension_id: String,
-    },
-    Reload {
-        extension_id: String,
-    },
+    Install(PackageInstall),
+    Uninstall(PackageTarget),
+    Reload(PackageTarget),
     Export {
         extension_id: String,
         target_path: String,
@@ -156,20 +180,31 @@ pub fn decode_input(operation: Operation, value: &Value) -> Result<Input> {
             }
             Input::Apply(apply)
         }
-        Operation::PluginPackageInstall => {
+        Operation::PluginPackagePreview => {
             codec::exact(row, &["sourcePath"])?;
-            Input::Install {
+            Input::Preview {
                 source_path: codec::string(&value["sourcePath"], "package source path", 4096)?,
             }
         }
+        Operation::PluginPackageInstall => {
+            codec::shaped(row, &["sourcePath"], &["sourceDigest", "expected"])?;
+            codec::string(&value["sourcePath"], "package source path", 4096)?;
+            if let Some(digest) = row.get("sourceDigest") {
+                validate_digest(digest)?;
+            }
+            validate_expected(row.get("expected"))?;
+            Input::Install(decode(value.clone())?)
+        }
         Operation::PluginPackageUninstall | Operation::PluginPackageReload => {
-            codec::exact(row, &["extensionId"])?;
+            codec::shaped(row, &["extensionId"], &["expected"])?;
             let extension_id = codec::string(&value["extensionId"], "package identity", 128)?;
             maka_plugins::identifier(&extension_id).map_err(|error| invalid(error.to_string()))?;
+            validate_expected(row.get("expected"))?;
+            let target = decode(value.clone())?;
             if operation == Operation::PluginPackageReload {
-                Input::Reload { extension_id }
+                Input::Reload(target)
             } else {
-                Input::Uninstall { extension_id }
+                Input::Uninstall(target)
             }
         }
         Operation::PluginPackageExport => {
@@ -187,6 +222,31 @@ pub fn decode_input(operation: Operation, value: &Value) -> Result<Input> {
         }
         _ => return Err(invalid("not a plugin operation")),
     })
+}
+
+pub(super) fn validate_digest(value: &Value) -> Result<()> {
+    let digest = codec::string(value, "package digest", 71)?;
+    if !digest.strip_prefix("sha256-").is_some_and(|hash| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    }) {
+        return Err(invalid("invalid package content digest"));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_expected(value: Option<&Value>) -> Result<()> {
+    if let Some(value) = value {
+        let row = codec::record(value, "package precondition")?;
+        codec::exact(row, &["baseGeneration", "contentDigest"])?;
+        codec::count(&value["baseGeneration"], "composition generation")?;
+        if !value["contentDigest"].is_null() {
+            validate_digest(&value["contentDigest"])?;
+        }
+    }
+    Ok(())
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {

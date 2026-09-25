@@ -242,6 +242,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Route::Workspace => crate::pages::home::draw(frame, app, page, nav_width > 0),
         Route::Session(id) => session::draw(frame, app, page, &id),
         Route::Settings => crate::pages::settings::draw(frame, app, page),
+        Route::Plugins(_) => crate::pages::plugins::draw(frame, app, page),
     }
     crate::files::resolve_hits(app);
     let focused = match app.focus {
@@ -279,6 +280,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .hint(app.focus == Focus::Navigation)
         .or_else(|| match app.navigation.current() {
             Route::Settings => app.settings.surface.hint(app.focus == Focus::Page),
+            Route::Plugins(_) => app.plugins.surface.hint(app.focus == Focus::Page),
             Route::Workspace => app.home.surface.hint(app.focus == Focus::Page),
             Route::Connections => app.connections.surface.hint(app.focus == Focus::List),
             Route::Projects => app.projects.surface.hint(app.focus == Focus::List),
@@ -415,6 +417,7 @@ fn draw_tooltip(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
     // Kernel surfaces drawn underneath lose pointer targets the tooltip covers.
     app.sidebar.surface.occlude(popup);
     app.settings.surface.occlude(popup);
+    app.plugins.surface.occlude(popup);
     app.home.surface.occlude(popup);
     if let Some(surface) = app.apps_surface() {
         surface.occlude(popup);
@@ -450,6 +453,7 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         Action::Visit(Route::Workspace | Route::Session(_)) => ("▤", "W"),
         Action::Host => ("◉", "H"),
         Action::Visit(Route::Settings) => ("⛭", "S"),
+        Action::Visit(Route::Plugins(_)) | Action::Plugins(_) => ("◇", "P"),
         Action::Help | Action::CloseHelp => ("?", "?"),
         Action::Visit(Route::Projects) => ("▦", "P"),
         Action::Visit(Route::Extensions) => ("◇", "E"),
@@ -730,6 +734,7 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::ToggleSymbols => "command-symbols",
         Action::ToggleMotion => "command-motion",
         Action::Settings(_) => "route-settings",
+        Action::Plugins(_) => "route-plugins",
         Action::Sidebar(_) | Action::Home(_) => "route-workspace",
         Action::Quit => "footer-quit",
         Action::Detach => "command-detach",

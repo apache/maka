@@ -96,6 +96,16 @@ pub struct Exported {
     pub target_path: String,
 }
 
+/// Read-only source metadata. `package.content_digest` pins the exact bytes
+/// reviewed; it must be sent as `PackageInstall.source_digest` when installing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackagePreview {
+    pub source_path: String,
+    pub package: PackageProjection,
+    pub expected: super::PackagePrecondition,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Page<T> {
@@ -183,6 +193,16 @@ pub fn decode_output(operation: Operation, value: &Value) -> Result<Value> {
             };
             if count > 64 {
                 return Err(ProtocolError::invalid("plugin page exceeds 64 items"));
+            }
+        }
+        Operation::PluginPackagePreview => {
+            let preview: PackagePreview = decode(value)?;
+            super::input::validate_digest(&value["package"]["contentDigest"])?;
+            super::input::validate_expected(Some(&value["expected"]))?;
+            maka_plugins::identifier(&preview.package.extension_id)
+                .map_err(|error| ProtocolError::invalid(error.to_string()))?;
+            if preview.package.base_generation != preview.expected.base_generation {
+                return Err(ProtocolError::invalid("inconsistent preview generation"));
             }
         }
         Operation::PluginPackageInstall => {

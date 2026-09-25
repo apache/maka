@@ -32,6 +32,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod library;
+
 const WINDOW: usize = 8;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -59,7 +61,8 @@ pub(super) fn publish(skills: &Skills, staged: &mut Staged) -> Result<(), String
         .map_err(|e| e.to_string())?;
     staged
         .insert(key(ID, "terminal").map_err(|e| e.to_string())?, endpoint)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    library::publish(skills, staged)
 }
 fn title() -> Text {
     Text::localized("Skills", "技能", "技能")

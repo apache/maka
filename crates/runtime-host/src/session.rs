@@ -400,6 +400,7 @@ pub fn metadata_projection(
         }
     };
     SessionCatalogProjection {
+        native_input: NativeInputAvailability::Ordinary,
         id: record.id,
         revision: record.revision,
         workspace: config.workspace,

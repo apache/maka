@@ -74,6 +74,29 @@ impl Submission {
     }
 }
 impl App {
+    /// Catalog facts describe the manager's current input policy, never a grant.
+    pub(crate) fn native_input(
+        &self,
+        session: &str,
+    ) -> maka_protocol::session::NativeInputAvailability {
+        if let crate::pages::sessions::Detail::Ready(item) = &self.sessions.detail
+            && item.id == session
+        {
+            return item.native_input;
+        }
+        self.sessions
+            .items
+            .iter()
+            .chain(&self.inbox.items)
+            .find(|item| item.id == session)
+            .map(|item| item.native_input)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn session_is_managed(&self, session: &str) -> bool {
+        self.native_input(session) != maka_protocol::session::NativeInputAvailability::Ordinary
+    }
+
     pub fn abandon_checkpoint(&mut self, request: &Submission) {
         if let Some(sent) = self.sending.get_mut(&request.session)
             && sent.request == *request
@@ -122,6 +145,11 @@ impl App {
         let crate::navigation::Route::Session(session) = self.navigation.current() else {
             return None;
         };
+        if self.native_input(&session)
+            == maka_protocol::session::NativeInputAvailability::ManagedUnavailable
+        {
+            return None;
+        }
         if self
             .sending
             .get(&session)
@@ -316,6 +344,55 @@ mod tests {
         i18n::{I18n, Locale, LocalePreference},
         navigation::Route,
     };
+    #[test]
+    fn managed_input_policy_preserves_drafts_and_original_recovery_without_manager_controls() {
+        use crate::app::Focus;
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use maka_protocol::session::NativeInputAvailability;
+        for locale in Locale::ALL {
+            let mut app = App::new(
+                "/unused".into(),
+                I18n::new(LocalePreference::Explicit(locale), locale),
+            );
+            app.connection = ConnectionState::Connected {
+                root_id: "root".into(),
+                epoch: "epoch".into(),
+            };
+            app.apply(Action::Visit(Route::Session("managed".into())));
+            let mut item: maka_protocol::session::SessionCatalogProjection = serde_json::from_value(serde_json::json!({
+                "id":"managed","revision":1,"workspace":{"target":{"kind":"host_path","path":"/workspace"},"hostCwd":"/workspace"},
+                "createdAt":1,"activityAt":1,"name":"Managed","isFlagged":false,"isArchived":false,"labels":[],"labelsTruncated":false,
+                "hasUnread":false,"status":"active","backend":"ai-sdk","llmConnectionId":null,"llmConnectionSlug":"fixture","connectionLocked":false,
+                "model":"fixture","sandboxMode":"workspace-write","approvalPolicy":{"kind":"on-request"},"collaborationMode":"agent","orchestrationMode":"default",
+                "nativeInput":"managed_unavailable"
+            })).unwrap();
+            app.sessions.items.push(item.clone());
+            app.focus = Focus::Composer;
+            app.drafts.get_mut("managed").unwrap().insert("kept 中文🦀");
+            let enter = || Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(app.input(enter()).1.is_none());
+            assert!(app.submission().is_none());
+            assert!(app.management_commands().is_empty());
+            assert!(app.resume_commands().is_empty());
+            item.native_input = NativeInputAvailability::ManagedNative;
+            app.sessions.detail = crate::pages::sessions::Detail::Ready(Box::new(item.clone()));
+            assert_eq!(app.input(enter()).1, Some(Action::SendMessage));
+            assert!(
+                app.management_commands().is_empty(),
+                "input opt-in cannot enable configuration"
+            );
+            assert!(app.resume_commands().is_empty());
+            let original = app.submission().unwrap();
+            app.abandon_checkpoint(&original);
+            item.native_input = NativeInputAvailability::ManagedUnavailable;
+            app.sessions.detail = crate::pages::sessions::Detail::Ready(Box::new(item));
+            assert!(!app.enabled(&Action::SendMessage));
+            assert!(app.enabled(&Action::ReconcileSubmission));
+            assert!(app.enabled(&Action::RetrySubmission));
+            assert_eq!(app.retry_submission().unwrap(), original);
+            assert_eq!(app.drafts["managed"].text(), "kept 中文🦀");
+        }
+    }
     #[test]
     fn explicit_send_follows_tail_but_late_ack_does_not_interrupt_new_reading() {
         use ratatui::{Terminal, backend::TestBackend};

@@ -56,7 +56,34 @@ pub trait Behavior: Send + Sync {
     fn prepare(&self, request: Request) -> BoxFuture<'_, Result<Preparation, String>>;
 }
 
-pub struct SessionBehavior(pub Arc<dyn Behavior>);
+/// Explicit delegation of canonical native message admission to the Host.
+/// This is registration metadata; preparing a behavior cannot grant input access.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeInputPolicy {
+    #[default]
+    Denied,
+    NativeUserMessages,
+}
+
+pub struct SessionBehavior {
+    pub behavior: Arc<dyn Behavior>,
+    pub native_input: NativeInputPolicy,
+}
+
+impl SessionBehavior {
+    pub fn new(behavior: Arc<dyn Behavior>) -> Self {
+        Self {
+            behavior,
+            native_input: NativeInputPolicy::Denied,
+        }
+    }
+
+    pub fn with_native_input(mut self, policy: NativeInputPolicy) -> Self {
+        self.native_input = policy;
+        self
+    }
+}
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]

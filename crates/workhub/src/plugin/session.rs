@@ -48,7 +48,8 @@ pub(super) fn publish(staged: &mut Staged, manager: Arc<Manager>) -> Result<(), 
     staged
         .insert(
             manager.coordinator.behavior.as_str(),
-            SessionBehavior(manager.clone()),
+            SessionBehavior::new(manager.clone())
+                .with_native_input(maka_plugins::session::NativeInputPolicy::NativeUserMessages),
         )
         .map_err(error)?;
     staged

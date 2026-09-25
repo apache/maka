@@ -289,6 +289,8 @@ export interface BehaviorPreparation {
   } | null;
   toolCeiling?: readonly string[] | null;
 }
+/** Explicitly delegate canonical user messages for Sessions this behavior's owner manages. */
+export type NativeInputPolicy = 'denied' | 'native_user_messages';
 export interface HostContext {
   revision(): Promise<PreparationRevision>;
   /** Explicitly shared non-secret inputs, never ambient home or Host state access. */
@@ -308,6 +310,8 @@ export interface HostContext {
   readonly behaviors: {
     /** Preparation narrows capabilities; it never grants execution authority.
      * Close/re-register when the source changes to invalidate stale admissions.
+     * Native input is denied by default. Opt-in requires matching Session ownership
+     * and current caller authority; it does not grant configuration or manager commands.
      */
     register(
       name: string,
@@ -315,6 +319,7 @@ export interface HostContext {
         request: { readonly session: import('./execution.js').SessionConfiguration },
         call: { readonly signal: Cancellation },
       ) => Awaitable<BehaviorPreparation>,
+      options?: { readonly nativeInput?: NativeInputPolicy },
     ): Promise<Registration>;
   };
   readonly background: {

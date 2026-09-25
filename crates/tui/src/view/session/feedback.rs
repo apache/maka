@@ -46,6 +46,20 @@ fn items(app: &App) -> Vec<Feedback> {
             warning: true,
         });
     }
+    if app.native_input(&id) == maka_protocol::session::NativeInputAvailability::ManagedUnavailable
+        && !app.sending.get(&id).is_some_and(|sending| {
+            matches!(
+                sending.delivery,
+                Delivery::Pending | Delivery::Retrying | Delivery::Checking
+            )
+        })
+    {
+        items.push(Feedback {
+            key: "chat-managed-unavailable",
+            detail: None,
+            warning: false,
+        });
+    }
     if let Some(sent) = app.sending.get(&id) {
         let (key, detail, warning) = match &sent.delivery {
             Delivery::Pending | Delivery::Retrying => ("chat-sending", None, false),

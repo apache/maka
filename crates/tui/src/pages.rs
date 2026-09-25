@@ -27,6 +27,7 @@ pub mod home;
 pub mod interactions;
 pub mod manage;
 pub mod onboarding;
+pub mod plugins;
 pub mod projects;
 pub mod queue;
 pub mod recap;

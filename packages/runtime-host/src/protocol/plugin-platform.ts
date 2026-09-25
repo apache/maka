@@ -40,6 +40,21 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 
+/** Current package, composition or activation facts changed; query them again. */
+export interface PluginPlatformChangedFrame {
+  readonly kind: 'plugin.platform.changed';
+  readonly revision: number;
+}
+export function decodePluginPlatformChangedFrame(value: unknown): PluginPlatformChangedFrame {
+  const row = requireExactRecord(value, 'Plugin platform change', ['kind', 'revision']);
+  if (row.kind !== 'plugin.platform.changed')
+    throw invalidProtocolFrame('Invalid plugin platform change kind');
+  return {
+    kind: 'plugin.platform.changed',
+    revision: requireCount(row.revision, 'plugin platform revision'),
+  };
+}
+
 /** The set of terminal views changed; shells list them again. */
 export interface PluginTerminalChangedFrame {
   readonly kind: 'plugin.terminal.changed';
@@ -94,6 +109,7 @@ export interface PluginMutationReceipt {
 }
 
 export interface PluginPackageProjection {
+  readonly baseGeneration?: number;
   readonly extensionId: string;
   readonly contentDigest: string;
   readonly displayName: string;
@@ -101,6 +117,20 @@ export interface PluginPackageProjection {
   readonly dependencies: readonly string[];
   readonly structuralDependencies: readonly string[];
   readonly requiredBy: readonly string[];
+  readonly hasRuntime?: boolean;
+  readonly hasClient?: boolean;
+  readonly hasComposition?: boolean;
+}
+
+/** Native Host management facts, absent from older TypeScript platform inspections. */
+export interface PluginEntryProjection extends MakaCompositionEntryInspection {
+  readonly baseGeneration?: number;
+  readonly localDisabled?: boolean;
+  readonly inject?: MakaCompositionEntry['inject'];
+  readonly isolate?: MakaCompositionEntry['isolate'];
+  readonly intercept?: MakaCompositionEntry['intercept'];
+  readonly requiredServices?: readonly string[] | null;
+  readonly children: readonly PluginEntryProjection[];
 }
 
 export interface PluginPlatformQueryInput {
@@ -137,7 +167,7 @@ export type PluginPlatformQueryResult =
     }
   | {
       readonly view: 'entries';
-      readonly items: readonly MakaCompositionEntryInspection[];
+      readonly items: readonly PluginEntryProjection[];
       readonly nextCursor: string | null;
     }
   | {
@@ -526,7 +556,7 @@ function decodePackageProjection(value: unknown): PluginPackageProjection {
       'structuralDependencies',
       'requiredBy',
     ],
-    ['description'],
+    ['description', 'baseGeneration', 'hasRuntime', 'hasClient', 'hasComposition'],
   );
   if (
     !Array.isArray(item.dependencies) ||
@@ -536,6 +566,14 @@ function decodePackageProjection(value: unknown): PluginPackageProjection {
     throw invalidProtocolFrame('Invalid Plugin dependencies');
   }
   return {
+    ...(item.baseGeneration === undefined
+      ? {}
+      : { baseGeneration: requireCount(item.baseGeneration, 'Plugin composition generation') }),
+    ...(item.hasRuntime === undefined ? {} : { hasRuntime: requireBoolean(item.hasRuntime) }),
+    ...(item.hasClient === undefined ? {} : { hasClient: requireBoolean(item.hasClient) }),
+    ...(item.hasComposition === undefined
+      ? {}
+      : { hasComposition: requireBoolean(item.hasComposition) }),
     extensionId: requireId(item.extensionId, 'Plugin package identity'),
     contentDigest: requireDigest(item.contentDigest, 'Plugin package content digest'),
     displayName: requireString(item.displayName, 'Plugin display name', 512),
@@ -740,14 +778,26 @@ function decodeEntryPatch(value: unknown): Partial<Omit<MakaCompositionEntry, 'i
   };
 }
 
-function decodeInspections(value: unknown): readonly MakaCompositionEntryInspection[] {
+function decodeInspections(value: unknown): readonly PluginEntryProjection[] {
   if (!Array.isArray(value)) throw invalidProtocolFrame('Invalid Plugin Entry inspections');
   return value.map((item) => {
     const inspection = requireShapedRecord(
       item,
       'Plugin Entry inspection',
       ['id', 'rootId', 'disabled', 'status', 'waitingFor', 'effects', 'children'],
-      ['parentId', 'packageId', 'config', 'generation', 'diagnostic'],
+      [
+        'parentId',
+        'packageId',
+        'config',
+        'generation',
+        'diagnostic',
+        'baseGeneration',
+        'localDisabled',
+        'inject',
+        'isolate',
+        'intercept',
+        'requiredServices',
+      ],
     );
     const statuses = [
       'disabled',
@@ -764,7 +814,40 @@ function decodeInspections(value: unknown): readonly MakaCompositionEntryInspect
     if (!Array.isArray(inspection.waitingFor) || !Array.isArray(inspection.effects)) {
       throw invalidProtocolFrame('Invalid Plugin Entry inspection details');
     }
+    if (
+      inspection.requiredServices !== undefined &&
+      inspection.requiredServices !== null &&
+      !Array.isArray(inspection.requiredServices)
+    ) {
+      throw invalidProtocolFrame('Invalid Plugin required services');
+    }
     return {
+      ...(inspection.baseGeneration === undefined
+        ? {}
+        : {
+            baseGeneration: requireCount(
+              inspection.baseGeneration,
+              'Plugin composition generation',
+            ),
+          }),
+      ...(inspection.localDisabled === undefined
+        ? {}
+        : { localDisabled: requireBoolean(inspection.localDisabled) }),
+      ...(inspection.inject === undefined ? {} : { inject: decodeInject(inspection.inject) }),
+      ...(inspection.isolate === undefined ? {} : { isolate: decodeIsolate(inspection.isolate) }),
+      ...(inspection.intercept === undefined
+        ? {}
+        : { intercept: decodeJsonRecord(inspection.intercept, 'intercept') }),
+      ...(inspection.requiredServices === undefined
+        ? {}
+        : {
+            requiredServices:
+              inspection.requiredServices === null
+                ? null
+                : (inspection.requiredServices as unknown[]).map((name) =>
+                    requireId(name, 'Plugin required service'),
+                  ),
+          }),
       id: requireId(inspection.id, 'Plugin Entry identity'),
       rootId: decodeRootId(inspection.rootId),
       ...(inspection.parentId === undefined

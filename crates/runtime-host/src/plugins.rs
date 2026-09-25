@@ -108,15 +108,26 @@ pub enum Error {
 }
 
 pub enum Mutation {
-    Install(Package),
-    Uninstall(String),
+    Install {
+        package: Package,
+        expected: Option<maka_protocol::plugin::PackagePrecondition>,
+    },
+    Uninstall {
+        id: String,
+        expected: Option<maka_protocol::plugin::PackagePrecondition>,
+    },
     Apply {
         base_generation: Option<u64>,
         operations: Vec<Operation>,
     },
-    Reload(String),
+    Reload {
+        id: String,
+        expected: Option<maka_protocol::plugin::PackagePrecondition>,
+    },
     Reconcile,
 }
+
+type RequiredServices = BTreeMap<String, Option<Vec<String>>>;
 
 #[derive(Clone)]
 pub struct Snapshot {
@@ -124,6 +135,7 @@ pub struct Snapshot {
     pub ledger: Ledger,
     pub desired: Composition,
     pub packages: BTreeMap<String, Package>,
+    pub required_services: RequiredServices,
     pub runtime: Status,
     pub fence: Option<String>,
 }
@@ -157,6 +169,7 @@ struct Owner {
     ledger: Ledger,
     packages: BTreeMap<String, Package>,
     desired: Composition,
+    required_services: RequiredServices,
     kernel: Kernel,
     updates: watch::Sender<Arc<Snapshot>>,
     fence: Option<String>,
@@ -216,8 +229,9 @@ impl Platform {
                 &builtin_layers,
                 loader.as_ref(),
                 &Definitions::new(),
+                &BTreeMap::new(),
             )
-            .and_then(|(_, prepared)| kernel.validate_change(&prepared).map_err(Error::from));
+            .and_then(|(_, prepared, _)| kernel.validate_change(&prepared).map_err(Error::from));
             match validation {
                 Ok(()) => {
                     ledger = candidate;
@@ -236,13 +250,14 @@ impl Platform {
         if defaults_changed {
             ledger = log.commit_plugin_state(ledger, None).await?;
         }
-        let (desired, prepared) = authority::prepare(
+        let (desired, prepared, required_services) = authority::prepare(
             &ledger,
             &packages,
             &builtins,
             &builtin_layers,
             loader.as_ref(),
             &Definitions::new(),
+            &BTreeMap::new(),
         )?;
         kernel.install(prepared);
         let snapshot = Arc::new(Snapshot {
@@ -250,6 +265,7 @@ impl Platform {
             ledger: ledger.clone(),
             desired: desired.clone(),
             packages: packages.clone(),
+            required_services: required_services.clone(),
             runtime: kernel.status(),
             fence: None,
         });
@@ -264,6 +280,7 @@ impl Platform {
             ledger,
             packages,
             desired,
+            required_services,
             kernel,
             updates,
             fence: None,

@@ -27,6 +27,10 @@ import type {
 } from '../src/host.js';
 
 declare const ctx: HostContext;
+ctx.behaviors.register('managed', () => ({}), { nativeInput: 'native_user_messages' });
+ctx.behaviors.register('closed', () => ({}));
+// @ts-expect-error Only an explicit, closed native input policy can be registered.
+ctx.behaviors.register('invalid', () => ({}), { nativeInput: 'unrestricted' });
 ctx.remote.method<TranscriptRead, TranscriptPage>('activity.read', () => ({
   fence: 0,
   records: [],

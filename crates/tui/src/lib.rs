@@ -54,6 +54,10 @@ pub struct Options {
 }
 
 enum Completed {
+    Plugins(
+        pages::plugins::Request,
+        Result<pages::plugins::Output, maka_client::RequestFailure>,
+    ),
     Providers(u64, Result<maka_client::ProviderDirectory, String>),
     SandboxDefaults(
         pages::manage::sandbox::defaults::Request,
@@ -524,6 +528,25 @@ where
                 dirty = true;
             }
             app.apps_transcript_pages(&transcript_runner);
+            if let Some(request) = app.plugins_request() {
+                if request.needs_checkpoint() {
+                    if let Some(state) = &mut state {
+                        state.submit_plugins(request);
+                    } else {
+                        app.plugins_after_checkpoint(
+                            &request,
+                            &Err("TUI checkpoint unavailable".into()),
+                        );
+                    }
+                } else {
+                    let client = client.clone();
+                    jobs.spawn(async move {
+                        let result = pages::plugins::execute(&client, &request).await;
+                        Completed::Plugins(request, result)
+                    });
+                }
+                dirty = true;
+            }
             for request in app.apps_requests() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
@@ -757,6 +780,7 @@ where
                     watches.stop();
                     transcript_runner.stop();
                     app.recap.disconnect();
+                    app.plugins.disconnect();
                     app.resume.disconnect();
                     app.branch.disconnect();
                     app.revision.disconnect();
@@ -793,6 +817,7 @@ where
                     watches.stop();
                     transcript_runner.stop();
                     app.recap.disconnect();
+                    app.plugins.disconnect();
                     app.resume.disconnect();
                     app.creating = false;
                     jobs = JoinSet::new();
@@ -970,6 +995,11 @@ where
                     None => std::future::pending().await,
                 }
             } => {
+                if let Some(request) = written.plugins
+                    && app.plugins_after_checkpoint(&request, &written.result)
+                    && let Some(client) = client.clone() {
+                    jobs.spawn(async move { let result = pages::plugins::execute(&client, &request).await; Completed::Plugins(request, result) });
+                }
                 if let Some(request) = written.recap
                     && app.recap_after_checkpoint(&request, &written.result)
                     && let Some(client) = client.clone() {
@@ -1133,6 +1163,10 @@ where
                         if let Some(service) = app.oauth_completed(request, result) {
                             oauth_service = Some(service);
                         }
+                        if let Some(state) = &mut state { state.changed(); }
+                    }
+                    Some(Ok(Completed::Plugins(request, result))) => {
+                        app.plugins_completed(request, result);
                         if let Some(state) = &mut state { state.changed(); }
                     }
                     Some(Ok(Completed::Recap(request,result))) => {
@@ -1299,6 +1333,9 @@ where
                         if notice.kind == "plugin.terminal.changed" {
                             app.apps.reload();
                         }
+                        if notice.kind == "plugin.platform.changed" {
+                            app.plugins.changed();
+                        }
                         if notice.kind == "model.provider.catalog.changed" {
                             app.providers.refresh();
                         }
@@ -1312,7 +1349,7 @@ where
                                 app.sessions.invalidate(id);
                                 app.apps_session_changed(id);
                             } else {
-                                app.sessions.refresh();
+                                app.sessions.invalidate_all();
                             }
                             app.inbox.refresh();
                         }
@@ -1348,6 +1385,7 @@ where
                 watches.stop();
                     transcript_runner.stop();
                 app.recap.disconnect();
+                    app.plugins.disconnect();
                 app.resume.disconnect();
                 app.abandon_management();
                 app.branch.disconnect();
@@ -1389,6 +1427,7 @@ where
     watches.stop();
     let _ = transcript_runner.shutdown().await;
     app.recap.disconnect();
+    app.plugins.disconnect();
     app.resume.disconnect();
     attachment_jobs.abort_all();
     jobs.abort_all();

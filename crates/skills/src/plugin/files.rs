@@ -21,7 +21,10 @@ use super::Error;
 use crate::{
     SourceCatalog,
     api::*,
-    publication::{Publisher, Tree},
+    publication::{
+        Publisher, Tree,
+        receipt::{Destination, Operation},
+    },
 };
 use maka_runtime::artifact::content_digest;
 use tokio_util::sync::CancellationToken;
@@ -61,16 +64,28 @@ pub(super) async fn apply(
     user: Option<&crate::publication::UserFiles>,
     sources: &SourceCatalog,
     mutation: &Mutation,
+    operation: Option<&Operation>,
+    reviewed: Option<&str>,
     cancellation: &CancellationToken,
 ) -> Result<Change, Failure> {
     match mutation {
-        Mutation::CreateStarter => starter(&publisher, sources, cancellation).await,
+        Mutation::CreateStarter => starter(&publisher, sources, operation, cancellation).await,
         Mutation::Install {
             source_type,
             source_id,
-        } => install(&publisher, sources, *source_type, source_id, cancellation).await,
+        } => {
+            install(
+                &publisher,
+                sources,
+                *source_type,
+                source_id,
+                operation,
+                cancellation,
+            )
+            .await
+        }
         Mutation::UpdateManaged(update) => {
-            update::apply(&publisher, sources, update, cancellation).await
+            update::apply(&publisher, sources, update, operation, cancellation).await
         }
         Mutation::Delete { reference } => {
             let discovery = &sources.publication.discovery;
@@ -89,8 +104,19 @@ pub(super) async fn apply(
                 .capture(id, cancellation)
                 .await?
                 .ok_or(Failure::Rejected(MutationRejection::NotFound))?;
+            if let Some(reviewed) = reviewed
+                && expected.digest()? != reviewed
+            {
+                return Err(Failure::Rejected(MutationRejection::SourceChanged));
+            }
             publisher
-                .publish(id, Some(&expected), None, cancellation)
+                .publish_operation(
+                    id,
+                    Some(&expected),
+                    None,
+                    operation.map(|operation| (operation, Destination::Installed)),
+                    cancellation,
+                )
                 .await?;
             Ok(Change {
                 changed: true,
@@ -100,7 +126,7 @@ pub(super) async fn apply(
         _ => unreachable!("file mutation"),
     }
 }
-async fn deletion_target<'a>(
+pub(super) async fn deletion_target<'a>(
     workspace: Publisher,
     user: Option<&crate::publication::UserFiles>,
     reference: &'a str,
@@ -138,6 +164,7 @@ fn workspace_id(reference: &str) -> Result<&str, Failure> {
 async fn starter(
     publisher: &Publisher,
     sources: &SourceCatalog,
+    operation: Option<&Operation>,
     cancellation: &CancellationToken,
 ) -> Result<Change, Failure> {
     for ordinal in 1..=99 {
@@ -180,7 +207,20 @@ async fn starter(
         );
         tree.insert("SKILL.md", content.into_bytes())?;
         publisher
-            .publish(&id, None, Some(&tree), cancellation)
+            .publish_operation(
+                &id,
+                None,
+                Some(&tree),
+                operation.map(|operation| {
+                    (
+                        operation,
+                        Destination::Skill {
+                            reference: format!("workspace:legacy:{id}"),
+                        },
+                    )
+                }),
+                cancellation,
+            )
             .await?;
         return Ok(Change {
             changed: true,
@@ -194,6 +234,7 @@ async fn install(
     sources: &SourceCatalog,
     kind: InstallSource,
     id: &str,
+    operation: Option<&Operation>,
     cancellation: &CancellationToken,
 ) -> Result<Change, Failure> {
     if !crate::safe_source_id(id) {
@@ -216,7 +257,20 @@ async fn install(
     let mut tree = Tree::empty();
     artifacts(&mut tree, id, id, kind, content)?;
     publisher
-        .publish(id, None, Some(&tree), cancellation)
+        .publish_operation(
+            id,
+            None,
+            Some(&tree),
+            operation.map(|operation| {
+                (
+                    operation,
+                    Destination::Skill {
+                        reference: format!("workspace:legacy:{id}"),
+                    },
+                )
+            }),
+            cancellation,
+        )
         .await?;
     Ok(Change {
         changed: true,

@@ -116,7 +116,14 @@ impl Host {
             return super::projects::execute(self, operation, &input).await;
         }
         if super::messages::supports(operation) {
-            return super::messages::execute(self, connection_id, operation, &input).await;
+            return super::messages::execute(
+                self,
+                connection_id,
+                super::plugin_authorization::principal(authority, client_instance_id),
+                operation,
+                &input,
+            )
+            .await;
         }
         if super::resources::supports(operation) {
             return super::resources::execute(self, connection_id, operation, &input).await;

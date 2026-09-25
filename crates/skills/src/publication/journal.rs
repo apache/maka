@@ -34,10 +34,15 @@ pub(super) struct Intent {
     pub id: String,
     pub expected: Option<Manifest>,
     pub next: Option<Manifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<super::receipt::Publication>,
 }
 impl Intent {
     pub fn validate(&self) -> Result<(), Error> {
         validate_id(&self.id)?;
+        if let Some(publication) = &self.operation {
+            publication.operation.validate()?;
+        }
         if self.schema != 1 || (self.expected.is_none() && self.next.is_none()) {
             return Err(Error::Invalid("Unsupported publication intent".into()));
         }

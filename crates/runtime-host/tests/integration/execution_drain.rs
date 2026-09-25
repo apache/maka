@@ -223,6 +223,7 @@ async fn foreground_background_and_closure_commit_failures_drain_host() {
                         "session.catalog.changed"
                             | "plugin.client.changed"
                             | "plugin.terminal.changed"
+                            | "plugin.platform.changed"
                             | "model.provider.catalog.changed"
                     )
                 ),
