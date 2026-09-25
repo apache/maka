@@ -77,7 +77,8 @@ impl<'a> Cuts<'a> {
                         input: InvocationInput::Message { .. },
                         ..
                     }
-                    | Fact::MessageSteered { .. } => Some(usize::MAX),
+                    | Fact::MessageSteered { .. }
+                    | Fact::ToolNotified { .. } => Some(usize::MAX),
                     Fact::ToolRejected { call, .. }
                         if matches!(call.origin, ToolOrigin::Provider { .. }) =>
                     {

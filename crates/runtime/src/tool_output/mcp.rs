@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::media::MAX_IMAGE_BYTES;
+use super::media::MAX_MEDIA_BYTES;
 use super::{DurableToolProjection, ImageOutput, ProjectionPart};
 use crate::{
     capability::{CallResult, ContentBlock},
@@ -60,6 +60,17 @@ pub(super) fn project(
                 continue;
             }
         }
+        if let ContentBlock::Audio { data, mime_type } = block {
+            let chars = utf16_len(data);
+            if artifacts.len() < 4 && chars <= MAX_IMAGE_CHARS - image_chars {
+                let (part, artifact) =
+                    super::audio::project(data, mime_type, id, parts.len(), time, invocation)?;
+                parts.push(part);
+                artifacts.extend(artifact);
+                image_chars += chars;
+                continue;
+            }
+        }
         if summaries.len() < 100 {
             summaries.push(summarize(block));
         } else {
@@ -97,11 +108,11 @@ fn image_artifact(
     time: SystemTime,
     invocation: &Invocation,
 ) -> Option<(ImageOutput, ProjectionArtifactWrite)> {
-    if data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+    if data.len() > MAX_MEDIA_BYTES.div_ceil(3) * 4 {
         return None;
     }
     let bytes = STANDARD.decode(data).ok()?;
-    if bytes.len() > MAX_IMAGE_BYTES || STANDARD.encode(&bytes) != data {
+    if bytes.len() > MAX_MEDIA_BYTES || STANDARD.encode(&bytes) != data {
         return None;
     }
     super::media::image_artifact(bytes, mime, event_id, part, time, invocation).ok()
@@ -209,8 +220,11 @@ mod tests {
             matches!(&parts[1], ProjectionPart::Artifact { image } if image.mime_type == "image/png")
         );
         assert!(
-            matches!(&parts[2], ProjectionPart::Text { text } if text.contains("base64Chars") && text.contains("42"))
+            matches!(&parts[2], ProjectionPart::Audio { audio } if audio.mime_type == "audio/wav")
         );
+        assert!(matches!(&parts[3], ProjectionPart::Text { text } if text.contains("42")));
+        assert_eq!(artifacts[1].bytes(), b"abc");
+        assert!(!artifacts[1].artifact().source.user_deletable());
         assert_eq!(artifacts[0].bytes(), b"\x89PNG\r\n\x1a\n");
         let descriptor = artifacts[0].artifact();
         assert_eq!(descriptor.created_at, 1234);

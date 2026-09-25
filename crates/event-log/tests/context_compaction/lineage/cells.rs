@@ -132,6 +132,69 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
         .await
         .is_err()
     );
+    log.append(&event(
+        "child",
+        Fact::ToolNotified {
+            operation_id: "cell".into(),
+            text: "before request".into(),
+            model_text: "before request".into(),
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&lineage_request("attempt", ModelPurpose::Main, &frozen))
+        .await
+        .unwrap();
+    log.append(&event(
+        "child",
+        Fact::ModelInterrupted {
+            step_id: "attempt".into(),
+            status: maka_runtime::event::ModelInterruption::RetryableFailure,
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&event(
+        "child",
+        Fact::ToolNotified {
+            operation_id: "cell".into(),
+            text: "during backoff".into(),
+            model_text: "during backoff".into(),
+        },
+    ))
+    .await
+    .unwrap();
+    let mut changed = lineage_request("changed", ModelPurpose::Main, &frozen)
+        .event()
+        .clone();
+    if let Fact::ModelRequested { input_digest, .. } = &mut changed.fact {
+        *input_digest = "different input".into();
+    }
+    assert!(
+        log.append(&EventWrite::plain(changed).unwrap())
+            .await
+            .is_err()
+    );
+    let changed = maka_runtime::composition::RequestComposition {
+        system_prompt: Some("changed".into()),
+        dynamic_context: vec![],
+        tool_catalog_digest: maka_runtime::artifact::content_digest(b"[]"),
+        tools: vec![],
+        provider_options: None,
+        max_output_tokens: None,
+        sources: vec![],
+    }
+    .freeze()
+    .unwrap();
+    assert!(
+        log.append(
+            &lineage_request("changed-surface", ModelPurpose::Main, &frozen)
+                .with_composition(std::sync::Arc::new(changed))
+                .unwrap()
+        )
+        .await
+        .is_err()
+    );
     log.append(&lineage_request("observe", ModelPurpose::Main, &frozen))
         .await
         .unwrap();

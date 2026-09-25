@@ -22,7 +22,7 @@ mod encoding;
 mod reference;
 use crate::{
     read::{MAX_PAGE_CHARS, ReadInput, ReadPage},
-    tool_output::{DurableToolProjection, ProjectionPart},
+    tool_output::DurableToolProjection,
 };
 pub use encoding::{encode_projection, outcome_projection, projection_digest};
 pub use reference::ToolResultAddress;
@@ -91,7 +91,7 @@ pub fn valid_projection_digest(value: &str) -> bool {
 }
 
 impl ArchivedPlaceholder {
-    /// One size rule for current and historical results. Image materialization is unchanged.
+    /// One size rule for current and historical results. Media stays materializable.
     pub fn prepare(
         event_id: String,
         tool_call_id: String,
@@ -99,7 +99,7 @@ impl ArchivedPlaceholder {
         projection: &DurableToolProjection,
     ) -> Result<Option<Self>, &'static str> {
         if matches!(projection, DurableToolProjection::Content { parts }
-            if parts.iter().any(|part| matches!(part, ProjectionPart::Artifact { .. })))
+            if parts.iter().any(|part| part.media().is_some()))
             || matches!(projection, DurableToolProjection::Json { value }
                 if value.get("kind").and_then(serde_json::Value::as_str) == Some("maka.archived_tool_result"))
         {

@@ -63,6 +63,21 @@ impl ProjectionArtifactWrite {
 impl EventWrite {
     pub fn plain(event: RuntimeEvent) -> Result<Self, CommitError> {
         match &event.fact {
+            Fact::ToolNotified {
+                operation_id,
+                text,
+                model_text,
+            } if operation_id.is_empty()
+                || operation_id.len() > 4096
+                || text.trim().is_empty()
+                || text.len() > 128 * 1024
+                || model_text.trim().is_empty()
+                || model_text.len() > 128 * 1024 =>
+            {
+                return Err(CommitError::Rejected(
+                    "invalid Code Mode notification".into(),
+                ));
+            }
             Fact::MessageImported { .. } => {
                 return Err(CommitError::Rejected(
                     "imported history requires Session import admission".into(),

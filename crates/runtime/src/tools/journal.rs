@@ -39,6 +39,27 @@ impl ToolJournal {
     pub fn invocation(&self) -> &Invocation {
         &self.invocation
     }
+    pub async fn notify(
+        &self,
+        operation_id: String,
+        text: String,
+        model_text: String,
+    ) -> Result<u64, ToolError> {
+        let write = EventWrite::plain(RuntimeEvent::new(
+            self.invocation.clone(),
+            Fact::ToolNotified {
+                operation_id,
+                text,
+                model_text,
+            },
+        ))
+        .map_err(|error| ToolError::Persistence(error.to_string()))?;
+        self.sink
+            .clone()
+            .commit(write)
+            .await
+            .map_err(|error| ToolError::Persistence(error.to_string()))
+    }
     pub fn reject(
         &self,
         operation_id: String,

@@ -32,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 pub(super) fn register(owner: Arc<Owner>) -> Result<PluginTool, String> {
     PluginTool::new(ToolRegistration {
         definition: ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: "GoalStatus".into(),
             description: "Report progress, achieved (with evidence), waiting for user input, \

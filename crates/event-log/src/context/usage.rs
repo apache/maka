@@ -74,6 +74,18 @@ async fn additions(
     if !basis.projection_current {
         return Ok(None);
     }
+    // A background notification can precede completion without having been in
+    // that request's frozen input. Wait for fresh provider usage instead of
+    // counting it as already consumed (or inventing a second usage meter).
+    let unobserved_notification: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM runtime_events c JOIN runtime_events r
+         ON r.invocation_id=c.invocation_id AND r.operation_id=c.operation_id AND r.kind='model_requested'
+         JOIN runtime_events n ON n.invocation_id=c.invocation_id AND n.kind='tool_notified'
+         WHERE c.sequence=? AND n.sequence>json_extract(r.event_json,'$.fact.source_high_water') AND n.sequence<c.sequence)",
+    ).bind(basis.sequence as i64).fetch_one(&mut *connection).await?;
+    if unobserved_notification {
+        return Ok(None);
+    }
     // A changed system/tool/plugin surface or provider route is not a text
     // addition. Reuse the already-frozen composition identities; never rerun it.
     let changed: bool = sqlx::query_scalar(
@@ -103,7 +115,7 @@ async fn additions(
     const FILTER: &str = "
         e.sequence > ?1 AND json_extract(e.event_json,'$.invocation.session_id')=?2
         AND e.kind IN ('invocation_opened','message_steered','model_requested',
-            'model_observed','executor_completed','tool_settled','tool_rejected',
+            'model_observed','executor_completed','tool_settled','tool_rejected','tool_notified',
             'context_checkpoint_recorded','tool_result_archived')
         AND (e.kind NOT IN ('tool_settled','tool_rejected') OR
             json_extract(e.event_json,'$.fact.call.origin.kind')='provider' OR
@@ -210,6 +222,7 @@ fn increment(fact: &Fact, basis: &AcceptedMainContext) -> Option<u64> {
                 }
             }
         }
+        Fact::ToolNotified { model_text, .. } => 12 + text_units(model_text),
         Fact::ToolRejected { reason, .. } => 12 + text_units(&reason.to_string()),
         Fact::ExecutorCompleted { .. } => return None,
         _ => 0,
@@ -243,7 +256,7 @@ fn projection_units(value: &DurableToolProjection) -> Option<u64> {
         DurableToolProjection::Content { parts } => {
             parts.iter().try_fold(0, |sum, part| match part {
                 ProjectionPart::Text { text } => Some(sum + text_units(text)),
-                ProjectionPart::Artifact { .. } => None,
+                ProjectionPart::Artifact { .. } | ProjectionPart::Audio { .. } => None,
             })
         }
     }

@@ -36,7 +36,7 @@ const NAME: &str = "ScheduledTask";
 pub(super) fn register(service: Service) -> Result<PluginTool, String> {
     PluginTool::new(ToolRegistration {
         definition: ToolDefinition {
-            provider: None,
+            freeform: None, output_schema: None, provider: None,
             name: NAME.into(),
             description: "Create and manage scheduled tasks (定时任务) owned by this conversation. Creating or resuming a task requires the user to approve background access in the Scheduler UI first; tool execution cannot grant unattended access. All tasks also appear in Desktop. session_resume (default) continues this conversation; agent_run uses a frozen model/workspace/policy template for a fresh session; notify_local sends a local notification. Times are Unix milliseconds; omitted startAt means now, cron uses the configured IANA timezone. Missed unclaimed triggers are skipped by default. list returns compact summaries; management cannot change another conversation's tasks.".into(),
             input_schema: input::schema(),

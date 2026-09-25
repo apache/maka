@@ -121,6 +121,8 @@ async fn nested_image_is_committed_before_js_and_explicit_output_projects_it() {
     let tools = Arc::new(ImageTools(log.clone()));
     let catalog = ToolCatalog::new(["read", "verify"].map(|name| ToolRegistration {
         definition: ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: name.into(),
             description: "image fixture".into(),
@@ -134,7 +136,7 @@ async fn nested_image_is_committed_before_js_and_explicit_output_projects_it() {
     let call = support::call(
         "exec",
         "exec",
-        json!({"code":"const result = await tools.read({}); image(result); return await tools.verify(result);"}),
+        json!({"code":"const result = await tools.read({}); image(result, 'original'); text(await tools.verify(result));"}),
     );
     support::accepted(&log, &invocation, std::slice::from_ref(&call)).await;
     let run = RunTools::new(
@@ -153,17 +155,16 @@ async fn nested_image_is_committed_before_js_and_explicit_output_projects_it() {
         .await
         .unwrap();
     assert_eq!(result["result"]["ok"], true);
-    assert_eq!(result["result"]["value"]["kind"], "image");
+    let image: Value =
+        serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(image["kind"], "image");
     let prefix = log.prefix(32, 64 * 1024).await.unwrap();
     assert!(
         matches!(&prefix.events.last().unwrap().event.fact, Fact::ToolSettled {
         outcome: ToolOutcome::Succeeded { model_projection: DurableToolProjection::Content { parts }, .. }, ..
-    } if parts.iter().any(|part| matches!(part, ProjectionPart::Artifact { .. })))
+    } if parts.iter().any(|part| matches!(part, ProjectionPart::Artifact { image } if image.detail == Some(maka_runtime::tool_output::ImageDetail::Original))))
     );
-    let artifact_id = result["result"]["value"]["ref"]["relativePath"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let artifact_id = image["ref"]["relativePath"].as_str().unwrap().to_owned();
     drop(run);
     drop(tools);
     support::close(log).await;

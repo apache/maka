@@ -22,6 +22,7 @@ mod attachment_projection;
 mod auto_context;
 mod code_mode;
 mod code_mode_lifetime;
+mod code_mode_media;
 mod context_compaction;
 mod context_overflow;
 mod context_stop;

@@ -199,7 +199,7 @@ async fn generated(
     use maka_runtime::{
         artifact::{ArtifactKind, ArtifactSource},
         event::{Fact, ToolOutcome},
-        tool_output::{DurableToolProjection, ProjectionPart},
+        tool_output::DurableToolProjection,
     };
     let Fact::ToolSettled {
         outcome:
@@ -229,12 +229,12 @@ async fn generated(
             .await?
             .ok_or_else(|| invalid("bundle lacks generated tool material"))?;
         let mime_matches = matches!(model_projection, DurableToolProjection::Content { parts } if parts.iter().any(|part|
-            matches!(part, ProjectionPart::Artifact { image } if
-                matches!(&image.reference, StorageRef::SessionFile { relative_path, .. } if relative_path == &evidence.id)
-                && artifact.mime_type.as_deref() == Some(image.mime_type.as_str()))
+            part.media().is_some_and(|(reference, mime)|
+                matches!(reference, StorageRef::SessionFile { relative_path, .. } if relative_path == &evidence.id)
+                && artifact.mime_type.as_deref() == Some(mime)
+                && artifact.kind == if mime.starts_with("image/") { ArtifactKind::Image } else { ArtifactKind::File })
         ));
         if artifact.source != ArtifactSource::ToolResultProjection
-            || artifact.kind != ArtifactKind::Image
             || artifact.turn_id != event.invocation.turn_id
             || artifact.size_bytes != evidence.bytes
             || digest != evidence.digest

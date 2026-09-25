@@ -68,7 +68,11 @@ impl RunTools {
 
     pub fn clear_loaded(&self) {
         self.availability.clear();
-        self.code.clear_store();
+    }
+
+    pub fn with_store(mut self, store: maka_js_runtime::CellStore) -> Self {
+        self.code = cell::Cells::new(store);
+        self
     }
 
     pub async fn shutdown(&self) -> Result<(), ToolError> {
@@ -77,6 +81,9 @@ impl RunTools {
 
     pub fn code_idle(&self) -> bool {
         self.code.is_idle()
+    }
+    pub async fn finish_output(&self, observed: u64) -> Result<bool, ToolError> {
+        self.code.finish_output(observed).await
     }
 
     pub fn with_model(mut self, model: maka_runtime::tools::ModelToolContext) -> Self {
@@ -156,7 +163,11 @@ impl RunTools {
             digest,
             direct,
             run: self,
-            catalog: availability.snapshot(),
+            catalog: if self.mode == ToolMode::CodeMode {
+                availability.all()
+            } else {
+                availability.snapshot()
+            },
             availability,
         }
     }
@@ -240,19 +251,23 @@ impl<'a> RequestTools<'a> {
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        let mut definitions: Vec<_> = self.catalog.definitions().cloned().collect();
-        if let Some(search) = self.availability.definition() {
-            definitions.push(search);
-        }
         if self.run.mode == ToolMode::CodeMode {
             let mut exec = cell::definition();
-            exec.description.push_str("\nUse this tool for JavaScript and nested functions. Other advertised tools must be called directly. After searching, return its result and use the refreshed catalog in the next exec call. Available nested functions:\n");
+            let definitions: Vec<_> = self
+                .availability
+                .snapshot()
+                .definitions()
+                .cloned()
+                .collect();
+            exec.description.push_str("\nSome authorized tools may be omitted below. Find them by name and description in ALL_TOOLS; all are callable within the current cell.\n");
             exec.description.push_str(&cell::declarations(&definitions));
             std::iter::once(exec)
                 .chain(std::iter::once(cell::wait_definition()))
                 .chain(self.direct.definitions().cloned())
                 .collect()
         } else {
+            let mut definitions: Vec<_> = self.catalog.definitions().cloned().collect();
+            definitions.extend(self.availability.definition());
             definitions
         }
     }
@@ -326,7 +341,6 @@ impl StepTools<'_> {
                     run.cells.clone(),
                     cell::source(&call.input)?,
                     self.request.catalog.clone(),
-                    self.request.availability.clone(),
                     run.journal.clone(),
                     operation_id.clone(),
                     call.id.clone(),

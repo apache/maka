@@ -30,6 +30,50 @@ const CONFIRMATION_CASES: [&str; 7] = [
 ];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn custom_result_and_notifications_all_survive_confirmed_websocket_delta() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut socket = accept(&listener).await;
+            assert_eq!(body(&mut socket).await["tools"][0]["type"], "custom");
+            let item = json!({"type":"custom_tool_call","id":"custom-item","call_id":"call_1","name":"exec","input":"text('start');"});
+            for event in [
+                json!({"type":"response.created","response":{"id":"resp_1","created_at":1,"model":"test-responses"}}),
+                json!({"type":"response.output_item.done","output_index":0,"item":item}),
+                json!({"type":"response.completed","response":{"id":"resp_1","output":[item],"usage":{"input_tokens":2,"output_tokens":1}}}),
+            ] { socket.send(Message::Text(event.to_string().into())).await.unwrap(); }
+            let delta = body(&mut socket).await;
+            assert_eq!(delta["previous_response_id"], "resp_1");
+            assert_eq!(delta["input"], json!([
+                {"type":"custom_tool_call_output","call_id":"call_1","output":"running"},
+                {"type":"custom_tool_call_output","call_id":"call_1","output":"notice one"},
+                {"type":"custom_tool_call_output","call_id":"call_1","output":"notice two"},
+            ]));
+            finish(&mut socket, "resp_2").await;
+        });
+        let executor = ModelExecutor::new(1, Duration::from_secs(5)).unwrap();
+        let lane = Conversation::default();
+        let mut input = request(&base, "first");
+        input.tools = vec![maka_model::ToolDefinition { name:"exec".into(), description:"JavaScript".into(), input_schema:json!({"type":"object"}), provider:None, output_schema:None,
+            freeform:Some(maka_runtime::tools::FreeformGrammar::Lark { definition:"start: /[\\s\\S]+/".into() }) }];
+        let mut next = request(&base, "first");
+        next.tools = input.tools.clone();
+        let step = generate_step(&executor, &lane, input).await;
+        let mut input = next;
+        let call = step.tool_calls().next().unwrap();
+        input.prompt.push(serde_json::from_value(json!({"role":"assistant","content":[{"type":"tool-call","toolCallId":call.id,"toolName":call.name,"input":call.input,"providerOptions":call.provider_options}]})).unwrap());
+        for (value, notification) in [("running",false),("notice one",true),("notice two",true)] {
+            input.prompt.push(serde_json::from_value(json!({"role":"tool","content":[{"type":"tool-result","toolCallId":"call_1","toolName":"exec",
+                "output":{"type":"text","value":value}, "providerOptions":{"openai":{"toolKind":"custom"},"maka":{"notification":notification}}}]})).unwrap());
+        }
+        assert!(lane.confirm(&input.prompt, &["call_1"], step.response_id.as_deref()).await.unwrap());
+        generate(&executor, &lane, input).await;
+        server.await.unwrap();
+    }).await.expect("custom outputs must not disappear from WS continuation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_close_reconnect_and_upgrade_fallback_restore_the_raw_baseline() {
     tokio::time::timeout(Duration::from_secs(25), async {
         let executor = ModelExecutor::new(1, Duration::from_secs(10)).unwrap();

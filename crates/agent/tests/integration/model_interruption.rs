@@ -190,7 +190,7 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn continuation_claim_replays_only_its_lineage_and_retries_at_fresh_boundaries() {
+async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_input() {
     use maka_runtime::{
         continuation::RunBoundary,
         event::{EventWrite, LogScope, RuntimeEvent},
@@ -270,14 +270,15 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_at_fresh_bounda
         }).collect();
         assert_eq!(claims.len(), 1, "only one canonical claim may acquire the sealed source");
         let attempts: Vec<_> = facts.events.iter().filter_map(|s| match &s.event.fact {
-            Fact::ModelRequested { source_high_water, input_digest, .. } if s.event.invocation.run_id == "run-child" =>
-                Some((*source_high_water, input_digest)),
+            Fact::ModelRequested { step_id, source_high_water, source_digest, input_digest, .. } if s.event.invocation.run_id == "run-child" =>
+                Some(((*source_high_water, source_digest), input_digest, step_id)),
             _ => None,
         }).collect();
         assert_eq!(attempts.len(), 2);
-        assert!(attempts[1].0 > attempts[0].0, "retry authenticates the advanced canonical cut");
+        assert_eq!(attempts[0].0, attempts[1].0, "retry preserves the original canonical cut");
         assert_eq!(attempts[0].1, &claims[0].replay.digest);
         assert_eq!(attempts[0].1, attempts[1].1);
+        assert_ne!(attempts[0].2, attempts[1].2, "each physical attempt has its own identity");
         assert_eq!(facts.events.iter().filter(|s| matches!(s.event.fact,
             Fact::ModelInterrupted { status: ModelInterruption::RetryableFailure, .. })).count(), 1);
         for fact in [

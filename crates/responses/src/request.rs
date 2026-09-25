@@ -57,6 +57,7 @@ enum Content {
     InputText { text: String },
     OutputText { text: String },
     InputImage { image_url: String, detail: String },
+    InputAudio { audio_url: String },
     InputFile { file_data: String, filename: String },
 }
 #[derive(Serialize)]
@@ -77,6 +78,15 @@ enum Item {
         arguments: String,
     },
     FunctionCallOutput {
+        call_id: String,
+        output: Value,
+    },
+    CustomToolCall {
+        call_id: String,
+        name: String,
+        input: String,
+    },
+    CustomToolCallOutput {
         call_id: String,
         output: Value,
     },
@@ -124,6 +134,10 @@ fn content(part: &ContentPart) -> Result<Content> {
                         .unwrap_or("auto")
                         .into(),
                 }
+            } else if media_type.starts_with("audio/") {
+                Content::InputAudio {
+                    audio_url: format!("data:{media_type};base64,{data}"),
+                }
             } else if media_type == "application/pdf" {
                 Content::InputFile {
                     file_data: format!("data:{media_type};base64,{data}"),
@@ -164,6 +178,36 @@ impl Request<'_> {
         if !options.is_object() {
             return Err(Error::Invalid("Responses options must be an object".into()));
         }
+        // Call kind belongs to historical calls, even if the current catalog changed.
+        let custom_calls: std::collections::HashSet<&str> = self
+            .prompt
+            .iter()
+            .flat_map(|message| match message {
+                Message::Assistant { content, .. } => content.as_slice(),
+                _ => &[],
+            })
+            .filter_map(|part| match part {
+                AssistantPart::ToolCall {
+                    tool_call_id,
+                    tool_name,
+                    input,
+                    provider_options,
+                    ..
+                } if input.is_string()
+                    && (metadata(provider_options, "openai", "toolKind").as_deref()
+                        == Some("custom")
+                        || metadata(provider_options, "openResponses", "toolKind").as_deref()
+                            == Some("custom")
+                        || self
+                            .tools
+                            .iter()
+                            .any(|tool| tool.name == *tool_name && tool.freeform.is_some())) =>
+                {
+                    Some(tool_call_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
         let mut input = Vec::new();
         for message in self.prompt {
             match message {
@@ -256,11 +300,25 @@ impl Request<'_> {
                                     {
                                         input.push(Input::Item(Item::Reference { id }));
                                     }
+                                } else if self.plaintext.is_none()
+                                    && custom_calls.contains(tool_call_id.as_str())
+                                {
+                                    input.push(Input::Item(Item::CustomToolCall {
+                                        call_id: tool_call_id.clone(),
+                                        name: wire_name(tool_name).into(),
+                                        input: args.as_str().unwrap().into(),
+                                    }));
                                 } else {
                                     input.push(Input::Item(Item::FunctionCall {
                                         call_id: tool_call_id.clone(),
                                         name: wire_name(tool_name).into(),
-                                        arguments: args.to_string(),
+                                        arguments: if tool_name == "exec"
+                                            && custom_calls.contains(tool_call_id.as_str())
+                                        {
+                                            json!({"code":args}).to_string()
+                                        } else {
+                                            args.to_string()
+                                        },
                                     }));
                                 }
                             }
@@ -270,9 +328,32 @@ impl Request<'_> {
                 }
                 Message::Tool { content, .. } => {
                     for result in content {
-                        input.push(Input::Item(Item::FunctionCallOutput {
-                            call_id: result.tool_call_id.clone(),
-                            output: output(&result.output)?,
+                        let custom = result.is_custom()
+                            || custom_calls.contains(result.tool_call_id.as_str());
+                        if result.is_notification() && (self.plaintext.is_some() || !custom) {
+                            if let ToolOutput::Text(text) = &result.output {
+                                input.push(Input::Message {
+                                    role: "user",
+                                    content: vec![Content::InputText {
+                                        text: format!(
+                                            "[Notification from exec {}]\n{text}",
+                                            result.tool_call_id
+                                        ),
+                                    }],
+                                });
+                            }
+                            continue;
+                        }
+                        input.push(Input::Item(if custom && self.plaintext.is_none() {
+                            Item::CustomToolCallOutput {
+                                call_id: result.tool_call_id.clone(),
+                                output: output(&result.output)?,
+                            }
+                        } else {
+                            Item::FunctionCallOutput {
+                                call_id: result.tool_call_id.clone(),
+                                output: output(&result.output)?,
+                            }
                         }));
                     }
                 }
@@ -365,6 +446,10 @@ impl Request<'_> {
                             value[key] = val.clone();
                         }
                         Ok(value)
+                    } else if self.plaintext.is_none() && let Some(format) = &tool.freeform {
+                        let mut format = serde_json::to_value(format).map_err(|e| Error::Invalid(e.to_string()))?;
+                        format["type"] = json!("grammar");
+                        Ok(json!({"type":"custom", "name":wire_name(&tool.name), "description":tool.description, "format":format}))
                     } else {
                         serde_json::to_value(Function {
                             r#type: "function",

@@ -19,7 +19,7 @@
 
 use maka_model::prompt::{ContentPart, Message, ToolOutput, ToolResult};
 
-/// Chat serializes tool content as text. Expose already materialized images in
+/// Chat serializes tool content as text. Expose already materialized media in
 /// a user message, after all responses in the tool batch have been delivered.
 pub(crate) fn project(messages: Vec<Message>) -> Vec<Message> {
     let mut projected = Vec::with_capacity(messages.len());
@@ -47,8 +47,8 @@ fn flush(messages: &mut Vec<Message>, images: &mut Vec<ContentPart>) {
     }
 }
 
-fn image(part: &ContentPart) -> bool {
-    matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("image/"))
+fn media(part: &ContentPart) -> bool {
+    matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("image/") || media_type.starts_with("audio/"))
 }
 
 fn label(value: &str) -> String {
@@ -59,26 +59,28 @@ fn extract(result: &mut ToolResult, images: &mut Vec<ContentPart>) {
     let ToolOutput::Content(parts) = &mut result.output else {
         return;
     };
-    if !parts.iter().any(image) {
+    if !parts.iter().any(media) {
         return;
     }
+    let kind = if parts.iter().any(|part| matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("audio/"))) { "Media" } else { "Images" };
     images.push(ContentPart::text(format!(
-        "Images from tool {} (toolCallId: {}):",
+        "{kind} from tool {} (toolCallId: {}):",
         label(&result.tool_name),
         label(&result.tool_call_id)
     )));
     let mut retained = Vec::new();
     for part in std::mem::take(parts) {
-        if image(&part) {
+        if media(&part) {
             images.push(part);
         } else {
             retained.push(part);
         }
     }
     if retained.is_empty() {
-        retained.push(ContentPart::text(
-            "Tool images are supplied in the following user message.",
-        ));
+        retained.push(ContentPart::text(format!(
+            "Tool {} are supplied in the following user message.",
+            kind.to_ascii_lowercase()
+        )));
     }
     *parts = retained;
 }

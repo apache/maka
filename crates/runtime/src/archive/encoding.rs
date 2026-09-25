@@ -63,18 +63,16 @@ pub fn encode_projection(projection: &DurableToolProjection) -> Result<Vec<u8>, 
                 result.push_str("{\"type\":\"text\",\"text\":");
                 match part {
                     ProjectionPart::Text { text } => string(&mut result, text)?,
-                    ProjectionPart::Artifact { image } => {
-                        let StorageRef::SessionFile { relative_path, .. } = &image.reference else {
+                    media => {
+                        let (reference, mime) = media.media().expect("media projection");
+                        let StorageRef::SessionFile { relative_path, .. } = reference else {
                             return Err("archive media must be Session-owned");
                         };
                         let quoted = serde_json::to_string(relative_path)
                             .map_err(|_| "invalid artifact reference")?;
                         string(
                             &mut result,
-                            &format!(
-                                "[Artifact {quoted} ({}) is stored in this Session.]",
-                                image.mime_type
-                            ),
+                            &format!("[Artifact {quoted} ({}) is stored in this Session.]", mime),
                         )?;
                     }
                 }

@@ -38,7 +38,7 @@ use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
 
 pub const CODE: &str =
-    "return await Promise.all([tools.left({value:21}), tools.right({value:42})]);";
+    "text(await Promise.all([tools.left({value:21}), tools.right({value:42})]));";
 
 pub struct Effects {
     pub log: Arc<EventLog>,
@@ -94,7 +94,7 @@ impl ToolExecutor for Effects {
 pub fn input(base: &str, suffix: &str, effects: Arc<Effects>) -> RunInput {
     let tools = ToolCatalog::new(["left", "right"].map(|name| ToolRegistration {
         definition: ToolDefinition {
-            provider: None,
+            freeform: None, output_schema: None, provider: None,
             name: name.into(),
             description: format!("fixture {name}"),
             input_schema: json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"],"additionalProperties":false}),

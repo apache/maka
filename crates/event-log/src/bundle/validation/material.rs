@@ -59,7 +59,14 @@ pub(super) async fn composition(
     db: &mut SqliteConnection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
-    let Some((number, descriptor)) = descriptor(staged, &event.id, "composition").await? else {
+    let material = descriptor(staged, &event.id, "composition").await?;
+    crate::composition::validate_retry(
+        db,
+        event,
+        material.as_ref().map(|(_, descriptor)| descriptor.digest()),
+    )
+    .await?;
+    let Some((number, descriptor)) = material else {
         return Ok(());
     };
     if !matches!(event.fact, Fact::ModelRequested { .. }) {

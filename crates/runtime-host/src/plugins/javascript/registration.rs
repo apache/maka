@@ -146,6 +146,8 @@ pub(super) struct Tool {
     description: String,
     input_schema: Value,
     #[serde(default)]
+    output_schema: Option<Value>,
+    #[serde(default)]
     direct_only: bool,
     #[serde(default)]
     semantics: Semantics,
@@ -159,6 +161,8 @@ impl Tool {
     ) -> Result<PluginTool, String> {
         let tool = PluginTool::new(ToolRegistration {
             definition: ToolDefinition {
+                freeform: None,
+                output_schema: self.output_schema,
                 provider: self.provider,
                 name: self.name,
                 description: self.description,

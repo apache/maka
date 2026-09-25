@@ -44,7 +44,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
             vec![
                 (call("finish", "direct", json!({"n": 1})), None),
                 (
-                    call("after", "exec", json!({"code": "return 4"})),
+                    call("after", "exec", json!({"code": "text(4)"})),
                     Some(ToolRejection::ExclusiveConflict),
                 ),
             ],
@@ -54,7 +54,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
             ToolMode::Direct,
             vec![
                 (
-                    call("exec", "exec", json!({"code":"return 1"})),
+                    call("exec", "exec", json!({"code":"text(1)"})),
                     Some(ToolRejection::Unavailable),
                 ),
                 (call("ok", "echo", json!({"n":1})), None),
@@ -85,13 +85,13 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
             "exclusive-first",
             ToolMode::CodeMode,
             vec![
-                (call("exec", "exec", json!({"code":"return 3"})), None),
+                (call("exec", "exec", json!({"code":"text(3)"})), None),
                 (
                     call("echo", "echo", json!({"n":1})),
                     Some(ToolRejection::Unavailable),
                 ),
                 (
-                    call("again", "exec", json!({"code":"return 4"})),
+                    call("again", "exec", json!({"code":"text(4)"})),
                     Some(ToolRejection::ExclusiveConflict),
                 ),
             ],
@@ -107,7 +107,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
                     }),
                 ),
                 (
-                    call("again", "exec", json!({"code":"return 4"})),
+                    call("again", "exec", json!({"code":"text(4)"})),
                     Some(ToolRejection::ExclusiveConflict),
                 ),
             ],
@@ -121,7 +121,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
                     Some(ToolRejection::Cancelled),
                 ),
                 (
-                    call("exec", "exec", json!({"code":"return 4"})),
+                    call("exec", "exec", json!({"code":"text(4)"})),
                     Some(ToolRejection::Cancelled),
                 ),
             ],
@@ -188,7 +188,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
             } else {
                 let value = result.unwrap();
                 let expected = if call.name == "exec" {
-                    json!({"ok":true,"value":3,"toolCalls":[]})
+                    json!({"ok":true,"value":null,"toolCalls":[]})
                 } else {
                     call.input
                 };
@@ -248,13 +248,13 @@ async fn nested_preflight_is_effect_free_and_diagnostics_are_successful_parent_v
     for (id, code, kind, calls) in [
         (
             "direct-only",
-            "return await tools.direct({n:1})",
-            "unknown_tool",
+            "await tools.direct({n:1})",
+            "execution_error",
             json!([]),
         ),
         (
             "invalid-input",
-            "return await tools.echo({n:'1'})",
+            "await tools.echo({n:'1'})",
             "tool_failure",
             json!([{"index":1,"name":"echo"}]),
         ),

@@ -607,7 +607,7 @@ impl maka_plugins::kernel::Plugin for Finish {
             };
             let mut staged = maka_plugins::contributions::Staged::default();
             let tool = maka_tools::plugins::PluginTool::new(ToolRegistration {
-                definition: ToolDefinition { provider: None, name: "FinishPlugin".into(), description: "FinishPlugin integration capability".into(),
+                definition: ToolDefinition { freeform: None, output_schema: None, provider: None, name: "FinishPlugin".into(), description: "FinishPlugin integration capability".into(),
                     input_schema: json!({"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}) },
                 nesting: ToolNesting::DirectOnly, semantics: ToolSemantics::FinishTurn,
                 handler: ToolHandler::Immediate(std::sync::Arc::new(Finish)),

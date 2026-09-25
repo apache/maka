@@ -75,6 +75,8 @@ fn input(base: &str, suffix: &str, effect: Arc<dyn maka_runtime::tools::ToolExec
             message: format!("question {suffix}").into(),
             tools: ToolCatalog::new([ToolRegistration {
                 definition: ToolDefinition {
+                    freeform: None,
+                    output_schema: None,
                     provider: None,
                     name: "slow".into(),
                     description: "fixture effect draining after cancellation".into(),
@@ -91,7 +93,7 @@ fn input(base: &str, suffix: &str, effect: Arc<dyn maka_runtime::tools::ToolExec
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dropping_caller_keeps_unawaited_child_session_and_cell_owned_until_drain() {
+async fn dropping_caller_keeps_child_session_and_cell_owned_until_drain() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -281,7 +283,7 @@ async fn verify_yielded(continuation: bool) {
         fixture::tool(
             &mut socket,
             "exec",
-            json!({"code":"return await tools.slow({value:42});","yield_time_ms":0}),
+            json!({"code":"text(await tools.slow({value:42}));","yield_time_ms":0}),
         )
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -303,14 +305,16 @@ async fn verify_yielded(continuation: bool) {
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let request = http::read_request(&mut socket).await;
-        let completed: serde_json::Value = serde_json::from_str(
-            request["messages"].as_array().unwrap().last().unwrap()["content"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
+        let mut output = request["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .lines();
+        let completed: serde_json::Value = serde_json::from_str(output.next().unwrap()).unwrap();
         assert_eq!(completed["state"], "completed");
-        assert_eq!(completed["result"]["value"], json!({"value":42}));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(output.next().unwrap()).unwrap(),
+            json!({"value":42})
+        );
         respond(&mut socket, false).await;
     });
     let engine = Engine::new(

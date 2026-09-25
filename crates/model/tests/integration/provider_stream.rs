@@ -43,6 +43,8 @@ pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
         },
         prompt: vec![maka_model::prompt::Message::user("hello")],
         tools: vec![maka_model::ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: "echo".into(),
             description: "echo".into(),
@@ -171,6 +173,7 @@ async fn sdk_text_and_tool_streams_cross_real_http_before_response_finishes() {
             customized.provider.headers.insert("X-Latin-1".into(), "ÿ".into());
             if matches!(kind, ProviderKind::Anthropic) {
                 customized.provider.headers.insert("Anthropic-Version".into(), "2023-06-01".into());
+                customized.prompt.push(serde_json::from_value(json!({"role":"user","content":[{"type":"file","mediaType":"audio/wav","data":{"type":"data","data":"YXVkaW8="}}]})).unwrap());
             }
             let mut stream = executor.stream(customized, CancellationToken::new()).await.unwrap();
             let mut events = Vec::new();
@@ -208,17 +211,21 @@ assert_eq!(step.finish_reason, maka_runtime::model::ModelFinishReason::ToolCalls
             assert_eq!(body["stream"], true);
             assert_eq!(body["max_tokens"], 10_000_000_000u64);
             assert_eq!(body["fixture_context"], json!({"route":"customized"}));
+            if matches!(kind, ProviderKind::Anthropic) {
+                assert!(body["messages"].to_string().contains("not supported by this model adapter"));
+                assert!(!body["messages"].to_string().contains("YXVkaW8="));
+            }
         }
     }).await.expect("provider stream must make bounded progress");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chat_tool_images_follow_the_complete_parallel_result_group_on_the_wire() {
+async fn chat_tool_media_follow_the_complete_parallel_result_group_on_the_wire() {
     use maka_model::prompt::{AssistantPart, ContentPart, FileData, Message, ToolOutput};
 
     tokio::time::timeout(Duration::from_secs(30), async {
         let executor = ModelExecutor::new(1, Duration::from_secs(10)).unwrap();
-        for kind in [ProviderKind::OpenaiChat, ProviderKind::OpenaiCompatible { name: "fixture".into() }] {
+        for (kind, mime) in [ProviderKind::OpenaiChat, ProviderKind::OpenaiCompatible { name: "fixture".into() }].into_iter().flat_map(|kind| ["image/png", "audio/wav"].map(|mime| (kind.clone(), mime))) {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
             let server = tokio::spawn(async move {
@@ -241,7 +248,7 @@ async fn chat_tool_images_follow_the_complete_parallel_result_group_on_the_wire(
             for id in ["first", "second"] {
                 input.prompt.push(Message::tool(id, "echo", ToolOutput::Content(vec![
                     ContentPart::text(format!("result-{id}")),
-                    ContentPart::File { data: FileData::Data("aW1hZ2U=".into()), media_type: "image/png".into(), provider_options: None },
+                    ContentPart::File { data: FileData::Data("aW1hZ2U=".into()), media_type: mime.into(), provider_options: None },
                 ])));
             }
             if append_user { input.prompt.push(Message::user("compare these images")); }
@@ -262,9 +269,13 @@ async fn chat_tool_images_follow_the_complete_parallel_result_group_on_the_wire(
             let images = messages[4]["content"].as_array().unwrap();
             assert_eq!(images.len(), 4);
             for (index, id) in [(0, "first"), (2, "second")] {
-                assert_eq!(images[index]["text"], format!("Image from tool echo ({id}):"));
-                assert_eq!(images[index + 1]["type"], "image_url");
-                assert_eq!(images[index + 1]["image_url"]["url"], "data:image/png;base64,aW1hZ2U=");
+                assert_eq!(images[index]["text"], format!("{} from tool echo ({id}):", if mime.starts_with("audio/") { "Audio" } else { "Image" }));
+                if mime.starts_with("audio/") {
+                    assert_eq!(images[index + 1], json!({"type":"input_audio","input_audio":{"data":"aW1hZ2U=","format":"wav"}}));
+                } else {
+                    assert_eq!(images[index + 1]["type"], "image_url");
+                    assert_eq!(images[index + 1]["image_url"]["url"], "data:image/png;base64,aW1hZ2U=");
+                }
             }
         }
     }).await.expect("Chat image projection must make bounded progress");

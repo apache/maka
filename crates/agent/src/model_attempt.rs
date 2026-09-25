@@ -200,14 +200,13 @@ pub(super) async fn execute(
         .await;
     };
     let mut failures = 0;
-    let mut refreshed = None;
     loop {
         // Each physical request gets a new step and the same frozen inputs.
         // Never reuse a request shortened by Responses continuation preparation.
         let result = execute_once(
             inner,
             input,
-            refreshed.as_ref().unwrap_or(source),
+            source,
             prompt.clone(),
             definitions.clone(),
             Attempt::Main {
@@ -236,37 +235,6 @@ pub(super) async fn execute(
             biased;
             _ = cancellation.cancelled() => return Err(RunError::Cancelled),
             _ = tokio::time::sleep(delay) => {}
-        }
-        if matches!(
-            input.work,
-            crate::RunWork::Continuation { .. } | crate::RunWork::Handoff { .. }
-        ) {
-            let next = inner
-                .log
-                .read_model_context(
-                    &input.invocation.session_id,
-                    Some(&input.invocation.invocation_id),
-                    10_000,
-                    8 * 1024 * 1024,
-                )
-                .await?;
-            let replay = self::prompt(
-                inner,
-                input,
-                &next,
-                ModelPurpose::Main,
-                cancellation,
-                continuation_base,
-                &input.invocation.invocation_id,
-                false,
-            )
-            .await?;
-            if surface.apply(replay) != prompt {
-                return Err(RunError::ReconciliationRequired(
-                    "continuation retry changed frozen model input".into(),
-                ));
-            }
-            refreshed = Some(next);
         }
     }
 }

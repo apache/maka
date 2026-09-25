@@ -67,7 +67,7 @@ impl Plugin for Builtin {
             });
             let tool = PluginTool::new(ToolRegistration {
                 definition: ToolDefinition {
-                    provider: None,
+                    freeform: None, output_schema: None, provider: None,
                     name: TOOL.into(),
                     description: "Check a tracked background task returned by Shell and optionally \
                         an HTTP(S) endpoint. Reports process state separately from HTTP readiness; \

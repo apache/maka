@@ -178,7 +178,7 @@ async fn run(mode: ToolMode, cut: Cut, cells: CodeExecutor) {
         input: if mode == ToolMode::Direct {
             json!({})
         } else {
-            json!({"code":format!("try {{ return await tools.{tool}({{}}); }} catch (_) {{ return {{caught:true}}; }}")})
+            json!({"code":format!("try {{ text(await tools.{tool}({{}})); }} catch (_) {{ text({{caught:true}}); }}")})
         },
         provider_options: None,
         provider_executed: false,

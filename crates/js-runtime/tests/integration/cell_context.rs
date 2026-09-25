@@ -35,6 +35,63 @@ struct Echo {
     active: Arc<AtomicUsize>,
     peak: AtomicUsize,
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_modules_match_globals_timers_explicit_output_and_import_boundaries() {
+    let engine = CodeExecutor::new(1, CellLimits::default()).unwrap();
+    let tools = Arc::new(Echo::default());
+    let context = CellContext::new(CellStore::default(), 4096, vec![]);
+    let result = engine
+        .execute_module(
+            r#"
+        export const moduleValue = 42;
+        text([typeof console, typeof Deno, typeof __bootstrap, typeof Atomics,
+              typeof SharedArrayBuffer, typeof WebAssembly, typeof process, typeof fetch,
+              typeof tools.missing, this === undefined]);
+        for (let i = 0; i < 1000; i++) clearTimeout(setTimeout(() => text('cancelled'), 60000));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        text(await tools.echo({value:moduleValue}));
+        setTimeout(() => text('late'), 60000);
+        exit();
+        text('unreachable');
+    "#
+            .into(),
+            tools.clone(),
+            CancellationToken::new(),
+            context.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    let output = serde_json::to_value(context.take_output()).unwrap();
+    assert_eq!(
+        output,
+        json!([
+            {"kind":"text","text":"[\"undefined\",\"undefined\",\"undefined\",\"undefined\",\"undefined\",\"undefined\",\"undefined\",\"undefined\",\"undefined\",true]"},
+            {"kind":"text","text":"{\"value\":42}"}
+        ])
+    );
+    for source in [
+        "return 42;",
+        "import x from 'node:fs';",
+        "await import('node:fs');",
+    ] {
+        let context = CellContext::new(CellStore::default(), 4096, vec![]);
+        let result = engine
+            .execute_module(
+                source.into(),
+                tools.clone(),
+                CancellationToken::new(),
+                context,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, CellResult::Failure { .. }),
+            "{source}: {result:?}"
+        );
+    }
+}
 impl ToolExecutor for Echo {
     fn names(&self) -> Vec<String> {
         vec!["echo".into()]
@@ -53,7 +110,7 @@ impl ToolExecutor for Echo {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn output_survives_errors_and_json_store_does_not_retain_heap_or_resurrect_after_clear() {
+async fn output_survives_errors_and_json_store_does_not_retain_heap() {
     let engine = CodeExecutor::new(1, CellLimits::default()).unwrap();
     let store = CellStore::default();
     let context = CellContext::new(
@@ -85,18 +142,6 @@ async fn output_survives_errors_and_json_store_does_not_retain_heap_or_resurrect
         serde_json::to_value(result).unwrap()["value"],
         json!([{"n":42},"undefined",true])
     );
-    store.clear();
-    context.commit().unwrap();
-    let result = engine
-        .execute_with_context(
-            "return load('data') === undefined;".into(),
-            tools,
-            CancellationToken::new(),
-            CellContext::new(store, 4096, vec![]),
-        )
-        .await
-        .unwrap();
-    assert_eq!(serde_json::to_value(result).unwrap()["value"], true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

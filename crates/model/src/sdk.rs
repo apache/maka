@@ -67,6 +67,11 @@ pub(super) async fn stream(
     } = context;
     #[derive(Serialize)]
     struct Tools<'a>(#[serde(serialize_with = "serialize_tools")] &'a [ToolDefinition]);
+    request.prompt = crate::prompt::notification_fallback(request.prompt);
+    audio_fallback(
+        &mut request.prompt,
+        matches!(request.provider.kind, crate::ProviderKind::Anthropic),
+    );
     if matches!(
         request.provider.kind,
         crate::ProviderKind::OpenaiChat | crate::ProviderKind::OpenaiCompatible { .. }
@@ -116,6 +121,46 @@ pub(super) async fn stream(
                     normalizer.end()
                 },
             }
+        }
+    }
+}
+
+// The locked Messages SDK has no audio content type. Chat SDKs support WAV/MP3.
+// Preserve an explicit observation instead of dropping media or fabricating bytes.
+fn audio_fallback(messages: &mut [crate::prompt::Message], anthropic: bool) {
+    use crate::prompt::{ContentPart, FileData, Message, ToolOutput};
+    fn project(parts: &mut [ContentPart], anthropic: bool) {
+        for part in parts {
+            if let ContentPart::File {
+                media_type,
+                data: FileData::Data(data),
+                ..
+            } = part
+                && media_type.starts_with("audio/")
+                && (anthropic
+                    || !matches!(
+                        media_type.as_str(),
+                        "audio/wav" | "audio/mpeg" | "audio/mp3"
+                    ))
+            {
+                *part = ContentPart::text(format!(
+                    "Audio input ({media_type}, {} base64 characters) is not supported by this model adapter. The audio remains in the tool evidence.",
+                    data.len()
+                ));
+            }
+        }
+    }
+    for message in messages {
+        match message {
+            Message::User { content, .. } => project(content, anthropic),
+            Message::Tool { content, .. } => {
+                for result in content {
+                    if let ToolOutput::Content(parts) = &mut result.output {
+                        project(parts, anthropic);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

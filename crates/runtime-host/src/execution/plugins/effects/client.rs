@@ -92,6 +92,8 @@ impl Executions {
                         offer: offer_index,
                         tool: tool_index,
                         definition: ToolDefinition {
+                            freeform: None,
+                            output_schema: None,
                             provider: None,
                             name: name.clone(),
                             description: tool.description.clone().unwrap_or_else(|| {

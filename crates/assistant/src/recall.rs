@@ -98,6 +98,8 @@ impl Plugin for Builtin {
             for (name, description, schema) in definitions() {
                 let tool = PluginTool::new(ToolRegistration {
                     definition: ToolDefinition {
+                        freeform: None,
+                        output_schema: None,
                         provider: None,
                         name: name.into(),
                         description: description.into(),

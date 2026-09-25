@@ -227,7 +227,7 @@ async fn exact_envelopes_and_structured_diagnostics() {
     for (source, kind) in [
         ("return (;", "parse_error"),
         ("throw new SyntaxError('unknown tool');", "execution_error"),
-        ("await tools.missing({});", "unknown_tool"),
+        ("await tools.missing({});", "execution_error"),
         (
             "throw {kind: 'tool_failure', message: 'fake'};",
             "execution_error",

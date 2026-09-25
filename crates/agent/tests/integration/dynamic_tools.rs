@@ -56,14 +56,12 @@ fn visible(request: &Value, mode: ToolMode) -> Vec<String> {
         assert_eq!(wire.len(), 2);
         assert_eq!(wire[0]["function"]["name"], "exec");
         let description = wire[0]["function"]["description"].as_str().unwrap();
-        let (_, definitions) = description
-            .split_once("Available nested functions:\n")
-            .unwrap();
+        let (_, definitions) = description.split_once("declare const tools: {\n").unwrap();
         definitions
             .lines()
             .filter_map(|line| {
                 line.split_once("(input:")
-                    .and_then(|(name, _)| serde_json::from_str::<String>(name).ok())
+                    .map(|(name, _)| name.trim().to_string())
             })
             .collect()
     } else {
@@ -89,8 +87,7 @@ pub(super) async fn respond_tools(socket: &mut TcpStream, mut calls: Vec<Value>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn search_activates_next_step_and_only_committed_compaction_unloads_direct_and_nested_tools()
-{
+async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_mode() {
     tokio::time::timeout(std::time::Duration::from_secs(45), async {
         for mode in [ToolMode::Direct, ToolMode::CodeMode] {
             for compact in [false, true] {
@@ -103,28 +100,26 @@ async fn search_activates_next_step_and_only_committed_compaction_unloads_direct
                 let server = tokio::spawn(async move {
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let first = fixture::read_request(&mut socket).await;
-                    assert_eq!(visible(&first, mode), ["tool_search"]);
+                    assert_eq!(visible(&first, mode), if mode == ToolMode::Direct { vec!["tool_search".to_string()] } else { vec![] });
                     let calls = if mode == ToolMode::Direct {
                         vec![call("search", "tool_search", json!({"query":"echo"})),
                              call("premature", "echo", json!({"n":1}))]
                     } else {
-                        vec![call("search", "exec", json!({"code":"const result = await tools.tool_search({query:'echo'}); let blocked = false; try { await tools.echo({n:1}); } catch { blocked = true; } return {result, blocked};"}))]
+                        vec![call("search", "exec", json!({"code":"const tool = ALL_TOOLS.find(t => t.name === 'echo'); text(tool.description); text(await tools[tool.name]({n:1}));"}))]
                     };
                     respond_tools(&mut socket, calls, 10).await;
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let second = fixture::read_request(&mut socket).await;
                     let definitions = visible(&second, mode);
-                    assert!(definitions.iter().any(|name| name == "echo"));
-                    assert_eq!(observed.load(Ordering::SeqCst), 0, "search cannot widen the current step or cell");
+                    assert_eq!(definitions.iter().any(|name| name == "echo"), mode == ToolMode::Direct);
+                    assert_eq!(observed.load(Ordering::SeqCst), usize::from(mode == ToolMode::CodeMode));
                     if mode == ToolMode::CodeMode {
                         let result = second["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
-                        let envelope: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
-                        assert_eq!(envelope["result"]["value"]["blocked"], true);
-                        assert_eq!(envelope["result"]["value"]["result"]["activated"], json!(["echo"]));
+                        assert!(result["content"].as_str().unwrap().contains("echo(input:"));
                     }
                     let call = if mode == ToolMode::Direct {
                         call("use", "echo", json!({"n":2}))
-                    } else { call("use", "exec", json!({"code":"return await tools.echo({n:2});"})) };
+                    } else { call("use", "exec", json!({"code":"text(await tools.echo({n:2}));"})) };
                     respond_tools(&mut socket, vec![call], 200).await;
                     for _ in 0..if compact { 1 } else { 2 } {
                         let (mut socket, _) = listener.accept().await.unwrap();
@@ -136,12 +131,12 @@ async fn search_activates_next_step_and_only_committed_compaction_unloads_direct
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let final_request = fixture::read_request(&mut socket).await;
                     let definitions = visible(&final_request, mode);
-                    assert_eq!(definitions.iter().any(|name| name == "echo"), !compact);
-                    assert!(definitions.iter().any(|name| name == "tool_search"));
+                    assert_eq!(definitions.iter().any(|name| name == "echo"), !compact && mode == ToolMode::Direct);
+                    assert_eq!(definitions.iter().any(|name| name == "tool_search"), mode == ToolMode::Direct);
                     fixture::respond(&mut socket, "done", "stop").await;
                 });
                 let catalog = ToolCatalog::new([ToolRegistration {
-                    definition: ToolDefinition { provider: None, name: "echo".into(), description: "Echo an integer".into(),
+                    definition: ToolDefinition { freeform: None, output_schema: None, provider: None, name: "echo".into(), description: "Echo an integer".into(),
                         input_schema: json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":false}) },
                     nesting: ToolNesting::Nestable, semantics: ToolSemantics::Parallel,
                     handler: ToolHandler::Immediate(Arc::new(Echo(effects.clone()))),
@@ -154,10 +149,10 @@ async fn search_activates_next_step_and_only_committed_compaction_unloads_direct
                 engine.run(input, CancellationToken::new()).await.unwrap();
                 engine.drain().await;
                 server.await.unwrap();
-                assert_eq!(effects.load(Ordering::SeqCst), 1);
+                assert_eq!(effects.load(Ordering::SeqCst), if mode == ToolMode::Direct { 1 } else { 2 });
                 let prefix = log.prefix(200, 1024 * 1024).await.unwrap();
                 assert_eq!(prefix.events.iter().filter(|e| matches!(e.event.fact, Fact::ContextCheckpointRecorded { .. })).count(), usize::from(compact));
-                assert_eq!(prefix.events.iter().filter(|e| matches!(&e.event.fact, Fact::ToolDispatched { name, .. } if name == "tool_search")).count(), 1);
+                assert_eq!(prefix.events.iter().filter(|e| matches!(&e.event.fact, Fact::ToolDispatched { name, .. } if name == "tool_search")).count(), usize::from(mode == ToolMode::Direct));
                 if mode == ToolMode::Direct {
                     assert_eq!(prefix.events.iter().filter(|e| matches!(&e.event.fact, Fact::ToolRejected { name, .. } if name == "echo")).count(), 1);
                 }

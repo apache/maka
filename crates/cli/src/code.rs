@@ -249,7 +249,7 @@ pub(super) async fn run(args: Args) -> Result<(), maka_runtime_host::server::Hos
         Ok(output) => {
             println!(
                 "{}",
-                json!({"invocation": invocation, "output": output, "content": context.take_output()})
+                json!({"invocation": invocation, "output": output, "content": context.take_output(), "notifications":context.take_notifications()})
             );
             if let CellResult::Failure { error, .. } = output {
                 return Err(error.message.into());

@@ -53,6 +53,8 @@ impl ToolExecutor for Large {
 fn catalog(count: Arc<AtomicUsize>, repeats: usize) -> ToolCatalog {
     ToolCatalog::new([ToolRegistration {
         definition: ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: "Read".into(),
             description: "fixture".into(),

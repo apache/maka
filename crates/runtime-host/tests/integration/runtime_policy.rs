@@ -106,7 +106,7 @@ async fn model_tool_preferences_freeze_each_run_and_survive_reopen() {
                     true,
                 )
                 .await;
-                request.reply.send(json!({"index":0,"delta":{"tool_calls":[{"index":0,"id":"cell","type":"function","function":{"name":"exec","arguments":"{\"code\":\"return 1;\"}"}}]},"finish_reason":"tool_calls"})).unwrap();
+                request.reply.send(json!({"index":0,"delta":{"tool_calls":[{"index":0,"id":"cell","type":"function","function":{"name":"exec","arguments":"{\"code\":\"text(1);\"}"}}]},"finish_reason":"tool_calls"})).unwrap();
                 let next =
                     tokio::time::timeout(std::time::Duration::from_secs(10), requests.recv())
                         .await

@@ -304,17 +304,15 @@ impl EventLog {
                             &mut target.projection
                     {
                         for part in parts {
-                            if let maka_runtime::tool_output::ProjectionPart::Artifact { image } =
-                                part
-                            {
+                            if let Some(reference) = part.reference_mut() {
                                 let maka_runtime::attachment::StorageRef::SessionFile {
                                     session_id,
                                     relative_path,
-                                } = &image.reference
+                                } = &*reference
                                 else {
                                     return Err(ArchiveError::Corrupt.into());
                                 };
-                                image.reference = crate::artifacts::history::resolve(
+                                *reference = crate::artifacts::history::resolve(
                                     &mut tx,
                                     &session,
                                     session_id,

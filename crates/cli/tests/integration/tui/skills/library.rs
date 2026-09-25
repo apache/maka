@@ -131,7 +131,10 @@ fn skill_library_import_install_update_and_reviewed_delete_through_real_host_pty
         .unwrap();
     assert_eq!(item["enabled"], true);
     assert_eq!(item["pinned"], true);
-    assert_eq!(item["path"], installed.to_str().unwrap());
+    assert_eq!(
+        item["path"],
+        installed.canonicalize().unwrap().to_str().unwrap()
+    );
     let picked_candidate = runtime
         .block_on(candidate(&client))
         .expect("installed exact reference is selectable");

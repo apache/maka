@@ -64,6 +64,7 @@ fn frozen_body_and_source_hash_match_typescript_serializers() {
                 },
                 ProjectionPart::Artifact {
                     image: ImageOutput {
+                        detail: None,
                         mime_type: "image/png".into(),
                         reference: StorageRef::SessionFile {
                             session_id: "session".into(),
@@ -257,6 +258,7 @@ fn pruning_freezes_a_bounded_first_page_with_lossless_read_continuation() {
                 },
                 ProjectionPart::Artifact {
                     image: ImageOutput {
+                        detail: None,
                         mime_type: "image/png".into(),
                         reference: StorageRef::SessionFile {
                             session_id: "session".into(),

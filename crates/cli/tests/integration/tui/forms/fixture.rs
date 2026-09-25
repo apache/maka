@@ -89,12 +89,12 @@ pub(super) async fn start(root: &std::path::Path, workspace: &std::path::Path) -
                     );
                     tool(
                         "exec",
-                        json!({"code":"return await tools.tool_search({query:\"mcp__tui_forms__collect\"});"}),
+                        json!({"code":"text(ALL_TOOLS.filter(t => t.name === \"mcp__tui_forms__collect\"));"}),
                     )
                 }
                 2 => tool(
                     "exec",
-                    json!({"code":"return await tools.mcp__tui_forms__collect({});","yield_time_ms":1000}),
+                    json!({"code":"text(await tools.mcp__tui_forms__collect({}));","yield_time_ms":1000}),
                 ),
                 _ => {
                     let result = answer
@@ -107,18 +107,16 @@ pub(super) async fn start(root: &std::path::Path, workspace: &std::path::Path) -
                         result,
                         json!({"action":"accept","values":{"name":"中文🦀","count":2.0,"enabled":false}})
                     );
-                    let last: Value = serde_json::from_str(
-                        body["messages"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .rev()
-                            .find(|message| message["role"] == "tool")
-                            .unwrap()["content"]
-                            .as_str()
-                            .unwrap(),
-                    )
-                    .unwrap();
+                    let output = body["messages"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .rev()
+                        .find(|message| message["role"] == "tool")
+                        .unwrap()["content"]
+                        .as_str()
+                        .unwrap();
+                    let last: Value = serde_json::from_str(output.lines().next().unwrap()).unwrap();
                     if last["state"] == "running" {
                         tool(
                             "wait",
@@ -126,7 +124,7 @@ pub(super) async fn start(root: &std::path::Path, workspace: &std::path::Path) -
                         )
                     } else {
                         assert_eq!(last["state"], "completed", "{last}");
-                        assert!(last.to_string().contains("中文🦀"), "{last}");
+                        assert!(output.contains("中文🦀"), "{output}");
                         json!({"content":"Form received exactly once"})
                     }
                 }

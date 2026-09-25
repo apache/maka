@@ -184,6 +184,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Json;
+  outputSchema?: Json;
   provider?: ProviderTool;
   directOnly?: boolean;
   alwaysVisible?: boolean;
