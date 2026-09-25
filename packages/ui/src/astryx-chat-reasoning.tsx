@@ -24,6 +24,7 @@
 import { useState, type HTMLAttributes, type ReactNode } from 'react';
 import { Icon } from '@astryxdesign/core/Icon';
 import { mergeProps, themeProps } from '@astryxdesign/core/utils';
+import { ICON_SIZE } from './icons.js';
 
 export interface ChatReasoningProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
@@ -34,7 +35,7 @@ export interface ChatReasoningProps extends HTMLAttributes<HTMLDivElement> {
 
 function ThinkingIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+    <svg width={ICON_SIZE.meta} height={ICON_SIZE.meta} viewBox="0 0 14 14" fill="none" aria-hidden="true">
       <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2" />
       <circle cx="5.5" cy="7" r="0.75" fill="currentColor" />
       <circle cx="8.5" cy="7" r="0.75" fill="currentColor" />
