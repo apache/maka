@@ -299,9 +299,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 8px;
-  /* Block-axis clip for the disclosure wipe only: Astryx tool rows overhang
-     their text by 4px on each inline edge for their hover surface, so the
-     inline axis must stay unclipped. */
+  /* Block-axis clip for the disclosure wipe only. */
   overflow-y: clip;
 }
 /* Astryx ChatReasoning and ChatToolCalls bring their own top margin, which
