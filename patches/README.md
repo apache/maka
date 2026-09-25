@@ -280,7 +280,8 @@ When measured rows above the reader shrink the list, the browser clamps
 correction is a relative `scrollBy` unless its target lies at an edge, so the
 clamp and the correction both land: reading upwards from the tail skipped
 ~2300px and several Turns. The patch also takes the absolute path when the live
-offset already sits at the maximum. `scripts/perf/geometry-ablation.mjs
+offset is within a pixel of the maximum: the browser clamps to rounded DOM
+sizes while virtua's maximum keeps the fractional part. `scripts/perf/geometry-ablation.mjs
 --assert-stable` and the `upward-traversal-holds-turn-geometry` story under CPU
 throttle fail without it.
 

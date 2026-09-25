@@ -1,5 +1,5 @@
 diff --git a/node_modules/virtua/lib/index.cjs b/node_modules/virtua/lib/index.cjs
-index 0153fca..787d582 100644
+index 0153fca..7481c9e 100644
 --- a/node_modules/virtua/lib/index.cjs
 +++ b/node_modules/virtua/lib/index.cjs
 @@ -361,8 +361,8 @@ n), S = e => l(e.t(), e.o()), _ = ({l: e, i: t, u: o, h: n, $: r, p: c, t: a, m:
@@ -9,12 +9,12 @@ index 0153fca..787d582 100644
 -            const r = e.M() + t;
 -            r <= 0 || r >= e.O() + e.t() - e.o() ? y(r) : o.scrollBy({
 +            const r = e.M() + t, edge = e.O() + e.t() - e.o();
-+            r <= 0 || r >= edge || z() >= edge ? y(r) : o.scrollBy({
++            r <= 0 || r >= edge || z() >= edge - 1 ? y(r) : o.scrollBy({
                  [_]: v(t),
                  behavior: "instant"
              }), n && (i && i(), e.o() > e.t() && e.A(1, z()));
 diff --git a/node_modules/virtua/lib/index.js b/node_modules/virtua/lib/index.js
-index eac48a4..caa3213 100644
+index eac48a4..935ccfa 100644
 --- a/node_modules/virtua/lib/index.js
 +++ b/node_modules/virtua/lib/index.js
 @@ -361,8 +361,8 @@ f), b = e => h(e.t(), e.o()), k = ({l: e, i: t, u: o, h: n, $: r, p: s, t: l, m:
@@ -24,7 +24,7 @@ index eac48a4..caa3213 100644
 -            const r = e.M() + t;
 -            r <= 0 || r >= e.O() + e.t() - e.o() ? z(r) : o.scrollBy({
 +            const r = e.M() + t, edge = e.O() + e.t() - e.o();
-+            r <= 0 || r >= edge || v() >= edge ? z(r) : o.scrollBy({
++            r <= 0 || r >= edge || v() >= edge - 1 ? z(r) : o.scrollBy({
                  [p]: m(t),
                  behavior: "instant"
              }), n && (i && i(), e.o() > e.t() && e.W(1, v()));
