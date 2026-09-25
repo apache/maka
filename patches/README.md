@@ -272,3 +272,17 @@ are not exported. Delete the re-export when upstream exports
 #6411 — keeping the composer call site on whatever upstream ships.
 
 Delete each hunk when the corresponding behavior ships in Astryx.
+
+## `virtua@0.52.7`
+
+When measured rows above the reader shrink the list, the browser clamps
+`scrollTop` to the new maximum before virtua corrects for the shrink. virtua's
+correction is a relative `scrollBy` unless its target lies at an edge, so the
+clamp and the correction both land: reading upwards from the tail skipped
+~2300px and several Turns. The patch also takes the absolute path when the live
+offset already sits at the maximum. `scripts/perf/geometry-ablation.mjs
+--assert-stable` and the `upward-traversal-holds-turn-geometry` story under CPU
+throttle fail without it.
+
+Delete when upstream applies the correction absolutely after a clamp
+(inokawa/virtua#983).
