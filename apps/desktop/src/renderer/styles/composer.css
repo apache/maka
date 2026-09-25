@@ -40,6 +40,21 @@
   max-width: var(--maka-reading-measure);
 }
 
+.maka-composer-editor {
+  --maka-editor-padding-block: var(--space-1);
+}
+
+/* An empty scrolling contenteditable can lose its line box when shown under
+   an inert session-switching parent (#5264). Astryx's outer minimum does not
+   protect the caret inside it. Keep one line plus the actual block padding,
+   including compact WorkHub's override, without fixing the multiline height.
+   Match only the editor, not nested contenteditable=false reference tokens;
+   keep the minimum while the editor itself is disabled, too. */
+.maka-composer-editor > [contenteditable] {
+  padding-block: var(--maka-editor-padding-block);
+  min-height: calc(1lh + 2 * var(--maka-editor-padding-block));
+}
+
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered
    compositing surface, so Chromium may re-raster the thin context-gauge paths

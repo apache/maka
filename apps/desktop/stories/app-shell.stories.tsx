@@ -354,6 +354,9 @@ function ComposedShell(props: {
   session?: (Omit<Partial<SessionSummary>, 'id'> & { streaming?: boolean }) | null;
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
+  /** The mainColumn interaction gate and ChatSurfaceLayout visibility in app-shell.tsx. */
+  switchingSession?: boolean;
+  chatHidden?: boolean;
   detailChildren?: ReactNode;
   motionEnabled?: boolean;
   /**
@@ -486,8 +489,9 @@ function ComposedShell(props: {
             // the chat column (app-shell.tsx). `.mainColumn` owns composer
             // padding, so a story without it measures its own box.
             (<div className="maka-detail-with-artifacts">
-              <div className="mainColumn">
+              <div className="mainColumn" inert={props.switchingSession || undefined}>
               <ChatSurfaceLayout
+                hidden={props.chatHidden}
                 composer={
                   <Composer
                     {...baseComposerProps}
@@ -1313,8 +1317,96 @@ export const WaitingForPermission: Story = {
 // half and it is not the same screen — see NewChatComposer below — so this
 // story is the one where the composer still binds to a session.
 export const EmptyHome: Story = {
-  render: () => <ComposedShell chat={{ messages: [] }} />,
+  render: () => <EmptyComposerLifecycle />,
+  play: async ({ canvasElement }) => {
+    const editor = canvasElement.querySelector<HTMLElement>('.maka-composer-editor > [contenteditable]')!;
+    const assertLineBox = () => {
+      const style = getComputedStyle(editor);
+      const required = Number.parseFloat(style.lineHeight)
+        + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      // The editable itself must contain a line, not just the placeholder or
+      // outer wrapper. Before #5264 this becomes 8px: padding with no line box.
+      expect(editor.clientHeight).toBeGreaterThanOrEqual(required);
+      expect(canvasElement.querySelector('.maka-composer-editor > [contenteditable]')).toBe(editor);
+    };
+    const transition = async (next: Partial<EmptyComposerState>) => {
+      expect(setEmptyComposerState).toBeDefined();
+      setEmptyComposerState!(next);
+      // Render each hide/inert boundary; collapsing these into one React
+      // commit would skip the browser layout reconstruction being tested.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    };
+    await waitFor(assertLineBox);
+
+    // Reduced WorkHub/sidebar lifecycle: the frame returns while session
+    // switching still makes its parent inert. Keep the same empty editor DOM.
+    for (const draftKey of ['session:caret-b', 'session:caret-a']) {
+      await transition({ switchingSession: true });
+      await transition({ chatHidden: true });
+      expect(editor.getClientRects()).toHaveLength(0);
+      await transition({ chatHidden: false, draftKey });
+      expect(editor.closest('[inert]')).not.toBeNull();
+      assertLineBox();
+      await transition({ switchingSession: false });
+      expect(editor.closest('[inert]')).toBeNull();
+      assertLineBox();
+    }
+
+    await userEvent.click(editor);
+    await userEvent.keyboard('one{Shift>}{Enter}{/Shift}two{Shift>}{Enter}{/Shift}three');
+    const multilineHeight = editor.clientHeight;
+    expect(multilineHeight).toBeGreaterThan(2 * Number.parseFloat(getComputedStyle(editor).lineHeight));
+    await transition({ draftKey: 'session:caret-b' });
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+    await transition({ draftKey: 'session:caret-a' });
+    await waitFor(() => expect(editor).toHaveTextContent('three'));
+    expect(editor.clientHeight).toBe(multilineHeight);
+    await userEvent.clear(editor);
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+    await transition({ disabled: true });
+    expect(editor).toHaveAttribute('contenteditable', 'false');
+    assertLineBox();
+    await transition({ disabled: false });
+    assertLineBox();
+
+    // A minimum must not turn into a fixed height or defeat the existing cap.
+    await userEvent.click(editor);
+    for (let line = 0; line < 12; line += 1) {
+      await userEvent.keyboard(`${line === 0 ? '' : '{Shift>}{Enter}{/Shift}'}line`);
+    }
+    expect(editor.clientHeight).toBe(Number.parseFloat(getComputedStyle(editor).maxHeight));
+    expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
+    await userEvent.clear(editor);
+    await userEvent.type(editor, 'send and clear');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(emptyComposerSend).toHaveBeenCalledWith('send and clear', undefined));
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+  },
 };
+
+type EmptyComposerState = {
+  switchingSession: boolean;
+  chatHidden: boolean;
+  draftKey: string;
+  disabled: boolean;
+};
+let setEmptyComposerState: ((next: Partial<EmptyComposerState>) => void) | undefined;
+const emptyComposerSend = fn();
+function EmptyComposerLifecycle() {
+  const [state, setState] = useState<EmptyComposerState>({
+    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false,
+  });
+  useEffect(() => {
+    emptyComposerSend.mockClear();
+    setEmptyComposerState = (next) => setState((current) => ({ ...current, ...next }));
+    return () => { setEmptyComposerState = undefined; };
+  }, []);
+  return <ComposedShell chat={{ messages: [] }} switchingSession={state.switchingSession}
+    chatHidden={state.chatHidden} composer={{ draftKey: state.draftKey, disabled: state.disabled, onSend: emptyComposerSend }} />;
+}
 
 // Real path: 新任务 → no session exists yet. The composer swaps
 // ChatModelSwitcher for NewChatModelPicker and drops the thinking selector,
