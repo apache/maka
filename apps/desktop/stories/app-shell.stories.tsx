@@ -1351,6 +1351,11 @@ export const NewChatComposer: Story = {
     await waitFor(() => expect(editor.textContent).toBe(''));
     await expect(editor.getBoundingClientRect().height).toBe(initialEditorHeight);
     await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
+
+    const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
+    await expect(projectPicker.querySelector('.maka-workspace-picker-end > :last-child svg')).not.toBeNull();
   },
 };
 
@@ -1397,6 +1402,12 @@ export const NewChatComposerProjectPending: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    // The spinner replaces the whole trigger content, host badge included.
+    const end = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker .maka-workspace-picker-end')!;
+    await expect(end.querySelector('.maka-workspace-picker-host-badge')).not.toBeNull();
+    await expect(getComputedStyle(end).visibility).toBe('hidden');
+  },
 };
 
 const longConversation: StoredMessage[] = [

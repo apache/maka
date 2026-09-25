@@ -324,7 +324,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/transcript-scroll-authority.tsx` | ui-composition | ChatLayoutScrollButton | aligned — uses Astryx (ChatLayoutScrollButton) | aligned |
 | `packages/ui/src/ui.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/user-question-prompt.tsx` | ui-composition | Button, ChatComposer, ChatComposerInput | aligned — uses Astryx (Button, ChatComposer, ChatComposerInput) | aligned |
-| `packages/ui/src/workspace-picker.tsx` | ui-composition | DropdownMenu, DropdownMenuItem | aligned — uses Astryx (DropdownMenu, DropdownMenuItem) | aligned |
+| `packages/ui/src/workspace-picker.tsx` | ui-composition | DropdownMenu, DropdownMenuItem, Icon | aligned — uses Astryx (DropdownMenu, DropdownMenuItem, Icon) | aligned |
 
 ## Severity legend
 
