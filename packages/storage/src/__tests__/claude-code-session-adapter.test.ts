@@ -27,6 +27,7 @@ import {
   rm,
   stat,
   truncate,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -850,6 +851,79 @@ describe('ClaudeCodeSessionAdapter', () => {
         new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
         new Set(ids),
       );
+    });
+  });
+
+  test('one session id under two projects resolves to the newest copy', async () => {
+    // A workspace move or a resumed session can leave the same id under more
+    // than one project directory. Listing and reading must pick the same file
+    // — the newest — or a user selects one summary and imports the other's
+    // transcript. The walk is concurrent, so the choice must not depend on
+    // completion order.
+    await withClaudeHome(async (home) => {
+      const id = 'aaaaaaaa-0000-4000-8000-000000000038';
+      const oldPath = await seed(
+        home,
+        id,
+        [
+          userRecord('work in the old place'),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ],
+        '/Users/someone/old-project',
+      );
+      const newPath = await seed(
+        home,
+        id,
+        [
+          userRecord('work in the new place'),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ],
+        '/Users/someone/new-project',
+      );
+      // Both seeds land in the same millisecond, so the winner is made
+      // explicit instead of depending on write order.
+      const past = new Date(Date.now() - 10_000);
+      await utimes(oldPath, past, past);
+      await utimes(newPath, new Date(), new Date());
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      const listed = await adapter.listSessions();
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0]?.cwd, '/Users/someone/new-project');
+      const session = await adapter.readSession(id);
+      assert.equal(session.metadata.cwd, '/Users/someone/new-project');
+    });
+  });
+
+  test('a batch past the pool width lists every session in walk order', async () => {
+    // Listing derives summaries in bounded chunks, so completeness and the
+    // catalog's order (newest transcript first) must survive completion
+    // order. Twenty-four transcripts across three projects is past the pool
+    // width; distinct mtimes make the walk order total.
+    await withClaudeHome(async (home) => {
+      const ids: string[] = [];
+      for (let index = 0; index < 24; index++) {
+        const id = `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, '0')}`;
+        ids.push(id);
+        const path = await seed(
+          home,
+          id,
+          [userRecord('common prompt'), assistantRecord({ text: 'ok', stopReason: 'end_turn' })],
+          `/Users/someone/project-${index % 3}`,
+        );
+        // Ascending mtimes: index 0 oldest, 23 newest.
+        const at = new Date(Date.now() + index * 1000);
+        await utimes(path, at, at);
+      }
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      const listed = await adapter.listSessions();
+      assert.equal(listed.length, 24);
+      assert.deepEqual(
+        listed.map((summary) => summary.id),
+        [...ids].reverse(),
+      );
+      await adapter.readSession(ids[5]!);
     });
   });
 

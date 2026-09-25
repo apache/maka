@@ -93,6 +93,45 @@ const CLAUDE_CATALOG_SUMMARY_TAIL_BYTES = 256 * 1024;
  *  joined onto a path. */
 const SESSION_ID_PATTERN = /^[0-9a-fA-F-]{1,128}$/u;
 
+/** Transcript derivations in flight during one listing. The point of
+ *  concurrency is to overlap the thread-pool round trips (stat, open, read)
+ *  with the parsing, not to hold every transcript's window at once: an
+ *  unbounded fan-out would open one descriptor per session and buffer every
+ *  candidate's summary windows concurrently — bounded only by the corpus
+ *  size. A pool of 8 keeps libuv's default 4-thread pool saturated while
+ *  capping open descriptors at 8 and peak buffers at 8 × 512 KiB. */
+const LIST_CONCURRENCY = 8;
+
+/** Maps with at most `limit` of `worker`'s promises in flight, results in
+ *  input order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index]!);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
+/** One transcript the walk selected, carrying what its single `stat` observed.
+ *  The mtime both deduplicates candidates (newest wins) and keys the summary
+ *  cache; the size feeds the cache key's staleness check — one stat serves
+ *  all three, and no listing caller stat'ed again. */
+interface TranscriptCandidate {
+  readonly path: string;
+  readonly sessionId: string;
+  readonly mtimeMs: number;
+  readonly size: number;
+}
+
 export interface ClaudeCodeSessionAdapterOptions {
   /** Overrides `~/.claude`. */
   claudeHome?: string;
@@ -169,16 +208,30 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     let matched = 0;
     const files = await this.#transcriptFiles();
     for (const file of files) live.add(file.path);
-    for (const file of files) {
-      const summary = await this.#summaryOf(file.path, file.sessionId);
-      if (!summary) continue;
-      // The shared matcher, not a local cwd comparison: filtering happens here
-      // rather than after paging, and every source has to answer a query the
-      // same way or the catalog lies about which one dropped the term.
-      if (!externalSessionMatchesQuery(summary, query)) continue;
-      if (matched++ < offset) continue;
-      summaries.push(summary);
-      if (summaries.length === limit) break;
+    // Derived in bounded chunks rather than one `await` at a time: each
+    // summary is a stat-open-read round trip through the thread pool, so a
+    // sequential loop serializes waiting rather than work. Whole-set fan-out
+    // would defeat the page budget above — it derives every transcript's
+    // summary where the loop stops at the first full page — so the chunk
+    // boundaries double as early-exit points: at most one chunk of extra
+    // derivations past a full page, all of them cache entries the next page
+    // (or the next search term) reuses. `#summaryOf` never throws and only
+    // touches the cache at distinct keys, and results are consumed in `files`
+    // order, so the paged list is the one the sequential loop produced.
+    for (let start = 0; start < files.length; start += LIST_CONCURRENCY) {
+      const chunk = files.slice(start, start + LIST_CONCURRENCY);
+      const derived = await Promise.all(chunk.map((file) => this.#summaryOf(file)));
+      for (const summary of derived) {
+        if (!summary) continue;
+        // The shared matcher, not a local cwd comparison: filtering happens here
+        // rather than after paging, and every source has to answer a query the
+        // same way or the catalog lies about which one dropped the term.
+        if (!externalSessionMatchesQuery(summary, query)) continue;
+        if (matched++ < offset) continue;
+        summaries.push(summary);
+        if (summaries.length === limit) break;
+      }
+      if (summaries.length >= limit) break;
     }
     // A transcript the source no longer lists must not keep its entry alive,
     // or a long-lived Host grows one per deleted session.
@@ -199,18 +252,15 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
    *
    * `undefined` is cached too: a sidechain transcript or an unreadable one is
    * a stable answer, and re-deriving it every list would defeat the point.
+   *
+   * The cache key is the walk's own stat, not a fresh one taken here: within
+   * a listing that makes the newest-wins choice and the cache key one
+   * observation of one file rather than two that can disagree. A transcript
+   * appended after the walk lands in the cache under the older key, and the
+   * next listing — which sees the new mtime — re-reads it.
    */
-  async #summaryOf(path: string, sessionId: string): Promise<ExternalSessionSummary | undefined> {
-    let mtimeMs: number;
-    let size: number;
-    try {
-      const info = await stat(path);
-      mtimeMs = info.mtimeMs;
-      size = info.size;
-    } catch {
-      this.#summaries.delete(path);
-      return undefined;
-    }
+  async #summaryOf(file: TranscriptCandidate): Promise<ExternalSessionSummary | undefined> {
+    const { path, sessionId, mtimeMs, size } = file;
     const cached = this.#summaries.get(path);
     if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.summary;
 
@@ -245,9 +295,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     return join(this.#home, 'projects');
   }
 
-  async #transcriptFiles(): Promise<
-    ReadonlyArray<{ path: string; sessionId: string; mtimeMs: number }>
-  > {
+  async #transcriptFiles(): Promise<ReadonlyArray<TranscriptCandidate>> {
     const root = this.#projectsRoot();
     let projects: string[];
     try {
@@ -257,45 +305,63 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     } catch {
       return [];
     }
+    // Listing one project and stating one file are each a round trip through
+    // the thread pool, so the walk is concurrent rather than one await at a
+    // time — the cost of a full scan is latency-bound, not work-bound. The
+    // pool cap bounds open directory handles during the walk. A project that
+    // fails to list or a file that vanishes mid-scan is dropped per item,
+    // exactly as the sequential loop dropped it.
+    const listings = await mapWithConcurrency(projects, LIST_CONCURRENCY, async (project) => {
+      try {
+        return (await readdir(join(root, project), { withFileTypes: true })).filter(
+          (entry) => entry.isFile() && entry.name.endsWith('.jsonl'),
+        );
+      } catch {
+        return [];
+      }
+    });
+    const resolvedRoot = resolve(root);
+    const candidates: { path: string; sessionId: string }[] = [];
+    for (const [index, project] of projects.entries()) {
+      for (const entry of listings[index]) {
+        const sessionId = entry.name.slice(0, -'.jsonl'.length);
+        if (!SESSION_ID_PATTERN.test(sessionId)) continue;
+        const path = join(root, project, entry.name);
+        // The id reaches a path join, so the resolved file must still be under
+        // the projects root — a crafted id must not read outside it.
+        if (!resolve(path).startsWith(resolvedRoot)) continue;
+        candidates.push({ path, sessionId });
+      }
+    }
+    // One stat per file, kept: the mtime decides the newest-wins winner and
+    // the summary cache key, the size completes that key.
+    const stats = await mapWithConcurrency(candidates, LIST_CONCURRENCY, async (candidate) => {
+      try {
+        const info = await stat(candidate.path);
+        return { mtimeMs: info.mtimeMs, size: info.size };
+      } catch {
+        return undefined;
+      }
+    });
     // Keyed by session id: the same id can legitimately exist under more than
     // one project directory after a workspace move or a resumed session. Two
     // files with one id are two candidates for the same source session, and
     // list and read must pick the same one or a user selects one summary and
     // imports the other.
-    const bySessionId = new Map<string, { path: string; sessionId: string; mtimeMs: number }>();
-    for (const project of projects) {
-      let entries: string[];
-      try {
-        entries = (await readdir(join(root, project), { withFileTypes: true }))
-          .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
-          .map((entry) => entry.name);
-      } catch {
-        continue;
-      }
-      for (const name of entries) {
-        const sessionId = name.slice(0, -'.jsonl'.length);
-        if (!SESSION_ID_PATTERN.test(sessionId)) continue;
-        const path = join(root, project, name);
-        // The id reaches a path join, so the resolved file must still be under
-        // the projects root — a crafted id must not read outside it.
-        if (!resolve(path).startsWith(resolve(root))) continue;
-        let mtimeMs: number;
-        try {
-          mtimeMs = (await stat(path)).mtimeMs;
-        } catch {
-          continue;
-        }
-        const existing = bySessionId.get(sessionId);
-        // Newest wins, and the path breaks a tie so the choice does not depend
-        // on directory iteration order. A resumed session's continuation is
-        // the copy a user means when they pick that id.
-        if (
-          !existing ||
-          mtimeMs > existing.mtimeMs ||
-          (mtimeMs === existing.mtimeMs && path < existing.path)
-        ) {
-          bySessionId.set(sessionId, { path, sessionId, mtimeMs });
-        }
+    const bySessionId = new Map<string, TranscriptCandidate>();
+    for (const [index, { path, sessionId }] of candidates.entries()) {
+      const observed = stats[index];
+      if (observed === undefined) continue;
+      const existing = bySessionId.get(sessionId);
+      // Newest wins, and the path breaks a tie so the choice does not depend
+      // on directory iteration order. A resumed session's continuation is
+      // the copy a user means when they pick that id.
+      if (
+        !existing ||
+        observed.mtimeMs > existing.mtimeMs ||
+        (observed.mtimeMs === existing.mtimeMs && path < existing.path)
+      ) {
+        bySessionId.set(sessionId, { path, sessionId, ...observed });
       }
     }
     return [...bySessionId.values()].sort(
