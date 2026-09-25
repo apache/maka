@@ -515,10 +515,10 @@ impl Decoder {
                 self.observed_output = true;
                 out.push(ModelEvent::ToolCall(ModelToolCall {
                     id: call_id,
-                    name,
+                    name: crate::request::local_name(&name).into(),
                     input: json!(input),
                     provider_executed: false,
-                    provider_options: Some(json!({"openai":{"itemId":id}})),
+                    provider_options: Some(json!({"openai":{"itemId":id,"toolKind":"custom"}})),
                 }));
             }
             Item::Search { id, action, status } => {
@@ -711,6 +711,98 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn freeform_source_and_call_kind_survive_decode_and_history_replay_without_catalog() {
+        use maka_runtime::{
+            model::prompt::{AssistantPart, Message, ToolOutput},
+            tools::FreeformGrammar,
+        };
+        let source =
+            "// @exec: {\"max_output_tokens\":1000}\ntext(await tools.echo({text:'你好'}));";
+        let tool = ToolDefinition {
+            name: "exec".into(),
+            description: "JavaScript module".into(),
+            provider: None,
+            input_schema: json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"]}),
+            freeform: Some(FreeformGrammar::Lark {
+                definition: "start: /[\\s\\S]+/".into(),
+            }),
+            output_schema: None,
+        };
+        let definitions = [tool];
+        let options = json!({"openai":{"store":false}});
+        let request = crate::request::Request {
+            model: "fixture",
+            prompt: &[],
+            tools: &definitions,
+            options: &options,
+            max_output_tokens: None,
+            plaintext: None,
+        };
+        let encoded = request.encode().unwrap();
+        assert_eq!(encoded["tools"][0]["type"], "custom");
+        assert_eq!(encoded["tools"][0]["format"]["syntax"], "lark");
+        let mut decoder = Decoder::new(None, &definitions);
+        let events = decoder
+            .push(json!({"type":"response.output_item.done","item":{
+                "type":"custom_tool_call","id":"item","call_id":"call","name":"exec","input":source
+            }}))
+            .unwrap();
+        let ModelEvent::ToolCall(call) = &events[0] else {
+            panic!("missing tool call")
+        };
+        assert_eq!(call.input, source);
+        let prompt = [
+            Message::Assistant {
+                content: vec![AssistantPart::ToolCall {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    input: call.input.clone(),
+                    provider_executed: None,
+                    provider_options: call.provider_options.clone(),
+                }],
+                provider_options: None,
+            },
+            Message::tool("call", "exec", ToolOutput::Text("done".into())),
+        ];
+        let replay = crate::request::Request {
+            prompt: &prompt,
+            tools: &[],
+            ..request
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            replay["input"],
+            json!([
+                {"type":"custom_tool_call","call_id":"call","name":"exec","input":source},
+                {"type":"custom_tool_call_output","call_id":"call","output":"done"}
+            ])
+        );
+        let fallback = crate::request::Request {
+            prompt: &prompt,
+            tools: &definitions,
+            plaintext: Some(maka_runtime::model::PlaintextResponses {
+                reasoning_replay: maka_runtime::model::PlaintextReasoningReplay::PlaintextContent,
+                compatibility: None,
+            }),
+            ..request
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(fallback["tools"][0]["type"], "function");
+        assert_eq!(fallback["input"][0]["type"], "function_call");
+        assert_eq!(
+            serde_json::from_str::<Value>(fallback["input"][0]["arguments"].as_str().unwrap())
+                .unwrap(),
+            json!({"code":source})
+        );
+        assert_eq!(fallback["input"][1]["type"], "function_call_output");
+        assert_eq!(
+            call.provider_options.as_ref().unwrap()["openai"]["toolKind"],
+            "custom"
+        );
+    }
     fn function(id: &str, call: &str) -> Value {
         json!({"type":"function_call", "id":id, "call_id":call, "name":"Read", "arguments":"{}"})
     }
@@ -761,6 +853,8 @@ mod tests {
     #[test]
     fn incomplete_terminals_preserve_started_search_without_inventing_its_result() {
         let tool = ToolDefinition {
+            freeform: None,
+            output_schema: None,
             name: "Research".into(),
             description: "search".into(),
             input_schema: json!({}),

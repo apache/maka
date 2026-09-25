@@ -22,6 +22,7 @@ use crate::capability::CallResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod audio;
 mod durable;
 mod mcp;
 mod media;
@@ -48,14 +49,36 @@ pub enum ToolOutput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<ImageDetail>,
     pub mime_type: String,
     #[serde(rename = "ref")]
     pub reference: StorageRef,
 }
 
+/// Immutable audio evidence; byte materialization belongs to the model request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AudioOutput {
+    pub mime_type: String,
+    #[serde(rename = "ref")]
+    pub reference: StorageRef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageDetail {
+    Auto,
+    Low,
+    High,
+    Original,
+}
+
 impl ImageOutput {
     fn to_json(&self) -> Value {
-        serde_json::json!({"kind":"image","mimeType":self.mime_type,"ref":self.reference})
+        let mut value = serde_json::to_value(self).expect("image evidence is JSON");
+        value["kind"] = Value::String("image".into());
+        value
     }
 }
 

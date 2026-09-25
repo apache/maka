@@ -28,9 +28,20 @@ pub(crate) async fn evaluate(
     names: &[String],
     max_bytes: usize,
     metadata: &[ToolMetadata],
+    module: bool,
 ) -> Result<Value, CellDiagnostic> {
     let execution = |error: String| CellDiagnostic::new(CellDiagnosticKind::ExecutionError, error);
-    let names = serde_json::to_string(names).unwrap();
+    let names: Vec<_> = names
+        .iter()
+        .map(|name| (crate::tool_identifier(name), name))
+        .collect();
+    let mut unique = std::collections::HashSet::new();
+    if names.iter().any(|(name, _)| !unique.insert(name)) {
+        return Err(execution(
+            "tool names collide after JavaScript normalization".into(),
+        ));
+    }
+    let names = serde_json::to_string(&names).unwrap();
     let metadata = serde_json::to_string(metadata).unwrap();
     runtime
         .execute_script(
@@ -39,16 +50,18 @@ pub(crate) async fn evaluate(
                 r#"(() => {{
         const call = Deno.core.ops.op_maka_tool;
         const emit = Deno.core.ops.op_maka_emit;
+        const notify = Deno.core.ops.op_maka_notify;
         const yieldOutput = Deno.core.ops.op_maka_yield;
         const save = Deno.core.ops.op_maka_store;
         const read = Deno.core.ops.op_maka_load;
         const sleep = Deno.core.ops.op_maka_sleep;
+        const timer = Deno.core.ops.op_maka_timer;
+        const cancelTimer = Deno.core.ops.op_maka_clear_timer;
         const diagnostics = new WeakMap();
         const remember = diagnostics.set.bind(diagnostics);
         const lookup = diagnostics.get.bind(diagnostics);
         const stringify = JSON.stringify;
         const describe = String;
-        const hasOwn = Object.hasOwn;
         const ErrorClass = Error;
         const exitSignal = Object.freeze({{}});
         const check = (diagnostic) => {{
@@ -63,27 +76,32 @@ pub(crate) async fn evaluate(
         }};
         const timers = new Map();
         let nextTimer = 0;
-        let pendingTimers = 0;
-        const media = (type, value) => {{
+        const media = (type, value, detail) => {{
             if (typeof value === "string") {{
                 const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]*={{0,2}})$/.exec(value);
                 if (!match || !match[1].startsWith(type + "/")) throw new ErrorClass("expected a base64 data URL");
                 value = {{type, mimeType:match[1],data:match[2]}};
             }}
             if (!value || value.type !== type) throw new ErrorClass("expected a " + type + " content block");
-            check(emit({{kind:"media",content:{{type,data:value.data,mimeType:value.mimeType}}}}));
+            check(emit({{kind:"media",content:{{type,data:value.data,mimeType:value.mimeType}}, detail}}));
         }};
         const helpers = {{
             text,
             exit: () => {{ throw exitSignal; }},
-            image: (value) => {{
-                if (!value?.ref) {{ media("image", value?.image_url ?? value); return; }}
+            image: (value, detail) => {{
+                detail = detail ?? value?.detail ?? value?._meta?.["codex/imageDetail"];
+                if (detail != null && !["auto", "low", "high", "original"].includes(detail))
+                    throw new ErrorClass("invalid image detail");
+                if (!value?.ref) {{ media("image", value?.image_url ?? value, detail); return; }}
                 const {{mimeType, ref}} = value;
-                check(emit({{kind:"image",image:{{mimeType,ref}}}}));
+                check(emit({{kind:"image",image:{{mimeType,ref,detail}}}}));
             }},
             audio: (value) => media("audio", value?.audio_url ?? value),
             generatedImage: (value) => {{ media("image", value.image_url); if (value.output_hint) text(value.output_hint); }},
-            notify: (value) => {{ text(value); yieldOutput(); }},
+            notify: (value) => {{
+                const content = typeof value === "string" ? value : stringify(value);
+                check(notify(content === undefined ? "undefined" : content));
+            }},
             yield_control: async () => {{ yieldOutput(); await sleep(0); }},
             store: (key, value) => {{
                 if (typeof key !== "string") throw new ErrorClass("store key must be a string");
@@ -99,19 +117,17 @@ pub(crate) async fn evaluate(
             setTimeout: (callback, millis = 0) => {{
                 if (typeof callback !== "function" || !Number.isFinite(millis) || millis < 0 || millis > 86400000)
                     throw new ErrorClass("invalid timer");
-                if (pendingTimers >= 128) throw new ErrorClass("timer limit exceeded");
+                if (timers.size >= 128) throw new ErrorClass("timer limit exceeded");
                 const id = ++nextTimer;
-                pendingTimers++;
                 timers.set(id, callback);
-                sleep(Math.trunc(millis)).then(() => {{
-                    pendingTimers--;
+                timer(id, Math.trunc(millis)).then((fired) => {{
                     const callback = timers.get(id);
                     timers.delete(id);
-                    if (callback) callback();
+                    if (fired && callback) callback();
                 }});
                 return id;
             }},
-            clearTimeout: (id) => {{ timers.delete(id); }},
+            clearTimeout: (id) => {{ if (timers.delete(id)) cancelTimer(id); }},
             ALL_TOOLS: Object.freeze({metadata}.map(Object.freeze)),
         }};
         for (const [name, value] of Object.entries(helpers))
@@ -124,20 +140,15 @@ pub(crate) async fn evaluate(
             throw error;
         }};
         const catalog = Object.create(null);
-        for (const name of {names}) {{
-            Object.defineProperty(catalog, name, {{
+        for (const [alias, name] of {names}) {{
+            Object.defineProperty(catalog, alias, {{
                 value: (input) => invoke(name, input), enumerable: true
             }});
         }}
-        Object.defineProperty(globalThis, "tools", {{ value: new Proxy(Object.freeze(catalog), {{
-            get(target, name) {{
-                if (typeof name !== "string") return undefined;
-                return hasOwn(target, name) ? target[name] : (input) => invoke(name, input);
-            }}
-        }}) }});
-        globalThis.__maka_run = async (cell) => {{
+        Object.defineProperty(globalThis, "tools", {{value: Object.freeze(catalog)}});
+        globalThis.__maka_run = async (promise) => {{
             try {{
-                const value = await cell();
+                const value = await promise;
                 const json = stringify(value === undefined ? null : value);
                 if (json === undefined) throw new ErrorClass("result is not JSON");
                 return stringify({{kind: "success", json}});
@@ -149,22 +160,43 @@ pub(crate) async fn evaluate(
                 }} }});
             }}
         }};
-        delete globalThis.Deno;
+        for (const name of ["Deno", "console", "Atomics", "SharedArrayBuffer", "WebAssembly", "__bootstrap"])
+            delete globalThis[name];
     }})();"#
             ),
         )
         .map_err(|error| execution(error.to_string()))?;
-    // Compile the user function without executing its body. A runtime SyntaxError
-    // (including eval failures) is therefore distinct from this parse boundary.
-    runtime
+    // Keep the diagnostic closure in Rust, inaccessible to user source.
+    let runner = runtime
         .execute_script(
-            "maka:code/cell",
-            format!("globalThis.__maka_cell = async () => {{\n{source}\n}};"),
+            "maka:code/runner",
+            "(() => { const run = __maka_run; delete globalThis.__maka_run; return run; })()",
         )
-        .map_err(|error| CellDiagnostic::new(CellDiagnosticKind::ParseError, error.to_string()))?;
-    let value = runtime.execute_script("maka:code/run",
-        "(() => { const run = __maka_run, cell = __maka_cell; delete globalThis.__maka_run; delete globalThis.__maka_cell; return run(cell); })()"
-    ).map_err(|error| execution(error.to_string()))?;
+        .map_err(|error| execution(error.to_string()))?;
+    let promise = if module {
+        crate::module::evaluate(runtime, source)?
+    } else {
+        // Standalone Rust/CLI function-body API predates model Code Mode.
+        runtime
+            .execute_script(
+                "maka:code/cell",
+                format!("(async () => {{\n{source}\n}})()"),
+            )
+            .map_err(|error| {
+                CellDiagnostic::new(CellDiagnosticKind::ParseError, error.to_string())
+            })?
+    };
+    let value = {
+        deno_core::scope!(scope, runtime);
+        let runner = v8::Local::<v8::Function>::try_from(v8::Local::new(scope, runner))
+            .map_err(|error| execution(error.to_string()))?;
+        let promise = v8::Local::new(scope, promise);
+        let undefined = v8::undefined(scope).into();
+        let value = runner
+            .call(scope, undefined, &[promise])
+            .ok_or_else(|| execution("module evaluation terminated".into()))?;
+        v8::Global::new(scope, value)
+    };
     let resolving = runtime.resolve(value);
     let value = runtime
         .with_event_loop_promise(resolving, Default::default())

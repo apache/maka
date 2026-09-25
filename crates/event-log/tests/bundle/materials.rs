@@ -106,7 +106,7 @@ pub(super) async fn verify_nested_copy(log: &EventLog) {
 }
 
 #[tokio::test]
-async fn generated_images_remain_required_material_not_deletable_upload_references() {
+async fn generated_media_remain_required_material_not_deletable_upload_references() {
     let dir = tempfile::tempdir().unwrap();
     let log = EventLog::open(&dir.path().join("events.sqlite"))
         .await
@@ -135,6 +135,14 @@ async fn generated_images_remain_required_material_not_deletable_upload_referenc
             content: vec![ContentBlock::Image {
                 data: "iVBORw0KGgo=".into(),
                 mime_type: "image/png".into(),
+            }],
+            structured_content: None,
+        })
+        .into(),
+        ToolOutput::Mcp(CallResult {
+            content: vec![ContentBlock::Audio {
+                data: "SUQzAAAA".into(),
+                mime_type: "audio/mpeg".into(),
             }],
             structured_content: None,
         })

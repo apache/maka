@@ -102,6 +102,8 @@ fn input(base: &str, suffix: &str, effect: Arc<Effect>) -> RunInput {
             message: format!("question {suffix}").into(),
             tools: ToolCatalog::new([ToolRegistration {
                 definition: ToolDefinition {
+                    freeform: None,
+                    output_schema: None,
                     provider: None,
                     name: "echo".into(),
                     description: "echo".into(),

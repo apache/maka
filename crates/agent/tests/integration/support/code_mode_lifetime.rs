@@ -52,7 +52,7 @@ impl ToolExecutor for SlowEffect {
 pub async fn respond(socket: &mut TcpStream, first: bool) {
     let delta = if first {
         json!({"tool_calls":[{"index":0,"id":"exec-slow","type":"function","function":{
-            "name":"exec","arguments":json!({"code":"tools.slow({value:42}); return 'unawaited';"}).to_string()
+            "name":"exec","arguments":json!({"code":"await tools.slow({value:42});"}).to_string()
         }}]})
     } else {
         json!({"content":"done"})

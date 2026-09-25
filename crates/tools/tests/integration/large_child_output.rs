@@ -65,6 +65,8 @@ async fn child_output_limit_after_t2_preserves_raw_and_remains_catchable() {
     });
     let catalog = ToolCatalog::new([ToolRegistration {
         definition: ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: "read".into(),
             description: "return a large child result".into(),
@@ -78,10 +80,10 @@ async fn child_output_limit_after_t2_preserves_raw_and_remains_catchable() {
     let cells = CodeExecutor::new(1, CellLimits::default()).unwrap();
     let mut children = Vec::new();
     for (id, code, caught) in [
-        ("uncaught", "return await tools.read({});", false),
+        ("uncaught", "text(await tools.read({}));", false),
         (
             "caught",
-            "try { await tools.read({}); } catch (_) { return 'caught'; }",
+            "try { await tools.read({}); } catch (_) { text('caught'); }",
             true,
         ),
     ] {
@@ -105,7 +107,7 @@ async fn child_output_limit_after_t2_preserves_raw_and_remains_catchable() {
             .unwrap();
         assert_eq!(result["result"]["ok"], caught);
         if caught {
-            assert_eq!(result["result"]["value"], "caught");
+            assert_eq!(result["content"][0]["text"], "caught");
         } else {
             assert_eq!(result["result"]["error"]["kind"], "limit_exceeded");
             assert_eq!(

@@ -144,55 +144,79 @@ async fn host_waits_do_not_spend_execution_budget_even_for_unawaited_effects() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn javascript_failure_cancels_and_drains_dispatched_tools() {
-    let dispatched = Arc::new(Notify::new());
-    let cancelled = Arc::new(Notify::new());
-    let released = Arc::new(Notify::new());
-    let tools = {
-        let dispatched = dispatched.clone();
-        let cancelled = cancelled.clone();
-        let released = released.clone();
-        Arc::new(Tools(
-            move |name, _value, cancel: CancellationToken| -> ToolFuture {
-                let dispatched = dispatched.clone();
-                let cancelled = cancelled.clone();
-                let released = released.clone();
-                Box::pin(async move {
-                    if name == "echo" {
-                        dispatched.notified().await;
-                        return Ok(Value::Null);
-                    }
-                    dispatched.notify_one();
-                    cancel.cancelled().await;
-                    cancelled.notify_one();
-                    released.notified().await;
-                    Ok(Value::Null)
-                })
-            },
-        ))
-    };
-    // Admission precedes dispatch. Wait for the tool to enter before failing JS,
-    // otherwise cancellation may correctly prevent dispatch altogether.
-    let mut task = tokio::spawn(async move {
-        executor()
-            .execute(
-                "tools.wait({}); await tools.echo({}); throw new Error('cell-failure');".into(),
-                tools,
-                CancellationToken::new(),
-            )
+    // Both exceptions and successful module completion cancel unawaited work,
+    // but neither may release the cell before the admitted effect drains.
+    for fail in [false, true] {
+        let dispatched = Arc::new(Notify::new());
+        let cancelled = Arc::new(Notify::new());
+        let released = Arc::new(Notify::new());
+        let tools = {
+            let dispatched = dispatched.clone();
+            let cancelled = cancelled.clone();
+            let released = released.clone();
+            Arc::new(Tools(
+                move |name, _value, cancel: CancellationToken| -> ToolFuture {
+                    let dispatched = dispatched.clone();
+                    let cancelled = cancelled.clone();
+                    let released = released.clone();
+                    Box::pin(async move {
+                        if name == "echo" {
+                            dispatched.notified().await;
+                            return Ok(Value::Null);
+                        }
+                        dispatched.notify_one();
+                        cancel.cancelled().await;
+                        cancelled.notify_one();
+                        released.notified().await;
+                        Ok(Value::Null)
+                    })
+                },
+            ))
+        };
+        // Admission precedes dispatch. Wait for the tool to enter before failing JS,
+        // otherwise cancellation may correctly prevent dispatch altogether.
+        let mut task = tokio::spawn(async move {
+            let context = maka_js_runtime::CellContext::new(
+                maka_js_runtime::CellStore::default(),
+                4096,
+                vec![],
+            );
+            executor()
+                .execute_module(
+                    format!(
+                        "tools.wait({{}}); await tools.echo({{}}); {}",
+                        if fail {
+                            "throw new Error('cell-failure');"
+                        } else {
+                            "text('finished');"
+                        }
+                    ),
+                    tools,
+                    CancellationToken::new(),
+                    context,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), cancelled.notified())
             .await
-    });
-    tokio::time::timeout(Duration::from_secs(5), cancelled.notified())
-        .await
-        .unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut task)
-            .await
-            .is_err()
-    );
-    released.notify_one();
-    assert!(
-        matches!(task.await.unwrap(), Ok(CellResult::Failure { error: CellDiagnostic { kind: CellDiagnosticKind::ExecutionError, message }, tool_calls }) if message.contains("cell-failure") && tool_calls.len() == 2)
-    );
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut task)
+                .await
+                .is_err()
+        );
+        released.notify_one();
+        let result = task.await.unwrap().unwrap();
+        if fail {
+            assert!(
+                matches!(result, CellResult::Failure { error: CellDiagnostic { kind: CellDiagnosticKind::ExecutionError, message }, tool_calls } if message.contains("cell-failure") && tool_calls.len() == 2)
+            );
+        } else {
+            assert!(
+                matches!(result, CellResult::Success { tool_calls, .. } if tool_calls.len() == 2)
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

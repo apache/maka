@@ -31,14 +31,26 @@ pub(super) fn render(definitions: &[ToolDefinition]) -> String {
             output.push_str(line);
             output.push('\n');
         }
-        let name = serde_json::to_string(&tool.name).unwrap();
+        let name = maka_js_runtime::tool_identifier(&tool.name);
         let mut renderer = Renderer {
             root: &tool.input_schema,
             remaining: 32_000,
             nodes: 512,
         };
         let input = renderer.schema(&tool.input_schema, 0);
-        output.push_str(&format!("{name}(input: {input}): Promise<unknown>;\n"));
+        let result = tool
+            .output_schema
+            .as_ref()
+            .map(|schema| {
+                Renderer {
+                    root: schema,
+                    remaining: 32_000,
+                    nodes: 512,
+                }
+                .schema(schema, 0)
+            })
+            .unwrap_or_else(|| "unknown".into());
+        output.push_str(&format!("{name}(input: {input}): Promise<{result}>;\n"));
     }
     output.push_str("};\n");
     output
@@ -206,6 +218,8 @@ mod tests {
     #[test]
     fn references_and_literal_property_names_come_from_the_schema() {
         let tool = ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: "a-b".into(),
             description: "Choose".into(),
@@ -213,7 +227,7 @@ mod tests {
                 "required":["x-y"],"additionalProperties":false,"$defs":{"Choice":{"enum":["a","b",null]}}}),
         };
         let text = render(&[tool]);
-        assert!(text.contains("\"a-b\"(input:"));
+        assert!(text.contains("a_b(input:"));
         assert!(text.contains("\"x-y\": \"a\" | \"b\" | null;"));
     }
 

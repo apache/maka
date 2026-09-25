@@ -69,6 +69,8 @@ pub(super) fn publish(repository: Arc<Repository>, staged: &mut Staged) -> Resul
                 action.name(),
                 PluginTool::new(ToolRegistration {
                     definition: ToolDefinition {
+                        freeform: None,
+                        output_schema: None,
                         provider: None,
                         name: action.name().into(),
                         description: description.into(),

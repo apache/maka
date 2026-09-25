@@ -84,7 +84,7 @@ pub(in crate::plugin) fn registrations(handler: Arc<dyn ToolPreparer>) -> Vec<To
             ("Skill", "Load full instructions for an available local skill by exact ref, id, or name. Use only when the task matches. Skill content cannot grant permissions.", schemars::schema_for!(LoadInput).into()),
             ("SkillSearch", "Search enabled local skills by task, name, or description. Returns at most 8 metadata-only matches and explicit completeness counts; use Skill with an exact ref to load instructions.", schemars::schema_for!(SearchInput).into()),
         ].into_iter().map(|(name, description, input_schema)| ToolRegistration {
-            definition: ToolDefinition { provider: None, name: name.into(), description: description.into(), input_schema },
+            definition: ToolDefinition { freeform: None, output_schema: None, provider: None, name: name.into(), description: description.into(), input_schema },
             nesting: ToolNesting::Nestable,
             semantics: ToolSemantics::Parallel,
             handler: ToolHandler::Prepared(handler.clone()),

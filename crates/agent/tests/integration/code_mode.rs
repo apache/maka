@@ -36,6 +36,86 @@ use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scratch_store_survives_turns_and_is_released_with_the_session() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for (index, code) in [
+                "store('saved', 42);",
+                "text(load('saved'));",
+                "text(load('saved'));",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                fixture::read_request(&mut socket).await;
+                crate::dynamic_tools::respond_tools(
+                    &mut socket,
+                    vec![crate::dynamic_tools::call(
+                        "cell",
+                        "exec",
+                        json!({"code":code}),
+                    )],
+                    10,
+                )
+                .await;
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = fixture::read_request(&mut socket).await;
+                let text = request["messages"].as_array().unwrap().last().unwrap()["content"]
+                    .as_str()
+                    .unwrap();
+                if index > 0 {
+                    assert_eq!(
+                        text.lines().last().unwrap(),
+                        if index == 1 { "42" } else { "undefined" }
+                    );
+                }
+                fixture::respond(&mut socket, false).await;
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let log = Arc::new(
+            EventLog::open(&directory.path().join("events.sqlite"))
+                .await
+                .unwrap(),
+        );
+        let engine = Engine::new(
+            log.clone(),
+            ModelExecutor::new(1, Duration::from_secs(5)).unwrap(),
+            CodeExecutor::new(1, CellLimits::default()).unwrap(),
+        );
+        for index in 0..3 {
+            if index == 2 {
+                engine.release_code_store("session");
+            }
+            engine
+                .run(
+                    fixture::input(
+                        &base,
+                        &format!("store-{index}"),
+                        Arc::new(fixture::Effects {
+                            log: log.clone(),
+                            count: Arc::new(AtomicUsize::new(0)),
+                            together: Arc::new(Barrier::new(2)),
+                        }),
+                    ),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+        server.await.unwrap();
+        engine.drain().await;
+        drop(engine);
+        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+    })
+    .await
+    .expect("session store lifecycle must complete");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecution() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -53,7 +133,7 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
         let path = directory.path().join("events.sqlite");
         let count = Arc::new(AtomicUsize::new(0));
         let envelope = json!({
-            "ok":true,"value":[{"value":21},{"value":42}],
+            "ok":true,"value":null,
             "toolCalls":[{"index":1,"name":"left"},{"index":2,"name":"right"}]
         });
         let before_reopen;
@@ -151,10 +231,18 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
             );
             let mut ids = HashSet::new();
             let (cell_t1, cell_operation, cell_call, _, _) = dispatches[1];
-            assert_eq!(cell_call.origin, ToolOrigin::CodeCell {
-                parent_operation_id: parent_operation.clone(), parent_tool_call_id: parent_call.tool_call_id.clone(),
-            });
-            let cell_t2 = settlements.iter().find(|(_, operation, _)| *operation == cell_operation).unwrap().0;
+            assert_eq!(
+                cell_call.origin,
+                ToolOrigin::CodeCell {
+                    parent_operation_id: parent_operation.clone(),
+                    parent_tool_call_id: parent_call.tool_call_id.clone(),
+                }
+            );
+            let cell_t2 = settlements
+                .iter()
+                .find(|(_, operation, _)| *operation == cell_operation)
+                .unwrap()
+                .0;
             for (t1, operation, call, name, input) in &dispatches {
                 assert!(ids.insert(operation.as_str()));
                 assert!(
@@ -177,7 +265,13 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
                     .copied()
                     .find(|(_, settled, _)| settled == operation)
                     .unwrap();
-                assert!(parent_t1 < cell_t1 && cell_t1 < *t1 && *t1 < t2 && t2 < cell_t2 && cell_t2 < parent_t2);
+                assert!(
+                    parent_t1 < cell_t1
+                        && cell_t1 < *t1
+                        && *t1 < t2
+                        && t2 < cell_t2
+                        && cell_t2 < parent_t2
+                );
                 assert!(matches!(outcome, ToolOutcome::Succeeded { .. }));
                 assert_eq!(
                     log.resolve_tool_result("session", &prefix.events[t2].event.id)
@@ -267,8 +361,8 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
                 .collect();
             assert_eq!(names, HashSet::from(["exec", "wait"]));
             let description = functions[0]["description"].as_str().unwrap();
-            assert!(description.contains("\"left\"(input:"));
-            assert!(description.contains("\"right\"(input:"));
+            assert!(description.contains("left(input:"));
+            assert!(description.contains("right(input:"));
             let schema = &functions[0]["parameters"];
             assert_eq!(schema["properties"]["code"]["type"], "string");
             assert!(schema["properties"].get("yield_time_ms").is_some());
@@ -294,7 +388,15 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
         assert_eq!(second[2]["role"], "tool");
         assert_eq!(second[2]["tool_call_id"], "exec-provider");
         assert_eq!(
-            serde_json::from_str::<Value>(second[2]["content"].as_str().unwrap()).unwrap()["result"],
+            serde_json::from_str::<Value>(
+                second[2]["content"]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+            )
+            .unwrap()["result"],
             envelope
         );
         let reopened = requests[2]["messages"].as_array().unwrap();

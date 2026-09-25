@@ -44,6 +44,7 @@ const PARENT: &str = "step:parent";
 enum Boundary {
     ChildDispatch,
     ChildSettlement,
+    Notification,
 }
 
 struct FaultSink {
@@ -59,6 +60,7 @@ impl EventSink for FaultSink {
             let event = write.event();
             self.attempts.lock().unwrap().push(event.clone());
             let fail = match (&self.boundary, &event.fact) {
+                (Boundary::Notification, Fact::ToolNotified { .. }) => true,
                 (Boundary::ChildDispatch, Fact::ToolDispatched { call, .. }) => {
                     matches!(call.origin, ToolOrigin::CodeMode { .. })
                 }
@@ -73,6 +75,9 @@ impl EventSink for FaultSink {
                     Boundary::ChildDispatch => CommitError::Rejected("injected child T1".into()),
                     Boundary::ChildSettlement => {
                         CommitError::OutcomeUnknown("injected child T2".into())
+                    }
+                    Boundary::Notification => {
+                        CommitError::OutcomeUnknown("injected notification commit".into())
                     }
                 });
             }
@@ -109,6 +114,8 @@ impl ToolExecutor for Effect {
 fn catalog(log: Arc<EventLog>, calls: Arc<AtomicUsize>) -> ToolCatalog {
     ToolCatalog::new([ToolRegistration {
         definition: ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: "effect".into(),
             description: "count one effect".into(),
@@ -187,7 +194,7 @@ async fn check_boundary(boundary: Boundary) {
     let call = ModelToolCall {
         id: "parent".into(),
         name: "exec".into(),
-        input: json!({"code": "try { await tools.effect({}); } catch (_) {} return 'caught';"}),
+        input: json!({"code": "try { await tools.effect({}); } catch (_) {} text('caught');"}),
         provider_options: None,
         provider_executed: false,
     };
@@ -221,6 +228,7 @@ async fn check_boundary(boundary: Boundary) {
             Err(ToolError::Persistence(_))
         ));
         match boundary {
+            Boundary::Notification => unreachable!("separate notification case"),
             Boundary::ChildDispatch => assert!(matches!(result, Err(ToolError::Persistence(_)))),
             Boundary::ChildSettlement => {
                 assert!(matches!(result, Err(ToolError::Persistence(_))))
@@ -322,6 +330,25 @@ async fn check_boundary(boundary: Boundary) {
     ));
     assert_eq!(effects.load(Ordering::SeqCst), expected_effects);
     assert_eq!(log.prefix(32, 64 * 1024).await.unwrap().digest, digest);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notification_commit_failure_cancels_the_cell_without_fabricating_success() {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let directory = tempfile::tempdir().unwrap();
+        let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+        let invocation = Invocation { session_id:"session".into(), turn_id:"turn".into(), run_id:"run".into(), invocation_id:"invocation".into() };
+        let call = ModelToolCall { id:"parent".into(), name:"exec".into(), input:json!({"code":"notify('progress'); await new Promise(resolve => setTimeout(resolve, 60000));"}), provider_options:None, provider_executed:false };
+        seed(&log, &invocation, &call).await;
+        let sink = Arc::new(FaultSink { log:log.clone(), boundary:Boundary::Notification, attempts:Mutex::new(Vec::new()), faults:AtomicUsize::new(0) });
+        let run = RunTools::new(sink.clone(), invocation, ToolCatalog::default(), ToolMode::CodeMode, CodeExecutor::new(1, CellLimits::default()).unwrap());
+        let result = run.capture(".", CancellationToken::new()).await.unwrap().into_step("step").invoke(&call, CancellationToken::new()).await;
+        assert!(matches!(result, Err(ToolError::Persistence(_))));
+        assert!(matches!(run.shutdown().await, Err(ToolError::Persistence(_))));
+        assert_eq!(sink.faults.load(Ordering::SeqCst), 1);
+        assert!(!log.prefix(32, 64*1024).await.unwrap().events.iter().any(|event| matches!(event.event.fact, Fact::ToolSettled { .. } | Fact::ToolNotified { .. })));
+        drop(run); drop(sink); Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+    }).await.expect("notification persistence failure must drain");
 }
 
 #[tokio::test]

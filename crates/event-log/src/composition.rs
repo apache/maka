@@ -25,6 +25,12 @@ pub(crate) async fn insert(
     connection: &mut SqliteConnection,
     write: &EventWrite,
 ) -> Result<(), StoreError> {
+    validate_retry(
+        connection,
+        write.event(),
+        write.composition().map(|surface| surface.digest()),
+    )
+    .await?;
     if let maka_runtime::event::Fact::ModelRequested {
         purpose: maka_runtime::context::ModelPurpose::Summary,
         source_scope,
@@ -70,6 +76,36 @@ pub(crate) async fn insert(
         .bind(surface.digest())
         .execute(connection)
         .await?;
+    Ok(())
+}
+
+/// Replaying a frozen Main request cannot replace its capability/model surface.
+/// This runs inside live append and bundle validation, after causal validation.
+pub(crate) async fn validate_retry(
+    connection: &mut SqliteConnection,
+    event: &maka_runtime::event::RuntimeEvent,
+    digest: Option<&str>,
+) -> Result<(), StoreError> {
+    let maka_runtime::event::Fact::ModelRequested {
+        purpose: maka_runtime::context::ModelPurpose::Main,
+        source_high_water,
+        ..
+    } = &event.fact
+    else {
+        return Ok(());
+    };
+    let prior: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT c.digest FROM runtime_events r LEFT JOIN model_request_compositions c ON c.event_id=r.event_id
+         WHERE r.invocation_id=?1 AND r.kind='model_requested' AND r.event_id!=?2 AND r.sequence>?3
+           AND json_remove(json_extract(r.event_json,'$.fact'),'$.step_id')=json_remove(json(?4),'$.step_id')
+         ORDER BY r.sequence LIMIT 1"
+    ).bind(&event.invocation.invocation_id).bind(&event.id).bind(*source_high_water as i64)
+        .bind(serde_json::to_string(&event.fact)?).fetch_optional(connection).await?;
+    if prior.is_some_and(|prior| prior.as_deref() != digest) {
+        return Err(StoreError::InvalidTransition(
+            "main retry changed frozen composition".into(),
+        ));
+    }
     Ok(())
 }
 

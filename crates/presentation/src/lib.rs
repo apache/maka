@@ -332,7 +332,9 @@ impl InvocationView {
                         messages.extend(self.tools.boundary(event, ts, resolved)?);
                     }
                     Fact::InvocationOpened { .. } | Fact::MessageImported { .. } => unreachable!(),
-                    Fact::ContextCheckpointRecorded { .. } | Fact::ToolResultArchived { .. } => {}
+                    Fact::ContextCheckpointRecorded { .. }
+                    | Fact::ToolResultArchived { .. }
+                    | Fact::ToolNotified { .. } => {}
                 }
             }
         }

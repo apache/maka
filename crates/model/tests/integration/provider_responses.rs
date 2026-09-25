@@ -153,7 +153,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
             let request = ModelRequest {
                 provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
                 prompt: serde_json::from_value(json!(prompt)).unwrap(),
-                tools: vec![maka_model::ToolDefinition { provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() }],
+                tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() }],
                 provider_options: json!({"openai":{"store":false,"reasoningEffort":"low","reasoningSummary":"auto"}}),
                 max_output_tokens: Some(128),
             };
@@ -298,7 +298,7 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                     provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
                         model: "plain".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                         headers: BTreeMap::from([("x-test-provider".into(),"responses".into())]), body_overlay: None },
-                    prompt: prompt.clone(), tools: vec![maka_model::ToolDefinition { provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) }],
+                    prompt: prompt.clone(), tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) }],
                     provider_options: json!({"openResponses":{"reasoningEffort":"high","reasoningSummary":"auto"}}),
                     max_output_tokens: Some(256),
                 };

@@ -62,7 +62,7 @@ async fn reopened_user_and_typed_tool_images_share_actual_byte_budget_with_curre
         ];
         for fact in facts { log.append(&EventWrite::plain(RuntimeEvent::new(prior.clone(), fact)).unwrap()).await.unwrap(); }
         log.append(&EventWrite::tool_success("prior-result".into(), std::time::SystemTime::now(), prior.clone(), "prior-step:read".into(),
-            ToolOutput::Image(ImageOutput { mime_type: "image/png".into(), reference: serde_json::from_value(attachment("tool")["ref"].clone()).unwrap() }).into()).unwrap().0).await.unwrap();
+            ToolOutput::Image(ImageOutput { detail: Some(maka_runtime::tool_output::ImageDetail::High), mime_type: "image/png".into(), reference: serde_json::from_value(attachment("tool")["ref"].clone()).unwrap() }).into()).unwrap().0).await.unwrap();
         log.append(&EventWrite::plain(RuntimeEvent::new(prior, Fact::InvocationEnded { outcome: InvocationOutcome::Completed })).unwrap()).await.unwrap();
         let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
         assert!(matches!(log.copy_session(maka_event_log::sessions::SessionCopy {
@@ -102,6 +102,7 @@ async fn reopened_user_and_typed_tool_images_share_actual_byte_budget_with_curre
             assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
         }
         let text = body["messages"].to_string();
+        assert!(text.contains("\"detail\":\"high\""), "tool image detail reaches the provider after reopening");
         for name in ["invalid", "missing", "historical", "workspace"] {
             assert!(text.contains(&format!("Image attachment \\\"{name}\\\" could not be loaded")), "missing error for {name}");
         }

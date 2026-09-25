@@ -45,6 +45,16 @@ pub(super) async fn run(
     )
     .with_model(input.provider.tool_context())
     .with_behavior(input.configuration.orchestration_mode.clone());
+    if input.configuration.tool_mode == maka_runtime::execution::ToolMode::CodeMode {
+        let store = inner
+            .code_stores
+            .lock()
+            .unwrap()
+            .entry(input.invocation.session_id.clone())
+            .or_default()
+            .clone();
+        tools = tools.with_store(store);
+    }
     let mut pending: Option<auto_context::Pending> = None;
     let mut handoff_cleanup = None;
     let result = std::panic::AssertUnwindSafe(async {
@@ -297,6 +307,13 @@ pub(super) async fn run(
                 .filter(|call| !call.provider_executed)
                 .collect();
             if local_calls.is_empty() {
+                if !tools
+                    .finish_output(source.source_evidence.high_water)
+                    .await?
+                {
+                    completed_step = true;
+                    continue;
+                }
                 return Ok(maka_runtime::event::InvocationOutcome::Completed);
             }
             let mut step_tools = request_tools.into_step(&step_id);

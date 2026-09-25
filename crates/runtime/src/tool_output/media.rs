@@ -26,7 +26,7 @@ use crate::{
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(super) const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub(super) const MAX_MEDIA_BYTES: usize = 5 * 1024 * 1024;
 
 /// Effect output awaiting T2 normalization. This is intentionally not serializable:
 /// pending image bytes must become an immutable Session ref before delivery.
@@ -55,7 +55,10 @@ enum ToolSuccessValue {
 pub enum ToolContent {
     Text(String),
     Image(ImageOutput),
-    Media(crate::capability::ContentBlock),
+    Media {
+        content: crate::capability::ContentBlock,
+        detail: Option<super::ImageDetail>,
+    },
 }
 
 pub(crate) struct NormalizedToolSuccess {
@@ -88,7 +91,7 @@ impl ToolSuccess {
     /// The executor owns authorization and image-header/dimension validation.
     /// Core checks representation bounds before accepting pending media.
     pub fn image(bytes: Vec<u8>, mime_type: String) -> Result<Self, &'static str> {
-        if bytes.len() > MAX_IMAGE_BYTES {
+        if bytes.len() > MAX_MEDIA_BYTES {
             return Err("tool image exceeds 5 MiB byte limit");
         }
         let mime_type = normalize_mime(&mime_type).ok_or("unsafe tool image MIME")?;
@@ -121,7 +124,7 @@ impl ToolSuccess {
                         ToolContent::Image(image) => {
                             projection.push(super::ProjectionPart::Artifact { image })
                         }
-                        ToolContent::Media(content) => {
+                        ToolContent::Media { content, detail } => {
                             let result = crate::capability::CallResult {
                                 content: vec![content],
                                 structured_content: None,
@@ -135,7 +138,12 @@ impl ToolSuccess {
                                 valid = false;
                                 break;
                             };
-                            if let DurableToolProjection::Content { parts } = media {
+                            if let DurableToolProjection::Content { mut parts } = media {
+                                for part in &mut parts {
+                                    if let super::ProjectionPart::Artifact { image } = part {
+                                        image.detail = detail;
+                                    }
+                                }
                                 projection.extend(parts);
                             }
                             artifacts.extend(writes);
@@ -218,38 +226,63 @@ pub(super) fn image_artifact(
     time: SystemTime,
     invocation: &Invocation,
 ) -> Result<(ImageOutput, ProjectionArtifactWrite), &'static str> {
-    if bytes.len() > MAX_IMAGE_BYTES {
+    if bytes.len() > MAX_MEDIA_BYTES {
         return Err("tool image exceeds 5 MiB byte limit");
     }
     let mime_type = normalize_mime(mime).ok_or("unsafe tool image MIME")?;
+    let (reference, artifact) =
+        media_artifact(bytes, &mime_type, event_id, part, time, invocation)?;
+    Ok((
+        ImageOutput {
+            detail: None,
+            mime_type,
+            reference,
+        },
+        artifact,
+    ))
+}
+
+pub(super) fn media_artifact(
+    bytes: Vec<u8>,
+    mime: &str,
+    event_id: &str,
+    part: usize,
+    time: SystemTime,
+    invocation: &Invocation,
+) -> Result<(StorageRef, ProjectionArtifactWrite), &'static str> {
     let id = format!(
         "tool-projection-{}",
         &content_digest(format!("{event_id}\0{part}").as_bytes())[7..39]
     );
-    let image = ImageOutput {
-        mime_type,
-        reference: StorageRef::SessionFile {
-            session_id: invocation.session_id.clone(),
-            relative_path: id.clone(),
-        },
+    let reference = StorageRef::SessionFile {
+        session_id: invocation.session_id.clone(),
+        relative_path: id.clone(),
     };
+    let image = mime.starts_with("image/");
     let artifact = Artifact {
         id,
         session_id: invocation.session_id.clone(),
         turn_id: invocation.turn_id.clone(),
         created_at: u64::try_from(
             time.duration_since(UNIX_EPOCH)
-                .map_err(|_| "invalid image capture time")?
+                .map_err(|_| "invalid media capture time")?
                 .as_millis(),
         )
-        .map_err(|_| "invalid image capture time")?,
-        name: format!("tool-result-image-{part}"),
-        kind: ArtifactKind::Image,
+        .map_err(|_| "invalid media capture time")?,
+        name: format!(
+            "tool-result-{}-{part}",
+            if image { "image" } else { "audio" }
+        ),
+        kind: if image {
+            ArtifactKind::Image
+        } else {
+            ArtifactKind::File
+        },
         size_bytes: bytes.len() as u64,
-        mime_type: Some(image.mime_type.clone()),
+        mime_type: Some(mime.into()),
         source: ArtifactSource::ToolResultProjection,
         summary: None,
     };
     artifact.validate()?;
-    Ok((image, ProjectionArtifactWrite::new(artifact, bytes)))
+    Ok((reference, ProjectionArtifactWrite::new(artifact, bytes)))
 }

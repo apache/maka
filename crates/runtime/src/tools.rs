@@ -48,6 +48,17 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    /// Native freeform transport where supported; input_schema is the JSON fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform: Option<FreeformGrammar>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "syntax", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FreeformGrammar {
+    Lark { definition: String },
 }
 
 #[derive(Clone, Debug, thiserror::Error)]

@@ -96,6 +96,8 @@ impl ClientTools {
                 let descriptor = &self.snapshot.offers()[*offer].offer().tools[*tool];
                 ToolRegistration {
                     definition: ToolDefinition {
+                        freeform: None,
+                        output_schema: None,
                         provider: None,
                         name: name.clone(),
                         description: descriptor

@@ -67,6 +67,15 @@ impl Message {
             provider_options: None,
         }
     }
+
+    /// Supplemental output, distinct from a tool's required settled result.
+    pub fn notification(id: impl Into<String>, text: impl Into<String>) -> Self {
+        let mut message = Self::tool(id, "exec", ToolOutput::Text(text.into()));
+        if let Self::Tool { content, .. } = &mut message {
+            content[0].provider_options = Some(serde_json::json!({"maka":{"notification":true}}));
+        }
+        message
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -151,6 +160,59 @@ pub struct ToolResult {
     pub output: ToolOutput,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<Value>,
+}
+
+impl ToolResult {
+    pub fn is_notification(&self) -> bool {
+        self.provider_options
+            .as_ref()
+            .is_some_and(|value| value["maka"]["notification"] == true)
+    }
+    pub fn is_custom(&self) -> bool {
+        self.provider_options
+            .as_ref()
+            .is_some_and(|value| value["openai"]["toolKind"] == "custom")
+    }
+}
+
+/// JSON-only APIs require exactly one result per call. Supplemental Code Mode
+/// output is carried as a labelled observation, never a second settlement.
+pub fn notification_fallback(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .flat_map(|message| {
+            let Message::Tool {
+                content,
+                provider_options,
+            } = message
+            else {
+                return vec![message];
+            };
+            if !content.iter().any(ToolResult::is_notification) {
+                return vec![Message::Tool {
+                    content,
+                    provider_options,
+                }];
+            }
+            let mut result = Vec::new();
+            for part in content {
+                if part.is_notification() {
+                    if let ToolOutput::Text(text) = part.output {
+                        result.push(Message::user(format!(
+                            "[Notification from exec {}]\n{text}",
+                            part.tool_call_id
+                        )));
+                    }
+                } else {
+                    result.push(Message::Tool {
+                        content: vec![part],
+                        provider_options: provider_options.clone(),
+                    });
+                }
+            }
+            result
+        })
+        .collect()
 }
 
 // A tool-role message cannot contain assistant text or a tool-call tag.

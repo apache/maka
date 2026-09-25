@@ -58,6 +58,24 @@ pub enum DurableToolProjection {
 pub enum ProjectionPart {
     Text { text: String },
     Artifact { image: ImageOutput },
+    Audio { audio: super::AudioOutput },
+}
+
+impl ProjectionPart {
+    pub fn media(&self) -> Option<(&StorageRef, &str)> {
+        match self {
+            Self::Artifact { image } => Some((&image.reference, &image.mime_type)),
+            Self::Audio { audio } => Some((&audio.reference, &audio.mime_type)),
+            Self::Text { .. } => None,
+        }
+    }
+    pub fn reference_mut(&mut self) -> Option<&mut StorageRef> {
+        match self {
+            Self::Artifact { image } => Some(&mut image.reference),
+            Self::Audio { audio } => Some(&mut audio.reference),
+            Self::Text { .. } => None,
+        }
+    }
 }
 
 pub fn decode_raw_tool_result(
@@ -218,6 +236,11 @@ impl DurableToolProjection {
                         ProjectionPart::Artifact { image } => {
                             checked_image(image, session).as_ref() == Some(image)
                         }
+                        ProjectionPart::Audio { audio } => {
+                            super::audio::valid_mime(&audio.mime_type)
+                                && matches!(&audio.reference, StorageRef::SessionFile { session_id, relative_path }
+                                    if session_id == session && crate::interaction::entity_id(relative_path).is_ok())
+                        }
                     })
             }
             Self::Text { .. } | Self::Failure => true,
@@ -254,6 +277,7 @@ pub(super) fn checked_image(image: &ImageOutput, session: &str) -> Option<ImageO
     }
     let mime = super::media::normalize_mime(&image.mime_type)?;
     Some(ImageOutput {
+        detail: image.detail,
         mime_type: mime,
         reference: image.reference.clone(),
     })

@@ -96,13 +96,7 @@ pub(super) async fn validate(
         )
         .await?
     } else {
-        safety::model_source_unchanged(
-            connection,
-            &selection,
-            &event.invocation.invocation_id,
-            *source_high_water,
-        )
-        .await?;
+        safety::model_source_unchanged(connection, &selection, event).await?;
         *source_high_water
     };
     if source_scope != &selection.scope

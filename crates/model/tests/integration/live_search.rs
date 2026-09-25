@@ -37,6 +37,8 @@ async fn sglang_protocols_preserve_reasoning_tools_and_replay() {
     let base_url = std::env::var("MAKA_SGLANG_TEST_URL").expect("explicit endpoint required");
     let executor = ModelExecutor::new(1, Duration::from_secs(120)).unwrap();
     let tools = vec![ToolDefinition {
+        freeform: None,
+        output_schema: None,
         provider: None,
         name: "echo".into(),
         description: "Echo the supplied token.".into(),
@@ -226,6 +228,8 @@ async fn codex_search_preserves_real_provider_calls_and_citations() {
                 maka_model::prompt::Message::user("Search rust-lang.org for the current stable Rust release. Give its version and release date with a citation.")
             ],
             tools: vec![ToolDefinition {
+                freeform: None,
+                output_schema: None,
                 name: "WebSearch".into(),
                 description: "Search the web".into(),
                 input_schema: json!({"type":"object","properties":{}}),

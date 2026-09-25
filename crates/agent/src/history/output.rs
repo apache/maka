@@ -41,6 +41,14 @@ pub(super) fn project<'a>(
                 .enumerate()
                 .map(|(part, item)| match item {
                     ProjectionPart::Text { text } => ContentPart::text(text.clone()),
+                    ProjectionPart::Audio { audio } => {
+                        images.push(images::Target::Audio {
+                            message,
+                            part,
+                            audio,
+                        });
+                        ContentPart::text("Audio could not be loaded.")
+                    }
                     ProjectionPart::Artifact { image } => {
                         if vision {
                             images.push(images::Target::Tool {

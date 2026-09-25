@@ -123,32 +123,39 @@ async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run
         fixture::accepted(&log, &invocation, &[]).await;
         let release = Arc::new(Notify::new());
         let catalog = ToolCatalog::new([ToolRegistration {
-            definition:ToolDefinition { provider:None,name:"block".into(),description:"wait".into(),input_schema:json!({"type":"object"}) },
+            definition:ToolDefinition { freeform: None, output_schema: None, provider:None,name:"block".into(),description:"wait".into(),input_schema:json!({"type":"object"}) },
             handler:ToolHandler::Immediate(Arc::new(Block(release.clone()))),nesting:ToolNesting::Nestable,semantics:ToolSemantics::Parallel,
         }]).unwrap();
         let run = RunTools::new(log.clone(), invocation.clone(), catalog, ToolMode::CodeMode, CodeExecutor::new(2, CellLimits::default()).unwrap());
-        let first = invoke(&log, &run, &invocation, "first", "exec", json!({"code":"text('early'); await yield_control(); await tools.block({}); text('late'); store('n',42); return 7;"})).await;
+        let first = invoke(&log, &run, &invocation, "first", "exec", json!("// @exec: {\"yield_time_ms\":1000,\"max_output_tokens\":1000}\ntext('early'); await yield_control(); await tools.block({}); text('late'); store('n',42);")).await;
         assert_eq!(first["state"], "running");
         assert_eq!(first["content"], json!([{"kind":"text","text":"early"}]));
         let cell_id = first["cell_id"].as_str().unwrap();
+        assert!(log.append(&maka_runtime::event::EventWrite::plain(maka_runtime::event::RuntimeEvent::new(invocation.clone(), Fact::ToolNotified {
+            operation_id: "first:first".into(), text: "forged".into(), model_text: "forged".into(),
+        })).unwrap()).await.is_err(), "only the cell, not its exec control, owns notifications");
         let prefix = log.prefix(100, 1024*1024).await.unwrap();
         assert!(prefix.events.iter().any(|e| matches!(&e.event.fact, Fact::ToolDispatched {operation_id,call,..}
             if operation_id==cell_id && matches!(&call.origin,ToolOrigin::CodeCell{parent_operation_id,..} if parent_operation_id=="first:first"))));
         assert!(log.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.contains(&cell_id.to_string()));
         release.notify_one();
-        let last = invoke(&log,&run,&invocation,"observe","wait",json!({"cell_id":cell_id})).await;
+        let last = invoke(&log,&run,&invocation,"observe","wait",json!({"cell_id":cell_id,"max_tokens":1000})).await;
         assert_eq!(last["state"],"completed");
-        assert_eq!(last["result"]["value"],7);
+        assert!(log.append(&maka_runtime::event::EventWrite::plain(maka_runtime::event::RuntimeEvent::new(invocation.clone(), Fact::ToolNotified {
+            operation_id: cell_id.into(), text: "late".into(), model_text: "late".into(),
+        })).unwrap()).await.is_err(), "settled cells cannot inject notifications");
+        assert_eq!(last["result"]["value"],Value::Null);
         assert_eq!(last["content"],json!([{"kind":"text","text":"late"}]));
-        let next = invoke(&log,&run,&invocation,"next","exec",json!({"code":"return load('n');"})).await;
-        assert_eq!(next["result"]["value"],42);
-        let stopping = invoke(&log,&run,&invocation,"stopping","exec",json!({"code":"notify('stoppable'); await tools.block({});"})).await;
+        run.clear_loaded();
+        let next = invoke(&log,&run,&invocation,"next","exec",json!({"code":"text(load('n'));"})).await;
+        assert_eq!(next["content"][0]["text"],"42");
+        let stopping = invoke(&log,&run,&invocation,"stopping","exec",json!({"code":"notify('stoppable'); await yield_control(); await tools.block({});"})).await;
         assert_eq!(stopping["state"],"running");
         let stopped = invoke(&log,&run,&invocation,"terminate","wait",json!({"cell_id":stopping["cell_id"],"terminate":true})).await;
         assert_eq!(stopped["state"],"terminated");
         assert_eq!(stopped["content"],json!([]), "termination must not repeat previously observed output");
         assert!(log.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.is_empty());
-        let unfinished = invoke(&log,&run,&invocation,"unfinished","exec",json!({"code":"notify('pending'); await tools.block({});"})).await;
+        let unfinished = invoke(&log,&run,&invocation,"unfinished","exec",json!({"code":"notify('pending'); await yield_control(); await tools.block({});"})).await;
         assert_eq!(unfinished["state"],"running");
         run.shutdown().await.unwrap();
         assert!(log.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.is_empty());

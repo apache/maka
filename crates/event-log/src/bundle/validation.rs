@@ -213,13 +213,7 @@ async fn request(
     };
     let selection = Selection::for_invocation(db, &event.invocation).await?;
     if *purpose == ModelPurpose::Main {
-        context::safety::model_source_unchanged(
-            db,
-            &selection,
-            &event.invocation.invocation_id,
-            *source_high_water,
-        )
-        .await?;
+        context::safety::model_source_unchanged(db, &selection, event).await?;
     }
     if *source_high_water >= sequence || *source_scope != selection.scope {
         return Err(invalid(

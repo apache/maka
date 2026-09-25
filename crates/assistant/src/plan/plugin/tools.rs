@@ -94,6 +94,8 @@ pub(super) fn publish(owner: Arc<Owner>, staged: &mut Staged) -> Result<(), Stri
         };
         let tool = PluginTool::new(ToolRegistration {
             definition: ToolDefinition {
+                freeform: None,
+                output_schema: None,
                 provider: None,
                 name: action.name().into(),
                 description: description.into(),

@@ -19,7 +19,7 @@
 
 use super::{invalid, selection::Selection};
 use crate::StoreError;
-use maka_runtime::event::RuntimeEvent;
+use maka_runtime::event::{Fact, RuntimeEvent};
 use sqlx::SqliteConnection;
 
 pub(crate) async fn current_opening(
@@ -247,25 +247,48 @@ pub(super) async fn summary_boundary(
 pub(crate) async fn model_source_unchanged(
     connection: &mut SqliteConnection,
     selection: &Selection,
-    invocation: &str,
-    through: u64,
+    request: &RuntimeEvent,
 ) -> Result<(), StoreError> {
+    let Fact::ModelRequested {
+        source_high_water: through,
+        ..
+    } = &request.fact
+    else {
+        return Err(invalid("expected model request"));
+    };
+    let invocation = &request.invocation.invocation_id;
     let filter = Selection::predicate("e", "?6");
     let changed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{INDEPENDENT_CELLS}, {PRIVATE_SUMMARIES}
+        "{INDEPENDENT_CELLS}, {PRIVATE_SUMMARIES}, retryable AS (
+           SELECT r.operation_id FROM runtime_events r WHERE r.invocation_id=?1 AND r.kind='model_requested' AND r.sequence>?3
+             AND json_remove(json_extract(r.event_json,'$.fact'),'$.step_id')=json_remove(json(?7),'$.step_id')
+             AND EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=r.invocation_id AND t.operation_id=r.operation_id
+                 AND t.kind='model_interrupted' AND json_extract(t.event_json,'$.fact.status')='retryable_failure')
+             AND NOT EXISTS(SELECT 1 FROM runtime_events barrier WHERE barrier.invocation_id=r.invocation_id
+                 AND barrier.kind='model_observed' AND json_extract(barrier.event_json,'$.fact.step_id')=r.operation_id
+                 AND (json_extract(barrier.event_json,'$.fact.event.kind') IN ('provider_tool_result','finished')
+                     OR (json_extract(barrier.event_json,'$.fact.event.kind')='tool_call'
+                         AND json_extract(barrier.event_json,'$.fact.event.data.provider_executed')=1)
+                     OR (json_extract(barrier.event_json,'$.fact.event.data.provider_options') IS NOT NULL
+                         AND json_extract(barrier.event_json,'$.fact.event.data.provider_options') != '{{}}'))))
          SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.sequence > ?3
            AND json_extract(e.event_json,'$.invocation.session_id')=?5 AND {filter}
            AND NOT (e.invocation_id=?1 AND e.kind IN ('tool_dispatched','tool_settled','tool_rejected')
              AND e.operation_id IN (SELECT operation_id FROM independent))
+           AND NOT (e.invocation_id=?1 AND e.kind='tool_notified'
+             AND json_extract(e.event_json,'$.fact.operation_id') IN (SELECT operation_id FROM independent))
+           AND NOT (e.invocation_id=?1 AND e.kind IN ('model_requested','model_observed','model_interrupted')
+             AND json_extract(e.event_json,'$.fact.step_id') IN (SELECT operation_id FROM retryable))
            AND NOT (e.invocation_id=?1 AND e.kind IN ('model_requested','model_observed','model_completed','model_interrupted')
              AND json_extract(e.event_json,'$.fact.step_id') IN (SELECT operation_id FROM private_summaries)))"
     )))
     .bind(invocation)
     .bind(i64::MAX)
-    .bind(through as i64)
+    .bind(*through as i64)
     .bind(true)
     .bind(&selection.session)
     .bind(&selection.lineage)
+    .bind(serde_json::to_string(&request.fact)?)
     .fetch_one(connection)
     .await?;
     if changed {

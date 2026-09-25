@@ -166,6 +166,12 @@ pub enum Fact {
         operation_id: String,
         outcome: ToolOutcome,
     },
+    /// Additional model output from a live Code Mode cell; never a settlement.
+    ToolNotified {
+        operation_id: String,
+        text: String,
+        model_text: String,
+    },
     ToolRejected {
         operation_id: String,
         call: crate::tool_call::ToolCallIdentity,
@@ -195,6 +201,7 @@ impl Fact {
             Self::ModelCompleted { .. } => "model_completed",
             Self::ToolDispatched { .. } => "tool_dispatched",
             Self::ToolSettled { .. } => "tool_settled",
+            Self::ToolNotified { .. } => "tool_notified",
             Self::ToolRejected { .. } => "tool_rejected",
             Self::InvocationEnded { .. } => "invocation_ended",
         }
@@ -319,6 +326,7 @@ impl LogPrefix {
                 | Fact::ExecutorObserved { .. }
                 | Fact::ModelObserved { .. }
                 | Fact::ToolRejected { .. } => {}
+                Fact::ToolNotified { .. } => {}
                 Fact::ModelRequested { step_id, .. } => {
                     model_steps.insert(step_id.clone());
                 }

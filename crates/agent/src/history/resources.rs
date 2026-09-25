@@ -23,7 +23,7 @@ use maka_event_log::EventLog;
 use maka_runtime::{
     attachment::StorageRef,
     event::{Fact, InvocationInput, ToolOutcome},
-    tool_output::{DurableToolProjection, ProjectionPart},
+    tool_output::DurableToolProjection,
 };
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
@@ -76,10 +76,11 @@ impl<'a> Resources<'a> {
                         },
                     ..
                 } => {
-                    references.extend(parts.iter().filter_map(|part| match part {
-                        ProjectionPart::Artifact { image } => Some(&image.reference),
-                        ProjectionPart::Text { .. } => None,
-                    }));
+                    references.extend(
+                        parts
+                            .iter()
+                            .filter_map(|part| part.media().map(|(reference, _)| reference)),
+                    );
                 }
                 _ => {}
             }

@@ -198,7 +198,7 @@ fn code_mode_patch_stops_after_failure_and_keeps_real_tools_visible() {
             let create = json!({"callId":"create","operation":{"type":"create_file","path":"created.txt","diff":"++literal 中文🦀"}});
             let update = json!({"callId":"update","operation":{"type":"update_file","path":"existing.txt","diff":"@@\n-absent\n+not applied"}});
             let delete = json!({"callId":"delete","operation":{"type":"delete_file","path":"later.txt"}});
-            let code = format!("await tools.apply_patch({create}); await tools.apply_patch({update}); return await tools.apply_patch({delete});");
+            let code = format!("await tools.apply_patch({create}); await tools.apply_patch({update}); text(await tools.apply_patch({delete}));");
             for index in 0..2 {
                 let (mut stream, body) = model_request(&listener).await;
                 if index == 0 {

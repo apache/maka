@@ -205,6 +205,7 @@ async fn read_attachment(
     cancelled(cancellation)?;
     match record.kind {
         ArtifactKind::Image => Ok(ToolOutput::Image(ImageOutput {
+            detail: None,
             mime_type: record
                 .mime_type
                 .ok_or_else(|| failed("Attachment image has no media type"))?,

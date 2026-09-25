@@ -21,12 +21,13 @@ mod bridge;
 mod cell_context;
 mod evaluate;
 mod execution_budget;
+mod module;
 pub mod plugin;
 mod result;
 pub mod trusted;
 
 use bridge::{Admission, ToolScope, maka_code};
-pub use cell_context::{CellContext, CellOutput, CellStore, ToolMetadata};
+pub use cell_context::{CellContext, CellOutput, CellStore, NotificationGate, ToolMetadata};
 use deno_core::{JsRuntime, RuntimeOptions, v8};
 use evaluate::evaluate;
 use execution_budget::ExecutionBudget;
@@ -123,6 +124,30 @@ impl CodeExecutor {
         cancellation: CancellationToken,
         context: CellContext,
     ) -> Result<CellResult, CellAbort> {
+        self.execute_source(source, tools, cancellation, context, false)
+            .await
+    }
+
+    /// Model-facing Code Mode uses an async ES module, without a return value.
+    pub async fn execute_module(
+        &self,
+        source: String,
+        tools: Arc<dyn ToolExecutor>,
+        cancellation: CancellationToken,
+        context: CellContext,
+    ) -> Result<CellResult, CellAbort> {
+        self.execute_source(source, tools, cancellation, context, true)
+            .await
+    }
+
+    async fn execute_source(
+        &self,
+        source: String,
+        tools: Arc<dyn ToolExecutor>,
+        cancellation: CancellationToken,
+        context: CellContext,
+        module: bool,
+    ) -> Result<CellResult, CellAbort> {
         if cancellation.is_cancelled() {
             return Err(CellAbort::Cancelled);
         }
@@ -160,6 +185,7 @@ impl CodeExecutor {
                     limits,
                     handle,
                     context,
+                    module,
                 ))
         })
         .await
@@ -174,6 +200,7 @@ async fn run_cell(
     limits: CellLimits,
     host: Handle,
     context: CellContext,
+    module: bool,
 ) -> Result<CellResult, CellAbort> {
     if cancellation.is_cancelled() {
         return Err(CellAbort::Cancelled);
@@ -240,6 +267,7 @@ async fn run_cell(
             &names,
             limits.max_value_bytes,
             context.metadata(),
+            module,
         ))
         .await
     {
@@ -252,7 +280,7 @@ async fn run_cell(
             Err(CellDiagnostic::limit("cell execution budget exceeded"))
         }
     };
-    if result.is_err() {
+    if module || result.is_err() {
         scope.cancellation.cancel();
     }
     // No more ops can enter once the runtime is destroyed.
@@ -294,4 +322,21 @@ enum StopReason {
 fn initialize_platform() {
     static INIT: Once = Once::new();
     INIT.call_once(|| JsRuntime::init_platform(None));
+}
+
+/// Codex-style JavaScript property spelling. Runtime construction rejects collisions.
+pub fn tool_identifier(name: &str) -> String {
+    let name: String = name
+        .chars()
+        .enumerate()
+        .map(|(index, c)| {
+            if c == '_' || c == '$' || c.is_ascii_alphabetic() || (index > 0 && c.is_ascii_digit())
+            {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if name.is_empty() { "_".into() } else { name }
 }

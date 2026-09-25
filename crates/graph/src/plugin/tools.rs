@@ -75,6 +75,8 @@ pub(super) fn register(staged: &mut Staged, manager: Arc<super::Manager>) -> Res
     ] {
         let tool = PluginTool::new(ToolRegistration {
             definition: ToolDefinition {
+                freeform: None,
+                output_schema: None,
                 provider: None,
                 name: name.into(),
                 description: description.into(),

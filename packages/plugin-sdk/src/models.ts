@@ -30,6 +30,9 @@ export type ModelToolOutput =
   | { type: 'text' | 'error-text'; value: string }
   | { type: 'json' | 'error-json'; value: Json }
   | { type: 'content'; value: readonly ModelContent[] };
+/** providerOptions.maka.notification marks supplemental output, not a second settlement.
+ * Native Responses adapters preserve the custom call ID; JSON-only adapters may
+ * carry it as a labelled observation. openai.toolKind preserves custom calls in deltas. */
 export type ModelToolResult = Options & {
   type: 'tool-result';
   toolCallId: string;
@@ -78,6 +81,8 @@ export interface ModelRequest {
     name: string;
     description: string;
     inputSchema: Json;
+    freeform?: { syntax: 'lark'; definition: string };
+    outputSchema?: Json;
     provider?: { id: string; args: Json };
   }[];
   providerOptions: Json;

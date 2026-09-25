@@ -21,7 +21,7 @@ use crate::StoreError;
 use maka_runtime::{
     attachment::{AttachmentRef, StorageRef},
     event::{Fact, InvocationInput, RuntimeEvent, ToolOutcome},
-    tool_output::{DurableToolProjection, ProjectionPart},
+    tool_output::DurableToolProjection,
 };
 
 /// Only typed canonical references convey ownership; arbitrary plugin JSON does not.
@@ -82,10 +82,11 @@ pub(crate) fn from_event(event: &RuntimeEvent) -> Vec<(&StorageRef, Option<&Atta
                 },
             ..
         } => {
-            references.extend(parts.iter().filter_map(|part| match part {
-                ProjectionPart::Artifact { image } => Some((&image.reference, None)),
-                ProjectionPart::Text { .. } => None,
-            }));
+            references.extend(
+                parts
+                    .iter()
+                    .filter_map(|part| part.media().map(|(reference, _)| (reference, None))),
+            );
         }
         _ => {}
     }

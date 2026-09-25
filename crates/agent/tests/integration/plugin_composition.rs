@@ -118,7 +118,7 @@ fn publish(catalog: &Catalog, version: &str, count: Arc<AtomicUsize>) -> Fiber {
         .unwrap();
     staged.insert("echo", PluginTool::new(ToolRegistration {
         definition: ToolDefinition {
-            provider: None,
+            freeform: None, output_schema: None, provider: None,
             name: "echo".into(), description: format!("Echo {version}"),
             input_schema: json!({"type":"object","properties":{"version":{"const":version}},"required":["version"],"additionalProperties":false}),
         },

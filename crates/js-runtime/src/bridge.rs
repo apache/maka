@@ -183,6 +183,12 @@ fn op_maka_emit(state: &mut OpState, #[serde] output: CellOutput) -> Option<Cell
     state.borrow::<CellContext>().emit(output).err()
 }
 
+#[op2]
+#[serde]
+fn op_maka_notify(state: &mut OpState, #[string] text: String) -> Option<CellDiagnostic> {
+    state.borrow::<CellContext>().notify(text).err()
+}
+
 #[op2(fast)]
 fn op_maka_yield(state: &mut OpState) {
     state.borrow::<CellContext>().yield_output();
@@ -212,14 +218,57 @@ async fn op_maka_sleep(#[number] millis: u64) {
     tokio::time::sleep(std::time::Duration::from_millis(millis.min(86_400_000))).await;
 }
 
+#[derive(Default)]
+struct Timers(std::collections::BTreeMap<u32, CancellationToken>);
+
+#[op2]
+fn op_maka_timer(
+    state: Rc<RefCell<OpState>>,
+    id: u32,
+    #[number] millis: u64,
+) -> impl Future<Output = bool> {
+    let cancellation = CancellationToken::new();
+    {
+        let mut state = state.borrow_mut();
+        if !state.has::<Timers>() {
+            state.put(Timers::default());
+        }
+        state
+            .borrow_mut::<Timers>()
+            .0
+            .insert(id, cancellation.clone());
+    }
+    async move {
+        let fired = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => false,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(millis)) => true,
+        };
+        state.borrow_mut().borrow_mut::<Timers>().0.remove(&id);
+        fired
+    }
+}
+
+#[op2(fast)]
+fn op_maka_clear_timer(state: &mut OpState, id: u32) {
+    if let Some(timers) = state.try_borrow_mut::<Timers>()
+        && let Some(timer) = timers.0.remove(&id)
+    {
+        timer.cancel();
+    }
+}
+
 deno_core::extension!(
     maka_code,
     ops = [
         op_maka_tool,
         op_maka_emit,
+        op_maka_notify,
         op_maka_yield,
         op_maka_store,
         op_maka_load,
-        op_maka_sleep
+        op_maka_sleep,
+        op_maka_timer,
+        op_maka_clear_timer
     ]
 );

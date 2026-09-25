@@ -19,7 +19,9 @@
 
 use super::{CellTool, CodeInput, NestedTools, WaitInput};
 use futures_util::FutureExt;
-use maka_js_runtime::{CellAbort, CellContext, CellOutput, CellStore, ToolMetadata};
+use maka_js_runtime::{
+    CellAbort, CellContext, CellOutput, CellStore, NotificationGate, ToolMetadata,
+};
 use maka_runtime::{
     tool_call::{ToolCallIdentity, ToolOrigin},
     tool_output::{ToolContent, ToolOutput, ToolSuccess},
@@ -48,6 +50,9 @@ struct State {
     cancellation: CancellationToken,
     tasks: TaskTracker,
     fatal: Mutex<Option<ToolError>>,
+    notification_gate: NotificationGate,
+    notification_high_water: tokio::sync::Mutex<u64>,
+    notification_changed: tokio::sync::Notify,
 }
 
 struct Cell {
@@ -76,8 +81,11 @@ enum Observation {
 }
 
 impl Cells {
-    pub fn clear_store(&self) {
-        self.0.store.clear();
+    pub fn new(store: CellStore) -> Self {
+        Self(Arc::new(State {
+            store,
+            ..State::default()
+        }))
     }
 
     pub fn cancel(&self) {
@@ -85,10 +93,36 @@ impl Cells {
     }
 
     pub async fn shutdown(&self) -> Result<(), ToolError> {
+        self.0.notification_gate.close();
         self.cancel();
         self.0.tasks.close();
         self.0.tasks.wait().await;
         self.check()
+    }
+
+    /// Linearize final model output with notification acceptance. A newer
+    /// committed notification requires another step; later callbacks see closure.
+    pub async fn finish_output(&self, observed: u64) -> Result<bool, ToolError> {
+        loop {
+            let changed = self.0.notification_changed.notified();
+            self.check()?;
+            let high_water = self.0.notification_high_water.lock().await;
+            if *high_water > observed {
+                return Ok(false);
+            }
+            if self.0.notification_gate.close_if_empty(
+                self.0
+                    .cells
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .map(|cell| &cell.context),
+            ) {
+                return Ok(true);
+            }
+            drop(high_water);
+            changed.await;
+        }
     }
 
     pub fn check(&self) -> Result<(), ToolError> {
@@ -127,17 +161,16 @@ impl Cells {
         let metadata = tool
             .catalog
             .definitions()
-            .cloned()
-            .chain(tool.availability.definition())
             .map(|definition| ToolMetadata {
-                name: definition.name,
-                description: definition.description,
+                name: maka_js_runtime::tool_identifier(&definition.name),
+                description: super::declarations(std::slice::from_ref(definition)),
             })
             .collect();
-        let context = CellContext::new(
+        let context = CellContext::with_notification_gate(
             self.0.store.clone(),
             tool.cells.limits().max_value_bytes,
             metadata,
+            self.0.notification_gate.clone(),
         );
         let (done, completion) = watch::channel(None);
         let token = cancellation.child_token();
@@ -161,7 +194,6 @@ impl Cells {
         } = tool.input;
         let nested = Arc::new(NestedTools {
             catalog: tool.catalog,
-            availability: tool.availability,
             journal: tool.journal.clone(),
             origin: ToolOrigin::CodeMode {
                 parent_operation_id: id.clone(),
@@ -182,7 +214,10 @@ impl Cells {
         self.0.tasks.spawn(async move {
             let effect_context = context.clone();
             let shutdown = state.cancellation.clone();
+            let notification_state = state.clone();
             let result = std::panic::AssertUnwindSafe(async move {
+                let notifications = journal.clone();
+                let notification_id = root_id.clone();
                 let operation = journal.invoke_call_with(
                     root_id,
                     identity,
@@ -193,9 +228,24 @@ impl Cells {
                     move |cancellation| {
                         Box::pin(async move {
                             let _ = started.send(());
-                            tool.cells
-                                .execute_with_context(code, nested, cancellation, effect_context)
-                                .await
+                            let execution = tool.cells.execute_module(code, nested, cancellation.clone(), effect_context.clone());
+                            tokio::pin!(execution);
+                            let result = loop {
+                                tokio::select! {
+                                    biased;
+                                    _ = effect_context.notified() => {
+                                        if let Err(error) = publish_notifications(&notification_state, &notifications, &notification_id, &effect_context, max_output_tokens).await {
+                                            effect_context.fail(error.clone());
+                                            cancellation.cancel();
+                                            let _ = execution.await;
+                                            return Err(error);
+                                        }
+                                    }
+                                    result = &mut execution => break result,
+                                }
+                            };
+                            publish_notifications(&notification_state, &notifications, &notification_id, &effect_context, max_output_tokens).await?;
+                            result
                                 .map_err(abort)
                                 .and_then(|result| {
                                     serde_json::to_value(result).map_err(|error| {
@@ -238,6 +288,7 @@ impl Cells {
                 state.cancellation.cancel();
             }
             done.send_replace(Some(result));
+            state.notification_changed.notify_one();
         });
         // The independent cell T1 must precede settlement of its starting exec.
         // A failed T1 drops this sender; observation propagates the stored failure.
@@ -246,7 +297,7 @@ impl Cells {
             WaitInput {
                 cell_id: id,
                 yield_time_ms,
-                max_output_tokens,
+                max_tokens: max_output_tokens,
                 terminate: false,
             },
             cancellation,
@@ -320,8 +371,25 @@ impl Cells {
         if !matches!(observation, Observation::Running { .. }) {
             self.0.cells.lock().unwrap().remove(&request.cell_id);
         }
-        Ok(project(observation, request.max_output_tokens))
+        Ok(project(observation, request.max_tokens))
     }
+}
+
+async fn publish_notifications(
+    state: &State,
+    journal: &maka_runtime::tools::ToolJournal,
+    cell_id: &str,
+    context: &CellContext,
+    max_tokens: usize,
+) -> Result<(), ToolError> {
+    let mut high_water = state.notification_high_water.lock().await;
+    for text in context.take_notifications() {
+        let mut remaining = max_tokens.saturating_mul(4).min(MAX_OUTPUT_BYTES);
+        let model_text = clip(&text, &mut remaining);
+        *high_water = journal.notify(cell_id.into(), text, model_text).await?;
+        state.notification_changed.notify_one();
+    }
+    Ok(())
 }
 
 fn abort(error: CellAbort) -> ToolError {
@@ -359,7 +427,7 @@ fn project(observation: Observation, max_tokens: usize) -> ToolSuccess {
         parts.push(match output {
             CellOutput::Text { text } => ToolContent::Text(clip(&text, &mut remaining)),
             CellOutput::Image { image } => ToolContent::Image(image),
-            CellOutput::Media { content } => ToolContent::Media(content),
+            CellOutput::Media { content, detail } => ToolContent::Media { content, detail },
         });
     }
     ToolSuccess::content(ToolOutput::Json(raw), parts)

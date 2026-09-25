@@ -129,6 +129,7 @@ struct Inner {
     log: Arc<EventLog>,
     model: ModelExecutor,
     cells: CodeExecutor,
+    code_stores: Mutex<std::collections::HashMap<String, maka_js_runtime::CellStore>>,
     active: Mutex<HashSet<String>>,
     workers: TaskTracker,
 }
@@ -176,6 +177,7 @@ impl Engine {
             log,
             model,
             cells,
+            code_stores: Mutex::default(),
             active: Mutex::new(HashSet::new()),
             workers: TaskTracker::new(),
         }))
@@ -187,6 +189,11 @@ impl Engine {
         cancellation: CancellationToken,
     ) -> Result<Invocation, RunError> {
         self.start(input, cancellation).await?.wait().await
+    }
+
+    /// Host calls after session retirement has fenced and drained its runs.
+    pub fn release_code_store(&self, session: &str) {
+        self.0.code_stores.lock().unwrap().remove(session);
     }
 
     /// Observe replay safety without reserving a source or creating a claim.

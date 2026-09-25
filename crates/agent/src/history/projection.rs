@@ -41,7 +41,10 @@ pub(super) fn build<'a>(
     // become an assistant-prefill request. Only a real user opens model input.
     let mut has_user = false;
     let mut calls = HashMap::new();
+    let mut custom_operations = HashSet::new();
     let mut dispatched = HashSet::new();
+    let mut cells = HashMap::new();
+    let mut notifications = Vec::new();
     let pending: HashSet<_> = if prior_unknown {
         let settled: HashSet<_> = events
             .clone()
@@ -78,10 +81,13 @@ pub(super) fn build<'a>(
             _ => None,
         })
         .collect();
-    let mut purposes = HashMap::new();
+    let mut requests = HashMap::new();
     for stored in events.clone().filter_map(EventRef::canonical) {
         if let Fact::ModelRequested {
-            step_id, purpose, ..
+            step_id,
+            purpose,
+            source_high_water,
+            ..
         } = &stored.event.fact
         {
             let opening = openings
@@ -91,7 +97,33 @@ pub(super) fn build<'a>(
                 })?;
             let resolved = resolve_model_purpose(opening, *purpose)
                 .map_err(|reason| RunError::ReconciliationRequired(reason.into()))?;
-            purposes.insert((&stored.event.invocation.invocation_id, step_id), resolved);
+            requests.insert(
+                (&stored.event.invocation.invocation_id, step_id),
+                RequestSpan {
+                    purpose: resolved,
+                    source: *source_high_water,
+                    end: u64::MAX,
+                },
+            );
+        }
+        match &stored.event.fact {
+            Fact::ModelCompleted { step_id, .. } | Fact::ModelInterrupted { step_id, .. } => {
+                if let Some(request) =
+                    requests.get_mut(&(&stored.event.invocation.invocation_id, step_id))
+                {
+                    request.end = stored.sequence;
+                }
+            }
+            Fact::InvocationEnded { .. } => {
+                for ((invocation, _), request) in &mut requests {
+                    if *invocation == &stored.event.invocation.invocation_id
+                        && request.end == u64::MAX
+                    {
+                        request.end = stored.sequence;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     let compact_invocations: HashSet<_> = events
@@ -132,7 +164,15 @@ pub(super) fn build<'a>(
                 } else {
                     ToolOutput::Json(value.clone())
                 };
-                messages.push(Message::tool(id, name, output));
+                messages.push(tool_message(
+                    id,
+                    name,
+                    output,
+                    custom_operations.contains(&archived.operation_id),
+                ));
+                if calls.is_empty() {
+                    flush_notifications(&mut notifications, archived.sequence, &mut messages);
+                }
                 continue;
             }
         };
@@ -140,6 +180,31 @@ pub(super) fn build<'a>(
             continue;
         }
         match &stored.event.fact {
+            Fact::ToolNotified {
+                operation_id,
+                model_text,
+                ..
+            } => {
+                let (parent, id) = cells.get(operation_id.as_str()).ok_or_else(|| {
+                    RunError::ReconciliationRequired("notification lacks its Code Mode cell".into())
+                })?;
+                let mut message = Message::notification(*id, model_text.clone());
+                if custom_operations.contains(*parent) {
+                    mark_custom(&mut message);
+                }
+                let release = requests
+                    .iter()
+                    .filter_map(|((invocation, _), request)| {
+                        (*invocation == &stored.event.invocation.invocation_id
+                            && request.purpose == ModelPurpose::Main
+                            && request.source < stored.sequence
+                            && stored.sequence <= request.end)
+                            .then_some(request.end)
+                    })
+                    .max()
+                    .unwrap_or(stored.sequence);
+                notifications.push((release, message));
+            }
             Fact::MessageImported { record, .. } => {
                 use maka_runtime::import::Content;
                 match &record.content {
@@ -204,7 +269,10 @@ pub(super) fn build<'a>(
                 });
             }
             Fact::ModelCompleted { step_id, output } => {
-                match purposes.get(&(&stored.event.invocation.invocation_id, step_id)) {
+                match requests
+                    .get(&(&stored.event.invocation.invocation_id, step_id))
+                    .map(|request| request.purpose)
+                {
                     Some(ModelPurpose::Summary) => continue,
                     Some(ModelPurpose::Main) => {}
                     None => {
@@ -215,56 +283,62 @@ pub(super) fn build<'a>(
                 }
                 let mut content = Vec::new();
                 for (index, part) in output.parts.iter().enumerate() {
-                    let value = match part {
-                        // Citations are preserved in the canonical result/UI, not
-                        // fabricated as additional model-authored prompt text.
-                        ModelPart::Source { .. } => continue,
-                        ModelPart::Text {
-                            text_kind,
-                            text,
-                            provider_options,
-                        } => match text_kind {
-                            TextKind::Thinking => AssistantPart::Reasoning {
-                                text: text.clone(),
+                    let value =
+                        match part {
+                            // Citations are preserved in the canonical result/UI, not
+                            // fabricated as additional model-authored prompt text.
+                            ModelPart::Source { .. } => continue,
+                            ModelPart::Text {
+                                text_kind,
+                                text,
+                                provider_options,
+                            } => match text_kind {
+                                TextKind::Thinking => AssistantPart::Reasoning {
+                                    text: text.clone(),
+                                    provider_options: provider_options.clone(),
+                                },
+                                TextKind::Text => AssistantPart::Text {
+                                    text: text.clone(),
+                                    provider_options: provider_options.clone(),
+                                },
+                            },
+                            ModelPart::ToolCall { call } => {
+                                if !call.provider_executed {
+                                    if call.provider_options.as_ref().is_some_and(|value| {
+                                        value["openai"]["toolKind"] == "custom"
+                                    }) {
+                                        custom_operations.insert(operation_id(step_id, &call.id));
+                                    }
+                                    calls.insert(
+                                        operation_id(step_id, &call.id),
+                                        (&call.id, &call.name),
+                                    );
+                                }
+                                AssistantPart::ToolCall {
+                                    tool_call_id: call.id.clone(),
+                                    tool_name: call.name.clone(),
+                                    input: call.input.clone(),
+                                    provider_executed: Some(call.provider_executed),
+                                    provider_options: call.provider_options.clone(),
+                                }
+                            }
+                            ModelPart::ToolResult {
+                                id,
+                                name,
+                                output,
+                                is_error,
+                                provider_options,
+                            } => AssistantPart::ToolResult {
+                                tool_call_id: id.clone(),
+                                tool_name: name.clone(),
+                                output: if *is_error {
+                                    ToolOutput::ErrorJson(output.clone())
+                                } else {
+                                    ToolOutput::Json(output.clone())
+                                },
                                 provider_options: provider_options.clone(),
                             },
-                            TextKind::Text => AssistantPart::Text {
-                                text: text.clone(),
-                                provider_options: provider_options.clone(),
-                            },
-                        },
-                        ModelPart::ToolCall { call } => {
-                            if !call.provider_executed {
-                                calls.insert(
-                                    operation_id(step_id, &call.id),
-                                    (&call.id, &call.name),
-                                );
-                            }
-                            AssistantPart::ToolCall {
-                                tool_call_id: call.id.clone(),
-                                tool_name: call.name.clone(),
-                                input: call.input.clone(),
-                                provider_executed: Some(call.provider_executed),
-                                provider_options: call.provider_options.clone(),
-                            }
-                        }
-                        ModelPart::ToolResult {
-                            id,
-                            name,
-                            output,
-                            is_error,
-                            provider_options,
-                        } => AssistantPart::ToolResult {
-                            tool_call_id: id.clone(),
-                            tool_name: name.clone(),
-                            output: if *is_error {
-                                ToolOutput::ErrorJson(output.clone())
-                            } else {
-                                ToolOutput::Json(output.clone())
-                            },
-                            provider_options: provider_options.clone(),
-                        },
-                    };
+                        };
                     if cuts
                         .as_ref()
                         .map(|cuts| cuts.allows(stored, step_id, index, part))
@@ -303,13 +377,27 @@ pub(super) fn build<'a>(
                             )
                         })?;
                         dispatched.remove(operation);
-                        messages.push(Message::tool(id, name, ToolOutput::ErrorText(
+                        messages.push(tool_message(id, name, ToolOutput::ErrorText(
                             "outcome_unknown: The tool was dispatched, but no durable result was recorded. Its effect may have happened. Inspect current state before repeating it.".into(),
-                        )));
+                        ), custom_operations.contains(operation)));
                     }
                 }
+                ToolOrigin::CodeCell {
+                    parent_operation_id,
+                    parent_tool_call_id,
+                    ..
+                } => {
+                    if calls.contains_key(operation) {
+                        return Err(RunError::ReconciliationRequired(
+                            "hidden cell aliases provider call".into(),
+                        ));
+                    }
+                    cells.insert(
+                        operation.as_str(),
+                        (parent_operation_id.as_str(), parent_tool_call_id.as_str()),
+                    );
+                }
                 ToolOrigin::CodeMode { .. }
-                | ToolOrigin::CodeCell { .. }
                 | ToolOrigin::HostSdk { .. }
                 | ToolOrigin::Standalone => {
                     if calls.contains_key(operation) {
@@ -336,10 +424,11 @@ pub(super) fn build<'a>(
                         ));
                     }
                     let (id, name) = calls.remove(operation).expect("validated accepted call");
-                    messages.push(Message::tool(
+                    messages.push(tool_message(
                         id,
                         name,
                         ToolOutput::ErrorText(reason.to_string()),
+                        custom_operations.contains(operation),
                     ));
                 }
                 ToolOrigin::CodeMode { .. }
@@ -373,10 +462,20 @@ pub(super) fn build<'a>(
                             ToolOutput::ErrorText(message.clone())
                         }
                     };
-                    messages.push(Message::tool(id, name, output));
+                    messages.push(tool_message(
+                        id,
+                        name,
+                        output,
+                        custom_operations.contains(operation_id),
+                    ));
                 }
             }
             _ => {}
+        }
+        // The request's source cut, not its commit timestamp, proves whether
+        // it saw a notification. This also preserves frozen physical retries.
+        if calls.is_empty() {
+            flush_notifications(&mut notifications, stored.sequence, &mut messages);
         }
     }
     if !calls.is_empty() {
@@ -385,4 +484,41 @@ pub(super) fn build<'a>(
         ));
     }
     Ok(messages)
+}
+
+fn tool_message(id: &str, name: &str, output: ToolOutput, custom: bool) -> Message {
+    let mut message = Message::tool(id, name, output);
+    if custom {
+        mark_custom(&mut message);
+    }
+    message
+}
+
+fn mark_custom(message: &mut Message) {
+    if let Message::Tool { content, .. } = message {
+        for part in content {
+            let options = part
+                .provider_options
+                .get_or_insert_with(|| serde_json::json!({}));
+            options["openai"] = serde_json::json!({"toolKind":"custom"});
+        }
+    }
+}
+
+struct RequestSpan {
+    purpose: ModelPurpose,
+    source: u64,
+    end: u64,
+}
+
+fn flush_notifications(
+    pending: &mut Vec<(u64, Message)>,
+    through: u64,
+    messages: &mut Vec<Message>,
+) {
+    messages.extend(
+        pending
+            .extract_if(.., |(release, _)| *release <= through)
+            .map(|(_, message)| message),
+    );
 }

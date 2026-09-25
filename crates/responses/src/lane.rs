@@ -100,18 +100,35 @@ impl Lane {
         if response_id != Some(id.as_str()) {
             return false;
         }
-        let Some(response_end) = replay.len().checked_sub(settled_tool_call_ids.len()) else {
-            return false;
-        };
-        if response_end <= pending.length || !pending.matches(replay) {
+        if !pending.matches(replay) {
             return false;
         }
-        for (message, id) in replay[response_end..].iter().zip(settled_tool_call_ids) {
-            if !matches!(message, Message::Tool { content, .. }
-                if content.iter().any(|part| part.tool_call_id == *id))
-            {
+        let response_end = match replay[pending.length..]
+            .iter()
+            .position(|message| matches!(message, Message::Tool { .. }))
+        {
+            Some(offset) => pending.length + offset,
+            None if settled_tool_call_ids.is_empty() => replay.len(),
+            None => return false,
+        };
+        if response_end <= pending.length {
+            return false;
+        }
+        let mut settled = settled_tool_call_ids.iter();
+        for message in &replay[response_end..] {
+            let Message::Tool { content, .. } = message else {
                 return false;
+            };
+            for part in content {
+                if !part.is_notification()
+                    && settled.next().copied() != Some(part.tool_call_id.as_str())
+                {
+                    return false;
+                }
             }
+        }
+        if settled.next().is_some() {
+            return false;
         }
         state.confirmed = Some((Prefix::new(&replay[..response_end]), id));
         true

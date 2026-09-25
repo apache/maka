@@ -20,7 +20,7 @@
 use crate::prompt::{ContentPart, Message, ToolOutput};
 
 /// Chat has text-only tool messages. Keep the entire result group together and
-/// carry its images in the following user message, never between parallel results.
+/// carry media in the following user message, never between parallel results.
 pub(super) fn project(messages: Vec<Message>) -> Vec<Message> {
     let mut projected = Vec::with_capacity(messages.len());
     let mut images = Vec::new();
@@ -32,18 +32,24 @@ pub(super) fn project(messages: Vec<Message>) -> Vec<Message> {
                 };
                 let mut labelled = false;
                 for part in parts {
-                    if matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("image/"))
+                    if matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("image/") || media_type.starts_with("audio/"))
                     {
+                        let kind = if matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("audio/"))
+                        {
+                            "Audio"
+                        } else {
+                            "Image"
+                        };
                         if !labelled {
                             images.push(ContentPart::text(format!(
-                                "Image from tool {} ({}):",
+                                "{kind} from tool {} ({}):",
                                 result.tool_name, result.tool_call_id
                             )));
                             labelled = true;
                         }
                         images.push(std::mem::replace(
                             part,
-                            ContentPart::text("Image supplied below."),
+                            ContentPart::text(format!("{kind} supplied below.")),
                         ));
                     }
                 }

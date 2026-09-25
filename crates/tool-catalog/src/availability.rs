@@ -153,6 +153,11 @@ impl Availability {
         self.catalog
             .select(|name| self.direct(name) || active.contains(name))
     }
+    /// The full, already-authorized request snapshot. Code Mode defers only
+    /// descriptions, so metadata discovery never changes executable authority.
+    pub fn all(&self) -> ToolCatalog {
+        self.catalog.clone()
+    }
     pub fn clear(&self) {
         self.active.lock().unwrap().clear();
     }
@@ -200,6 +205,8 @@ impl Availability {
             .map(|d| d.name.as_str())
             .collect::<Vec<_>>();
         Some(ToolDefinition {
+            freeform: None,
+            output_schema: None,
             provider: None,
             name: SEARCH.into(),
             description: format!(

@@ -31,25 +31,41 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    ToolCallContext, ToolCatalog, ToolDefinition,
-    availability::{Availability, SEARCH},
-};
+use crate::{ToolCallContext, ToolCatalog, ToolDefinition};
 use uuid::Uuid;
+
+const EXEC_GRAMMAR: &str = r#"start: pragma_source | plain_source
+pragma_source: PRAGMA_LINE NEWLINE SOURCE
+plain_source: SOURCE
+PRAGMA_LINE: /[ \t]*\/\/ @exec:[^\r\n]*/
+NEWLINE: /\r?\n/
+SOURCE: /[\s\S]+/
+"#;
+
+fn default_wait_yield() -> u64 {
+    10_000
+}
 
 pub(super) fn definition() -> ToolDefinition {
     ToolDefinition {
-        provider: None,
+        freeform: Some(maka_runtime::tools::FreeformGrammar::Lark { definition: EXEC_GRAMMAR.into() }), output_schema: None, provider: None,
         name: "exec".into(),
-        description: r#"Run an async JavaScript function body in a fresh bounded V8 isolate; no Node, filesystem, network or console.
-Call tools.<name>(args) or tools["name"](args). Await every intended operation. Promise.all queues work: 8 tools run concurrently, with 32 calls total per cell.
-Return JSON, or emit selected output using text(value). image(value) accepts a Host image result, MCP image block, or base64 data URL. generatedImage({image_url, output_hint?}) emits generated image content.
-audio(value) accepts an MCP audio block or base64 data URL; bytes are retained in evidence, but current model adapters receive audio metadata, not native audio input.
-notify(value) emits text and requests an immediate observation. await yield_control() returns accumulated output while the cell continues. exit() ends the JS body successfully; admitted Host effects still settle.
-Results have state running/completed/terminated. For running, use wait with cell_id to receive only new output or request termination. Up to 4 uncollected cells per Run.
-store(key, value) and load(key) retain bounded JSON between cells in this Run, not JS globals. Values are published after cell settlement. Compaction, Run end and Host restart clear them.
-ALL_TOOLS is this cell's frozen name/description catalog. Search cannot add tools to a running cell; use the refreshed catalog in the next exec.
-setTimeout(callback, millis) and clearTimeout(id) are available; timers alone do not keep a completed cell alive. Synchronous execution is bounded to 30 seconds; asynchronous tool waits do not consume it. Cancellation and Run completion stop cells and settle accepted effects."#.into(),
+        description: r#"Run JavaScript code to orchestrate tool calls in a fresh V8 isolate. Code is an async ES module: use top-level await and emit output with helpers; no top-level return. No Node, filesystem, network, imports or console.
+Pass raw JavaScript on freeform transports; on JSON-only transports put the same source in code. Optional first line: // @exec: {"yield_time_ms": 30000, "max_output_tokens": 10000}
+Call tools.<name>(input). Names are normalized JavaScript identifiers. Await every intended operation, including Promise.all/Promise.allSettled. When the module finishes, unawaited operations are cancelled; admitted Host effects still settle before completion.
+Helpers:
+- text(value): emit a string or JSON value.
+- image(value, detail?): emit a Host image, MCP image block or base64 data URL; image_url objects are accepted. detail is auto/low/high/original; an explicit argument overrides embedded detail.
+- audio(value): emit an MCP audio block, audio_url object or base64 data URL. Audio bytes are delivered as native model input when supported; unsupported adapters receive an explicit notice. PCM WAV clips shorter than 25 ms are omitted with a text notice.
+- generatedImage({image_url, output_hint?}): emit image content and its hint.
+- store(key, value), load(key): retain JSON between exec calls in this live session, including across turns and compaction. No JS globals survive. Writes publish after settlement. Host restart/session retirement clears the store.
+- notify(value): independently inject additional output for the current exec into the model history; no wait call is needed. Does not yield or finish the cell. Notifications arriving during a model request are delivered on the next step.
+- await yield_control(): return accumulated output while the cell continues.
+- exit(): end the script successfully.
+- setTimeout(callback, delayMs=0), clearTimeout(id): timers alone do not keep a finished cell alive.
+- ALL_TOOLS: frozen name/description metadata for all authorized nested tools, including deferred tools omitted from this description. Find a tool here and call it in the same cell.
+Use wait only after exec returns a running cell_id. Tool permissions and schemas stay frozen for the cell. Calls to other advertised tools must be made directly. Do not invoke exec in parallel with other model tools.
+Host limits: 64 KiB source, 1 MiB JSON/output/store, 64 MiB V8 heap, 30 seconds cumulative synchronous execution (async waits excluded), 32 tool calls per cell, 8 simultaneous calls, 4 uncollected cells per Run, 128 pending timers."#.into(),
         input_schema: schemars::schema_for!(CodeInput).into(),
     }
 }
@@ -57,7 +73,7 @@ setTimeout(callback, millis) and clearTimeout(id) are available; timers alone do
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CodeInput {
-    /// Async JavaScript function body, at most 64 KiB UTF-8. Return JSON or emit content.
+    /// Async JavaScript module, at most 64 KiB UTF-8. Emit content using helpers.
     code: String,
     /// Observation wait in milliseconds (0..60000), not an execution timeout.
     #[serde(default = "default_yield")]
@@ -70,25 +86,26 @@ pub(super) struct CodeInput {
 }
 
 fn default_yield() -> u64 {
-    10_000
+    30_000
 }
 fn default_tokens() -> usize {
-    4_000
+    10_000
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WaitInput {
-    /// The opaque cell_id returned by exec or wait in this Run.
+    /// Identifier returned by a running exec cell.
     cell_id: String,
     /// Observation wait in milliseconds (0..60000), not an execution timeout.
-    #[serde(default = "default_yield")]
+    #[serde(default = "default_wait_yield")]
     #[schemars(range(min = 0, max = 60000))]
     yield_time_ms: u64,
     /// Approximate text-output budget (64..32768 tokens).
     #[serde(default = "default_tokens")]
     #[schemars(range(min = 64, max = 32768))]
-    max_output_tokens: usize,
+    #[serde(alias = "max_output_tokens")]
+    max_tokens: usize,
     /// Request cancellation. Running means accepted effects are still being settled.
     #[serde(default)]
     terminate: bool,
@@ -96,8 +113,8 @@ pub(super) struct WaitInput {
 
 pub(super) fn wait_definition() -> ToolDefinition {
     ToolDefinition {
-        provider: None, name: "wait".into(),
-        description: "Observe a running Code Mode cell using the cell_id from exec/wait. Returns only new output and its running/completed/terminated state. terminate requests cancellation; while cleanup is pending the state stays running. Completed cells are collected once. IDs are scoped to this Run and do not survive Host restart. yield_time_ms is 0..60000 (default 10000); max_output_tokens is an approximate text budget, 64..32768 (default 4000).".into(),
+        freeform: None, output_schema: None, provider: None, name: "wait".into(),
+        description: "Use only after exec returns a running cell_id. Observe a running Code Mode cell using the cell_id from exec/wait. Returns only new output and its running/completed/terminated state. terminate requests cancellation; while cleanup is pending the state stays running. Completed cells are collected once. IDs are scoped to this Run and do not survive Host restart. yield_time_ms is 0..60000 (default 10000); max_tokens is an approximate text budget, 64..32768 (default 10000).".into(),
         input_schema: schemars::schema_for!(WaitInput).into(),
     }
 }
@@ -111,14 +128,37 @@ fn invalid(message: impl Into<String>) -> ToolRejection {
 fn observation_limits(yield_time_ms: u64, tokens: usize) -> Result<(), ToolRejection> {
     if yield_time_ms > 60_000 || !(64..=32_768).contains(&tokens) {
         return Err(invalid(
-            "yield_time_ms must be 0..60000; max_output_tokens must be 64..32768",
+            "yield_time_ms must be 0..60000; output token budget must be 64..32768",
         ));
     }
     Ok(())
 }
 
 pub(super) fn source(input: &Value) -> Result<CodeInput, ToolRejection> {
-    serde_json::from_value::<CodeInput>(input.clone())
+    let mut value = if let Some(code) = input.as_str() {
+        serde_json::json!({"code":code})
+    } else {
+        input.clone()
+    };
+    if let Some(code) = value.get("code").and_then(Value::as_str)
+        && let Some(pragma) = code
+            .lines()
+            .next()
+            .and_then(|line| line.trim_start().strip_prefix("// @exec:"))
+    {
+        let options: serde_json::Map<String, Value> = serde_json::from_str(pragma)
+            .map_err(|error| invalid(format!("invalid exec pragma: {error}")))?;
+        for (key, option) in options {
+            if !matches!(key.as_str(), "yield_time_ms" | "max_output_tokens") {
+                return Err(invalid(format!("unknown exec pragma option: {key}")));
+            }
+            if value.get(&key).is_some() {
+                return Err(invalid(format!("exec option specified twice: {key}")));
+            }
+            value[&key] = option;
+        }
+    }
+    serde_json::from_value::<CodeInput>(value)
         .map_err(|error| invalid(error.to_string()))
         .and_then(|input| {
             observation_limits(input.yield_time_ms, input.max_output_tokens)?;
@@ -132,7 +172,7 @@ pub(super) fn source(input: &Value) -> Result<CodeInput, ToolRejection> {
 pub(super) fn wait_input(input: &Value) -> Result<WaitInput, ToolRejection> {
     let input: WaitInput =
         serde_json::from_value(input.clone()).map_err(|error| invalid(error.to_string()))?;
-    observation_limits(input.yield_time_ms, input.max_output_tokens)?;
+    observation_limits(input.yield_time_ms, input.max_tokens)?;
     Ok(input)
 }
 
@@ -140,7 +180,6 @@ pub(super) struct CellTool {
     cells: CodeExecutor,
     input: CodeInput,
     catalog: ToolCatalog,
-    availability: Availability,
     journal: ToolJournal,
     parent_operation_id: String,
     parent_tool_call_id: String,
@@ -151,7 +190,6 @@ impl CellTool {
         cells: CodeExecutor,
         input: CodeInput,
         catalog: ToolCatalog,
-        availability: Availability,
         journal: ToolJournal,
         parent_operation_id: String,
         parent_tool_call_id: String,
@@ -160,7 +198,6 @@ impl CellTool {
             cells,
             input,
             catalog,
-            availability,
             journal,
             parent_operation_id,
             parent_tool_call_id,
@@ -172,23 +209,17 @@ impl CellTool {
 /// parent identity or a broader catalog. Direct-only entries were removed once.
 struct NestedTools {
     catalog: ToolCatalog,
-    availability: Availability,
     journal: ToolJournal,
     origin: ToolOrigin,
 }
 
 impl ToolExecutor for NestedTools {
     fn names(&self) -> Vec<String> {
-        let mut names = self.catalog.names();
-        if self.availability.enabled() {
-            names.push(SEARCH.into());
-        }
-        names
+        self.catalog.names()
     }
 
     fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
         let catalog = self.catalog.clone();
-        let availability = self.availability.clone();
         let journal = self.journal.clone();
         let call = ToolCallIdentity {
             tool_call_id: Uuid::new_v4().to_string(),
@@ -200,13 +231,9 @@ impl ToolExecutor for NestedTools {
                 invocation: journal.invocation().clone(),
                 operation_id: operation_id.clone(),
             };
-            let prepared = if name == SEARCH && availability.enabled() {
-                availability.prepare_search(&input)
-            } else {
-                catalog
-                    .prepare(name.clone(), input.clone(), context, cancellation.clone())
-                    .await
-            };
+            let prepared = catalog
+                .prepare(name.clone(), input.clone(), context, cancellation.clone())
+                .await;
             let effect = match prepared {
                 Ok(effect) => effect,
                 Err(reason) => {
@@ -225,7 +252,6 @@ impl ToolExecutor for NestedTools {
                     effect,
                 )
                 .await?;
-            availability.settled(&name, &result)?;
             Ok(result)
         })
     }

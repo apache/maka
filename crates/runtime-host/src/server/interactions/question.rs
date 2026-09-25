@@ -47,7 +47,7 @@ impl Interactions {
     pub(crate) fn question_tool(self: &Arc<Self>) -> ToolRegistration {
         ToolRegistration {
             definition: ToolDefinition {
-                provider: None,
+                freeform: None, output_schema: None, provider: None,
                 name: NAME.into(),
                 description: "Ask 1–3 bounded multiple-choice questions whose answers are required to continue the current turn. Use ordinary assistant text for open-ended follow-up.".into(),
                 input_schema: schemars::schema_for!(QuestionInput).into(),
