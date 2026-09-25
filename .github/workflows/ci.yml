@@ -230,6 +230,16 @@ jobs:
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
 
+      # Here rather than in a packaging job so the cost lands in the pull
+      # request that adds it. electron-builder ships the production dependency
+      # closure whether or not anything loads it, and a packaging job runs only
+      # at release -- which is how 183 MB of renderer sources shipped for weeks
+      # with nothing reporting the step change (#3146). The closure is read
+      # from installed node_modules, so this runs after `npm ci`.
+      - name: Check packaged artifact budget
+        if: steps.plan.outputs.code == 'true'
+        run: npm run check:artifact-budget
+
       - name: Check localized TUI copy boundaries
         if: steps.plan.outputs.code == 'true'
         run: |
