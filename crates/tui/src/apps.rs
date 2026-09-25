@@ -449,7 +449,30 @@ impl App {
                 work: Work::Directory(cursor),
             });
         }
+        // A confirmation belongs to the view the reader actually reviewed.
+        // Defer live reads until it closes; submitting still uses that view's
+        // revision, fields and recovery identity. Retirement cancels the sheet.
+        if apps.confirmation().is_none() {
+            apps.confirming = None;
+        }
         for (key, instance) in &mut apps.instances {
+            if apps
+                .confirming
+                .as_ref()
+                .is_some_and(|(holder, _)| holder == key)
+            {
+                if matches!(
+                    instance.pending,
+                    Some(Work::Call {
+                        input: Input::Read { .. },
+                        ..
+                    })
+                ) {
+                    instance.pending = None;
+                    instance.stale = true;
+                }
+                continue;
+            }
             if instance.busy {
                 continue;
             }
@@ -983,7 +1006,12 @@ impl App {
                     instance.submit(&id, &locale);
                 }
             }
-            Command::CancelConfirm => apps.confirming = None,
+            Command::CancelConfirm => {
+                apps.confirming = None;
+                if instance.stale && instance.idle() && !instance.keeps() {
+                    instance.read(&locale);
+                }
+            }
             Command::View(Intent::Navigate(route)) => instance.navigate(route, &locale),
             Command::View(Intent::Open(session)) => {
                 return self.apply(Action::Visit(Route::Session(session)));
@@ -1686,6 +1714,61 @@ pub(crate) mod tests {
 
     fn save_like(action: &str) -> Message {
         command(Command::View(Intent::Submit(action.into())))
+    }
+
+    #[test]
+    fn confirmation_keeps_its_reviewed_revision_fields_and_recovery_across_live_updates() {
+        for approve in [false, true] {
+            let mut app = app();
+            let view = instance_mut(&mut app).view.as_mut().unwrap();
+            view.actions[0].confirm = Some(maka_plugins::terminal_ui::view::Confirm {
+                title: "Save these values?".into(),
+                message: "Review the current notebook.".into(),
+                destructive: false,
+            });
+            view.actions[0].recovery = Some(json!({"decision":"original"}));
+            // Opening a confirmation overtakes a background read already in flight.
+            instance_mut(&mut app).read("en");
+            let old = next(&mut app).unwrap();
+            app.apps_action(save());
+            assert!(app.apps.confirm_visible());
+            let mut replacement = form();
+            replacement.revision = "later".into();
+            app.apps_complete(old, Ok(Output::Reply(Reply::View { view: replacement })));
+            app.apps_session_changed("session");
+            assert!(
+                next(&mut app).is_none(),
+                "updates wait for the decision sheet"
+            );
+            assert_eq!(instance(&app).view.as_ref().unwrap().revision, "one");
+            app.apps_action(command(if approve {
+                Command::Confirm
+            } else {
+                Command::CancelConfirm
+            }));
+            let request = next(&mut app).unwrap();
+            if approve {
+                assert!(
+                    matches!(request.work, Work::Call { input: Input::Submit { ref revision, ref fields, .. }, .. }
+                    if revision == "one" && fields["name"] == "My notes")
+                );
+                assert_eq!(
+                    instance(&app).unresolved.as_ref().unwrap().recovery,
+                    Some(json!({"decision":"original"}))
+                );
+            } else {
+                assert!(
+                    matches!(
+                        request.work,
+                        Work::Call {
+                            input: Input::Read { .. },
+                            ..
+                        }
+                    ),
+                    "cancelling catches up with the deferred updates without writing"
+                );
+            }
+        }
     }
 
     #[test]

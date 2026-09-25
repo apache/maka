@@ -50,7 +50,9 @@ fn restart_keeps_forward_history_and_keyboard_control_without_replaying_actions(
     tui.send(b"\x1b"); // Help closes without becoming a navigation entry.
     tui.wait_until(|screen| !screen.contains("Move focus between controls"));
     tui.command("Open workspace");
-    tui.wait_for("No sessions yet");
+    // The sidebar already says "No sessions yet" on Settings. Observe the
+    // destination before sending Back, or an old frame can satisfy both waits.
+    tui.wait_until(|screen| screen.contains("No sessions yet") && !screen.contains("Unicode ▾"));
     tui.send(b"\x1b[1;3D"); // A real destination leaves forward history.
     tui.wait_for("Unicode ▾");
     tui.close_terminal();
