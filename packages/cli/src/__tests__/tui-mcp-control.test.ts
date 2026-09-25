@@ -810,6 +810,78 @@ test('TUI MCP recovers on the next mcp.json change after a failed start or sync'
   await controller.close();
 });
 
+for (const recovery of ['external change', 'explicit retry'] as const) {
+  test(`TUI MCP ignores config echoes after cancelled synchronization until ${recovery}`, async (t) => {
+    const store = mutableConfigStore(
+      { version: 3, mcpServers: { docs: { url: 'https://old.example/mcp' } } },
+      [],
+    );
+    const started = deferred<void>();
+    let syncs = 0;
+    const manager = managementManager([], {
+      forgetServerCredentials: async (_serverId, _config, options) => {
+        options?.onCommitStarted?.();
+      },
+      sync: async (_config, options) => {
+        syncs += 1;
+        if (syncs !== 2) return;
+        started.resolve();
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    });
+    const controller = createTuiMcpController(
+      { workspaceRoot: '/unused', connection: connectionHarness().connection },
+      { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+    );
+    t.after(() => controller.close());
+    await waitFor(() => controller.snapshot().initialization === 'ready', 'MCP initialization');
+    const edit = controller.configForEdit('docs');
+    assert.ok(edit);
+    const abort = new AbortController();
+    const editing = controller.execute(
+      {
+        kind: 'edit',
+        serverId: 'docs',
+        expectedRevision: edit.revision,
+        config: { url: 'https://new.example/mcp' },
+      },
+      { signal: abort.signal },
+    );
+    await started.promise;
+    const committed = await store.store.get();
+    // A write notification queued during the action runs after its cancellation.
+    store.replaceElsewhere(committed);
+    abort.abort(new Error('cancel committed configuration sync'));
+    assert.deepEqual(await editing, { status: 'applied', effect: 'sync_failed' });
+    // A delayed notification can also arrive after the action has settled.
+    store.replaceElsewhere(committed);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await controller.execute({ kind: 'test', serverId: 'docs' });
+    assert.equal(syncs, 2);
+    assert.equal(controller.snapshot().configuration, 'out_of_sync');
+    assert.deepEqual(await store.store.get(), committed);
+
+    if (recovery === 'external change') {
+      store.replaceElsewhere({
+        version: 3,
+        mcpServers: { docs: { url: 'https://external.example/mcp' } },
+      });
+      await waitFor(() => controller.snapshot().configuration === 'ready', 'external config sync');
+    } else {
+      assert.deepEqual(
+        await controller.execute({ kind: 'set_enabled', serverId: 'docs', enabled: true }),
+        { status: 'applied', effect: 'published' },
+      );
+    }
+    assert.equal(syncs, 3);
+    assert.equal(controller.snapshot().configuration, 'ready');
+  });
+}
+
 test('TUI MCP keeps a durable mutation visible when manager synchronization fails', async () => {
   const order: string[] = [];
   const store = mutableConfigStore(emptyConfig(), order);

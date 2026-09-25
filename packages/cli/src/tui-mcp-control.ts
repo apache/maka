@@ -278,6 +278,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
   #availability: TuiMcpPublicationAvailability = { kind: 'unavailable' };
   #closed = false;
   #config: McpConfigFile | undefined;
+  #configurationSyncCancelled = false;
   #preparedImport:
     | {
         readonly previewId: string;
@@ -901,8 +902,10 @@ class TuiMcpControllerImpl implements TuiMcpController {
     ]);
     const latest = await waitForAbort(this.#deps.configStore.get(), signal);
     // An import preview survives: its commit re-checks each server it replaces.
+    // A delayed notification for our own write must not restart a cancelled
+    // connection. A changed configuration or an explicit action may retry it.
     if (
-      this.#snapshot.configuration !== 'ready' ||
+      (this.#snapshot.configuration !== 'ready' && !this.#configurationSyncCancelled) ||
       JSON.stringify(latest) !== JSON.stringify(this.#config)
     ) {
       await this.#synchronizeCommittedConfig(latest, {
@@ -938,6 +941,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     readonly reconciliationError?: unknown;
   }> {
     if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
+    this.#configurationSyncCancelled = false;
     this.#config = cloneConfig(committed);
     this.#updateSnapshot({ configuration: 'synchronizing' });
     this.#refreshManagerSnapshot();
@@ -966,6 +970,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
             reconciliationError: synchronizationError,
           };
     } catch (error) {
+      if (this.#closed || signal?.aborted) this.#configurationSyncCancelled = true;
       if (rollbackOnCancel && (this.#closed || signal?.aborted)) {
         const rolledBack = await this.#rollbackCancelledMutation(
           previous,
