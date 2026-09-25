@@ -230,20 +230,6 @@ impl Sessions {
             _ => unreachable!("client checks catalog reply variants"),
         }
     }
-    pub fn move_selection(&mut self, down: bool) {
-        let index = self
-            .items
-            .iter()
-            .position(|item| Some(&item.id) == self.selected.as_ref());
-        let next = index.map_or(0, |i| {
-            if down {
-                (i + 1).min(self.items.len().saturating_sub(1))
-            } else {
-                i.saturating_sub(1)
-            }
-        });
-        self.selected = self.items.get(next).map(|item| item.id.clone());
-    }
     pub fn open(&mut self, id: &str) {
         if self.detail.id() == Some(id) {
             return;
@@ -490,7 +476,7 @@ pub(crate) mod tests {
             })
         };
         state.complete(page(&["A", "B"]));
-        state.move_selection(true);
+        state.selected = Some("B".into());
         assert_eq!(state.selected.as_deref(), Some("B"));
         state.complete(page(&["B", "A"]));
         assert_eq!(state.selected.as_deref(), Some("B"));

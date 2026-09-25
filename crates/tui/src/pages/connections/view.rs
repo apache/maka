@@ -19,15 +19,12 @@
 
 use super::Command;
 use crate::{
-    app::{Action, App, ConnectionState, Focus, Hit},
-    view::safe,
+    app::{Action, App, ConnectionState, Focus},
+    ui::{self, Node, On, Tone},
 };
 use ratatui::{
     Frame,
     layout::{Margin, Rect},
-    style::Style,
-    text::{Line, Span},
-    widgets::{Paragraph, Wrap},
 };
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -44,86 +41,87 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     } else {
         None
     };
-    if let Some(key) = message {
-        frame.render_widget(
-            Paragraph::new(app.i18n.text(key)).wrap(Wrap { trim: false }),
-            area,
-        );
-        return; // No stale directory behind a disconnect or read error.
-    }
-    let visible = usize::from(area.height / 3);
-    let selected = state
-        .rows
-        .iter()
-        .position(|row| Some(&row.id) == state.selected.as_ref());
-    let offset = selected.map_or(0, |index| (index + 1).saturating_sub(visible));
-    let muted = Style::default().fg(if app.theme.choice == crate::theme::Choice::Terminal {
-        app.theme.colors().muted
+    let rows = if let Some(key) = message {
+        vec![Node::text(
+            "status",
+            vec![(app.i18n.text(key), Tone::Subtle)],
+        )]
     } else {
-        app.theme.colors().subtle
-    });
-    for (index, row) in state.rows.iter().enumerate().skip(offset).take(visible) {
-        let action = Action::Connection(Command::Select(row.id.clone()));
-        let focused = app.palette.is_none()
-            && (app.focus == Focus::List && selected == Some(index)
-                || app.hover.as_ref() == Some(&action));
-        let rect = Rect::new(
-            area.x,
-            area.y + ((index - offset) * 3) as u16,
-            area.width,
-            2,
-        );
-        let name = format!(
-            "{} {}",
-            if selected == Some(index) {
-                app.chrome.symbol("›", ">")
-            } else {
-                " "
-            },
-            safe(&row.name)
-        );
-        let status = if row.enabled {
-            "".into()
-        } else {
-            format!(" · {}", app.i18n.text("connection-disabled"))
-        };
-        let title = Line::from(vec![
-            Span::styled(
-                name,
-                if focused {
-                    Style::default().fg(app.theme.colors().accent)
+        state
+            .rows
+            .iter()
+            .map(|row| {
+                let selected = state.selected.as_ref() == Some(&row.id);
+                let name = format!(
+                    "{} {}",
+                    if selected {
+                        app.chrome.symbol("›", ">")
+                    } else {
+                        " "
+                    },
+                    row.name
+                );
+                let mut title = vec![(name, Tone::Normal)];
+                if !row.enabled {
+                    title.push((
+                        format!(" · {}", app.i18n.text("connection-disabled")),
+                        Tone::Muted,
+                    ));
+                }
+                let identity = if row.slug == row.provider.name {
+                    row.slug.clone()
                 } else {
-                    Style::default()
-                },
-            ),
-            Span::styled(status, muted),
-        ]);
-        let identity = if row.slug == row.provider.name {
-            safe(&row.slug)
-        } else {
-            format!("{} · {}", safe(&row.slug), safe(&row.provider.name))
-        };
-        let detail = if let Some(model) = &row.default_model {
-            format!(
-                "  {}: {} · {}",
-                app.i18n.text("connection-default"),
-                safe(model),
-                identity
-            )
-        } else {
-            format!(
-                "  {} · {}",
-                app.i18n.format(
-                    "connection-models",
-                    &[("count", &row.enabled_models.to_string())]
-                ),
-                identity
-            )
-        };
-        frame.render_widget(
-            Paragraph::new(vec![title, Line::styled(detail, muted)]),
-            rect,
-        );
-        app.hits.push(Hit { area: rect, action });
+                    format!("{} · {}", row.slug, row.provider.name)
+                };
+                let detail = if let Some(model) = &row.default_model {
+                    format!(
+                        "{}: {} · {}",
+                        app.i18n.text("connection-default"),
+                        model,
+                        identity
+                    )
+                } else {
+                    format!(
+                        "{} · {}",
+                        app.i18n.format(
+                            "connection-models",
+                            &[("count", &row.enabled_models.to_string())]
+                        ),
+                        identity
+                    )
+                };
+                Node::column(
+                    row.id.clone(),
+                    vec![
+                        Node::text("name", title).clip(),
+                        Node::text("detail", vec![(detail, Tone::Subtle)]).clip(),
+                    ],
+                )
+                .on(On::Activate(Action::Connection(Command::Select(
+                    row.id.clone(),
+                ))))
+                .submit(Action::Connection(Command::Open(row.id.clone())))
+                .follow_focus()
+                .current(selected)
+                .hint(app.i18n.text("connection-rename"))
+            })
+            .collect()
+    };
+    let tree = Node::scroll(
+        "connections",
+        Node::column("rows", rows).gap(1).focus_group(),
+    );
+    let context = ui::Context {
+        colors: app.theme.colors(),
+        ascii: app.chrome.ascii,
+        focused: app.focus == Focus::List && app.overlay().is_none(),
+    };
+    if app.connections.surface.focused().is_none()
+        && let Some(id) = &app.connections.selected
+    {
+        app.connections
+            .surface
+            .focus(format!("connections/rows/{id}"));
     }
+    app.connections.surface.render(frame, area, tree, context);
 }

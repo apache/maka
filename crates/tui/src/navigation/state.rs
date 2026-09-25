@@ -171,6 +171,8 @@ impl App {
         let route = self.navigation.current();
         match route {
             Route::Settings => self.settings.surface.leave(),
+            Route::Connections => self.connections.surface.leave(),
+            Route::Projects => self.projects.surface.leave(),
             Route::Workspace => self.home.surface.leave(),
             Route::Extensions | Route::App(_) => {
                 if let Some(surface) = self.apps_surface() {

@@ -72,6 +72,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         app.invalidate_editor_geometry();
         // Nothing drawn now stays clickable from the last full frame.
         app.sidebar.surface.invalidate();
+        app.connections.surface.invalidate();
+        app.projects.surface.invalidate();
         app.settings.surface.invalidate();
         app.home.surface.invalidate();
         app.apps.surface.invalidate();
@@ -278,6 +280,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .or_else(|| match app.navigation.current() {
             Route::Settings => app.settings.surface.hint(app.focus == Focus::Page),
             Route::Workspace => app.home.surface.hint(app.focus == Focus::Page),
+            Route::Connections => app.connections.surface.hint(app.focus == Focus::List),
+            Route::Projects => app.projects.surface.hint(app.focus == Focus::List),
             Route::Extensions => app.apps.surface.hint(app.focus == Focus::Page),
             Route::Session(_) => app
                 .apps
@@ -288,7 +292,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 .apps
                 .instance(&key)
                 .and_then(|instance| instance.surface.hint(app.focus == Focus::Page)),
-            _ => None,
         })
     {
         hint.to_owned()
@@ -470,7 +473,8 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         }
         Action::Visit(Route::Connections) => ("⇄", "C"),
         Action::Connection(command) => match command {
-            crate::pages::connections::Command::Select(_) => ("⇄", "C"),
+            crate::pages::connections::Command::Select(_)
+            | crate::pages::connections::Command::Open(_) => ("⇄", "C"),
             crate::pages::connections::Command::Refresh => ("↻", "R"),
             crate::pages::connections::Command::Next => ("›", ">"),
             crate::pages::connections::Command::Previous => ("‹", "<"),

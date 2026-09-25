@@ -19,21 +19,16 @@
 
 use super::Command;
 use crate::{
-    app::{Action, App, ConnectionState, Focus, Hit},
-    view::safe,
+    app::{Action, App, ConnectionState, Focus},
+    ui::{self, Node, On, Tone},
 };
 use ratatui::{
     Frame,
-    layout::Rect,
-    style::Style,
-    widgets::{Paragraph, Wrap},
+    layout::{Margin, Rect},
 };
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let area = area.inner(ratatui::layout::Margin::new(
-        1,
-        u16::from(area.height >= 18),
-    ));
+    let area = area.inner(Margin::new(1, u16::from(area.height >= 18)));
     let state = &app.projects;
     let message = if !matches!(app.connection, ConnectionState::Connected { .. }) {
         Some("workspace-connect")
@@ -50,52 +45,49 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     } else {
         None
     };
-    let mut list = area;
-    if let Some(key) = message {
-        frame.render_widget(
-            Paragraph::new(app.i18n.text(key)).wrap(Wrap { trim: false }),
-            Rect::new(area.x, area.y, area.width, 2.min(area.height)),
-        );
-        list.y += 2.min(list.height);
-        list.height = list.height.saturating_sub(2);
+    let rows = if let Some(key) = message {
+        vec![Node::text(
+            "status",
+            vec![(app.i18n.text(key), Tone::Subtle)],
+        )]
+    } else {
+        state
+            .items
+            .iter()
+            .map(|item| {
+                let mut title = vec![(item.name.clone(), Tone::Normal)];
+                let status = if item.archived {
+                    Some("session-archived")
+                } else if !item.available {
+                    Some("project-unavailable")
+                } else {
+                    None
+                };
+                if let Some(key) = status {
+                    title.push((format!(" · {}", app.i18n.text(key)), Tone::Muted));
+                }
+                Node::text(item.id.clone(), title)
+                    .clip()
+                    .on(On::Activate(Action::Project(Command::Select(
+                        item.id.clone(),
+                    ))))
+                    .submit(Action::Project(Command::Create(item.id.clone())))
+                    .follow_focus()
+                    .current(state.selected.as_ref() == Some(&item.id))
+                    .hint(app.i18n.text("project-create-session"))
+            })
+            .collect()
+    };
+    let tree = Node::scroll("projects", Node::column("rows", rows).gap(1).focus_group());
+    let context = ui::Context {
+        colors: app.theme.colors(),
+        ascii: app.chrome.ascii,
+        focused: app.focus == Focus::List && app.overlay().is_none(),
+    };
+    if app.projects.surface.focused().is_none()
+        && let Some(id) = &app.projects.selected
+    {
+        app.projects.surface.focus(format!("projects/rows/{id}"));
     }
-    let visible = list.height as usize / 2;
-    let selected = state
-        .items
-        .iter()
-        .position(|item| Some(&item.id) == state.selected.as_ref());
-    let offset = selected.map_or(0, |index| (index + 1).saturating_sub(visible));
-    for (index, item) in state.items.iter().enumerate().skip(offset).take(visible) {
-        let action = Action::Project(Command::Select(item.id.clone()));
-        let active = app.palette.is_none()
-            && (app.focus == Focus::List && selected == Some(index)
-                || app.hover.as_ref() == Some(&action));
-        let rect = Rect::new(
-            list.x,
-            list.y + ((index - offset) * 2) as u16,
-            list.width,
-            1,
-        );
-        let status = if item.archived {
-            Some("session-archived")
-        } else if !item.available {
-            Some("project-unavailable")
-        } else {
-            None
-        };
-        let text = format!(
-            "{}{}",
-            safe(&item.name),
-            status.map_or(String::new(), |key| format!(" · {}", app.i18n.text(key)))
-        );
-        frame.render_widget(
-            Paragraph::new(text).style(if active {
-                app.theme.colors().selected()
-            } else {
-                Style::default()
-            }),
-            rect,
-        );
-        app.hits.push(Hit { area: rect, action });
-    }
+    app.projects.surface.render(frame, area, tree, context);
 }

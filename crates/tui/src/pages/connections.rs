@@ -35,6 +35,7 @@ const PAGE_SIZE: usize = 16;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Select(String),
+    Open(String),
     Refresh,
     Next,
     Previous,
@@ -43,6 +44,7 @@ impl Command {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Select(_) => "connection-select",
+            Self::Open(_) => "connection-rename",
             Self::Refresh => "command-refresh",
             Self::Next => "sessions-next",
             Self::Previous => "sessions-previous",
@@ -67,6 +69,7 @@ pub struct Row {
 /// A bounded overview, not a second model inventory or credential store.
 #[derive(Default)]
 pub struct Connections {
+    pub surface: crate::ui::Surface<Action>,
     pub rows: Vec<Arc<Row>>,
     pub selected: Option<String>,
     pub loading: bool,
@@ -258,20 +261,6 @@ impl Connections {
             self.scan += 1;
         }
     }
-    pub fn move_selection(&mut self, down: bool) {
-        let index = self
-            .rows
-            .iter()
-            .position(|row| Some(&row.id) == self.selected.as_ref())
-            .map_or(0, |index| {
-                if down {
-                    (index + 1).min(self.rows.len().saturating_sub(1))
-                } else {
-                    index.saturating_sub(1)
-                }
-            });
-        self.selected = self.rows.get(index).map(|row| row.id.clone());
-    }
 }
 
 impl App {
@@ -296,14 +285,21 @@ impl App {
             return false;
         }
         match command {
-            Command::Select(id) => self.connections.rows.iter().any(|row| row.id == *id),
+            Command::Select(id) | Command::Open(id) => {
+                self.connections.rows.iter().any(|row| row.id == *id)
+            }
             Command::Refresh => !self.connections.loading,
             Command::Next => self.connections.can_next(),
             Command::Previous => self.connections.can_previous(),
         }
     }
-    pub fn connection_action(&mut self, command: Command) {
+    pub fn connection_action(&mut self, command: Command) -> Option<Action> {
         match command {
+            Command::Open(id) => {
+                self.connections.selected = Some(id);
+                let action = self.rename_connection_action()?;
+                return self.apply(action);
+            }
             Command::Select(id) => {
                 self.connections.selected = Some(id);
                 self.focus = Focus::List;
@@ -315,6 +311,7 @@ impl App {
             Command::Next => self.connections.change_page(true),
             Command::Previous => self.connections.change_page(false),
         }
+        None
     }
 }
 
@@ -484,6 +481,83 @@ mod tests {
                 );
             }
         }
+        // Scrolling reads the directory without selecting another connection.
+        app.connections.refresh();
+        assert_eq!(app.connections.query(), Some(Query::Start));
+        app.connections.complete(Ok(page(9, 0, 16, 16)));
+        app.apply(Action::Connection(Command::Select("id-0".into())));
+        app.connections
+            .surface
+            .focus("connections/rows/id-0".into());
+        terminal.backend_mut().resize(60, 15);
+        terminal
+            .resize(ratatui::layout::Rect::new(0, 0, 60, 15))
+            .unwrap();
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        let first = app
+            .connections
+            .surface
+            .rect("connections/rows/id-0")
+            .unwrap();
+        app.input(Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: first.x,
+            row: first.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.connections.selected.as_deref(), Some("id-0"));
+        assert!(
+            app.connections
+                .surface
+                .rect("connections/rows/id-0")
+                .unwrap()
+                .is_empty()
+        );
+        app.input(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.connections.selected.as_deref(), Some("id-15"));
+        assert!(
+            !app.connections
+                .surface
+                .rect("connections/rows/id-15")
+                .unwrap()
+                .is_empty()
+        );
+        app.connections.rows.retain(|row| row.id != "id-15");
+        assert!(
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            )))
+            .1
+            .is_none(),
+            "stale geometry cannot open the connection that disappeared"
+        );
+        assert!(app.management.dialog.is_none());
+        app.input(Event::Resize(60, 15));
+        assert!(
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            )))
+            .1
+            .is_none(),
+            "before the next frame, Enter cannot fall through to the toolbar"
+        );
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        app.input(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
         app.input(Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,

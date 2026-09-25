@@ -59,6 +59,7 @@ impl Item {
 
 #[derive(Default)]
 pub struct Projects {
+    pub surface: crate::ui::Surface<Action>,
     pub items: Vec<Item>,
     pub selected: Option<String>,
     pub loading: bool,
@@ -243,20 +244,6 @@ impl Projects {
         }
         self.superseded |= self.loading;
         self.refresh();
-    }
-    pub fn move_selection(&mut self, down: bool) {
-        let index = self
-            .items
-            .iter()
-            .position(|item| Some(&item.id) == self.selected.as_ref());
-        let index = index.map_or(0, |index| {
-            if down {
-                (index + 1).min(self.items.len().saturating_sub(1))
-            } else {
-                index.saturating_sub(1)
-            }
-        });
-        self.selected = self.items.get(index).map(|item| item.id.clone());
     }
 }
 

@@ -631,7 +631,7 @@ impl App {
             Action::Revision(command) => return self.revision_action(command),
             Action::Onboard(command) => return self.onboarding_action(command),
             Action::Project(command) => return self.project_action(command),
-            Action::Connection(command) => self.connection_action(command),
+            Action::Connection(command) => return self.connection_action(command),
             Action::Queue(command) => return self.queue_action(command),
             Action::Copy(_) | Action::CopyFile(_) => return Some(action),
             Action::OpenInteraction => self.open_interaction(),
@@ -1209,6 +1209,16 @@ impl App {
                 return Some(self.surface_outcome(event, Focus::Navigation, outcome));
             }
         }
+        if mouse || (key && self.focus == Focus::List) {
+            let outcome = match self.navigation.current() {
+                Route::Connections => Some(self.connections.surface.input(event)),
+                Route::Projects => Some(self.projects.surface.input(event)),
+                _ => None,
+            };
+            if let Some(outcome) = outcome.filter(|outcome| outcome.consumed) {
+                return Some(self.surface_outcome(event, Focus::List, outcome));
+            }
+        }
         let captures = match self.navigation.current() {
             Route::Settings => self.settings.surface.captures(),
             Route::Workspace => self.home.surface.captures(),
@@ -1401,6 +1411,8 @@ impl App {
         let action = match event {
             Event::Resize(_, _) => {
                 self.chat.area = None;
+                self.connections.surface.invalidate();
+                self.projects.surface.invalidate();
                 self.settings.surface.invalidate();
                 self.sidebar.surface.invalidate();
                 self.home.surface.invalidate();
@@ -1607,6 +1619,12 @@ impl App {
                             }
                             match (self.focus, self.navigation.current()) {
                                 (Focus::Navigation, _) => self.sidebar.surface.enter(backwards),
+                                (Focus::List, Route::Connections) => {
+                                    self.connections.surface.enter(backwards)
+                                }
+                                (Focus::List, Route::Projects) => {
+                                    self.projects.surface.enter(backwards)
+                                }
                                 (Focus::Inspector, _) => self.apps.inspector.enter(backwards),
                                 (Focus::Page, Route::Settings) => {
                                     self.settings.surface.enter(backwards)
@@ -1663,35 +1681,19 @@ impl App {
                                 .min(self.page_actions().len().saturating_sub(1));
                             None
                         }
-                        KeyCode::Up | KeyCode::Down if self.focus == Focus::List => {
-                            if self.navigation.current() == Route::Connections {
-                                self.connections.move_selection(key.code == KeyCode::Down);
-                            } else if self.navigation.current() == Route::Projects {
-                                self.projects.move_selection(key.code == KeyCode::Down);
-                            } else {
-                                self.catalog_mut().move_selection(key.code == KeyCode::Down);
-                            }
+                        // Unpresented list geometry cannot activate another control.
+                        KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Home
+                        | KeyCode::End
+                        | KeyCode::Enter
+                        | KeyCode::Char(' ')
+                            if self.focus == Focus::List =>
+                        {
                             None
                         }
-                        KeyCode::Enter
-                            if self.focus == Focus::List
-                                && self.navigation.current() == Route::Projects =>
-                        {
-                            self.projects.selected.clone().map(|id| {
-                                Action::Project(crate::pages::projects::Command::Create(id))
-                            })
-                        }
-                        KeyCode::Enter
-                            if self.focus == Focus::List
-                                && self.navigation.current() == Route::Connections =>
-                        {
-                            self.rename_connection_action()
-                        }
-                        KeyCode::Enter if self.focus == Focus::List => self
-                            .catalog()
-                            .selected
-                            .clone()
-                            .map(|id| Action::Visit(Route::Session(id))),
                         KeyCode::Enter => self.page_actions().get(self.selected_control).cloned(),
                         KeyCode::Esc => Some(Action::Back),
                         _ => return (false, None),
@@ -1794,32 +1796,6 @@ impl App {
                             self.palette = None;
                         }
                         target
-                    }
-                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                        if self.navigation.current() == Route::Connections
-                            && matches!(
-                                target.as_ref(),
-                                Some(Action::Connection(
-                                    crate::pages::connections::Command::Select(_)
-                                ))
-                            ) =>
-                    {
-                        self.focus = Focus::List;
-                        self.connections
-                            .move_selection(mouse.kind == MouseEventKind::ScrollDown);
-                        None
-                    }
-                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                        if self.navigation.current() == Route::Projects
-                            && matches!(
-                                target.as_ref(),
-                                Some(Action::Project(crate::pages::projects::Command::Select(_)))
-                            ) =>
-                    {
-                        self.focus = Focus::List;
-                        self.projects
-                            .move_selection(mouse.kind == MouseEventKind::ScrollDown);
-                        None
                     }
                     _ => return (false, None),
                 }
