@@ -314,15 +314,18 @@ mod tests {
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
     #[test]
-    fn shipped_rgb_palettes_keep_body_status_syntax_and_selection_readable() {
+    fn shipped_palettes_keep_text_readable_and_motion_appropriate() {
         let mut choice = Choice::default();
         for expected in [Choice::Maka, Choice::Dusk, Choice::Paper, Choice::Terminal] {
             assert_eq!(choice, expected);
             choice = choice.next();
+            let c = expected.colors();
             if expected == Choice::Terminal {
+                assert_eq!(c.breath(true, Some(0.0)), c.breath(true, Some(1.0)));
                 continue;
             }
-            let c = expected.colors();
+            assert_ne!(c.breath(true, Some(0.0)), c.breath(true, Some(1.0)));
+            assert_eq!(c.breath(true, Some(1.0)), c.accent);
             for color in [
                 c.foreground,
                 c.muted,

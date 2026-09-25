@@ -130,7 +130,18 @@ pub(super) async fn verify(
                     .unwrap();
                 live = Some(open.subscription_id);
             }
-            let terminal = support::completed(client, &turn).await;
+            // This is an active subscriber. Drain live frames while polling the
+            // Turn so the bounded client queue does not fail as a slow consumer.
+            let terminal = {
+                let completed = support::completed(client, &turn);
+                tokio::pin!(completed);
+                loop {
+                    tokio::select! {
+                        result = &mut completed => break result,
+                        notice = native.notices.recv() => assert!(notice.is_some(), "client disconnected during the Turn"),
+                    }
+                }
+            };
             if case == "control" {
                 capacity(client, &session, live.as_deref()).await;
                 let basis = client

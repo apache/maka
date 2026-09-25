@@ -48,18 +48,21 @@ pub struct ModelInfo {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    /// Total model capacity for input plus generated output, before any reply reserve.
     pub context_window: Option<u64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    /// Independent provider input ceiling; not context_window minus max_output_tokens.
     pub input_limit: Option<u64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    /// Provider output ceiling; also the default output reserve for auto-compaction.
     pub max_output_tokens: Option<u64>,
     /// Choices reported by the provider plugin.
     #[serde(

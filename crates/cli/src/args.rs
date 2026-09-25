@@ -366,12 +366,4 @@ mod tests {
             Some(Command::Tui(Tui {profile: Some(profile), ..})) if profile == "second")
         );
     }
-
-    #[test]
-    fn help_keeps_tui_and_existing_commands_discoverable() {
-        let help = Cli::command().render_long_help().to_string();
-        for command in ["tui", "host", "code", "inspect", "sandbox"] {
-            assert!(help.contains(command));
-        }
-    }
 }

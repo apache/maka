@@ -122,7 +122,7 @@ impl Agents {
         })
         .await;
         stream.cancel();
-        let _ = stream.close().await;
+        stream.close().await?;
         answer.map_err(|_| Error::Provider("The agent did not answer in time".into()))?
     }
 }

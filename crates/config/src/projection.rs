@@ -20,8 +20,6 @@ use crate::{ConfigError, Result};
 use maka_runtime::configuration::*;
 use serde_json::{Value, json};
 
-pub use crate::model_catalog::ModelCatalogEntry;
-
 /// Produces a 128-item / 128 KiB wire page; the cursor identifies
 /// the next item, and only belongs to the revision that produced it.
 pub fn project(
@@ -47,7 +45,7 @@ pub fn project(
             .map(|target| target.model_id.as_str());
         let entries = resolve(row, default)?;
         for entry in &entries {
-            entry.validate()?;
+            entry.validate().map_err(ConfigError::Invalid)?;
         }
         let mut header = json!({"kind":"connection", "connectionIndex":connection_index,
             "connectionId":row.connection_id,"revision":row.revision,"slug":row.slug,

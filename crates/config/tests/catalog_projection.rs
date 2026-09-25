@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use maka_config::{Result, model_catalog::ModelCatalogEntry, projection::project};
+use maka_config::{Result, projection::project};
 use maka_runtime::configuration::*;
 use maka_runtime::execution::ThinkingLevel;
 use serde_json::json;

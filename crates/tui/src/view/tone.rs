@@ -17,18 +17,9 @@
  * under the License.
  */
 
-//! Shared semantic colors; no process-global theme or terminal-cell recoloring.
+//! Stable session identity hues from the selected palette.
 use crate::theme::Palette;
-use ratatui::style::{Color, Style};
-pub fn accent(colors: Palette) -> Color {
-    colors.accent
-}
-pub fn thinking(colors: Palette) -> Color {
-    colors.thinking
-}
-pub fn selection(colors: Palette) -> Style {
-    colors.focused()
-}
+use ratatui::style::Color;
 /// Stable identity hue index for a session ID (FNV-1a), never its position.
 pub fn session_hue(id: &str) -> u8 {
     let hash = id.bytes().fold(0xcbf29ce484222325_u64, |h, b| {
@@ -49,27 +40,4 @@ pub fn hue(index: u8, colors: Palette) -> Color {
         colors.syntax[0],
     ];
     variants[usize::from(index) % variants.len()]
-}
-pub fn border(colors: Palette, focused: bool, breath: Option<f32>) -> Color {
-    colors.breath(focused, breath)
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::theme::Choice;
-    #[test]
-    fn working_border_has_visible_blue_breath_without_flashing_or_changing_terminal_palette() {
-        let palette = Choice::Maka.colors();
-        let Color::Rgb(r, g, b) = border(palette, true, Some(0.0)) else {
-            panic!("RGB");
-        };
-        assert!(b > g && g > r && b >= 100);
-        assert_eq!(border(palette, true, Some(1.0)), palette.accent);
-        assert!(253 - b >= 100);
-        let terminal = Choice::Terminal.colors();
-        assert_eq!(
-            border(terminal, true, Some(0.0)),
-            border(terminal, true, Some(1.0))
-        );
-    }
 }

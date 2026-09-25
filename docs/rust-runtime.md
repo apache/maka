@@ -431,8 +431,9 @@ user/project content paths stay separate from private journals.
   and unfinished response fragments. Unknown effects block admission; repeating
   the same admitted request returns its original Turn, including after restart.
 - Typed model inventory flows from discovery through storage and catalog projection;
-  connection-owned overrides remain separate. Capacity,
-  proactive compaction threshold and per-request output budget are independent.
+  connection-owned overrides remain separate. Proactive compaction reserves maximum
+  output and input-growth headroom within the total capacity;
+  see [Context windows and compaction](#context-windows-and-compaction).
 - Tool dispatch commits before effects; outcomes commit afterward. An uncertain
   outcome is not permission to repeat an effect. Cancellation drains admitted work.
 - Permission-only grants can widen during execution. New tool calls capture the
@@ -503,6 +504,66 @@ user/project content paths stay separate from private journals.
   two-minute duration limit. User cancellation still closes and drains the request.
   A real provider finish releases the stream without waiting for transport EOF;
   synthetic finishes from truncated streams are not successful completions.
+
+## Context windows and compaction
+
+Model configuration uses `contextWindow` for the **total input-plus-output capacity**.
+Enter the full model window and the desired `maxOutputTokens`; a separate
+`compactionThreshold` is optional. The default trigger reserves the full maximum
+output and leaves 5% of the remaining input space for growth:
+
+```text
+output reserve = requested maxOutputTokens, capped by the provider's output ceiling
+                 (use the provider ceiling when no request override is set)
+input budget   = min(contextWindow - output reserve, provider inputLimit if known)
+auto threshold = floor(input budget × 95%)
+threshold      = explicit compactionThreshold, otherwise auto threshold
+```
+
+For a **1,000,000-token window and 128,000-token maximum output**, with no smaller
+input limit, the default threshold is **828,400 tokens**. The 43,600-token margin
+before the 872,000-token input budget accommodates growth between requests.
+If the provider also limits input to 800,000 tokens, the default becomes 760,000.
+These are decimal token counts. A manual threshold replaces the default trigger;
+it does not change provider capacity or reserve output a second time.
+
+The internal names distinguish frozen request facts from model configuration:
+
+| Quantity | Meaning |
+| --- | --- |
+| `ModelInfo.context_window` / configuration `contextWindow` | Total model capacity, including output; an explicit model override replaces the reported value. |
+| `inputLimit` | Independent provider input ceiling, if known; it is not another required auto-compaction setting. |
+| `ModelRequestContext.context_window` | Internal input ceiling before the output reserve: the smaller known value of `contextWindow` and `inputLimit`, or the sole known value. |
+| `ModelRequestContext.model_context_window` | Full model capacity. An input-only limit cannot supply this value. Context diagnostics expose this as `contextWindow`. |
+| Model / override `maxOutputTokens` | Provider output ceiling / requested per-step output budget. They supply the output reserve above; provider policy still resolves the actual request limit. |
+| `ModelRequestContext.declared_window` | Resolved compaction threshold, either explicit or automatic, frozen for the request. |
+
+Before a main model step, the runtime compares the previous completed main
+request's actual **input tokens + output tokens** with the resolved threshold.
+Input usage must be positive; missing output usage counts as zero.
+The usage must belong to the same connection, model and current checkpoint.
+Compaction waits for a safe execution boundary. It does not add a second
+recent-reply reserve on top of the default 5% margin.
+
+If total capacity or the output reserve is unknown, or reserving output leaves
+insufficient input space, no default threshold is guessed. An explicit threshold
+can still be used. Missing usable usage also prevents a proactive trigger.
+The 5% margin is a heuristic: new messages or tool results may exceed it because
+the complete next prompt is not locally tokenized. A provider context-overflow
+rejection before observable output therefore retains bounded compaction recovery;
+an output-length finish alone does not prove context overflow. The context
+meter's estimates are display-only.
+
+Per-request output capping remains a separate fallback. With a selected request
+budget `M`, full window `C` and matching usage `R`, it limits output to the remaining
+window minus 8,000 tokens for new input and any fixed Anthropic thinking budget,
+with a floor of `min(M, 8000)`. It neither changes configured capacity nor guarantees
+that the next prompt fits. The first main request after compaction is capped at
+8,000 tokens (or a smaller selected budget).
+
+See [Host threshold resolution](../crates/runtime-host/src/execution/provider/context.rs),
+[usage and output checks](../crates/agent/src/auto_context.rs), and
+[compaction admission/recovery](../crates/agent/src/steps.rs).
 
 ## Web
 

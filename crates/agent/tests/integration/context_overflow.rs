@@ -192,7 +192,7 @@ async fn proactive_failure_spends_the_same_budget_as_overflow_recovery() {
     next.context = Some(ModelRequestContext {
         provider_id: "openai".into(),
         context_window: Some(170),
-        declared_window: Some(170),
+        declared_window: Some(70),
         model_context_window: None,
     });
     if let RunWork::Message { max_steps, .. } = &mut next.work {

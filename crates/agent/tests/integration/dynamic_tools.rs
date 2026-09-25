@@ -148,7 +148,7 @@ async fn search_activates_next_step_and_only_committed_compaction_unloads_direct
                 }]).unwrap().with_discovery();
                 let mut input = fixture::input(&base, "discovery", false);
                 input.configuration.tool_mode = mode;
-                input.context = Some(ModelRequestContext { provider_id:"openai".into(), context_window:Some(220), declared_window:Some(220), model_context_window:None });
+                input.context = Some(ModelRequestContext { provider_id:"openai".into(), context_window:Some(220), declared_window:Some(210), model_context_window:None });
                 input.work = RunWork::Message { allow_prior_unknown:false, source_messages:Vec::new(), message:"Use echo".into(), tools:catalog, max_steps:3 };
                 let engine = fixture::engine(log.clone());
                 engine.run(input, CancellationToken::new()).await.unwrap();

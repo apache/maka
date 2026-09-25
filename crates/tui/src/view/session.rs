@@ -236,7 +236,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
             BorderType::Rounded
         })
         .padding(Padding::new(4, control_width, 0, 0))
-        .border_style(Style::default().fg(tone::border(app.theme.colors(), focused, breath)));
+        .border_style(Style::default().fg(app.theme.colors().breath(focused, breath)));
     let mut input = border.inner(parts[3]);
     frame.render_widget(border, parts[3]);
     frame.render_widget(Paragraph::new(metadata), metadata_area);
@@ -496,7 +496,7 @@ mod tests {
                 assert_eq!(button, " ■ ");
                 assert_eq!(
                     terminal.backend().buffer()[(area.x, area.y - 1)].fg,
-                    tone::border(app.theme.colors(), true, Some(0.45))
+                    app.theme.colors().breath(true, Some(0.45))
                 );
                 assert!(!app.drafts["chat"].contains(Position::new(area.x, area.y)));
                 assert_eq!(
@@ -593,7 +593,7 @@ mod tests {
                 .unwrap();
             assert_ne!(
                 terminal.backend().buffer()[(send.area.x, send.area.y - 1)].fg,
-                tone::border(app.theme.colors(), true, Some(0.45))
+                app.theme.colors().breath(true, Some(0.45))
             );
             app.chat.snapshot = Some(snapshot.clone());
             app.chat

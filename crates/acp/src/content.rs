@@ -246,11 +246,15 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
     #[test]
-    fn text_and_remote_links_are_explicit_context() {
-        let (content, files) = validate(vec!["hello".into(), block(serde_json::json!({"type":"resource_link", "uri":"https://example.com/doc", "name":"guide"}))]).unwrap();
+    fn text_links_and_embedded_resources_preserve_explicit_context() {
+        let (content, files) = validate(vec![
+            "hello".into(),
+            block(serde_json::json!({"type":"resource_link", "uri":"https://example.com/doc", "name":"guide"})),
+            block(serde_json::json!({"type":"resource", "resource":{"uri":"memory://context", "text":"actual content"}})),
+        ]).unwrap();
         assert_eq!(
             content.text,
-            "hello\n\nResource: guide\nhttps://example.com/doc"
+            "hello\n\nResource: guide\nhttps://example.com/doc\n\nResource: memory://context\nactual content"
         );
         assert!(files.is_empty());
     }
@@ -268,10 +272,5 @@ mod tests {
         );
         assert!(validate(vec![link; 9]).is_err());
         assert!(validate(vec![block(serde_json::json!({"type":"resource_link", "uri":"file:///tmp/a?query", "name":"file"}))]).is_err());
-    }
-    #[test]
-    fn embedded_text_keeps_uri_and_content() {
-        let (content, _) = validate(vec![block(serde_json::json!({"type":"resource", "resource":{"uri":"memory://context", "text":"actual content"}}))]).unwrap();
-        assert!(content.text.contains("memory://context\nactual content"));
     }
 }

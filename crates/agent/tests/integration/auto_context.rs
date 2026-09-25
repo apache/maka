@@ -42,11 +42,11 @@ fn context(window: Option<u64>) -> Option<ModelRequestContext> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn declaration_and_matching_latest_main_route_are_required_for_preturn() {
+async fn resolved_threshold_and_matching_latest_main_route_are_required_for_preturn() {
     for (declared, matching, expected) in [
         (None, true, false),
-        (Some(170), false, false),
-        (Some(170), true, true),
+        (Some(70), false, false),
+        (Some(70), true, true),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
@@ -186,7 +186,7 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
         together: Arc::new(Barrier::new(2)),
     });
     let mut input = code_mode::input(&base, "first", effects.clone());
-    input.context = context(Some(13));
+    input.context = context(Some(7));
     input.supports_vision = true;
     input.configuration.model = fixture::input(&base, "unused", false).configuration.model;
     if let RunWork::Message { message, .. } = &mut input.work {

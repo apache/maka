@@ -20,7 +20,7 @@
 //! Labelled text rows of a form sheet. Each whole row is one kernel slot,
 //! so a form's rows share a focus group and the arrows walk them; the
 //! label and the editor are painted here, over the drawn sheet.
-use crate::{editor::Editor, theme::Palette, view::tone};
+use crate::{editor::Editor, theme::Palette};
 use ratatui::{Frame, layout::Rect, style::Style, widgets::Paragraph};
 
 /// The label column for labels this wide, on a terminal this wide.
@@ -52,7 +52,7 @@ pub(crate) fn draw(
     frame.buffer_mut().set_style(label, colors.base());
     frame.render_widget(
         Paragraph::new(row.label).style(Style::default().fg(if row.focused {
-            tone::accent(colors)
+            colors.accent
         } else {
             colors.muted
         })),

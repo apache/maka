@@ -91,7 +91,7 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
             connection_id: "connection".into(), connection_slug: "fixture".into(), model: "test".into(),
         });
         first.context = Some(ModelRequestContext {
-            provider_id: "openai".into(), context_window: Some(10), declared_window: Some(10),
+            provider_id: "openai".into(), context_window: Some(10), declared_window: Some(7),
             model_context_window: None,
         });
         let configuration = first.configuration.clone();

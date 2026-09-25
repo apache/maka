@@ -20,9 +20,8 @@
 use crate::Result;
 mod entry;
 mod limits;
-pub use entry::ModelCatalogEntry;
 pub(crate) use limits::validate_overrides;
-use maka_runtime::configuration::{ConnectionCatalogEntry, ModelInfo};
+use maka_runtime::configuration::{ConnectionCatalogEntry, ModelCatalogEntry, ModelInfo};
 use std::collections::HashSet;
 
 /// Project persisted provider facts and explicit user declarations without resolving plugins.

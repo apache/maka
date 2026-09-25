@@ -16,11 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-//! Epoch 141 catalog output boundary, independent of the catalog producer.
+//! Catalog output boundary using the shared public configuration types.
 use crate::codec::{count, exact, record, shaped, string};
 use crate::{ProtocolError, Result};
-use maka_runtime::configuration::{ConnectionCatalogEntry, ConnectionTarget, validation as v};
-use maka_runtime::execution::ThinkingLevel;
+use maka_runtime::configuration::{
+    ConnectionCatalogEntry, ConnectionTarget, ModelCatalogEntry, ModelOverride, validation as v,
+};
 use serde_json::{Value, json};
 
 // Stored inventory + independent overrides + enabled IDs + fallback + default.
@@ -133,7 +134,6 @@ pub fn decode_catalog_query_result(value: &Value) -> Result<Value> {
 
 fn decode_item(value: &Value) -> Result<Value> {
     let o = record(value, "catalog item")?;
-    let mut output = value.clone();
     match value["kind"].as_str().unwrap_or("") {
         "connection" => return header(value),
         "enabled_model_id" => {
@@ -150,137 +150,18 @@ fn decode_item(value: &Value) -> Result<Value> {
                 &["kind", "connectionIndex", "itemIndex", "entry"],
                 &["modelOverride"],
             )?;
-            model_entry(&value["entry"])?;
+            let entry: ModelCatalogEntry =
+                serde_json::from_value(value["entry"].clone()).map_err(|_| invalid())?;
+            domain(entry.validate())?;
             if let Some(profile) = o.get("modelOverride") {
-                output["modelOverride"] = model_override(profile)?;
+                let profile: ModelOverride =
+                    serde_json::from_value(profile.clone()).map_err(|_| invalid())?;
+                domain(v::model_override(&entry.id, &profile))?;
             }
         }
         _ => return Err(invalid()),
     }
-    Ok(output)
-}
-
-fn model_entry(value: &Value) -> Result<()> {
-    let o = record(value, "model catalog entry")?;
-    shaped(
-        o,
-        &[
-            "id",
-            "canUseAsChatDefault",
-            "isDefault",
-            "supportsVision",
-            "thinkingLevels",
-        ],
-        &[
-            "displayName",
-            "description",
-            "contextWindow",
-            "inputLimit",
-            "compactionThreshold",
-            "defaultContextWindow",
-            "defaultInputLimit",
-            "defaultSupportsVision",
-            "knowledgeCutoff",
-        ],
-    )?;
-    let mut shared = json!({"id":value["id"]});
-    for field in [
-        "displayName",
-        "description",
-        "contextWindow",
-        "inputLimit",
-        "knowledgeCutoff",
-    ] {
-        if let Some(v) = o.get(field) {
-            shared[field] = v.clone();
-        }
-    }
-    domain(v::connection_model(&shared))?;
-    for field in ["canUseAsChatDefault", "isDefault", "supportsVision"] {
-        if !value[field].is_boolean() {
-            return Err(invalid());
-        }
-    }
-    if o.get("defaultSupportsVision")
-        .is_some_and(|v| !v.is_boolean())
-    {
-        return Err(invalid());
-    }
-    for field in [
-        "compactionThreshold",
-        "defaultContextWindow",
-        "defaultInputLimit",
-    ] {
-        if let Some(value) = o.get(field)
-            && count(value, field)? == 0
-        {
-            return Err(invalid());
-        }
-    }
-    let levels = value["thinkingLevels"].as_array().ok_or_else(invalid)?;
-    let mut seen = std::collections::BTreeSet::new();
-    for level in levels {
-        let level = level.as_str().ok_or_else(invalid)?;
-        if serde_json::from_value::<ThinkingLevel>(json!(level)).is_err() || !seen.insert(level) {
-            return Err(invalid());
-        }
-    }
-    Ok(())
-}
-
-fn model_override(value: &Value) -> Result<Value> {
-    record(value, "model override")?;
-    let mut result = json!({});
-    if let Some(levels) = value["thinkingLevels"].as_array() {
-        let selected: Vec<ThinkingLevel> = levels
-            .iter()
-            .filter_map(|level| serde_json::from_value(level.clone()).ok())
-            .collect();
-        let levels: Vec<_> = ThinkingLevel::ALL
-            .into_iter()
-            .filter(|level| selected.contains(level))
-            .collect();
-        if !levels.is_empty() {
-            result["thinkingLevels"] = json!(levels);
-        }
-    }
-    for field in ["vision", "codeMode", "applyPatch"] {
-        if value[field].is_boolean() {
-            result[field] = value[field].clone();
-        }
-    }
-    for field in [
-        "contextWindow",
-        "inputLimit",
-        "compactionThreshold",
-        "maxOutputTokens",
-    ] {
-        if let Ok(n) = count(&value[field], field)
-            && n > 0
-        {
-            result[field] = json!(n);
-        }
-    }
-    for field in ["displayName", "description", "knowledgeCutoff"] {
-        if value[field].is_string() {
-            result[field] = value[field].clone();
-        }
-    }
-    for field in ["capabilities", "modalities"] {
-        if value[field].is_object() {
-            result[field] = value[field].clone();
-        }
-    }
-    if matches!(
-        value["apiProtocol"].as_str(),
-        Some("openai-chat" | "openai-responses" | "anthropic-messages")
-    ) {
-        result["apiProtocol"] = value["apiProtocol"].clone();
-    }
-    if value["serviceTier"] == "fast" {
-        result["serviceTier"] = json!("fast");
-    }
-    Ok(result)
+    Ok(value.clone())
 }
 
 fn header(value: &Value) -> Result<Value> {

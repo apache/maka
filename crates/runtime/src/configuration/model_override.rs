@@ -86,24 +86,29 @@ pub struct ModelOverride {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    /// Override total input-plus-output capacity, without subtracting a reply budget.
     pub context_window: Option<u64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    /// Optional override of the automatic compaction threshold, in retained tokens.
+    /// By default Host reserves maximum output, then leaves 5% input-growth headroom.
     pub compaction_threshold: Option<u64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    /// Independent input ceiling; also caps the default compaction input budget.
     pub input_limit: Option<u64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    /// Requested per-step output budget, subject to provider and remaining-capacity caps.
     pub max_output_tokens: Option<u64>,
     #[serde(
         default,

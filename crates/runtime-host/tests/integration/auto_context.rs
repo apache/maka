@@ -120,8 +120,9 @@ async fn original_client_keeps_auto_summary_private_and_reopens_anchor_without_r
         );
         let context = main.context.unwrap();
         assert_eq!(context.provider_id, "openai");
-        assert_eq!(context.context_window, Some(10000));
-        assert_eq!(context.declared_window, Some(120));
+        assert_eq!(context.context_window, Some(1_000_000));
+        assert_eq!(context.model_context_window, Some(1_000_000));
+        assert_eq!(context.declared_window, Some(828_400));
         let facts = serde_json::to_value(&prefix.events).unwrap();
         if let Some(original) = &original {
             let original: &Vec<serde_json::Value> = original;
