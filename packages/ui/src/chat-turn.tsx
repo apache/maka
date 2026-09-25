@@ -177,29 +177,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     // Timestamp takes milliseconds directly for modern chat timestamps.
     <Timestamp className="maka-message-time-inline" value={props.ts} format="auto" isLive />
   ) : null;
+  // Astryx lays a user's metadata out row-reverse: the stamp goes last in the
+  // DOM so it renders first, left of the actions.
   const userMetadata = (
     <ChatMessageMetadata
       className="maka-message-meta"
       footer={
         <>
-          {props.status ? <span className="maka-message-status-time">
-            {props.status}
-            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
-            {timeOrDelivery}
-          </span> : timeOrDelivery}
-          {props.delivery?.deliveryActions?.map((action) => (
-            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
-          ))}
-          <CopyButton
-            copyKey="message"
-            text={props.text}
-            label={copyText.copy}
-            ariaLabel={copyText.messageActionAriaLabel(
-              copyText.copy,
-              accessibleActionContext(props.text, props.ts, locale),
-            )}
-            dataMessageId={props.messageId}
-          />
           {props.onEditUserMessage ? (
             <UiIconButton
               label={copyText.messageActionAriaLabel(
@@ -217,6 +201,24 @@ const UserMessageBody = memo(function UserMessageBody(props: {
               onClick={() => props.onEditUserMessage?.()}
             />
           ) : null}
+          <CopyButton
+            copyKey="message"
+            text={props.text}
+            label={copyText.copy}
+            ariaLabel={copyText.messageActionAriaLabel(
+              copyText.copy,
+              accessibleActionContext(props.text, props.ts, locale),
+            )}
+            dataMessageId={props.messageId}
+          />
+          {props.delivery?.deliveryActions?.map((action) => (
+            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+          ))}
+          {props.status ? <span className="maka-message-status-time">
+            {props.status}
+            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
+            {timeOrDelivery}
+          </span> : timeOrDelivery}
         </>
       }
     />
@@ -697,9 +699,10 @@ export const TurnView = memo(function TurnView(props: {
               : undefined,
         };
         const footerActions = props.liveStreaming ? [] : props.footerActions ?? [];
-        const footerMeta = turnMetaSummary(turn);
+        // Gated on the live-aware status: a live turn has no recorded turn_state
+        // yet, so `turn.status` reads `completed` as soon as one step lands.
         const finishedAt =
-          turn.status !== 'running' &&
+          statusBarStatus !== 'running' &&
           turn.durationMs !== undefined &&
           turn.startedAt > MIN_PLAUSIBLE_TURN_TS
             ? turn.startedAt + turn.durationMs
@@ -819,7 +822,6 @@ export const TurnView = memo(function TurnView(props: {
               <TurnFooter
                 turnId={turn.turnId}
                 actions={footerActions}
-                meta={footerMeta}
                 finishedAt={finishedAt}
                 live={!!props.liveStreaming}
                 context={answerContext}
@@ -1013,9 +1015,6 @@ export function TurnStatusBar(props: TurnStatusRowProps) {
 function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
-  /** Model · cost facts, before the actions. */
-  meta?: string;
-  /** Wall-clock finish time, rendered as a semantic Timestamp. */
   finishedAt?: number;
   live?: boolean;
   context: string;
@@ -1025,25 +1024,16 @@ function TurnFooter(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const hasSlotContent = useMakaClientSlotOccupied('conversation.turn.footer');
-  const hasFooterContent =
-    props.meta !== undefined || props.actions.length > 0 || hasSlotContent;
-  const isToolbar = !props.live && (props.actions.length > 0 || hasSlotContent);
+  const hasActions = props.actions.length > 0 || hasSlotContent;
+  const isToolbar = !props.live && hasActions;
   return (
     <ChatMessageMetadata
       className={markerVariants({ variant: 'footer' })}
       role={isToolbar ? 'toolbar' : undefined}
       aria-label={isToolbar ? copy.answerActionsAriaLabel(props.context) : undefined}
-      timestamp={
-        props.finishedAt !== undefined
-          ? <Timestamp value={props.finishedAt} format="auto" isLive />
-          : undefined
-      }
       footer={
-        hasFooterContent ? (
+        hasActions || props.finishedAt !== undefined ? (
         <>
-          {props.meta !== undefined ? (
-            <span className="maka-turn-footer-meta-model">{props.meta}</span>
-          ) : null}
           {props.actions.map((action) =>
             action.id === 'copy' ? (
               <CopyButton
@@ -1081,19 +1071,14 @@ function TurnFooter(props: {
               }}
             />
           ) : null}
+          {props.finishedAt !== undefined ? (
+            <Timestamp className="maka-message-time-inline" value={props.finishedAt} format="auto" isLive />
+          ) : null}
         </>
         ) : undefined
       }
     />
   );
-}
-
-/** "model · cost" facts for the footer; the turn's state lives in the status row. */
-function turnMetaSummary(turn: TurnViewModel): string | undefined {
-  const parts: string[] = [];
-  if (turn.modelId) parts.push(turn.modelId);
-  if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) parts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
-  return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {

@@ -72,11 +72,7 @@ import {
 } from './orchestration.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
 import { isExecutorId } from './executor-id.js';
-import {
-  isRuntimeSystemNoteKind,
-  type PersistedBackendKind,
-  type RuntimeSystemNoteKind,
-} from './session.js';
+import { isSystemNoteKind, type PersistedBackendKind, type SystemNoteKind } from './session.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
@@ -246,7 +242,7 @@ export interface RuntimeEventFunctionResponseContent {
  */
 export interface RuntimeEventSystemNoteContent {
   kind: 'system_note';
-  note: RuntimeSystemNoteKind;
+  note: SystemNoteKind;
   /** Shape depends on `note`, exactly as it does on the transcript row. */
   data?: unknown;
 }
@@ -1134,7 +1130,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       return (
         hasExactShape(value, SYSTEM_NOTE_CONTENT_SHAPE) &&
         typeof value.note === 'string' &&
-        isRuntimeSystemNoteKind(value.note)
+        isSystemNoteKind(value.note)
       );
     case 'invocation_opened':
       return isRuntimeInvocationOpened(value);

@@ -18,6 +18,7 @@
  */
 
 import { executorCopy, ExecutorModelPicker, type ExecutorModelPickerProps } from './executor-model-picker.js';
+import { usePromptSuggestion } from './prompt-suggestion.js';
 import {
   forwardRef,
   useEffect,
@@ -913,6 +914,27 @@ export const Composer = forwardRef<
   const executorNativeDisabledReason = props.executorPicker?.selection ? executorCopy(locale).nativeOperations : undefined;
   const copy = getConversationCopy(locale).composer;
   const mentionCopy = getConversationCopy(locale).mentions;
+  const nextPrompt = usePromptSuggestion({
+    sessionId: props.activeSession?.id,
+    streaming: props.streaming === true,
+    text,
+    blocked: Boolean(props.disabled || props.hidden || props.goalActive || props.planModeActive
+      || props.pendingAttachments?.length || props.pendingQuotes?.length || props.pendingSessionReferences?.length),
+  });
+  const suggestionLabel = copy.promptSuggestionLabel;
+  function acceptNextPrompt() {
+    if (!nextPrompt.text || compositionActiveRef.current || textPort.getValue().length) return;
+    const value = nextPrompt.text;
+    nextPrompt.dismiss();
+    focusInput();
+    // Use the same native editing transaction as paste so Undo removes the offer.
+    if (!document.execCommand('insertText', false, value)) {
+      textPort.setValue(value);
+      saveCurrentDraft(value);
+    }
+    resetPromptHistoryNavigation();
+  }
+
 
   useEffect(() => {
     return () => {
@@ -1490,6 +1512,13 @@ export const Composer = forwardRef<
    * the built-in submit clears the editor unconditionally.
    */
   function onInputKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (!event.defaultPrevented && nextPrompt.text && !compositionActiveRef.current
+      && event.currentTarget.getAttribute('aria-expanded') !== 'true') {
+      if (event.key === 'Tab' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault(); acceptNextPrompt(); return;
+      }
+      if (event.key === 'Escape') { event.preventDefault(); setDragActive(false); nextPrompt.dismiss(); return; }
+    }
     // Keystrokes made during an IME composition never reach this handler — the
     // native listener above takes them away from React entirely.
     if (event.key === 'Enter' && event.currentTarget.getAttribute('aria-expanded') === 'true') {
@@ -1511,6 +1540,19 @@ export const Composer = forwardRef<
     // blurred the window or completed a real drop somewhere.
     if (event.key === 'Escape' && dragActive) {
       setDragActive(false);
+      event.preventDefault();
+      return;
+    }
+    // The mounted composer can be hosted in a dismissible preview. Give that
+    // host first refusal after the editor's local trigger menu has handled Esc.
+    if (event.key === 'Escape' && !event.currentTarget.dispatchEvent(
+      new event.currentTarget.ownerDocument.defaultView!.CustomEvent(
+        'maka-composer-escape',
+        { bubbles: true, cancelable: true },
+      ),
+    )) {
+      event.preventDefault();
+      return;
     }
     // Esc during streaming interrupts the model. We don't preventDefault
     // unconditionally so Esc still works to close modals when the composer
@@ -1544,6 +1586,7 @@ export const Composer = forwardRef<
   }
 
   function onInputChange(next: string) {
+    nextPrompt.dismiss();
     applyText(next);
     resetPromptHistoryNavigation();
     saveCurrentDraft(next);
@@ -1806,7 +1849,7 @@ export const Composer = forwardRef<
     props.onPickAttachments || props.onPickDirectory || props.mentionSkills || props.onSetGoal,
   );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
-  const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
+  const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes || (nextPrompt.service && props.activeSession));
   const onNativeModelChange = async (
     target: Parameters<NonNullable<typeof props.onModelChange>>[0],
   ) => {
@@ -2069,57 +2112,64 @@ export const Composer = forwardRef<
                   ) : null)}
                 </div>
               )}
-              <ChatComposerInput
-                ref={inputRootRef}
-                handleRef={inputHandleRef}
-                data-maka-contract="composer-input"
-                className="maka-composer-editor"
-                value={text}
-                onChange={onInputChange}
-                placeholder={props.placeholder ?? copy.placeholder}
-                label={copy.textareaAriaLabel}
-                maxRows={props.maxInputRows ?? COMPOSER_MAX_ROWS}
-                // Prompt history stays ours: persisted, shared across input
-                // surfaces, and clearable from Settings · 数据 (see
-                // use-composer-history.ts).
-                hasHistory={false}
-                triggers={triggers}
-                pasteAsToken={pasteAsToken}
-                onPaste={(event, pasted) => {
-                  // Astryx has already offered token-adjacent, file, and
-                  // reference-sized-token pastes before it reaches this seam.
-                  const plainTextContainer = document.createElement('div');
-                  plainTextContainer.textContent = pasted;
-                  const menuWasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
-                  plainTextPasteInputActiveRef.current = true;
-                  try {
-                    // Deprecated, but still the composer's only insertion
-                    // primitive that creates a browser undo transaction.
-                    // Migrate when Astryx exposes a transactional plain-text
-                    // insertion authority.
-                    return document.execCommand(
-                      'insertHTML',
-                      false,
-                      plainTextContainer.innerHTML.replace(/\r\n?|\n/g, '<br>'),
-                    );
-                  } finally {
-                    plainTextPasteInputActiveRef.current = false;
-                    if (menuWasOpen) {
-                      event.currentTarget.dispatchEvent(
-                        new KeyboardEvent('keydown', {
-                          key: 'Escape',
-                          bubbles: true,
-                          cancelable: true,
-                        }),
+              <div className="maka-composer-input-suggestion-wrap">
+                {nextPrompt.text ? (
+                  <span aria-hidden="true" className="maka-composer-next-prompt" style={{ maxHeight: (props.maxInputRows ?? COMPOSER_MAX_ROWS) * 22 }}>
+                    <span className="maka-composer-next-prompt-text">{nextPrompt.text}</span>
+                  </span>
+                ) : null}
+                <ChatComposerInput
+                  ref={inputRootRef}
+                  handleRef={inputHandleRef}
+                  data-maka-contract="composer-input"
+                  className="maka-composer-editor"
+                  value={text}
+                  onChange={onInputChange}
+                  placeholder={nextPrompt.text ? '' : (props.placeholder ?? copy.placeholder)}
+                  label={copy.textareaAriaLabel}
+                  maxRows={props.maxInputRows ?? COMPOSER_MAX_ROWS}
+                  // Prompt history stays ours: persisted, shared across input
+                  // surfaces, and clearable from Settings · 数据 (see
+                  // use-composer-history.ts).
+                  hasHistory={false}
+                  triggers={triggers}
+                  pasteAsToken={pasteAsToken}
+                  onPaste={(event, pasted) => {
+                    // Astryx has already offered token-adjacent, file, and
+                    // reference-sized-token pastes before it reaches this seam.
+                    const plainTextContainer = document.createElement('div');
+                    plainTextContainer.textContent = pasted;
+                    const menuWasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
+                    plainTextPasteInputActiveRef.current = true;
+                    try {
+                      // Deprecated, but still the composer's only insertion
+                      // primitive that creates a browser undo transaction.
+                      // Migrate when Astryx exposes a transactional plain-text
+                      // insertion authority.
+                      return document.execCommand(
+                        'insertHTML',
+                        false,
+                        plainTextContainer.innerHTML.replace(/\r\n?|\n/g, '<br>'),
                       );
+                    } finally {
+                      plainTextPasteInputActiveRef.current = false;
+                      if (menuWasOpen) {
+                        event.currentTarget.dispatchEvent(
+                          new KeyboardEvent('keydown', {
+                            key: 'Escape',
+                            bubbles: true,
+                            cancelable: true,
+                          }),
+                        );
+                      }
                     }
-                  }
-                }}
-                onFiles={onInputFiles}
-                onKeyDown={onInputKeyDown}
-                onCompositionStart={() => { compositionActiveRef.current = true; }}
-                onCompositionEnd={() => { compositionActiveRef.current = false; }}
-              />
+                  }}
+                  onFiles={onInputFiles}
+                  onKeyDown={onInputKeyDown}
+                  onCompositionStart={() => { nextPrompt.dismiss(); compositionActiveRef.current = true; }}
+                  onCompositionEnd={() => { compositionActiveRef.current = false; }}
+                />
+              </div>
               {dragActive && (
                 <span className="maka-visually-hidden" role="status" aria-live="polite">
                   {copy.dropToImport}
@@ -2242,6 +2292,12 @@ export const Composer = forwardRef<
                         }}
                       />
                     ) : null}
+                    {nextPrompt.service && props.activeSession ? (
+                      <DropdownMenuCheckboxItem label={suggestionLabel} value={nextPrompt.service.enabled}
+                        endContent={nextPrompt.service.enabled ? <SelectionMark state="checked" size="sm" /> : undefined}
+                        description={copy.promptSuggestionDescription}
+                        onChange={(enabled) => { nextPrompt.dismiss(); nextPrompt.service?.setEnabled(enabled); }} />
+                    ) : null}
                     {hasPlusMenuModes ? (
                       <>
                         {hasPlusMenuActions ? <DropdownMenuDivider /> : null}
@@ -2311,7 +2367,7 @@ export const Composer = forwardRef<
               {props.onPermissionModeChange ? (
                 <PermissionModeSelect
                   appearance="icon"
-                  activeMode={props.permissionMode ?? 'ask'}
+                  activeMode={props.permissionMode}
                   onSelect={(mode) => {
                     void props.onPermissionModeChange?.(mode);
                   }}
@@ -2479,6 +2535,7 @@ export const Composer = forwardRef<
                   }}
                 />
               </MakaClientSessionScope>
+              {nextPrompt.text ? <kbd className="maka-composer-next-prompt-key" aria-hidden="true">Tab</kbd> : null}
               {props.footerAccessory}
             </div>
           )}

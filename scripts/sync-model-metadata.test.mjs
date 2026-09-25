@@ -471,7 +471,10 @@ test('refresh carries the video and pdf modalities models.dev declares', async (
       metadata,
     ]);
 
-    const written = JSON.parse(await readFile(snapshot, 'utf8'));
+    const writtenText = await readFile(snapshot, 'utf8');
+    // The committed snapshot is under the Biome format gate.
+    assert.match(writtenText, /"input": \["text", "video"\],\n/);
+    const written = JSON.parse(writtenText);
     assert.deepEqual(written.projection.metadata.anthropic.model.modalities, modalities);
   } finally {
     await rm(root, { recursive: true, force: true });

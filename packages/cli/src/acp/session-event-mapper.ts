@@ -188,10 +188,7 @@ function deltaText(
   event: Extract<SessionEvent, { type: 'text_delta' | 'thinking_delta' }>,
   current = '',
 ): string {
-  return foldRuntimeHostAssistantDelta(current, {
-    startOffset: event.startOffset ?? current.length,
-    text: event.text,
-  }).text;
+  return foldRuntimeHostAssistantDelta(current, event).text;
 }
 
 function streamKey(kind: StreamKind, messageId: string): string {

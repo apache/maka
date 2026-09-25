@@ -674,3 +674,24 @@ test('shared transcript preserves admitted action identity alongside its physica
     message,
   );
 });
+
+test('shared transcript omits private choice prompts and answers', () => {
+  assert.equal(
+    projectSharedSessionTranscriptMessage(
+      {
+        type: 'form_interaction',
+        id: 'choice',
+        turnId: 'turn',
+        ts: 2,
+        request: {
+          kind: 'question',
+          toolUseId: 'tool',
+          questions: [{ question: 'Private?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+        },
+        outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 2 },
+      },
+      'session',
+    ),
+    null,
+  );
+});

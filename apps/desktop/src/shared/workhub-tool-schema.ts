@@ -159,6 +159,13 @@ const delegationTarget = z.discriminatedUnion("disposition", [
 ]);
 export const workHubTasksSchema = z.discriminatedUnion("operation", [
   z.object({
+    operation: z.literal("status"),
+    targetSessionId: z.string().min(1),
+    targetTurnId: z.string().min(1),
+  }).strict().describe(
+    "Read the exact execution turn returned by a prior delegation or resume, without starting work. The Session must remain in current bounded discovery. Reports that turn only, not all work in the Session. Completed execution is not verification of files or tests; never resend a task just to check progress.",
+  ),
+  z.object({
     operation: z.literal("select_and_delegate"),
     candidateSetId: z.string().min(1),
     candidateRefs: z.array(z.string().min(1)).min(1).max(32),

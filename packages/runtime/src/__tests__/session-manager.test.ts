@@ -65,6 +65,7 @@ import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-stor
 import { deriveTurnRecords } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
+import { buildInterruptedToolOutcomeCommits } from '../recovery-resolver.js';
 import { buildImmutableRuntimePrefix, decodeContinuationClaim } from '@maka/core/runtime-boundary';
 import type {
   CreateSandboxBoundaryRequest,
@@ -12813,7 +12814,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await turnOf(activeDone.id, 'active-turn'))?.status, 'completed');
   });
 
-  test('startup recovery derives the interrupted outcome sink from the runtime store', async () => {
+  test('startup recovery settles arbitrary dispatched tools before terminalizing the run', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
@@ -12854,6 +12855,7 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-1',
         status: 'running',
         toolMode: 'code_mode',
+        toolBoundaryProtocol: 't1_after_preflight_v1',
       }),
       [
         makeRunEvent({
@@ -12865,7 +12867,7 @@ describe('SessionManager permission mode updates', () => {
         }),
       ],
     );
-    const code = { code: 'return await tools.Read({ path: "a.ts" })' };
+    const command = { command: 'echo interrupted' };
     await runStore.appendRuntimeEvent(
       session.id,
       'run-1',
@@ -12875,7 +12877,6 @@ describe('SessionManager permission mode updates', () => {
         role: 'user',
         author: 'user',
         content: { kind: 'text', text: 'inspect' },
-        actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
       }),
     );
     await runStore.appendRuntimeEvent(
@@ -12888,7 +12889,7 @@ describe('SessionManager permission mode updates', () => {
         author: 'agent',
         origin: 'provider',
         modelVisibility: 'visible',
-        content: { kind: 'function_call', id: 'exec-1', name: 'exec', args: code },
+        content: { kind: 'function_call', id: 'exec-1', name: 'Bash', args: command },
         refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
       }),
     );
@@ -12903,8 +12904,8 @@ describe('SessionManager permission mode updates', () => {
             protocol: 't1_after_preflight_v1',
             operationId: 'outer-op',
             providerToolCallId: 'exec-1',
-            toolName: 'exec',
-            canonicalArgsHash: canonicalToolArgsHash('exec', code),
+            toolName: 'Bash',
+            canonicalArgsHash: canonicalToolArgsHash('Bash', command),
             recoveryMode: 'never_auto_retry',
           },
         },
@@ -12912,6 +12913,11 @@ describe('SessionManager permission mode updates', () => {
       }),
     );
 
+    const preRecoveryEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
+    assert.equal(
+      buildInterruptedToolOutcomeCommits(preRecoveryEvents, 12_825, 'code_mode').length,
+      1,
+    );
     await manager.recoverInterruptedSessions();
 
     assert.equal((await readInvocation(runStore, session.id, 'run-1')).terminalEvent, undefined);
@@ -12935,14 +12941,16 @@ describe('SessionManager permission mode updates', () => {
     assert.deepEqual(
       response?.content?.kind === 'function_response' ? response.content.result : undefined,
       {
-        kind: 'json',
-        value: {
-          kind: 'code_mode',
-          status: 'interrupted',
-          message: 'Code Mode execution was interrupted by runtime recovery.',
-        },
+        kind: 'text',
+        text: 'Tool Bash was interrupted before its result was committed. Its side effects may or may not have occurred. Do not retry it immediately; inspect the current state first.',
+        uncertainOutcome: { code: 'outcome_unknown', retrySafe: false },
       },
     );
+    const responseIndex = runtimeEvents.findIndex(
+      (event) => event.content?.kind === 'function_response',
+    );
+    const terminalIndex = runtimeEvents.findIndex(isTerminalRuntimeEvent);
+    assert.ok(responseIndex >= 0 && terminalIndex > responseIndex);
     assert.equal(
       runtimeInvocationOutcome(await readInvocation(runStore, session.id, 'run-1')),
       'failed',
@@ -15662,6 +15670,7 @@ interface TestRunHeader {
   orchestrationSource?: 'session' | 'turn_override';
   agentSwarmAuthorization?: 'none' | 'session_mode' | 'turn_override';
   toolMode?: ToolMode;
+  toolBoundaryProtocol?: 't1_after_preflight_v1';
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -15781,16 +15790,18 @@ async function seedInvocationOpening(
   store: Pick<RuntimeEventStore, 'appendRuntimeEvent'>,
   header: TestRunHeader,
 ): Promise<void> {
-  await store.appendRuntimeEvent(
-    header.sessionId,
-    header.runId,
-    buildInvocationOpenedEvent({
-      id: `${header.runId}-invocation-opened`,
-      run: runIdentityOf(header),
-      openedAt: header.createdAt,
-      opening: testInvocationOpening(header),
-    }),
-  );
+  const opened = buildInvocationOpenedEvent({
+    id: `${header.runId}-invocation-opened`,
+    run: runIdentityOf(header),
+    openedAt: header.createdAt,
+    opening: testInvocationOpening(header),
+  });
+  await store.appendRuntimeEvent(header.sessionId, header.runId, {
+    ...opened,
+    ...(header.toolBoundaryProtocol
+      ? { actions: { runtimeProtocol: { toolBoundary: header.toolBoundaryProtocol } } }
+      : {}),
+  });
 }
 
 /** The one event that ends the run, when the header says the run ended. */

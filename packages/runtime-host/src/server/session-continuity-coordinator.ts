@@ -179,9 +179,10 @@ interface Subscriber {
   /**
    * Work that arrived while a backlog was still unpaid. A subscriber has one
    * delivery order, so anything produced after the text it is catching up on
-   * waits here instead of overtaking it.
+   * waits here instead of overtaking it. It spends the queue's byte budget.
    */
-  deferred: Array<() => void>;
+  deferred: Array<{ work: () => void; bytes: number }>;
+  deferredBytes: number;
 }
 
 interface AssistantBacklog {
@@ -664,6 +665,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
         const nextRevision = state.revision + 1;
         const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
+        this.#invalidateSettledChoiceTranscript(state, canonical);
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
@@ -753,8 +755,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             // reads the accumulated stream, so it carries this delta already.
             this.#payAssistantBacklog(subscriber, state);
           } else {
-            this.#deliverInOrder(subscriber, () =>
-              this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset),
+            this.#deliverInOrder(
+              subscriber,
+              () =>
+                this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset),
+              () => Buffer.byteLength(event.text, 'utf8'),
             );
           }
         }
@@ -823,20 +828,26 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.toolResultPreviews.delete(event.toolUseId);
       }
       for (const subscriber of state.subscribers.values()) {
-        const frame: SessionEventFrame = {
-          kind: 'subscription.session_event',
-          hostEpoch: this.#hostEpoch,
-          subscriptionId: subscriber.subscriptionId,
-          sequence: subscriber.nextSequence,
-          sessionId,
-          runId,
-          event: projectSessionEvent(
-            event,
-            sessionId,
-            subscriber.principalKind === 'session_guest',
-          ),
-        };
-        this.#enqueue(subscriber, frame);
+        this.#deliverInOrder(
+          subscriber,
+          () => {
+            const frame: SessionEventFrame = {
+              kind: 'subscription.session_event',
+              hostEpoch: this.#hostEpoch,
+              subscriptionId: subscriber.subscriptionId,
+              sequence: subscriber.nextSequence,
+              sessionId,
+              runId,
+              event: projectSessionEvent(
+                event,
+                sessionId,
+                subscriber.principalKind === 'session_guest',
+              ),
+            };
+            this.#enqueue(subscriber, frame);
+          },
+          () => Buffer.byteLength(JSON.stringify(event), 'utf8'),
+        );
       }
     });
   }
@@ -1029,6 +1040,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             [...committed.state.assistantStreams.keys()].map((key) => [key, { sent: 0 }]),
           ),
           deferred: [],
+          deferredBytes: 0,
           ...(transcript ? { transcript } : {}),
         };
         committed.state.subscribers.set(subscriptionId, subscriber);
@@ -1297,12 +1309,17 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       );
   }
 
-  #closeSubscriber(subscriber: Subscriber, reason: 'slow_consumer' | 'access_revoked'): void {
+  #closeSubscriber(
+    subscriber: Subscriber,
+    reason: 'slow_consumer' | 'access_revoked' | 'transcript_changed',
+  ): void {
     if (subscriber.phase !== 'open') return;
     subscriber.phase = 'closing';
     const inFlight = subscriber.pumping ? subscriber.queue[0] : undefined;
     subscriber.queue = [];
     subscriber.queuedBytes = 0;
+    subscriber.deferred = [];
+    subscriber.deferredBytes = 0;
     subscriber.nextSequence = (inFlight?.frame.sequence ?? subscriber.lastFlushedSequence) + 1;
     const frame: SubscriptionFrame = {
       kind: 'subscription.closed',
@@ -1522,6 +1539,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       ?.subscriptionIds.delete(subscriber.subscriptionId);
     subscriber.assistantBacklog.clear();
     subscriber.deferred = [];
+    subscriber.deferredBytes = 0;
     if (!this.#closed && state && removed && state.subscribers.size === 0) {
       this.#scheduleInactiveStateCleanup(subscriber.sessionId, state);
     }
@@ -1602,16 +1620,19 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       return;
     }
     subscriber.assistantBacklog.delete(key);
-    this.#deliverInOrder(subscriber, () =>
-      this.#enqueueAssistantCompletion(
-        subscriber,
-        subscriber.sessionId,
-        runId,
-        { ...stream, text: held },
-        stream.kind,
-        finalText,
-        interrupted,
-      ),
+    this.#deliverInOrder(
+      subscriber,
+      () =>
+        this.#enqueueAssistantCompletion(
+          subscriber,
+          subscriber.sessionId,
+          runId,
+          { ...stream, text: held },
+          stream.kind,
+          finalText,
+          interrupted,
+        ),
+      () => Buffer.byteLength(finalText, 'utf8'),
     );
   }
 
@@ -1681,6 +1702,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       }
       const nextRevision = state.revision + 1;
       const value = createSessionContinuitySnapshot(canonical, nextRevision);
+      this.#invalidateSettledChoiceTranscript(state, canonical);
       state.canonical = canonical;
       state.revision = nextRevision;
       return { changed, state, value };
@@ -1692,10 +1714,32 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
+  #invalidateSettledChoiceTranscript(
+    state: SessionProjectionState,
+    next: CanonicalSessionProjection,
+  ): void {
+    const pending = new Set(next.interactions.pending.map((item) => item.interactionId));
+    if (
+      !state.canonical.interactions.pending.some(
+        (item) =>
+          (item.request.kind === 'form' || item.request.kind === 'question') &&
+          !pending.has(item.interactionId),
+      )
+    )
+      return;
+    // Outcomes can settle after their owner's last event. Their historical rows
+    // then lie behind an already-consumed cursor: advancing the event high water
+    // cannot deliver them. Close explicitly so observers rebuild their bounded tail.
+    for (const subscriber of state.subscribers.values()) {
+      if (subscriber.transcript) this.#closeSubscriber(subscriber, 'transcript_changed');
+    }
+  }
+
   #publishCanonical(state: SessionProjectionState, canonical: CanonicalSessionProjection): void {
     if (isDeepStrictEqual(state.canonical, canonical)) return;
     const nextRevision = state.revision + 1;
     const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
+    this.#invalidateSettledChoiceTranscript(state, canonical);
     state.canonical = immutableClone(canonical);
     state.revision = nextRevision;
     this.#broadcastProjection(state, snapshot);
@@ -1703,15 +1747,19 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
   #broadcastProjection(state: SessionProjectionState, snapshot: SessionContinuitySnapshot): void {
     for (const subscriber of state.subscribers.values()) {
-      this.#deliverInOrder(subscriber, () => {
-        this.#enqueue(subscriber, {
-          kind: 'subscription.session_projection',
-          hostEpoch: this.#hostEpoch,
-          subscriptionId: subscriber.subscriptionId,
-          sequence: subscriber.nextSequence,
-          snapshot: projectSessionSnapshot(snapshot, subscriber.principalKind),
-        });
-      });
+      this.#deliverInOrder(
+        subscriber,
+        () => {
+          this.#enqueue(subscriber, {
+            kind: 'subscription.session_projection',
+            hostEpoch: this.#hostEpoch,
+            subscriptionId: subscriber.subscriptionId,
+            sequence: subscriber.nextSequence,
+            snapshot: projectSessionSnapshot(snapshot, subscriber.principalKind),
+          });
+        },
+        () => Buffer.byteLength(JSON.stringify(snapshot), 'utf8'),
+      );
     }
   }
 
@@ -1720,12 +1768,19 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
    * on. Every assistant frame and projection goes through here, so the order a
    * subscriber sees is the order the Host produced.
    */
-  #deliverInOrder(subscriber: Subscriber, work: () => void): void {
+  #deliverInOrder(subscriber: Subscriber, work: () => void, bytes: () => number): void {
+    if (subscriber.phase !== 'open') return;
     if (subscriber.assistantBacklog.size === 0 && subscriber.deferred.length === 0) {
       work();
       return;
     }
-    subscriber.deferred.push(work);
+    const size = bytes();
+    if (subscriber.queuedBytes + subscriber.deferredBytes + size > MAX_SUBSCRIBER_QUEUED_BYTES) {
+      this.#evictSlowSubscriber(subscriber);
+      return;
+    }
+    subscriber.deferred.push({ work, bytes: size });
+    subscriber.deferredBytes += size;
   }
 
   #drainDeferred(subscriber: Subscriber): void {
@@ -1734,7 +1789,9 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       subscriber.deferred.length > 0 &&
       subscriber.phase === 'open'
     ) {
-      subscriber.deferred.shift()?.();
+      const next = subscriber.deferred.shift()!;
+      subscriber.deferredBytes -= next.bytes;
+      next.work();
     }
   }
 

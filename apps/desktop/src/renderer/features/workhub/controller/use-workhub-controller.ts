@@ -389,7 +389,7 @@ export function useWorkHubController(onSubmit?: () => void) {
           const ids = new Set(entries.map((entry) => entry.messageId));
           if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
           setMessagePresentation((previous) => ({
-            messageQueue: { entries: entries.filter((entry) => entry.state === 'queued'), revision: event.queueRevision },
+            messageQueue: { entries, revision: event.queueRevision },
             transientMessages: previous.transientMessages.filter((message) => !ids.has(message.id)),
           }));
         }

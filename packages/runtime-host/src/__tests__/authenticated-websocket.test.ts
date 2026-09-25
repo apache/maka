@@ -69,7 +69,8 @@ async function configureTestModel(local: RuntimeHostConnection): Promise<void> {
     connection: {
       slug: 'websocket-fixture',
       name: 'WebSocket fixture',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-chat',
       baseUrl: 'https://websocket-model.invalid/v1',
       enabled: true,
       enabledModelIds: ['websocket-test-model'],

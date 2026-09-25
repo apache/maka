@@ -1356,16 +1356,6 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
       return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
-    case 'context_provider_dropping': {
-      const data = message.data as
-        | { inputTokens?: unknown; priorInputTokens?: unknown }
-        | undefined;
-      const used = typeof data?.inputTokens === 'number' ? data.inputTokens : undefined;
-      const prior = typeof data?.priorInputTokens === 'number' ? data.priorInputTokens : undefined;
-      if (used === undefined || prior === undefined)
-        return "After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten. If this persists, check that the model's actual context capacity and the connection settings agree.";
-      return `After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten (${used} tokens versus ${prior} before). If this persists, check that the model's actual context capacity and the connection settings agree.`;
-    }
     case 'context_overflow_after_compaction':
       return 'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.';
     case 'context_reported_window_exceeded': {

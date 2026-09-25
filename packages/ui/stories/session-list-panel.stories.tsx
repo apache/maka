@@ -705,9 +705,15 @@ export const ProjectGroups: Story = {
 
     const taskRow = taskControl.closest<HTMLElement>('[data-session-id]');
     if (!taskRow) throw new Error('task row is missing');
-    const timestamp = taskRow.querySelector<HTMLElement>('.maka-session-row-time');
-    if (!timestamp) throw new Error('task timestamp is missing');
+    const signal = taskRow.querySelector<HTMLElement>('.maka-session-row-signal');
+    const indicator = signal?.querySelector<HTMLElement>('.maka-running-indicator');
+    if (!signal || !indicator) throw new Error('task running indicator is missing');
     const taskActionButton = within(taskRow).getByRole('button', { name: /任务操作$/ });
+    const centerX = (element: Element) => {
+      const box = element.getBoundingClientRect();
+      return box.x + box.width / 2;
+    };
+    expect(Math.abs(centerX(indicator) - centerX(taskActionButton))).toBeLessThanOrEqual(1);
     taskActionButton.focus();
     await userEvent.keyboard('{Enter}');
     const renameTask = page.getByRole('menuitem', { name: '重命名' });
@@ -719,7 +725,7 @@ export const ProjectGroups: Story = {
       'true',
     );
     await userEvent.hover(renameTask);
-    await expect(timestamp).toHaveStyle({ visibility: 'hidden' });
+    await expect(signal).toHaveStyle({ visibility: 'hidden' });
     await userEvent.click(renameTask);
     await expect(await page.findByRole('dialog', { name: '重命名任务' }, {
       timeout: 5_000,

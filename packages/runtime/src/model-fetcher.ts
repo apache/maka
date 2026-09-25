@@ -202,7 +202,11 @@ async function fetchProviderModelsStrict(
   // The wire is the Runtime adapter's, not a second field beside it. Only four
   // adapter kinds reach here: every other one returned above on its own
   // discovery branch, and both OpenAI-shaped kinds speak the same /models wire.
-  switch (definition.runtimeAdapter.kind) {
+  const listAdapter =
+    (connection.defaultApiProtocol &&
+      definition.protocolAdapters?.[connection.defaultApiProtocol]) ||
+    definition.runtimeAdapter;
+  switch (listAdapter.kind) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
         headers: anthropicModelHeaders(apiKey),

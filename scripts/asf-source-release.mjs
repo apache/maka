@@ -103,6 +103,7 @@ const textSourceExtensions = new Set([
   '.tsv',
   '.tsx',
   '.txt',
+  '.xml',
   '.yaml',
   '.yml',
 ]);

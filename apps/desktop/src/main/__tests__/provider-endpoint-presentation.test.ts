@@ -65,7 +65,7 @@ test('a persisted override is the displayed effective endpoint', () => {
 test('displaying a custom endpoint masks userinfo and every query value without hiding its route', () => {
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl:
         `https://relay-user:relay-password@relay.example.com/v1?api-version=2026-08-01&api_key=${longOpaqueToken}`,
     }),
@@ -81,7 +81,7 @@ test('displaying a custom endpoint masks userinfo and every query value without 
 test('query values are masked under arbitrary key names, not just known ones', () => {
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: `https://relay.example.com/v1?key=${longOpaqueToken}`,
     }),
     {
@@ -92,7 +92,7 @@ test('query values are masked under arbitrary key names, not just known ones', (
   );
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: `https://relay.example.com/v1?client_secret=${longOpaqueToken}`,
     }),
     {
@@ -106,7 +106,7 @@ test('query values are masked under arbitrary key names, not just known ones', (
 test('custom relays and local runtimes retain endpoint editing', () => {
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: 'https://relay.example.com/v1',
     }),
     {
@@ -149,7 +149,7 @@ test('derived and OAuth endpoints remain visible but read-only', () => {
 
 test('an absent custom endpoint remains visible as a missing editable value', () => {
   assert.deepEqual(
-    providerEndpointPresentation({ providerType: 'openai-compatible' }),
+    providerEndpointPresentation({ providerType: 'custom' }),
     { value: null, editable: true, emptyState: 'missing' },
   );
 });
