@@ -31,6 +31,26 @@ pub(super) fn resolve(
     {
         return Err(unavailable("Model input limit exceeds its context window"));
     }
+    let declaration = connection
+        .model_overrides
+        .as_ref()
+        .and_then(|values| values.get(&model.id));
+    let output = match (
+        declaration.and_then(|value| value.max_output_tokens),
+        model.max_output_tokens,
+    ) {
+        (Some(requested), Some(capacity)) => Some(requested.min(capacity)),
+        (requested, capacity) => requested.or(capacity),
+    };
+    // Reserve the entire output budget, respect any independent input ceiling,
+    // then leave 5% for input growth since the last measured request.
+    let automatic = model
+        .context_window
+        .zip(output)
+        .and_then(|(window, output)| window.checked_sub(output))
+        .map(|budget| model.input_limit.map_or(budget, |limit| budget.min(limit)))
+        .map(|budget| budget - budget.div_ceil(20))
+        .filter(|threshold| *threshold > 0);
     Ok(ModelRequestContext {
         provider_id: connection.provider.name.clone(),
         context_window: model
@@ -39,11 +59,9 @@ pub(super) fn resolve(
             .chain(model.input_limit)
             .min(),
         model_context_window: model.context_window,
-        declared_window: connection
-            .model_overrides
-            .as_ref()
-            .and_then(|values| values.get(&model.id))
-            .and_then(|value| value.compaction_threshold),
+        declared_window: declaration
+            .and_then(|value| value.compaction_threshold)
+            .or(automatic),
     })
 }
 
@@ -53,7 +71,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn full_window_input_budget_and_compaction_policy_remain_independent() {
+    fn compaction_reserves_output_and_headroom_unless_manually_overridden() {
         let mut connection: ConnectionCatalogEntry = serde_json::from_value(json!({
             "connectionId":"connection","revision":1,"slug":"fixture","name":"Fixture",
             "provider":{"packageId":"fixture","entryId":"fixture","scope":"profile","name":"model"},
@@ -73,5 +91,35 @@ mod tests {
             context.model_context_window, None,
             "input-only limits cannot become full capacity"
         );
+        connection.models[0].context_window = Some(1_000_000);
+        for (input, maximum, requested, manual, expected) in [
+            (None, Some(128_000), None, None, Some(828_400)),
+            (Some(800_000), Some(128_000), None, None, Some(760_000)),
+            (None, Some(128_000), Some(64_000), None, Some(889_200)),
+            (None, Some(128_000), Some(256_000), None, Some(828_400)),
+            (None, None, Some(128_000), None, Some(828_400)),
+            (None, None, None, None, None),
+            (None, Some(1_000_000), None, None, None),
+            (None, None, None, Some(700_000), Some(700_000)),
+        ] {
+            let model = &mut connection.models[0];
+            model.input_limit = input;
+            model.max_output_tokens = maximum;
+            let profile = connection
+                .model_overrides
+                .as_mut()
+                .unwrap()
+                .get_mut("custom")
+                .unwrap();
+            profile.max_output_tokens = requested;
+            profile.compaction_threshold = manual;
+            assert_eq!(
+                resolve(&connection, &connection.models[0])
+                    .unwrap()
+                    .declared_window,
+                expected,
+                "input={input:?}, output={maximum:?}, requested={requested:?}, manual={manual:?}"
+            );
+        }
     }
 }

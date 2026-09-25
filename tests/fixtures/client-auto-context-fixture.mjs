@@ -130,7 +130,7 @@ export async function autoContextFixture(port = 0, reopened = false) {
           ? ''
           : frame({ content: 'automatic context complete' });
       const [prompt, completion, cached] = isRead
-        ? [90, 10, 7]
+        ? [828390, 10, 7]
         : isSummary
           ? [999, 200, 99]
           : reopened

@@ -42,13 +42,18 @@ pub const MAX_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct ModelRequestContext {
     pub provider_id: String,
-    /// Historical field: effective input budget, not the model's total capacity.
+    /// Effective input ceiling: the smaller known contextWindow/inputLimit value.
+    /// Unlike ModelInfo::context_window, this may be input-only. No output budget
+    /// is subtracted here; this value is not the proactive compaction threshold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     /// Full selected-model capacity. Unknown legacy values must not be inferred
     /// from context_window, which may be an independent input-only limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_context_window: Option<u64>,
+    /// Resolved proactive threshold: explicit compactionThreshold, otherwise 95% of
+    /// the smaller of (total capacity - output reserve) and any input-only limit.
+    /// None means no usable threshold; overflow recovery remains available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_window: Option<u64>,
 }

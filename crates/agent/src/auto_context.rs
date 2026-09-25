@@ -131,10 +131,9 @@ fn threshold(input: Option<u64>, output: Option<u64>, window: u64) -> bool {
         return false;
     };
     let output = output.unwrap_or(0);
-    input
-        .saturating_add(output)
-        .saturating_add(output.saturating_mul(2).min(8000))
-        >= window
+    // Host has already reserved maximum output and input-growth headroom when
+    // deriving this threshold. A manual threshold is used literally as well.
+    input.saturating_add(output) >= window
 }
 
 pub(super) async fn attempt(
@@ -212,14 +211,14 @@ mod tests {
         assert_eq!(cap_output(4096, 200_000, 199_999, 0), 4096);
     }
     #[test]
-    fn actual_usage_threshold_preserves_unknown_and_caps_reply_reserve() {
+    fn actual_usage_threshold_preserves_unknown_without_reserving_output_twice() {
         assert!(!threshold(None, Some(5000), 1));
         assert!(!threshold(Some(0), Some(5000), 1));
         assert!(threshold(Some(100), None, 100));
         assert!(!threshold(Some(100), None, 101));
-        assert!(threshold(Some(100), Some(20), 160));
-        assert!(!threshold(Some(100), Some(20), 161));
-        assert!(threshold(Some(100), Some(5000), 13100));
-        assert!(!threshold(Some(100), Some(5000), 13101));
+        assert!(threshold(Some(100), Some(20), 120));
+        assert!(!threshold(Some(100), Some(20), 121));
+        assert!(threshold(Some(100), Some(5000), 5100));
+        assert!(!threshold(Some(100), Some(5000), 5101));
     }
 }

@@ -101,7 +101,7 @@ function diagnostics(value, inputTokens, cacheReadInputTokens, since) {
     completedAt: value.completedAt,
     inputTokens,
     cacheReadInputTokens,
-    contextWindow: 10000,
+    contextWindow: 1000000,
   });
 }
 function readResult(stored) {
@@ -153,7 +153,7 @@ export async function verifyAutoContext(connection, workspace, reopened) {
         apiKey: 'auto-context-fixture',
         enabledModelIds: ['fixture-model'],
         modelOverrides: {
-          'fixture-model': { vision: false, contextWindow: 10000, compactionThreshold: 120 },
+          'fixture-model': { vision: false, contextWindow: 1000000, maxOutputTokens: 128000 },
         },
       });
       const basis = created.connection;
@@ -181,7 +181,7 @@ export async function verifyAutoContext(connection, workspace, reopened) {
       await request('turn.start', saved.turn);
       await model.waitFor('summary');
       const firstDiagnostics = await query();
-      diagnostics(firstDiagnostics, 90, 7, since);
+      diagnostics(firstDiagnostics, 828390, 7, since);
       const settledRows = await rows(connection, saved.sessionId);
       readResult(settledRows);
       await request('session.read_marker.set', {
