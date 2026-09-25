@@ -72,7 +72,6 @@ function createHostSnapshotCache<T>() {
   const entries = new Map<string, {
     generationKey: string;
     snapshot?: T;
-    latestRead?: object;
   }>();
   return {
     read(target: SettingsSnapshotTarget): T | undefined {
@@ -81,16 +80,14 @@ function createHostSnapshotCache<T>() {
     },
     beginRead(target: SettingsSnapshotTarget): (snapshot: T) => void {
       const previous = entries.get(target.hostKey);
-      const entry = previous?.generationKey === target.generationKey
-        ? previous
-        : { generationKey: target.generationKey, snapshot: undefined, latestRead: undefined };
-      const read = {};
-      entry.latestRead = read;
+      // A new entry owns each read. Late results only update retired entries.
+      const entry = {
+        generationKey: target.generationKey,
+        snapshot: previous?.generationKey === target.generationKey ? previous.snapshot : undefined,
+      };
       entries.set(target.hostKey, entry);
       return (snapshot) => {
-        if (entries.get(target.hostKey) === entry && entry.latestRead === read) {
-          entry.snapshot = snapshot;
-        }
+        entry.snapshot = snapshot;
       };
     },
     prune(currentHostKeys: ReadonlySet<string>): void {

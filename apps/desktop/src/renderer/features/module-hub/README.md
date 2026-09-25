@@ -82,8 +82,10 @@ reach it only through `testing.ts`.
   feedback is live-surface fenced, while Command Palette commands remain usable
   off-page.
 - That bridge retains the last successful today snapshot across leaf mounts;
-  every mount still revalidates. Host lifecycle events and local-day rollover
-  invalidate it. Cancelled, superseded, and pre-invalidation reads cannot commit.
+  every mount still revalidates. Relevant Host events retire the current read,
+  and local-day rollover hides the previous day's snapshot. Each refresh owns
+  a new entry, so superseded or retired reads can only update detached entries;
+  cancelled reads cannot replace the retained snapshot.
 - Daily Review paste captures the active Composer before its first await and
   validates the Session, navigation owner, and Composer handle before append and
   feedback.

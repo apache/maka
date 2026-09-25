@@ -159,51 +159,49 @@ export function createDailyReviewBridge(
   const copy = getShellRemainingCopy(locale).dailyReview;
   // Every leaf mount starts on today. Keep only that snapshot, rather than
   // retaining an unbounded history of date/range selections in the renderer.
-  let cachedToday: { dayStart: number; summary: DailyReviewSummary; host: ModuleHubRuntimeHostRef } | undefined;
-  let pendingTodayHost: ModuleHubRuntimeHostRef | undefined;
-  let generation = 0;
-  let latestTodayRead = 0;
+  type TodayRead = {
+    dayStart: number;
+    snapshot?: { summary: DailyReviewSummary; host: ModuleHubRuntimeHostRef };
+    pendingHost?: ModuleHubRuntimeHostRef;
+  };
+  let today: TodayRead | undefined;
   function invalidateCache() {
-    cachedToday = undefined;
-    pendingTodayHost = undefined;
-    generation += 1;
+    today = undefined;
   }
   return {
     invalidateCache,
     handleHostChange(event) {
       if (
-        event.isDefault || event.profileId === cachedToday?.host.profileId
-        || event.profileId === pendingTodayHost?.profileId
+        event.isDefault || event.profileId === today?.snapshot?.host.profileId
+        || event.profileId === today?.pendingHost?.profileId
       ) invalidateCache();
     },
     readCachedDay(offsetDays, daySpan = 1) {
       if (offsetDays !== 0 || daySpan !== 1) return undefined;
-      if (cachedToday?.dayStart !== localDayBoundsAt(Date.now(), 0).fromMs) return undefined;
-      return cachedToday.summary;
+      if (today?.dayStart !== localDayBoundsAt(Date.now(), 0).fromMs) return undefined;
+      return today.snapshot?.summary;
     },
     async fetchDay(offsetDays: number, daySpan = 1, signal?: AbortSignal) {
-      const cachesToday = offsetDays === 0 && daySpan === 1;
-      const read = cachesToday ? ++latestTodayRead : 0;
-      const readGeneration = generation;
       const dayStart = localDayBoundsAt(Date.now(), 0).fromMs;
+      // Replace the read owner while retaining the last-good snapshot. A
+      // superseded or invalidated request can only update its detached owner.
+      const read: TodayRead | undefined = offsetDays === 0 && daySpan === 1
+        ? { dayStart, snapshot: today?.dayStart === dayStart ? today.snapshot : undefined }
+        : undefined;
+      if (read) today = read;
       try {
-        const { summary, host } = await readCurrentDefaultHost(services, async (host) => {
+        const snapshot = await readCurrentDefaultHost(services, async (host) => {
           signal?.throwIfAborted();
-          if (cachesToday && read === latestTodayRead && readGeneration === generation) {
-            pendingTodayHost = host;
-          }
+          if (read) read.pendingHost = host;
           const result = await services.dailyReview.day(offsetDays, daySpan, host);
           if (!result.ok) throw new Error(result.error.message);
           return { summary: result.data, host };
         });
         signal?.throwIfAborted();
-        if (
-          cachesToday && read === latestTodayRead && readGeneration === generation
-          && dayStart === localDayBoundsAt(Date.now(), 0).fromMs
-        ) cachedToday = { dayStart, summary, host };
-        return summary;
+        if (read) read.snapshot = snapshot;
+        return snapshot.summary;
       } finally {
-        if (cachesToday && read === latestTodayRead) pendingTodayHost = undefined;
+        if (read) read.pendingHost = undefined;
       }
     },
     runOnce(input) {

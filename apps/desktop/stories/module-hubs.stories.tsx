@@ -774,10 +774,11 @@ const withManyMcpBridge = withMcpServices(manyMcpConfig, manyMcpStatuses);
 function ModuleSurface(props: {
   children: ReactNode;
   agentsView: 'skills' | 'mcp' | 'cron' | 'daily-review';
+  motionEnabled?: boolean;
 }) {
   return (
     <div
-      data-maka-e2e-fixture="true"
+      data-maka-e2e-fixture={props.motionEnabled ? undefined : 'true'}
       // The detail panel's height contract hangs off `.maka-shell-astryx`
       // (shell-layout.css); without the shell class the panel grows with
       // content and nothing inside the page ever scrolls on its own.
@@ -951,6 +952,7 @@ function ModuleHubHostSurface(props: {
 function ProductionModuleHubHostSurface(props: {
   initialSelection?: ComponentProps<typeof ModuleHubHostSurface>['selection'];
   dailyReviewDay?: ModuleHubServices['dailyReview']['day'];
+  motionEnabled?: boolean;
 }) {
   const [selection, setSelection] = useState<NavSelection>(
     props.initialSelection ?? { section: 'extensions', module: 'skills' },
@@ -972,7 +974,7 @@ function ProductionModuleHubHostSurface(props: {
     });
   });
   return (
-    <ModuleSurface agentsView={selection.section === 'automations'
+    <ModuleSurface motionEnabled={props.motionEnabled} agentsView={selection.section === 'automations'
       ? selection.module === 'daily-review' ? 'daily-review' : 'cron'
       : 'skills'}>
       <ModuleHubServicesProvider services={services}>
@@ -1103,6 +1105,7 @@ export const HostAutomationsDailyReview: Story = {
     <ProductionModuleHubHostSurface
       initialSelection={{ section: 'automations', module: 'scheduled-tasks' }}
       dailyReviewDay={delayedDailyReviewDay}
+      motionEnabled
     />
   ),
   play: async ({ canvasElement }) => {
@@ -1110,6 +1113,8 @@ export const HostAutomationsDailyReview: Story = {
       canvasElement,
       (candidate) => candidate.textContent?.includes('每日回顾') === true,
     );
+    // The fixture flag disables all animations, hiding the entry-flash regression.
+    expect(canvasElement.querySelector('[data-maka-e2e-fixture="true"]')).toBeNull();
     let lazyFallbacks = 0;
     let skeletons = 0;
     let dailyReviewEntryAnimations = 0;

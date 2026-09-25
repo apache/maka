@@ -135,6 +135,51 @@ test('cancelled and superseded reads cannot overwrite a newer cached summary', a
   assert.equal(bridge.readCachedDay?.(0, 1), fresh);
 });
 
+test('a superseded completion cannot retire the newer pending Host read', async () => {
+  const pending = Array.from({ length: 2 }, () => deferred<{ ok: true; data: DailyReviewSummary }>());
+  const started = pending.map(() => deferred<void>());
+  let index = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(() => {
+      const current = index++;
+      started[current]!.resolve();
+      return pending[current]!.promise;
+    }),
+  }), 'en');
+  const old = bridge.fetchDay(0, 1);
+  const latest = bridge.fetchDay(0, 1);
+  await Promise.all(started.map(read => read.promise));
+
+  pending[0]!.resolve({ ok: true, data: summary(1) });
+  await old;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+  bridge.handleHostChange({ profileId: 'local', readiness: 'ready', isDefault: false });
+  pending[1]!.resolve({ ok: true, data: summary(2) });
+  await latest;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
+test('a failed newest refresh retains last-good data after an older refresh completes', async () => {
+  const oldResult = deferred<{ ok: true; data: DailyReviewSummary }>();
+  const latestResult = deferred<{ ok: true; data: DailyReviewSummary }>();
+  let reads = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(async () => {
+      reads += 1;
+      if (reads === 1) return { ok: true, data: summary(1) };
+      return reads === 2 ? oldResult.promise : latestResult.promise;
+    }),
+  }), 'en');
+  const lastGood = await bridge.fetchDay(0, 1);
+  const old = bridge.fetchDay(0, 1);
+  const latest = bridge.fetchDay(0, 1);
+  latestResult.reject(new Error('offline'));
+  await assert.rejects(latest, /offline/);
+  oldResult.resolve({ ok: true, data: summary(2) });
+  await old;
+  assert.equal(bridge.readCachedDay?.(0, 1), lastGood);
+});
+
 test('a new local day cannot reuse yesterday as today or cache an overnight read', async (t) => {
   let now = new Date(2026, 8, 18, 23, 59).getTime();
   t.mock.method(Date, 'now', () => now);
