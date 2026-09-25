@@ -376,6 +376,24 @@ export function AgentGraphPanel(props: {
                         <span className="maka-agent-graph-operator-copy">
                           <strong>{operator.agentId}</strong>
                           <span>{work?.instructionPreview ?? operator.operatorId}</span>
+                          {operator.output ? (
+                            <span className="maka-agent-graph-output">
+                              <span className="maka-agent-graph-output-meta">
+                                {operator.output.phase === 'streaming'
+                                  ? copy.liveOutput
+                                  : copy.completedOutput}
+                                {operator.output.tokensPerSecond === undefined
+                                  ? null
+                                  : ` · ${copy.throughput(operator.output.tokensPerSecond)}`}
+                              </span>
+                              <span className="maka-agent-graph-output-preview">
+                                {operator.output.previewTruncated ? (
+                                  <span aria-hidden="true">…</span>
+                                ) : null}
+                                <bdi>{operator.output.preview}</bdi>
+                              </span>
+                            </span>
+                          ) : null}
                           {wait ? <span className="maka-agent-graph-wait">{wait}</span> : null}
                         </span>
                         <span className="maka-agent-graph-operator-status">

@@ -1889,6 +1889,8 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
 
       pauseNext = true;
       boundary = deferred<void>();
+      // Stopping either physical run can enqueue a result notification in the
+      // coordination Session. Resume only after that notification has settled.
       const resumed = await actWorkHub(
         composition,
         {
