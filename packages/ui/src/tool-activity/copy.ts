@@ -165,7 +165,6 @@ export interface ToolActivityCopy {
     workflowCompleted: string;
     workflowFailed: string;
     fileWritten: (bytes: number, path: string) => string;
-    unanswered: string;
     webNoResults: string;
     webResults: (count: number) => string;
     credentialSource: Record<WebCredentialCopyKey, string>;
@@ -285,7 +284,6 @@ const TOOL_ACTIVITY_COPY = {
       workflowCompleted: 'Rive 工作流已完成',
       workflowFailed: 'Rive 工作流执行失败',
       fileWritten: (bytes, path) => `已向 ${path} 写入 ${bytes} 字节`,
-      unanswered: '未回答',
     },
     agent: {
       subagentStatus: { completed: '已完成', failed: '失败', cancelled: '已取消', running: '运行中', waiting_for_user: '等待用户输入' },
@@ -394,7 +392,6 @@ const TOOL_ACTIVITY_COPY = {
       workflowCompleted: 'Rive 工作流已完成',
       workflowFailed: 'Rive 工作流執行失敗',
       fileWritten: (bytes, path) => `已向 ${path} 寫入 ${bytes} 位元組`,
-      unanswered: '未回答',
     },
     agent: {
       subagentStatus: { completed: '已完成', failed: '失敗', cancelled: '已取消', running: '執行中', waiting_for_user: '等待使用者輸入' },
@@ -500,7 +497,6 @@ const TOOL_ACTIVITY_COPY = {
       workflowCompleted: 'Rive workflow completed',
       workflowFailed: 'Rive workflow failed',
       fileWritten: (bytes, path) => `Wrote ${bytes} bytes to ${path}`,
-      unanswered: 'Not answered',
     },
     agent: {
       subagentStatus: { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', running: 'Running', waiting_for_user: 'Waiting for user input' },

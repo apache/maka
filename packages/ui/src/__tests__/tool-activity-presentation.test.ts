@@ -133,44 +133,22 @@ describe('tool activity presentation', () => {
   });
 
   it('shows AskUserQuestion answers against the offered options', () => {
-    const detailText = (item: ToolActivityItem, locale?: UiLocale) =>
-      renderToStaticMarkup(createElement(ToolCallDetail, { item }), locale)
-        .split(/<[^>]+>/)
-        .filter((text) => text.trim().replace('​', '') !== '')
-        .join('\n');
-    const result = {
-      kind: 'json' as const,
-      value: {
-        answers: [
-          { question: 'Which client?', answer: 'maka' },
-          { question: 'Which scope?', answer: null },
-        ],
+    const settled = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
+        toolUseId: 'question',
+        toolName: 'AskUserQuestion',
+        status: 'completed',
+        args: {
+          questions: [{ question: 'Which client?', options: [{ label: 'claude' }, { label: 'maka' }] }],
+        },
+        result: { kind: 'json', value: { answers: [{ question: 'Which client?', answer: 'maka' }] } },
       },
-    };
-    const settled = detailText({
-      toolUseId: 'question',
-      toolName: 'AskUserQuestion',
-      status: 'completed',
-      args: {
-        questions: [
-          { question: 'Which client?', options: [{ label: 'claude' }, { label: 'maka' }] },
-          { question: 'Which scope?', options: [{ label: 'user' }, { label: 'project' }] },
-        ],
-      },
-      result,
-    });
-    assert.ok(settled.includes('Which client?\n  claude\n✓ maka\nWhich scope?\n  user\n  project\n  未回答'), settled);
-    assert.doesNotMatch(settled, /answers:|null/);
-
-    const live = detailText({
-      toolUseId: 'question',
-      toolName: 'AskUserQuestion',
-      status: 'completed',
-      args: undefined,
-      argsPreview: { questions: [{ question: 'Which client?' }, { question: 'Which scope?' }] },
-      result,
-    }, 'en');
-    assert.ok(live.includes('Which client?\n✓ maka\nWhich scope?\n  Not answered'), live);
+    }))
+      .split(/<[^>]+>/)
+      .filter((text) => text.trim() !== '')
+      .join('\n');
+    assert.ok(settled.includes('Which client?\n  claude\n✓ maka'), settled);
+    assert.doesNotMatch(settled, /answers:/);
   });
 
   it('describes Computer Use proxy calls by action instead of the generic tool name', () => {

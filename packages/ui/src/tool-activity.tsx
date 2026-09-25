@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
+import { formatUserQuestionResult } from '@maka/core/tool-quiet-preview';
 import { type ToolResultContent } from '@maka/core/events';
 import { type UiLocale } from '@maka/core/ui-locale';
 import {
@@ -204,28 +205,6 @@ type DetailDecision = {
     | { kind: 'none' };
 };
 
-// Live frames carry only a question-text args preview, so options may be absent.
-function formatUserQuestionAnswers(args: unknown, value: unknown, locale: UiLocale): string | undefined {
-  const answers = (value as { answers?: unknown } | null)?.answers;
-  if (!Array.isArray(answers) || answers.length === 0) return undefined;
-  const questions = (args as { questions?: unknown } | null)?.questions;
-  const unanswered = getToolActivityCopy(locale).result.unanswered;
-  const blocks: string[] = [];
-  for (const [index, entry] of answers.entries()) {
-    const { question, answer } = (entry ?? {}) as { question?: unknown; answer?: unknown };
-    if (typeof question !== 'string' || (answer !== null && typeof answer !== 'string')) return undefined;
-    const options = Array.isArray(questions) ? (questions[index] as { options?: unknown } | undefined)?.options : undefined;
-    const labels = Array.isArray(options)
-      ? options.flatMap((option) => typeof option?.label === 'string' ? [option.label as string] : [])
-      : [];
-    const lines = [question, ...labels.map((label) => `${label === answer ? '✓' : ' '} ${label}`)];
-    if (answer === null) lines.push(`  ${unanswered}`);
-    else if (!labels.includes(answer)) lines.push(`✓ ${answer}`);
-    blocks.push(lines.join('\n'));
-  }
-  return redactSecrets(blocks.join('\n\n'));
-}
-
 function describeToolCall(
   item: ToolActivityItem,
   locale: UiLocale,
@@ -309,7 +288,7 @@ function describeToolCall(
   }
 
   const userQuestionAnswers = !ownsPanel && item.toolName === 'AskUserQuestion' && displayResult?.kind === 'json'
-    ? formatUserQuestionAnswers(item.args ?? item.argsPreview, displayResult.value, locale)
+    ? formatUserQuestionResult(item.args ?? item.argsPreview, displayResult.value, locale)
     : undefined;
   if (userQuestionAnswers) {
     return { decorations, body: { kind: 'quietText', body: userQuestionAnswers } };
