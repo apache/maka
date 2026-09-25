@@ -26,6 +26,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type RefObject,
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { QuoteRef } from '@maka/core/events';
@@ -113,6 +114,8 @@ export interface UseWorkbarControllerInput {
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
+  /** The CSS gap between conversation and rail, supplied by the shell. */
+  layoutGap?: number;
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
@@ -125,6 +128,8 @@ export interface UseWorkbarControllerInput {
 }
 
 export interface WorkbarController {
+  /** Ref for the shell grid whose width sets the rail's available space. */
+  layoutContainerRef: RefObject<HTMLDivElement | null>;
   host: WorkbarHostModel;
   commands: WorkbarControllerCommands;
   selectors: WorkbarControllerSelectors;
@@ -187,7 +192,13 @@ export function useWorkbarController(
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
+  const layoutContainerRef = useRef<HTMLDivElement>(null);
+  const layout = useWorkbarLayoutState(
+    input.layoutSessionId,
+    input.authoritativeSessionIds,
+    layoutContainerRef,
+    input.layoutGap,
+  );
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -926,6 +937,7 @@ export function useWorkbarController(
 
   return {
     commands,
+    layoutContainerRef,
     LiveContextUsageProbe,
     selectors: {
       rightCollapsed: layout.workbarCollapsed,

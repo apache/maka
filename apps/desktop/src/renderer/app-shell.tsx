@@ -137,7 +137,7 @@ import {
 } from './app-shell-context-compaction';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
-import { appShellFrameStyle } from './shell/frame-style';
+import { appShellFrameStyle, APP_SHELL_CONTENT_AREA_GAP } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
@@ -1168,7 +1168,7 @@ function AppShellContent({
       }),
     [toastApi],
   );
-  const workbar = useWorkbarController({
+  const { commands, selectors, LiveContextUsageProbe, host, layoutContainerRef } = useWorkbarController({
     workHub: { enabled: workHubEnabled, active: workHubActive },
     available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
     layoutSessionId: activeId,
@@ -1178,6 +1178,7 @@ function AppShellContent({
     authoritativeSessionIds,
     shellObscured,
     modelChoices: chatModelChoices,
+    layoutGap: APP_SHELL_CONTENT_AREA_GAP,
     toastApi,
     composerRef,
     openNewTaskSurface,
@@ -1185,7 +1186,6 @@ function AppShellContent({
     resolveWorkBoardTarget,
     prepareWorkBoardDraft,
   });
-  const { commands, selectors, LiveContextUsageProbe } = workbar;
 
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
   const selectSessionSurface = useCallback(
@@ -1605,7 +1605,7 @@ function AppShellContent({
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
       targetSessionId: expectedRevisionDraft?.draftSessionId,
-      onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
+      onSessionResolved: commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
       ...(quotes ? { quotes } : {}),
       ...(workspaceFileReferences.length
@@ -2131,7 +2131,7 @@ function AppShellContent({
       style={appShellFrameStyle({
         sessionListCollapsed,
         sessionListWidth,
-        workbarRightWidth: workbar.host.rightWidth,
+        workbarRightWidth: host.rightWidth,
       })}
     >
       <Conversation.TranscriptReadingPositionController
@@ -2169,7 +2169,7 @@ function AppShellContent({
         sidebarCollapsed={sessionListCollapsed}
         onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
         onOpenSearchModal={openSearch}
-        workbar={{ model: workbar.host, togglePosition: workbarTogglePosition }}
+        workbar={{ model: host, togglePosition: workbarTogglePosition }}
       >
             {/* Only a session has an identity to state. The other views name
                 themselves in the nav column they are selected from, and the
@@ -2280,12 +2280,12 @@ function AppShellContent({
               which is correct: those surfaces shouldn't be a
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
-          <div className="maka-detail-with-artifacts">
+          <div className="maka-detail-with-artifacts" ref={layoutContainerRef}>
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />
-              <WorkHubMainNavigation workbarReady={workHubActive && Boolean(workbar.host.activeId)}
+              <WorkHubMainNavigation workbarReady={workHubActive && Boolean(host.activeId)}
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRight}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock workbarTogglePosition={workbarTogglePosition} workbarCollapsed={selectors.rightCollapsed} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
@@ -2589,7 +2589,7 @@ function AppShellContent({
               </ChatSurfaceLayout>
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools. */}
-            <WorkbarHost model={workbar.host} togglePosition={workbarTogglePosition} />
+            <WorkbarHost model={host} togglePosition={workbarTogglePosition} />
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>

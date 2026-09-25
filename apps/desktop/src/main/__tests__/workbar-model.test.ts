@@ -32,9 +32,15 @@ import {
   reduceWorkbarLayout,
   reduceWorkbarPanels,
   SESSION_BOTTOM_PANEL_MAX_HEIGHT,
+  SESSION_CONVERSATION_MIN_WIDTH,
+  SESSION_WORKBAR_DEFAULT_WIDTH,
   SESSION_WORKBAR_MIN_WIDTH,
+  sessionWorkbarCeiling,
+  sessionWorkbarDisplayWidth,
+  sessionWorkbarMaxWidth,
   terminalSessionWorkbarTabId,
   WORKBAR_TOOL_DEFINITIONS,
+  type WorkbarLayoutState,
 } from '../../renderer/features/workbar/testing.js';
 
 function installMemoryLocalStorage(initial: Record<string, string> = {}) {
@@ -90,12 +96,13 @@ describe('Workbar topology', () => {
   });
 
   it('routes panel visibility and dimensions through the layout reducer', () => {
-    let state = {
+    let state: WorkbarLayoutState = {
       panels: createSessionWorkbarPanelsState(),
-      activeSessionId: 'session-a' as string | undefined,
-      collapsedBySession: {} as Record<string, boolean>,
+      activeSessionId: 'session-a',
+      collapsedBySession: {},
       bottomOpen: false,
-      rightWidth: 480,
+      rightWidthPreference: 480,
+      rightWidthCeiling: undefined,
       bottomHeight: 300,
     };
     state = reduceWorkbarLayout(state, {
@@ -109,7 +116,7 @@ describe('Workbar topology', () => {
       placement: 'right',
       size: 12,
     });
-    assert.equal(state.rightWidth, SESSION_WORKBAR_MIN_WIDTH);
+    assert.equal(sessionWorkbarDisplayWidth(state), SESSION_WORKBAR_MIN_WIDTH);
     state = reduceWorkbarLayout(state, {
       type: 'open',
       placement: 'bottom',
@@ -128,6 +135,101 @@ describe('Workbar topology', () => {
       tabIds: ['workbar:work-board'],
     });
     assert.equal(state.bottomOpen, false);
+  });
+
+  it('sizes the right rail from the measured container, not a fixed cap', () => {
+    cleanups.push(installMemoryLocalStorage());
+    // 900 is a width the old 600px cap would have truncated.
+    const base: WorkbarLayoutState = {
+      panels: createSessionWorkbarPanelsState(),
+      activeSessionId: 'session-a',
+      collapsedBySession: {},
+      bottomOpen: false,
+      rightWidthPreference: 900,
+      // The hook measures the container; a test states the ceiling the layout
+      // would have produced, which is `sessionWorkbarCeiling`'s job.
+      rightWidthCeiling: undefined,
+      bottomHeight: 300,
+    };
+    let state = reduceWorkbarLayout(base, {
+      type: 'activate-session',
+      sessionId: 'session-a',
+    });
+    // Unmeasured: the default is the safe display, but the preference survives.
+    assert.equal(sessionWorkbarDisplayWidth(state), SESSION_WORKBAR_DEFAULT_WIDTH);
+    assert.equal(state.rightWidthPreference, 900);
+
+    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: 1108 });
+    assert.equal(sessionWorkbarMaxWidth(state), 1108);
+    assert.equal(sessionWorkbarDisplayWidth(state), 900);
+
+    // A narrower window narrows the display without rewriting the preference.
+    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: 620 });
+    assert.equal(sessionWorkbarDisplayWidth(state), 620);
+    assert.equal(state.rightWidthPreference, 900);
+    persistWorkbarLayout(state, 'right-size');
+    assert.equal(localStorage.getItem('maka-session-workbar-width-v1'), '900');
+
+    // Space comes back: so does the width the user chose.
+    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: 1400 });
+    assert.equal(sessionWorkbarDisplayWidth(state), 900);
+
+    // Dragging while narrowed starts from what is displayed, so the constrained
+    // width becomes the new preference instead of snapping back to 900.
+    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: 620 });
+    state = reduceWorkbarLayout(state, { type: 'resize', placement: 'right', size: 700 });
+    assert.equal(state.rightWidthPreference, 620);
+    assert.equal(sessionWorkbarDisplayWidth(state), 620);
+    state = reduceWorkbarLayout(state, { type: 'resize', placement: 'right', size: 300 });
+    assert.equal(sessionWorkbarDisplayWidth(state), SESSION_WORKBAR_MIN_WIDTH);
+  });
+
+  it('keeps the rail at its floor when the container cannot fit both columns', () => {
+    cleanups.push(installMemoryLocalStorage());
+    let state: WorkbarLayoutState = {
+      panels: createSessionWorkbarPanelsState(),
+      activeSessionId: 'session-a',
+      collapsedBySession: {},
+      bottomOpen: false,
+      rightWidthPreference: 900,
+      rightWidthCeiling: undefined,
+      bottomHeight: 300,
+    };
+    // The ceiling leaves the conversation column exactly its target; the plan's
+    // worked example is a 1600px container with a 12px gap leaving 1108px.
+    assert.equal(sessionWorkbarCeiling(1600, 12), 1108);
+    assert.equal(
+      1600 - 12 - sessionWorkbarCeiling(1600, 12),
+      SESSION_CONVERSATION_MIN_WIDTH,
+    );
+    // 700px of container minus a 4px gap leaves 216 for the rail — below its
+    // floor, so the rail keeps 340 and the conversation column is the one that
+    // gives way.
+    assert.equal(sessionWorkbarCeiling(700, 4), 216);
+    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: sessionWorkbarCeiling(700, 4) });
+    assert.equal(sessionWorkbarMaxWidth(state), SESSION_WORKBAR_MIN_WIDTH);
+    assert.equal(sessionWorkbarDisplayWidth(state), SESSION_WORKBAR_MIN_WIDTH);
+  });
+
+  it('ignores an unreadable or unchanged measurement', () => {
+    cleanups.push(installMemoryLocalStorage());
+    const state: WorkbarLayoutState = {
+      panels: createSessionWorkbarPanelsState(),
+      activeSessionId: 'session-a',
+      collapsedBySession: {},
+      bottomOpen: false,
+      rightWidthPreference: 480,
+      rightWidthCeiling: 1108,
+      bottomHeight: 300,
+    };
+    assert.equal(
+      reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: 1108 }),
+      state,
+    );
+    assert.equal(
+      reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: Number.NaN }),
+      state,
+    );
   });
 
   it('keeps static tabs and removes dynamic metadata from persistence', () => {
@@ -236,7 +338,8 @@ describe('Workbar topology', () => {
       activeSessionId: 'session-a',
       collapsedBySession: { 'session-a': false },
       bottomOpen: true,
-      rightWidth: 544,
+      rightWidthPreference: 544,
+      rightWidthCeiling: undefined,
       bottomHeight: 388,
     };
     persistWorkbarLayout(layout);
@@ -263,7 +366,8 @@ describe('Workbar topology', () => {
       activeSessionId: 'session-a',
       collapsedBySession: { 'session-a': false },
       bottomOpen: true,
-      rightWidth: 544,
+      rightWidthPreference: 544,
+      rightWidthCeiling: undefined,
       bottomHeight: 388,
     });
   });

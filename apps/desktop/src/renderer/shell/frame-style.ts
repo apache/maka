@@ -33,5 +33,19 @@ export function appShellFrameStyle(input: {
   return {
     '--maka-session-workbar-width': `${input.workbarRightWidth}px`,
     '--maka-sidenav-width': `${input.sessionListCollapsed ? 0 : input.sessionListWidth}px`,
+    '--agents-content-area-gap': `${APP_SHELL_CONTENT_AREA_GAP}px`,
   } as CSSProperties;
 }
+
+/**
+ * The spacing between the conversation column and the rail, in CSS pixels.
+ *
+ * The single source of truth: `appShellFrameStyle` publishes it as
+ * `--agents-content-area-gap` for the eight CSS rules that draw the shell's
+ * seams, and the Workbar takes the same number to size the rail against. It
+ * lives here rather than in `reference-shell.css` because it has a JavaScript
+ * reader, and the Workbar cannot read the custom property itself — one reads
+ * back as its declaration, not as a resolved length (see
+ * `ink-ladder-contract`).
+ */
+export const APP_SHELL_CONTENT_AREA_GAP = 4;
