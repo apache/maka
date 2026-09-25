@@ -704,13 +704,14 @@ export const PromptSentBeforeTurnLands: Story = {
       session={{ status: 'running', streaming: true, lastMessageAt: NOW - 3_000 }}
       chat={{
         activeTurn: { turnId: 'turn-sent' },
-        messages: [],
+        messages: conversation.slice(0, 2),
         transientMessages: [{
           id: 'msg-sent',
           text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
           ts: NOW,
           transientPlacement: 'current_turn',
           hostTurnId: 'turn-sent',
+          deliveryStatus: '已接收',
         }],
       }}
     />
@@ -719,6 +720,16 @@ export const PromptSentBeforeTurnLands: Story = {
     await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
     // No clock before the Turn's own start arrives.
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
+    // The pending prompt already sits a Turn's distance below the last Turn,
+    // so it does not move when its Turn lands.
+    const pending = canvasElement.querySelector<HTMLElement>('.maka-chat-session-swap + .maka-turn')!;
+    await waitFor(() => {
+      const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
+      expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
+    });
+    // Delivery is news, so its row stays up at rest.
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await expect(getComputedStyle(pending.querySelector('.maka-message-meta')!).opacity).toBe('1');
   },
 };
 
@@ -1351,6 +1362,11 @@ export const NewChatComposer: Story = {
     await waitFor(() => expect(editor.textContent).toBe(''));
     await expect(editor.getBoundingClientRect().height).toBe(initialEditorHeight);
     await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
+
+    const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
+    await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
   },
 };
 
@@ -1397,6 +1413,12 @@ export const NewChatComposerProjectPending: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    // The spinner replaces the whole trigger content, host badge included.
+    const end = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker .maka-workspace-picker-end')!;
+    await expect(end.querySelector('.maka-workspace-picker-host-badge')).not.toBeNull();
+    await expect(getComputedStyle(end).visibility).toBe('hidden');
+  },
 };
 
 const longConversation: StoredMessage[] = [
@@ -1640,6 +1662,16 @@ export const NativeConversation: Story = {
       gap: Math.round(row.rect.top - rows[index]!.rect.bottom),
     }));
     await expect(gaps).toEqual(gaps.map(({ between }) => ({ between, gap: rowGap })));
+
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    const metadataRows = [
+      ...canvasElement.querySelectorAll<HTMLElement>('.maka-user-message .maka-message-meta, .maka-turn-footer'),
+    ];
+    await expect(metadataRows.length).toBeGreaterThan(1);
+    await waitFor(() => expect(metadataRows.map((row) => getComputedStyle(row).opacity)).toEqual(metadataRows.map(() => '0')));
+    const footer = canvasElement.querySelector<HTMLElement>('.maka-turn-footer')!;
+    footer.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(footer).opacity).toBe('1'));
   },
 };
 
@@ -2423,12 +2455,19 @@ async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Pro
   await painted(40);
   const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
   if (!input) throw new Error('The composer input is missing');
-  await userEvent.type(input, '请简短说明当前提交过程发生了什么。', { delay: null });
-  for (let line = 1; line < lines; line += 1) {
-    await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
-    await userEvent.type(input, '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。', { delay: null });
+  // Prepare the draft with native text insertion so a tall prompt does not
+  // spend the render budget dispatching thousands of synthetic keystrokes.
+  // Keep line breaks and submission on the real composer's keyboard path.
+  const promptLines = Array.from({ length: lines }, (_, index) => index === 0
+    ? '请简短说明当前提交过程发生了什么。'
+    : '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。');
+  await userEvent.click(input);
+  for (const [index, line] of promptLines.entries()) {
+    if (index > 0) await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
+    document.execCommand('insertText', false, line);
   }
   await painted(40);
+  await expect(input.innerText).toBe(promptLines.join('\n'));
   // Observe admission itself: the correct final bottom can hide a reverse
   // jump when an offscreen block first uses an estimate, then its real size.
   const tops: number[] = [];
@@ -2447,21 +2486,25 @@ async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Pro
   await expect(tailMetrics().distance).toBeLessThanOrEqual(4);
 }
 
+// Real path: submit a prompt in an existing conversation and follow its new turn.
 export const SubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement),
 };
 
+// Real path: compose a multiline prompt with Shift+Enter, then submit it.
 export const MultilineSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 8),
 };
 
+// Real path: submit an overflowing draft and follow its turn as the composer shrinks.
 export const TallSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 80),
 };
 
+// Real path: submit a prompt and keep following its turn when the reply settles.
 export const SubmittedPromptSettlesWithoutReversing: Story = {
   render: () => <StreamingTailHarness pendingUser />,
   play: async ({ canvasElement }) => {

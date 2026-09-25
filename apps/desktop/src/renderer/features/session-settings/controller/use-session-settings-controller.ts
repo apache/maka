@@ -23,7 +23,6 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   isChatDefaultPermissionMode,
-  type ChatDefaultPermissionMode,
 } from '@maka/core/settings';
 import {
   useSessionSettingIntent as useSharedSessionSettingIntent,
@@ -33,38 +32,20 @@ import {
   equalSessionModelConfigurationIntent,
   modelConfigurationIntentForModel,
   modelConfigurationIntentForThinking,
-  type SessionModelConfigurationIntent,
   type SessionModelTarget,
-} from './session-model-configuration-intent.js';
-import type { SessionCatalogController } from '../../application/contracts/session-catalog/session-catalog-state.js';
-import { useSessionSettingsServices } from './services-context.js';
+} from '../session-model-configuration-intent.js';
+import { useSessionSettingsServices } from '../services-context.js';
 
-type SessionSettingValues = {
-  modelConfiguration: SessionModelConfigurationIntent;
-  permissionMode: ChatDefaultPermissionMode;
-  planMode: boolean;
-  orchestrationMode: OrchestrationMode;
-};
+import type {
+  SessionSettingValues,
+  SessionSettingsController,
+  SessionSettingsInput,
+} from '../model/session-settings-contract.js';
+import { writeSessionPlanMode } from '../model/write-session-plan-mode.js';
 
-export function useSessionSettingIntent<Owner extends { sessionId?: string }>(input: {
-  catalog: SessionCatalogController;
-  isActiveSession(sessionId: string): boolean;
-  newSessionPermissionMode: ChatDefaultPermissionMode;
-  refreshCatalog(): Promise<unknown>;
-  saveComposerDefaults(model: SessionModelTarget): void;
-  writeFailureCopy(
-    setting: 'model' | 'thinking' | 'permission' | 'plan' | 'orchestration',
-    error: unknown,
-  ): { title: string; description: string };
-  showSessionError(sessionId: string, title: string, description: string): void;
-  planMode: {
-    write(sessionId: string, active: boolean): Promise<boolean>;
-  };
-  captureOwner(): Owner;
-  isOwnerActive(owner: Owner): boolean;
-  setNewTaskPermissionMode(mode: ChatDefaultPermissionMode): void;
-  confirmBypass(): Promise<boolean>;
-}) {
+export function useSessionSettingsController<Owner extends { sessionId?: string }>(
+  input: SessionSettingsInput<Owner>,
+): SessionSettingsController {
   const services = useSessionSettingsServices();
   const reportWriteError = (
     sessionId: string,
@@ -121,7 +102,7 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
       planMode: {
         // Exiting a pending proposal returns Plan state rather than a Session
         // summary, so this policy channel has no authoritative Session revision.
-        write: input.planMode.write,
+        write: (sessionId, active) => writeSessionPlanMode(services, input.planMode, sessionId, active),
         onWriteError: (sessionId, error) => reportWriteError(sessionId, error, 'plan'),
       },
       orchestrationMode: {
@@ -141,8 +122,6 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
 
   return {
     clear: intent.clear,
-    abandonPlanProposal: services.abandonPlanProposal,
-    setCollaborationMode: services.setCollaborationMode,
     overlays: intent.overlayByChannel,
     setSessionModel: (sessionId: string, modelTarget: SessionModelTarget) =>
       intent.request('modelConfiguration', sessionId, modelConfigurationIntentForModel(modelTarget)),

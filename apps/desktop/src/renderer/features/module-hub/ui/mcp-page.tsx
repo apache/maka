@@ -517,7 +517,7 @@ function McpMark(props: { server: McpServerConfig; isChrome: boolean } | { sugge
     : MCP_SUGGESTIONS.find((candidate) => candidate.url && hostOf(candidate) === hostOf(props.server));
   const mark = suggestion?.mark;
   // Feishu's mark is already an app-icon tile, so it takes the plate's place.
-  if (mark === 'feishu') return <BotBrandLogo provider="feishu" width={ICON_SIZE.plate} height={ICON_SIZE.plate} className="maka-mcp-mark" aria-hidden="true" />;
+  if (mark === 'feishu') return <BotBrandLogo provider="feishu" className="maka-mcp-mark" aria-hidden="true" />;
   return (
     <span className="maka-module-market-icon maka-mcp-mark" aria-hidden="true">
       {mark && 'image' in mark ? <img src={mark.image} alt="" />

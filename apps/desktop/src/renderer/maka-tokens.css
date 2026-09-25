@@ -749,7 +749,7 @@
   /* ICON_SIZE in @maka/ui's icons.tsx is the icon scale; components pass it as
      a prop. These two rungs exist only for the sites that size a glyph from
      CSS — add a rung here when a CSS site needs one, not to mirror the TS. */
-  --icon-meta: 13px;
+  --icon-meta: 12px;
   --icon-control: 14px;
 
   /* === motion ===
@@ -1398,18 +1398,12 @@
 
   /* ---- Chat surface ----------------------------------------------- */
 
-  /* Turn grouping (per kenji UI-04): user msg + tools + assistant answer
-   * cluster into one visual unit. The section is a flex container; both the
-   * between-turn and within-turn gaps are uniform (CHAT-TURN-SPACING-0), so
-   * a turn reads as one unit by grouping, not by tighter internal spacing. */
+  /* A turn reads as one unit because its internal gap is well under the
+     between-turn gap, which the transcript row in chat-view.tsx owns. */
   .maka-turn {
     display: flex;
     flex-direction: column;
-    /* The content wrapper owns between-turn flex layout. */
     flex: 0 0 auto;
-    /* PR5 CHAT-TURN-SPACING-0: uniform 12px within-turn gap, matching the
-       between-turn gap (.maka-chatContent) — one density, no between/within
-       split. */
     gap: var(--space-3);
     max-width: var(--maka-reading-measure);
     margin: 0 auto;

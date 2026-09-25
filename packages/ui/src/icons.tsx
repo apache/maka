@@ -41,11 +41,11 @@ export type { LucideIcon, LucideProps } from 'lucide-react';
  * for the CSS-clamped sites.
  */
 export const ICON_SIZE = {
-  meta: 13,    // inline with text: dense metadata, markers, badge glyphs
+  meta: 12,    // inline with supporting text: metadata, markers, badge glyphs; == Astryx Icon xsm
   control: 14, // row icons, IconButton sm, toolbars, list startContent
   chrome: 16,  // nav/affordance chrome; == Astryx Icon sm / Button sm icon slot
   empty: 20,   // EmptyState glyphs (DESIGN.md §10 tier 2/3)
-  plate: 28,   // glyph inside an icon plate or hero mark
+  plate: 24,   // glyph inside an icon plate or hero mark; == Astryx Icon lg
 } as const;
 
 export {

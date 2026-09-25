@@ -273,6 +273,13 @@
       "count": 1
     },
     {
+      "implementation": "src/renderer/features/session-settings/controller/use-session-settings-controller.ts",
+      "symbol": "useSessionSettingsController",
+      "owner": "src/renderer/features/session-settings/ui/session-settings-provider.tsx",
+      "ownerSymbol": "SessionSettingsProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/task-entry/controller/use-task-entry-controller.ts",
       "symbol": "useTaskEntryController",
       "owner": "src/renderer/features/task-entry/ui/task-entry-provider.tsx",
@@ -680,7 +687,6 @@
           "window.maka.notifications.runEnded": 1,
           "window.maka.onboarding.setMilestone": 1,
           "window.maka.sessions.compact": 1,
-          "window.maka.sessions.getPlanState": 1,
           "window.maka.sessions.listActiveInteractions": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
           "window.maka.sessions.promoteQueueEntry": 1,
@@ -815,7 +821,7 @@
           "react": 1
         },
         "importSpecifiers": 94,
-        "nonTriviaTokens": 12649
+        "nonTriviaTokens": 12536
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,

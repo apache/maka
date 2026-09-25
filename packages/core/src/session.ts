@@ -382,6 +382,8 @@ export interface SessionSummary {
   isArchived: boolean;
   labels: string[];
   hasUnread: boolean;
+  /** Host-owned recency, including creation before the first message; present on catalog rows. */
+  activityAt?: number;
   lastMessageAt?: number;
   lastMessagePreview?: string;
   status: SessionStatus;

@@ -1378,12 +1378,26 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
   }
 });
 
-test('conversation copy rewrites the parent operation id of a nested Code Mode call', async () => {
+test('conversation copy excludes legacy Code Mode partials while rewriting parent operation ids', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-copy-parent-op-'));
   const runStore = createSqliteAgentRunStore(root);
   const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
   try {
     await runStore.ready?.();
+    const legacyProgress = runtimeEvent({
+      id: 'event-nested-progress',
+      ts: 4,
+      partial: true,
+      role: 'tool',
+      author: 'tool',
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      refs: {
+        toolCallId: 'provider-call-1:nested:nested-1',
+        parentOperationId: 'operation-1',
+        parentToolCallId: 'provider-call-1',
+      },
+    });
     const sourceEvents: RuntimeEvent[] = [
       invocationOpenedEvent({
         runId: 'run-source',
@@ -1448,6 +1462,7 @@ test('conversation copy rewrites the parent operation id of a nested Code Mode c
           parentToolCallId: 'provider-call-1',
         },
       }),
+      { ...legacyProgress, partial: false },
       runtimeEvent({
         id: 'event-outcome',
         ts: 5,
@@ -1471,6 +1486,17 @@ test('conversation copy rewrites the parent operation id of a nested Code Mode c
     await runtimeEventStore.importConversationCopyRuntimeEvents('session-source', [
       { runId: 'run-source', events: sourceEvents },
     ]);
+    // Reproduce the pre-fix on-disk shape independently of today's append path:
+    // nested tool heartbeats with parent refs used to land in runtime_events.
+    const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+    try {
+      db.prepare('UPDATE runtime_events SET payload_json = ? WHERE event_id = ?').run(
+        JSON.stringify(legacyProgress),
+        legacyProgress.id,
+      );
+    } finally {
+      db.close();
+    }
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'model_stream_completed',
       id: 'completed-source',
@@ -1482,43 +1508,62 @@ test('conversation copy rewrites the parent operation id of a nested Code Mode c
     const source = await new RuntimeReadModel({
       runtimeEventStore,
     }).getSessionView('session-source');
-    await cloneConversationRuntimeLedger({
-      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
-      copiedMessages: source.messages,
-      referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
+    assert.ok(source.events.some((event) => event.id === legacyProgress.id && event.partial));
+    for (const eventSource of ['snapshot', 'store'] as const) {
+      const targetSessionId = `session-target-${eventSource}`;
+      const plan = await prepareConversationRuntimeLedgerCopy({
         sourceSessionId: 'session-source',
-        targetSessionId: 'session-target',
-        artifactIds: new Map(),
-        relativePaths: new Map(),
-      },
-      runStore,
-      runtimeEventStore,
-      newId: () => crypto.randomUUID(),
-    });
-    const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
-    assert.ok(targetRun);
-    assert.ok(targetRun.invocationId);
-    const targetOperationId = buildToolOperationId({
-      invocationId: targetRun.invocationId,
-      providerToolCallId: 'provider-call-1',
-    });
-    assert.notEqual(targetOperationId, 'operation-1');
-    const targetEvents = await runtimeEventStore.readRuntimeEvents(
-      'session-target',
-      targetRun.runId,
+        sourceEvents: eventSource === 'snapshot' ? source.events : [],
+        copiedMessages: source.messages,
+        runStore,
+        runtimeEventStore,
+      });
+      await cloneConversationRuntimeLedger({
+        plan,
+        copiedMessages: source.messages,
+        referenceMap: {
+          mode: 'exact',
+          linkedChildren: { mode: 'reject' },
+          sourceSessionId: 'session-source',
+          targetSessionId,
+          artifactIds: new Map(),
+          relativePaths: new Map(),
+        },
+        runStore,
+        runtimeEventStore,
+        newId: () => crypto.randomUUID(),
+      });
+      assert.ok(plan.inlineRuntimeEvents.every((event) => !event.partial));
+      const [targetRun] = await runtimeEventStore.listSessionInvocations(targetSessionId);
+      assert.ok(targetRun);
+      assert.ok(targetRun.invocationId);
+      assert.equal(targetRun.terminalEvent?.status, 'completed');
+      const targetOperationId = buildToolOperationId({
+        invocationId: targetRun.invocationId,
+        providerToolCallId: 'provider-call-1',
+      });
+      assert.notEqual(targetOperationId, 'operation-1');
+      const targetEvents = await runtimeEventStore.readRuntimeEvents(
+        targetSessionId,
+        targetRun.runId,
+      );
+      assert.ok(targetEvents.every((event) => !event.partial));
+      assert.equal(targetEvents.length, sourceEvents.length - 1);
+      const nested = targetEvents.find((event) => event.refs?.parentOperationId !== undefined);
+      assert.ok(nested, 'nested Code Mode call survived the copy');
+      assert.equal(nested.refs?.parentOperationId, targetOperationId);
+      assert.equal(nested.refs?.parentToolCallId, 'provider-call-1');
+      const dispatch = targetEvents.find((event) => event.actions?.toolDispatch)?.actions
+        ?.toolDispatch;
+      assert.equal(dispatch?.operationId, targetOperationId);
+    }
+    assert.deepEqual(
+      (await runtimeEventStore.readImmutableRuntimeEvents('session-source', 'run-source')).find(
+        (event) => event.id === legacyProgress.id,
+      ),
+      legacyProgress,
+      'copying does not rewrite the source ledger',
     );
-    const nested = targetEvents.find((event) => event.refs?.parentOperationId !== undefined);
-    assert.ok(nested, 'nested Code Mode call survived the copy');
-    // The parent operation id is rewritten to the target namespace, not stranded
-    // at the source identity.
-    assert.equal(nested.refs?.parentOperationId, targetOperationId);
-    // The provider-owned parentToolCallId is not runtime-owned and is preserved.
-    assert.equal(nested.refs?.parentToolCallId, 'provider-call-1');
-    const dispatch = targetEvents.find((event) => event.actions?.toolDispatch)?.actions
-      ?.toolDispatch;
-    assert.equal(dispatch?.operationId, targetOperationId);
   } finally {
     runtimeEventStore.close();
     runStore.close?.();
