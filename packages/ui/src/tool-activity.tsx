@@ -579,11 +579,11 @@ function LinkedAgentList(props: {
             }
             label={(
               <span className="maka-subagent-session-label">
-                <Text type="label" maxLines={1}>
+                <Text type="supporting" weight="medium" maxLines={1}>
                   {row.name}
                 </Text>
                 {row.target ? (
-                  <Text type="body" color="secondary" maxLines={1} className="maka-subagent-session-summary">
+                  <Text type="supporting" color="secondary" maxLines={1} className="maka-subagent-session-summary">
                     {row.target}
                   </Text>
                 ) : null}

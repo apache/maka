@@ -103,8 +103,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 188 as const;
-// 188: Remove form_interaction transcript messages and the transcript_changed close reason.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 189 as const;
+// 189: Remove form_interaction transcript messages and the transcript_changed close reason.
+// 188: Session capability replacement can require an atomic idle root check;
+// complete MCP configuration identities fence conflicting providers across ACP clients.
 // 187: transcript_changed closes a subscription for automatic bounded-tail reseeding.
 // 186: Settled form/question history adds form_interaction transcript messages.
 // 185: Add the bounded next-prompt suggestion operation.

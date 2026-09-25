@@ -1642,6 +1642,7 @@ export async function createExecutionRuntimeHostComposition(
           state.kind === 'removed' || (state.kind === 'present' && state.record.header.isArchived)
         );
       },
+      isSessionTurnBusy: (sessionId) => rootCoordinator?.hasActiveOrPendingTurn(sessionId) ?? false,
       onModelToolsChanged: registerBackendInvalidation,
       interactions,
       grants: stores.interactionStore,
