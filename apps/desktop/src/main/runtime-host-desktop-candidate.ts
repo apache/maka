@@ -23,12 +23,7 @@ import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
-import { isSideConversationSession } from '@maka/core/side-conversation';
-import {
-  isWorkHubCoordinationSessionId,
-  type SessionChangedEvent,
-  type SessionChangedReason,
-} from '@maka/core/session';
+import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/session';
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
   type RuntimeHostSshOperatorActivationInput,
@@ -721,14 +716,7 @@ export async function createDesktopRuntimeHostCandidate(
     registerRuntimeHostSessionObservationIpc(
       {
         observations: sessionObservations,
-        resolveSideConversation: async (sessionId) => {
-          if (target.access === 'session_guest') return false;
-          const session = isWorkHubCoordinationSessionId(sessionId)
-            ? await client.getWorkHubSession()
-            : await client.getSession(sessionId);
-          if (!session) throw new Error(`Runtime Host Session not found: ${sessionId}`);
-          return isSideConversationSession(session.labels);
-        },
+        messageAdmissions: target.access !== 'session_guest',
       },
       ipc,
     );

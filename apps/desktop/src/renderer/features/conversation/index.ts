@@ -70,7 +70,7 @@ export {
   type ComposerMentionsSurface,
 } from './ui/composer-mentions-provider.js';
 
-export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
+export { chatTurnActivity } from '../../application/contracts/session-execution.js';
 export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';

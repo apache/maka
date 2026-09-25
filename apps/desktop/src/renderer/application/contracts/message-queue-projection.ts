@@ -90,8 +90,9 @@ export function applyMessageQueueEvent(
         return;
       }
       // Main announces the admission before the queue update that drops the
-      // entry, so a follow-up becomes its Turn's prompt without a gap. Admitted
-      // steering waits for `steering_message` to place it inside the Turn.
+      // entry, so a follow-up becomes its Turn's prompt without a gap. Steering
+      // is not bound here: steering folded into a successor Turn can share one
+      // prompt with other messages, whose id then matches none of them.
       const entry = messageQueueStore?.getState().messageQueueBySession[sessionId]?.entries
         .find((candidate) => candidate.messageId === event.messageId);
       if (entry?.placement !== 'next_turn') return;

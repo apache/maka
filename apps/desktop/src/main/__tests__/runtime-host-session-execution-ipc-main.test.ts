@@ -53,7 +53,7 @@ test('registers Session observation as one reconnectable operation', () => {
   registerRuntimeHostSessionObservationIpc(
     {
       observations: new RuntimeHostSessionObservationRegistry(),
-      resolveSideConversation: async () => false,
+      messageAdmissions: false,
     },
     ipc,
   );
@@ -77,7 +77,7 @@ for (const phase of ['connecting', 'seeding'] as const) {
         async unobserve() {},
       };
       if (phase === 'seeding') await observations.attach(source);
-      registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
+      registerRuntimeHostSessionObservationIpc({ observations, messageAdmissions: false }, ipc);
       const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
       void observing.catch(() => undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -113,7 +113,7 @@ test('transcript history IPC forwards open mode, load-earlier, and read-turn to 
     calls.push({ command: 'read-turn', sessionId, turnId });
     return turn as never;
   };
-  registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
+  registerRuntimeHostSessionObservationIpc({ observations, messageAdmissions: false }, ipc);
 
   await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history');
   await ipc.invoke('sessions:transcript:load-earlier', 'guest-consumer');
@@ -336,7 +336,7 @@ function observationIpcHarness(observations: RuntimeHostSessionObservationRegist
   registerRuntimeHostSessionObservationIpc(
     {
       observations,
-      resolveSideConversation: async () => false,
+      messageAdmissions: false,
     },
     ipc,
   );
@@ -2548,19 +2548,6 @@ test('renderer reload releases old observations without accumulating destroyed l
   assert.equal(removed.length, 20);
   await registry.close();
   assert.equal(ipc.rendererListenerCount(), 0);
-});
-
-test('an observation admitted across document replacement is cancelled before registration', async () => {
-  const registry = new RuntimeHostSessionObservationRegistry();
-  const ipc = ipcHarness();
-  const resolving = deferred();
-  registerRuntimeHostSessionObservationIpc({ observations: registry, resolveSideConversation: async () => { await resolving.promise; return false; } }, ipc);
-  const observing = ipc.invoke('sessions:observe', 'session-1', 'old-document');
-  ipc.rendererNavigate();
-  resolving.resolve();
-  assert.deepEqual(await observing, { kind: 'cancelled' });
-  assert.deepEqual(registry.observedSessionIds(), []);
-  await registry.close();
 });
 
 

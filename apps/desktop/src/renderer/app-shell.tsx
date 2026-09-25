@@ -320,6 +320,7 @@ function AppShellContent({
     updateTransientMessage,
     retireCancelledTransientMessages,
     removeTransientMessage,
+    retireLocalMessage,
     transcriptRangeRef,
     publishedTranscriptRange,
     publishTranscript,
@@ -1281,7 +1282,7 @@ function AppShellContent({
     uiLocale,
     getRunningTurnId: (sessionId) => {
       if (sessionId !== activeId) return undefined;
-      return Conversation.activeHostTurn(sessionUiController.getState().executionBySession[sessionId])?.turnId;
+      return Conversation.chatTurnActivity(sessionUiController.getState().executionBySession[sessionId])?.turnId;
     },
     activeIdRef,
     captureComposerImportOwner,
@@ -2092,7 +2093,7 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
+    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={retireLocalMessage} reportError={toastApi.error} />
     <CatalogRowWatch
       catalog={sessionCatalogController}
       sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}

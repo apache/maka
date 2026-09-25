@@ -27,6 +27,7 @@ import { mergeTransientMessageProjection } from '../../renderer/application/cont
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
+import { createSessionWorkspaceActions } from '../../renderer/session-workspace-actions.js';
 
 afterEach(cleanupFakeDom);
 
@@ -251,7 +252,25 @@ test('steering delivery clears a promoted follow-up from the desktop queue', () 
 
 test('an admitted follow-up leaves the plate as the prompt of the Turn it starts', () => {
   const controller = createAppShellSessionUiStateController();
-  const transient = new Map<string, TransientUserMessageProjection>();
+  const transientMessagesBySessionRef = { current: new Map<string, Map<string, TransientUserMessageProjection>>() };
+  const workspace = createSessionWorkspaceActions({
+    activeIdRef: { current: 'session-1' },
+    readRequestedSessionId: () => 'session-1',
+    isReadableSession: () => true,
+    messagesRef: { current: [] },
+    transientMessagesBySessionRef,
+    transcriptRangeRef: { current: undefined },
+    selectionRevisionRef: { current: 0 },
+    setActiveIdState: () => {},
+    setMessagesState: () => {},
+    setTransientMessagesState: () => {},
+    setMessageLoadPending: () => {},
+    clearSessionUiState: () => {},
+  });
+  const transient = {
+    get: (id: string) => transientMessagesBySessionRef.current.get('session-1')?.get(id),
+    keys: () => [...(transientMessagesBySessionRef.current.get('session-1')?.keys() ?? [])],
+  };
   const handlers = createAppShellSessionEventHandlers({
     uiLocale: 'en',
     activeIdRef: { current: 'session-1' },
@@ -261,8 +280,8 @@ test('an admitted follow-up leaves the plate as the prompt of the Turn it starts
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
     messageQueueStore: controller,
-    addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
-    removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
+    addTransientMessage: workspace.addTransientMessage,
+    removeTransientMessage: workspace.removeTransientMessage,
     showModelSetupToast() {},
     toastApi: { error() {} },
   });
@@ -288,7 +307,7 @@ test('an admitted follow-up leaves the plate as the prompt of the Turn it starts
   assert.deepEqual(queued(), ['steer', 'withdrawn'], 'the plate and the Turn never show it together');
   admit('steer', 'admitted');
   admit('withdrawn', 'retracted');
-  assert.deepEqual([...transient.keys()], ['next'], 'steering waits for its own event; a retraction publishes nothing');
+  assert.deepEqual(transient.keys(), ['next'], 'steering waits for its own event; a retraction publishes nothing');
   assert.deepEqual(queued(), ['steer', 'withdrawn']);
 
   handlers.handleEvent('session-1', {
@@ -296,6 +315,13 @@ test('an admitted follow-up leaves the plate as the prompt of the Turn it starts
     steering: [], followup: [], steeringEntries: [], followupEntries: [],
   });
   assert.equal(transient.get('next')?.hostTurnId, 'turn-b', 'the queue update that drops it keeps its Turn prompt');
+  // A later send refreshes the local outbox, whose copy of this message is
+  // still an accepted follow-up with no Turn.
+  workspace.retireLocalMessage('session-1', 'next');
+  assert.equal(transient.get('next')?.hostTurnId, 'turn-b', 'the outbox copy does not outrank the Host');
+  workspace.addTransientMessage('session-1', { id: 'queued-copy', text: 'queued', ts: 4, transientPlacement: 'follow_up' });
+  workspace.retireLocalMessage('session-1', 'queued-copy');
+  assert.deepEqual(transient.keys(), ['next'], 'a copy the Host queue owns still yields');
 });
 
 test('complete events deliver the durable context compaction outcome to Desktop', () => {

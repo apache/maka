@@ -67,6 +67,7 @@ export interface SessionWorkspaceActions {
   updateTransientMessage(sessionId: string, message: TransientUserMessage): void;
   retireCancelledTransientMessages(sessionId: string): Promise<void>;
   removeTransientMessage(sessionId: string, messageId: string): void;
+  retireLocalMessage(sessionId: string, messageId: string): void;
 }
 
 export function createSessionWorkspaceActions(deps: {
@@ -172,6 +173,13 @@ export function createSessionWorkspaceActions(deps: {
     reprojectActiveTransients(sessionId);
   }
 
+  /** A local outbox copy yields to the Host queue, not to a prompt the Host already gave its Turn. */
+  function retireLocalMessage(sessionId: string, messageId: string): void {
+    const message = transientMessagesBySessionRef.current.get(sessionId)?.get(messageId);
+    if (message?.transientPlacement === 'transcript' && message.hostTurnId !== undefined) return;
+    removeTransientMessage(sessionId, messageId);
+  }
+
   function setActiveId(next: string | undefined): void {
     selectionRevisionRef.current += 1;
     if (next !== readRequestedSessionId()) transcriptRangeRef.current = undefined;
@@ -247,5 +255,6 @@ export function createSessionWorkspaceActions(deps: {
     updateTransientMessage,
     retireCancelledTransientMessages,
     removeTransientMessage,
+    retireLocalMessage,
   };
 }

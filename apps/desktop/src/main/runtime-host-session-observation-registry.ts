@@ -160,7 +160,7 @@ export class RuntimeHostSessionObservationRegistry {
     string,
     SessionObservationRegistration
   >();
-  readonly #renderers = new Map<number, { epoch: number; release(): void }>();
+  readonly #renderers = new Map<number, { release(): void }>();
   readonly #transcripts = new Map<string, TranscriptRegistration>();
   readonly #onError: (error: unknown) => void;
   #source: SessionObservationSource | undefined;
@@ -279,12 +279,10 @@ export class RuntimeHostSessionObservationRegistry {
   }
 
   /** A reload replaces the document, not WebContents. Retire its read replicas. */
-  trackRenderer(target: Pick<WebContents, 'id' | 'on' | 'once' | 'off'>): () => boolean {
+  trackRenderer(target: Pick<WebContents, 'id' | 'on' | 'once' | 'off'>): void {
     this.#assertOpen();
-    let owner = this.#renderers.get(target.id);
-    if (!owner) {
+    if (!this.#renderers.has(target.id)) {
       const invalidate = () => {
-        registration.epoch++;
         const source = this.#source;
         const operations: Promise<unknown>[] = [];
         for (const [id, observation] of this.#registrations) {
@@ -306,7 +304,6 @@ export class RuntimeHostSessionObservationRegistry {
       };
       const destroy = () => { invalidate(); registration.release(); };
       const registration = {
-        epoch: 0,
         release: () => {
           target.off('did-start-navigation', navigate);
           target.off('render-process-gone', invalidate);
@@ -314,14 +311,11 @@ export class RuntimeHostSessionObservationRegistry {
           this.#renderers.delete(target.id);
         },
       };
-      owner = registration;
-      this.#renderers.set(target.id, owner);
+      this.#renderers.set(target.id, registration);
       target.on('did-start-navigation', navigate);
       target.on('render-process-gone', invalidate);
       target.once('destroyed', destroy);
     }
-    const epoch = owner.epoch;
-    return () => !this.#closed && this.#renderers.get(target.id) === owner && owner.epoch === epoch;
   }
 
   async observe(
