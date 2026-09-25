@@ -234,7 +234,48 @@ pub struct ModelExecutor {
     networks: Arc<network::Pool>,
 }
 
+/// One opportunistically reserved slot, tied to the executor that owns it.
+/// A stream retains the slot until its worker drains; repairs reuse it afterward.
+pub struct ModelReservation {
+    executor: ModelExecutor,
+    permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl ModelReservation {
+    pub async fn stream_with_adapter(
+        &mut self,
+        request: ModelRequest,
+        cancellation: CancellationToken,
+        binding: maka_plugins::model::Binding,
+    ) -> Result<ModelStream, ModelError> {
+        if Arc::strong_count(&self.permit) != 1 {
+            return Err(ModelError::Adapter(
+                "reserved model stream has not drained".into(),
+            ));
+        }
+        self.executor
+            .stream_reserved(
+                request,
+                cancellation,
+                None,
+                binding,
+                Some(self.permit.clone()),
+            )
+            .await
+    }
+}
+
 impl ModelExecutor {
+    /// Acquire atomically without queuing ahead of foreground work. Retaining
+    /// one of two available slots leaves room for a foreground request.
+    pub fn try_reserve_background(&self) -> Option<ModelReservation> {
+        let mut permits = self.permits.clone().try_acquire_many_owned(2).ok()?;
+        drop(permits.split(1)?);
+        Some(ModelReservation {
+            executor: self.clone(),
+            permit: Arc::new(permits),
+        })
+    }
     /// Providers and adapters share Host proxy routing and connection pools.
     pub fn transport(
         &self,
@@ -309,10 +350,22 @@ impl ModelExecutor {
 
     pub async fn stream_with_adapter(
         &self,
+        request: ModelRequest,
+        cancellation: CancellationToken,
+        conversation: Option<Conversation>,
+        binding: maka_plugins::model::Binding,
+    ) -> Result<ModelStream, ModelError> {
+        self.stream_reserved(request, cancellation, conversation, binding, None)
+            .await
+    }
+
+    async fn stream_reserved(
+        &self,
         mut request: ModelRequest,
         cancellation: CancellationToken,
         conversation: Option<Conversation>,
         binding: maka_plugins::model::Binding,
+        reservation: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
     ) -> Result<ModelStream, ModelError> {
         for tool in &request.tools {
             if let Some(provider) = &tool.provider {
@@ -348,11 +401,15 @@ impl ModelExecutor {
         }
         request.prompt = reasoning::project(request.prompt, &request.provider.kind);
         let cancellation = cancellation.child_token();
-        let permit = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
-            permit = self.permits.clone().acquire_owned() =>
-                permit.map_err(|error| ModelError::Adapter(error.to_string()))?,
+        let permit = if let Some(permit) = reservation {
+            permit
+        } else {
+            Arc::new(tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
+                permit = self.permits.clone().acquire_owned() =>
+                    permit.map_err(|error| ModelError::Adapter(error.to_string()))?,
+            })
         };
         tokio::select! {
             biased;

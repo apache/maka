@@ -44,7 +44,7 @@ async fn external_model_adapters_use_host_io_confirm_settled_tools_and_retire_wi
             let changed = configuration.update_connection(serde_json::from_value(json!({
                 "expected":{"connectionId":row.connection_id, "revision":row.revision},
                 "changes":{"name":row.name, "configuration":row.configuration, "enabled":true,
-                    "enabledModelIds":row.enabled_model_ids, "modelOverrides":{"fixture-model":{"adapter":"example.protocol"}}}
+                    "enabledModelIds":row.enabled_model_ids, "modelOverrides":{"fixture-model":{"contextWindow":200000,"adapter":"example.protocol"}}}
             })).unwrap()).await.unwrap();
             assert!(matches!(changed, maka_runtime::configuration::CatalogMutationResult::Committed { .. }));
             configuration.close().await.unwrap();

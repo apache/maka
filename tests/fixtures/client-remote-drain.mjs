@@ -49,6 +49,7 @@ export async function verifyRemoteDrain(local, issue, ready, bounded) {
       baseUrl: baseUrl,
       apiKey: 'dummy-remote-drain-key',
       enabledModelIds: ['fixture-model'],
+      modelOverrides: { 'fixture-model': { contextWindow: 200000 } },
     });
     const { connectionId } = created.connection;
     const credential = await issue(['connection.test.run']);

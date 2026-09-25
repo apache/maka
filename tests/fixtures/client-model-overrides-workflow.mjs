@@ -25,6 +25,7 @@ import {
   catalog,
   configure,
   inputOnlyId,
+  inputPin,
   modelId,
   sessionInput,
   verifyCatalogPins,
@@ -126,13 +127,20 @@ export async function verifyModelOverrides(connection, workspace, reopened, open
     ];
     for (const input of inputs) await request('session.create', input);
     const turns = [];
-    // Usage exceeds inputLimit. No contextWindow was declared for
-    // this model, so the second real request must remain Main, not a summary.
+    // A standalone input ceiling cannot stand in for total model capacity.
+    // The catalog remains usable to repair it before any model request is sent.
+    await assert.rejects(
+      request('turn.start', turnInput('facts-input-only', 'missing-capacity', 'NO_REQUEST')),
+      (error) => error.message.includes('contextWindow'),
+    );
+    Object.assign(inputPin, { contextWindow: 1000, inputLimit: 200 });
+    await updateDeclaration(request, rows[0], catalogChecks.pin);
     for (let i = 1; i <= 2; i++) {
       const marker = 'FACTS_INPUT_ONLY_' + i;
       const stream = fixture.expect({
         path: '/v1/chat/completions',
         model: inputOnlyId,
+        outputLimit: 8000,
         parallel: true,
         marker,
         answer: 'input-only main ' + i,
@@ -166,7 +174,7 @@ export async function verifyModelOverrides(connection, workspace, reopened, open
       }
     }
     const inputOnlyDiagnostics = await queryDiagnostics('facts-input-only');
-    diagnostics(inputOnlyDiagnostics, inputOnlyId, undefined, 100);
+    diagnostics(inputOnlyDiagnostics, inputOnlyId, 1000, 100);
 
     await writeFile(join(workspace, 'facts-evidence.txt'), evidence);
     const gate = fixture.expect({

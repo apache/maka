@@ -192,6 +192,7 @@ export async function verifyShellWorkflow(connection, workspace, reopened, openC
       baseUrl: model.baseUrl,
       apiKey: 'dummy-shell-fixture',
       enabledModelIds: ['fixture-model'],
+      modelOverrides: { 'fixture-model': { contextWindow: 200000 } },
     });
     const basis = created.connection;
     await request('connection.catalog.set-default-target', {

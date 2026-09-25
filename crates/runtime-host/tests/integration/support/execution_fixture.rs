@@ -78,7 +78,7 @@ pub async fn fixture() -> (
     let row = login.connection();
     let created = configuration.update_connection(serde_json::from_value(json!({
         "expected":{"connectionId":row.connection_id,"revision":row.revision},
-        "changes":{"name":row.name,"configuration":row.configuration,"enabled":true,"enabledModelIds":["fixture-model"]}
+        "changes":{"name":row.name,"configuration":row.configuration,"enabled":true,"enabledModelIds":["fixture-model"],"modelOverrides":{"fixture-model":{"contextWindow":200000}}}
     })).unwrap()).await.unwrap();
     let CatalogMutationResult::Committed {
         connection: Some(connection),

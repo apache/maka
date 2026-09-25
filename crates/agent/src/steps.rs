@@ -45,6 +45,8 @@ pub(super) async fn run(
     )
     .with_model(input.provider.tool_context())
     .with_behavior(input.configuration.orchestration_mode.clone());
+    let mut pending: Option<auto_context::Pending> = None;
+    let mut handoff_cleanup = None;
     let result = std::panic::AssertUnwindSafe(async {
         use maka_runtime::handoff::CompactionBudget;
         let mut compaction = CompactionBudget::Available;
@@ -61,6 +63,10 @@ pub(super) async fn run(
             inner.log.commit_pending_steering(&input.invocation).await?;
             if let Some(pause) = handoff
                 .boundary(cancellation, |intent| async {
+                    if let Err(error) = auto_context::drain(&mut pending).await {
+                        handoff_cleanup = Some(error);
+                        return None;
+                    }
                     // Live cells retain the current step's capabilities and effects.
                     // A handoff can seal only after those independent jobs settle.
                     if !tools.code_idle() {
@@ -123,10 +129,26 @@ pub(super) async fn run(
             {
                 return Ok(maka_runtime::event::InvocationOutcome::HandoffPaused { pause });
             }
+            if let Some(error) = handoff_cleanup.take() {
+                return Err(error);
+            }
             if cancellation.is_cancelled() {
                 return Err(RunError::Cancelled);
             }
             input.refresh_model(cancellation).await?;
+            if tools.code_idle()
+                && pending
+                    .as_ref()
+                    .is_some_and(auto_context::Pending::is_finished)
+                && pending
+                    .take()
+                    .expect("finished candidate")
+                    .adopt(inner, cancellation)
+                    .await?
+            {
+                compaction = CompactionBudget::Reshaped;
+                tools.clear_loaded();
+            }
             let mut source = if prior_unknown {
                 inner
                     .log
@@ -150,11 +172,12 @@ pub(super) async fn run(
             };
             if tools.code_idle()
                 && compaction == CompactionBudget::Available
+                && pending.is_none()
                 && !prior_unknown
                 && auto_context::due(input, &source)
             {
                 compaction = CompactionBudget::Failed;
-                if auto_context::attempt(
+                if let Some((candidate, background)) = auto_context::start(
                     inner,
                     input,
                     &source,
@@ -164,8 +187,12 @@ pub(super) async fn run(
                 )
                 .await?
                 {
-                    compaction = CompactionBudget::Reshaped;
-                    tools.clear_loaded();
+                    if background {
+                        pending = Some(candidate);
+                    } else if candidate.adopt(inner, cancellation).await? {
+                        compaction = CompactionBudget::Reshaped;
+                        tools.clear_loaded();
+                    }
                 }
                 source = inner
                     .log
@@ -197,7 +224,6 @@ pub(super) async fn run(
                     &inner.model,
                     input,
                     &source,
-                    compaction == CompactionBudget::Reshaped,
                     cancellation,
                     unknown_notice.as_deref(),
                 )
@@ -234,20 +260,26 @@ pub(super) async fn run(
                     error @ RunError::Model(maka_model::ModelError::ContextOverflow {
                         observed_output: false,
                     }),
-                ) if compaction == CompactionBudget::Available
+                ) if (compaction == CompactionBudget::Available || pending.is_some())
                     && tools.code_idle()
                     && step + 1 < max_steps
                     && !cancellation.is_cancelled() =>
                 {
-                    if auto_context::attempt(
-                        inner,
-                        input,
-                        &source,
-                        completed_step,
-                        cancellation,
-                        continuation_base,
-                    )
-                    .await?
+                    let candidate = match pending.take() {
+                        Some(candidate) => Some(candidate),
+                        None => auto_context::start(
+                            inner,
+                            input,
+                            &source,
+                            completed_step,
+                            cancellation,
+                            continuation_base,
+                        )
+                        .await?
+                        .map(|(candidate, _)| candidate),
+                    };
+                    if let Some(candidate) = candidate
+                        && candidate.adopt(inner, cancellation).await?
                     {
                         compaction = CompactionBudget::Reshaped;
                         tools.clear_loaded();
@@ -257,9 +289,9 @@ pub(super) async fn run(
                 }
                 Err(error) => return Err(error),
             };
-            if compaction == CompactionBudget::Reshaped {
-                compaction = CompactionBudget::Available;
-            }
+            // Only accepted Main progress renews the budget. Summary events
+            // never replenish their own attempts, even though the log advances.
+            compaction = CompactionBudget::Available;
             let local_calls: Vec<_> = output
                 .tool_calls()
                 .filter(|call| !call.provider_executed)
@@ -292,7 +324,7 @@ pub(super) async fn run(
             // Pruning/compaction require a settled boundary. A yielded cell is
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
-            if tools.code_idle() && !prior_unknown {
+            if tools.code_idle() && pending.is_none() && !prior_unknown {
                 prune::run(inner, input, cancellation).await?;
             }
             if step_tools.finished() {
@@ -346,6 +378,33 @@ pub(super) async fn run(
     .catch_unwind()
     .await
     .unwrap_or_else(|_| Err(RunError::Internal("model step worker panicked".into())));
+    let summary_cleanup = auto_context::drain(&mut pending).await;
     tools.shutdown().await?;
+    summary_cleanup?;
+    if matches!(
+        result,
+        Ok(maka_runtime::event::InvocationOutcome::Completed)
+    ) && !prior_unknown
+    {
+        // The last Main can finish while a background Summary fails. Drain first,
+        // then reuse admission's zero-materialization safety check so an unknown
+        // summary effect becomes a sealed failure, never apparent Turn success.
+        inner
+            .log
+            .prepare_prune_candidates(
+                &input.invocation.session_id,
+                Some(&input.invocation.invocation_id),
+                0,
+                0,
+                None,
+            )
+            .await
+            .map_err(|error| match error {
+                maka_event_log::StoreError::InvalidTransition(reason) => {
+                    RunError::ReconciliationRequired(reason)
+                }
+                error => RunError::Store(error),
+            })?;
+    }
     result
 }

@@ -212,6 +212,7 @@ impl Source {
             overrides.and_then(|value| value.apply_patch),
         );
         let context = context::resolve(row, &model.info)?;
+        let main_output_limit = Some(context::output_limit(&model)?);
         let binding = auth::observe(&self.models, provider, &material, session_id)?;
         let network = maka_network::Policy::from_host_settings(
             &material.network.proxy,
@@ -248,7 +249,7 @@ impl Source {
             options: model.provider_options,
             supports_vision: capabilities.vision.unwrap_or(false),
             context,
-            main_output_limit: model.main_output_limit,
+            main_output_limit,
         })
     }
 }

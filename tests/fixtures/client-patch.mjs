@@ -163,7 +163,7 @@ export async function verifyPatchWorkflow(connection, workspace, reopened) {
       baseUrl: model.baseUrl,
       apiKey: 'dummy-patch-fixture',
       enabledModelIds: ['fixture-model'],
-      modelOverrides: { 'fixture-model': { applyPatch: true } },
+      modelOverrides: { 'fixture-model': { contextWindow: 200000, applyPatch: true } },
     });
     const basis = created.connection;
     await request('connection.catalog.set-default-target', {

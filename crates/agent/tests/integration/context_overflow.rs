@@ -80,7 +80,7 @@ async fn overflow_recovers_once_only_without_output_and_with_remaining_main_budg
                 let (mut next, _) = listener.accept().await.unwrap();
                 let request = fixture::read_request(&mut next).await;
                 assert!(request["messages"].to_string().contains("summary-marker"));
-                assert_eq!(request["max_tokens"], 8000);
+                assert_eq!(request["max_tokens"], 128_000);
                 fixture::respond(&mut next, "done", "stop").await;
             }
         });

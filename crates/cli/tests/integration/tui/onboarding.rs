@@ -141,7 +141,8 @@ async fn serve(listener: tokio::net::TcpListener) {
         let (mut stream, request) = support::model_list_request(&listener).await;
         assert!(!request.to_ascii_lowercase().contains("authorization:"));
         let status = "200 OK";
-        let body = json!({"data":[{"id":"fixture-model"},{"id":"unused-model"}]});
+        let body =
+            json!({"data":[{"id":"fixture-model","context_window":128000},{"id":"unused-model"}]});
         let body = body.to_string();
         stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
     }

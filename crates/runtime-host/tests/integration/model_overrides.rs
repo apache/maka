@@ -58,8 +58,8 @@ async fn client_declarations_freeze_each_model_step_and_reopen_without_rewriting
         assert_eq!(
             &requests[..5],
             &[
-                ("input-only-1", Some(20), None, None),
-                ("input-only-2", Some(20), None, None),
+                ("input-only-1", Some(200), Some(170), Some(1000)),
+                ("input-only-2", Some(200), Some(170), Some(1000)),
                 ("frozen", Some(32000), Some(64000), Some(64000)),
                 ("frozen", Some(32000), Some(96000), Some(96000)),
                 ("next", Some(32000), Some(96000), Some(96000)),

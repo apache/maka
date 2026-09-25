@@ -23,7 +23,6 @@ use serde_json::Value;
 
 pub(super) enum ReadError {
     Cancelled,
-    Incomplete,
     Transport(&'static str),
 }
 
@@ -31,7 +30,6 @@ impl ReadError {
     pub fn into_error(self) -> crate::Error {
         error(match self {
             Self::Cancelled => "Responses WebSocket cancelled",
-            Self::Incomplete => "Responses WebSocket response incomplete",
             Self::Transport(message) => message,
         })
     }
@@ -58,9 +56,8 @@ pub(super) async fn receive(
         || (kind == "response.incomplete"
             && event["response"]["incomplete_details"]["reason"] == "max_output_tokens");
     let terminal = reusable || matches!(kind, "response.incomplete" | "response.failed" | "error");
-    if kind == "response.incomplete" && !reusable {
-        return Err(ReadError::Incomplete);
-    }
+    // Deliver terminal semantics to the shared decoder, including Incomplete
+    // without details. A non-reusable terminal simply discards the WS cache.
     // JSON whitespace may contain newlines, which must not become SSE
     // record boundaries when the frame crosses the SDK fetch bridge.
     let text = event.to_string();

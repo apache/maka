@@ -152,27 +152,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
         log.append(&completion("child", "summary", "malformed summary"))
             .await
             .unwrap();
-        let repair_source = log
-            .prepare_context_compaction("session", Some("child"), 100, 65536, &mode)
-            .await
-            .unwrap();
-        assert_eq!(
-            repair_source.source_evidence.scope,
-            source.source_evidence.scope
-        );
-        assert_eq!(
-            repair_source.source_evidence.high_water,
-            source.source_evidence.high_water
-        );
-        assert_eq!(
-            repair_source.source_evidence.digest,
-            source.source_evidence.digest
-        );
-        assert_eq!(
-            repair_source.effective_source_digest,
-            source.effective_source_digest
-        );
-        let repair = lineage_request("repair", ModelPurpose::Summary, &repair_source);
+        let repair = lineage_request("repair", ModelPurpose::Summary, &source);
         let mut wrong_route = repair.event().clone();
         if let Fact::ModelRequested { route_identity, .. } = &mut wrong_route.fact {
             *route_identity = continuation::digest('e');

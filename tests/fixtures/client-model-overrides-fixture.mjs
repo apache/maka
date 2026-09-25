@@ -69,7 +69,7 @@ export async function modelOverridesFixture(port = 0) {
             (value) => value !== undefined,
           ),
           expected.outputLimit === undefined ? [] : [expected.outputLimit],
-          'only an explicit OpenAI reply budget is sent',
+          'every request has its resolved finite reply budget',
         );
         if (expected.toolEvidence)
           assert(

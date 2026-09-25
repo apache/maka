@@ -71,61 +71,110 @@ async fn tool_call(log: &EventLog) {
 }
 
 #[tokio::test]
-async fn reopened_pending_model_is_failed_without_replaying_admission() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("events.sqlite");
-    let original = {
+async fn reopened_pending_main_and_summary_are_failed_without_replaying_admission() {
+    for summary in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sqlite");
+        let original = {
+            let log = EventLog::open(&path).await.unwrap();
+            let original = opening(&log).await;
+            request(&log).await;
+            if summary {
+                append(
+                    &log,
+                    Fact::ModelCompleted {
+                        step_id: "step".into(),
+                        output: serde_json::from_value(json!({
+                            "parts":[{"kind":"text","text_kind":"text","text":"completed prefix"}],
+                            "finish_reason":"stop", "usage":{}
+                        }))
+                        .unwrap(),
+                    },
+                )
+                .await;
+                let source = log
+                    .prepare_context_compaction(
+                        "session",
+                        Some("invocation"),
+                        100,
+                        128 * 1024,
+                        &maka_runtime::context::CheckpointMode::MidTurn {
+                            anchor_event_id: original.id.clone(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                append(
+                    &log,
+                    Fact::ModelRequested {
+                        step_id: "summary".into(),
+                        purpose: maka_runtime::context::ModelPurpose::Summary,
+                        model_id: "test".into(),
+                        context: None,
+                        source_scope: source.source_evidence.scope,
+                        source_high_water: source.source_evidence.high_water,
+                        source_digest: source.source_evidence.digest,
+                        effective_source_digest: Some(source.effective_source_digest),
+                        input_digest: "fixture".into(),
+                        route_identity: format!("sha256:{}", "a".repeat(64)),
+                        checkpoint_event_id: None,
+                    },
+                )
+                .await;
+            }
+            log.close().await.unwrap();
+            original
+        };
         let log = EventLog::open(&path).await.unwrap();
-        let original = opening(&log).await;
-        request(&log).await;
-        log.close().await.unwrap();
-        original
-    };
-    let log = EventLog::open(&path).await.unwrap();
-    assert_eq!(recover(&log).await.unwrap(), 1);
-    let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-    assert_eq!(prefix.events.len(), 4);
-    assert!(
-        matches!(&prefix.events[2].event.fact, Fact::ModelInterrupted {
+        assert_eq!(recover(&log).await.unwrap(), 1);
+        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
+        assert_eq!(prefix.events.len(), if summary { 6 } else { 4 });
+        let end = prefix.events.len();
+        assert!(
+            matches!(&prefix.events[end - 2].event.fact, Fact::ModelInterrupted {
         step_id, status: ModelInterruption::Failed
-    } if step_id == "step")
-    );
-    assert!(
-        matches!(&prefix.events[3].event.fact, Fact::InvocationEnded {
+    } if step_id == if summary { "summary" } else { "step" })
+        );
+        assert!(
+            matches!(&prefix.events[end - 1].event.fact, Fact::InvocationEnded {
         outcome: InvocationOutcome::Failed { class, .. }
     } if class == "host_interrupted")
-    );
-    assert!(
-        prefix
-            .events
-            .iter()
-            .all(|event| event.event.invocation == invocation())
-    );
-    assert!(
-        prefix
-            .project_invocation("invocation")
-            .unfinished_model_steps
-            .is_empty()
-    );
-    assert_eq!(
-        log.append(&maka_runtime::event::EventWrite::plain(original.clone()).unwrap())
-            .await
-            .unwrap(),
-        1
-    );
-    assert!(
-        log.append(
-            &maka_runtime::event::EventWrite::plain(RuntimeEvent::new(invocation(), original.fact))
+        );
+        assert!(
+            prefix
+                .events
+                .iter()
+                .all(|event| event.event.invocation == invocation())
+        );
+        assert!(
+            prefix
+                .project_invocation("invocation")
+                .unfinished_model_steps
+                .is_empty()
+        );
+        assert_eq!(
+            log.append(&maka_runtime::event::EventWrite::plain(original.clone()).unwrap())
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            log.append(
+                &maka_runtime::event::EventWrite::plain(RuntimeEvent::new(
+                    invocation(),
+                    original.fact
+                ))
                 .unwrap()
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(recover(&log).await.unwrap(), 0);
-    assert_eq!(
-        log.prefix(100, 128 * 1024).await.unwrap().high_water,
-        prefix.high_water
-    );
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(recover(&log).await.unwrap(), 0);
+        assert_eq!(
+            log.prefix(100, 128 * 1024).await.unwrap().high_water,
+            prefix.high_water
+        );
+    }
 }
 
 #[tokio::test]

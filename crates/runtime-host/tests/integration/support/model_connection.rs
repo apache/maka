@@ -33,8 +33,19 @@ pub async fn create(
     slug: &str,
     base: &str,
     key: &str,
-    models: Value,
+    mut models: Value,
 ) -> Value {
+    for model in models
+        .as_object_mut()
+        .expect("fixture model declarations")
+        .values_mut()
+    {
+        model
+            .as_object_mut()
+            .expect("fixture model override")
+            .entry("contextWindow")
+            .or_insert(json!(200_000));
+    }
     let provider = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let directory = client.provider_directory(Scope::Profile).await.unwrap();

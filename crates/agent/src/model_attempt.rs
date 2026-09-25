@@ -35,13 +35,16 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub(super) enum Attempt {
+pub(super) enum Attempt<'a> {
     Main {
         lane: maka_model::Conversation,
         continuation_base: Option<u64>,
         surface: Arc<crate::request_composition::Surface>,
     },
-    Summary,
+    Summary {
+        adapter: maka_plugins::model::Binding,
+        reservation: Option<&'a mut maka_model::ModelReservation>,
+    },
 }
 
 #[allow(clippy::too_many_arguments)] // Keep the admitted history policy explicit at each model request.
@@ -176,7 +179,7 @@ pub(super) async fn execute(
     source: &ModelContextSource,
     prompt: Vec<Message>,
     definitions: Vec<ToolDefinition>,
-    attempt: Attempt,
+    attempt: Attempt<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(String, ModelStep), RunError> {
     let Attempt::Main {
@@ -191,7 +194,7 @@ pub(super) async fn execute(
             source,
             prompt,
             definitions,
-            Attempt::Summary,
+            attempt,
             cancellation,
         )
         .await;
@@ -274,28 +277,37 @@ async fn execute_once(
     source: &ModelContextSource,
     prompt: Vec<Message>,
     definitions: Vec<ToolDefinition>,
-    attempt: Attempt,
+    attempt: Attempt<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(String, ModelStep), RunError> {
-    let (purpose, lane, surface) = match attempt {
-        Attempt::Main { lane, surface, .. } => (ModelPurpose::Main, Some(lane), Some(surface)),
-        Attempt::Summary => (ModelPurpose::Summary, None, None),
+    let (purpose, lane, surface, summary_adapter, reservation) = match attempt {
+        Attempt::Main { lane, surface, .. } => {
+            (ModelPurpose::Main, Some(lane), Some(surface), None, None)
+        }
+        Attempt::Summary {
+            adapter,
+            reservation,
+        } => (
+            ModelPurpose::Summary,
+            None,
+            None,
+            Some(adapter),
+            reservation,
+        ),
     };
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
-    let max_output_tokens = surface
-        .as_ref()
-        .map_or(Some(8000), |surface| surface.max_output_tokens);
+    let max_output_tokens = surface.as_ref().map_or(
+        Some(input.main_output_limit.unwrap_or(8000).min(8000)),
+        |surface| surface.max_output_tokens,
+    );
     let prepared = prepare_request(input, prompt, definitions, max_output_tokens)?;
     let (binding, composition) = match surface {
         Some(surface) => (surface.adapter.clone(), surface.evidence.clone()),
         None => {
             let request = &prepared.request;
-            let binding = inner.model.binding_in_scope(
-                &request.provider,
-                &maka_plugins::composition::Scope::Session(input.invocation.session_id.clone()),
-            )?;
+            let binding = summary_adapter.expect("summary adapter frozen at capture");
             let evidence = maka_runtime::composition::RequestComposition {
                 system_prompt: request.prompt.iter().find_map(|message| match message {
                     Message::System { content, .. } => Some(content.clone()),
@@ -359,14 +371,23 @@ async fn execute_once(
     use maka_runtime::event::EventSink;
     inner.log.clone().commit(write).await?;
     let result: Result<_, RunError> = async {
-        let stream = inner
-            .model
-            .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
-            .await?;
+        let stream = match reservation {
+            Some(reservation) => {
+                reservation
+                    .stream_with_adapter(prepared.request, cancellation.clone(), binding)
+                    .await?
+            }
+            None => {
+                inner
+                    .model
+                    .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
+                    .await?
+            }
+        };
         receive(inner, input, &step_id, purpose, stream).await
     }
     .await;
-    finish(inner, input, step_id, result, cancellation).await
+    finish(inner, input, step_id, purpose, result, cancellation).await
 }
 
 pub(super) struct PreparedRequest {
@@ -388,6 +409,7 @@ pub(super) fn prepare_request(
     definitions: Vec<ToolDefinition>,
     max_output_tokens: Option<u64>,
 ) -> Result<PreparedRequest, RunError> {
+    let max_output_tokens = Some(max_output_tokens.unwrap_or(8000));
     let prompt = if input.supports_vision
         && matches!(
             &input.provider.kind,
@@ -448,14 +470,6 @@ async fn receive(
     .await;
     stream.cancel_and_wait().await;
     let output = result?;
-    if purpose == ModelPurpose::Main
-        && output.finish_reason == maka_runtime::model::ModelFinishReason::Length
-    {
-        return Err(maka_model::ModelError::Adapter(
-            "unsupported model finish reason: length".into(),
-        )
-        .into());
-    }
     if purpose == ModelPurpose::Summary
         && output.parts.iter().any(|part| {
             matches!(
@@ -474,6 +488,7 @@ async fn finish(
     inner: &Arc<Inner>,
     input: &RunInput,
     step_id: String,
+    purpose: ModelPurpose,
     result: Result<ModelStep, RunError>,
     cancellation: &CancellationToken,
 ) -> Result<(String, ModelStep), RunError> {
@@ -503,15 +518,39 @@ async fn finish(
         }
         Err(error) => return Err(error),
     };
-    append(
-        inner,
-        &input.invocation,
+    use maka_runtime::event::{EventWrite, RuntimeEvent};
+    let incomplete = purpose == ModelPurpose::Main
+        && output.finish_reason == maka_runtime::model::ModelFinishReason::Length;
+    let mut writes = vec![EventWrite::plain(RuntimeEvent::new(
+        input.invocation.clone(),
         Fact::ModelCompleted {
             step_id: step_id.clone(),
             output: output.clone(),
         },
-    )
-    .await?;
+    ))?];
+    if incomplete {
+        for call in output.tool_calls().filter(|call| !call.provider_executed) {
+            writes.push(EventWrite::plain(RuntimeEvent::new(
+                input.invocation.clone(),
+                Fact::ToolRejected {
+                    operation_id: format!("{step_id}:{}", call.id),
+                    call: maka_runtime::tool_call::ToolCallIdentity::provider(
+                        step_id.clone(),
+                        call.id.clone(),
+                    ),
+                    name: call.name.clone(),
+                    input: call.input.clone(),
+                    reason: maka_runtime::tool_call::ToolRejection::PreparationFailed {
+                        message: RunError::ModelIncomplete.to_string(),
+                    },
+                },
+            ))?);
+        }
+    }
+    inner.log.append_batch(&writes).await?;
+    if incomplete {
+        return Err(RunError::ModelIncomplete);
+    }
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }

@@ -176,7 +176,7 @@ pub async fn configure_provider(
     let created = config.update_connection(serde_json::from_value(json!({
         "expected":{"connectionId":row.connection_id,"revision":row.revision},
         "changes":{"name":row.name,"configuration":row.configuration,"enabled":true,"enabledModelIds":["fixture-model"],
-            "modelOverrides":{"fixture-model":{"thinkingLevels":["off"]}}}
+            "modelOverrides":{"fixture-model":{"contextWindow":200000,"thinkingLevels":["off"]}}}
     })).unwrap()).await.unwrap();
     let CatalogMutationResult::Committed {
         connection: Some(connection),

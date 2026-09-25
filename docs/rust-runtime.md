@@ -508,62 +508,60 @@ user/project content paths stay separate from private journals.
 ## Context windows and compaction
 
 Model configuration uses `contextWindow` for the **total input-plus-output capacity**.
-Enter the full model window and the desired `maxOutputTokens`; a separate
-`compactionThreshold` is optional. The default trigger reserves the full maximum
-output and leaves 5% of the remaining input space for growth:
+Native AI execution requires this value from the provider catalog or a model profile;
+`inputLimit` alone cannot replace it. Catalog/settings remain available to repair
+missing capacity. ACP executors and deterministic Code execution own their contracts.
 
 ```text
-output reserve = requested maxOutputTokens, capped by the provider's output ceiling
-                 (use the provider ceiling when no request override is set)
-input budget   = min(contextWindow - output reserve, provider inputLimit if known)
-auto threshold = floor(input budget × 95%)
+auto threshold = floor(85% × min(contextWindow, inputLimit if known))
 threshold      = explicit compactionThreshold, otherwise auto threshold
 ```
 
-For a **1,000,000-token window and 128,000-token maximum output**, with no smaller
-input limit, the default threshold is **828,400 tokens**. The 43,600-token margin
-before the 872,000-token input budget accommodates growth between requests.
-If the provider also limits input to 800,000 tokens, the default becomes 760,000.
-These are decimal token counts. A manual threshold replaces the default trigger;
-it does not change provider capacity or reserve output a second time.
+For a **1,000,000-token window**, the default is **850,000 tokens**, independent of
+whether the requested maximum output is 128,000 or 64,000 tokens. An independent
+800,000-token input limit lowers the default to 680,000. The sole optional
+`compactionThreshold` override remains an absolute token count.
 
-The internal names distinguish frozen request facts from model configuration:
+Before a Main request, positive input usage from the latest matching Main request
+can trigger compaction by itself. Otherwise output usage must also be known before
+comparing input + output. Unknown counts never become zero. The observation must
+match model, connection, route, checkpoint and effective history projection.
 
-| Quantity | Meaning |
-| --- | --- |
-| `ModelInfo.context_window` / configuration `contextWindow` | Total model capacity, including output; an explicit model override replaces the reported value. |
-| `inputLimit` | Independent provider input ceiling, if known; it is not another required auto-compaction setting. |
-| `ModelRequestContext.context_window` | Internal input ceiling before the output reserve: the smaller known value of `contextWindow` and `inputLimit`, or the sole known value. |
-| `ModelRequestContext.model_context_window` | Full model capacity. An input-only limit cannot supply this value. Context diagnostics expose this as `contextWindow`. |
-| Model / override `maxOutputTokens` | Provider output ceiling / requested per-step output budget. They supply the output reserve above; provider policy still resolves the actual request limit. |
-| `ModelRequestContext.declared_window` | Resolved compaction threshold, either explicit or automatic, frozen for the request. |
+Each request has a finite output budget: the resolved request budget, otherwise
+its known provider output ceiling, otherwise 8,000 tokens. Provider policy caps it
+at the known ceiling. With complete matching usage `R` and total window `C`, output
+is further limited to `C - R - 8000 - fixed thinking`, with a useful floor of
+`min(selected budget, 8000)`. Anthropic's text/thinking conversion is applied once.
+Without that usage anchor, including after compaction, the selected budget remains
+unchanged. Summary text is capped at the smaller selected budget and 8,000 tokens.
+These are request limits; they never rewrite configured model capacity.
 
-Before a main model step, the runtime compares the previous completed main
-request's actual **input tokens + output tokens** with the resolved threshold.
-Input usage must be positive; missing output usage counts as zero.
-The usage must belong to the same connection, model and current checkpoint.
-Compaction waits for a safe execution boundary. It does not add a second
-recent-reply reserve on top of the default 5% margin.
+Compaction captures a settled prefix and freezes its model, adapter and source for
+bounded summary repairs. When the model executor has spare capacity, summary work
+runs beside Main requests; otherwise the same compactor runs synchronously. A
+candidate is adopted only before a new Main request, preserving the exact prefix
+and all appended messages/tool results. Pruning waits while a candidate exists.
+Cancellation, completion and handoff cancel and drain outstanding summary work
+before the invocation seals. Only new accepted Main work renews automatic attempts.
 
-If total capacity or the output reserve is unknown, or reserving output leaves
-insufficient input space, no default threshold is guessed. An explicit threshold
-can still be used. Missing usable usage also prevents a proactive trigger.
-The 5% margin is a heuristic: new messages or tool results may exceed it because
-the complete next prompt is not locally tokenized. A provider context-overflow
-rejection before observable output therefore retains bounded compaction recovery;
-an output-length finish alone does not prove context overflow. The context
-meter's estimates are display-only.
+Observed usage and the growth reserve are heuristics, **not a proof that the next
+prompt fits**. New text, tools or media may still overflow. Only an explicit provider
+context-overflow rejection before observable output triggers bounded automatic
+compaction/retry; summary overflow fails without recursive compaction. Display
+estimates never authorize request admission.
 
-Per-request output capping remains a separate fallback. With a selected request
-budget `M`, full window `C` and matching usage `R`, it limits output to the remaining
-window minus 8,000 tokens for new input and any fixed Anthropic thinking budget,
-with a floor of `min(M, 8000)`. It neither changes configured capacity nor guarantees
-that the next prompt fits. The first main request after compaction is capped at
-8,000 tokens (or a smaller selected budget).
+A valid, closed output-length response is retained but ends the Turn with
+`model_incomplete`; its local tool calls are durably rejected and never dispatched.
+Malformed partial calls and unresolved provider effects remain strict failures.
+There is no automatic prose continuation. Explicit resume retains its existing
+stable-effect replay policy; a new user message can refer to the saved partial text.
 
-See [Host threshold resolution](../crates/runtime-host/src/execution/provider/context.rs),
+Internal request evidence distinguishes `ModelRequestContext.context_window`
+(the effective input ceiling), `model_context_window` (total capacity), and
+`declared_window` (the resolved trigger). Historical missing fields remain unknown.
+See [Host resolution](../crates/runtime-host/src/execution/provider/context.rs),
 [usage and output checks](../crates/agent/src/auto_context.rs), and
-[compaction admission/recovery](../crates/agent/src/steps.rs).
+[compaction lifecycle](../crates/agent/src/steps.rs).
 
 ## Web
 

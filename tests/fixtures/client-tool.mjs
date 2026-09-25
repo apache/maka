@@ -142,6 +142,7 @@ export async function verifyReadWorkflow(connection, workspace, reopened) {
       baseUrl: model.baseUrl,
       apiKey: 'dummy-read-fixture',
       enabledModelIds: ['fixture-model'],
+      modelOverrides: { 'fixture-model': { contextWindow: 200000 } },
     });
     const basis = created.connection;
     await request('connection.catalog.set-default-target', {

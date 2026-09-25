@@ -390,7 +390,7 @@ async fn file_approvals_are_exact_call_scoped_and_refuse_partial_or_protected_mu
         let patched = peer.rpc("connection.catalog.update",json!({
             "expected":{"connectionId":model.connection_id,"revision":2},
             "changes":{"name":"Recovery fixture","configuration":{"baseUrl":provider.base_url},"enabled":true,
-                "enabledModelIds":["fixture-model"],"modelOverrides":{"fixture-model":{"applyPatch":true}}}
+                "enabledModelIds":["fixture-model"],"modelOverrides":{"fixture-model":{"contextWindow":200000,"applyPatch":true}}}
         })).await;
         assert_eq!(patched["result"]["kind"],"committed","{patched}");
         start(&mut peer, "partial").await;

@@ -148,6 +148,11 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
     let commits = log.subscribe_commits();
     log.append(&write).await.unwrap();
     assert!(!commits.has_changed().unwrap());
+    let competing = event("active", write.event().fact.clone());
+    assert!(
+        log.append(&competing).await.is_err(),
+        "a new candidate cannot reuse a predecessor superseded after its source cut"
+    );
     assert!(
         log.prepare_context_compaction("session", Some("active"), 100, 8192, &mode)
             .await
@@ -263,15 +268,7 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
     log.append(&completion("active", "summary", "malformed"))
         .await
         .unwrap();
-    let source_again = log
-        .prepare_context_compaction("session", Some("active"), 100, 8192, &mode)
-        .await
-        .unwrap();
-    assert_eq!(
-        source.source_evidence.digest,
-        source_again.source_evidence.digest
-    );
-    let mut repair = request("active", "repair", ModelPurpose::Summary, &source_again)
+    let mut repair = request("active", "repair", ModelPurpose::Summary, &source)
         .event()
         .clone();
     if let Fact::ModelRequested { source_digest, .. } = &mut repair.fact {
@@ -282,13 +279,141 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
             .await
             .is_err()
     );
-    log.append(&request(
+    log.append(&request("active", "repair", ModelPurpose::Summary, &source))
+        .await
+        .unwrap();
+    log.append(&event(
         "active",
-        "repair",
-        ModelPurpose::Summary,
-        &source_again,
+        Fact::ModelObserved {
+            step_id: "repair".into(),
+            event: ModelEvent::PartDelta {
+                id: "partial".into(),
+                text: "private failed summary".into(),
+                provider_options: None,
+            },
+        },
     ))
     .await
     .unwrap();
+    log.append(&event(
+        "active",
+        Fact::ModelInterrupted {
+            step_id: "repair".into(),
+            status: maka_runtime::event::ModelInterruption::Failed,
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&request(
+        "active",
+        "last-repair",
+        ModelPurpose::Summary,
+        &source,
+    ))
+    .await
+    .unwrap();
+    log.append(&completion("active", "last-repair", "malformed"))
+        .await
+        .unwrap();
+    assert!(
+        log.append(&request(
+            "active",
+            "excess-repair",
+            ModelPurpose::Summary,
+            &source
+        ))
+        .await
+        .is_err()
+    );
+    assert!(
+        log.prepare_context_compaction("session", Some("active"), 100, 16384, &mode)
+            .await
+            .is_err(),
+        "summary events cannot renew their own attempt budget"
+    );
+    let main = log
+        .read_model_context("session", Some("active"), 100, 16384)
+        .await
+        .unwrap();
+    log.append(&request("active", "new-main", ModelPurpose::Main, &main))
+        .await
+        .unwrap();
+    log.append(&completion("active", "new-main", "new work"))
+        .await
+        .unwrap();
+    let next = log
+        .prepare_context_compaction("session", Some("active"), 100, 16384, &mode)
+        .await
+        .unwrap();
+    assert!(next.source_evidence.high_water > source.source_evidence.high_water);
+    // Main may finish after capture but before Summary's request is committed.
+    let raced = log
+        .read_model_context("session", Some("active"), 100, 16384)
+        .await
+        .unwrap();
+    log.append(&request("active", "raced-main", ModelPurpose::Main, &raced))
+        .await
+        .unwrap();
+    log.append(&completion(
+        "active",
+        "raced-main",
+        "completed before summary admission",
+    ))
+    .await
+    .unwrap();
+    log.append(&request(
+        "active",
+        "new-round",
+        ModelPurpose::Summary,
+        &next,
+    ))
+    .await
+    .unwrap();
+    log.append(&completion("active", "new-round", "malformed"))
+        .await
+        .unwrap();
+    assert!(
+        log.append(&request(
+            "active",
+            "stale-new-round",
+            ModelPurpose::Summary,
+            &main
+        ))
+        .await
+        .is_err(),
+        "a new source must cover the Main whose progress renews it"
+    );
+    let after = log
+        .prepare_context_compaction("session", Some("active"), 100, 32768, &mode)
+        .await
+        .unwrap();
+    log.append(&request(
+        "active",
+        "after-race",
+        ModelPurpose::Summary,
+        &after,
+    ))
+    .await
+    .unwrap();
+    log.append(&completion("active", "after-race", "malformed"))
+        .await
+        .unwrap();
+    // An allowed repair of an older round cannot roll back the progress fence.
+    log.append(&request(
+        "active",
+        "older-repair",
+        ModelPurpose::Summary,
+        &next,
+    ))
+    .await
+    .unwrap();
+    log.append(&completion("active", "older-repair", "malformed"))
+        .await
+        .unwrap();
+    assert!(
+        log.prepare_context_compaction("session", Some("active"), 100, 32768, &mode)
+            .await
+            .is_err()
+    );
     log.close().await.unwrap();
 }

@@ -117,7 +117,7 @@ export async function verifySessionWorkflow(connection, workspace, reopened, con
         configuration: { baseUrl: fixture.baseUrl },
         enabled: true,
         enabledModelIds: ['fixture-model'],
-        modelOverrides: { 'fixture-model': { thinkingLevels: ['off'] } },
+        modelOverrides: { 'fixture-model': { contextWindow: 200000, thinkingLevels: ['off'] } },
       },
     };
     const created = await request('connection.catalog.create', draft);

@@ -453,7 +453,7 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
                     let expected = serde_json::to_vec(&json!({
                         "projection":"maka.model-history.v1",
                         "prompt":[{"role":"user","content":[{"type":"text","text":"question cancelled"}]}],
-                        "tools":[], "providerOptions":{}
+                        "tools":[], "providerOptions":{}, "maxOutputTokens":8000
                     })).unwrap();
                     assert_eq!(*input_digest, format!("sha256:{:x}", Sha256::digest(expected)));
                 }

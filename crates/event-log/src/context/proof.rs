@@ -80,14 +80,16 @@ pub(super) async fn validate(
         &selection,
         Some(&(opened as i64, opening.clone())),
         &checkpoint.mode,
-        sequence,
+        checkpoint
+            .covered_through
+            .checked_add(1)
+            .ok_or_else(|| invalid("coverage overflow"))?,
     )
     .await?
         != checkpoint.covered_through
     {
         return Err(invalid("coverage is not the complete closed source"));
     }
-    boundary::summary_span(connection, event, sequence).await?;
     if evidence::selected(connection, &selection, checkpoint.covered_through)
         .await?
         .digest
@@ -116,10 +118,15 @@ pub(super) async fn validate(
     else {
         return Err(invalid("missing summary request"));
     };
-    let first_summary =
-        boundary::summary_start(connection, &event.invocation.invocation_id, sequence)
-            .await?
-            .ok_or_else(|| invalid("missing summary attempt"))?;
+    let first_summary = boundary::summary_start(
+        connection,
+        &event.invocation.invocation_id,
+        source_scope,
+        *source_high_water,
+        sequence,
+    )
+    .await?
+    .ok_or_else(|| invalid("missing summary attempt"))?;
     crate::archive::validate_summary(
         connection,
         &super::SourceEvidence {
@@ -157,13 +164,15 @@ pub(super) async fn validate(
     let changed_route: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'model_requested' AND sequence >= ?9 AND sequence < ?2
          AND json_extract(event_json, '$.fact.purpose') = 'summary'
+         AND json_extract(event_json, '$.fact.source_high_water') = ?5
+         AND json_extract(event_json, '$.fact.source_scope') = json(?10)
          AND (json_extract(event_json, '$.fact.model_id') != ?3 OR json_extract(event_json, '$.fact.route_identity') != ?4
            OR json_extract(event_json, '$.fact.source_high_water') != ?5 OR json_extract(event_json, '$.fact.source_digest') != ?6
            OR json_extract(event_json, '$.fact.checkpoint_event_id') IS NOT ?7
            OR json_extract(event_json, '$.fact.effective_source_digest') IS NOT ?8))",
     ).bind(&event.invocation.invocation_id).bind(sequence as i64)
         .bind(model_id).bind(route_identity).bind(checkpoint.covered_through as i64).bind(&checkpoint.source_digest)
-        .bind(&checkpoint.previous_checkpoint_id).bind(effective_source_digest).bind(first_summary as i64).fetch_one(&mut *connection).await?;
+        .bind(&checkpoint.previous_checkpoint_id).bind(effective_source_digest).bind(first_summary as i64).bind(serde_json::to_string(source_scope)?).fetch_one(&mut *connection).await?;
     if changed_route {
         return Err(invalid("summary request route changed"));
     }

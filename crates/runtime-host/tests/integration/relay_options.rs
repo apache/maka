@@ -196,7 +196,7 @@ async fn seed_catalog(owner: RootOwner, root: &Path) {
         "configuration":{"baseUrl":base_url}, "enabled": true,
         "enabledModelIds": models, "modelSource": "fetched", "modelsFetchedAt": 1,
         "models": models.iter().map(|model| serde_json::json!({
-            "id": model, "capabilities": {
+            "id": model, "contextWindow":400000, "capabilities": {
                 "parallelToolCalls": *model != "unknown-relay", "vision": false
             }
         })).collect::<Vec<_>>()

@@ -128,7 +128,7 @@ export async function verifyPruning(connection, workspace, reopened) {
         apiKey: 'pruning-fixture',
         baseUrl: model.baseUrl,
         enabledModelIds: ['fixture-model'],
-        modelOverrides: { 'fixture-model': { vision: false } },
+        modelOverrides: { 'fixture-model': { contextWindow: 200000, vision: false } },
       });
       assert.equal(created.kind, 'committed');
       const basis = created.connection;

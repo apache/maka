@@ -58,6 +58,7 @@ pub(super) async fn validate(
     }
     let resolved = resolve_model_purpose(input, *purpose).map_err(invalid)?;
     if resolved == ModelPurpose::Main && matches!(input, InvocationInput::Message { .. }) {
+        safety::summary_boundary(connection, &event.invocation.invocation_id).await?;
         return Ok(());
     }
     let selection = Selection::for_opening(connection, &opening).await?;
@@ -65,9 +66,6 @@ pub(super) async fn validate(
     safety::require_safe(connection, session, Some(&event.invocation.invocation_id)).await?;
     if resolved == ModelPurpose::Main {
         safety::model_boundary(connection, &event.invocation.invocation_id, i64::MAX as u64)
-            .await?;
-    } else {
-        safety::active_boundary(connection, &event.invocation.invocation_id, i64::MAX as u64)
             .await?;
     }
     let high = if resolved == ModelPurpose::Summary {
@@ -87,13 +85,14 @@ pub(super) async fn validate(
             },
             _ => return Err(invalid("invalid summary opening")),
         };
-        boundary::summary_span(connection, event, i64::MAX as u64).await?;
         boundary::source_fence(
             connection,
             &selection,
             Some(&(opened as i64, opening)),
             &mode,
-            i64::MAX as u64,
+            source_high_water
+                .checked_add(1)
+                .ok_or_else(|| invalid("source overflow"))?,
         )
         .await?
     } else {
@@ -138,10 +137,22 @@ pub(super) async fn validate(
     if resolved == ModelPurpose::Main {
         return Ok(());
     }
-    let first_summary =
-        boundary::summary_start(connection, &event.invocation.invocation_id, i64::MAX as u64)
-            .await?
-            .map(|sequence| sequence as i64);
+    let first_summary = boundary::summary_start(
+        connection,
+        &event.invocation.invocation_id,
+        source_scope,
+        *source_high_water,
+        i64::MAX as u64,
+    )
+    .await?
+    .map(|sequence| sequence as i64);
+    boundary::admit_summary(
+        connection,
+        &event.invocation.invocation_id,
+        first_summary.map(|value| value as u64),
+        *source_high_water,
+    )
+    .await?;
     let previous_effective: Option<(i64, Option<String>)> = sqlx::query_as(
         "SELECT sequence,json_extract(event_json,'$.fact.effective_source_digest') FROM runtime_events
          WHERE sequence = ?",

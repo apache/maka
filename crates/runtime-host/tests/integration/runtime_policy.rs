@@ -197,7 +197,7 @@ async fn set_model_tools(
     let updated = peer.rpc("connection.catalog.update",serde_json::json!({
         "expected":{"connectionId":connection,"revision":revision},
         "changes":{"name":"Recovery fixture","configuration":{"baseUrl":endpoint},"enabled":true,"enabledModelIds":["fixture-model"],
-            "modelOverrides":{"fixture-model":{"codeMode":code,"applyPatch":patch}}}
+            "modelOverrides":{"fixture-model":{"contextWindow":200000,"codeMode":code,"applyPatch":patch}}}
     })).await;
     assert_eq!(updated["result"]["kind"], "committed", "{updated}");
 }
@@ -238,7 +238,7 @@ async fn model_thinking_default_is_frozen_at_creation_not_replay() {
                     json!({
                         "expected":{"connectionId":model.connection_id,"revision":revision},
                         "changes":{"name":"Recovery fixture","configuration":{"baseUrl":endpoint},"enabled":true,
-                            "enabledModelIds":["fixture-model"],"modelOverrides":{"fixture-model":{
+                            "enabledModelIds":["fixture-model"],"modelOverrides":{"fixture-model":{"contextWindow":200000,
                                 "thinkingLevels":["low","high"],"defaultThinkingLevel":default
                             }}}
                     }),

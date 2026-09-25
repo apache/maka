@@ -31,7 +31,7 @@ pub(crate) async fn validate_append(
 ) -> Result<(), StoreError> {
     super::request::validate(connection, event).await?;
     match &event.fact {
-        Fact::ContextCheckpointRecorded { .. } => {
+        Fact::ContextCheckpointRecorded { checkpoint } => {
             safety::current_opening(
                 connection,
                 &event.invocation.session_id,
@@ -44,8 +44,22 @@ pub(crate) async fn validate_append(
                 Some(&event.invocation.invocation_id),
             )
             .await?;
-            safety::active_boundary(connection, &event.invocation.invocation_id, i64::MAX as u64)
+            safety::settled_boundary(connection, &event.invocation.invocation_id, i64::MAX as u64)
                 .await?;
+            let (_, opening) = proof::by_kind(
+                connection,
+                &event.invocation.invocation_id,
+                "invocation_opened",
+                None,
+            )
+            .await?;
+            let selection = Selection::for_opening(connection, &opening).await?;
+            let current = read::latest_record(connection, &selection, i64::MAX as u64)
+                .await?
+                .map(|record| record.event.id);
+            if current != checkpoint.previous_checkpoint_id {
+                return Err(invalid("checkpoint predecessor changed before adoption"));
+            }
             chain(connection, event, i64::MAX as u64, false).await?;
         }
         Fact::InvocationEnded { outcome } => {

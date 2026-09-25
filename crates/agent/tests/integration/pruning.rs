@@ -106,8 +106,8 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let request = fixture::read_request(&mut socket).await;
                     assert_eq!(
-                        request["max_tokens"], 8000,
-                        "Summary limit is independent of Main"
+                        request["max_tokens"], 4000,
+                        "Summary also respects the selected output budget"
                     );
                     assert!(
                         request["messages"]

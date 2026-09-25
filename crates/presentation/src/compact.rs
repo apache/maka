@@ -25,7 +25,7 @@ impl InvocationView {
     // Summary attempts produce no transcript rows, whether standalone or inside
     // a Message Turn. Every request records its explicit purpose.
     pub(super) fn compact(&mut self, event: &RuntimeEvent) -> Result<bool, ProjectionError> {
-        if let State::Active { invocation, step } = &self.state {
+        if let State::Active { invocation, .. } = &self.state {
             if *invocation != event.invocation {
                 return Err(ProjectionError::Invalid("invocation identity changed"));
             }
@@ -35,7 +35,7 @@ impl InvocationView {
                 ..
             } = &event.fact
             {
-                if step.is_some() || self.summary_step.is_some() {
+                if self.summary_step.is_some() {
                     return Err(ProjectionError::Invalid("overlapping model steps"));
                 }
                 self.summary_step = Some(step_id.clone());
@@ -56,7 +56,10 @@ impl InvocationView {
                     {
                         self.summary_step = None;
                     }
-                    _ => return Err(ProjectionError::Invalid("unexpected fact during summary")),
+                    Fact::InvocationEnded { .. } => {
+                        return Err(ProjectionError::Invalid("unfinished summary at completion"));
+                    }
+                    _ => {} // Main and tool facts retain their ordinary identity checks.
                 }
             }
         }

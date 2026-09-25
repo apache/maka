@@ -25,6 +25,31 @@ pub(crate) async fn insert(
     connection: &mut SqliteConnection,
     write: &EventWrite,
 ) -> Result<(), StoreError> {
+    if let maka_runtime::event::Fact::ModelRequested {
+        purpose: maka_runtime::context::ModelPurpose::Summary,
+        source_scope,
+        source_high_water,
+        ..
+    } = &write.event().fact
+    {
+        let first: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT c.digest FROM runtime_events r LEFT JOIN model_request_compositions c ON c.event_id=r.event_id
+             WHERE r.invocation_id=?1 AND r.kind='model_requested' AND r.event_id!=?2
+               AND json_extract(r.event_json,'$.fact.purpose')='summary'
+               AND json_extract(r.event_json,'$.fact.source_scope')=json(?3)
+               AND json_extract(r.event_json,'$.fact.source_high_water')=?4
+             ORDER BY r.sequence LIMIT 1",
+        ).bind(&write.event().invocation.invocation_id).bind(&write.event().id)
+            .bind(serde_json::to_string(source_scope)?).bind(*source_high_water as i64)
+            .fetch_optional(&mut *connection).await?;
+        if first.is_some_and(|digest| {
+            digest.as_deref() != write.composition().map(|surface| surface.digest())
+        }) {
+            return Err(StoreError::InvalidTransition(
+                "summary repair changed frozen composition".into(),
+            ));
+        }
+    }
     let Some(surface) = write.composition() else {
         return Ok(());
     };

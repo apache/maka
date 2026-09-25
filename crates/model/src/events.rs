@@ -184,7 +184,11 @@ impl Normalizer {
                 if !self.open.is_empty() || !self.tool_input.is_empty() {
                     return Err(invalid("finish with incomplete model parts"));
                 }
-                let reason = string(&value["finishReason"], "unified")?;
+                let reason = if value["finishReason"]["raw"] == "model_context_window_exceeded" {
+                    "length".to_owned()
+                } else {
+                    string(&value["finishReason"], "unified")?
+                };
                 let reason = match reason.as_str() {
                     "stop" => ModelFinishReason::Stop,
                     "tool-calls" => ModelFinishReason::ToolCalls,

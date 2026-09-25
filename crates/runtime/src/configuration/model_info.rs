@@ -62,7 +62,7 @@ pub struct ModelInfo {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
-    /// Provider output ceiling; also the default output reserve for auto-compaction.
+    /// Provider output ceiling; also the default request budget when none is selected.
     pub max_output_tokens: Option<u64>,
     /// Choices reported by the provider plugin.
     #[serde(

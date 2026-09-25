@@ -266,7 +266,11 @@ async fn malformed_summary_repairs_once_then_keeps_previous_context() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn length_retries_once_for_compact_but_never_accepts_truncated_main() {
+async fn length_repairs_summary_but_retains_incomplete_main_without_success() {
+    use crate::support::agent_loop;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
         EventLog::open(&directory.path().join("events.sqlite"))
@@ -286,7 +290,17 @@ async fn length_retries_once_for_compact_but_never_accepts_truncated_main() {
         ] {
             let (mut socket, _) = listener.accept().await.unwrap();
             requests.push(read_request(&mut socket).await);
-            respond(&mut socket, text, reason).await;
+            if text == "truncated-main" {
+                let partial = json!({"id":"partial","object":"chat.completion.chunk","created":1,"model":"test",
+                    "choices":[{"index":0,"delta":{"content":text,"tool_calls":[{"index":0,"id":"unexecuted","type":"function",
+                        "function":{"name":"echo","arguments":"{\"value\":42}"}}]},"finish_reason":null}]});
+                let end = json!({"id":"partial","object":"chat.completion.chunk","created":1,"model":"test",
+                    "choices":[{"index":0,"delta":{},"finish_reason":reason}]});
+                let body = format!("data: {partial}\n\ndata: {end}\n\ndata: [DONE]\n\n");
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            } else {
+                respond(&mut socket, text, reason).await;
+            }
         }
         requests
     });
@@ -299,12 +313,20 @@ async fn length_retries_once_for_compact_but_never_accepts_truncated_main() {
         .run(input(&base, "shorten", true), CancellationToken::new())
         .await
         .unwrap();
-    assert!(
-        worker
-            .run(input(&base, "truncated", false), CancellationToken::new())
-            .await
-            .is_err()
+    let effects = Arc::new(AtomicUsize::new(0));
+    let truncated_input = agent_loop::input(
+        &base,
+        "truncated",
+        Arc::new(agent_loop::Effect {
+            log: log.clone(),
+            count: effects.clone(),
+        }),
     );
+    assert!(matches!(
+        worker.run(truncated_input, CancellationToken::new()).await,
+        Err(maka_agent::RunError::ModelIncomplete)
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
     worker
         .run(
             input(&base, "after-failure", false),
@@ -314,10 +336,10 @@ async fn length_retries_once_for_compact_but_never_accepts_truncated_main() {
         .unwrap();
     let requests = server.await.unwrap();
     assert!(
-        !requests[4]["messages"]
+        requests[4]["messages"]
             .to_string()
             .contains("truncated-main"),
-        "failed response remains display evidence, never model replay"
+        "valid incomplete text remains available to a new user message"
     );
     assert!(
         requests[2]["messages"]
@@ -336,13 +358,27 @@ async fn length_retries_once_for_compact_but_never_accepts_truncated_main() {
         .iter()
         .filter(|event| event.event.invocation.invocation_id == "invocation-truncated")
         .collect();
+    assert!(truncated.iter().any(|event| matches!(
+        &event.event.fact,
+        Fact::ToolRejected {
+            reason: maka_runtime::tool_call::ToolRejection::PreparationFailed { .. },
+            ..
+        }
+    )));
+    assert!(
+        !truncated
+            .iter()
+            .any(|event| matches!(event.event.fact, Fact::ToolDispatched { .. }))
+    );
     assert!(
         truncated
             .iter()
-            .any(|event| matches!(event.event.fact, Fact::ModelInterrupted { .. }))
+            .any(|event| matches!(&event.event.fact, Fact::InvocationEnded {
+                outcome: InvocationOutcome::Failed { class, .. }
+            } if class == "model_incomplete"))
     );
     assert!(
-        !truncated
+        truncated
             .iter()
             .any(|event| matches!(event.event.fact, Fact::ModelCompleted { .. }))
     );

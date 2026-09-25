@@ -67,15 +67,29 @@ async fn hosted_tools_cross_the_real_sdks_on_http_and_websocket_without_becoming
 
 async fn scenario() {
     let executor = ModelExecutor::new(1, Duration::from_secs(10)).unwrap();
-    for (kind, websocket) in [
-        (ProviderKind::OpenaiResponses, false),
-        (ProviderKind::OpenaiResponses, true),
-        (ProviderKind::Anthropic, false),
+    for (kind, websocket, incomplete) in [
+        (ProviderKind::OpenaiResponses, false, false),
+        (ProviderKind::OpenaiResponses, true, false),
+        (ProviderKind::Anthropic, false, false),
+        (ProviderKind::OpenaiResponses, false, true),
+        (ProviderKind::OpenaiResponses, true, true),
+        (ProviderKind::Anthropic, false, true),
     ] {
         let openai = matches!(kind, ProviderKind::OpenaiResponses);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let events = if openai { responses() } else { anthropic() };
+        let mut events = if openai { responses() } else { anthropic() };
+        if incomplete {
+            if openai {
+                events.last_mut().unwrap()["type"] = json!("response.incomplete");
+            } else {
+                let terminal = events
+                    .iter_mut()
+                    .find(|event| event["type"] == "message_delta")
+                    .unwrap();
+                terminal["delta"]["stop_reason"] = json!("model_context_window_exceeded");
+            }
+        }
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             if websocket {
@@ -134,6 +148,10 @@ async fn scenario() {
             builder.push(event.unwrap()).unwrap();
         }
         let step = builder.finish().unwrap();
+        assert_eq!(
+            step.finish_reason == maka_runtime::model::ModelFinishReason::Length,
+            incomplete
+        );
         assert!(
             step.tool_calls()
                 .all(|call| call.provider_executed && call.name == "Research"),
@@ -148,6 +166,12 @@ async fn scenario() {
         );
         assert!(step.parts.iter().any(|part| matches!(part, ModelPart::Source {source: ModelSource::Url {url, ..}} if url == "https://example.com/source")));
         stream.cancel_and_wait().await;
+        if websocket && incomplete {
+            assert!(
+                !lane.as_ref().unwrap().needs_confirmation(),
+                "an incomplete response without details cannot authorize cached continuation"
+            );
+        }
         drop(lane);
         let wire = server.await.unwrap();
         assert_eq!(wire["tools"].as_array().unwrap().len(), 1);

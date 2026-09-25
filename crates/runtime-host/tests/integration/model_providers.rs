@@ -145,6 +145,8 @@ async fn external_provider_authentication_execution_retirement_and_recovery_shar
             assert_eq!(success(peer.rpc("oauth.login.query", json!({"attemptId":"external-login"})).await), authenticated);
             turn(&mut peer, "reopened", "completed").await;
             assert_eq!(model.requests.lock().unwrap().len(), 3, "retirement cannot select a fallback provider or replay work");
+            assert!(model.requests.lock().unwrap().iter().all(|request| request["max_tokens"] == 1024),
+                "a plugin's absent request override still respects its advertised output ceiling");
             peer.close().await;
             stop.cancel();
             server.await.unwrap().unwrap();

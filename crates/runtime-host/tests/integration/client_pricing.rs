@@ -152,7 +152,7 @@ async fn in_flight_model_quotes_are_frozen_and_next_admission_observes_rate_chan
     assert_eq!(records.total, 2);
     assert_eq!(
         records.attempts[0].outcome,
-        maka_event_log::usage::Outcome::Error
+        maka_event_log::usage::Outcome::Success
     );
     for (attempt, revision, expected) in [
         (&records.attempts[0], 2, 0.0012),

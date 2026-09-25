@@ -72,9 +72,7 @@ pub(super) async fn source_fence(
                     "mid-turn anchor is not the exact canonical opening",
                 ));
             }
-            summary_start(connection, &event.invocation.invocation_id, through)
-                .await?
-                .unwrap_or(through) as i64
+            through as i64
         }
         _ => return Err(invalid("checkpoint mode does not match its opening")),
     };
@@ -85,63 +83,67 @@ pub(super) async fn source_fence(
                 "mid-turn source has no completed work after its anchor",
             ));
         }
-        safety::active_boundary(connection, &event.invocation.invocation_id, high).await?;
+        safety::settled_boundary(connection, &event.invocation.invocation_id, high).await?;
     } else if high > 0 {
         safety::closed_boundary(connection, session, high).await?;
     }
     Ok(high)
 }
 
-/// The summary attempt may repair its output, but never advance its source.
-pub(super) async fn summary_span(
-    connection: &mut SqliteConnection,
-    event: &RuntimeEvent,
-    through: u64,
-) -> Result<(), StoreError> {
-    let first = summary_start(connection, &event.invocation.invocation_id, through).await?;
-    let Some(first) = first else {
-        return Ok(());
-    };
-    let work: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND sequence > ?2 AND sequence < ?3
-         AND (kind IN ('message_steered','tool_dispatched','tool_rejected','tool_settled')
-           OR (kind = 'model_requested' AND json_extract(event_json, '$.fact.purpose') != 'summary')))",
-    ).bind(&event.invocation.invocation_id).bind(first as i64).bind(through as i64).fetch_one(connection).await?;
-    if work {
-        return Err(invalid(
-            "message, main or tool work interleaved with summary repairs",
-        ));
-    }
-    Ok(())
-}
-
-/// Repairs share one source until a checkpoint commits. Only a subsequent
-/// accepted main step permits another attempt. `through` excludes the checkpoint
-/// being validated, so later rounds cannot alter a historical proof.
+/// The frozen source key owns a round. Route/digest changes cannot create a new
+/// repair budget; the first request's existing step identity is the round root.
 pub(super) async fn summary_start(
     connection: &mut SqliteConnection,
     invocation: &str,
+    scope: &maka_runtime::event::LogScope,
+    high: u64,
     through: u64,
 ) -> Result<Option<u64>, StoreError> {
-    let (first, renewed): (Option<i64>, bool) = sqlx::query_as(
-        "WITH boundary AS (
-           SELECT COALESCE(MAX(sequence), 0) AS cut FROM runtime_events
-           WHERE invocation_id = ?1 AND kind = 'context_checkpoint_recorded' AND sequence < ?2)
-         SELECT (SELECT MIN(s.sequence) FROM runtime_events s
-           WHERE s.invocation_id = ?1 AND s.kind = 'model_requested' AND s.sequence > cut AND s.sequence < ?2
-           AND json_extract(s.event_json, '$.fact.purpose') = 'summary'),
-           cut = 0 OR EXISTS (SELECT 1 FROM runtime_events completed
-             JOIN runtime_events request ON request.invocation_id = completed.invocation_id
-               AND request.operation_id = completed.operation_id AND request.kind = 'model_requested'
-             JOIN runtime_events opening ON opening.invocation_id = completed.invocation_id AND opening.kind = 'invocation_opened'
-             WHERE completed.invocation_id = ?1 AND completed.kind = 'model_completed'
-               AND completed.sequence > cut AND completed.sequence < ?2
-               AND json_extract(opening.event_json, '$.fact.input.kind') != 'context_compact'
-               AND json_extract(request.event_json, '$.fact.purpose') = 'main')
-         FROM boundary",
-    ).bind(invocation).bind(through as i64).fetch_one(connection).await?;
-    if !renewed {
-        return Err(invalid("compaction requires a newly accepted main step"));
-    }
+    let first: Option<i64> = sqlx::query_scalar(
+        "SELECT MIN(sequence) FROM runtime_events WHERE invocation_id = ?1
+         AND kind = 'model_requested' AND sequence < ?2
+         AND json_extract(event_json, '$.fact.purpose') = 'summary'
+         AND json_extract(event_json, '$.fact.source_high_water') = ?3
+         AND json_extract(event_json, '$.fact.source_scope') = json(?4)",
+    )
+    .bind(invocation)
+    .bind(through as i64)
+    .bind(high as i64)
+    .bind(serde_json::to_string(scope)?)
+    .fetch_one(connection)
+    .await?;
     first.map(crate::sequence_number).transpose()
+}
+
+/// Renewal must be Main progress covered by the new source. A fast Main can
+/// finish before the prior Summary request commits; request arrival order is
+/// not a progress fence, and late repairs must not roll that fence backward.
+pub(super) async fn admit_summary(
+    connection: &mut SqliteConnection,
+    invocation: &str,
+    first: Option<u64>,
+    high: u64,
+) -> Result<(), StoreError> {
+    let (pending, attempts, renewed): (bool, i64, bool) = sqlx::query_as(
+        "WITH summaries AS (
+           SELECT * FROM runtime_events WHERE invocation_id = ?1 AND kind = 'model_requested'
+             AND json_extract(event_json, '$.fact.purpose') = 'summary')
+         SELECT EXISTS(SELECT 1 FROM summaries s WHERE NOT EXISTS(
+           SELECT 1 FROM runtime_events t WHERE t.invocation_id=s.invocation_id
+             AND t.operation_id=s.operation_id AND t.kind IN ('model_completed','model_interrupted'))),
+           (SELECT COUNT(*) FROM summaries WHERE sequence >= ?2),
+           NOT EXISTS(SELECT 1 FROM summaries) OR EXISTS(
+             SELECT 1 FROM runtime_events c JOIN runtime_events r
+               ON r.invocation_id=c.invocation_id AND r.operation_id=c.operation_id AND r.kind='model_requested'
+             WHERE c.invocation_id=?1 AND c.kind='model_completed'
+               AND json_extract(r.event_json, '$.fact.purpose')='main'
+               AND c.sequence <= ?3 AND c.sequence > (
+                 SELECT MAX(json_extract(event_json,'$.fact.source_high_water')) FROM summaries))",
+    ).bind(invocation).bind(first.map(|v| v as i64)).bind(high as i64).fetch_one(connection).await?;
+    if pending || (first.is_some() && attempts >= 3) || (first.is_none() && !renewed) {
+        return Err(invalid(
+            "summary requires settled work and a bounded repair budget",
+        ));
+    }
+    Ok(())
 }

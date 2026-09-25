@@ -232,6 +232,7 @@ fn failure_class(error: &RunError) -> &'static str {
         RunError::InvalidInput(_) => "invalid_input",
         RunError::Cancelled | RunError::Model(maka_model::ModelError::Cancelled) => "cancelled",
         RunError::StepLimit => "step_limit",
+        RunError::ModelIncomplete => "model_incomplete",
         RunError::Commit(_) => "event_commit",
         RunError::Store(_) => "event_store",
         RunError::Model(maka_model::ModelError::TimedOut) => "model_timeout",

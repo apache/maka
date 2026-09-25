@@ -66,6 +66,8 @@ pub enum RunError {
     Cancelled,
     #[error("model step limit reached")]
     StepLimit,
+    #[error("model output was incomplete; local tools from this response were not executed")]
+    ModelIncomplete,
     #[error(transparent)]
     Commit(#[from] CommitError),
     #[error(transparent)]
@@ -78,6 +80,7 @@ pub enum RunError {
     Internal(String),
 }
 
+#[derive(Clone)]
 pub struct RunInput {
     /// Optional for standalone adapters; Host executions supply a public provider source.
     pub model_source: Option<Arc<dyn ModelSource>>,
@@ -91,13 +94,14 @@ pub struct RunInput {
     pub request_fingerprint: Option<String>,
     pub provider: ProviderConfig,
     pub provider_options: Value,
-    /// Main-only output limit for the current logical step. Summary has its own limit.
+    /// Resolved SDK reply budget; summaries additionally cap their text at 8K.
     pub main_output_limit: Option<u64>,
     /// Current selected-model capability; image bytes are projected per request.
     pub supports_vision: bool,
     pub configuration: InvocationConfiguration,
 }
 
+#[derive(Clone)]
 pub enum RunWork {
     Handoff {
         source: maka_runtime::continuation::RunBoundary,

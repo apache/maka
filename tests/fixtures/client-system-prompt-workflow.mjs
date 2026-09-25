@@ -86,6 +86,7 @@ export async function verifySystemPrompt(connection, workspace, reopened) {
       path: '/v1/chat/completions',
       model: modelId,
       parallel: true,
+      outputLimit: 8000,
       marker,
       answer: 'prompt completed',
       ...extra,
@@ -134,6 +135,7 @@ export async function verifySystemPrompt(connection, workspace, reopened) {
       baseUrl: fixture.baseUrl,
       apiKey: secret,
       enabledModelIds: [modelId],
+      modelOverrides: { [modelId]: { contextWindow: 200000 } },
     });
     const input = sessionInput(
       workspace,

@@ -32,6 +32,9 @@ use std::sync::{
 use tokio::{net::TcpListener, sync::Barrier};
 use tokio_util::sync::CancellationToken;
 
+#[path = "auto_context/background.rs"]
+mod background;
+
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {
     Some(ModelRequestContext {
         provider_id: "openai".into(),
@@ -93,7 +96,7 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
         assert_eq!(
             requests.last().unwrap()["max_tokens"],
             if expected {
-                8000
+                200_000
             } else if matching {
                 191_930 // 200K capacity, 70 observed retained tokens, 8K growth reserve.
             } else {

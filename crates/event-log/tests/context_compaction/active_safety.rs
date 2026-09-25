@@ -104,3 +104,97 @@ async fn active_cuts_require_settled_effects_or_explicit_retry_safety() {
         log.close().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn private_summary_failure_allows_main_progress_only_without_provider_effects() {
+    for provider_effect in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let log = EventLog::open(&directory.path().join("summary.sqlite"))
+            .await
+            .unwrap();
+        let anchor = opening("active");
+        log.append(&anchor).await.unwrap();
+        let source = log
+            .read_model_context("session", Some("active"), 100, 16384)
+            .await
+            .unwrap();
+        log.append(&request("active", "main", ModelPurpose::Main, &source))
+            .await
+            .unwrap();
+        log.append(&completion("active", "main", "completed work"))
+            .await
+            .unwrap();
+        let mode = CheckpointMode::MidTurn {
+            anchor_event_id: anchor.event().id.clone(),
+        };
+        let source = log
+            .prepare_context_compaction("session", Some("active"), 100, 16384, &mode)
+            .await
+            .unwrap();
+        log.append(&request(
+            "active",
+            "summary",
+            ModelPurpose::Summary,
+            &source,
+        ))
+        .await
+        .unwrap();
+        let observation = if provider_effect {
+            ModelEvent::ToolCall(maka_runtime::model::ModelToolCall {
+                id: "remote".into(),
+                name: "search".into(),
+                input: json!({}),
+                provider_executed: true,
+                provider_options: None,
+            })
+        } else {
+            ModelEvent::PartDelta {
+                id: "text".into(),
+                text: "private partial text".into(),
+                provider_options: None,
+            }
+        };
+        log.append(&event(
+            "active",
+            Fact::ModelObserved {
+                step_id: "summary".into(),
+                event: observation,
+            },
+        ))
+        .await
+        .unwrap();
+        log.append(&event(
+            "active",
+            Fact::ModelInterrupted {
+                step_id: "summary".into(),
+                status: maka_runtime::event::ModelInterruption::Failed,
+            },
+        ))
+        .await
+        .unwrap();
+        let tail = log
+            .read_model_context("session", Some("active"), 100, 16384)
+            .await
+            .unwrap();
+        let next = log
+            .append(&request("active", "next", ModelPurpose::Main, &tail))
+            .await;
+        assert_eq!(
+            next.is_ok(),
+            !provider_effect,
+            "private summary is not permission to hide a remote effect"
+        );
+        if !provider_effect {
+            log.append(&completion("active", "next", "new work"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            log.prepare_context_compaction("session", Some("active"), 100, 32768, &mode)
+                .await
+                .is_ok(),
+            !provider_effect
+        );
+        log.close().await.unwrap();
+    }
+}

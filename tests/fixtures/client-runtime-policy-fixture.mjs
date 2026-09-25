@@ -63,6 +63,7 @@ export async function configureModel(request, baseUrl = 'http://127.0.0.1:9/v1')
     baseUrl: baseUrl,
     apiKey: 'runtime-policy-test-model-key',
     enabledModelIds: ['fixture-model'],
+    modelOverrides: { 'fixture-model': { contextWindow: 200000 } },
   });
   const selected = await request('connection.catalog.set-default-target', {
     expectedCatalogRevision: created.catalogRevision,

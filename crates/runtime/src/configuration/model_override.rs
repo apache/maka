@@ -94,7 +94,7 @@ pub struct ModelOverride {
         deserialize_with = "present"
     )]
     /// Optional override of the automatic compaction threshold, in retained tokens.
-    /// By default Host reserves maximum output, then leaves 5% input-growth headroom.
+    /// By default Host uses 85% of the smaller total window/input ceiling.
     pub compaction_threshold: Option<u64>,
     #[serde(
         default,

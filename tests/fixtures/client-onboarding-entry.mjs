@@ -76,6 +76,7 @@ async function workflow(connection, workspace, reopened) {
   const models = Array.from({ length: 445 }, (_, index) => ({
     id: index === 0 ? 'one' : index === 1 ? 'two' : `model-${index}`,
     name: `Model ${index}`,
+    context_length: 200000,
     description: 'Representative model metadata: multilingual 中文, quotes " and newline\n'.repeat(
       8,
     ),

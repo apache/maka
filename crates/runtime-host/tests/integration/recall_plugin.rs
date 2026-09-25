@@ -57,7 +57,7 @@ async fn scenario() {
     let updated = config.update_connection(serde_json::from_value(json!({
         "expected":{"connectionId":model.connection_id,"revision":2},
         "changes":{"name":"Recall fixture","configuration":{"baseUrl":provider.base_url},"enabled":true,
-            "enabledModelIds":[model.model],"modelOverrides":{"fixture-model":{"vision":true}}}
+            "enabledModelIds":[model.model],"modelOverrides":{"fixture-model":{"contextWindow":200000,"vision":true}}}
     })).unwrap()).await.unwrap();
     assert!(matches!(
         updated,

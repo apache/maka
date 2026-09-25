@@ -174,15 +174,7 @@ pub(super) async fn closed_boundary(
     Ok(())
 }
 
-/// A live opening is allowed; every covered model and tool operation must close.
-pub(crate) async fn active_boundary(
-    connection: &mut SqliteConnection,
-    invocation: &str,
-    through: u64,
-) -> Result<(), StoreError> {
-    execution_boundary(connection, invocation, through, Boundary::Active).await
-}
-
+/// A live opening is allowed; covered effects must be settled.
 pub(crate) async fn settled_boundary(
     connection: &mut SqliteConnection,
     invocation: &str,
@@ -202,7 +194,6 @@ pub(crate) async fn model_boundary(
 }
 
 enum Boundary {
-    Active,
     Settled,
     Model,
 }
@@ -218,6 +209,39 @@ const INDEPENDENT_CELLS: &str = "WITH RECURSIVE independent(operation_id) AS (
       AND child.kind IN ('tool_dispatched','tool_rejected')
 )";
 
+// Only admitted Summary requests without tool observations are private work.
+// Recovery still sees them; foreground readiness may ignore them. Parameters
+// 1 and 2 are invocation identity and the historical upper cut.
+pub(crate) const PRIVATE_SUMMARIES: &str = "private_summaries(operation_id) AS (
+  SELECT r.operation_id FROM runtime_events r WHERE r.invocation_id=?1 AND r.sequence<=?2
+    AND r.kind='model_requested' AND json_extract(r.event_json,'$.fact.purpose')='summary'
+    AND NOT EXISTS(SELECT 1 FROM runtime_events o WHERE o.invocation_id=r.invocation_id
+      AND json_extract(o.event_json,'$.fact.step_id')=r.operation_id AND o.kind='model_observed' AND o.sequence<=?2
+      AND json_extract(o.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result'))
+)";
+
+/// Ordinary Message requests retain their existing trace-admission contract,
+/// but may overlap only private Summary work, never observed summary tools.
+pub(super) async fn summary_boundary(
+    connection: &mut SqliteConnection,
+    invocation: &str,
+) -> Result<(), StoreError> {
+    let unsafe_summary: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "WITH {PRIVATE_SUMMARIES} SELECT EXISTS(SELECT 1 FROM runtime_events r
+         WHERE r.invocation_id=?1 AND r.kind='model_requested'
+           AND json_extract(r.event_json,'$.fact.purpose')='summary'
+           AND r.operation_id NOT IN (SELECT operation_id FROM private_summaries))"
+    )))
+    .bind(invocation)
+    .bind(i64::MAX)
+    .fetch_one(connection)
+    .await?;
+    if unsafe_summary {
+        return Err(invalid("summary contains tool observations"));
+    }
+    Ok(())
+}
+
 /// The prompt's immutable cut may lag only asynchronous cell events, not a new
 /// model step, direct tool result, checkpoint, or other selected history.
 pub(crate) async fn model_source_unchanged(
@@ -228,11 +252,13 @@ pub(crate) async fn model_source_unchanged(
 ) -> Result<(), StoreError> {
     let filter = Selection::predicate("e", "?6");
     let changed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{INDEPENDENT_CELLS}
+        "{INDEPENDENT_CELLS}, {PRIVATE_SUMMARIES}
          SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.sequence > ?3
            AND json_extract(e.event_json,'$.invocation.session_id')=?5 AND {filter}
            AND NOT (e.invocation_id=?1 AND e.kind IN ('tool_dispatched','tool_settled','tool_rejected')
-             AND e.operation_id IN (SELECT operation_id FROM independent)))"
+             AND e.operation_id IN (SELECT operation_id FROM independent))
+           AND NOT (e.invocation_id=?1 AND e.kind IN ('model_requested','model_observed','model_completed','model_interrupted')
+             AND json_extract(e.event_json,'$.fact.step_id') IN (SELECT operation_id FROM private_summaries)))"
     )))
     .bind(invocation)
     .bind(i64::MAX)
@@ -255,12 +281,14 @@ async fn execution_boundary(
     boundary: Boundary,
 ) -> Result<(), StoreError> {
     let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{INDEPENDENT_CELLS}
+        "{INDEPENDENT_CELLS}, {PRIVATE_SUMMARIES}
         SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id = ?1 AND e.sequence <= ?2 AND (
           (e.kind = 'tool_dispatched' AND NOT EXISTS(SELECT 1 FROM runtime_events t
              WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind = 'tool_settled' AND t.sequence <= ?2)
              AND e.operation_id NOT IN (SELECT operation_id FROM independent))
-          OR (e.kind = 'model_requested' AND NOT EXISTS(SELECT 1 FROM runtime_events t
+          OR (e.kind = 'model_requested'
+             AND NOT (?4 AND e.operation_id IN (SELECT operation_id FROM private_summaries))
+             AND NOT EXISTS(SELECT 1 FROM runtime_events t
              WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind IN ('model_completed','model_interrupted') AND t.sequence <= ?2))
           OR (e.kind = 'model_completed' AND EXISTS(SELECT 1 FROM json_each(e.event_json, '$.fact.output.parts') p
              WHERE json_extract(p.value, '$.kind') = 'tool_call' AND json_extract(p.value, '$.call.provider_executed') = 0
@@ -277,11 +305,7 @@ async fn execution_boundary(
                      AND json_extract(barrier.event_json, '$.fact.event.data.provider_executed')=1)
                    OR (json_extract(barrier.event_json, '$.fact.event.data.provider_options') IS NOT NULL
                      AND json_extract(barrier.event_json, '$.fact.event.data.provider_options') != '{{}}'))))
-             AND NOT (?3 AND EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=e.invocation_id AND r.operation_id=e.operation_id
-               AND r.kind='model_requested' AND json_extract(r.event_json,'$.fact.purpose')='summary')
-               AND NOT EXISTS(SELECT 1 FROM runtime_events o WHERE o.invocation_id=e.invocation_id
-                 AND json_extract(o.event_json,'$.fact.step_id')=e.operation_id AND o.kind='model_observed'
-                 AND json_extract(o.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result')))
+             AND NOT ((?3 OR ?4) AND e.operation_id IN (SELECT operation_id FROM private_summaries))
              AND EXISTS(SELECT 1 FROM runtime_events o
              WHERE o.invocation_id = e.invocation_id AND json_extract(o.event_json, '$.fact.step_id') = e.operation_id
              AND o.kind = 'model_observed' AND o.sequence <= ?2))

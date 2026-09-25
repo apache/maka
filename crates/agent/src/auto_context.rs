@@ -30,20 +30,14 @@ use tokio_util::sync::CancellationToken;
 pub(super) fn output_limit(
     input: &RunInput,
     source: &ModelContextSource,
-    reshaped: bool,
 ) -> Result<Option<u64>, RunError> {
-    const RECOVERY_OUTPUT: u64 = 8000;
-    let limit = input.main_output_limit;
-    if reshaped {
-        return Ok(Some(limit.unwrap_or(RECOVERY_OUTPUT).min(RECOVERY_OUTPUT)));
-    }
-    let Some((limit, window)) = limit.zip(
-        input
-            .context
-            .as_ref()
-            .and_then(|context| context.model_context_window),
-    ) else {
-        return Ok(limit);
+    let limit = input.main_output_limit.unwrap_or(8000);
+    let Some(window) = input
+        .context
+        .as_ref()
+        .and_then(|context| context.model_context_window)
+    else {
+        return Ok(Some(limit));
     };
     let LatestMainContext::Selected(latest) = &source.latest_main else {
         return Ok(Some(limit));
@@ -69,7 +63,10 @@ pub(super) fn output_limit(
     let Some(tokens) = latest.usage.input_tokens.filter(|tokens| *tokens > 0) else {
         return Ok(Some(limit));
     };
-    let retained = tokens.saturating_add(latest.usage.output_tokens.unwrap_or(0));
+    let Some(output) = latest.usage.output_tokens else {
+        return Ok(Some(limit));
+    };
+    let retained = tokens.saturating_add(output);
     let thinking = input
         .provider_options
         .pointer("/anthropic/thinking")
@@ -110,6 +107,7 @@ pub(super) fn due(input: &RunInput, source: &ModelContextSource) -> bool {
     };
     if !latest.projection_current
         || latest.model_id != input.provider.model
+        || crate::model_attempt::route_identity(input).as_ref().ok() != Some(&latest.route_identity)
         || latest.connection_id.as_deref() != Some(connection)
         || latest.checkpoint_event_id.as_deref()
             != source
@@ -130,20 +128,17 @@ fn threshold(input: Option<u64>, output: Option<u64>, window: u64) -> bool {
     let Some(input) = input.filter(|tokens| *tokens > 0) else {
         return false;
     };
-    let output = output.unwrap_or(0);
-    // Host has already reserved maximum output and input-growth headroom when
-    // deriving this threshold. A manual threshold is used literally as well.
-    input.saturating_add(output) >= window
+    input >= window || output.is_some_and(|output| input.saturating_add(output) >= window)
 }
 
-pub(super) async fn attempt(
+pub(super) async fn start(
     inner: &Arc<Inner>,
     input: &mut RunInput,
     source: &ModelContextSource,
     mid_turn: bool,
     cancellation: &CancellationToken,
     continuation_base: Option<u64>,
-) -> Result<bool, RunError> {
+) -> Result<Option<(Pending, bool)>, RunError> {
     let opening = source
         .anchor
         .iter()
@@ -167,20 +162,6 @@ pub(super) async fn attempt(
     } else {
         CheckpointMode::PreTurn
     };
-    let result = compact::run(inner, input, &mode, cancellation, continuation_base).await;
-    let (_, checkpoint) = match result {
-        Ok(result) => result,
-        Err(RunError::Model(
-            maka_model::ModelError::Adapter(_)
-            | maka_model::ModelError::Provider(_)
-            | maka_model::ModelError::TimedOut
-            | maka_model::ModelError::ContextOverflow { .. },
-        )) => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    let Some(checkpoint) = checkpoint else {
-        return Ok(false);
-    };
     // The candidate is a checked text summary plus this exact durable opening.
     // Materialize its attachments with the normal bounded reader before adopting.
     history::materialize(
@@ -192,11 +173,84 @@ pub(super) async fn attempt(
         cancellation,
     )
     .await?;
-    if cancellation.is_cancelled() {
-        return Err(RunError::Cancelled);
+    let job = match compact::capture(inner, input, &mode, cancellation, continuation_base).await {
+        Ok(Some(job)) => job,
+        Ok(None) | Err(RunError::Store(maka_event_log::StoreError::PrefixTooLarge)) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let reservation = inner.model.try_reserve_background();
+    let background = reservation.is_some();
+    let cancellation = cancellation.child_token();
+    let worker_cancel = cancellation.clone();
+    let inner = inner.clone();
+    let worker =
+        tokio::spawn(async move { job.execute(&inner, &worker_cancel, reservation).await });
+    Ok(Some((
+        Pending {
+            cancellation,
+            worker: Some(worker),
+        },
+        background,
+    )))
+}
+
+pub(super) struct Pending {
+    cancellation: CancellationToken,
+    worker: Option<tokio::task::JoinHandle<Result<compact::Candidate, RunError>>>,
+}
+
+impl Pending {
+    pub fn is_finished(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
     }
-    inner.log.append(&EventWrite::plain(checkpoint)?).await?;
-    Ok(true)
+
+    async fn join(mut self) -> Result<Option<maka_runtime::event::RuntimeEvent>, RunError> {
+        match self
+            .worker
+            .take()
+            .expect("candidate has one owner")
+            .await
+            .map_err(|error| RunError::Internal(format!("summary worker failed: {error}")))?
+        {
+            Ok((_, checkpoint)) => Ok(checkpoint),
+            Err(RunError::Model(_) | RunError::Cancelled) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn adopt(
+        self,
+        inner: &Inner,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, RunError> {
+        let checkpoint = self.join().await?;
+        if cancellation.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        let Some(checkpoint) = checkpoint else {
+            return Ok(false);
+        };
+        inner.log.append(&EventWrite::plain(checkpoint)?).await?;
+        Ok(true)
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+
+pub(super) async fn drain(pending: &mut Option<Pending>) -> Result<(), RunError> {
+    if let Some(pending) = pending.take() {
+        pending.cancellation.cancel();
+        pending.join().await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

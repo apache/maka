@@ -23,10 +23,40 @@ use maka_runtime::{
     context::ModelRequestContext,
 };
 
+/// Providers return a resolved SDK reply budget; advertised ceilings remain
+/// total output. Normalize the ceiling/default once, never the resolved budget.
+pub(super) fn output_limit(model: &maka_plugins::provider::Model) -> Result<u64, OperationError> {
+    let thinking = if matches!(model.protocol, maka_model::ProviderKind::Anthropic)
+        && model.provider_options["anthropic"]["thinking"]["type"] == "enabled"
+    {
+        model.provider_options["anthropic"]["thinking"]["budgetTokens"]
+            .as_u64()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let text_budget = |total: u64| {
+        total
+            .checked_sub(thinking)
+            .filter(|limit| *limit > 0)
+            .ok_or_else(|| unavailable("Model output limit does not leave a positive text budget"))
+    };
+    let ceiling = model.info.max_output_tokens.map(text_budget).transpose()?;
+    match (model.main_output_limit, ceiling) {
+        (Some(selected), Some(ceiling)) => Ok(selected.min(ceiling)),
+        (Some(selected), None) => Ok(selected),
+        (None, Some(ceiling)) => Ok(ceiling),
+        (None, None) => text_budget(8000),
+    }
+}
+
 pub(super) fn resolve(
     connection: &ConnectionCatalogEntry,
     model: &ModelInfo,
 ) -> Result<ModelRequestContext, OperationError> {
+    let capacity = model.context_window.ok_or_else(|| {
+        unavailable("Model context window is unknown; set contextWindow in the model profile")
+    })?;
     if matches!((model.context_window, model.input_limit), (Some(context), Some(input)) if input > context)
     {
         return Err(unavailable("Model input limit exceeds its context window"));
@@ -35,33 +65,19 @@ pub(super) fn resolve(
         .model_overrides
         .as_ref()
         .and_then(|values| values.get(&model.id));
-    let output = match (
-        declaration.and_then(|value| value.max_output_tokens),
-        model.max_output_tokens,
-    ) {
-        (Some(requested), Some(capacity)) => Some(requested.min(capacity)),
-        (requested, capacity) => requested.or(capacity),
-    };
-    // Reserve the entire output budget, respect any independent input ceiling,
-    // then leave 5% for input growth since the last measured request.
-    let automatic = model
-        .context_window
-        .zip(output)
-        .and_then(|(window, output)| window.checked_sub(output))
-        .map(|budget| model.input_limit.map_or(budget, |limit| budget.min(limit)))
-        .map(|budget| budget - budget.div_ceil(20))
-        .filter(|threshold| *threshold > 0);
+    let input_ceiling = model
+        .input_limit
+        .map_or(capacity, |limit| capacity.min(limit));
+    // This proactive trigger uses observed usage, not a proof that the next
+    // prompt and its selected output budget fit. Leave 15% for further work.
+    let automatic = ((u128::from(input_ceiling) * 85) / 100) as u64;
     Ok(ModelRequestContext {
         provider_id: connection.provider.name.clone(),
-        context_window: model
-            .context_window
-            .into_iter()
-            .chain(model.input_limit)
-            .min(),
-        model_context_window: model.context_window,
+        context_window: Some(input_ceiling),
+        model_context_window: Some(capacity),
         declared_window: declaration
             .and_then(|value| value.compaction_threshold)
-            .or(automatic),
+            .or(Some(automatic.max(1))),
     })
 }
 
@@ -71,7 +87,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn compaction_reserves_output_and_headroom_unless_manually_overridden() {
+    fn compaction_requires_total_capacity_and_preserves_manual_threshold() {
         let mut connection: ConnectionCatalogEntry = serde_json::from_value(json!({
             "connectionId":"connection","revision":1,"slug":"fixture","name":"Fixture",
             "provider":{"packageId":"fixture","entryId":"fixture","scope":"profile","name":"model"},
@@ -85,21 +101,16 @@ mod tests {
         assert_eq!(context.context_window, Some(96000));
         assert_eq!(context.declared_window, Some(64000));
         connection.models[0].context_window = None;
-        let context = resolve(&connection, &connection.models[0]).unwrap();
-        assert_eq!(context.context_window, Some(96000));
-        assert_eq!(
-            context.model_context_window, None,
-            "input-only limits cannot become full capacity"
-        );
+        assert!(resolve(&connection, &connection.models[0]).is_err());
         connection.models[0].context_window = Some(1_000_000);
         for (input, maximum, requested, manual, expected) in [
-            (None, Some(128_000), None, None, Some(828_400)),
-            (Some(800_000), Some(128_000), None, None, Some(760_000)),
-            (None, Some(128_000), Some(64_000), None, Some(889_200)),
-            (None, Some(128_000), Some(256_000), None, Some(828_400)),
-            (None, None, Some(128_000), None, Some(828_400)),
-            (None, None, None, None, None),
-            (None, Some(1_000_000), None, None, None),
+            (None, Some(128_000), None, None, Some(850_000)),
+            (Some(800_000), Some(128_000), None, None, Some(680_000)),
+            (None, Some(128_000), Some(64_000), None, Some(850_000)),
+            (None, Some(128_000), Some(256_000), None, Some(850_000)),
+            (None, None, Some(128_000), None, Some(850_000)),
+            (None, None, None, None, Some(850_000)),
+            (None, Some(1_000_000), None, None, Some(850_000)),
             (None, None, None, Some(700_000), Some(700_000)),
         ] {
             let model = &mut connection.models[0];

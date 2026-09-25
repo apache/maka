@@ -51,8 +51,10 @@ function gate() {
 }
 export async function autoContextFixture(port = 0, reopened = false) {
   const summaryGate = gate(),
+    overlapGate = gate(),
     mainGate = gate();
   let count = 0,
+    mainCount = 0,
     failure;
   const server = createServer(async (request, response) => {
     try {
@@ -67,14 +69,18 @@ export async function autoContextFixture(port = 0, reopened = false) {
       }
       const input = JSON.parse(Buffer.concat(chunks).toString());
       const step = ++count;
-      assert(step <= (reopened ? 1 : 3), 'auto compaction must not loop');
+      assert(step <= (reopened ? 1 : 4), 'auto compaction must not loop');
       assert.equal(input.model, 'fixture-model');
       assert.equal(input.stream, true);
       assert(
         input.messages.some((message) => message.role === 'user' && message.content === anchor),
       );
-      const isSummary = !reopened && step === 2;
-      const isRead = !reopened && step === 1;
+      const isSummary = JSON.stringify(input.messages.at(-1)).includes(
+        'Now write the structured summary',
+      );
+      const mainStep = isSummary ? 0 : ++mainCount;
+      const isRead = !reopened && mainStep === 1;
+      const overlap = !reopened && mainStep === 2;
       if (isSummary) {
         assert(!input.tools?.length);
         assert.equal(input.messages.at(-1).role, 'user');
@@ -84,7 +90,7 @@ export async function autoContextFixture(port = 0, reopened = false) {
         assert.deepEqual(JSON.parse(tool.content), readPage(evidence, { path: 'evidence.txt' }));
       } else {
         assert(input.tools.some((tool) => tool.function.name === 'Read'));
-        if (!isRead) {
+        if (!isRead && !overlap) {
           const serialized = JSON.stringify(input.messages);
           assert(serialized.includes(JSON.stringify(summary).slice(1, -1)));
           assert(!serialized.includes('AUTO_OLD_TOOL_EVIDENCE'));
@@ -95,6 +101,16 @@ export async function autoContextFixture(port = 0, reopened = false) {
           );
           assert.equal(input.messages.filter((message) => message.content === anchor).length, 1);
         }
+      }
+      if (overlap) {
+        assert(JSON.stringify(input.messages).includes('AUTO_OLD_TOOL_EVIDENCE'));
+        overlapGate.arrive();
+        await overlapGate.released;
+        response.writeHead(400, { 'Content-Type': 'application/json', Connection: 'close' });
+        response.end(
+          JSON.stringify({ error: { code: 'context_length_exceeded', message: 'input rejected' } }),
+        );
+        return;
       }
       const frame = (delta, finish_reason = null) =>
         'data: ' +
@@ -130,7 +146,7 @@ export async function autoContextFixture(port = 0, reopened = false) {
           ? ''
           : frame({ content: 'automatic context complete' });
       const [prompt, completion, cached] = isRead
-        ? [828390, 10, 7]
+        ? [849990, 10, 7]
         : isSummary
           ? [999, 200, 99]
           : reopened
@@ -165,10 +181,11 @@ export async function autoContextFixture(port = 0, reopened = false) {
   return {
     baseUrl: 'http://127.0.0.1:' + server.address().port + '/v1',
     releaseSummary: summaryGate.release,
+    releaseOverlap: overlapGate.release,
     releaseMain: mainGate.release,
     async waitFor(stage) {
       await Promise.race([
-        (stage === 'summary' ? summaryGate : mainGate).arrived,
+        (stage === 'summary' ? summaryGate : stage === 'overlap' ? overlapGate : mainGate).arrived,
         delay(10000, undefined, { ref: false }).then(() => {
           this.check();
           throw new Error('Provider did not reach ' + stage);
@@ -181,10 +198,11 @@ export async function autoContextFixture(port = 0, reopened = false) {
     },
     verify() {
       this.check();
-      assert.equal(count, reopened ? 1 : 3);
+      assert.equal(count, reopened ? 1 : 4);
     },
     async close() {
       summaryGate.release();
+      overlapGate.release();
       mainGate.release();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

@@ -88,7 +88,9 @@ export async function verifyCompatibleChat(connection, workspace, reopened) {
       baseUrl: model.baseUrl,
       apiKey: 'compatible-fixture',
       enabledModelIds: ['fixture-model'],
-      modelOverrides: { 'fixture-model': { thinkingLevels: ['high', 'max'] } },
+      modelOverrides: {
+        'fixture-model': { contextWindow: 200000, thinkingLevels: ['high', 'max'] },
+      },
     });
     const basis = created.connection;
     const saved = [];

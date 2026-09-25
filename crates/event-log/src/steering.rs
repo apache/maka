@@ -41,10 +41,14 @@ pub(crate) async fn validate_append(
             "steering requires an inline model invocation".into(),
         ));
     }
-    let pending: bool = sqlx::query_scalar(crate::recovery::unresolved!(
-        " SELECT EXISTS(SELECT 1 FROM unresolved)"
-    ))
+    let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "{}, {} SELECT EXISTS(SELECT 1 FROM unresolved WHERE kind != 0
+          OR id NOT IN (SELECT operation_id FROM private_summaries))",
+        crate::recovery::unresolved!(""),
+        crate::context::safety::PRIVATE_SUMMARIES,
+    )))
     .bind(&event.invocation.invocation_id)
+    .bind(i64::MAX)
     .fetch_one(&mut *tx)
     .await?;
     if pending {

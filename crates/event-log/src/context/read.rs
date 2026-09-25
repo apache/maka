@@ -134,7 +134,14 @@ impl EventLog {
                     };
                     let high_water = if let Some(mode) = &mode {
                         if let Some((_, event)) = &opening {
-                            safety::active_boundary(
+                            boundary::admit_summary(
+                                &mut tx,
+                                &event.invocation.invocation_id,
+                                None,
+                                i64::MAX as u64,
+                            )
+                            .await?;
+                            safety::settled_boundary(
                                 &mut tx,
                                 &event.invocation.invocation_id,
                                 i64::MAX as u64,
@@ -152,15 +159,7 @@ impl EventLog {
                     } else {
                         selection.high_water(&mut tx, i64::MAX as u64).await?
                     };
-                    let before = if mode.is_some()
-                        && let Some(current) = current.as_deref()
-                    {
-                        boundary::summary_start(&mut tx, current, i64::MAX as u64)
-                            .await?
-                            .unwrap_or(i64::MAX as u64)
-                    } else {
-                        i64::MAX as u64
-                    };
+                    let before = i64::MAX as u64;
                     let latest_main =
                         latest_main::read_selected(&mut tx, &selection, high_water).await?;
                     let source = materialize_selected(

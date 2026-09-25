@@ -36,6 +36,7 @@ export async function createMessageSession(
     baseUrl: baseUrl,
     apiKey: 'dummy-local-fixture',
     enabledModelIds: ['fixture-model'],
+    modelOverrides: { 'fixture-model': { contextWindow: 200000 } },
   });
   const basis = created.connection;
   await request('connection.catalog.set-default-target', {

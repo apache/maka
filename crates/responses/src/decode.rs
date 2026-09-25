@@ -262,7 +262,7 @@ impl Decoder {
     fn invalid(message: &str) -> Error {
         Error::Invalid(message.into())
     }
-    fn observe(&mut self, item: &Item, added: bool) -> Result<()> {
+    fn observe(&mut self, item: &Item, added: bool, out: &mut Vec<ModelEvent>) -> Result<()> {
         let (id, identity) = item.identity()?;
         if id.is_empty() || id.len() > 2048 {
             return Err(Self::invalid("invalid Responses item identity"));
@@ -285,6 +285,21 @@ impl Decoder {
                     || name.len() > 256)
             {
                 return Err(Self::invalid("invalid Responses tool identity"));
+            }
+            if identity == Identity::Search {
+                let name = self
+                    .search_name
+                    .clone()
+                    .ok_or_else(|| Self::invalid("unrequested Responses web search"))?;
+                self.observed_output = true;
+                self.replay_safe = false;
+                out.push(ModelEvent::ToolCall(ModelToolCall {
+                    id: id.into(),
+                    name,
+                    input: json!({}),
+                    provider_executed: true,
+                    provider_options: Some(json!({"openai":{"itemId":id}})),
+                }));
             }
             self.items.insert(id.into(), identity);
         }
@@ -398,7 +413,7 @@ impl Decoder {
         Ok(())
     }
     fn final_item(&mut self, item: Item, out: &mut Vec<ModelEvent>) -> Result<()> {
-        self.observe(&item, false)?;
+        self.observe(&item, false, out)?;
         if self.done.contains(item.identity()?.0) {
             return Err(Self::invalid("duplicate Responses item finalization"));
         }
@@ -516,20 +531,18 @@ impl Decoder {
                     .search_name
                     .clone()
                     .ok_or_else(|| Self::invalid("unrequested Responses web search"))?;
-                out.push(ModelEvent::ToolCall(ModelToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: json!({}),
-                    provider_executed: true,
-                    provider_options: Some(json!({"openai":{"itemId":id}})),
-                }));
-                out.push(ModelEvent::ProviderToolResult {
-                    id,
-                    name,
-                    output: json!({"action":action}),
-                    is_error: status == "failed",
-                    provider_options: None,
-                });
+                // A terminal response can contain unfinished provider work.
+                // Retain its call without fabricating a settlement; the strict
+                // step assembler then keeps the outcome unknown.
+                if matches!(status.as_str(), "completed" | "failed") {
+                    out.push(ModelEvent::ProviderToolResult {
+                        id,
+                        name,
+                        output: json!({"action":action}),
+                        is_error: status == "failed",
+                        provider_options: None,
+                    });
+                }
             }
             Item::Other => return Err(Self::invalid("unsupported Responses output item")),
         }
@@ -554,6 +567,7 @@ impl Decoder {
         }
         let event: Event = serde_json::from_value(value)
             .map_err(|e| Error::Invalid(format!("invalid Responses event: {e}")))?;
+        let incomplete = matches!(event, Event::Incomplete { .. });
         let mut out = Vec::new();
         match event {
             Event::Created { response } => {
@@ -573,7 +587,7 @@ impl Decoder {
                 });
             }
             Event::Added { item } => {
-                self.observe(&item, true)?;
+                self.observe(&item, true, &mut out)?;
                 match item {
                     Item::Message { id, .. } => self.start(&id, TextKind::Text, &mut out)?,
                     Item::Reasoning { id, .. } => self.start(&id, TextKind::Thinking, &mut out)?,
@@ -627,7 +641,7 @@ impl Decoder {
                     .as_ref()
                     .map(|d| d.reason.as_str())
                 {
-                    None => false,
+                    None => incomplete,
                     Some("max_output_tokens") => true,
                     Some(_) => {
                         return Err(Self::invalid(
@@ -638,7 +652,7 @@ impl Decoder {
                 // Terminal output may repeat already-finalized items or contain
                 // the only complete items. Sparse Codex terminals are also valid.
                 for item in response.output {
-                    self.observe(&item, false)?;
+                    self.observe(&item, false, &mut out)?;
                     let id = match &item {
                         Item::Message { id, .. }
                         | Item::Reasoning { id, .. }
@@ -742,5 +756,51 @@ mod tests {
             matches!(&end[0], ModelEvent::Finished { reason: ModelFinishReason::Stop, usage, .. } if usage.input_tokens == Some(5))
         );
         decoder.end().unwrap();
+    }
+
+    #[test]
+    fn incomplete_terminals_preserve_started_search_without_inventing_its_result() {
+        let tool = ToolDefinition {
+            name: "Research".into(),
+            description: "search".into(),
+            input_schema: json!({}),
+            provider: Some(maka_runtime::tools::ProviderTool {
+                id: "openai.web_search".into(),
+                args: json!({}),
+            }),
+        };
+        for (status, settled) in [
+            ("in_progress", false),
+            ("completed", true),
+            ("failed", true),
+        ] {
+            let mut decoder = Decoder::new(None, std::slice::from_ref(&tool));
+            let start = decoder
+                .push(json!({"type":"response.output_item.added",
+                "item":{"type":"web_search_call","id":"search","status":"in_progress"}}))
+                .unwrap();
+            assert!(matches!(&start[..], [ModelEvent::ToolCall(call)] if call.provider_executed));
+            assert!(!decoder.replay_safe);
+            let end = decoder
+                .push(json!({"type":"response.incomplete","response":{"output":[
+                {"type":"web_search_call","id":"search","status":status}]}}))
+                .unwrap();
+            assert!(
+                !end.iter()
+                    .any(|event| matches!(event, ModelEvent::ToolCall(_)))
+            );
+            assert_eq!(
+                end.iter()
+                    .any(|event| matches!(event, ModelEvent::ProviderToolResult { .. })),
+                settled
+            );
+            assert!(matches!(
+                end.last(),
+                Some(ModelEvent::Finished {
+                    reason: ModelFinishReason::Length,
+                    ..
+                })
+            ));
+        }
     }
 }

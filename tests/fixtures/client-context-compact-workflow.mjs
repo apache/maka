@@ -187,7 +187,7 @@ export async function verifyContextCompact(connection, workspace, reopened) {
         apiKey: 'context-compact-fixture',
         baseUrl: model.baseUrl,
         enabledModelIds: ['fixture-model'],
-        modelOverrides: { 'fixture-model': { vision: false } },
+        modelOverrides: { 'fixture-model': { contextWindow: 200000, vision: false } },
       });
       assert.equal(created.kind, 'committed');
       const basis = created.connection;

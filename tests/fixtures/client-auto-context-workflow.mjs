@@ -180,8 +180,9 @@ export async function verifyAutoContext(connection, workspace, reopened) {
       const since = Date.now();
       await request('turn.start', saved.turn);
       await model.waitFor('summary');
+      await model.waitFor('overlap');
       const firstDiagnostics = await query();
-      diagnostics(firstDiagnostics, 828390, 7, since);
+      diagnostics(firstDiagnostics, 849990, 7, since);
       const settledRows = await rows(connection, saved.sessionId);
       readResult(settledRows);
       await request('session.read_marker.set', {
@@ -198,6 +199,7 @@ export async function verifyAutoContext(connection, workspace, reopened) {
       noSummary(await during.subscription.loadTranscript(decodeStoredMessage));
       ordinaryRoot(live.frames);
       model.releaseSummary();
+      model.releaseOverlap();
       await model.waitFor('main');
       const afterCompaction = await query();
       const { current: _beforeCurrent, ...beforeMain } = firstDiagnostics;
@@ -237,7 +239,7 @@ export async function verifyAutoContext(connection, workspace, reopened) {
       assert.deepEqual((await request('turn.start', saved.turn)).turn, saved.terminal);
       saved.baseUrl = model.baseUrl;
       saved.summary = summary;
-      saved.requestCount = 3;
+      saved.requestCount = 4;
       await writeFile(path, JSON.stringify(saved));
     }
     model.verify();

@@ -38,7 +38,6 @@ impl Surface {
         models: &maka_model::ModelExecutor,
         input: &RunInput,
         source: &maka_event_log::context::ModelContextSource,
-        reshaped: bool,
         cancellation: &CancellationToken,
         prior_unknown_notice: Option<&str>,
     ) -> Result<Self, RunError> {
@@ -79,7 +78,7 @@ impl Surface {
         if let Some(source) = &input.model_revision {
             prompt.sources.push(source.clone());
         }
-        let max_output_tokens = crate::auto_context::output_limit(input, source, reshaped)?;
+        let max_output_tokens = crate::auto_context::output_limit(input, source)?;
         let evidence = RequestComposition {
             system_prompt: prompt.system.clone(),
             dynamic_context: prompt.contexts.clone(),

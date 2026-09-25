@@ -51,8 +51,8 @@ pub struct ModelRequestContext {
     /// from context_window, which may be an independent input-only limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_context_window: Option<u64>,
-    /// Resolved proactive threshold: explicit compactionThreshold, otherwise 95% of
-    /// the smaller of (total capacity - output reserve) and any input-only limit.
+    /// Resolved proactive threshold: explicit compactionThreshold, otherwise 85% of
+    /// the smaller of total capacity and any independent input ceiling.
     /// None means no usable threshold; overflow recovery remains available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_window: Option<u64>,
