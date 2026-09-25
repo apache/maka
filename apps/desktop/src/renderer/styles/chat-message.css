@@ -71,6 +71,11 @@
   overflow-anchor: none;
 }
 
+/* Holds the row's place until the Host names the Turn. */
+.maka-pending-turn[data-awaiting-host] .maka-turn-statusbar {
+  visibility: hidden;
+}
+
 .maka-transcript-turn {
   display: flex;
   flex-direction: column;

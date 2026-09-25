@@ -2320,12 +2320,8 @@ let settleTailTurn: (() => void) | undefined;
 let startHostTurn: (() => void) | undefined;
 let admitTailTurn: (() => void) | undefined;
 
-/**
- * Streams one line per frame into a live Turn. `hostAhead` holds each step of
- * a send for the play function: the local prompt, then the Host's running
- * Turn, then the transcript range that carries the prompt as its user row.
- */
-function StreamingTailHarness({ pendingUser = false, hostAhead = false }: { pendingUser?: boolean; hostAhead?: boolean } = {}) {
+/** Streams one line per frame into a live Turn. `hostAhead` lets the play function step through a send. */
+function StreamingTailHarness({ pendingUser = false, hostAhead = false, fresh = false }: { pendingUser?: boolean; hostAhead?: boolean; fresh?: boolean } = {}) {
   const [question, setQuestion] = useState<string>();
   const [settled, setSettled] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -2381,15 +2377,16 @@ function StreamingTailHarness({ pendingUser = false, hostAhead = false }: { pend
       }}
       chat={{
         activeTurn: question && !settled && hostStarted ? { turnId: 'turn-tail' } : undefined,
-        // Before admission the local copy has no Host Turn name yet.
         transientMessages: (pendingUser || !admitted) && question && !settled ? [{
           id: 'msg-tail-1', text: question, ts: NOW - 30_000,
           transientPlacement: 'transcript', ...(admitted ? { hostTurnId: 'turn-tail' } : {}),
         }] : [],
         viewportNavigation,
         messages: [
-          user('history-question', 'history-turn', 6, '已有问题。'),
-          assistant('history-answer', 'history-turn', 5, TAIL_LINES.slice(0, 40).join('\n\n')),
+          ...(fresh ? [] : [
+            user('history-question', 'history-turn', 6, '已有问题。'),
+            assistant('history-answer', 'history-turn', 5, TAIL_LINES.slice(0, 40).join('\n\n')),
+          ]),
           ...(question && admitted ? [
             ...(!pendingUser || settled ? [user('msg-tail-1', 'turn-tail', 3, question)] : []),
             ...(settled ? [assistant('msg-assistant-tail', 'turn-tail', 2, TAIL_LINES.slice(0, lines).join('\n\n'))] : []),
@@ -2539,43 +2536,68 @@ export const SubmittedPromptSettlesWithoutReversing: Story = {
   },
 };
 
-function lastPromptTop(): number {
-  const prompts = tailScroller().querySelectorAll('.maka-user-message');
-  const prompt = prompts[prompts.length - 1];
-  if (!prompt) throw new Error('the sent prompt is missing');
-  return prompt.getBoundingClientRect().top;
+// Send → Host Turn → transcript → stream → settle: only streaming moves the prompt, and only up.
+async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> {
+  const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
+  if (!input) throw new Error('The composer input is missing');
+  const question = '请简短说明当前提交过程发生了什么。';
+  await userEvent.type(input, question, { delay: null });
+  await painted(10);
+  const tops: number[] = [];
+  const sample = async (frames = 12): Promise<void> => {
+    for (let frame = 0; frame < frames; frame += 1) {
+      await painted(1);
+      // Read after resize observers run, i.e. what was painted.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const prompt = [...tailScroller().querySelectorAll('.maka-user-message')]
+        .find((message) => message.textContent?.includes(question));
+      if (prompt) tops.push(Math.round(prompt.getBoundingClientRect().top));
+    }
+  };
+  const arrival = sample(20);
+  await userEvent.keyboard('{Enter}');
+  await arrival;
+  expect(canvasElement.querySelector('[data-transient-message-id="msg-tail-1"]')).not.toBeNull();
+  startHostTurn?.();
+  await sample();
+  admitTailTurn?.();
+  await sample();
+  expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
+  expect(canvasElement.querySelector('[data-transcript-turn-id="turn-tail"] .maka-turn-processing')).not.toBeNull();
+  expect(new Set(tops).size, JSON.stringify(tops)).toBe(1);
+
+  startTailStream?.();
+  await sample();
+  stopTailStream?.();
+  // Production settles only after the reveal finishes.
+  let height = -1;
+  let still = 0;
+  while (still < 10) {
+    await painted(1);
+    const next = canvasElement.querySelector('[data-transcript-turn-id="turn-tail"]')!.getBoundingClientRect().height;
+    still = next === height ? still + 1 : 0;
+    height = next;
+  }
+  await sample(1);
+  settleTailTurn?.();
+  await sample();
+  const reversal = Math.max(0, ...tops.slice(1).map((top, index) => top - tops[index]!));
+  expect(reversal, JSON.stringify(tops)).toBe(0);
+  expect(new Set(tops.slice(-13)).size, JSON.stringify(tops)).toBe(1);
+  expect(tailMetrics().distance).toBeLessThanOrEqual(4);
 }
 
-// Real path: an existing Session → send. The local copy shows first, the Host
-// reports the running Turn, and only then does the transcript range deliver
-// that Turn with the prompt as its own user row.
-export const HostTurnAheadOfTranscriptKeepsPrompt: Story = {
+export const SendKeepsPromptInPlace: Story = {
   render: () => <StreamingTailHarness hostAhead />,
   play: async ({ canvasElement }) => {
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
-    const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
-    if (!input) throw new Error('The composer input is missing');
-    await userEvent.type(input, '请简短说明当前提交过程发生了什么。', { delay: null });
-    await userEvent.keyboard('{Enter}');
-    await waitFor(() => expect(canvasElement.querySelector('[data-transient-message-id="msg-tail-1"]')).not.toBeNull());
-    await painted(4);
-    startHostTurn?.();
-    await waitFor(() => expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull());
-    await painted(4);
-    const before = lastPromptTop();
-    const offsets: number[] = [];
-    admitTailTurn?.();
-    for (let frame = 0; frame < 40; frame += 1) {
-      await painted(1);
-      offsets.push(Math.round(lastPromptTop() - before));
-    }
-    expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
-    expect(canvasElement.querySelector('[data-transcript-turn-id="turn-tail"] .maka-turn-processing')).not.toBeNull();
-    // The first sample is virtua placing the new row from its size estimate,
-    // which happens with or without a pending Turn before it.
-    expect(Math.max(...offsets.slice(1).map(Math.abs)), JSON.stringify(offsets)).toBeLessThanOrEqual(1);
-    expect(tailMetrics().distance).toBeLessThanOrEqual(4);
+    await verifySendKeepsPrompt(canvasElement);
   },
+};
+
+export const FirstSendKeepsPromptInPlace: Story = {
+  render: () => <StreamingTailHarness hostAhead fresh />,
+  play: async ({ canvasElement }) => verifySendKeepsPrompt(canvasElement),
 };
 
 /** Lets a play function drive props React owns. One story renders per page. */

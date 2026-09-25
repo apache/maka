@@ -131,11 +131,7 @@ export interface TransientUserMessageProjection {
   directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
-  /**
-   * Presentation-only placement until canonical transcript grouping arrives.
-   * A prompt renders in the transcript beside its live Turn; steering and
-   * follow-ups stay in the composer queue until the Host takes them.
-   */
+  /** Steering and follow-ups stay in the composer queue until the Host takes them. */
   transientPlacement: 'transcript' | 'steering' | 'follow_up';
   /** The Host Turn this Message is already bound to, once the Host named one. */
   hostTurnId?: string;
@@ -398,12 +394,6 @@ export function ChatView(props: {
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
-  // The Host can name its running Turn before the transcript carries it. Until
-  // then the tail renders the TurnView that Turn will become, so the handoff
-  // moves nothing. It stays out of `turns`: that list is transcript evidence.
-  const pendingTurn: TurnViewModel | undefined = tailTurnId === undefined || hasRenderedLiveTurn ? undefined : {
-    turnId: tailTurnId, status: 'running', tools: [], notes: [], timeline: [], startedAt: activeContent?.startedAt ?? 0,
-  };
   const boundaryOverlayTurnId = activeContent?.turnId
     ?? (streamingActive ? tailTurnId : undefined);
   const transformedUserTurnIds = useMemo(
@@ -516,10 +506,19 @@ export function ChatView(props: {
     inlineTransientMessageIds,
     turns,
   );
+  // Rendered as the Turn it becomes, so the handoff moves nothing. Not in `turns`.
+  const awaitingHost = props.activeTurn === undefined
+    && tailTransientMessages.length > 0
+    && tailTransientMessages.every((message) => message.deliveryStatus === undefined);
+  const pendingTurnId = tailTurnId !== undefined && !hasRenderedLiveTurn ? tailTurnId
+    : awaitingHost ? tailTransientMessages[0]!.hostTurnId ?? tailTransientMessages[0]!.id : undefined;
+  const pendingTurn: TurnViewModel | undefined = pendingTurnId === undefined ? undefined : {
+    turnId: pendingTurnId, status: 'running', tools: [], notes: [], timeline: [], startedAt: activeContent?.startedAt ?? 0,
+  };
   // Tail rows have no Turn ancestor, so the reading measure that `.maka-turn`
   // owns would not reach them: without it the bubble spans the full window.
   const tail = pendingTurn ? (
-    <div className="maka-pending-turn">
+    <div className="maka-pending-turn" data-awaiting-host={awaitingHost || undefined}>
       <TurnView
         turn={pendingTurn}
         activityObserved

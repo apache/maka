@@ -67,8 +67,6 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
   assert.equal(transient.get('root')?.deliveryStatus, 'Host outcome unknown');
   const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
-  // The Host queues an ordinary send behind a running Turn, but it is shown
-  // where the user sent it.
   assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
   messages = messages.map((message) => ({ ...message, state: 'failed' }));
   await act(async () => changed('session-1'));

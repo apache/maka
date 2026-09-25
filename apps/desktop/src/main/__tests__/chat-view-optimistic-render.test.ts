@@ -82,7 +82,6 @@ test('ChatView renders the optimistic bubble and running status before a session
     }]]),
   });
   const { document } = parseHTML(markup);
-  // The question and its running status render as the one Turn they become.
   const turn = document.querySelector('.maka-pending-turn > .maka-turn[data-turn-id="turn-1"]');
   assert.ok(turn?.querySelector('.maka-user-message')?.textContent?.includes('why does this fail?'));
   assert.ok(turn?.querySelector('.maka-user-message [data-testid="prompt-status"]'), 'the prompt keeps its Turn status');

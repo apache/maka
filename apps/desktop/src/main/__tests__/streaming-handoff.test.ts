@@ -112,7 +112,7 @@ describe('single live-turn handoff', () => {
       );
       assert.ok(status, 'activity must occupy the top status row');
       assert.equal(document.querySelector('.maka-processing-block'), null);
-      assert.equal(document.querySelector('.maka-turn-footer'), null);
+      assert.equal(document.querySelector('.maka-turn-footer')?.textContent, '');
       assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
     }
   });

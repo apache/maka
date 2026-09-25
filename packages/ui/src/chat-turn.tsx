@@ -1031,8 +1031,9 @@ function TurnFooter(props: {
       className={markerVariants({ variant: 'footer' })}
       role={isToolbar ? 'toolbar' : undefined}
       aria-label={isToolbar ? copy.answerActionsAriaLabel(props.context) : undefined}
+      // Live: reserves the actions' row.
       footer={
-        hasActions || props.finishedAt !== undefined ? (
+        hasActions || props.finishedAt !== undefined || props.live ? (
         <>
           {props.actions.map((action) =>
             action.id === 'copy' ? (
