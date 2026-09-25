@@ -1461,9 +1461,17 @@ function SessionItemActions(props: {
   // only while the task is in one.
   const moveTargets = useMemo(() => {
     const currentProjectId = props.session.projectId ?? null;
+    // "Move out of project" only reads honestly when the row is in a project
+    // the rail can actually name: one of the listed targets is its current
+    // home. A truthy-but-unknown `projectId` (deleted or archived upstream) is
+    // functionally project-less; offering the exit there drew an orphan row
+    // for tasks the user already sees as having no project.
+    const hasVisibleProject =
+      currentProjectId !== null &&
+      props.moveTargets.some((target) => target.projectId === currentProjectId);
     return props.moveTargets
       .filter((target) => target.projectId !== currentProjectId)
-      .filter((target) => target.projectId !== null || currentProjectId !== null)
+      .filter((target) => target.projectId !== null || hasVisibleProject)
       .map((target) => ({
         label: target.projectId === null ? copy.moveToNoProject : (target.name ?? ''),
         onClick: () =>
