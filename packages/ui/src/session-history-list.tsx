@@ -1455,29 +1455,17 @@ function SessionItemActions(props: {
     [],
   );
 
-  // Where this task may go, asked of the shell rather than derived here: the
-  // rail holds no project list beyond the rows it draws, and one Host's
-  // projects are not another's. The row that leaves every project is offered
-  // only while the task is in one.
-  const moveTargets = useMemo(() => {
-    const currentProjectId = props.session.projectId ?? null;
-    // "Move out of project" only reads honestly when the row is in a project
-    // the rail can actually name: one of the listed targets is its current
-    // home. A truthy-but-unknown `projectId` (deleted or archived upstream) is
-    // functionally project-less; offering the exit there drew an orphan row
-    // for tasks the user already sees as having no project.
-    const hasVisibleProject =
-      currentProjectId !== null &&
-      props.moveTargets.some((target) => target.projectId === currentProjectId);
-    return props.moveTargets
-      .filter((target) => target.projectId !== currentProjectId)
-      .filter((target) => target.projectId !== null || hasVisibleProject)
-      .map((target) => ({
+  // The provider resolves project membership and destination eligibility.
+  // An exit remains valid even when the current project cannot receive tasks.
+  const moveTargets = useMemo(
+    () =>
+      props.moveTargets.map((target) => ({
         label: target.projectId === null ? copy.moveToNoProject : (target.name ?? ''),
         onClick: () =>
           runRowAction('move', () => actions.onMoveToProject?.(props.session.id, target.projectId)),
-      }));
-  }, [actions, copy.moveToNoProject, props.moveTargets, props.session.id, props.session.projectId]);
+      })),
+    [actions, copy.moveToNoProject, props.moveTargets, props.session.id],
+  );
 
   function runRowAction(actionId: SessionRowActionId, action: () => void | Promise<void>) {
     if (pendingActionRef.current) return;

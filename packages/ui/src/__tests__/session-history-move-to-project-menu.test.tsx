@@ -17,20 +17,6 @@
  * under the License.
  */
 
-/**
- * The "move to project" row menu answers one question per task: which of its
- * projects are places this task can land — and is "leave every project" one of
- * them?
- *
- * The second half tripped once. A task whose `projectId` had outlived its
- * project (deleted, archived, relocated upstream — anything that empties the
- * scopes the rail can see) used to be offered only the exit row, because the
- * guard that gates it asked "is `projectId` truthy?" instead of "is this
- * `projectId` a project the rail can still name?". The user-surface read
- * "this task has no project", and the menu read "want to leave it?", and the
- * only way to keep both honest is to ask the same question.
- */
-
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { act } from 'react';
@@ -100,7 +86,13 @@ async function mountRail(
   sessions: readonly SessionSummary[],
   moveTargets: (sessionId: string) => readonly SessionMoveTarget[],
 ) {
-  const original = { document: globalThis.document, window: globalThis.window };
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    IS_REACT_ACT_ENVIRONMENT: Reflect.get(globalThis, 'IS_REACT_ACT_ENVIRONMENT'),
+  };
   const { document, window } = parseHTML('<div id="root"></div>');
   installDomStubs(window);
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
@@ -137,7 +129,6 @@ async function mountRail(
   );
 
   return {
-    window,
     moves,
     openRowMenu: async (sessionId: string) => {
       const trigger = document.querySelector(
@@ -157,6 +148,15 @@ async function mountRail(
       [...document.querySelectorAll(`[data-session-id="${sessionId}"] [role="menuitem"]`)].map(
         (item) => (item.textContent ?? '').trim(),
       ),
+    clickMenuItem: async (sessionId: string, label: string) => {
+      const item = [...document.querySelectorAll(
+        `[data-session-id="${sessionId}"] [role="menuitem"]`,
+      )].find((candidate) => candidate.textContent?.trim() === label);
+      assert.ok(item, `no menu item: ${label}`);
+      await act(async () => {
+        item.dispatchEvent(pointerEvent(window, 'click'));
+      });
+    },
     dispose: async () => {
       await act(() => root.unmount());
       Object.assign(globalThis, original);
@@ -164,100 +164,59 @@ async function mountRail(
   };
 }
 
-test('a task with no project is not offered "Remove from project"', async () => {
-  // The provider's answer for such a task is "no targets": nothing below can
-  // move it. But the guard that hides "Remove from project" has to live in
-  // the row itself too, because the row is where `projectId` and the targets
-  // meet.
-  const rail = await mountRail([summary('s1')], () => []);
-  try {
-    await rail.openRowMenu('s1');
-    const labels = rail.menuLabels('s1');
-    assert.ok(
-      !labels.some((label) => /remove from project/i.test(label)),
-      `expected no "Remove from project", got ${JSON.stringify(labels)}`,
-    );
-    assert.ok(
-      !labels.some((label) => /move to project/i.test(label)),
-      `with nowhere to go the submenu itself should read as nothing, got ${JSON.stringify(labels)}`,
-    );
-  } finally {
-    await rail.dispose();
-  }
-});
+for (const projectId of [undefined, 'missing']) {
+  test('hides the move submenu when the provider has no targets: ' + String(projectId), async () => {
+    const rail = await mountRail([summary('s1', { projectId })], () => []);
+    try {
+      await rail.openRowMenu('s1');
+      const labels = rail.menuLabels('s1');
+      assert.ok(!labels.includes('Remove from project'));
+      assert.ok(!labels.includes('Move to project'));
+    } finally {
+      await rail.dispose();
+    }
+  });
+}
 
-test('a task in a project is offered every other project and the exit', async () => {
-  const rail = await mountRail([summary('s1', { projectId: 'pA' })], () => [
-    { groupKey: 'pA', projectId: 'pA', name: 'Alpha' },
-    { groupKey: 'pB', projectId: 'pB', name: 'Beta' },
-    { groupKey: '__ungrouped__:local', projectId: null },
-  ]);
-  try {
-    await rail.openRowMenu('s1');
-    const labels = rail.menuLabels('s1');
-    assert.ok(
-      labels.some((label) => /beta/i.test(label)),
-      `sibling project should be reachable, got ${JSON.stringify(labels)}`,
-    );
-    assert.ok(
-      !labels.some((label) => /alpha/i.test(label)),
-      `the project the task already lives in is not a destination, got ${JSON.stringify(labels)}`,
-    );
-    assert.ok(
-      labels.some((label) => /remove from project/i.test(label)),
-      `expected "Remove from project", got ${JSON.stringify(labels)}`,
-    );
-  } finally {
-    await rail.dispose();
-  }
-});
-
-test('a task whose projectId no longer names a real project is not offered the exit either', async () => {
-  // Regression. The task carries a truthy `projectId` — orphaned by a project
-  // deletion/archive upstream — and the rail's scopes no longer know it. From
-  // the user's side this row reads as a task with no project, so offering only
-  // "Remove from project" was exactly the lie. The targets the shell can name
-  // are pB and pC here; pA is the one that disappeared.
-  const rail = await mountRail([summary('s1', { projectId: 'pA' })], () => [
+test('an orphan projectId can move to a destination without an exit', async () => {
+  const rail = await mountRail([summary('s1', { projectId: 'missing' })], () => [
     { groupKey: 'pB', projectId: 'pB', name: 'Beta' },
     { groupKey: 'pC', projectId: 'pC', name: 'Gamma' },
-    { groupKey: '__ungrouped__:local', projectId: null },
   ]);
   try {
     await rail.openRowMenu('s1');
     const labels = rail.menuLabels('s1');
-    assert.ok(
-      !labels.some((label) => /remove from project/i.test(label)),
-      `an orphaned projectId must not summon the exit, got ${JSON.stringify(labels)}`,
-    );
-    // Moving into a real project remains the honest one-way door.
-    assert.ok(labels.some((label) => /beta/i.test(label)));
-    assert.ok(labels.some((label) => /gamma/i.test(label)));
-  } finally {
-    await rail.dispose();
-  }
-});
-
-test('clicking a real destination forwards its projectId', async () => {
-  const rail = await mountRail([summary('s1', { projectId: 'pA' })], () => [
-    { groupKey: 'pA', projectId: 'pA', name: 'Alpha' },
-    { groupKey: 'pB', projectId: 'pB', name: 'Beta' },
-    { groupKey: '__ungrouped__:local', projectId: null },
-  ]);
-  try {
-    await rail.openRowMenu('s1');
-    const items = [
-      ...rail.window.document.querySelectorAll(
-        '[data-session-id="s1"] [role="menuitem"]',
-      ),
-    ] as HTMLElement[];
-    const beta = items.find((item) => /beta/i.test(item.textContent ?? ''));
-    assert.ok(beta, 'no Beta item in the menu');
-    await act(() => {
-      beta.dispatchEvent(pointerEvent(rail.window, 'click'));
-    });
+    assert.ok(!labels.includes('Remove from project'));
+    assert.ok(labels.includes('Beta'));
+    assert.ok(labels.includes('Gamma'));
+    await rail.clickMenuItem('s1', 'Beta');
     assert.deepEqual(rail.moves, [{ sessionId: 's1', projectId: 'pB' }]);
   } finally {
     await rail.dispose();
   }
 });
+
+// The provider resolves aliases and archived/unavailable membership. None of
+// those cases require the current project to appear among the destinations.
+for (const projectId of ['pA', 'oldA']) {
+  for (const withSibling of [false, true]) {
+    test('keeps a provider-approved exit: ' + projectId + ', sibling=' + withSibling, async () => {
+      const targets: SessionMoveTarget[] = withSibling
+        ? [{ groupKey: 'pB', projectId: 'pB', name: 'Beta' }]
+        : [];
+      targets.push({ groupKey: '__ungrouped__:local', projectId: null });
+      const rail = await mountRail([summary('s1', { projectId })], () => targets);
+      try {
+        await rail.openRowMenu('s1');
+        const labels = rail.menuLabels('s1');
+        assert.ok(labels.includes('Move to project'));
+        assert.ok(labels.includes('Remove from project'));
+        assert.equal(labels.includes('Beta'), withSibling);
+        await rail.clickMenuItem('s1', 'Remove from project');
+        assert.deepEqual(rail.moves, [{ sessionId: 's1', projectId: null }]);
+      } finally {
+        await rail.dispose();
+      }
+    });
+  }
+}

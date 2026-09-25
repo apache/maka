@@ -17,28 +17,15 @@
  * under the License.
  */
 
-/**
- * The destination list the rail's "move to project" menu reads for one task.
- *
- * Two questions live here, and they used to be answered by different halves of
- * the truth: which projects may the task land in (one Host's available,
- * un-archived scopes), and may "leave every project" ride along (the task's
- * `projectId` was truthy). A task whose `projectId` had outlived its Project —
- * deleted, relocated, archived upstream — satisfied the second while failing
- * the first, and its menu offered only the exit for a project the user already
- * read the task as not being in. The exit's gate is now the visible half of
- * the same answer: the destination list must contain the `projectId` the task
- * carries.
- */
-
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { ProjectRecord } from '@maka/core/project';
-import { sessionMoveTargets } from '../../renderer/features/session-navigation/model/session-navigation-move-targets.js';
-import type {
-  SessionNavigationProjectScope,
-  SessionNavigationSession,
-} from '../../renderer/features/session-navigation/ports.js';
+import {
+  deriveSessionNavigationGroups,
+  sessionMoveTargets,
+  type SessionNavigationProjectScope,
+  type SessionNavigationSession,
+} from '../../renderer/features/session-navigation/testing.js';
 
 function project(id: string, overrides: Partial<ProjectRecord> = {}): ProjectRecord {
   return {
@@ -93,84 +80,66 @@ function session(
 }
 
 describe('sessionMoveTargets', () => {
-  it('a session in a project is offered its sibling projects and the exit', () => {
-    const targets = sessionMoveTargets(
-      session('s1', { projectId: 'pA' }),
-      [scope('local', 'keyA', project('pA')), scope('local', 'keyB', project('pB'))],
-    );
-    assert.deepEqual(
-      targets.map((target) => target.projectId),
-      ['pA', 'pB', null],
-      'the exit rides along while the project the task lives in is real',
-    );
-  });
+  const homes: Array<{ name: string; projectId: string; overrides: Partial<ProjectRecord> }> = [
+    { name: 'active', projectId: 'pA', overrides: {} },
+    { name: 'alias', projectId: 'oldA', overrides: { aliases: ['oldA'] } },
+    { name: 'archived', projectId: 'pA', overrides: { archivedAt: 1 } },
+    { name: 'archived alias', projectId: 'oldA', overrides: { archivedAt: 1, aliases: ['oldA'] } },
+    { name: 'unavailable', projectId: 'pA', overrides: { available: false } },
+  ];
 
-  it('a session with no project is offered only projects', () => {
+  for (const home of homes) {
+    it('keeps membership and an exit for an ' + home.name + ' project', () => {
+      const current = session('s1', { projectId: home.projectId });
+      const homeScope = scope('local', 'keyA', project('pA', home.overrides));
+      const scopes = [homeScope, scope('local', 'keyB', project('pB'))];
+      const groups = deriveSessionNavigationGroups([current], scopes, 'en');
+      assert.equal(groups.find((group) => group.sessions.includes(current))?.id, 'project:keyA');
+      assert.deepEqual(sessionMoveTargets(current, scopes), [
+        { groupKey: 'project:keyB', projectId: 'pB', name: 'pB' },
+        { groupKey: '__ungrouped__:local', projectId: null },
+      ]);
+      assert.deepEqual(
+        sessionMoveTargets(current, [homeScope]),
+        [{ groupKey: '__ungrouped__:local', projectId: null }],
+        'leaving a known project does not require another destination',
+      );
+    });
+  }
+
+  for (const projectId of [undefined, null, 'missing']) {
+    it('offers only destinations without known membership: ' + String(projectId), () => {
+      const current = session('s1', { projectId });
+      assert.deepEqual(
+        sessionMoveTargets(current, [
+          scope('local', 'keyB', project('pB')),
+          scope('local', 'keyC', project('pC')),
+        ]).map((target) => target.projectId),
+        ['pB', 'pC'],
+      );
+      assert.deepEqual(sessionMoveTargets(current, []), []);
+    });
+  }
+
+  for (const remoteProject of [project('pR'), project('remote', { aliases: ['pR'] })]) {
+    it('ignores membership and destinations on another Host: ' + remoteProject.id, () => {
+      const targets = sessionMoveTargets(
+        session('s1', { projectId: 'pR' }),
+        [scope('remote', 'keyR', remoteProject), scope('local', 'keyL', project('pL'))],
+      );
+      assert.deepEqual(targets, [{ groupKey: 'project:keyL', projectId: 'pL', name: 'pL' }]);
+    });
+  }
+
+  it('does not offer archived or unavailable projects as destinations', () => {
     const targets = sessionMoveTargets(
       session('s1'),
-      [scope('local', 'keyA', project('pA')), scope('local', 'keyB', project('pB'))],
-    );
-    assert.deepEqual(
-      targets.map((target) => target.projectId),
-      ['pA', 'pB'],
-      'the exit has nothing to leave',
-    );
-  });
-
-  it('a session whose projectId no longer names a real project is offered the projects but not the exit', () => {
-    // Regression coverage. pA used to be where s1 lived; it vanished upstream
-    // (deleted, archived, relocated). The scopes the rail knows are pB and pC.
-    // From the user's side s1 reads as project-less — the menu must not offer
-    // only a way out of a project that is no longer there.
-    const targets = sessionMoveTargets(
-      session('s1', { projectId: 'pA' }),
-      [scope('local', 'keyB', project('pB')), scope('local', 'keyC', project('pC'))],
-    );
-    assert.deepEqual(
-      targets.map((target) => target.projectId),
-      ['pB', 'pC'],
-      'no exit when the task is not observably in any project the rail can name',
-    );
-  });
-
-  it('a session whose project is archived counts as having no visible project', () => {
-    const targets = sessionMoveTargets(
-      session('s1', { projectId: 'pA' }),
-      [
-        scope('local', 'keyA', project('pA', { archivedAt: 1 })),
-        scope('local', 'keyB', project('pB')),
-      ],
-    );
-    assert.deepEqual(
-      targets.map((target) => target.projectId),
-      ['pB'],
-      'an archived home is not a place the task can be said to live',
-    );
-  });
-
-  it('a session may not be moved across hosts', () => {
-    const targets = sessionMoveTargets(
-      session('s1', { runtimeHostId: 'local' }),
-      [scope('remote', 'keyR', project('pR')), scope('local', 'keyL', project('pL'))],
-    );
-    assert.deepEqual(
-      targets.map((target) => target.projectId),
-      ['pL'],
-      'a Host only re-files its own tasks',
-    );
-  });
-
-  it('an unavailable project is not a destination and not a home', () => {
-    const targets = sessionMoveTargets(
-      session('s1', { projectId: 'pA' }),
       [
         scope('local', 'keyA', project('pA', { available: false })),
         scope('local', 'keyB', project('pB')),
+        scope('local', 'keyC', project('pC', { archivedAt: 1 })),
       ],
     );
-    assert.deepEqual(
-      targets.map((target) => target.projectId),
-      ['pB'],
-    );
+    assert.deepEqual(targets, [{ groupKey: 'project:keyB', projectId: 'pB', name: 'pB' }]);
   });
 });
