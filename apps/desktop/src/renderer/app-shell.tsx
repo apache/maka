@@ -125,8 +125,6 @@ import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { SessionSettingsProvider, useSessionSettingIntent } from './features/session-settings';
 import { pendingSessionView } from './pending-session-view';
-import { normalizeSessionSummaryForDisplay } from './session-status-presentation';
-import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { readNavigationState, selectNavigation } from './nav-selection';
@@ -330,6 +328,7 @@ function AppShellContent({
     setMessageLoadPending,
     sessionUiController,
     sessionCatalogController,
+    commitSession,
     activeCatalogSession,
     activeHostSession,
     requestedCatalogSession,
@@ -1254,13 +1253,6 @@ function AppShellContent({
     [sessionCatalogController, localProjects],
   );
 
-  const activateSessionForFirstSend = useCallback((session: DesktopSessionSummary): Promise<void> => {
-    sessionCatalogController.commitPatch(session.id, normalizeSessionSummaryForDisplay(session));
-    setNavSelection({ section: 'sessions' });
-    setActiveId(session.id);
-    return Promise.resolve();
-  }, [sessionCatalogController, setActiveId, setNavSelection]);
-
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
     refreshSessions,
@@ -1299,7 +1291,11 @@ function AppShellContent({
     isShellSurfaceOwnerActive,
     messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
-    activateSessionForFirstSend,
+    activateSessionForFirstSend: async (session) => {
+      commitSession(session);
+      setNavSelection({ section: 'sessions' });
+      setActiveId(session.id);
+    },
     retireSession: clearSessionRendererState,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     addTransientMessage,
