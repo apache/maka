@@ -46,11 +46,12 @@ test('walks the production dependency graph', (t) => {
   writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0' } });
   writePackage(join(root, 'node_modules/alpha'), {
     name: 'alpha',
+    version: '1.0.0',
     dependencies: { beta: '1.0.0' },
   });
-  writePackage(join(root, 'node_modules/beta'), { name: 'beta' });
+  writePackage(join(root, 'node_modules/beta'), { name: 'beta', version: '1.0.0' });
 
-  deepEqual(collectClosure(root), ['alpha', 'beta']);
+  deepEqual(collectClosure(root), ['node_modules/alpha@1.0.0', 'node_modules/beta@1.0.0']);
 });
 
 test('devDependencies never ship', (t) => {
@@ -62,10 +63,10 @@ test('devDependencies never ship', (t) => {
     dependencies: { alpha: '1.0.0' },
     devDependencies: { renderer_only: '1.0.0' },
   });
-  writePackage(join(root, 'node_modules/alpha'), { name: 'alpha' });
+  writePackage(join(root, 'node_modules/alpha'), { name: 'alpha', version: '1.0.0' });
   writePackage(join(root, 'node_modules/renderer_only'), { name: 'renderer_only' });
 
-  deepEqual(collectClosure(root), ['alpha']);
+  deepEqual(collectClosure(root), ['node_modules/alpha@1.0.0']);
 });
 
 test('optional dependencies ship when they install', (t) => {
@@ -75,11 +76,12 @@ test('optional dependencies ship when they install', (t) => {
   writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0' } });
   writePackage(join(root, 'node_modules/alpha'), {
     name: 'alpha',
+    version: '1.0.0',
     optionalDependencies: { gamma: '1.0.0' },
   });
-  writePackage(join(root, 'node_modules/gamma'), { name: 'gamma' });
+  writePackage(join(root, 'node_modules/gamma'), { name: 'gamma', version: '1.0.0' });
 
-  deepEqual(collectClosure(root), ['alpha', 'gamma']);
+  deepEqual(collectClosure(root), ['node_modules/alpha@1.0.0', 'node_modules/gamma@1.0.0']);
 });
 
 test('follows a nested node_modules copy with different dependencies', (t) => {
@@ -92,18 +94,46 @@ test('follows a nested node_modules copy with different dependencies', (t) => {
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0', shared: '1.0.0' } });
-  writePackage(join(root, 'node_modules/shared'), { name: 'shared' });
+  writePackage(join(root, 'node_modules/shared'), { name: 'shared', version: '1.0.0' });
   writePackage(join(root, 'node_modules/alpha'), {
     name: 'alpha',
+    version: '1.0.0',
     dependencies: { shared: '2.0.0' },
   });
   writePackage(join(root, 'node_modules/alpha/node_modules/shared'), {
     name: 'shared',
+    version: '2.0.0',
     dependencies: { only_via_nested: '1.0.0' },
   });
-  writePackage(join(root, 'node_modules/only_via_nested'), { name: 'only_via_nested' });
+  writePackage(join(root, 'node_modules/only_via_nested'), {
+    name: 'only_via_nested',
+    version: '1.0.0',
+  });
 
-  deepEqual(collectClosure(root), ['alpha', 'only_via_nested', 'shared']);
+  // Both `shared` instances are listed, so the duplicate is reviewable.
+  deepEqual(collectClosure(root), [
+    'node_modules/alpha/node_modules/shared@2.0.0',
+    'node_modules/alpha@1.0.0',
+    'node_modules/only_via_nested@1.0.0',
+    'node_modules/shared@1.0.0',
+  ]);
+});
+
+test('a same-name version replacement changes the closure', (t) => {
+  const { root, writePackage } = makeTree();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0' } });
+  writePackage(join(root, 'node_modules/alpha'), { name: 'alpha', version: '1.0.0' });
+  const before = collectClosure(root);
+
+  writePackage(join(root, 'node_modules/alpha'), { name: 'alpha', version: '2.0.0' });
+  const after = collectClosure(root);
+
+  deepEqual(compare(before, after), {
+    added: ['node_modules/alpha@2.0.0'],
+    removed: ['node_modules/alpha@1.0.0'],
+  });
 });
 
 test('a missing package is skipped rather than throwing', (t) => {

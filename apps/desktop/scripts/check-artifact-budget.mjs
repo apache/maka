@@ -28,7 +28,7 @@
 // exactly which packages ship; adding a production dependency changes that
 // file, so the cost lands in the diff of the pull request that causes it.
 //
-// It tracks the package SET rather than bytes on purpose. The bytes that reach
+// It tracks the set of package instances rather than bytes on purpose. The bytes that reach
 // `app.asar` are what survives the `files` globs -- on this checkout the
 // closure is 241 MiB on disk and 142 MiB in the archive -- and reproducing
 // those globs here would be the same hand-written exclude list that
@@ -36,7 +36,7 @@
 // exact, and it is the thing that regressed.
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -68,6 +68,10 @@ export function resolvePackageDirectory(name, fromDirectory) {
 // keying by name lets the hoisted copy win and hides the nested subtree --
 // which is how `proxy-agent-negotiate` (reached only through
 // `packages/runtime/node_modules/https-proxy-agent`) goes missing.
+//
+// The result lists resolved instances, `<path relative to root>@<version>`,
+// not names: a version replacement or a second copy of the same name changes
+// what electron-builder ships and must change the ledger too.
 export function collectClosure(rootDirectory = DESKTOP_ROOT) {
   const manifest = readPackageJson(rootDirectory);
   if (!manifest) throw new Error(`no package.json at ${rootDirectory}`);
@@ -76,9 +80,9 @@ export function collectClosure(rootDirectory = DESKTOP_ROOT) {
   const walk = (name, fromDirectory) => {
     const directory = resolvePackageDirectory(name, fromDirectory);
     if (!directory || visited.has(directory)) return;
-    visited.set(directory, name);
-
     const pkg = readPackageJson(directory);
+    const path = relative(rootDirectory, directory).split(sep).join('/');
+    visited.set(directory, `${path}@${pkg?.version ?? 'unknown'}`);
     if (!pkg) return;
     // Optional dependencies ship when they install, so they count.
     for (const dependency of Object.keys(pkg.dependencies ?? {})) walk(dependency, directory);
@@ -86,7 +90,7 @@ export function collectClosure(rootDirectory = DESKTOP_ROOT) {
   };
 
   for (const dependency of Object.keys(manifest.dependencies ?? {})) walk(dependency, rootDirectory);
-  return [...new Set(visited.values())].sort();
+  return [...visited.values()].sort();
 }
 
 export function readLedger(path = LEDGER_PATH) {
@@ -131,7 +135,7 @@ function main() {
 
   if (write) {
     writeFileSync(LEDGER_PATH, `${JSON.stringify({ packages: actual }, null, 2)}\n`);
-    console.log(`Wrote ${actual.length} packages to artifact-budget.json`);
+    console.log(`Wrote ${actual.length} package instances to artifact-budget.json`);
     return;
   }
 
