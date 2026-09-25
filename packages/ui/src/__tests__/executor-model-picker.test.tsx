@@ -397,6 +397,7 @@ test('unavailable executors can be inspected but never committed', async () => {
 test('native thinking stays beside the composer model trigger and follows executor selection', async () => {
   const dom = installTranscriptDom();
   dom.window.getSelection = () => null;
+  dom.document.getSelection = dom.window.getSelection;
   const levels: unknown[] = [];
   function Harness() {
     const [selection, setSelection] = useState<ExecutorSelection>();

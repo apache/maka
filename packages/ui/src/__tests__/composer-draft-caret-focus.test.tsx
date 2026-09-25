@@ -90,11 +90,17 @@ interface AimedRange {
   container: Node | null;
   offset: number;
   collapsed: boolean;
+  startContainer: Node | null;
+  startOffset: number;
+  endContainer: Node | null;
+  endOffset: number;
+  commonAncestorContainer: Node | null;
 }
 
 function harness() {
   const { document, window } = parseHTML('<div id="root"></div>');
   window.getComputedStyle = () => computedStyle();
+  const animationFrames: FrameRequestCallback[] = [];
   const setAttribute = window.Element.prototype.setAttribute;
   window.Element.prototype.setAttribute = function normalized(name: string, value: string) {
     return setAttribute.call(this, name === 'contentEditable' ? 'contenteditable' : name, value);
@@ -106,17 +112,66 @@ function harness() {
     const range: AimedRange & {
       selectNodeContents(node: Node): void;
       collapse(toStart: boolean): void;
+      setStart(node: Node, offset: number): void;
+      setEnd(node: Node, offset: number): void;
+      cloneRange(): Range;
     } = {
       container: null,
       offset: 0,
       collapsed: false,
+      startContainer: null,
+      startOffset: 0,
+      endContainer: null,
+      endOffset: 0,
+      commonAncestorContainer: null,
       selectNodeContents(node) {
         range.container = node;
         range.offset = node.childNodes.length;
+        range.startContainer = node;
+        range.startOffset = 0;
+        range.endContainer = node;
+        range.endOffset = node.childNodes.length;
+        range.commonAncestorContainer = node;
       },
       collapse(toStart) {
         range.offset = toStart ? 0 : range.offset;
+        if (range.startContainer !== null) {
+          const node = toStart ? range.startContainer : range.endContainer;
+          const offset = toStart ? range.startOffset : range.endOffset;
+          range.startContainer = node;
+          range.startOffset = offset;
+          range.endContainer = node;
+          range.endOffset = offset;
+          range.container = node;
+          range.commonAncestorContainer = node;
+        }
         range.collapsed = true;
+      },
+      setStart(node, offset) {
+        range.startContainer = node;
+        range.startOffset = offset;
+        range.container = node;
+        range.offset = offset;
+        range.commonAncestorContainer = node;
+      },
+      setEnd(node, offset) {
+        range.endContainer = node;
+        range.endOffset = offset;
+        range.commonAncestorContainer = node;
+        range.collapsed =
+          range.startContainer === range.endContainer && range.startOffset === range.endOffset;
+      },
+      cloneRange() {
+        const clone = document.createRange() as unknown as typeof range;
+        clone.container = range.container;
+        clone.offset = range.offset;
+        clone.collapsed = range.collapsed;
+        clone.startContainer = range.startContainer;
+        clone.startOffset = range.startOffset;
+        clone.endContainer = range.endContainer;
+        clone.endOffset = range.endOffset;
+        clone.commonAncestorContainer = range.commonAncestorContainer;
+        return clone as unknown as Range;
       },
     };
     return range as unknown as Range;
@@ -124,8 +179,17 @@ function harness() {
   let active: Element | null = null;
   const selected: AimedRange[] = [];
   const selection = {
+    get rangeCount(): number {
+      return selected.length;
+    },
+    get isCollapsed(): boolean {
+      return selected.at(-1)?.collapsed ?? true;
+    },
     get anchorNode(): Node | null {
-      return selected.at(-1)?.container ?? null;
+      return selected.at(-1)?.startContainer ?? null;
+    },
+    getRangeAt(index: number): Range {
+      return selected[index] as unknown as Range;
     },
     removeAllRanges() {
       selected.length = 0;
@@ -136,8 +200,11 @@ function harness() {
       // The whole point: a selection inside a `contenteditable` focuses it,
       // whoever held focus before. Without this the harness would let a caret
       // placed on a blurred editor look free.
-      const container = aimed.container as Element & { closest?: Element['closest'] };
-      active = container?.closest?.('[contenteditable="true"]') ?? active;
+      const container = aimed.container as Node & { closest?: Element['closest']; parentElement?: Element | null };
+      const element = container?.closest
+        ? container
+        : container?.parentElement;
+      active = element?.closest?.('[contenteditable="true"]') ?? active;
     },
   };
   document.getSelection = () => selection as unknown as Selection;
@@ -145,6 +212,14 @@ function harness() {
   window.matchMedia = () =>
     ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
   Object.defineProperty(document, 'activeElement', { configurable: true, get: () => active });
+  const focus = window.HTMLElement.prototype.focus;
+  window.HTMLElement.prototype.focus = function focusElement() {
+    active = this;
+    this.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+  };
+  restoreDom.push(() => {
+    window.HTMLElement.prototype.focus = focus;
+  });
   Object.assign(globalThis, {
     document,
     window,
@@ -153,13 +228,21 @@ function harness() {
     HTMLBRElement: window.HTMLBRElement,
     Node: window.Node,
     matchMedia: window.matchMedia,
-    requestAnimationFrame: () => 1,
+    requestAnimationFrame: (callback: FrameRequestCallback) => {
+      animationFrames.push(callback);
+      return animationFrames.length;
+    },
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
   });
+  window.requestAnimationFrame = (callback: FrameRequestCallback) => {
+    animationFrames.push(callback);
+    return animationFrames.length;
+  };
+  window.cancelAnimationFrame = () => undefined;
   const container = document.querySelector('#root');
   assert.ok(container);
-  const root = createRoot(container);
+  const root = createRoot(container as unknown as Element);
   mountedRoots.push(root);
   return {
     /** The live selection: what `removeAllRanges` cleared and `addRange` added. */
@@ -190,6 +273,50 @@ function harness() {
       await act(() => {
         element.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
       });
+    },
+    async click(element: HTMLElement) {
+      await act(async () => {
+        element.dispatchEvent(new window.Event('click', { bubbles: true }));
+      });
+    },
+    async keyDown(element: HTMLElement, key: string) {
+      const event = new window.Event('keydown', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'key', { value: key });
+      await act(async () => { element.dispatchEvent(event); });
+    },
+    async openThinking(element: HTMLElement, input: 'pointer' | 'keyboard') {
+      if (input === 'keyboard') {
+        await this.keyDown(element, 'ArrowDown');
+      } else {
+        await this.pointerDown(element);
+        await this.click(element);
+      }
+    },
+    async lightDismiss(trigger: HTMLElement) {
+      const popover = document.getElementById(trigger.getAttribute('aria-controls')!)?.closest('[popover]');
+      assert.ok(popover);
+      // linkedom 没有原生 popover 关闭行为，模拟浏览器的 toggle 通知。
+      await act(async () => {
+        popover.dispatchEvent(Object.assign(new window.Event('toggle'), {
+          oldState: 'open', newState: 'closed',
+        }));
+      });
+    },
+    async flushAnimationFrames() {
+      const callbacks = animationFrames.splice(0);
+      await act(() => {
+        for (const callback of callbacks) callback(0);
+      });
+    },
+    async setCaret(offset: number) {
+      const editable = this.editable();
+      const text = editable.firstChild as Node | null;
+      assert.ok(text, 'the composer has no text node');
+      const range = document.createRange();
+      range.setStart(text as Node, offset);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
     },
     async render(props: Parameters<typeof Composer>[0]) {
       await act(() => {
@@ -222,7 +349,7 @@ function withDraft(key: string, draft: string) {
 /** The end of the content, which is where every restored draft owes its caret. */
 function assertCaretAtEnd(selected: readonly AimedRange[], editable: HTMLElement): void {
   const caret = selected.at(-1);
-  assert.ok(caret, 'the composer placed no caret');
+  if (!caret) throw new Error('the composer placed no caret');
   assert.equal(caret.collapsed, true, 'the caret must be a collapsed selection');
   assert.equal(caret.container, editable);
   assert.equal(caret.offset, editable.childNodes.length);
@@ -273,3 +400,98 @@ test('a session swap leaves focus on the row that caused it', async () => {
     'the restored caret took focus out from under the row the user activated',
   );
 });
+
+for (const input of ['pointer', 'keyboard'] as const) {
+  for (const executorPicker of [undefined, {
+    catalog: [],
+    onSelect: () => undefined,
+    onSetup: () => undefined,
+    onRetry: () => undefined,
+    onNewTask: () => undefined,
+  }]) {
+    test(`changing thinking level keeps the draft caret (${input}, ${executorPicker ? 'executor picker' : 'native fallback'})`, async () => {
+      const dom = harness();
+      const props = {
+        ...withDraft('session-a', 'draft in the middle'),
+        draftKey: 'session-a',
+        executorPicker,
+        activeSession: {
+          id: 'session-a',
+          llmConnectionId: 'connection-a',
+          llmConnectionSlug: 'connection-a',
+          model: 'model-a',
+        } as never,
+        activeThinkingLevels: ['low'] as never,
+        activeThinkingLevel: undefined,
+        onThinkingLevelChange: () => undefined,
+      };
+      await dom.render(props);
+      await dom.focus(dom.editable());
+      await dom.setCaret(6);
+
+      const selector = document.querySelector('.maka-thinking-level-selector [role="combobox"]');
+      assert.ok(selector, 'the thinking-level selector did not render');
+      await dom.openThinking(selector as HTMLElement, input);
+
+      const options = [...document.querySelectorAll('[role="option"]')];
+      const low = options.find((option) => option.textContent?.includes('Low'));
+      assert.ok(low, 'the thinking-level menu did not render the low option');
+      // A browser can collapse a contenteditable selection when focus moves into
+      // the menu. The production code must restore the range captured before that
+      // interaction rather than accepting the collapsed start position.
+      await dom.setCaret(0);
+      await dom.click(low as HTMLElement);
+      await dom.render({ ...props, activeThinkingLevel: 'low' as never });
+      await dom.flushAnimationFrames();
+
+      const caret = dom.selected.at(-1);
+      if (!caret) throw new Error('the thinking-level change removed the draft selection');
+      assert.equal(caret.startContainer, dom.editable().firstChild);
+      assert.equal(caret.startOffset, 6);
+    });
+
+  }
+
+  test(`cancelling a thinking menu recaptures a caret moved before the next choice (${input})`, async () => {
+    const dom = harness();
+    const props = {
+      ...withDraft('session-a', 'draft in the middle'),
+      draftKey: 'session-a',
+      activeSession: {
+        id: 'session-a',
+        llmConnectionId: 'connection-a',
+        llmConnectionSlug: 'connection-a',
+        model: 'model-a',
+      } as never,
+      activeThinkingLevels: ['low'] as never,
+      activeThinkingLevel: undefined,
+      onThinkingLevelChange: () => undefined,
+    };
+    await dom.render(props);
+    await dom.focus(dom.editable());
+    await dom.setCaret(6);
+
+    const selector = document.querySelector('.maka-thinking-level-selector [role="combobox"]');
+    assert.ok(selector, 'the thinking-level selector did not render');
+    await dom.openThinking(selector as HTMLElement, input);
+    if (input === 'keyboard') await dom.keyDown(selector as HTMLElement, 'Escape');
+    else await dom.lightDismiss(selector as HTMLElement);
+    assert.equal(selector.getAttribute('aria-expanded'), 'false');
+
+    await dom.setCaret(2);
+    await dom.openThinking(selector as HTMLElement, input);
+    const low = [...document.querySelectorAll('[role="option"]')].find((option) =>
+      option.textContent?.includes('Low'),
+    );
+    assert.ok(low, 'the thinking-level menu did not render the low option');
+    await dom.click(low as HTMLElement);
+    await dom.render({ ...props, activeThinkingLevel: 'low' as never });
+    await dom.flushAnimationFrames();
+
+    const caret = dom.selected.at(-1);
+    if (!caret) throw new Error('the thinking-level change removed the draft selection');
+    assert.equal(caret.startContainer, dom.editable().firstChild);
+    assert.equal(caret.startOffset, 2);
+  });
+
+}
