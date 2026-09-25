@@ -186,12 +186,24 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
 export function materializeTools(
   messages: readonly StoredMessage[],
 ): ToolActivityItem[] {
+  const callTurnIdsByUseId = new Map<string, Set<string>>();
+  const resultsByUseId = new Map<
+    string,
+    Extract<StoredMessage, { type: "tool_result" }>
+  >();
   const resultsByTurnId = new Map<
     string,
     Map<string, Extract<StoredMessage, { type: "tool_result" }>>
   >();
   for (const message of messages) {
+    if (message.type === "tool_call") {
+      const turnIds = callTurnIdsByUseId.get(message.id);
+      if (turnIds) turnIds.add(message.turnId);
+      else callTurnIdsByUseId.set(message.id, new Set([message.turnId]));
+      continue;
+    }
     if (message.type !== "tool_result") continue;
+    resultsByUseId.set(message.toolUseId, message);
     const turnResults = resultsByTurnId.get(message.turnId);
     if (turnResults) turnResults.set(message.toolUseId, message);
     else resultsByTurnId.set(message.turnId, new Map([[message.toolUseId, message]]));
@@ -202,7 +214,10 @@ export function materializeTools(
   return messages
     .filter((message) => message.type === "tool_call")
     .map((call) => {
-      const result = resultsByTurnId.get(call.turnId)?.get(call.id);
+      const result = resultsByTurnId.get(call.turnId)?.get(call.id)
+        ?? (callTurnIdsByUseId.get(call.id)?.size === 1
+          ? resultsByUseId.get(call.id)
+          : undefined);
       return {
         toolUseId: call.id,
         toolName: call.toolName,
