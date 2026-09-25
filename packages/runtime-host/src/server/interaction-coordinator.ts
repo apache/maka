@@ -43,6 +43,7 @@ import type {
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
 } from '@maka/core/sandbox-boundary';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
@@ -912,6 +913,63 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         throw this.#poison(error);
       }),
     );
+  }
+
+  /** Only forwards an actual answer collected by a Host-owned WorkHub question tool. */
+  answerDelegatedQuestion(
+    input: InteractionAnswerInput,
+    lease: SessionAdmissionLease,
+  ): ReturnType<InteractionOperationHandlerMap['interaction.answer']> {
+    return this.#sessionAdmission.runAdmitted(input.sessionId, lease, async () => {
+      this.#throwIfPoisoned();
+      const record = await this.#readInteraction(input.interactionId);
+      if (
+        !record ||
+        record.request.sessionId !== input.sessionId ||
+        record.request.request.kind !== 'question' ||
+        input.answer.kind !== 'question'
+      )
+        return interactionNotFound();
+      return this.#answerStoredInteraction(record, input.answer, lease);
+    });
+  }
+
+  /** Close a copied WorkHub question once its original question has settled.
+   * The exact Turn and tool call bind this closure to the relay, not to another
+   * pending WorkHub interaction.
+   */
+  closeRelayedQuestion(turnId: string, toolUseId: string): Promise<boolean> {
+    return this.#sessionAdmission.run(WORKHUB_COORDINATION_SESSION_ID, async (admission) => {
+      this.#throwIfPoisoned();
+      const requests = (
+        await this.#readPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
+      ).filter(
+        (request) =>
+          request.turnId === turnId &&
+          request.request.kind === 'question' &&
+          request.request.toolUseId === toolUseId,
+      );
+      if (requests.length === 0) return false;
+      if (requests.length !== 1) {
+        throw this.#poison(
+          new RuntimeInteractionInvariantError('Ambiguous WorkHub question relay'),
+        );
+      }
+      const request = requests[0]!;
+      const entry = this.#requireLiveStored(request);
+      if (entry.kind !== 'question') {
+        throw this.#poison(new RuntimeInteractionInvariantError('WorkHub relay is not a question'));
+      }
+      const outcome = await this.#commitOutcome(request, {
+        kind: 'closure',
+        reason: 'producer_cancelled',
+        committedAt: this.#now(),
+      });
+      await this.#refreshCanonicalContinuity(WORKHUB_COORDINATION_SESSION_ID, admission);
+      this.#throwIfPoisoned();
+      await this.#applyAndDelete(entry, outcome);
+      return true;
+    });
   }
 
   async #answerStoredInteraction(

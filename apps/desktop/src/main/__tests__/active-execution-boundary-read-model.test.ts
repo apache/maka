@@ -79,6 +79,17 @@ describe('Active execution boundary read model', () => {
       'ask',
     );
   });
+
+  it('shows a pending mode change only once the boundary is known', () => {
+    assert.deepEqual(
+      deriveDesktopExecutionBoundarySurface('session-a', widened, 'ask', 'bypass'),
+      { permissionMode: 'bypass', localInteractionAvailable: true },
+    );
+    assert.deepEqual(
+      deriveDesktopExecutionBoundarySurface('session-a', undefined, 'ask', 'bypass'),
+      { permissionMode: undefined, localInteractionAvailable: false },
+    );
+  });
 });
 
 describe('A boundary read that fails (#1629)', () => {

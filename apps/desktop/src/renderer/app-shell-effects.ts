@@ -179,14 +179,18 @@ export function useAppShellBootstrapSubscriptions(options: {
   const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
     options.handleConnectionEvent(event);
   });
+  const refreshRuntimeHostSettingsMirrors = () => {
+    void options.refreshShellSettings();
+    void options.refreshConnections();
+  };
   const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
     void options.refreshSessions().then(() => {
       options.retiredSessionIds(options.sessionsRef.current).forEach(options.retireSession);
     });
     if (event.readiness !== 'ready') return;
     if (!event.isDefault) return;
+    refreshRuntimeHostSettingsMirrors();
     void options.refreshProjects();
-    void options.refreshConnections();
     void options.refreshMemoryActive('load');
   });
   // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
@@ -259,10 +263,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     const unsubscribeConnections = window.maka.connections.subscribeEvents(handleConnectionSubscriptionEvent);
     const unsubscribeRuntimeHostChanges =
       window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
-    const refreshRuntimeHostSettingsMirrors = () => {
-      void options.refreshShellSettings();
-      void options.refreshConnections();
-    };
     const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(
       refreshRuntimeHostSettingsMirrors,
     );

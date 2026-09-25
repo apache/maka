@@ -8,7 +8,6 @@
       "@maka/ui": ["../../packages/ui/src/index.ts"],
       "@maka/ui/icons": ["../../packages/ui/src/icons.tsx"],
       "@maka/ui/artifact-preview-registry": ["../../packages/ui/src/artifact-preview-registry.ts"],
-      "@maka/ui/assistant-stream": ["../../packages/ui/src/assistant-stream.ts"],
       "@maka/ui/maka-uri": ["../../packages/ui/src/maka-uri.ts"],
     }
   },

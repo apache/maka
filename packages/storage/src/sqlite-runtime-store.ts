@@ -244,7 +244,9 @@ export type ToolJournalState =
   | 'reconcile_observed'
   | 'outcome_committed'
   | 'recovery_completed'
-  | 'recovery_parked';
+  | 'recovery_parked'
+  | 'abandoned'
+  | 'interrupted_unknown';
 
 export type SqliteRuntimeStoreFailpoint =
   | 'after_runtime_event_insert'
@@ -491,7 +493,11 @@ export class SqliteRuntimeStore
       if (events.some(isToolLedgerBearingEvent)) {
         this.assertToolLedgerTransition(events, 'generic_append');
       }
-      const created = events.map((event) => this.importRuntimeEventSync(event));
+      // Batch imports preserve already-persisted history, including legacy
+      // terminal/tool gaps that recovery will classify when projections are
+      // rebuilt. New terminal writes through appendRuntimeEvent must obey the
+      // unsettled-operation invariant below.
+      const created = events.map((event) => this.importRuntimeEventSync(event, true));
       return { created };
     });
   }
@@ -3507,6 +3513,86 @@ export class SqliteRuntimeStore
     return this.transaction(() => this.rebuildToolProjectionsFromRuntimeEventsSync());
   }
 
+  /** Rebuild one Session's disposable tool projections while its owner holds a fence. */
+  async rebuildToolProjectionsForSession(sessionId: string): Promise<void> {
+    await this.transaction(() => this.rebuildToolProjectionsFromRuntimeEventsSync(sessionId));
+  }
+
+  /**
+   * Repair terminal projections for unsettled tools without decoding the
+   * Session's full RuntimeEvent history. Bundle export is a compatibility
+   * boundary: unrelated historical payloads may be byte-preserved and newer
+   * or older than the RuntimeEvent schema understood by this build.
+   */
+  async rebuildTerminalToolProjectionsForSessions(sessionIds: readonly string[]): Promise<void> {
+    const operations = await this.listUnsettledToolOperations(sessionIds);
+    if (operations.length === 0) return;
+
+    this.transaction(() => {
+      const dispatchSequence = this.db.prepare(`
+        SELECT event_seq
+        FROM runtime_events
+        WHERE event_id = ? AND session_id = ? AND invocation_id = ?
+      `);
+      const firstTerminal = this.db.prepare(`
+        SELECT event_id, event_seq, committed_at
+        FROM runtime_events
+        WHERE session_id = ? AND invocation_id = ?
+          AND ${TERMINAL_RUNTIME_EVENT_SQL}
+        ORDER BY event_seq ASC, event_id ASC
+        LIMIT 1
+      `);
+      const insertJournal = this.db.prepare(`
+        INSERT INTO tool_journal_events (
+          journal_event_id, operation_id, invocation_id, run_id, turn_id, state,
+          runtime_event_id, canonical_args_hash, recovery_mode, committed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const updateOperation = this.db.prepare(`
+        UPDATE tool_operations
+        SET current_state = ?, version = version + 1
+        WHERE operation_id = ? AND current_state = 'prepared' AND result_event_id IS NULL
+      `);
+
+      for (const operation of operations) {
+        if (!operation.dispatchEventId) continue;
+        const dispatch = dispatchSequence.get(
+          operation.dispatchEventId,
+          operation.sessionId,
+          operation.invocationId,
+        ) as { event_seq: number } | undefined;
+        if (!dispatch) continue;
+        const terminal = firstTerminal.get(operation.sessionId, operation.invocationId) as
+          | { event_id: string; event_seq: number; committed_at: number }
+          | undefined;
+        if (!terminal || terminal.event_seq <= dispatch.event_seq) continue;
+
+        const state =
+          operation.toolName === 'AskUserQuestion' && operation.recoveryMode === 'never_auto_retry'
+            ? 'abandoned'
+            : 'interrupted_unknown';
+        insertJournal.run(
+          journalEventIdFor(operation.operationId, terminal.event_id, state),
+          operation.operationId,
+          operation.invocationId,
+          operation.runId,
+          operation.turnId,
+          state,
+          terminal.event_id,
+          operation.canonicalArgsHash,
+          operation.recoveryMode,
+          terminal.committed_at,
+        );
+        const updated = updateOperation.run(state, operation.operationId);
+        if (updated.changes !== 1) {
+          throw new Error(
+            `Tool operation projection changed during export: ${operation.operationId}`,
+          );
+        }
+      }
+    });
+  }
+
   private rebuildToolProjectionsFromRuntimeEventsSync(
     sessionId?: string,
   ): ToolProjectionRebuildResult {
@@ -3524,6 +3610,17 @@ export class SqliteRuntimeStore
     >;
     const events = rows.map(decodeRuntimeEventStorageRow);
     const eventOrder = new Map(events.map((event, index) => [event.id, index] as const));
+    const runtimeInvocationKey = (event: RuntimeEvent): string =>
+      JSON.stringify([event.sessionId, event.invocationId]);
+    const terminalEventsByInvocation = new Map<string, RuntimeEvent>();
+    for (const event of events) {
+      if (
+        isTerminalRuntimeEvent(event) &&
+        !terminalEventsByInvocation.has(runtimeInvocationKey(event))
+      ) {
+        terminalEventsByInvocation.set(runtimeInvocationKey(event), event);
+      }
+    }
     const committedAt = new Map(
       rows.map((row, index) => [events[index]!.id, row.committed_at] as const),
     );
@@ -3587,6 +3684,24 @@ export class SqliteRuntimeStore
       }
       const reconcileEvent = recovery.kind === 'valid' ? recovery.reconcileEvent : undefined;
       const decisionEvent = recovery.kind === 'valid' ? recovery.decisionEvent : undefined;
+      const decision = recovery.kind === 'valid' ? recovery.decision : undefined;
+      const terminalEvent = terminalEventsByInvocation.get(runtimeInvocationKey(event));
+      const terminalAfterDispatch =
+        terminalEvent !== undefined &&
+        requireRuntimeEventOrder(eventOrder, terminalEvent.id) >
+          requireRuntimeEventOrder(eventOrder, event.id);
+      const abandoned =
+        !decision &&
+        !operation.responseEvent &&
+        dispatch.toolName === 'AskUserQuestion' &&
+        dispatch.recoveryMode === 'never_auto_retry' &&
+        terminalAfterDispatch;
+      // A terminal invocation closes the tool's execution window, but does not
+      // prove whether an external side effect completed. Preserve that
+      // uncertainty in the query projection without rewriting the immutable
+      // RuntimeEvent history.
+      const interruptedUnknown =
+        !decision && !operation.responseEvent && !abandoned && terminalAfterDispatch;
 
       this.db
         .prepare(`
@@ -3608,14 +3723,17 @@ export class SqliteRuntimeStore
         );
       journalEvents += 1;
       const response = operation.responseEvent;
-      const decision = recovery.kind === 'valid' ? recovery.decision : undefined;
       const currentState = decision
         ? decision.disposition === 'completed'
           ? 'recovery_completed'
           : 'recovery_parked'
         : response
           ? 'outcome_committed'
-          : 'prepared';
+          : abandoned
+            ? 'abandoned'
+            : interruptedUnknown
+              ? 'interrupted_unknown'
+              : 'prepared';
       const tail = [
         ...(reconcileEvent
           ? [{ event: reconcileEvent, state: 'reconcile_observed' as const }]
@@ -3631,6 +3749,12 @@ export class SqliteRuntimeStore
                     : ('recovery_completed' as const),
               },
             ]
+          : []),
+        ...(abandoned && terminalEvent
+          ? [{ event: terminalEvent, state: 'abandoned' as const }]
+          : []),
+        ...(interruptedUnknown && terminalEvent
+          ? [{ event: terminalEvent, state: 'interrupted_unknown' as const }]
           : []),
       ].sort(
         (a, b) =>
@@ -3669,7 +3793,7 @@ export class SqliteRuntimeStore
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `)
           .run(
-            journalEventIdFor(dispatch.operationId, item.event, item.state),
+            journalEventIdFor(dispatch.operationId, item.event.id, item.state),
             dispatch.operationId,
             item.event.invocationId,
             item.event.runId,
@@ -4381,7 +4505,10 @@ export class SqliteRuntimeStore
     }
   }
 
-  private importRuntimeEventSync(event: RuntimeEvent): boolean {
+  private importRuntimeEventSync(
+    event: RuntimeEvent,
+    allowLegacyTerminalWithUnsettledOperation = false,
+  ): boolean {
     const canonicalEvent = canonicalizeRuntimeEventForStorage(event);
     this.assertInvocationIdentity([canonicalEvent]);
     const partial = partialRuntimeStream(canonicalEvent);
@@ -4400,6 +4527,23 @@ export class SqliteRuntimeStore
     // consult either.
     if (!existing) {
       this.assertContinuationAuthorityAllowsEvent(canonicalEvent);
+      if (isTerminalRuntimeEvent(canonicalEvent) && !allowLegacyTerminalWithUnsettledOperation) {
+        const unresolved = this.db
+          .prepare(`
+            SELECT operation_id FROM tool_operations
+            WHERE invocation_id = ?
+              AND current_state = 'prepared'
+              AND result_event_id IS NULL
+              AND dispatch_event_id IS NOT NULL
+            LIMIT 1
+          `)
+          .get(canonicalEvent.invocationId) as { operation_id?: unknown } | undefined;
+        if (unresolved && typeof unresolved.operation_id === 'string') {
+          throw new Error(
+            `Cannot terminalize invocation ${canonicalEvent.invocationId} with unsettled tool operation ${unresolved.operation_id}`,
+          );
+        }
+      }
       this.assertRunNotSealed(canonicalEvent);
     }
     if (isToolLedgerBearingEvent(canonicalEvent)) {
@@ -4719,7 +4863,13 @@ interface ToolOperationRow {
   tool_name: string;
   canonical_args_hash: string;
   recovery_mode: ToolRecoveryMode;
-  current_state: 'prepared' | 'outcome_committed' | 'recovery_completed' | 'recovery_parked';
+  current_state:
+    | 'prepared'
+    | 'outcome_committed'
+    | 'recovery_completed'
+    | 'recovery_parked'
+    | 'abandoned'
+    | 'interrupted_unknown';
   call_event_id: string;
   dispatch_event_id: string | null;
   result_event_id: string | null;
@@ -4876,10 +5026,17 @@ function requireRuntimeEventOrder(
 
 function journalEventIdFor(
   operationId: string,
-  event: RuntimeEvent,
+  eventId: string,
   state: Exclude<ToolJournalState, 'prepared'>,
 ): string {
-  return state === 'outcome_committed' ? `${operationId}_outcome` : `${event.id}_journal`;
+  if (state === 'outcome_committed') return `${operationId}_outcome`;
+  if (state === 'abandoned' || state === 'interrupted_unknown') {
+    // One invocation terminal can close multiple tool operations. Its journal
+    // fact is therefore unique per operation, unlike per-operation recovery
+    // events whose RuntimeEvent ids are already distinct.
+    return `${operationId}_${eventId}_journal`;
+  }
+  return `${eventId}_journal`;
 }
 
 function assertRecoveryAuthorityCapability(db: DatabaseSync): void {

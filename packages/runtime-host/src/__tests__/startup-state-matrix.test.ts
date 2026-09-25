@@ -118,11 +118,17 @@ test('mixed tool states recover once beside unrelated history before Host ready'
         assert.equal(content.isError, scenario.outcome);
         assert.deepEqual(content.result, { kind: 'text', text: scenario.name });
       } else {
+        assert.equal(outcomes.length, 1, scenario.name);
+        const outcome = outcomes[0]!;
+        assert.equal(outcome.id, `${operationId}_response`);
+        assert.equal(outcome.refs?.operationId, operationId);
         assert.equal(
-          outcomes.length,
-          0,
-          'recovery must not invent success for an unobserved effect',
+          outcome.content?.kind === 'function_response' && outcome.content.isError,
+          true,
+          'recovery must record an unobserved effect as interrupted, never successful',
         );
+        assert.match(JSON.stringify(outcome.content), /outcome_unknown/);
+        assert.match(JSON.stringify(outcome.content), /"retrySafe":false/);
       }
       settled.push(ledger.runtimeEvents);
     }

@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { decodeRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { RunSealedError } from '@maka/core/runtime-event-store';
 import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
@@ -804,6 +804,185 @@ describe('SqliteRuntimeStore', () => {
         }),
         { created: false, runtimeEventSeq: 3 },
       );
+    });
+  });
+
+  it('rebuilds a legacy terminal-without-tool-result gap as interrupted_unknown', async () => {
+    await withStore(async (store) => {
+      await commitPrepared(store);
+      const identity = {
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+      } as const;
+      await store.importRuntimeEventsBatch({
+        sessionId: identity.sessionId,
+        runId: identity.runId,
+        events: [
+          {
+            id: 'recovery-terminal-1',
+            ...identity,
+            ts: 4,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'failed',
+            actions: { endInvocation: true },
+          },
+        ],
+      });
+
+      await store.rebuildToolProjectionsFromRuntimeEvents();
+
+      assert.equal(
+        (await store.readToolOperation('operation-1'))?.currentState,
+        'interrupted_unknown',
+      );
+      assert.deepEqual(
+        (await store.readToolJournal('operation-1')).map((event) => event.state),
+        ['prepared', 'interrupted_unknown'],
+      );
+      assert.equal((await store.listUnsettledToolOperations(identity.sessionId)).length, 0);
+    });
+  });
+
+  it('repairs a terminal unsettled tool without decoding opaque Session history', async () => {
+    await withStore(async (store, dbPath) => {
+      await commitPrepared(store);
+      const identity = {
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+      } as const;
+      const secondArgs = { path: '/workspace/recovery-second.txt' };
+      const secondArgsHash = canonicalToolArgsHash('Read', secondArgs);
+      await store.commitToolPrepared({
+        operationId: 'recovery-operation-2',
+        journalEventId: 'recovery-operation-2_prepared',
+        runtimeEvent: functionCallEvent({
+          id: 'recovery-call-2',
+          ...identity,
+          ts: 3,
+          content: {
+            kind: 'function_call',
+            id: 'recovery-tool-call-2',
+            name: 'Read',
+            args: secondArgs,
+          },
+        }),
+        dispatchRuntimeEvent: toolDispatchEvent({
+          id: 'recovery-dispatch-2',
+          ...identity,
+          ts: 4,
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: 'recovery-operation-2',
+              providerToolCallId: 'recovery-tool-call-2',
+              toolName: 'Read',
+              canonicalArgsHash: secondArgsHash,
+              recoveryMode: 'replay_safe',
+            },
+          },
+          refs: { operationId: 'recovery-operation-2', toolCallId: 'recovery-tool-call-2' },
+        }),
+        providerToolCallId: 'recovery-tool-call-2',
+        toolName: 'Read',
+        canonicalArgsHash: secondArgsHash,
+        recoveryMode: 'replay_safe',
+        committedAt: 4,
+      });
+      await store.importRuntimeEventsBatch({
+        sessionId: identity.sessionId,
+        runId: identity.runId,
+        events: [
+          {
+            id: 'recovery-terminal-1',
+            ...identity,
+            ts: 4,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'failed',
+            actions: { endInvocation: true },
+          },
+        ],
+      });
+      await store.importRuntimeEventsBatch({
+        sessionId: identity.sessionId,
+        runId: 'legacy-run',
+        events: [
+          {
+            id: 'opaque-legacy-event',
+            invocationId: 'legacy-invocation',
+            runId: 'legacy-run',
+            sessionId: identity.sessionId,
+            turnId: 'legacy-turn',
+            ts: 5,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            content: { kind: 'text', text: 'preserve this event' },
+          },
+        ],
+      });
+      store.close();
+
+      const raw = new DatabaseSync(dbPath);
+      let legacyPayload = '';
+      try {
+        const event = raw
+          .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
+          .get('opaque-legacy-event') as { payload_json: string };
+        legacyPayload = `${event.payload_json.slice(0, -1)},"legacyBytePreserved":true}`;
+        assert.throws(
+          () => decodeRuntimeEvent(JSON.parse(legacyPayload) as unknown),
+          /Invalid RuntimeEvent schema/,
+        );
+        raw
+          .prepare('UPDATE runtime_events SET payload_json = ? WHERE event_id = ?')
+          .run(legacyPayload, 'opaque-legacy-event');
+      } finally {
+        raw.close();
+      }
+
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        await reopened.rebuildTerminalToolProjectionsForSessions([identity.sessionId]);
+        assert.equal(
+          (await reopened.readToolOperation('operation-1'))?.currentState,
+          'interrupted_unknown',
+        );
+        assert.deepEqual(
+          (await reopened.readToolJournal('operation-1')).map(({ state }) => state),
+          ['prepared', 'interrupted_unknown'],
+        );
+        assert.equal(
+          (await reopened.readToolOperation('recovery-operation-2'))?.currentState,
+          'interrupted_unknown',
+        );
+        assert.deepEqual(
+          (await reopened.readToolJournal('recovery-operation-2')).map(({ state }) => state),
+          ['prepared', 'interrupted_unknown'],
+        );
+        const retained = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+          assert.equal(
+            (
+              retained
+                .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
+                .get('opaque-legacy-event') as { payload_json: string }
+            ).payload_json,
+            legacyPayload,
+          );
+        } finally {
+          retained.close();
+        }
+      } finally {
+        reopened.close();
+      }
     });
   });
 

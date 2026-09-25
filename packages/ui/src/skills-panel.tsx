@@ -19,15 +19,15 @@
 
 // packages/ui/src/skills-panel.tsx
 //
-// The Skills module page, on the shared ModulePage shell (Astryx Layout,
-// the vendor's incident-console archetype) — the same surface as 定时任务:
+// The Skills module page, on the shared ModulePage shell — the same surface
+// as 定时任务:
 //
 // - header: title, a live count line, and one overflow menu of page actions;
 // - toolbar (the header's last row, fixed): the hub switch, the 市场 / 内置 /
 //   已安装 SegmentedControl, search, and the market's category/sort filters;
 // - content: dense Astryx List rows, not cards;
-// - inspector: selecting an installed row opens it, and every per-skill
-//   action lives there (skill-inspector.tsx).
+// - detail: selecting an installed row opens its dialog, and every per-skill
+//   action lives there (skill-detail.tsx).
 //
 // Layout owns scroll containment, so the view switch can never scroll away
 // with the list — the bug this page used to ship (#2236) is unrepresentable
@@ -72,7 +72,7 @@ import {
 } from '@astryxdesign/core/DropdownMenu';
 import { ModulePage } from './primitives/module-page.js';
 import { CapabilityAuditStrip, capabilityAuditIssues } from './capability-audit-strip.js';
-import { SkillInspector } from './skill-inspector.js';
+import { skillDetail, skillUpdateReviewDetail, type SkillDetailActions } from './skill-detail.js';
 import {
   formatSkillLibraryDescription,
   formatSkillStatusLabel,
@@ -136,9 +136,7 @@ export function SkillsModuleMain(props: {
   // list — which only happens when the main process pushes the new set back.
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
   const focusRowAfterRemovalRef = useRef<number | null>(null);
-  // One tab stop for the whole installed list: without it, reaching the
-  // inspector from row k of N costs N−k presses, because the inspector
-  // renders after the list and every row is its own stop.
+  // One tab stop for the whole installed list, so tabbing past it costs one press.
   const rovingRows = useRovingRowFocus(rowsContainerRef);
 
   useEffect(() => {
@@ -209,15 +207,13 @@ export function SkillsModuleMain(props: {
       destructive: true,
     });
     if (!confirmed || !mountedRef.current) return;
-    // The 删除 button is about to unmount with the whole inspector, and
-    // nothing else would claim focus — it would fall to `body`, dropping a
-    // keyboard user at the top of the document. Hand it to the row that
-    // takes the deleted one's place.
+    // The deleted row cannot take focus back from the closing dialog; the row
+    // that takes its place does.
     focusRowAfterRemovalRef.current = filteredSkills.findIndex(
       (entry) => (entry.ref ?? entry.id) === ref,
     );
     await runSkillAction(`delete:${ref}`, () => props.onDeleteSkill?.(ref));
-    // Drop the selection too — keeping it would reopen the inspector if a
+    // Drop the selection too — keeping it would reopen the detail if a
     // skill with the same ref is installed again later, unasked.
     if (mountedRef.current) {
       setSelectedSkillRef((current) => (current === ref ? null : current));
@@ -298,11 +294,35 @@ export function SkillsModuleMain(props: {
   }, [allManagedSources, marketCategory, marketSort, normalizedSkillQuery]);
 
   // Derived, not stored: whatever hides the row — deletion, a filter, a
-  // view switch — closes the inspector without a reconciliation step, and
+  // view switch — closes the detail without a reconciliation step, and
   // the panel always reads the freshest copy of the skill.
   const selectedSkill = activeSkillTab === 'installed'
     ? filteredSkills.find((skill) => (skill.ref ?? skill.id) === selectedSkillRef) ?? null
     : null;
+  const selectedSkillActions: SkillDetailActions | null = selectedSkill ? {
+    busy: pendingSkillAction !== null,
+    opening: pendingSkillAction === `open:${selectedSkill.ref ?? selectedSkill.id}`,
+    reviewing: pendingSkillAction === `managed:review:${selectedSkill.id}`,
+    onUse: props.onUseSkill ? () => props.onUseSkill?.(selectedSkill.id, selectedSkill.name) : undefined,
+    onSetEnabled: props.onSetSkillEnabled
+      ? (enabled) => void runSkillAction(`runtime:set:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillEnabled?.(selectedSkill.ref ?? selectedSkill.id, enabled))
+      : undefined,
+    onTogglePinned: props.onSetSkillPinned
+      ? () => void runSkillAction(`runtime:pin:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillPinned?.(selectedSkill.ref ?? selectedSkill.id, !selectedSkill.pinned))
+      : undefined,
+    onOpen: props.onOpenSkill
+      ? () => void runSkillAction(`open:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onOpenSkill?.(selectedSkill.ref ?? selectedSkill.id))
+      : undefined,
+    onPreviewUpdate: props.onPreviewManagedSkillUpdate ? () => void reviewManagedSkillUpdate(selectedSkill) : undefined,
+    onApplyUpdate: props.onUpdateManagedSkill && updatePreview ? () => void applyManagedSkillUpdate(updatePreview) : undefined,
+    onCancelUpdate: () => setUpdatePreview(null),
+    onDelete: props.onDeleteSkill ? () => void requestDeleteSkill(selectedSkill) : undefined,
+  } : null;
+  const selectedSkillDetail = selectedSkill && selectedSkillActions
+    ? updatePreview?.skill.id === selectedSkill.id
+      ? skillUpdateReviewDetail(updatePreview, copy, selectedSkillActions)
+      : skillDetail(selectedSkill, copy, selectedSkillActions)
+    : undefined;
 
   // Collision-only slug reveal: when two visible skills share a display name
   // the rows become indistinguishable — surface the slug inline exactly for
@@ -509,13 +529,6 @@ export function SkillsModuleMain(props: {
   const installedEmptyBody = `${copy.installed.emptyBodyBeforeCode} SKILL.md ${copy.installed.emptyBodyAfterCode}`;
   const installedPanel = (
     <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
-      {/* Selecting a row moves no focus — a mouse user did not ask to leave
-          the list — so nothing else would tell a screen reader that the
-          details opened. This says so, politely, after whatever the
-          activation itself announced. */}
-      <p className="maka-visually-hidden" role="status" aria-live="polite">
-        {selectedSkill ? copy.detail.inspectorOpened(selectedSkill.name) : ''}
-      </p>
       {searchSummary}
       {skills.length === 0 ? (
         <EmptyState
@@ -538,9 +551,9 @@ export function SkillsModuleMain(props: {
           actions={<UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />}
         />
       ) : (
-        /* Selectable, otherwise inert rows: every control that used to ride
-           the row now lives in the inspector — no interactive elements
-           inside an interactive list item. */
+        /* Selectable, otherwise inert rows: every per-skill control lives in
+           the detail dialog — no interactive elements inside an interactive
+           list item. */
         (<List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.installed.listAriaLabel}>
           {filteredSkills.map((skill) => {
             const isDiscoveryDiagnostic = skill.kind === 'discovery_diagnostic';
@@ -592,9 +605,7 @@ export function SkillsModuleMain(props: {
                   />
                 )}
                 isSelected={selectedSkillRef === skillRef}
-                onClick={() => setSelectedSkillRef(
-                  selectedSkillRef === skillRef ? null : skillRef,
-                )}
+                onClick={() => setSelectedSkillRef(skillRef)}
               />
             );
           })}
@@ -616,34 +627,11 @@ export function SkillsModuleMain(props: {
           updateAvailableCount > 0 ? copy.page.metaUpdates(updateAvailableCount) : null,
           availableToInstallCount > 0 ? copy.page.metaAvailable(availableToInstallCount) : null,
         ].filter(Boolean).join(' · ')}
-        inspectorLabel={copy.detail.label}
-        inspectorAutoSaveId="maka-skill-inspector"
-        onInspectorDismiss={() => setSelectedSkillRef(null)}
-        inspector={selectedSkill ? (
-          <SkillInspector
-            skill={selectedSkill}
-            busy={skillActionBusy}
-            opening={pendingSkillAction === `open:${selectedSkill.ref ?? selectedSkill.id}`}
-            reviewing={pendingSkillAction === `managed:review:${selectedSkill.id}`}
-            updatePreview={updatePreview && updatePreview.skill.id === selectedSkill.id ? updatePreview : null}
-            onUse={props.onUseSkill ? () => props.onUseSkill?.(selectedSkill.id, selectedSkill.name) : undefined}
-            onSetEnabled={props.onSetSkillEnabled
-              ? (enabled) => void runSkillAction(`runtime:set:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillEnabled?.(selectedSkill.ref ?? selectedSkill.id, enabled))
-              : undefined}
-            onTogglePinned={props.onSetSkillPinned
-              ? () => void runSkillAction(`runtime:pin:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillPinned?.(selectedSkill.ref ?? selectedSkill.id, !selectedSkill.pinned))
-              : undefined}
-            onOpen={props.onOpenSkill
-              ? () => void runSkillAction(`open:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onOpenSkill?.(selectedSkill.ref ?? selectedSkill.id))
-              : undefined}
-            onPreviewUpdate={props.onPreviewManagedSkillUpdate ? () => void reviewManagedSkillUpdate(selectedSkill) : undefined}
-            onApplyUpdate={props.onUpdateManagedSkill && updatePreview ? () => void applyManagedSkillUpdate(updatePreview) : undefined}
-            onCancelUpdate={() => setUpdatePreview(null)}
-            onDelete={props.onDeleteSkill && selectedSkill.manageable !== false
-              ? () => void requestDeleteSkill(selectedSkill)
-              : undefined}
-          />
-        ) : undefined}
+        onDetailDismiss={() => {
+          setSelectedSkillRef(null);
+          setUpdatePreview(null);
+        }}
+        detail={selectedSkillDetail}
         actions={
           props.onOpenSkillLocation || props.onImportManagedSkillSource || canRefreshSkillData ? (
             <DropdownMenu
@@ -719,7 +707,7 @@ export function SkillsModuleMain(props: {
                   onChange={(value) => {
                     if (value !== 'market' && value !== 'builtin' && value !== 'installed') return;
                     // The selection belongs to the view it was made in;
-                    // carrying it across would reopen the inspector without
+                    // carrying it across would reopen the detail without
                     // a user action on return.
                     setSelectedSkillRef(null);
                     setActiveSkillTab(value);

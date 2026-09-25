@@ -2633,3 +2633,7 @@ function continuitySnapshot(hostEpoch: string) {
     interactions: { pending: [] },
   };
 }
+
+test('Jev policy snapshots and credential locators require post-182 peers', () => {
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 182);
+});

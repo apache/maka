@@ -72,10 +72,7 @@ type RefBox<T> = { current: T };
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
-type PendingNewChatModel =
-  | { llmConnectionId: string; llmConnectionSlug: string; model: string }
-  | { executorId: string; model: string }
-  | null;
+type PendingNewChatModel = Conversation.NewChatExecutionTarget | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
 type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
@@ -183,6 +180,8 @@ export function createAppShellChatActions(deps: {
   ) => void;
   toastApi: ToastApi;
   newChatModel: PendingNewChatModel;
+  executorSelection?: { executorId: string; configuration: import('@maka/core/executor-catalog').ExecutorConfiguration };
+  executorEntry?: Conversation.ExecutorSubmission['executorEntry'];
   /** Undefined applies the Host's model default; null explicitly keeps the provider default. */
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
@@ -223,12 +222,8 @@ export function createAppShellChatActions(deps: {
     respondToUserForm: submitUserForm,
     showModelSetupToast,
     toastApi,
-    newChatModel,
-    pendingNewChatThinkingLevel,
     newChatPermissionChoice,
     clearNewChatPermissionChoice,
-    newChatCollaborationMode,
-    newChatOrchestrationMode,
     newTaskTarget,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
@@ -261,7 +256,6 @@ export function createAppShellChatActions(deps: {
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
     const directoryReferences = input.command.directoryReferences;
-    const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
       messageId,
@@ -288,17 +282,17 @@ export function createAppShellChatActions(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: placement,
-      pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
+      transientPlacement: result.disposition === 'turn_started' ? 'current_turn' : placement,
+      pendingSteering: result.disposition !== 'turn_started' && input.pendingSteering,
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
-      ...copiedArray('quotes', quotes),
+      ...copiedArray('quotes', input.quotes ?? []),
       inlineReferences: [...(result.inlineReferences ?? [])],
     }, true);
     return {
       kind: 'projected',
       skillInvocation: result.skillInvocation,
-      ...(result.turnId ? { turnId: result.turnId } : {}),
+      ...(result.turnId ? { turnId: result.turnId } : {})
     };
   }
 
@@ -309,6 +303,7 @@ export function createAppShellChatActions(deps: {
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
     const initialSessionId = options.targetSessionId ?? activeIdRef.current;
+    if (!Conversation.canSubmitExecutor(deps, pending?.length ?? 0)) return false;
     const sendOwner = captureComposerImportOwner();
     const selectionIsCurrent = captureSelection();
     if (!initialSessionId && !newTaskTarget) return false;
@@ -346,6 +341,7 @@ export function createAppShellChatActions(deps: {
       async function submitIntoSession(sessionId: string, messageId: string) {
         const sendCommand = {
           text,
+          localDisplayPlacement: 'current_turn' as const,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray(
             'attachmentItems',
@@ -379,11 +375,7 @@ export function createAppShellChatActions(deps: {
         if (pending?.length) preflightAttachmentItems(pending);
         const session = await window.maka.newTasks.create(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
-          ...(newChatModel !== null ? { ...newChatModel } : {}),
-          thinkingLevel: pendingNewChatThinkingLevel,
-          ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
-          collaborationMode: newChatCollaborationMode,
-          orchestrationMode: newChatOrchestrationMode,
+          ...Conversation.newTaskConfiguration(deps),
         });
         unsentSessionId = session.id;
         // Creation can also yield while a same-target New Task is reopened.
@@ -401,7 +393,6 @@ export function createAppShellChatActions(deps: {
           id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
-          inlineReferences: [],
         });
         // Main owns observation-before-dispatch. This only selects the local
         // surface; saving a draft never waits for the Host's event stream.
@@ -434,7 +425,6 @@ export function createAppShellChatActions(deps: {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
-        inlineReferences: [],
       });
       const submitted = await submitIntoSession(initialSessionId, messageId);
       // An existing-Session send never reports a resolved Session.

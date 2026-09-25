@@ -149,8 +149,6 @@ interface MidTurnFixtureOptions {
   firstResult?: string;
   /** The model finishes on the second request instead of running three steps. */
   finalAtSecondCall?: boolean;
-  /** One request and no tool call, so only the step-0 comparison can fire. */
-  singleRequest?: boolean;
   /** Leading tool-call steps before the final text step (default 2). */
   toolSteps?: number;
   /** Per provider-call reported usage, keyed by 1-based call number. */
@@ -175,12 +173,6 @@ interface MidTurnFixtureOptions {
   systemPromptChars?: number;
   /** An always-active tool whose schema dominates the request payload. */
   bigActiveTool?: boolean;
-  /**
-   * Run as a child agent with a two-step budget, so the turn's LAST request is
-   * the child-summary finalization step: it adds a prompt fragment and sends no
-   * tool schemas at all.
-   */
-  childFinalization?: boolean;
   /** Enable and capture automatic Memory extraction without allowing it to settle. */
   captureMemoryExtraction?: boolean;
   memoryGate?:
@@ -287,7 +279,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }, call)
         : doneChunks(call);
     }
-    if (options.singleRequest) return doneChunks(call);
     if (call === 1) {
       const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' }, call);
       if (!options.assistantTextInFirstStep) return first;
@@ -489,10 +480,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
 
   const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
-    header: options.childFinalization
-      ? { ...header(), collaborationMode: 'agent' as const }
-      : header(),
-    ...(options.childFinalization ? { maxSteps: 2 } : {}),
+    header: header(),
     appendMessage: async (message) => {
       messages.push(message);
     },
@@ -1102,28 +1090,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(failedOpen[0]?.failOpenReason, 'provider_error');
   });
 
-  test('does not report provider dropping when the step dropped its tool schemas', async () => {
-    // A finalization step resolves an empty tool set, so its request loses
-    // several thousand schema tokens with no fold, prune or image omission.
-    // Maka shaped that request; the provider dropped nothing.
-    const fixture = buildFixture({
-      contextWindow: 200,
-      finalAtSecondCall: true,
-      childFinalization: true,
-      finalStepUsage: { input: 50, output: 10 },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(
-      fixture.messages.some(
-        (message) =>
-          (message as { type?: string; kind?: string }).type === 'system_note' &&
-          (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
-  });
-
   test('fails closed before provider dispatch when the durable ledger read fails', async () => {
     const fixture = buildFixture();
     // Break the seam after construction: every trigger read now rejects.
@@ -1355,114 +1321,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     );
   });
 
-  test('reports provider context dropping across the send boundary', async () => {
-    // The Ollama shape: the provider truncates to its own window, so the input
-    // it counts is the SAME on every later request while the user keeps adding
-    // turns. A send of one or two steps never sees that from the inside
-    // (#4623). One request here, so only the step-0 comparison can write it.
-    const fixture = buildFixture({
-      withoutContextWindow: true,
-      singleRequest: true,
-      finalStepUsage: { input: 3_716, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-        (message as { kind?: string }).kind === 'context_provider_dropping',
-    );
-    assert.deepEqual(note?.data, {
-      inputTokens: 3_716,
-      priorInputTokens: 3_716,
-    });
-  });
-
-  test('does not report dropping across the boundary when the input grew', async () => {
-    const fixture = buildFixture({
-      withoutContextWindow: true,
-      singleRequest: true,
-      finalStepUsage: { input: 4_000, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(
-      fixture.messages.some(
-        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
-  });
-
-  test('does not report dropping across the boundary when the input merely shrank', async () => {
-    // A manual compaction leaves the pre-compaction anchor behind, a turn can
-    // carry a smaller tool set, and a user can edit or branch history. All
-    // three shrink the input legitimately, and none lands on exactly the same
-    // count, so equality is what separates them from a truncating provider.
-    const fixture = buildFixture({
-      withoutContextWindow: true,
-      singleRequest: true,
-      finalStepUsage: { input: 900, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(
-      fixture.messages.some(
-        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
-  });
-
-  test('does not report dropping across the boundary when this send folded first', async () => {
-    // A fold before the first request explains a smaller input by itself.
-    const fixture = buildFixture({
-      contextWindow: 3_000,
-      singleRequest: true,
-      finalStepUsage: { input: 3_716, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.summarizerCalls, 1);
-    assert.equal(
-      fixture.messages.some(
-        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
-  });
-
-  test('records provider context dropping when an append-only step reports the same usage', async () => {
-    // The Ollama shape: the provider truncates to its own window, so input
-    // stops growing rather than dropping while Maka keeps appending. A
-    // plateau is the signal the copy promises ("usage did not grow").
-    const fixture = buildFixture({
-      contextWindow: 200,
-      finalAtSecondCall: true,
-      firstStepUsage: { input: 100, output: 20 },
-      finalStepUsage: { input: 100, output: 10 },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-        (message as { type?: string }).type === 'system_note',
-    );
-    assert.equal(note?.kind, 'context_provider_dropping');
-    assert.deepEqual(note?.data, {
-      inputTokens: 100,
-      priorInputTokens: 100,
-    });
-  });
-
-  test('records provider context dropping only for an unshaped usage decrease', async () => {
+  test('a falling input count between steps writes no note', async () => {
+    // A relay that moves a request to another upstream reports a smaller
+    // input for the same history. That is not evidence of dropped context.
     const fixture = buildFixture({
       contextWindow: 200,
       finalAtSecondCall: true,
@@ -1470,34 +1331,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     });
     await runFixtureTurn(fixture, consumer);
 
-    const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-        (message as { type?: string }).type === 'system_note',
-    );
-    assert.equal(note?.kind, 'context_provider_dropping');
-    assert.deepEqual(note?.data, {
-      inputTokens: 50,
-      priorInputTokens: 100,
-    });
-  });
-
-  test('does not call provider context dropping when active pruning explains the decrease', async () => {
-    const fixture = buildFixture({
-      contextWindow: 200,
-      finalAtSecondCall: true,
-      hugeFirstResult: true,
-      toolResultPrune: true,
-      finalStepUsage: { input: 50, output: 10 },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(
-      fixture.messages.some(
-        (message) =>
-          (message as { type?: string; kind?: string }).type === 'system_note' &&
-          (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
+    assert.deepEqual(
+      fixture.messages.filter((message) => (message as { type?: string }).type === 'system_note'),
+      [],
     );
   });
 

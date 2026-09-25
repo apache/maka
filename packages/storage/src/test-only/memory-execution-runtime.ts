@@ -974,6 +974,56 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
           return sessionId && selected.has(sessionId) ? [{ sessionId, ...operation }] : [];
         });
       }),
+    rebuildTerminalToolProjectionsForSessions: async (sessionIds) =>
+      a.write('runtime.rebuildTerminalToolProjections', (s) => {
+        const selected = new Set(sessionIds);
+        if (selected.size === 0) return;
+        const history = allEvents(s);
+        const eventsById = new Map(history.map((event) => [event.id, event]));
+        const eventOrder = new Map(history.map((event, index) => [event.id, index]));
+        const terminalByInvocation = new Map<
+          string,
+          { readonly event: RuntimeEvent; readonly order: number }
+        >();
+        for (const event of history) {
+          if (!isTerminalRuntimeEvent(event)) continue;
+          const order = eventOrder.get(event.id);
+          if (order === undefined) continue;
+          const previous = terminalByInvocation.get(event.invocationId);
+          if (!previous || order < previous.order) {
+            terminalByInvocation.set(event.invocationId, { event, order });
+          }
+        }
+        for (const [operationId, operation] of operations(s)) {
+          if (operation.currentState !== 'prepared' || !operation.dispatchEventId) continue;
+          const call = eventsById.get(operation.callEventId);
+          if (!call || !selected.has(call.sessionId)) continue;
+          const dispatchOrder = eventOrder.get(operation.dispatchEventId);
+          const terminal = terminalByInvocation.get(operation.invocationId);
+          if (dispatchOrder === undefined || !terminal || terminal.order <= dispatchOrder) {
+            continue;
+          }
+          const state =
+            operation.toolName === 'AskUserQuestion' &&
+            operation.recoveryMode === 'never_auto_retry'
+              ? 'abandoned'
+              : 'interrupted_unknown';
+          operations(s).set(operationId, {
+            ...operation,
+            currentState: state,
+            version: operation.version + 1,
+          });
+          rows<ToolJournalEntry>(s, 'toolJournal').set(
+            `${operationId}_${terminal.event.id}_journal`,
+            {
+              operationId,
+              eventId: terminal.event.id,
+              state,
+              committedAt: terminal.event.ts,
+            },
+          );
+        }
+      }),
     readTranscriptHighWater: async (sessionId) =>
       a.read((s) => {
         check(sessionId);

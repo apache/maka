@@ -273,3 +273,7 @@
 .maka-import-selection-spacer {
   flex: 1 1 auto;
 }
+
+.jevAdvancedSettings { min-width: 0; }
+.jevAdvancedSettings > summary { padding-block: var(--space-3); cursor: default; }
+.jevAdvancedSettings > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
