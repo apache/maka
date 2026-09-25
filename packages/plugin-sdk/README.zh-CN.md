@@ -164,6 +164,8 @@ UI entry 默认导出 `({ tui }) => ({ read, submit, recover? })` factory，每�
 
 Host 按需创建页面 VM，不按页面数量设置准入上限。每个 VM 的 JavaScript 堆上限为 128 MiB，同步执行片段上限为 200 ms。这是执行预算，不是进程总内存限制或恶意代码沙箱。隐藏草稿不占 VM；已准入写入保留原执行 owner 直到结算。页面失效后停止观察，保留最后有效视图及已加载的 transcript 供本地阅读；重新绑定需要显式操作，不重放结果未知的写入。页面故障不会重启插件的业务激活或其他页面 VM。
 
+`tui.split(key, ratio, left, right)` 创建可在本地调整宽度的双栏。拖动分隔线，或用 Tab 聚焦后按左右方向键调整；Shift 增大步幅，Home/End 到达支持的边界。调整不会发送 Host 请求，后台读取期间也可操作。窄屏改为上下排列，再次加宽会恢复本地比例及稳定 key 对应的编辑器。
+
 `tui.boundary(key, body, { bottom?, padding?, emphasis?, activity? })` 为任意正文添加边框，正文可使用普通输入字段。可选 bottom 仅包含文本、按钮及其嵌套行，在下边线上右对齐并裁剪为一行，不占正文空间；body 与 bottom 的 key 必须不同。padding 的 `horizontal`、`vertical` 各为 0–4 格。默认无 bottom、零 padding、`emphasis: 'normal'`、`activity: 'idle'`。可见的 `'accent'` / `'busy'` 边框使用内核共享的柔和呼吸，遵循减少动态效果、焦点与浮层设置；终端自有配色保持静态。所有节点仍共享 View 的深度、节点和字节预算，并使用已声明的字段与动作。Rust 对应写法为 `terminal_ui::view::build::boundary(key, body).bottom(node).padding(1, 0).emphasis(Emphasis::Accent).activity(Activity::Busy).into()`。
 
 标签组和由 item 组成的列各占一个 Tab 停靠点，方向键在组内移动，重新进入时恢复上次焦点。列表列可包含文本、Markdown、代码、分隔线和进度；字段与按钮放在列表外，保持逐个 Tab 可达。仅移动焦点不会提交动作或进入插件路由。

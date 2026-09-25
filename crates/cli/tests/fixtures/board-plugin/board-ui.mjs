@@ -92,6 +92,7 @@ export default ({ tui }) => {
               tui.input('note', 'note', cx.t('Note', '备注', '備註')),
             ]),
             tui.row('controls', buttons),
+            tui.slot('notes', 'board.card.detail', { boardId: 'board', cardId: card.id }),
           ]),
         };
       }
@@ -123,7 +124,7 @@ export default ({ tui }) => {
         fields: [tui.line('new', '', 200, { placeholder: cx.t('A new card', '新卡片', '新卡片') })],
         actions: [tui.action('add', cx.t('Add', '添加', '新增'), { fields: ['new'] })],
         root: tui.column('root', [
-          tui.row('lanes', lanes),
+          tui.split('lanes', 34, lanes[0], tui.row('remaining', lanes.slice(1))),
           tui.rule('divider'),
           tui.row('adding', [
             tui.input('new', 'new', cx.t('Card', '卡片', '卡片')),

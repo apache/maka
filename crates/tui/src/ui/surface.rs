@@ -35,6 +35,19 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 pub(super) mod reader;
 
+/// Local split preferences, keyed by the same complete paths as focus.
+#[derive(Default)]
+pub struct Splits(HashMap<String, u8>);
+impl Splits {
+    pub fn ratio(&self, divider: &str, initial: u8) -> u8 {
+        self.0
+            .get(divider)
+            .copied()
+            .unwrap_or(initial)
+            .clamp(20, 80)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Context {
     pub colors: Palette,
@@ -125,6 +138,8 @@ pub struct Surface<M> {
     offsets: HashMap<String, u16>,
     /// The scroller whose thumb the pointer is dragging.
     drag: Option<String>,
+    splits: Splits,
+    split_drag: Option<String>,
     /// Where focus lands first, by path prefix, once such a stop exists.
     start: Option<String>,
     committed: Option<Committed<M>>,
@@ -143,6 +158,8 @@ impl<M> Default for Surface<M> {
             popover: None,
             offsets: HashMap::new(),
             drag: None,
+            splits: Splits::default(),
+            split_drag: None,
             start: None,
             committed: None,
             last_layout: None,
@@ -201,6 +218,21 @@ impl<M: Clone> Surface<M> {
         pass.run(tree, area);
         let (items, scrollers, canvases, transcripts) =
             (pass.items, pass.scrollers, pass.canvases, pass.transcripts);
+        let dividers: std::collections::HashSet<_> = items
+            .iter()
+            .filter(|item| matches!(item.on, On::Resize { .. }))
+            .map(|item| item.id.as_str())
+            .collect();
+        self.splits
+            .0
+            .retain(|key, _| dividers.contains(key.as_str()));
+        if self.split_drag.as_ref().is_some_and(|key| {
+            !items
+                .iter()
+                .any(|item| item.id == *key && item.enabled && !item.rect.is_empty())
+        }) {
+            self.split_drag = None;
+        }
         let stops: Vec<_> = items.iter().filter(|item| item.enabled).collect();
         match stops
             .iter()
@@ -418,6 +450,18 @@ impl<M: Clone> Surface<M> {
         self.popover.is_some()
     }
 
+    pub fn splits(&self) -> &Splits {
+        &self.splits
+    }
+
+    pub fn dragging_split(&self) -> bool {
+        self.split_drag.is_some()
+    }
+
+    pub fn captures_event(&self, event: &Event) -> bool {
+        self.captures() || self.dragging_split() && matches!(event, Event::Mouse(_))
+    }
+
     /// Footer hint of the pointed-at or keyboard-focused control.
     pub fn hint(&self, focused: bool) -> Option<&str> {
         let committed = self.committed.as_ref()?;
@@ -556,6 +600,9 @@ impl<M: Clone> Surface<M> {
             }
             for item in &mut committed.items {
                 if !item.rect.intersection(rect).is_empty() {
+                    if self.split_drag.as_ref() == Some(&item.id) {
+                        self.split_drag = None;
+                    }
                     item.rect = Rect::default();
                 }
             }
@@ -573,6 +620,7 @@ impl<M: Clone> Surface<M> {
         self.committed = None;
         self.hover = None;
         self.drag = None;
+        self.split_drag = None;
     }
 
     pub fn input(&mut self, event: &Event) -> Outcome<M> {
@@ -582,6 +630,7 @@ impl<M: Clone> Surface<M> {
                 Outcome::handled(true)
             }
             Event::FocusLost => {
+                self.split_drag = None;
                 let redraw = self.hover.take().is_some();
                 Outcome {
                     redraw,
@@ -633,6 +682,31 @@ impl<M: Clone> Surface<M> {
                 },
                 _ => Outcome::handled(false),
             };
+        }
+        if let Some(id) = self.split_drag.clone() {
+            if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+                self.split_drag = None;
+                return Outcome::handled(true);
+            }
+            if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
+                if let Some(item) = committed
+                    .items
+                    .iter()
+                    .find(|item| item.id == id && item.enabled && !item.rect.is_empty())
+                    && let Some((start, width)) = item.row
+                    && let On::Resize { ratio: initial } = item.on
+                {
+                    let available = width.saturating_sub(3).max(1);
+                    let leading = point.x.saturating_sub(start.saturating_add(1));
+                    let ratio =
+                        (u32::from(leading) * 100 / u32::from(available)).clamp(20, 80) as u8;
+                    let before = self.splits.ratio(&id, initial);
+                    self.splits.0.insert(id, ratio);
+                    return Outcome::handled(ratio != before);
+                }
+                self.split_drag = None;
+                return Outcome::handled(false);
+            }
         }
         // A scrollbar column is a thumb to drag, never a row to open.
         let bar = committed.scrollers.iter().rev().find(|scroller| {
@@ -709,6 +783,10 @@ impl<M: Clone> Surface<M> {
                 });
                 let keep = typing && item.role.is_some() && matches!(item.on, On::Activate(_));
                 let outcome = match &item.on {
+                    On::Resize { .. } => {
+                        self.split_drag = Some(id.clone());
+                        Outcome::handled(true)
+                    }
                     // Clicking into a field or a viewer places focus; only
                     // Enter submits.
                     On::Activate(_) if item.slot => Outcome::handled(true),
@@ -771,7 +849,7 @@ impl<M: Clone> Surface<M> {
                 On::Choose { choices, .. } => {
                     choices.get(index).map(|choice| choice.action.clone())
                 }
-                On::Activate(_) | On::Scroll | On::Transcript => None,
+                On::Activate(_) | On::Scroll | On::Transcript | On::Resize { .. } => None,
             });
         match message {
             Some(message) => Outcome::emit(message),
@@ -787,6 +865,9 @@ impl<M: Clone> Surface<M> {
             // reachable over the page and its choosers.
             return Outcome::ignored();
         }
+        if key.code == KeyCode::Esc && self.split_drag.take().is_some() {
+            return Outcome::handled(true);
+        }
         if self.popover.is_some() {
             return self.chooser_key(key.code);
         }
@@ -801,6 +882,27 @@ impl<M: Clone> Surface<M> {
         let current = stops
             .iter()
             .position(|index| Some(&item(*index).id) == self.focus.as_ref());
+        if let Some(at) = current
+            && let On::Resize { ratio } = item(stops[at]).on
+        {
+            let ratio = self.splits.ratio(&item(stops[at]).id, ratio);
+            let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                10
+            } else {
+                1
+            };
+            let next = match key.code {
+                KeyCode::Left => Some(ratio.saturating_sub(step).max(20)),
+                KeyCode::Right => Some(ratio.saturating_add(step).min(80)),
+                KeyCode::Home => Some(20),
+                KeyCode::End => Some(80),
+                _ => None,
+            };
+            if let Some(next) = next {
+                self.splits.0.insert(item(stops[at]).id.clone(), next);
+                return Outcome::handled(next != ratio);
+            }
+        }
         // A focused viewer scrolls; with nothing to scroll the keys move focus.
         if let Some(at) = current
             && matches!(item(stops[at]).on, On::Scroll)
@@ -897,7 +999,7 @@ impl<M: Clone> Surface<M> {
                         });
                         Outcome::handled(true)
                     }
-                    On::Scroll | On::Transcript => Outcome::handled(false),
+                    On::Scroll | On::Transcript | On::Resize { .. } => Outcome::handled(false),
                 };
             }
             (
@@ -1043,7 +1145,7 @@ impl<M: Clone> Surface<M> {
             .and_then(|committed| committed.items.iter().find(|item| item.id == popover.owner))
             .map_or(0, |item| match &item.on {
                 On::Choose { choices, .. } => choices.len(),
-                On::Activate(_) | On::Scroll | On::Transcript => 0,
+                On::Activate(_) | On::Scroll | On::Transcript | On::Resize { .. } => 0,
             });
         match code {
             KeyCode::Up => {

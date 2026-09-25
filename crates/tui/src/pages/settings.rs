@@ -184,7 +184,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 /// A plugin's settings pane, under the column it shares with built-in rows.
 fn pane(app: &App, key: &crate::apps::Key, wells: &mut Vec<crate::apps::Well>) -> Node<Message> {
     let node = key.node();
-    let (children, found) = crate::apps::page::pane(app, key, &format!("{}{node}", ROW_PATH), ROWS);
+    let (children, found) = crate::apps::page::pane(
+        app,
+        key,
+        &format!("{}{node}", ROW_PATH),
+        ROWS,
+        app.settings.surface.splits(),
+    );
     wells.extend(found);
     Node::column(node, children).gap(1).map(&Message::App)
 }

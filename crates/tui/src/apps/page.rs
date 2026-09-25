@@ -110,10 +110,11 @@ fn page(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
     } else if let Some(view) = &instance.view {
         let offered = |intent: &Intent| instance.offered(intent);
         let slots = |name: &str, wire: &str, path: &str, width: u16| {
-            fill(app, key, name, wire, path, width)
+            fill(app, key, name, wire, path, width, instance.surface.splits())
         };
         let env = tree::Env {
             readers: &app.apps.readers,
+            splits: instance.surface.splits(),
             resources_live: instance.live.is_some() && !instance.blocked,
             i18n: &app.i18n,
             key,
@@ -303,6 +304,7 @@ impl App {
                 && press.modifiers.is_empty()
                 && keyboard
                 && !instance.surface.captures()
+                && !instance.surface.dragging_split()
             {
                 let command = if instance.review.is_some() {
                     Command::CancelDraft
@@ -543,6 +545,7 @@ pub(crate) fn pane(
     key: &Key,
     path: &str,
     width: u16,
+    splits: &ui::Splits,
 ) -> (Vec<Node<Message>>, Vec<tree::Well>) {
     let Some(instance) = app.apps.instances.get(key) else {
         return (vec![], vec![]);
@@ -564,10 +567,12 @@ pub(crate) fn pane(
         return (children, vec![]);
     };
     let offered = |intent: &Intent| instance.offered(intent);
-    let slots =
-        |name: &str, wire: &str, path: &str, width: u16| fill(app, key, name, wire, path, width);
+    let slots = |name: &str, wire: &str, path: &str, width: u16| {
+        fill(app, key, name, wire, path, width, splits)
+    };
     let env = tree::Env {
         readers: &app.apps.readers,
+        splits,
         resources_live: instance.live.is_some() && !instance.blocked,
         i18n: &app.i18n,
         key,
@@ -592,6 +597,7 @@ fn fill(
     wire: &str,
     path: &str,
     width: u16,
+    splits: &ui::Splits,
 ) -> (Vec<Node<Message>>, Vec<tree::Well>) {
     let locale = app.i18n.locale().id();
     let mut nodes = vec![];
@@ -605,7 +611,7 @@ fn fill(
             continue;
         };
         let body = format!("{path}/{node}/body");
-        let (mut children, found) = pane(app, &key, &body, width.saturating_sub(2));
+        let (mut children, found) = pane(app, &key, &body, width.saturating_sub(2), splits);
         children.insert(
             0,
             Node::text(

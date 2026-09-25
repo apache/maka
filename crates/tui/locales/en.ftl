@@ -1063,3 +1063,5 @@ plugins-create-impact = Create this instance with the values below. It may start
 
 extensions-section-retained = Retained edits and submissions
 extensions-scope-application = Application
+
+extensions-split-hint = Drag to resize · ←/→ adjust

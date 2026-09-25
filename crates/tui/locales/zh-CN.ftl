@@ -1063,3 +1063,5 @@ plugins-create-impact = 按以下值创建实例，它可能立即启动。
 
 extensions-section-retained = 保留的编辑与待核对提交
 extensions-scope-application = 应用
+
+extensions-split-hint = 拖动调整宽度 · ←/→ 微调

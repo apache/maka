@@ -118,6 +118,37 @@ fn a_javascript_plugin_installed_at_runtime_brings_its_own_app_into_the_running_
             && !screen.contains("To do  0  Doing")
             && screen.contains("A new card")
     });
+    let stats = runtime.block_on(remote(&client, "activity-stats", Value::Null));
+    let locate = |screen: &str| {
+        screen
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                let doing = line.find("Doing  0")?;
+                let divider = line[..doing].rfind('│')?;
+                Some((row, line[..divider].width(), line[..doing].width()))
+            })
+            .unwrap()
+    };
+    let (row, divider, doing) = locate(&tui.screen.snapshot().unwrap().screen);
+    tui.send(
+        format!(
+            "\x1b[<0;{};{}M\x1b[<32;{};{}M\x1b[<0;{};{}m",
+            divider + 1,
+            row + 1,
+            divider + 13,
+            row + 1,
+            divider + 13,
+            row + 1
+        )
+        .as_bytes(),
+    );
+    tui.wait_until(|screen| locate(screen).2 > doing + 8);
+    assert_eq!(
+        runtime.block_on(remote(&client, "activity-stats", Value::Null)),
+        stats,
+        "local split dragging neither reads the view nor mutates its source"
+    );
     tui.click_page_text("A new card");
     tui.send(b"\x1b[200~Write the tests\x1b[201~");
     tui.wait_for("Write the tests");

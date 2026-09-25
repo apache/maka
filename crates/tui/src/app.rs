@@ -1180,6 +1180,12 @@ impl App {
     }
 
     pub fn invalidate_editor_geometry(&mut self) {
+        self.settings.surface.invalidate();
+        self.apps.inspector.invalidate();
+        self.apps.status.invalidate();
+        if let Some(surface) = self.apps_surface() {
+            surface.invalidate();
+        }
         self.chrome.header.invalidate();
         self.chrome.footer.invalidate();
         self.chrome.feedback.invalidate();
@@ -1424,48 +1430,48 @@ impl App {
             .then(|| self.surface_outcome(event, Focus::Page, outcome))
     }
 
-    /// A local chooser is modal across shell regions, even though it is
-    /// owned by its existing Surface rather than the shell overlay stack.
+    /// Local choosers and captured pointer drags keep their original owner
+    /// across shell regions.
     fn captured_surface_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {
         if !matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_)) {
             return None;
         }
-        if self.sidebar.surface.captures() {
+        if self.sidebar.surface.captures_event(event) {
             let outcome = self.sidebar.surface.input(event).map(Action::Sidebar);
             return outcome
                 .consumed
                 .then(|| self.surface_outcome(event, Focus::Navigation, outcome));
         }
         let (outcome, focus) = match self.navigation.current() {
-            Route::Settings if self.settings.surface.captures() => (
+            Route::Settings if self.settings.surface.captures_event(event) => (
                 self.settings.surface.input(event).map(Action::Settings),
                 Focus::Page,
             ),
-            Route::Plugins(_) if self.plugins.surface.captures() => (
+            Route::Plugins(_) if self.plugins.surface.captures_event(event) => (
                 self.plugins.surface.input(event).map(Action::Plugins),
                 Focus::Page,
             ),
-            Route::Workspace if self.home.surface.captures() => (
+            Route::Workspace if self.home.surface.captures_event(event) => (
                 self.home.surface.input(event).map(Action::Home),
                 Focus::Page,
             ),
-            Route::Connections if self.connections.surface.captures() => {
+            Route::Connections if self.connections.surface.captures_event(event) => {
                 (self.connections.surface.input(event), Focus::List)
             }
-            Route::Projects if self.projects.surface.captures() => {
+            Route::Projects if self.projects.surface.captures_event(event) => {
                 (self.projects.surface.input(event), Focus::List)
             }
             Route::Extensions | Route::App(_) => {
                 let surface = self.apps_surface()?;
-                if !surface.captures() {
+                if !surface.captures_event(event) {
                     return None;
                 }
                 (surface.input(event).map(Action::Apps), Focus::Page)
             }
-            Route::Session(_) if self.apps.inspector.captures() => {
+            Route::Session(_) if self.apps.inspector.captures_event(event) => {
                 return self.inspector_input(event);
             }
-            Route::Session(_) if self.apps.status.captures() => {
+            Route::Session(_) if self.apps.status.captures_event(event) => {
                 (self.apps.status.input(event).map(Action::Apps), self.focus)
             }
             _ => return None,

@@ -58,6 +58,7 @@ pub(crate) struct Well {
 
 pub(crate) struct Env<'a, M> {
     pub readers: &'a super::transcript::Readers,
+    pub splits: &'a ui::Splits,
     pub resources_live: bool,
     pub i18n: &'a crate::i18n::I18n,
     pub key: &'a super::Key,
@@ -510,6 +511,7 @@ impl<M> Builder<'_, M> {
         width: u16,
     ) -> Node<M> {
         let expands = has_transcript(left) || has_transcript(right);
+        let ratio = self.env.splits.ratio(&format!("{path}/divider"), ratio);
         // Both layouts keep the same paths, so focus survives a resize
         // across the breakpoint.
         let (left_path, right_path) = (
@@ -527,7 +529,9 @@ impl<M> Builder<'_, M> {
                     } else {
                         Size::Content
                     }),
-                    Node::rule("divider"),
+                    Node::rule("divider")
+                        .on(On::Resize { ratio })
+                        .enabled(false),
                     Node::column("trailing", vec![right]).size(if expands {
                         Size::Fill
                     } else {
@@ -546,7 +550,9 @@ impl<M> Builder<'_, M> {
             key,
             vec![
                 Node::column("leading", vec![left]).size(Size::Fixed(leading)),
-                Node::rule("divider"),
+                Node::rule("divider")
+                    .on(On::Resize { ratio })
+                    .hint(self.env.i18n.text("extensions-split-hint")),
                 Node::column("trailing", vec![right]).size(Size::Fill),
             ],
         )

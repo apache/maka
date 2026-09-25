@@ -1521,7 +1521,9 @@ pub(crate) mod tests {
         app::Focus,
         i18n::{I18n, LocalePreference},
     };
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use maka_plugins::terminal_ui::view::View;
     use maka_plugins::{
         composition::Scope,
@@ -1679,6 +1681,110 @@ pub(crate) mod tests {
         app.focus = Focus::Page;
         app
     }
+    #[test]
+    fn public_split_adjusts_locally_during_reads_and_survives_reflow() {
+        const DIVIDER: &str = "app/body/frame/content/root/divider";
+        const FIELD: &str = "app/body/frame/content/root/leading/left/name";
+        let mut app = app();
+        let mut view = form();
+        view.root = split(
+            "root",
+            40,
+            column("left", vec![input("name", "name", "Name")]),
+            column(
+                "right",
+                vec![
+                    input("enabled", "enabled", "Enabled"),
+                    button("save", "save", Role::Primary),
+                ],
+            ),
+        );
+        instance_mut(&mut app).view = Some(view.clone());
+        draw(&mut app, 170, 26);
+        app.apps_action(command(Command::Refresh));
+        let pending = next(&mut app).unwrap();
+        let initial = instance(&app).surface.rect(DIVIDER).unwrap();
+        let mouse = |app: &mut App, kind, x| {
+            app.input(Event::Mouse(MouseEvent {
+                kind,
+                column: x,
+                row: initial.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        };
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), initial.x);
+        draw(&mut app, 170, 26);
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            initial.x + 18,
+        );
+        draw(&mut app, 170, 26);
+        let moved = instance(&app).surface.rect(DIVIDER).unwrap();
+        assert!(moved.x >= initial.x + 16);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), moved.x);
+        assert!(!instance(&app).surface.dragging_split());
+        assert!(
+            next(&mut app).is_none(),
+            "resizing never queues a Host operation"
+        );
+        for _ in 0..2 {
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Right,
+                KeyModifiers::NONE,
+            )));
+        }
+        draw(&mut app, 170, 26);
+        let adjusted = instance(&app).surface.rect(DIVIDER).unwrap();
+        assert!(
+            adjusted.x > moved.x,
+            "repeated keys accumulate before the next frame"
+        );
+        app.apps_complete(pending, Ok(Output::Reply(Reply::View { view })));
+        draw(&mut app, 170, 26);
+        assert_eq!(instance(&app).surface.rect(DIVIDER).unwrap().x, adjusted.x);
+        click(&mut app, FIELD);
+        app.input(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        app.input(Event::Paste(" — kept".into()));
+        let draft = instance(&app).drafts["name"].clone();
+        draw(&mut app, 60, 26);
+        assert_eq!(instance(&app).surface.focused(), Some(FIELD));
+        draw(&mut app, 170, 26);
+        assert_eq!(instance(&app).surface.rect(DIVIDER).unwrap().x, adjusted.x);
+        assert_eq!(instance(&app).drafts["name"], draft);
+        assert!(next(&mut app).is_none());
+
+        for interrupted in [Event::Resize(60, 26), Event::FocusLost] {
+            mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                adjusted.x,
+            );
+            assert!(instance(&app).surface.dragging_split());
+            app.input(interrupted);
+            mouse(
+                &mut app,
+                MouseEventKind::Drag(MouseButton::Left),
+                adjusted.x + 20,
+            );
+            draw(&mut app, 170, 26);
+            assert!(!instance(&app).surface.dragging_split());
+            assert_eq!(instance(&app).surface.rect(DIVIDER).unwrap().x, adjusted.x);
+        }
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            adjusted.x,
+        );
+        app.input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!instance(&app).surface.dragging_split());
+        assert!(matches!(app.navigation.current(), Route::App(_)));
+
+        instance_mut(&mut app).view.as_mut().unwrap().root = text("root", "Replaced", Tone::Normal);
+        draw(&mut app, 170, 26);
+        assert_eq!(instance(&app).surface.splits().ratio(DIVIDER, 40), 40);
+    }
+
     #[test]
     fn contributed_form_supports_mouse_keyboard_and_retains_conflicting_drafts_without_rebinding() {
         let mut app = app();

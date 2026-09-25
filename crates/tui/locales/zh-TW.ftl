@@ -1063,3 +1063,5 @@ plugins-create-impact = 依以下值建立執行個體，它可能立即啟動�
 
 extensions-section-retained = 保留的編輯與待核對提交
 extensions-scope-application = 應用
+
+extensions-split-hint = 拖曳調整寬度 · ←/→ 微調

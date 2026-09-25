@@ -54,6 +54,8 @@ pub(super) struct Item<M> {
     pub role: Option<Role>,
     /// Owner-drawn: the surface paints neither focus nor hover over it.
     pub slot: bool,
+    /// The containing row's full span, before clipping.
+    pub row: Option<(u16, u16)>,
 }
 
 pub(super) struct Scroller {
@@ -101,6 +103,7 @@ struct Scope {
     scroller: Option<usize>,
     /// Interaction styling of an enclosing interactive node.
     style: Option<Style>,
+    row: Option<(u16, u16)>,
 }
 
 pub(super) struct Pass<'a, M> {
@@ -155,6 +158,7 @@ impl<'a, M> Pass<'a, M> {
             tab_group: None,
             scroller: None,
             style: None,
+            row: None,
         };
         self.place(root, placed, id, scope);
     }
@@ -218,6 +222,7 @@ impl<'a, M> Pass<'a, M> {
                 hint,
                 role,
                 slot: matches!(kind, Kind::Slot | Kind::Transcript { .. }),
+                row: scope.row,
             });
         }
         match kind {
@@ -231,6 +236,7 @@ impl<'a, M> Pass<'a, M> {
                 let inner = Scope {
                     axis: Axis::Vertical,
                     group: self.groups,
+                    row: None,
                     ..scope
                 };
                 let mut y = area.y;
@@ -251,6 +257,7 @@ impl<'a, M> Pass<'a, M> {
                 let inner = Scope {
                     axis: Axis::Horizontal,
                     group: self.groups,
+                    row: Some((area.x, area.width)),
                     ..scope
                 };
                 let mut x = area.x;

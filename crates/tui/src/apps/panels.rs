@@ -215,7 +215,13 @@ fn panel(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
         ));
     }
     let mut children = vec![Node::row("head", head).gap(1)];
-    let (pane, wells) = super::page::pane(app, key, &format!("{BODY}/{node}"), width);
+    let (pane, wells) = super::page::pane(
+        app,
+        key,
+        &format!("{BODY}/{node}"),
+        width,
+        app.apps.inspector.splits(),
+    );
     children.extend(pane);
     (Node::column(node, children).gap(1), wells)
 }
@@ -281,6 +287,7 @@ fn status(app: &App, key: &Key, width: u16) -> Node<Message> {
         let offered = |intent: &Intent| instance.offered(intent);
         let env = tree::Env {
             readers: &app.apps.readers,
+            splits: app.apps.status.splits(),
             resources_live: instance.live.is_some() && !instance.blocked,
             i18n: &app.i18n,
             key,
@@ -310,7 +317,11 @@ impl App {
         let over = matches!(event, Event::Mouse(mouse)
             if self.apps.inspector_area.is_some_and(|area|
                 area.contains((mouse.column, mouse.row).into())));
-        if !keyboard && !over && !self.apps.inspector.captures() {
+        if !keyboard
+            && !over
+            && !self.apps.inspector.captures()
+            && !self.apps.inspector.dragging_split()
+        {
             return None;
         }
         let mut surface = std::mem::take(&mut self.apps.inspector);

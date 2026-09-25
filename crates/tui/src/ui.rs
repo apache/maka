@@ -33,4 +33,4 @@ pub(crate) use layout::width as natural_width;
 pub use node::{Align, Choice, Node, On, Role, Size, Tone};
 pub use sheet::{Layer, Sheet, content_width};
 pub use surface::reader::ReaderEffect;
-pub use surface::{Context, Hover, Outcome, Surface};
+pub use surface::{Context, Hover, Outcome, Splits, Surface};

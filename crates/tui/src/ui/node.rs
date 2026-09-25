@@ -88,6 +88,8 @@ pub enum On<M> {
     Scroll,
     /// Focus belongs to the mounted transcript's local reader.
     Transcript,
+    /// A split divider. Adjustment stays in the surface and emits no action.
+    Resize { ratio: u8 },
 }
 
 #[derive(Clone)]
@@ -354,6 +356,7 @@ impl<M> Node<M> {
             },
             On::Scroll => On::Scroll,
             On::Transcript => On::Transcript,
+            On::Resize { ratio } => On::Resize { ratio },
         });
         Node {
             key: self.key,
