@@ -465,7 +465,12 @@ pub(crate) mod tests {
                 };
                 app.input(mouse(MouseEventKind::ScrollDown, first.x, first.y));
                 frame(&mut app, width, height);
-                assert!(!shown(&app, 0), "the wheel scrolls the list");
+                assert!(
+                    !shown(&app, 0),
+                    "the wheel scrolls the list: {locale:?}, {width}x{height}, before {first:?}, after {:?}, focus {:?}",
+                    app.layer.rect("list/rows/0"),
+                    app.layer.focused_path()
+                );
                 app.input(mouse(MouseEventKind::ScrollUp, first.x, first.y));
                 frame(&mut app, width, height);
                 assert!(shown(&app, 0));

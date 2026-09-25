@@ -207,7 +207,7 @@ impl App {
             Message::New => self.apply(Action::CreateSession),
             Message::Open(id) => self.apply(Action::Visit(Route::Session(id))),
             Message::Connect => self.apply(Action::Connect),
-            Message::Host => self.apply(Action::Visit(Route::Host)),
+            Message::Host => self.apply(Action::Host),
         }
     }
 }

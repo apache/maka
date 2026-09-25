@@ -40,9 +40,9 @@ fn simultaneous_resize_and_input_do_not_wait_for_another_key() {
         tui.resize(size.0, size.1);
         tui.send(b"\x10");
         assert_eq!(unsafe { libc::kill(pid, libc::SIGCONT) }, 0);
-        tui.wait_for("Commands · Esc closes");
+        tui.wait_for("Search commands…");
         tui.send(b"\x1b");
-        tui.wait_until(|screen| !screen.contains("Commands · Esc closes"));
+        tui.wait_until(|screen| !screen.contains("Search commands…"));
     }
     tui.send(b"\x11");
     tui.finish();

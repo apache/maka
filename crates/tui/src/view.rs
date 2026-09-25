@@ -241,10 +241,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Route::Inbox => crate::pages::sessions::draw_catalog(frame, app, page),
         Route::Session(id) => session::draw(frame, app, page, &id),
         Route::Settings => crate::pages::settings::draw(frame, app, page),
-        _ => frame.render_widget(
-            Paragraph::new(page_lines(app)).wrap(Wrap { trim: false }),
-            page,
-        ),
     }
     crate::files::resolve_hits(app);
     let focused = match app.focus {
@@ -360,7 +356,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if matches!(&app.notice, Some(Notice::Diagnostic(_))) {
         app.hits.push(Hit {
             area: Rect::new(page.x, rows[2].y, page.width, 1),
-            action: Action::Visit(Route::Host),
+            action: Action::Host,
         });
     }
     if let Some(overlay) = app.overlay() {
@@ -450,9 +446,9 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         Action::OpenInteraction => ("!", "!"),
         Action::Interaction(_) => ("?", "?"),
         Action::Visit(Route::Workspace | Route::Session(_)) => ("▤", "W"),
-        Action::Visit(Route::Host) => ("◉", "H"),
+        Action::Host => ("◉", "H"),
         Action::Visit(Route::Settings) => ("⛭", "S"),
-        Action::Visit(Route::Help) => ("?", "?"),
+        Action::Help | Action::CloseHelp => ("?", "?"),
         Action::Visit(Route::Projects) => ("▦", "P"),
         Action::Visit(Route::Extensions) => ("◇", "E"),
         Action::Visit(Route::App(_)) => ("◇", "E"),
@@ -694,6 +690,8 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::Visit(Route::Inbox) if app.inbox.error.is_some() => "inbox-unavailable",
         Action::Visit(Route::Inbox) if app.inbox_attention() => "inbox-pending",
         Action::Visit(route) => route.title(),
+        Action::Host => "route-host",
+        Action::Help | Action::CloseHelp => "route-help",
         Action::Back => "footer-back",
         Action::Forward => "footer-forward",
         Action::Palette | Action::ClosePalette => "footer-commands",
@@ -742,89 +740,6 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
 fn icon_button(frame: &mut Frame<'_>, app: &mut App, area: Rect, action: Action, focused: bool) {
     let title = icon(app, &action);
     button(frame, app, area, title, action, focused);
-}
-
-fn page_lines(app: &App) -> Vec<Line<'static>> {
-    let i18n = &app.i18n;
-    let root = || {
-        i18n.format(
-            "state-root",
-            &[("path", &safe(&app.root.to_string_lossy()))],
-        )
-    };
-    match app.navigation.current() {
-        Route::Workspace
-        | Route::Inbox
-        | Route::Projects
-        | Route::Connections
-        | Route::Extensions
-        | Route::App(_) => vec![],
-        Route::Session(_) => crate::pages::sessions::detail_lines(app),
-        Route::Host => {
-            let mut lines = vec![Line::raw(root()), Line::raw("")];
-            match &app.connection {
-                ConnectionState::Connected { root_id, epoch } => {
-                    lines.push(Line::raw(
-                        i18n.format("root-id", &[("value", &safe(root_id))]),
-                    ));
-                    lines.push(Line::raw(
-                        i18n.format("host-epoch", &[("value", &safe(epoch))]),
-                    ));
-                    if let Some(status) = &app.status {
-                        for (message, key) in [
-                            ("host-state", "state"),
-                            ("host-composition", "compositionId"),
-                            ("host-connections", "connections"),
-                            ("host-operations", "activeOperations"),
-                            ("host-residencies", "activeResidencies"),
-                        ] {
-                            lines.push(Line::raw(
-                                i18n.format(message, &[("value", &safe(&status[key].to_string()))]),
-                            ));
-                        }
-                    }
-                }
-                ConnectionState::Connecting => lines.push(Line::raw(i18n.text("host-connecting"))),
-                ConnectionState::Failed(_) | ConnectionState::WrongEpoch => {
-                    let error = match &app.connection {
-                        ConnectionState::Failed(error) => safe(error),
-                        _ => i18n.text("host-wrong-epoch"),
-                    };
-                    lines.push(Line::styled(
-                        error,
-                        Style::default().fg(app.theme.colors().error),
-                    ));
-                    lines.push(Line::raw(""));
-                    lines.push(Line::raw(i18n.text("host-start")));
-                }
-                ConnectionState::Disconnected => {
-                    lines.push(Line::raw(i18n.text("connection-disconnected")))
-                }
-            }
-            if let Some(error) = &app.state_error {
-                lines.push(Line::raw(""));
-                lines.push(Line::raw(safe(error)));
-            }
-            if let Some(notice) = &app.notice {
-                lines.push(Line::raw(""));
-                lines.push(Line::raw(match notice {
-                    Notice::Diagnostic(error) => safe(error),
-                    Notice::Clipboard { key, .. } | Notice::Local(key) => i18n.text(key),
-                    Notice::Catalog { kind, revision } => i18n.format(
-                        "host-notification",
-                        &[("kind", &safe(kind)), ("revision", &safe(revision))],
-                    ),
-                }));
-            }
-            lines
-        }
-        Route::Settings => vec![],
-        Route::Help => i18n
-            .text("help")
-            .lines()
-            .map(|line| Line::raw(line.to_owned()))
-            .collect(),
-    }
 }
 
 pub(crate) fn button(
@@ -941,7 +856,7 @@ mod tests {
             ),
         );
         app.apply(Action::Visit(Route::Settings));
-        app.hover = Some(Action::Visit(Route::Host));
+        app.hover = Some(Action::Host);
         app.apply(Action::Palette);
         assert_eq!(
             app.hover, None,
@@ -1198,7 +1113,7 @@ mod tests {
                 crate::Locale::En,
             ),
         );
-        app.apply(Action::Visit(Route::Host));
+        app.apply(Action::Visit(Route::Extensions));
         app.apply(Action::Visit(Route::Settings));
         app.connection = ConnectionState::Connected {
             root_id: "root".into(),
@@ -1250,7 +1165,7 @@ mod tests {
             "Tab past the first control leaves the page"
         );
         app.apply(Action::Back);
-        assert_eq!(app.navigation.current(), Route::Host);
+        assert_eq!(app.navigation.current(), Route::Extensions);
     }
 
     #[test]

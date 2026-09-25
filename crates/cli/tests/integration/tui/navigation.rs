@@ -47,7 +47,11 @@ fn restart_keeps_forward_history_and_keyboard_control_without_replaying_actions(
     tui.wait_for("Choose Icons");
     tui.send(b"\x1bOP"); // F1 Help.
     tui.wait_for("Move focus between controls");
-    tui.send(b"\x1b[1;3D"); // Alt+Left.
+    tui.send(b"\x1b"); // Help closes without becoming a navigation entry.
+    tui.wait_until(|screen| !screen.contains("Move focus between controls"));
+    tui.command("Open workspace");
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x1b[1;3D"); // A real destination leaves forward history.
     tui.wait_for("Unicode ▾");
     tui.close_terminal();
     tui.finish();
@@ -59,19 +63,21 @@ fn restart_keeps_forward_history_and_keyboard_control_without_replaying_actions(
     reopened.send(b"\x1b[B\r");
     reopened.wait_for("ASCII v");
     reopened.send(b"\x1b[1;3C");
-    reopened.wait_for("Move focus between controls");
+    reopened.wait_until(|screen| screen.contains("No sessions yet") && !screen.contains("ASCII v"));
     reopened.send(b"\x1b[1;3D");
     reopened.wait_for("ASCII v");
     reopened.send(b"\x1b[1;3D");
     reopened.wait_for("No sessions yet");
-    reopened.command("Open Host connection");
+    reopened.host_details();
     reopened.wait_for("Host epoch:");
     reopened.send(b"\x1b[1;3C"); // New destination replaces the previous forward branch.
     reopened.close_terminal();
     reopened.finish();
 
     let mut branched = Pty::spawn(&["--root", host.root.to_str().unwrap()]);
-    branched.wait_for("Host epoch:");
+    branched.wait_for("Connection details");
+    branched.send(b"\x1b[1;3C");
+    branched.wait_for("Connection details");
     branched.send(b"\x1b[1;3D");
     branched.wait_for("No sessions yet");
     branched.close_terminal();

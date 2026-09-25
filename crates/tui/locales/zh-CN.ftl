@@ -106,8 +106,8 @@ help = Tab / Shift+Tab     在控件间移动焦点
     F5                 刷新当前页
     Alt+左 / 右         后退 / 前进
     Esc                关闭面板 / 离开编辑器或正文焦点，否则后退
-    F1                 打开此帮助
-    Ctrl+Q             退出界面，保留 Host 运行
+    ? / F1             显示帮助（编辑器中的 ? 仍是文字）
+    Ctrl+Q             退出 Maka；有活动任务时先确认
 
     鼠标：点击控件或消息三角；滚轮滚动正文。
     无需特殊字体。调整窗口大小会改变导航布局。
@@ -115,6 +115,8 @@ command-workspace = 打开工作区
 command-host = 打开 Host 连接
 command-settings = 打开设置
 command-help = 键盘和鼠标帮助
+help-close = 关闭
+settings-host-details = 连接详情
 command-connect = 连接配置的 Host
 command-refresh = 刷新当前页 · F5
 command-sidebar = 展开 / 折叠导航 · Ctrl+B
@@ -137,7 +139,7 @@ footer-commands = Ctrl+P 命令
 footer-back = < 后退
 footer-forward = 前进 >
 footer-quit = Ctrl+Q 退出
-palette-title = 命令 · Esc 关闭
+palette-title = 命令
 palette-filter = 搜索命令…
 palette-empty = 没有匹配的命令。
 route-session = 会话

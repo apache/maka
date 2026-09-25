@@ -66,11 +66,13 @@ pub enum Align {
     End,
 }
 
+#[derive(Clone)]
 pub struct Choice<M> {
     pub label: String,
     pub action: M,
 }
 
+#[derive(Clone)]
 pub enum On<M> {
     /// Click, Enter or Space emits the action.
     Activate(M),
@@ -85,6 +87,7 @@ pub enum On<M> {
     Scroll,
 }
 
+#[derive(Clone)]
 pub enum Kind<M> {
     Column {
         children: Vec<Node<M>>,
@@ -113,6 +116,7 @@ pub enum Kind<M> {
 /// A keyed node. Keys identify interaction state (focus, hover, scroll) across
 /// frames, so they must be stable and unique among siblings; positions,
 /// translated labels and coordinates are never identities.
+#[derive(Clone)]
 pub struct Node<M> {
     pub key: Cow<'static, str>,
     pub size: Size,

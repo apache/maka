@@ -407,7 +407,7 @@ impl App {
             Message::App(key) => self.apply(Action::Apps(crate::apps::Message::Open(key))),
             Message::Apps => self.apply(Action::Apps(crate::apps::Message::Directory)),
             Message::Settings => self.apply(Action::Visit(Route::Settings)),
-            Message::Host => self.apply(Action::Visit(Route::Host)),
+            Message::Host => self.apply(Action::Host),
         }
     }
 }

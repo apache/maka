@@ -35,8 +35,8 @@ fn fresh_terminals_share_one_on_demand_host_and_reopen_the_same_root() {
     ]);
     for tui in [&mut first, &mut second] {
         tui.wait_for("Workspace");
-        tui.command("Open Host connection");
-        tui.wait_for("State: \"ready\"");
+        tui.host_details();
+        tui.wait_for("State: ready");
     }
     let original = read_discovery(&root).unwrap();
     for tui in [&mut first, &mut second] {
@@ -94,7 +94,8 @@ fn fresh_terminals_share_one_on_demand_host_and_reopen_the_same_root() {
     );
 
     let mut reopened = Pty::spawn(&["--root", root.to_str().unwrap(), "--profile", "first"]);
-    reopened.wait_for("State: \"ready\"");
+    reopened.host_details();
+    reopened.wait_for("State: ready");
     let current = read_discovery(&root).unwrap();
     assert_eq!(current.root_id, original.root_id);
     assert_ne!(current.host_epoch, original.host_epoch);
@@ -131,9 +132,9 @@ fn busy_root_keeps_navigation_responsive_and_quit_does_not_take_over() {
     let owner = RootOwner::create(&root, &namespaces).unwrap();
     let mut tui = Pty::spawn(&["--root", root.to_str().unwrap()]);
     tui.wait_for("Workspace");
-    tui.command("Open Host connection");
+    tui.host_details();
     tui.wait_for("Connecting");
-    tui.click_text("Settings");
+    tui.click_page_text("Appearance");
     tui.wait_for("Maka dark ▾");
     tui.send(b"\x11");
     tui.finish();

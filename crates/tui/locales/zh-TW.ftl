@@ -106,8 +106,8 @@ help = Tab / Shift+Tab     在控制項間移動焦點
     F5                 重新整理目前頁面
     Alt+左 / 右         返回 / 前進
     Esc                關閉面板 / 離開編輯器或正文焦點，否則返回
-    F1                 開啟此說明
-    Ctrl+Q             離開介面，保留 Host 執行
+    ? / F1             顯示說明（編輯器中的 ? 仍是文字）
+    Ctrl+Q             離開 Maka；有執行中工作時先確認
 
     滑鼠：點擊控制項或訊息三角；滾輪捲動正文。
     無需特殊字型。調整視窗大小會改變導覽佈局。
@@ -115,6 +115,8 @@ command-workspace = 開啟工作區
 command-host = 開啟 Host 連線
 command-settings = 開啟設定
 command-help = 鍵盤和滑鼠說明
+help-close = 關閉
+settings-host-details = 連線詳情
 command-connect = 連線至設定的 Host
 command-refresh = 重新整理目前頁面 · F5
 command-sidebar = 展開 / 收合導覽 · Ctrl+B
@@ -137,7 +139,7 @@ footer-commands = Ctrl+P 命令
 footer-back = < 返回
 footer-forward = 前進 >
 footer-quit = Ctrl+Q 離開
-palette-title = 命令 · Esc 關閉
+palette-title = 命令
 palette-filter = 搜尋命令…
 palette-empty = 沒有符合的命令。
 route-session = 工作階段

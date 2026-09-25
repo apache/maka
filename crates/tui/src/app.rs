@@ -50,6 +50,9 @@ pub enum Action {
     Forward,
     Palette,
     ClosePalette,
+    Help,
+    CloseHelp,
+    Host,
     Connect,
     Refresh,
     ToggleTheme,
@@ -147,6 +150,7 @@ pub struct App {
     pub attachments: crate::pages::attachments::State,
     pub skills: crate::pages::skills::State,
     pub settings: crate::pages::settings::State,
+    pub help: bool,
     pub sidebar: crate::pages::sidebar::State,
     /// The modal layer presenting whichever overlay is a kernel sheet.
     pub layer: crate::ui::Layer<Action>,
@@ -205,6 +209,7 @@ impl App {
             attachments: Default::default(),
             skills: Default::default(),
             settings: Default::default(),
+            help: false,
             sidebar: Default::default(),
             layer: Default::default(),
             home: Default::default(),
@@ -245,7 +250,7 @@ impl App {
         }
         let mut commands = vec![
             (Action::Visit(Route::Workspace), "command-workspace"),
-            (Action::Visit(Route::Host), "command-host"),
+            (Action::Host, "command-host"),
             (Action::Visit(Route::Settings), "command-settings"),
             (Action::Visit(Route::Connections), "route-connections"),
             (
@@ -256,7 +261,7 @@ impl App {
                 Action::Onboard(crate::pages::onboarding::Command::Open),
                 "onboard-title",
             ),
-            (Action::Visit(Route::Help), "command-help"),
+            (Action::Help, "command-help"),
             (Action::Visit(Route::Inbox), "command-inbox"),
             (Action::Visit(Route::Projects), "route-projects"),
             (Action::CreateSession, "session-create"),
@@ -459,16 +464,8 @@ impl App {
                 }
                 actions
             }
-            Route::Host => vec![
-                Action::Apps(crate::apps::Message::Directory),
-                if matches!(self.connection, ConnectionState::Connected { .. }) {
-                    Action::Refresh
-                } else {
-                    Action::Connect
-                },
-            ],
             // Settings controls live in its kernel surface, not page actions.
-            Route::Settings | Route::Help => vec![],
+            Route::Settings => vec![],
         };
         if self.fullscreen() && self.inbox_attention() {
             actions.push(Action::Visit(Route::Inbox));
@@ -558,7 +555,12 @@ impl App {
             Route::Projects => Some(Action::Project(crate::pages::projects::Command::Refresh)),
             Route::Workspace | Route::Inbox => Some(Action::RefreshSessions),
             Route::Session(_) => Some(Action::RefreshSession),
-            Route::Host => Some(Action::Refresh),
+            Route::Settings
+                if self.settings.category == crate::pages::settings::Category::Host
+                    && self.settings.pane.is_none() =>
+            {
+                Some(Action::Refresh)
+            }
             _ => None,
         }
     }
@@ -567,6 +569,28 @@ impl App {
             return None;
         }
         match action {
+            Action::Help => {
+                self.palette = None;
+                self.help = true;
+                self.hover = None;
+            }
+            Action::CloseHelp => self.help = false,
+            Action::Host => {
+                let effect = self.apply(Action::Visit(Route::Settings));
+                self.settings.category = crate::pages::settings::Category::Host;
+                self.settings.pane = None;
+                self.settings.host_details |= self.state_error.is_some()
+                    || matches!(self.notice, Some(Notice::Diagnostic(_)))
+                    || matches!(
+                        self.connection,
+                        ConnectionState::Failed(_) | ConnectionState::WrongEpoch
+                    );
+                self.settings
+                    .surface
+                    .focus_within("settings/pane/frame/rows/host/");
+                self.focus = Focus::Page;
+                return effect;
+            }
             Action::NextTab | Action::PreviousTab => {
                 let route = self.navigation.current();
                 let id = if let Route::Session(id) = &route {
@@ -1487,7 +1511,8 @@ impl App {
                         {
                             self.chat.view.selection().map(Action::ToggleMessage)
                         }
-                        KeyCode::F(1) => Some(Action::Visit(Route::Help)),
+                        KeyCode::F(1) => Some(Action::Help),
+                        KeyCode::Char('?') if self.focus != Focus::Composer => Some(Action::Help),
                         KeyCode::F(5) => self.refresh_action(),
                         KeyCode::F(11) => Some(Action::ToggleFullscreen),
                         KeyCode::Tab | KeyCode::BackTab => {

@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(written.revision, Some(request.clone()));
         assert!(written.result.is_ok());
         let bytes = read(&directory);
-        assert_eq!(bytes["version"], 16);
+        assert_eq!(bytes["version"], 17);
         assert_eq!(bytes["revision"]["copy"]["targetSessionId"], "revised");
         assert_eq!(bytes["revision"]["inputs"][0]["content"]["text"], "edited");
         let mut incomplete = bytes.clone();

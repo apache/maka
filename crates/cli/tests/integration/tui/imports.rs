@@ -159,7 +159,7 @@ fn imported_observations_remain_readable_without_offering_executable_turn_action
             "imported observations are not local Turn boundaries"
         );
         tui.send(b"\x1b");
-        tui.wait_until(|screen| !screen.contains("Commands · Esc closes"));
+        tui.wait_until(|screen| !screen.contains("No matching commands."));
     }
     tui.close_terminal();
     tui.finish();

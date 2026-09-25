@@ -127,7 +127,7 @@ fn real_pty_default_entry_routes_mouse_modal_resize_and_restores_terminal() {
     tui.click_text("Settings");
     tui.wait_for("Maka dark ▾");
     tui.send(b"\x10"); // Ctrl+P
-    tui.wait_for("Commands · Esc closes");
+    tui.wait_for("Search commands…");
     // Outside click closes only the modal, without activating the workspace.
     tui.send(b"\x1b[<0;3;5M\x1b[<0;3;5m");
     tui.wait_until(|screen| !screen.contains("Open workspace") && screen.contains("Maka dark ▾"));
@@ -175,7 +175,7 @@ fn real_pty_default_entry_routes_mouse_modal_resize_and_restores_terminal() {
     tui.resize(80, 24);
     // Narrow windows hide the session sidebar; Host details stay one command away.
     tui.wait_until(|screen| !screen.contains("+  New session"));
-    tui.command("Open Host connection");
+    tui.host_details();
     tui.wait_for("refusing to initialize a nonempty State Root");
     tui.close_terminal();
     tui.finish();
@@ -966,6 +966,14 @@ impl Pty {
     fn command(&mut self, label: &str) {
         self.filter_command(label);
         self.click_text(label);
+    }
+    fn host_details(&mut self) {
+        self.command("Open Host connection");
+        self.wait_for("Connection details");
+        let screen = self.screen.snapshot().unwrap().screen;
+        if screen.contains("▸ Connection details") || screen.contains("> Connection details") {
+            self.click_page_text("Connection details");
+        }
     }
     /// SGR wheel events over the first occurrence of `text`.
     fn wheel_at(&mut self, text: &str, down: bool, times: usize) {

@@ -68,7 +68,7 @@ impl Snapshot {
             .collect();
         unresolved.sort_by(|left, right| left.session.cmp(&right.session));
         Self {
-            version: 16,
+            version: 17,
             attachments: app.attachments.saved.clone(),
             directories: app.directories.clone(),
             skills: app.skills.saved.clone(),
@@ -103,7 +103,7 @@ impl Snapshot {
         let id = |id: &str| {
             !id.is_empty() && id.encode_utf16().count() <= 256 && !id.chars().any(char::is_control)
         };
-        if self.version != 16
+        if self.version != 17
             || self.root != root
             || self.tabs.len() > LIMIT
             || self.drafts.len() > LIMIT
@@ -447,7 +447,7 @@ mod tests {
         request.input().validate().unwrap();
         original.sending.get_mut("a").unwrap().request = request.clone();
         let saved = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
-        assert_eq!(saved["version"], 16);
+        assert_eq!(saved["version"], 17);
         let mut restored = app();
         serde_json::from_value::<Snapshot>(saved.clone())
             .unwrap()
@@ -522,7 +522,7 @@ mod tests {
         original.focus = Focus::Transcript;
         original.apply(Action::Visit(Route::Settings));
         original.settings.focus_setting(&Action::ToggleSymbols);
-        original.apply(Action::Visit(Route::Help));
+        original.apply(Action::Visit(Route::Extensions));
         original.apply(Action::Back);
         let encoded = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
         let mut restored = app();
@@ -547,11 +547,11 @@ mod tests {
         assert!(!restored.chrome.details);
         restored.apply(Action::Forward);
         restored.apply(Action::Forward);
-        assert_eq!(restored.navigation.current(), Route::Help);
+        assert_eq!(restored.navigation.current(), Route::Extensions);
         restored.apply(Action::Back);
-        restored.apply(Action::Visit(Route::Host));
+        restored.apply(Action::Visit(Route::Workspace));
         restored.apply(Action::Forward);
-        assert_eq!(restored.navigation.current(), Route::Host);
+        assert_eq!(restored.navigation.current(), Route::Workspace);
 
         // Sidebar cursor is a destination, not an index into possibly changed tabs.
         restored.focus = Focus::Navigation;

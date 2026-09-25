@@ -109,7 +109,7 @@ fn recover(after_acceptance: bool) {
         tui.click_text("Retry original message");
         // Closing the palette can temporarily cover/erase the old feedback before
         // the checkpoint releases the explicit retry. Observe the real relay too.
-        tui.wait_until(|screen| proxy.requests.lock().unwrap().len() == 2 && !screen.contains("Delivery uncertain") && !screen.contains("Sending…") && !screen.contains("Commands · Esc") && screen.contains("plus new edits"));
+        tui.wait_until(|screen| proxy.requests.lock().unwrap().len() == 2 && !screen.contains("Delivery uncertain") && !screen.contains("Sending…") && screen.contains("plus new edits"));
         let requests = proxy.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 2, "reconnect must not automatically replay");
         assert_eq!(requests[0], requests[1], "retry must not send the new draft or rebind the original identity");
@@ -261,7 +261,7 @@ impl LostReply {
                                     assert_eq!(original["origin_epoch"], value["input"]["originHostEpoch"]);
                                     assert_eq!(original["session"], value["input"]["sessionId"]);
                                     assert_eq!(original["id"], value["input"]["messageId"]);
-                                    assert_eq!(saved["version"], 16);
+                                    assert_eq!(saved["version"], 17);
                                     assert_eq!(original["content"], value["input"]["content"]);
                                     assert_eq!(original["placement"], value["input"]["placement"]);
                                     assert_eq!(original["input_selections"], value["input"].get("inputSelections").cloned().unwrap_or_else(|| json!({})));

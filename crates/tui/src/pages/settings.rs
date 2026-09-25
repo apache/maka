@@ -79,7 +79,10 @@ pub enum Message {
     CustomTheme,
     Connections,
     SandboxDefaults,
-    Host,
+    HostDetails,
+    Connect,
+    Refresh,
+    Apps,
     /// A plugin's settings pane.
     Pane(crate::apps::Key),
     App(crate::apps::Message),
@@ -88,6 +91,7 @@ pub enum Message {
 #[derive(Default)]
 pub struct State {
     pub category: Category,
+    pub host_details: bool,
     /// The plugin pane shown instead of a built-in category.
     pub pane: Option<crate::apps::Key>,
     pub surface: ui::Surface<Message>,
@@ -97,12 +101,13 @@ pub struct State {
 
 /// Rows whose focus a checkpoint keeps, by the shell action each stands for.
 /// Actions are the persisted vocabulary; row ids are only this layout's.
-const PERSISTED: [(&str, Category); 5] = [
+const PERSISTED: [(&str, Category); 6] = [
     ("palette", Category::Appearance),
     ("custom-theme", Category::Appearance),
     ("language", Category::Interface),
     ("symbols", Category::Interface),
     ("motion", Category::Interface),
+    ("host", Category::Host),
 ];
 fn persisted_action(key: &str) -> Option<Action> {
     Some(match key {
@@ -111,6 +116,7 @@ fn persisted_action(key: &str) -> Option<Action> {
         "language" => Action::CycleLocale,
         "symbols" => Action::ToggleSymbols,
         "motion" => Action::ToggleMotion,
+        "host" => Action::Host,
         _ => return None,
     })
 }
@@ -119,7 +125,13 @@ const ROW_PATH: &str = "settings/pane/frame/rows/";
 impl State {
     /// The shell action equivalent to the focused row, for checkpoints.
     pub(crate) fn focused_setting(&self) -> Option<Action> {
-        persisted_action(self.surface.focused()?.strip_prefix(ROW_PATH)?)
+        persisted_action(
+            self.surface
+                .focused()?
+                .strip_prefix(ROW_PATH)?
+                .split('/')
+                .next()?,
+        )
     }
     pub(crate) fn focus_setting(&mut self, action: &Action) {
         if let Some((key, category)) = PERSISTED
@@ -127,7 +139,11 @@ impl State {
             .find(|(key, _)| persisted_action(key).as_ref() == Some(action))
         {
             self.category = *category;
-            self.surface.focus(format!("{ROW_PATH}{key}"));
+            if *key == "host" {
+                self.surface.focus_within(format!("{ROW_PATH}host/"));
+            } else {
+                self.surface.focus(format!("{ROW_PATH}{key}"));
+            }
         }
     }
 }
@@ -404,31 +420,7 @@ fn section(app: &App, category: Category) -> Vec<Node<Message>> {
             Action::Visit(Route::Connections),
             Message::Connections,
         )],
-        Category::Host => {
-            let state = match app.connection {
-                crate::app::ConnectionState::Connected { .. } => "settings-host-connected",
-                crate::app::ConnectionState::Connecting => "settings-host-connecting",
-                crate::app::ConnectionState::Disconnected => "settings-host-disconnected",
-                crate::app::ConnectionState::Failed(_)
-                | crate::app::ConnectionState::WrongEpoch => "settings-host-failed",
-            };
-            let action = Action::Visit(Route::Host);
-            let hint = crate::view::action_label(app, &action);
-            vec![
-                row(
-                    app,
-                    Setting {
-                        key: "host",
-                        action,
-                        label: i18n.text("route-host"),
-                        value: i18n.text(state),
-                    },
-                    if ascii { " >" } else { " ›" },
-                )
-                .on(On::Activate(Message::Host))
-                .hint(hint),
-            ]
-        }
+        Category::Host => vec![Node::column("host", host(app)).gap(1)],
         Category::Sessions => match app.sandbox_defaults_action() {
             Some(action) => vec![link(
                 app,
@@ -511,6 +503,122 @@ fn row(app: &App, setting: Setting, affordance: &str) -> Node<Message> {
     )
 }
 
+fn host(app: &App) -> Vec<Node<Message>> {
+    use crate::app::{ConnectionState, Notice};
+    use crate::ui::Role;
+    let i18n = &app.i18n;
+    let (state, tone) = match app.connection {
+        ConnectionState::Connected { .. } => ("settings-host-connected", Tone::Success),
+        ConnectionState::Connecting => ("settings-host-connecting", Tone::Subtle),
+        ConnectionState::Disconnected => ("settings-host-disconnected", Tone::Muted),
+        ConnectionState::Failed(_) | ConnectionState::WrongEpoch => {
+            ("settings-host-failed", Tone::Warning)
+        }
+    };
+    let (message, label) = if matches!(app.connection, ConnectionState::Connected { .. }) {
+        (Message::Refresh, "extensions-refresh")
+    } else {
+        (Message::Connect, "command-connect")
+    };
+    let mut rows = vec![
+        Node::text("connection-state", vec![(i18n.text(state), tone)]),
+        Node::row(
+            "connection-actions",
+            vec![
+                // Transient requests are gated at dispatch, preserving focus.
+                Node::button("connect", i18n.text(label), Role::Primary).on(On::Activate(message)),
+            ],
+        ),
+        link(
+            app,
+            "apps",
+            Action::Apps(crate::apps::Message::Directory),
+            Message::Apps,
+        ),
+        Node::text(
+            "connection-details",
+            vec![(
+                format!(
+                    "{} {}",
+                    app.chrome.symbol(
+                        if app.settings.host_details {
+                            "▾"
+                        } else {
+                            "▸"
+                        },
+                        if app.settings.host_details { "v" } else { ">" }
+                    ),
+                    i18n.text("settings-host-details")
+                ),
+                Tone::Muted,
+            )],
+        )
+        .on(On::Activate(Message::HostDetails)),
+    ];
+    if !app.settings.host_details {
+        return rows;
+    }
+    let safe = crate::view::safe;
+    let mut details = vec![i18n.format(
+        "state-root",
+        &[("path", &safe(&app.root.to_string_lossy()))],
+    )];
+    match &app.connection {
+        ConnectionState::Connected { root_id, epoch } => {
+            details.push(i18n.format("root-id", &[("value", &safe(root_id))]));
+            details.push(i18n.format("host-epoch", &[("value", &safe(epoch))]));
+            if let Some(status) = &app.status {
+                for (label, field) in [
+                    ("host-state", "state"),
+                    ("host-composition", "compositionId"),
+                    ("host-connections", "connections"),
+                    ("host-operations", "activeOperations"),
+                    ("host-residencies", "activeResidencies"),
+                ] {
+                    if let Some(value) = status.get(field).filter(|value| !value.is_null()) {
+                        let value = value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string());
+                        details.push(i18n.format(label, &[("value", &safe(&value))]));
+                    }
+                }
+            }
+        }
+        ConnectionState::Failed(error) => details.push(safe(error)),
+        ConnectionState::WrongEpoch => details.push(i18n.text("host-wrong-epoch")),
+        _ => {}
+    }
+    if let Some(error) = &app.state_error {
+        details.push(safe(error));
+    }
+    match &app.notice {
+        Some(Notice::Diagnostic(error)) => details.push(safe(error)),
+        Some(Notice::Catalog { kind, revision }) => details.push(i18n.format(
+            "host-notification",
+            &[("kind", &safe(kind)), ("revision", &safe(revision))],
+        )),
+        _ => {}
+    }
+    rows.push(
+        Node::scroll(
+            "diagnostics",
+            Node::column(
+                "lines",
+                details
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, line)| Node::text(index.to_string(), vec![(line, Tone::Subtle)]))
+                    .collect(),
+            )
+            .gap(1),
+        )
+        .size(Size::Upto(12))
+        .on(On::Scroll),
+    );
+    rows
+}
+
 fn note(key: &'static str, lines: Vec<(String, Tone)>) -> Option<Node<Message>> {
     (!lines.is_empty()).then(|| {
         Node::column(
@@ -544,7 +652,10 @@ impl App {
                 return self.apply(Action::Theme(crate::theme::editor::Command::Open));
             }
             Message::Connections => return self.apply(Action::Visit(Route::Connections)),
-            Message::Host => return self.apply(Action::Visit(Route::Host)),
+            Message::HostDetails => self.settings.host_details = !self.settings.host_details,
+            Message::Connect => return self.apply(Action::Connect),
+            Message::Refresh => return self.apply(Action::Refresh),
+            Message::Apps => return self.apps_action(crate::apps::Message::Directory),
             Message::SandboxDefaults => {
                 return self
                     .sandbox_defaults_action()
@@ -626,6 +737,41 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         })
+    }
+
+    #[test]
+    fn host_commands_land_in_settings_and_diagnostics_are_disclosed_on_request() {
+        for locale in Locale::ALL {
+            let mut app = app(locale);
+            app.connection = ConnectionState::Connected {
+                root_id: "private-root".into(),
+                epoch: "current-epoch".into(),
+            };
+            app.apply(Action::Host);
+            assert_eq!(app.navigation.current(), Route::Settings);
+            assert_eq!(app.settings.category, Category::Host);
+            let terminal = render(&mut app, 100, 32);
+            assert!(!rows(&terminal).join("\n").contains("private-root"));
+            let focused = app.settings.surface.focused().map(str::to_owned);
+            app.refreshing = true;
+            render(&mut app, 100, 32);
+            assert_eq!(app.settings.surface.focused(), focused.as_deref());
+            assert_eq!(app.settings_action(Message::Refresh), None);
+            app.refreshing = false;
+            app.input(click(locate(
+                &terminal,
+                &app.i18n.text("settings-host-details"),
+            )));
+            render(&mut app, 100, 32);
+            app.input(Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                KeyModifiers::NONE,
+            )));
+            let terminal = render(&mut app, 100, 32);
+            assert!(rows(&terminal).join("\n").contains("private-root"));
+            assert!(app.i18n.diagnostics().is_empty());
+            assert_eq!(app.settings_action(Message::Refresh), Some(Action::Refresh));
+        }
     }
 
     #[test]

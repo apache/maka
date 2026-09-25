@@ -58,6 +58,10 @@ pub(super) struct Scroller {
     pub id: String,
     pub viewport: Rect,
     pub content: u16,
+    /// Unclipped placement and ancestry, including viewports outside a parent.
+    pub top: i32,
+    pub height: u16,
+    pub parent: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,6 +286,9 @@ impl<'a, M> Pass<'a, M> {
                     id: id.clone(),
                     viewport: visible,
                     content,
+                    top: area.y,
+                    height: area.height,
+                    parent: scope.scroller,
                 });
                 let child_id = format!("{id}/{}", child.key);
                 let placed = Area {

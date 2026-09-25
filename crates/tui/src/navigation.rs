@@ -32,9 +32,7 @@ pub mod tabs;
 pub enum Route {
     Workspace,
     Session(String),
-    Host,
     Settings,
-    Help,
     Inbox,
     Projects,
     Connections,
@@ -46,21 +44,12 @@ pub enum Route {
 
 impl Route {
     pub const PAGE_COUNT: usize = Self::ALL.len() + 2;
-    pub const ALL: [Self; 6] = [
-        Self::Workspace,
-        Self::Host,
-        Self::Settings,
-        Self::Help,
-        Self::Inbox,
-        Self::Projects,
-    ];
+    pub const ALL: [Self; 4] = [Self::Workspace, Self::Settings, Self::Inbox, Self::Projects];
     pub fn title(&self) -> &'static str {
         match self {
             Self::Workspace => "route-workspace",
             Self::Session(_) => "route-session",
-            Self::Host => "route-host",
             Self::Settings => "route-settings",
-            Self::Help => "route-help",
             Self::Inbox => "route-inbox",
             Self::Projects => "route-projects",
             Self::Connections => "route-connections",
@@ -71,7 +60,7 @@ impl Route {
         match self {
             Self::Session(_) => Self::Workspace,
             Self::Connections => Self::Settings,
-            Self::Extensions => Self::Host,
+            Self::Extensions => Self::Settings,
             Self::App(key) => Self::App(key.clone()),
             _ => self.clone(),
         }
@@ -167,19 +156,19 @@ mod tests {
     #[test]
     fn navigation_replaces_forward_branch_and_bounds_history() {
         let mut nav = Navigation::default();
-        nav.visit(Route::Host);
+        nav.visit(Route::Projects);
         nav.visit(Route::Settings);
         nav.back();
-        assert_eq!(nav.current(), Route::Host);
-        nav.visit(Route::Help);
+        assert_eq!(nav.current(), Route::Projects);
+        nav.visit(Route::Inbox);
         nav.forward();
-        assert_eq!(nav.current(), Route::Help);
-        nav.visit(Route::Help);
+        assert_eq!(nav.current(), Route::Inbox);
+        nav.visit(Route::Inbox);
         nav.back();
-        assert_eq!(nav.current(), Route::Host);
+        assert_eq!(nav.current(), Route::Projects);
         for _ in 0..200 {
             nav.visit(Route::Settings);
-            nav.visit(Route::Help);
+            nav.visit(Route::Inbox);
         }
         assert_eq!(nav.entries.len(), 128);
         for _ in 0..200 {

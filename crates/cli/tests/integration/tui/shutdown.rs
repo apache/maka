@@ -143,8 +143,8 @@ fn force_confirmation_never_retargets_a_replacement_host() {
     let original_epoch = observer.identity.host_epoch.clone();
     let mut tui = Pty::spawn(&["--root", host.root.to_str().unwrap()]);
     tui.wait_for("No sessions yet");
-    tui.command("Open Host connection");
-    tui.wait_for("State: \"ready\"");
+    tui.host_details();
+    tui.wait_for("State: ready");
     tui.send(b"\x11");
     tui.wait_for("Force quit");
     runtime

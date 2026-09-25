@@ -151,7 +151,7 @@ fn old_window_selection_and_search_resume_across_pages_and_disk_restart() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(saved["version"], 16);
+    assert_eq!(saved["version"], 17);
     let encoded = serde_json::to_string(&saved).unwrap();
     assert!(
         !encoded.contains("History context line"),

@@ -45,7 +45,7 @@ fn oauth_entry_uses_host_enrollment_mouse_keyboard_and_never_starts_on_dismiss()
     let mut tui = Pty::spawn(&["--root", host.root.to_str().unwrap()]);
     tui.read_size = 128; // Split frames and escape sequences across PTY reads.
     tui.wait_for("Workspace");
-    tui.command("Open Host connection");
+    tui.host_details();
     tui.wait_for("Host epoch:");
     tui.command("Open workspace");
     tui.filter_command("Sign in to a provider");
@@ -115,7 +115,7 @@ fn oauth_start_is_durable_before_dispatch_and_crash_reopens_only_the_original_qu
         let relay = super::recovery::LostReply::oauth_start(&host.root, directory.path()).await;
         let mut tui = Pty::spawn(&["--root", host.root.to_str().unwrap()]);
         tui.wait_for("Workspace");
-        tui.command("Open Host connection");
+        tui.host_details();
         tui.wait_for("Host epoch:");
         tui.command("Open workspace");
         tui.filter_command("Sign in to a provider");
@@ -167,7 +167,7 @@ fn oauth_start_is_durable_before_dispatch_and_crash_reopens_only_the_original_qu
         assert!(!tui.terminate().unwrap().success());
         let mut reopened = Pty::spawn(&["--root", host.root.to_str().unwrap()]);
         reopened.wait_for("Workspace");
-        reopened.command("Open Host connection");
+        reopened.host_details();
         reopened.wait_for("Host epoch:");
         reopened.filter_command("View sign-in");
         reopened.click_text("View sign-in");

@@ -51,6 +51,7 @@ pub(crate) enum Overlay {
     Interactions,
     QueueEdit,
     Palette,
+    Help,
 }
 
 impl Overlay {
@@ -75,6 +76,7 @@ impl Overlay {
             Self::Interactions => Action::Interaction(interactions::Command::Close),
             Self::QueueEdit => Action::Queue(queue::Command::Close),
             Self::Palette => Action::ClosePalette,
+            Self::Help => Action::CloseHelp,
         }
     }
 }
@@ -100,6 +102,7 @@ impl App {
             (Interactions, self.interactions.visible),
             (QueueEdit, self.queue.edit.is_some()),
             (Palette, self.palette.is_some()),
+            (Help, self.help),
         ]
         .into_iter()
         .find_map(|(overlay, open)| open.then_some(overlay))
@@ -124,6 +127,7 @@ impl App {
             Overlay::Revision => crate::pages::revision::sheet(self),
             Overlay::Interactions => crate::pages::interactions::sheet(self),
             Overlay::Palette => crate::pages::commands::sheet(self),
+            Overlay::Help => Some(crate::pages::help::sheet(self)),
         }
     }
 

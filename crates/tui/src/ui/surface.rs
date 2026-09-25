@@ -118,6 +118,9 @@ pub struct Surface<M> {
     /// Where focus lands first, by path prefix, once such a stop exists.
     start: Option<String>,
     committed: Option<Committed<M>>,
+    /// Survives hit-geometry invalidation, so resize can keep a previously
+    /// visible focus in view without undoing the reader's manual scrolling.
+    last_layout: Option<(Rect, bool)>,
 }
 
 impl<M> Default for Surface<M> {
@@ -132,12 +135,21 @@ impl<M> Default for Surface<M> {
             drag: None,
             start: None,
             committed: None,
+            last_layout: None,
         }
     }
 }
 
 impl<M: Clone> Surface<M> {
     pub fn render(&mut self, frame: &mut Frame<'_>, area: Rect, tree: Node<M>, context: Context) {
+        let reveal = context.focused
+            && (self
+                .last_layout
+                .is_some_and(|(before, visible)| before != area && visible)
+                || self.focus.is_none() && self.start.is_some());
+        // A reflow may need one corrective placement after its new geometry
+        // is known. Ordinary frames neither copy the tree nor move the viewport.
+        let retry = reveal.then(|| tree.clone());
         let mut pass = Pass::new(
             frame.buffer_mut(),
             context.colors,
@@ -170,6 +182,28 @@ impl<M: Clone> Surface<M> {
                     .map(|item| item.id.clone());
             }
             None => {}
+        }
+        let focused = items
+            .iter()
+            .find(|item| Some(&item.id) == self.focus.as_ref());
+        self.last_layout = Some((
+            area,
+            context.focused && focused.is_some_and(|item| !item.rect.is_empty()),
+        ));
+        if let Some(tree) = retry
+            && let Some(item) = focused
+            && reveal_offsets(
+                &mut self.offsets,
+                &scrollers,
+                item.scroller,
+                item.top,
+                item.height,
+            )
+        {
+            frame.render_widget(Clear, area);
+            frame.render_widget(Block::default().style(context.colors.base()), area);
+            self.render(frame, area, tree, context);
+            return;
         }
         if self
             .hover
@@ -533,6 +567,7 @@ impl<M: Clone> Surface<M> {
                 self.offsets.insert(id.clone(), offset.min(maximum));
                 self.drag = Some(id);
                 self.hover = None;
+                self.manually_scrolled();
                 return Outcome::handled(true);
             }
             (MouseEventKind::Up(MouseButton::Left), _, _) if self.drag.is_some() => {
@@ -612,7 +647,9 @@ impl<M: Clone> Surface<M> {
                 };
                 // Pointer targets move under the wheel; resolve them afresh.
                 self.hover = None;
-                Outcome::handled(*offset != before)
+                let changed = *offset != before;
+                self.manually_scrolled();
+                Outcome::handled(changed)
             }
             _ if inside => Outcome::handled(false),
             _ => Outcome::ignored(),
@@ -696,7 +733,9 @@ impl<M: Clone> Surface<M> {
                         | KeyCode::Home
                         | KeyCode::End
                 ) {
-                    return Outcome::handled(*offset != before);
+                    let changed = *offset != before;
+                    self.manually_scrolled();
+                    return Outcome::handled(changed);
                 }
             }
         }
@@ -947,27 +986,62 @@ impl<M: Clone> Surface<M> {
         self.focus = Some(id);
     }
 
-    /// Scroll a keyboard target fully into its viewport.
-    fn reveal(&mut self, scroller: Option<usize>, top: i32, height: u16) {
-        let Some(scroller) =
-            scroller.and_then(|index| self.committed.as_ref()?.scrollers.get(index))
-        else {
-            return;
-        };
-        let viewport = scroller.viewport;
-        // A stored offset can exceed a taller viewport's range; start from
-        // what was actually drawn.
-        let maximum = scroller.content.saturating_sub(viewport.height);
-        let offset = self.offsets.entry(scroller.id.clone()).or_default();
-        *offset = (*offset).min(maximum);
-        let above = i32::from(viewport.y) - top;
-        let below = top + i32::from(height) - i32::from(viewport.bottom());
-        if above > 0 {
-            *offset = offset.saturating_sub(above as u16);
-        } else if below > 0 {
-            *offset = offset.saturating_add(below as u16);
+    /// Explicit scrolling wins over a simultaneous change in layout.
+    fn manually_scrolled(&mut self) {
+        if let Some((_, keep_focus)) = &mut self.last_layout {
+            *keep_focus = false;
         }
     }
+
+    /// Scroll a keyboard target fully into its viewport.
+    fn reveal(&mut self, scroller: Option<usize>, top: i32, height: u16) {
+        if let Some(committed) = &self.committed {
+            reveal_offsets(
+                &mut self.offsets,
+                &committed.scrollers,
+                scroller,
+                top,
+                height,
+            );
+        }
+    }
+}
+
+/// Reveal from the innermost viewport outward. Clipped viewports can have an
+/// empty hit rectangle, so their allocated position supplies the geometry.
+fn reveal_offsets(
+    offsets: &mut HashMap<String, u16>,
+    scrollers: &[Scroller],
+    mut index: Option<usize>,
+    mut top: i32,
+    mut height: u16,
+) -> bool {
+    let mut changed = false;
+    while let Some(scroller) = index.and_then(|index| scrollers.get(index)) {
+        let offset = offsets.entry(scroller.id.clone()).or_default();
+        let drawn = (*offset).min(scroller.content.saturating_sub(scroller.viewport.height));
+        let maximum = scroller.content.saturating_sub(scroller.height);
+        let before = *offset;
+        *offset = drawn.min(maximum);
+        top += i32::from(drawn) - i32::from(*offset);
+        height = height.min(scroller.height);
+        let above = scroller.top - top;
+        let below = top + i32::from(height) - (scroller.top + i32::from(scroller.height));
+        let adjusted = if above > 0 {
+            offset.saturating_sub(above.min(i32::from(u16::MAX)) as u16)
+        } else if below > 0 {
+            offset
+                .saturating_add(below.min(i32::from(u16::MAX)) as u16)
+                .min(maximum)
+        } else {
+            *offset
+        };
+        top += i32::from(*offset) - i32::from(adjusted);
+        *offset = adjusted;
+        changed |= before != *offset;
+        index = scroller.parent;
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -1214,6 +1288,90 @@ mod tests {
         draw(&mut surface, 50, 12, tree(&[0], 0, &[("alpha", true)]));
         assert!(!surface.captures());
         assert_eq!(surface.focus.as_deref(), Some("root/pane/rows/alpha"));
+    }
+
+    #[test]
+    fn resizing_reveals_visible_focus_through_nested_viewports_without_undoing_manual_scroll() {
+        for nested in [false, true] {
+            let tree = || {
+                let list = Node::scroll(
+                    "list",
+                    Node::column(
+                        "rows",
+                        (0..30)
+                            .map(|index| {
+                                Node::text(
+                                    index.to_string(),
+                                    vec![(
+                                        if index < 10 {
+                                            format!("Long label that belongs to row {index}")
+                                        } else {
+                                            format!("Row {index}")
+                                        },
+                                        Tone::Normal,
+                                    )],
+                                )
+                                .on(On::Activate(Message::Pick(index)))
+                            })
+                            .collect(),
+                    ),
+                );
+                if nested {
+                    Node::scroll(
+                        "outer",
+                        Node::column(
+                            "sections",
+                            vec![
+                                Node::text("intro", vec![]).size(Size::Fixed(15)),
+                                list.size(Size::Fixed(10)),
+                            ],
+                        ),
+                    )
+                } else {
+                    list
+                }
+            };
+            let target = if nested {
+                "outer/sections/list/rows/20"
+            } else {
+                "list/rows/20"
+            };
+            let mut surface = Surface::default();
+            draw(&mut surface, 80, 40, tree());
+            surface.move_focus(target.into());
+            draw(&mut surface, 80, 40, tree());
+            assert!(!surface.rect(target).unwrap().is_empty());
+            surface.input(&Event::Resize(40, 8));
+            let screen = draw(&mut surface, 40, 8, tree());
+            assert!(
+                !screen.contains("belongs"),
+                "corrective layout must erase the first pass"
+            );
+            assert_eq!(surface.focused(), Some(target));
+            let rect = surface.rect(target).unwrap();
+            assert_eq!(
+                rect.height, 1,
+                "the focused row stays visible across reflow"
+            );
+            assert_eq!(
+                surface.input(&click(rect.x, rect.y)).message,
+                Some(Message::Pick(20))
+            );
+            for _ in 0..12 {
+                surface.input(&mouse(MouseEventKind::ScrollUp, 1, 1));
+                draw(&mut surface, 40, 8, tree());
+            }
+            assert!(
+                surface.rect(target).unwrap().is_empty(),
+                "manual scrolling can leave focus behind"
+            );
+            surface.input(&Event::Resize(50, 9));
+            draw(&mut surface, 50, 9, tree());
+            assert!(
+                surface.rect(target).unwrap().is_empty(),
+                "resize must respect that reading position"
+            );
+        }
     }
 
     #[test]

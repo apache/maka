@@ -39,6 +39,7 @@ enum Setting {
     Symbols,
     Motion,
     CustomTheme,
+    Host,
 }
 
 impl Setting {
@@ -49,6 +50,7 @@ impl Setting {
             Self::Symbols => Action::ToggleSymbols,
             Self::Motion => Action::ToggleMotion,
             Self::CustomTheme => Action::Theme(crate::theme::editor::Command::Open),
+            Self::Host => Action::Host,
         }
     }
 }
@@ -75,12 +77,7 @@ impl Saved {
             }
             Focus::Page => matches!(
                 route,
-                Route::Workspace
-                    | Route::Settings
-                    | Route::Host
-                    | Route::Help
-                    | Route::Extensions
-                    | Route::App(_)
+                Route::Workspace | Route::Settings | Route::Extensions | Route::App(_)
             ),
             Focus::Queue => false,
         };
@@ -135,6 +132,7 @@ impl State {
                     Some(Action::CycleLocale) => Some(Setting::Locale),
                     Some(Action::ToggleSymbols) => Some(Setting::Symbols),
                     Some(Action::ToggleMotion) => Some(Setting::Motion),
+                    Some(Action::Host) => Some(Setting::Host),
                     Some(Action::Theme(crate::theme::editor::Command::Open)) => {
                         Some(Setting::CustomTheme)
                     }
@@ -257,8 +255,8 @@ mod tests {
         assert!(!app.bind_root("different-root-at-the-same-path"));
         assert_eq!(app.drafts["a"].text(), "draft A");
         app.focus = Focus::Transcript;
-        app.apply(Action::Visit(Route::Host));
-        app.selected_control = 1;
+        app.apply(Action::Visit(Route::Settings));
+        app.settings.focus_setting(&Action::ToggleSymbols);
         app.apply(Action::Visit(Route::Session("b".into())));
         app.drafts.get_mut("b").unwrap().insert("draft B");
         app.apply(Action::ToggleDetails);
@@ -269,9 +267,8 @@ mod tests {
         app.apply(Action::Back);
         assert!(app.chrome.details);
         assert_eq!(app.drafts["b"].text(), "draft B");
-        app.apply(Action::Visit(Route::Host));
+        app.apply(Action::Visit(Route::Settings));
         assert_eq!(app.focus, Focus::Page);
-        assert_eq!(app.selected_control, 1);
-        assert_eq!(app.page_actions()[1], Action::Connect);
+        assert_eq!(app.settings.focused_setting(), Some(Action::ToggleSymbols));
     }
 }

@@ -22,6 +22,7 @@ pub mod branch;
 pub mod chat;
 pub mod commands;
 pub mod connections;
+pub mod help;
 pub mod home;
 pub mod interactions;
 pub mod manage;

@@ -106,8 +106,8 @@ help = Tab / Shift+Tab     Move focus between controls
     F5                 Refresh current page
     Alt+Left / Right   Back / forward
     Esc                Close palette / leave editor or conversation, otherwise go back
-    F1                 Open this help
-    Ctrl+Q             Quit UI, leave Host running
+    ? / F1             Show help (? remains text inside an editor)
+    Ctrl+Q             Quit Maka; ask before stopping active work
 
     Mouse: click controls or message triangles; wheel scrolls the conversation.
     No special font is required. Resize adapts the navigation layout.
@@ -115,6 +115,8 @@ command-workspace = Open workspace
 command-host = Open Host connection
 command-settings = Open settings
 command-help = Keyboard and mouse help
+help-close = Close
+settings-host-details = Connection details
 command-connect = Connect to configured Host
 command-refresh = Refresh current page · F5
 command-sidebar = Expand / collapse navigation · Ctrl+B
@@ -137,7 +139,7 @@ footer-commands = Ctrl+P Commands
 footer-back = < Back
 footer-forward = Forward >
 footer-quit = Ctrl+Q Quit
-palette-title = Commands · Esc closes
+palette-title = Commands
 palette-filter = Search commands…
 palette-empty = No matching commands.
 route-session = Session
