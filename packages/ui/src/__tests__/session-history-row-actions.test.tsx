@@ -248,6 +248,44 @@ test('a responding row spins where an unread row shows a dot', () => {
   assert.equal(signal(unread.id).querySelector('.astryx-spinner'), null);
 });
 
+test('a row shows its state in place of the timestamp and still names it when covered', () => {
+  const now = Date.UTC(2026, 7, 24, 12, 0, 0);
+  const waiting = {
+    ...session,
+    status: 'waiting_for_user' as const,
+    lastMessageAt: now - 46 * 60_000,
+  };
+  const idle = { ...session, id: 'session-idle', lastMessageAt: now - 46 * 60_000 };
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  try {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={[waiting, idle]}
+          onSelectSession={() => undefined}
+          rowActions={rowActions}
+        />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+    const row = (id: string) => document.querySelector(`[data-session-id="${id}"]`)!;
+    const slot = (id: string) => row(id).querySelector('.maka-session-row-signal')!;
+
+    assert.ok(slot(waiting.id).querySelector('.astryx-status-dot'));
+    assert.equal(slot(waiting.id).querySelector('.maka-session-row-time-label'), null);
+    assert.equal(slot(idle.id).querySelector('.astryx-status-dot'), null);
+    assert.equal(slot(idle.id).querySelector('.maka-session-row-time-label')?.textContent, '46min');
+    assert.match(
+      row(waiting.id).querySelector('.astryx-side-nav-item .maka-visually-hidden')?.textContent ??
+        '',
+      /Waiting for you/,
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
   const hostRunning = { ...session, runningTurnIds: ['turn-live'] };
   const markup = renderToStaticMarkup(

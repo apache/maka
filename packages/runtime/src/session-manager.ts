@@ -193,7 +193,7 @@ import {
   classifyAgentRunRecovery,
   type AgentRunRecoveryDecision,
 } from './agent-run-recovery.js';
-import { buildInterruptedCodeModeOutcomeCommits } from './recovery-resolver.js';
+import { buildInterruptedToolOutcomeCommits, resolveRuntimeRecovery } from './recovery-resolver.js';
 import {
   isRuntimeHostedRootAuthority,
   RuntimeMessageAuthorityInvariantError,
@@ -4856,7 +4856,7 @@ export class SessionManager {
         continue;
       }
       if (this.runtimeCommitSink) {
-        const interruptedOutcomes = buildInterruptedCodeModeOutcomeCommits(
+        const interruptedOutcomes = buildInterruptedToolOutcomeCommits(
           inspected.runtimeEvents,
           this.deps.now(),
           run.opening.configuration.toolMode,
@@ -4889,6 +4889,18 @@ export class SessionManager {
               includeProjection: false,
             },
           );
+        }
+      }
+      if (!inspected.runtimeEvents.some(isTerminalRuntimeEvent)) {
+        const toolRecovery = resolveRuntimeRecovery(inspected.runtimeEvents);
+        if (
+          toolRecovery.hasCorruption ||
+          toolRecovery.decisions.some((decision) => decision.status === 'indeterminate')
+        ) {
+          // Never seal an invocation while a dispatched operation still lacks
+          // a result or an explicit recovery decision. A later recovery pass
+          // may retry the durable settlement; corruption stays fail-closed.
+          continue;
         }
       }
       const terminalLedger = classifyTerminalRuntimeLedger(run, inspected.runtimeEvents);

@@ -150,20 +150,25 @@ describe('SQLite recovery authority multi-process races', () => {
   });
 
   it('never claims an active source while its terminal append races in another process', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['claim_nonterminal', 'append_source']);
-      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+    // Keep the source open but settle its tool so this race exercises the
+    // continuation/terminal serialization rather than the unsettled-tool guard.
+    await withPreparedDatabase(
+      async ({ dbPath, startPath }) => {
+        const results = await runWorkers(dbPath, startPath, ['claim_nonterminal', 'append_source']);
+        assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
 
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        const sourceEvents = await store.readImmutableRuntimeEvents('session-1', 'run-1');
-        const claims = await store.listContinuationClaimsForRecovery('session-1');
-        assert.equal(sourceEvents.length, 3);
-        assert.equal(claims.length, 0);
-      } finally {
-        store.close();
-      }
-    });
+        const store = createSqliteRuntimeStore(dbPath);
+        try {
+          const sourceEvents = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+          const claims = await store.listContinuationClaimsForRecovery('session-1');
+          assert.equal(sourceEvents.length, 4);
+          assert.equal(claims.length, 0);
+        } finally {
+          store.close();
+        }
+      },
+      { settlePreparedToolOperation: true },
+    );
   });
 
   it('serializes a continuation claim against an ordinary first target event', async () => {
@@ -392,6 +397,7 @@ describe('SQLite recovery authority multi-process races', () => {
 
 async function withPreparedDatabase(
   run: (input: { dbPath: string; startPath: string }) => Promise<void>,
+  options: { settlePreparedToolOperation?: boolean } = {},
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-recovery-race-'));
   const dbPath = join(root, 'runtime.sqlite');
@@ -400,6 +406,25 @@ async function withPreparedDatabase(
   try {
     bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
     await store.commitToolPrepared(preparedCommit());
+    if (options.settlePreparedToolOperation) {
+      await store.commitToolOutcome({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_outcome',
+        runtimeEvent: {
+          ...baseEvent('operation-1_response', 3),
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'provider-call-1',
+            name: 'Write',
+            result: 'write completed',
+          },
+          refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+        },
+        committedAt: 3,
+      });
+    }
     await store.appendRuntimeEvent('session-1', 'continuation-source-run', {
       id: 'continuation-source-user',
       sessionId: 'session-1',

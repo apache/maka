@@ -66,6 +66,9 @@ export function projectSharedSessionTranscriptMessage(
           : { coordinationActionId: message.coordinationActionId }),
       };
     }
+    case 'form_interaction':
+      // Choice requests and answers are private decision evidence.
+      return null;
     case 'assistant':
       return {
         type: message.type,

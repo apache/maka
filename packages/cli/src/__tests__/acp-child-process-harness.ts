@@ -364,7 +364,8 @@ async function seedModelConnection(
       connection: {
         slug: 'acp-fixture-model',
         name: 'ACP fixture model',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: model.baseUrl ?? 'https://acp-model.invalid/v1',
         enabled: true,
         enabledModelIds: [model.id],

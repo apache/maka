@@ -19,8 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import {
   catalogJobs,
+  installStorybookRenderProbe,
   isExpectedConsoleError,
   rescuedRenderSummary,
   storyUrl,
@@ -223,4 +225,34 @@ test('a rescued render is recorded with its story id and reason', () => {
 
 test('a run with no rescued renders records nothing', () => {
   assert.equal(rescuedRenderSummary([]).includes('- `'), false);
+});
+
+test('a play assertion exception fails the render even if Storybook emits a finished event', () => {
+  const listeners = new Map();
+  const window = {
+    addEventListener() {},
+    __STORYBOOK_PREVIEW__: {
+      channel: {
+        on: (event, handler) => listeners.set(event, handler),
+      },
+    },
+  };
+  runInNewContext(`(${installStorybookRenderProbe.toString()})({storyId: 'example'})`, { window });
+  listeners.get('playFunctionThrewException')({ storyId: 'example', message: 'glyphs moved' });
+  listeners.get('storyFinished')({ storyId: 'example' });
+  assert.equal(window.__makaStorybookSmoke.finished, true);
+  assert.match(window.__makaStorybookSmoke.failures[0], /glyphs moved/);
+});
+
+test('WorkHub suggestion geometry runs at both widths in both themes', () => {
+  const jobs = catalogJobs(storyIndex('product-workhub--next-prompt-suggestion'));
+  assert.deepEqual(
+    jobs.map(({ colorScheme, viewport }) => [colorScheme, viewport.width]),
+    [
+      ['light', 1280],
+      ['light', 720],
+      ['dark', 1280],
+      ['dark', 720],
+    ],
+  );
 });

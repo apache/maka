@@ -131,7 +131,7 @@
 
 .maka-artifact-preview-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-1-5);
   min-height: 48px;
@@ -173,6 +173,21 @@
   padding: var(--space-2);
   background: var(--background);
   min-height: 0;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-artifact-preview {
+  padding: var(--space-3) var(--space-4) var(--maka-focused-composer-space, 180px);
+  scroll-padding-bottom: var(--maka-focused-composer-space, 180px);
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-artifact-preview-markdown {
+  margin-inline: auto;
+  padding-inline: var(--space-2);
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-artifact-preview-image {
+  max-height: none;
+  min-height: min(60vh, 520px);
 }
 
 .maka-artifact-preview-text {

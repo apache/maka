@@ -236,7 +236,7 @@ for (const copy of localeCases) {
         fetchModels: async () => { calls.push('fetchModels'); throw new Error('unexpected discovery'); },
       } as unknown as ConnectionsBridge;
       await harness.render(copy.locale, createElement(components.AddProviderForm, {
-        bridge, providerType: 'openai-compatible', existingSlugs: ['taken'],
+        bridge, providerType: 'custom', existingSlugs: ['taken'],
         onCancel: unexpectedCall, onCreated: unexpectedCall,
       }));
       const input = harness.document.querySelector<HTMLInputElement>('input[placeholder="my-provider"]');
@@ -417,9 +417,10 @@ function relayConnection(): ProjectedLlmConnection {
   const modelId = 'gpt-5.6-sol-joybuilder';
   return {
     connectionId: 'relay-connection',
-    slug: 'openai-responses-compatible-2',
+    slug: 'custom-2',
     name: '自定义中转站（OpenAI Responses）',
-    providerType: 'openai-responses-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-responses',
     baseUrl: 'https://relay.example/v1',
     defaultModel: modelId,
     enabledModelIds: [modelId],

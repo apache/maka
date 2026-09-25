@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import type { UsageScreen, UsageScreenRequest } from '@maka/core/settings';
+import type { UsageScreen, UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
 import {
   copyFile,
   mkdir,
@@ -875,7 +875,7 @@ async function withScreenStores(
 }
 async function initialScreen(
   stores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>,
-  query = screenQuery,
+  query: UsageScreenQuery = screenQuery,
 ) {
   const result = await stores.readUsageScreen({ kind: 'screen', query });
   assert.equal(result.kind, 'screen');
@@ -1215,3 +1215,309 @@ describe('revision-consistent Usage screen', () => {
     });
   });
 });
+
+describe('Usage range statistics reuse', () => {
+  test('search and status changes reuse complete statistics for the same revision and range', async () => {
+    await withScreenStores(async (stores, root) => {
+      await seedScreen(stores);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'old-error', ts: 1, modelId: 'ÄModel', status: 'error' }),
+      );
+      await stores.telemetry.recordToolInvocation(toolRecord({ ts: 2 }));
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      const prepare = lease.database.prepare;
+      let aggregateQueries = 0;
+      // Observe database work without replacing its results. Value assertions
+      // below independently protect the range/filter contract.
+      lease.database.prepare = function (sql) {
+        if (/\bGROUP\s+BY\b|\bSUM\s*\(/i.test(sql)) aggregateQueries++;
+        return prepare.call(this, sql);
+      };
+      try {
+        const first = await initialScreen(stores);
+        assert.equal(first.summary.totalRequests, 62);
+        assert.equal(first.byModel.length, 2);
+        assert.equal(first.byTool[0]?.calls, 1);
+        assert.ok(aggregateQueries >= 4, 'the cold screen computes range statistics');
+        for (const [search, status, total] of [
+          ['gpt', 'success', 61],
+          ['ÄMODEL', 'error', 1],
+          ['absentword', 'all', 0],
+          ['', 'all', 63],
+        ] as const) {
+          aggregateQueries = 0;
+          const filtered = await initialScreen(stores, { ...screenQuery, search, status });
+          assert.equal(filtered.revision, first.revision);
+          assert.deepEqual(rangeStatistics(filtered), rangeStatistics(first));
+          assert.equal(filtered.activityTotal, total);
+          assert.equal(filtered.logs.length, Math.min(50, total));
+          assert.equal(aggregateQueries, 0, 'filter edits do not reaggregate unchanged history');
+        }
+      } finally {
+        lease.database.prepare = prepare;
+        lease.close();
+      }
+    });
+  });
+
+  test('mutating or freezing a response cannot affect a later screen', async () => {
+    await withScreenStores(async (stores) => {
+      await seedScreen(stores);
+      await stores.telemetry.recordToolInvocation(toolRecord());
+      await stores.pricing.upsert(0, {
+        modelKey: 'openai:gpt-5',
+        inputUsdPer1M: 1,
+        outputUsdPer1M: 2,
+      });
+      const first = await initialScreen(stores, structuredClone(screenQuery));
+      const expected = structuredClone(rangeStatistics(first));
+      first.summary.totalRequests = 999;
+      first.byProvider[0]!.provider = 'projected provider';
+      first.byModel[0]!.model = 'projected model';
+      first.byTool[0]!.tool = 'projected tool';
+      first.pricing[0]!.inputPerMTokUsd = 999;
+      first.provenance.coverage.attempts = 999;
+      first.provenance.pendingRepairs = 999;
+      first.query.range.to = 0;
+      const freeze = (value: unknown): void => {
+        if (!value || typeof value !== 'object') return;
+        for (const child of Object.values(value)) freeze(child);
+        Object.freeze(value);
+      };
+      freeze(first);
+      const second = await initialScreen(stores, { ...screenQuery, search: 'gpt' });
+      assert.deepEqual(rangeStatistics(second), expected);
+      assert.equal(second.activityTotal, 61);
+      assert.equal(Object.isFrozen(second.byProvider[0]), false);
+      second.byProvider[0]!.provider = 'second projection';
+      freeze(second);
+      assert.deepEqual(rangeStatistics(await initialScreen(stores)), expected);
+    });
+  });
+
+  test('failed transaction commits cannot publish statistics under a reusable revision', async () => {
+    await withScreenStores(async (stores, root) => {
+      await stores.telemetry.recordToolInvocation(toolRecord({ toolName: 'Original' }));
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      const exec = lease.database.exec;
+      const prepare = lease.database.prepare;
+      let rolledBackRevision: string | undefined;
+      let aggregateQueries = 0;
+      let commitFailed = false;
+      // Force the reader to join a write transaction, then fail its outer
+      // commit. Both the data and trigger-owned revision roll back together.
+      lease.database.exec = function (sql) {
+        if (sql === 'BEGIN') {
+          exec.call(this, 'BEGIN IMMEDIATE');
+          exec.call(
+            this,
+            "UPDATE usage_tool_invocations SET record_json = json_set(record_json, '$.toolName', 'Rolled back')",
+          );
+          rolledBackRevision = String(
+            prepare.call(this, 'SELECT revision FROM usage_screen_revision').get()?.revision,
+          );
+          return;
+        }
+        if (sql === 'COMMIT') {
+          commitFailed = true;
+          throw new Error('simulated commit failure');
+        }
+        return exec.call(this, sql);
+      };
+      try {
+        await assert.rejects(initialScreen(stores), /simulated commit failure/);
+        assert.ok(commitFailed);
+        lease.database.exec = exec;
+        lease.transaction('write', () => {
+          lease.database.exec(
+            "UPDATE usage_tool_invocations SET record_json = json_set(record_json, '$.toolName', 'Committed')",
+          );
+        });
+        assert.equal(
+          String(
+            lease.database.prepare('SELECT revision FROM usage_screen_revision').get()?.revision,
+          ),
+          rolledBackRevision,
+          'the committed write can reuse the counter observed before rollback',
+        );
+        lease.database.prepare = function (sql) {
+          if (/\bGROUP\s+BY\b|\bSUM\s*\(/i.test(sql)) aggregateQueries++;
+          return prepare.call(this, sql);
+        };
+        const committed = await initialScreen(stores);
+        assert.equal(committed.byTool[0]?.tool, 'Committed');
+        assert.equal(committed.logs[0]?.toolName, 'Committed');
+        assert.ok(aggregateQueries >= 4, 'rolled-back statistics are recomputed');
+        aggregateQueries = 0;
+        assert.deepEqual(
+          rangeStatistics(await initialScreen(stores, { ...screenQuery, search: 'committed' })),
+          rangeStatistics(committed),
+        );
+        assert.equal(aggregateQueries, 0, 'a successfully committed read can be reused');
+      } finally {
+        lease.database.exec = exec;
+        lease.database.prepare = prepare;
+        lease.close();
+      }
+    });
+  });
+
+  test('range boundaries, accounting writes, pricing and repair changes refresh statistics', async () => {
+    await withScreenStores(async (stores, root) => {
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'early', ts: 10, costUsd: 1 }));
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'late', ts: 20, costUsd: 2 }));
+      await stores.telemetry.recordToolInvocation(toolRecord({ ts: 15 }));
+      assert.equal((await initialScreen(stores)).summary.totalCostUsd, 3);
+      const narrow = { ...screenQuery, range: { from: 10, to: 19 } };
+      assert.equal((await initialScreen(stores, narrow)).summary.totalCostUsd, 1);
+      const later = { ...screenQuery, range: { from: 11, to: 20 } };
+      assert.equal((await initialScreen(stores, later)).summary.totalCostUsd, 2);
+      const empty = await initialScreen(stores, { ...screenQuery, range: { from: 11, to: 14 } });
+      assert.equal(empty.summary.totalRequests, 0);
+      assert.equal(empty.byTool.length, 0);
+      assert.equal(empty.activityTotal, 0);
+      let previous = await initialScreen(stores);
+      const refreshed = async () => {
+        const screen = await initialScreen(stores);
+        assert.notEqual(screen.revision, previous.revision);
+        previous = screen;
+        return screen;
+      };
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'early', ts: 10, costUsd: 4 }));
+      assert.equal((await refreshed()).summary.totalCostUsd, 6);
+      await stores.telemetry.recordToolInvocation(toolRecord({ id: 'second', status: 'error' }));
+      const tools = await refreshed();
+      assert.equal(tools.byTool[0]?.calls, 2);
+      assert.equal(tools.byTool[0]?.errors, 1);
+      await stores.pricing.upsert(0, {
+        modelKey: 'openai:gpt-5',
+        inputUsdPer1M: 3,
+        outputUsdPer1M: 4,
+      });
+      assert.deepEqual((await refreshed()).pricing, [
+        { provider: 'openai', model: 'gpt-5', inputPerMTokUsd: 3, outputPerMTokUsd: 4 },
+      ]);
+      appendModelCallAuthorityEvent(root, modelCallAttempt('cache-source'));
+      assert.equal((await refreshed()).provenance.pendingRepairs, 1);
+      await stores.modelCalls.catchUpModelCallProjection();
+      const repaired = await refreshed();
+      assert.equal(repaired.provenance.pendingRepairs, 0);
+      assert.equal(repaired.provenance.coverage.attempts, 1);
+      assert.equal(repaired.summary.totalRequests, 3);
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      try {
+        lease.transaction('write', () => {
+          lease.database.exec(
+            'UPDATE usage_model_call_projection_checkpoints SET unreadable_events = 2',
+          );
+        });
+        assert.equal((await refreshed()).provenance.unreadableRecords, 2);
+        lease.transaction('write', () => lease.database.exec('DELETE FROM usage_llm_calls'));
+        assert.equal((await refreshed()).summary.totalRequests, 1);
+      } finally {
+        lease.close();
+      }
+    });
+  });
+
+  test('a warm cache cannot bypass capacity failures or keep a failed range result', async () => {
+    await withScreenStores(async (stores) => {
+      await stores.telemetry.recordToolInvocation(toolRecord({ id: 'first', ts: 1 }));
+      const first = await initialScreen(stores);
+      assert.equal(first.byTool.length, 1);
+      for (let i = 0; i < 100; i++) {
+        await stores.telemetry.recordToolInvocation(
+          toolRecord({ id: `tool-${i}`, toolName: `tool-${i}`, ts: 2 }),
+        );
+      }
+      for (const search of ['', 'absentword']) {
+        assert.deepEqual(
+          await stores.readUsageScreen({ kind: 'screen', query: { ...screenQuery, search } }),
+          { kind: 'screen_response_too_large', section: 'tool_breakdown' },
+        );
+      }
+      const small = await initialScreen(stores, { ...screenQuery, range: { from: 1, to: 1 } });
+      assert.deepEqual(small.byTool, first.byTool);
+      assert.deepEqual(await stores.readUsageScreen({ kind: 'screen', query: screenQuery }), {
+        kind: 'screen_response_too_large',
+        section: 'tool_breakdown',
+      });
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({ id: 'tool-0', toolName: 'Bash', ts: 2 }),
+      );
+      const recovered = await initialScreen(stores);
+      assert.equal(recovered.byTool.length, 100);
+      assert.equal(recovered.activityTotal, 101);
+      const filtered = await initialScreen(stores, { ...screenQuery, search: 'absentword' });
+      assert.deepEqual(filtered.byTool, recovered.byTool);
+      assert.equal(filtered.activityTotal, 0);
+    });
+  });
+
+  test('a cache hit and its activity stay in one snapshot during an external WAL commit', async () => {
+    await withScreenStores(async (stores, root) => {
+      await seedScreen(stores);
+      const first = await initialScreen(stores);
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      const external = new DatabaseSync(lease.databasePath);
+      let committed = false;
+      lease.database.function('usage_screen_lower', { deterministic: true }, (value) => {
+        if (!committed) {
+          committed = true;
+          external.exec(
+            "UPDATE usage_llm_calls SET record_json = json_set(record_json, '$.costUsd', 2)",
+          );
+        }
+        return String(value ?? '').toLowerCase();
+      });
+      try {
+        const filtered = await initialScreen(stores, { ...screenQuery, search: 'gpt' });
+        assert.ok(committed);
+        assert.equal(filtered.revision, first.revision);
+        assert.deepEqual(rangeStatistics(filtered), rangeStatistics(first));
+        assert.ok(filtered.logs.every((row) => row.costUsd === 0.001));
+        assert.deepEqual(await stores.readUsageScreen(continuation(filtered)), {
+          kind: 'revision_changed',
+        });
+        const refreshed = await initialScreen(stores);
+        assert.notEqual(refreshed.revision, first.revision);
+        assert.equal(refreshed.summary.totalCostUsd, 122);
+        assert.ok(refreshed.logs.every((row) => row.costUsd === 2));
+      } finally {
+        lease.database.function('usage_screen_lower', { deterministic: true }, (value) =>
+          String(value ?? '').toLowerCase(),
+        );
+        external.close();
+        lease.close();
+      }
+    });
+  });
+
+  test('different roots with identical ranges retain independent statistics', async () => {
+    await withScreenStores(async (first) => {
+      await withScreenStores(async (second) => {
+        await first.telemetry.recordLlmCall(llmRecord({ costUsd: 1, modelId: 'first' }));
+        await second.telemetry.recordLlmCall(llmRecord({ costUsd: 9, modelId: 'second' }));
+        const firstScreen = await initialScreen(first);
+        const secondScreen = await initialScreen(second);
+        assert.notEqual(firstScreen.revision, secondScreen.revision);
+        assert.equal(firstScreen.summary.totalCostUsd, 1);
+        assert.equal(secondScreen.summary.totalCostUsd, 9);
+        assert.equal(
+          (await initialScreen(first, { ...screenQuery, search: 'second' })).activityTotal,
+          0,
+        );
+        assert.deepEqual(rangeStatistics(await initialScreen(first)), rangeStatistics(firstScreen));
+        assert.deepEqual(
+          rangeStatistics(await initialScreen(second)),
+          rangeStatistics(secondScreen),
+        );
+      });
+    });
+  });
+});
+
+function rangeStatistics(screen: UsageScreen) {
+  const { summary, byProvider, byModel, byTool, pricing, provenance } = screen;
+  return { summary, byProvider, byModel, byTool, pricing, provenance };
+}

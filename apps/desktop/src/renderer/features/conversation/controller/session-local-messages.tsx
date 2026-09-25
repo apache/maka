@@ -56,7 +56,7 @@ export function SessionLocalMessages(props: {
               id: message.messageId,
               text: message.text,
               ts: message.createdAt,
-              transientPlacement: message.turnId ? 'current_turn' : message.placement,
+              transientPlacement: message.turnId ? 'current_turn' : (message.localDisplayPlacement ?? message.placement),
               attachments: message.attachments,
               directoryReferences: message.directoryReferences,
               quotes: message.quotes,
