@@ -23,8 +23,10 @@ export const DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES = 512 * 1024;
 export const DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS = 10;
 export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
-/** Projected message bytes of whole Turns one history read delivers: the first read and each "load earlier". */
-export const DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES = 64 * 1024 * 1024;
+/** Recent whole Turns needed to open a reader; older history remains available on demand. */
+export const DESKTOP_TRANSCRIPT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
+/** Projected message bytes per earlier read; restoring a held range also respects its oldest row. */
+export const DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES = 512 * 1024;
 
 export interface DesktopTranscriptFragment {
   readonly sequence: number;

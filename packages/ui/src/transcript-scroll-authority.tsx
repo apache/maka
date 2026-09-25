@@ -63,6 +63,8 @@ export interface TranscriptLayout {
   reveal(turnId: string, options: { align: 'start' | 'center'; smooth: boolean }): void;
   /** The list knows its viewport; until then it renders no Turns. */
   measured(): boolean;
+  /** Upward reader input near the beginning; true while earlier history is available. */
+  readEarlier?(): boolean;
 }
 
 /** How a list of Turns changed: where Turns were added, if anywhere but in place. */
@@ -251,11 +253,18 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       layout = nextLayout;
       const previousOverflowAnchor = target.style.overflowAnchor;
       target.style.overflowAnchor = 'none';
+      const readEarlier = (): void => {
+        if (!positioning && target.scrollTop <= target.clientHeight && layout?.readEarlier?.()) {
+          pinned = false;
+          readingTurnId = readTurn();
+        }
+      };
       const begin = (event: Event, direction: 'up' | 'down'): void => {
         if (event.defaultPrevented || !reachesTranscript(event, target, direction)) return;
         endPositioning();
         const remaining = direction === 'up' ? target.scrollTop : distanceToTail();
         gesture = { top: gesture?.top ?? target.scrollTop, direction };
+        if (direction === 'up') readEarlier();
         // An edge gesture produces no scroll and therefore no scrollend. A
         // passive wheel can arrive after the threaded scroll it caused, already
         // at the top edge; that input did move the reader.
@@ -342,6 +351,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
             if ((delta < 0 ? 'up' : 'down') === direction) {
               gesture.direction = direction;
               pinned = false;
+              if (direction === 'up') readEarlier();
             }
           }
         }

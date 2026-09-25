@@ -73,6 +73,7 @@ export function useChatScroll(input: {
   restoreTarget?: { turnId: string; unavailable?: boolean };
   viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
+  onReadEarlier?(): boolean;
   behavior: ScrollBehavior;
   /** `useTranscriptStartMargin`'s live measurement, for reads within a commit. */
   measureStartMargin(): number;
@@ -81,6 +82,8 @@ export function useChatScroll(input: {
   const authority = useTranscriptScrollAuthority();
   const turnIdsRef = useRef(input.turnIds);
   turnIdsRef.current = input.turnIds;
+  const readEarlierRef = useRef(input.onReadEarlier);
+  readEarlierRef.current = input.onReadEarlier;
 
   /**
    * `virtua` caches measured heights by position. Growth at the tail leaves
@@ -145,6 +148,7 @@ export function useChatScroll(input: {
   const measureStartMarginRef = useRef(input.measureStartMargin);
   measureStartMarginRef.current = input.measureStartMargin;
   const [layout] = useState((): TranscriptLayout => ({
+    readEarlier: () => readEarlierRef.current?.() ?? false,
     turnAt(scrollTop) {
       const handle = input.virtualizerRef.current;
       const turnIds = turnIdsRef.current;

@@ -551,6 +551,23 @@ export function ChatView(props: {
     turns,
   );
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
+  const earlierReader = useRef({ sessionId: props.activeSession?.id, pending: false });
+  if (earlierReader.current.sessionId !== props.activeSession?.id) {
+    earlierReader.current = { sessionId: props.activeSession?.id, pending: false };
+  }
+  const loadEarlierHistory = (): boolean => {
+    if (!props.hasEarlierHistory || !props.onLoadEarlierHistory) return false;
+    const reader = earlierReader.current;
+    if (reader.pending) return true;
+    reader.pending = true;
+    const settled = () => { reader.pending = false; };
+    try {
+      void Promise.resolve(props.onLoadEarlierHistory()).then(settled, settled);
+    } catch {
+      settled();
+    }
+    return true;
+  };
   const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
     measureStartMargin,
@@ -561,6 +578,7 @@ export function ChatView(props: {
     restoreTarget: props.restoreTargetTurn,
     viewportNavigation: props.viewportNavigation,
     onReadingAnchorChange: props.onReadingAnchorChange,
+    onReadEarlier: loadEarlierHistory,
     behavior: props.scrollBehavior,
   });
   const onLoadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
@@ -589,16 +607,6 @@ export function ChatView(props: {
       keepMountedIndexes.add(index);
     }
   }
-  const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
-  const loadEarlierHistory = (): void => {
-    const pending = props.onLoadEarlierHistory?.();
-    if (!pending) return;
-    setLoadingEarlierHistory(true);
-    void pending.then(
-      () => setLoadingEarlierHistory(false),
-      () => setLoadingEarlierHistory(false),
-    );
-  };
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
@@ -728,27 +736,6 @@ export function ChatView(props: {
       : props.emptyOverride ?? (
           <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
         );
-  /**
-   * Nothing to show is exactly when this matters most: WorkHub filters the
-   * transcript to one Work, and a Work whose Turns are all still in unloaded
-   * history filters it down to nothing. So the control rides along with the
-   * empty state rather than sitting in the branch that replaces it — which
-   * also keeps the list's only child a single `null`, the shape that lets
-   * `ChatMessageList` render an empty state at all.
-   */
-  const loadEarlierHistoryControl = props.hasEarlierHistory && props.onLoadEarlierHistory ? (
-    <HStack hAlign="center">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        label={copy.loadEarlierHistory}
-        isDisabled={loadingEarlierHistory}
-        onClick={loadEarlierHistory}
-      />
-    </HStack>
-  ) : null;
-
   return (
     <MakaClientSessionScope sessionId={props.activeSession.id}>
       <SessionAttachmentProvider
@@ -788,12 +775,7 @@ export function ChatView(props: {
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
           isStreaming={streamingActive}
-          emptyState={showEmptyState ? (
-            <>
-              {loadEarlierHistoryControl}
-              {emptyContent}
-            </>
-          ) : undefined}
+          emptyState={showEmptyState ? emptyContent : undefined}
         >
           {showEmptyState ? null : (
             <>
@@ -805,7 +787,6 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
-              {loadEarlierHistoryControl}
               <div ref={listRef} className="maka-chat-session-swap" data-placed={placed || undefined}>
                 <Virtualizer
                   key={measurement.generation}
