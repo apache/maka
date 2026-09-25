@@ -29,11 +29,25 @@ export interface MessageQueueProjection {
   readonly transientMessages: readonly TransientUserMessageProjection[];
 }
 
-type QueueState = {
+export interface MessageQueueState {
   readonly queueRevision?: number;
   readonly entries: readonly MessageQueueEntryProjection[];
-};
-type QueueBySession = Record<string, QueueState>;
+}
+type QueueBySession = Record<string, MessageQueueState>;
+
+/** What one Host event changes about the messages a Session shows outside its transcript. */
+interface MessageQueueChange {
+  /** The Session's next queue; `null` once the Host holds nothing. */
+  readonly queue?: MessageQueueState | null;
+  readonly retire?: readonly string[];
+  readonly publish?: TransientUserMessageProjection;
+}
+
+/** A surface that holds its queue and pending prompts as one value. */
+export interface MessagePresentation {
+  readonly transientMessages: readonly TransientUserMessageProjection[];
+  readonly messageQueue: MessageQueueState;
+}
 
 export interface MessageQueueStores {
   readonly messageQueueStore?: {
@@ -60,68 +74,82 @@ export function deriveMessageQueueProjection(
 
 /**
  * A message is on the plate exactly while the Host queue holds it. Leaving the
- * queue, it moves straight to where it now lives, so no event leaves it unshown.
+ * queue, it moves straight to where it now lives, so no event leaves it
+ * unshown.
  */
-export function applyMessageQueueEvent(
-  sessionId: string,
+function messageQueueChange(
+  queue: MessageQueueState | undefined,
   event: SessionEvent,
-  { messageQueueStore, addTransientMessage, removeTransientMessage }: MessageQueueStores,
-): void {
-  const dropQueuedMessage = (messageId: string) =>
-    messageQueueStore?.setMessageQueueBySession((current) => withoutQueuedMessage(current, sessionId, messageId));
+): MessageQueueChange | undefined {
   switch (event.type) {
     case 'queue_update': {
-      const queue = deriveMessageQueueProjection(event);
-      for (const entry of queue.entries) removeTransientMessage?.(sessionId, entry.messageId);
-      messageQueueStore?.setMessageQueueBySession((current) => {
-        if (!event.steering.length && !event.followup.length) {
-          if (!current[sessionId]) return current;
-          const next = { ...current };
-          delete next[sessionId];
-          return next;
-        }
-        return { ...current, [sessionId]: { queueRevision: event.queueRevision, entries: queue.entries } };
-      });
-      return;
+      const { entries } = deriveMessageQueueProjection(event);
+      return {
+        queue: event.steering.length || event.followup.length ? { queueRevision: event.queueRevision, entries } : null,
+        retire: entries.map((entry) => entry.messageId),
+      };
     }
     case 'message_admission': {
-      if (event.outcome === 'retracted') {
-        removeTransientMessage?.(sessionId, event.messageId);
-        return;
-      }
+      if (event.outcome === 'retracted') return { retire: [event.messageId], ...dequeued(queue, event.messageId) };
       // Main announces the admission before the queue update that drops the
       // entry, so a follow-up becomes its Turn's prompt without a gap. Steering
       // is not bound here: steering folded into a successor Turn can share one
       // prompt with other messages, whose id then matches none of them.
-      const entry = messageQueueStore?.getState().messageQueueBySession[sessionId]?.entries
-        .find((candidate) => candidate.messageId === event.messageId);
-      if (entry?.placement !== 'next_turn') return;
-      addTransientMessage?.(sessionId, {
-        ...queuedTransientMessage(entry, event),
-        transientPlacement: 'transcript',
-        hostTurnId: event.turnId,
-      });
-      dropQueuedMessage(event.messageId);
-      return;
+      const entry = queue?.entries.find((candidate) => candidate.messageId === event.messageId);
+      if (entry?.placement !== 'next_turn') return undefined;
+      return {
+        publish: { ...queuedTransientMessage(entry, event), transientPlacement: 'transcript', hostTurnId: event.turnId },
+        ...dequeued(queue, event.messageId),
+      };
     }
     case 'steering_message':
       // The live Turn projection now renders this same messageId in place.
       // Retire the local submission placeholder; a later nack is represented
       // by the Host queue alone.
-      removeTransientMessage?.(sessionId, event.messageId);
-      dropQueuedMessage(event.messageId);
-      return;
+      return { retire: [event.messageId], ...dequeued(queue, event.messageId) };
+    default:
+      return undefined;
   }
 }
 
-function withoutQueuedMessage(current: QueueBySession, sessionId: string, messageId: string): QueueBySession {
-  const queue = current[sessionId];
-  if (!queue?.entries.some((entry) => entry.messageId === messageId)) return current;
+/** Applies the queue rule to a Session whose queue and pending prompts live in separate stores. */
+export function applyMessageQueueEvent(
+  sessionId: string,
+  event: SessionEvent,
+  { messageQueueStore, addTransientMessage, removeTransientMessage }: MessageQueueStores,
+): void {
+  const change = messageQueueChange(messageQueueStore?.getState().messageQueueBySession[sessionId], event);
+  if (!change) return;
+  for (const messageId of change.retire ?? []) removeTransientMessage?.(sessionId, messageId);
+  if (change.publish) addTransientMessage?.(sessionId, change.publish);
+  const { queue } = change;
+  if (queue === undefined) return;
+  messageQueueStore?.setMessageQueueBySession((current) => {
+    if (queue) return { ...current, [sessionId]: queue };
+    if (!current[sessionId]) return current;
+    const next = { ...current };
+    delete next[sessionId];
+    return next;
+  });
+}
+
+export function reduceMessagePresentation(current: MessagePresentation, event: SessionEvent): MessagePresentation {
+  const change = messageQueueChange(current.messageQueue, event);
+  if (!change) return current;
+  const replaced = new Set([...(change.retire ?? []), ...(change.publish ? [change.publish.id] : [])]);
+  return {
+    transientMessages: [
+      ...current.transientMessages.filter((message) => !replaced.has(message.id)),
+      ...(change.publish ? [change.publish] : []),
+    ],
+    messageQueue: change.queue === undefined ? current.messageQueue : change.queue ?? { entries: [] },
+  };
+}
+
+function dequeued(queue: MessageQueueState | undefined, messageId: string): Pick<MessageQueueChange, 'queue'> {
+  if (!queue?.entries.some((entry) => entry.messageId === messageId)) return {};
   const entries = queue.entries.filter((entry) => entry.messageId !== messageId);
-  if (entries.length > 0) return { ...current, [sessionId]: { ...queue, entries } };
-  const next = { ...current };
-  delete next[sessionId];
-  return next;
+  return { queue: entries.length > 0 ? { ...queue, entries } : null };
 }
 
 function queuedTransientMessage(

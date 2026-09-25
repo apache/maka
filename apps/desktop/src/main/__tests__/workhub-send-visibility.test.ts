@@ -629,6 +629,24 @@ test('WorkHub Host queue owns restored, consumed and retracted rows without tran
   assert.deepEqual(h.controller.transientMessages, [], 'withdrawal needs no separate admission event');
 });
 
+test('WorkHub hands an admitted follow-up from its queue to the Turn it starts, as the main chat does', async () => {
+  const h = await mountController();
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
+  const entry = (messageId: string, placement: 'current_turn' | 'next_turn') => ({
+    entryId: messageId, messageId, content: { text: messageId }, placement, state: 'queued' as const,
+  });
+  await act(() => h.emit({ type: 'queue_update', id: 'queued', turnId: 'active-turn', ts: 2, queueRevision: 3,
+    steering: ['steer'], followup: ['next'], steeringEntries: [entry('steer', 'current_turn')], followupEntries: [entry('next', 'next_turn')] }));
+  await act(() => {
+    h.emit({ type: 'message_admission', id: 'admit-next', turnId: 'next-turn', ts: 3, messageId: 'next', outcome: 'admitted' });
+    h.emit({ type: 'message_admission', id: 'admit-steer', turnId: 'active-turn', ts: 3, messageId: 'steer', outcome: 'admitted' });
+  });
+  assert.deepEqual(h.controller.transientMessages.map(({ id, hostTurnId, transientPlacement }) => ({ id, hostTurnId, transientPlacement })),
+    [{ id: 'next', hostTurnId: 'next-turn', transientPlacement: 'transcript' }]);
+  assert.deepEqual(h.controller.messageQueue, { queueRevision: 3, entries: [entry('steer', 'current_turn')] },
+    'admitted steering waits for its own event');
+});
+
 test('WorkHub sends queue edits, withdrawal and both queue orders to the Host and waits for its projection', async () => {
   const h = await mountController();
   const entries = ['first', 'second'].map((id) => ({ entryId: id, messageId: id,
@@ -753,7 +771,12 @@ test('follow-up admission before an uncertain response keeps its successor place
   const h = await mountController();
   await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   h.setSteerResult('unknown');
-  h.onSteer(([, messageId]) => h.emit({ type: 'message_admission', id: 'admitted', turnId: 'successor', messageId, ts: 2, outcome: 'admitted' }));
+  // Main admits only a message it has already shown in a queue snapshot.
+  h.onSteer(([, messageId, text]) => {
+    h.emit({ type: 'queue_update', id: 'queued', turnId: 'active-turn', ts: 2, steering: [], followup: [text],
+      followupEntries: [{ entryId: messageId, messageId, content: { text }, placement: 'next_turn', state: 'queued' }] });
+    h.emit({ type: 'message_admission', id: 'admitted', turnId: 'successor', messageId, ts: 2, outcome: 'admitted' });
+  });
   await act(async () => { assert.equal(await h.controller.send('next request', []), true); });
   assert.equal(h.controller.transientMessages[0]?.transientPlacement, 'transcript');
   assert.equal(h.controller.transientMessages[0]?.hostTurnId, 'successor');

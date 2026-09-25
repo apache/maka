@@ -308,7 +308,7 @@ test('an admitted follow-up leaves the plate as the prompt of the Turn it starts
   admit('steer', 'admitted');
   admit('withdrawn', 'retracted');
   assert.deepEqual(transient.keys(), ['next'], 'steering waits for its own event; a retraction publishes nothing');
-  assert.deepEqual(queued(), ['steer', 'withdrawn']);
+  assert.deepEqual(queued(), ['steer'], 'a retracted message leaves the plate with nothing in its place');
 
   handlers.handleEvent('session-1', {
     type: 'queue_update', id: 'queue-2', turnId: 'turn-b', ts: 3, queueRevision: 2,

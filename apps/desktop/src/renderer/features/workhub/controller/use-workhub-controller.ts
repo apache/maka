@@ -18,6 +18,7 @@
  */
 
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import { reduceMessagePresentation, type MessagePresentation } from '../../../application/contracts/message-queue-projection.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -30,10 +31,9 @@ import {
   settleLiveTurnBufferStep,
   useUiLocale,
   type LiveTurnProjection,
-  type TransientUserMessageProjection,
 } from '@maka/ui';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared/workhub-conversation.js';
-import type { AttachmentRef, FollowUpMode, MessageQueueEntryProjection, MessageQueuePlacement } from '@maka/core/events';
+import type { AttachmentRef, FollowUpMode, MessageQueuePlacement } from '@maka/core/events';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { WorkHubCreateDefaults } from '@maka/core/session';
@@ -57,10 +57,13 @@ interface SendAttempt {
   reconciling?: boolean;
   stop?: 'requested' | 'sending' | 'resend';
 }
-interface MessagePresentation {
-  transientMessages: TransientUserMessageProjection[];
-  messageQueue: { entries: MessageQueueEntryProjection[]; revision?: number };
+/** A pending prompt never outlives its published user row, whichever arrives first. */
+function withoutPublished(presentation: MessagePresentation, messages: WorkHubTranscriptSnapshot['messages']): MessagePresentation {
+  const transientMessages = presentation.transientMessages.filter((pending) => !messages.some((message) => message.type === 'user'
+    && (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))));
+  return transientMessages.length === presentation.transientMessages.length ? presentation : { ...presentation, transientMessages };
 }
+
 export function useWorkHubController(onSubmit?: () => void) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
@@ -382,56 +385,14 @@ export function useWorkHubController(onSubmit?: () => void) {
         const terminal = event.type === 'complete' || event.type === 'abort' || event.type === 'error';
         setInteractions((current) => terminal ? clearInteractions(current, sessionId) : reduceInteractionQueues(current, sessionId, event));
         if (terminal) setTurnStates((current) => Object.fromEntries([...Object.entries(current), [event.turnId, event.type === 'complete' ? 'completed' : event.type === 'abort' ? 'aborted' : 'failed']].slice(-64)));
-        if (event.type === 'queue_update') {
-          const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
-          // Host evidence retires local submission placeholders. Queue state
-          // lives only in messageQueue, including after reconnect or withdrawal.
-          const ids = new Set(entries.map((entry) => entry.messageId));
-          if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
-          setMessagePresentation((previous) => ({
-            messageQueue: { entries, revision: event.queueRevision },
-            transientMessages: previous.transientMessages.filter((message) => !ids.has(message.id)),
-          }));
+        const queued = pendingQueued.current;
+        if (queued && event.type === 'queue_update') {
+          if ([...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])].some((entry) => entry.messageId === queued.messageId)) queued.observed = true;
+        } else if (queued && (event.type === 'message_admission' || event.type === 'steering_message') && event.messageId === queued.messageId) {
+          if (event.type === 'message_admission' && event.outcome === 'retracted') pendingQueued.current = undefined;
+          else queued.observed = true;
         }
-        if (event.type === 'message_admission') {
-          if (event.outcome === 'admitted') {
-            if (pendingQueued.current?.messageId === event.messageId) pendingQueued.current.observed = true;
-            // Admission transfers the queued content to its Host-named Turn.
-            // Neither the queue receipt nor admission proves the transcript
-            // has displayed that message yet; only publication retires it.
-            setMessagePresentation((previous) => {
-              const queued = previous.messageQueue.entries.find((entry) => entry.messageId === event.messageId);
-              const local = previous.transientMessages.find((message) => message.id === event.messageId);
-              const content = queued ? {
-                ...queued.content, text: queued.content.displayText ?? queued.content.text,
-                id: queued.messageId, ts: local?.ts ?? event.ts,
-              } : local;
-              const messages = previous.transientMessages.filter((message) => message.id !== event.messageId);
-              if (content && !transcriptRef.current.messages.some((message) => message.type === 'user' && message.id === event.messageId)) {
-                messages.push({ ...content, hostTurnId: event.turnId, transientPlacement: 'transcript' });
-              }
-              return {
-                messageQueue: { ...previous.messageQueue, entries: previous.messageQueue.entries.filter((entry) => entry.messageId !== event.messageId) },
-                transientMessages: messages,
-              };
-            });
-          } else {
-            if (pendingQueued.current?.messageId === event.messageId) pendingQueued.current = undefined;
-            setMessagePresentation((previous) => ({
-              messageQueue: { ...previous.messageQueue, entries: previous.messageQueue.entries.filter((entry) => entry.messageId !== event.messageId) },
-              transientMessages: previous.transientMessages.filter((message) => message.id !== event.messageId),
-            }));
-          }
-        }
-        if (event.type === 'steering_message') {
-          if (pendingQueued.current?.messageId === event.messageId) pendingQueued.current.observed = true;
-          // The live Turn now owns this row, before the durable transcript
-          // necessarily catches up. Retire its admission placeholder.
-          setMessagePresentation((previous) => ({
-            messageQueue: { ...previous.messageQueue, entries: previous.messageQueue.entries.filter((entry) => entry.messageId !== event.messageId) },
-            transientMessages: previous.transientMessages.filter((message) => message.id !== event.messageId),
-          }));
-        }
+        setMessagePresentation((previous) => withoutPublished(reduceMessagePresentation(previous, event), transcriptRef.current.messages));
         reconcileAdmission(sessionId, event.turnId, event.type === 'abort' || event.type === 'error' || event.type === 'complete');
         setLiveTurns((previous) => {
           const next = applyLiveTurnBufferEvent(previous, event, localeRef.current);
@@ -465,10 +426,7 @@ export function useWorkHubController(onSubmit?: () => void) {
       transcriptRef.current = snapshot;
       setTranscript(snapshot);
       if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
-      setMessagePresentation((previous) => ({ ...previous, transientMessages: previous.transientMessages.filter((pending) =>
-        !snapshot.messages.some((message) => message.type === 'user' &&
-          (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
-      ) }));
+      setMessagePresentation((previous) => withoutPublished(previous, snapshot.messages));
       const settled = snapshot.messages.filter((message) =>
         message.type === 'assistant' && settledBeforePublication.current.delete(message.id));
       setLiveTurns((previous) => {
