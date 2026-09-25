@@ -59,7 +59,7 @@ import {
 } from '@astryxdesign/core/SideNav';
 import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
-import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
+import { describeBlockedReason, presentSessionName, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { RunningIndicator } from './running-indicator.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
@@ -867,6 +867,11 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
   const activityAt = sessionActivityAt(props.session);
+  const name = presentSessionName(props.session.name, locale);
+  const session = useMemo(
+    () => (name === props.session.name ? props.session : { ...props.session, name }),
+    [props.session, name],
+  );
   const signals = sessionRowSignals(
     props.session,
     { streaming: props.streaming, stale: props.stale, active: props.active },
@@ -953,7 +958,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-actionable={props.actions ? 'true' : undefined}
     >
       <SideNavItem
-        label={props.session.name}
+        label={name}
         aria-describedby={hoverDescriptionId}
         size="md"
         isSelected={props.active}
@@ -970,7 +975,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
               {
                 kind: 'session',
                 id: props.session.id,
-                name: props.session.name,
+                name,
               },
               // The row's own button: a double-click starts the rename from
               // the row itself, not from the actions menu.
@@ -1034,21 +1039,21 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       />
       <SessionHoverCardDescription
         id={hoverDescriptionId}
-        session={props.session}
+        session={session}
         status={previewStatus}
         projectName={props.projectName}
         locale={locale}
       />
       <SessionHoverCardLayer
         containerRef={containerRef}
-        session={props.session}
+        session={session}
         status={previewStatus}
         projectName={props.projectName}
         locale={locale}
       />
       {props.actions && (
         <SessionItemActions
-          session={props.session}
+          session={session}
           actions={props.actions}
           canMoveToProject={props.canMoveToProject}
           moveTargets={props.moveTargets}

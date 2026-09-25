@@ -30,6 +30,7 @@ import { act, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { LocaleProvider } from '../locale-context.js';
+import { presentSessionName } from '../session-status-presentation.js';
 import { TitlebarSessionIdentity } from '../titlebar-session-identity.js';
 
 const originalGlobals = {
@@ -103,4 +104,10 @@ test('both branches hand their rendered span to the truncation measurement', asy
   } finally {
     globalThis.ResizeObserver = originalObserver;
   }
+});
+
+test('the Host untitled name reads as the localized placeholder', async () => {
+  assert.equal((await renderIdentity('New Chat'))?.textContent, 'New task');
+  assert.equal((await renderIdentity('Fix the build'))?.textContent, 'Fix the build');
+  assert.equal(presentSessionName('New Chat', 'zh-CN'), '新建任务');
 });
