@@ -203,6 +203,8 @@ pub struct Watch {
     pub package: String,
     pub method: String,
     pub session: Option<String>,
+    /// Replacing a plugin restarts its stream even when its method name stays.
+    pub activation: String,
 }
 
 pub enum Change {
@@ -265,7 +267,7 @@ async fn follow(
         method: watch.method.clone(),
         session_id: watch.session.clone(),
     };
-    let opened = async {
+    let bound = async {
         let RemoteResult::Bound {
             target,
             handler: RemoteKind::Stream,
@@ -278,59 +280,64 @@ async fn follow(
         else {
             return None;
         };
-        let RemoteResult::Document { document } = client
-            .plugin_remote(RemoteRequest::OpenDocument)
-            .await
-            .ok()?
-        else {
-            return None;
-        };
-        match client
-            .plugin_remote(RemoteRequest::Open {
-                binding: binding.clone(),
-                target,
-                document,
-                input: serde_json::Value::Null,
-            })
-            .await
-        {
-            Ok(RemoteResult::Opened { stream }) => Some((document, Some(stream))),
-            _ => Some((document, None)),
-        }
+        (target.activation == watch.activation).then_some(target)
     };
-    let opened = tokio::select! {
+    let target = tokio::select! {
         _ = &mut stopped => return,
-        opened = opened => opened,
+        target = bound => target,
     };
-    let stopped_early = if let Some((document, Some(stream))) = opened {
-        let stopped_early = loop {
-            let next = tokio::select! {
-                _ = &mut stopped => break true,
-                next = client.plugin_remote(RemoteRequest::Next { document, stream }) => next,
+    // Once a document is allocated, retain its identity through cancellation
+    // so a pending Open/Next cannot strand Host resources.
+    let document = if target.is_some() {
+        match client.plugin_remote(RemoteRequest::OpenDocument).await {
+            Ok(RemoteResult::Document { document }) => Some(document),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let stopped_early = if let (Some(target), Some(document)) = (target, document) {
+        let observe = async {
+            let Ok(RemoteResult::Opened { stream }) = client
+                .plugin_remote(RemoteRequest::Open {
+                    binding,
+                    target,
+                    document,
+                    input: serde_json::Value::Null,
+                })
+                .await
+            else {
+                return false;
             };
-            match next {
-                Ok(RemoteResult::Item { .. }) => {
-                    if changes.send(Change::Stale(watch.clone())).is_err() {
-                        break true;
+            // Subscribe before the authoritative reread: a write between the
+            // first rendered view and this Open must not be missed forever.
+            if changes.send(Change::Stale(watch.clone())).is_err() {
+                return true;
+            }
+            loop {
+                match client
+                    .plugin_remote(RemoteRequest::Next { document, stream })
+                    .await
+                {
+                    Ok(RemoteResult::Item { .. }) => {
+                        if changes.send(Change::Stale(watch.clone())).is_err() {
+                            break true;
+                        }
                     }
+                    Ok(RemoteResult::Pending) => {}
+                    _ => break false,
                 }
-                Ok(RemoteResult::Pending) => {}
-                _ => break false,
             }
         };
-        let _ = client
-            .plugin_remote(RemoteRequest::Close { document, stream })
-            .await;
+        let stopped_early = tokio::select! {
+            _ = &mut stopped => true,
+            ended = observe => ended,
+        };
         let _ = client
             .plugin_remote(RemoteRequest::CloseDocument { document })
             .await;
         stopped_early
     } else {
-        if let Some((document, None)) = opened {
-            let _ = client
-                .plugin_remote(RemoteRequest::CloseDocument { document })
-                .await;
-        }
         false
     };
     if stopped_early {

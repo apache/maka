@@ -371,7 +371,7 @@ impl<M> Builder<'_, M> {
 
     /// Children keep their natural widths when the row holds them all;
     /// otherwise buttons keep theirs and everything else shares the rest
-    /// equally. Fields, bars and splits always stretch.
+    /// equally. Fields, bars, splits and columns (lanes) always stretch.
     fn row(
         &mut self,
         key: String,
@@ -634,7 +634,8 @@ impl<M> Builder<'_, M> {
 fn stretchy(node: &wire::Node) -> bool {
     matches!(
         node,
-        wire::Node::Input { .. }
+        wire::Node::Column { .. }
+            | wire::Node::Input { .. }
             | wire::Node::Progress { .. }
             | wire::Node::Split { .. }
             | wire::Node::Scroll { .. }

@@ -365,10 +365,232 @@
       await host('authorization.close', { handle });
     }
   };
+
+  /** Terminal apps: a Remote method that answers terminal view requests,
+   * with builders for the view tree the terminal renders. */
+  const terminal = (remote) => {
+    const pick = (locale, en, zhCN, zhTW) => {
+      const language = String(locale ?? '').toLowerCase();
+      if (language === 'zh-tw' || language === 'zh-hant') return zhTW ?? zhCN ?? en;
+      if (language.startsWith('zh')) return zhCN ?? en;
+      return en;
+    };
+    const view = ({ title, revision, fields = [], actions = [], root }) => ({
+      version: 4,
+      title,
+      revision: String(revision),
+      fields,
+      actions,
+      root,
+    });
+    const item = (key, title, target, extra = {}) => ({
+      kind: 'item',
+      key,
+      title,
+      target,
+      ...extra,
+    });
+    const text = (key, value, tone = 'normal') => ({
+      kind: 'text',
+      key,
+      spans: [{ text: String(value), tone }],
+    });
+    return Object.freeze({
+      /** Serves `handlers` as the terminal view `descriptor` describes. */
+      app: (name, handlers, descriptor, options = {}) =>
+        remote.method(
+          name,
+          async (input, caller) => {
+            const locale = input?.locale ?? 'en';
+            const cx = Object.freeze({
+              locale,
+              caller,
+              t: (en, zhCN, zhTW) => pick(locale, en, zhCN, zhTW),
+            });
+            switch (input?.kind) {
+              case 'read': {
+                const result = await handlers.read(input.route ?? null, cx);
+                return { kind: 'view', view: result?.version ? result : view(result) };
+              }
+              case 'submit': {
+                const { route = null, revision, action, fields = {}, grant = null } = input;
+                return await handlers.submit({ route, revision, action, fields, grant }, cx);
+              }
+              case 'recover': {
+                if (typeof handlers.recover !== 'function') {
+                  throw Object.assign(new Error('This view declares no recovery'), {
+                    code: 'invalid',
+                  });
+                }
+                return await handlers.recover(input.route ?? null, cx);
+              }
+              default:
+                throw Object.assign(new Error('Unknown terminal request'), { code: 'invalid' });
+            }
+          },
+          { ...options, terminalView: { version: 4, ...descriptor } },
+        ),
+      /** A changes stream for a descriptor's `changes`; calling the
+       * returned function tells every open view it is stale. */
+      changes: async (name) => {
+        const waiting = new Set();
+        const registration = await remote.stream(name, () => {
+          let pending = 0;
+          let wake;
+          const listener = () => {
+            pending += 1;
+            wake?.();
+          };
+          waiting.add(listener);
+          let stopped = false;
+          return {
+            async next() {
+              while (!stopped && pending === 0) {
+                await new Promise((resolve) => {
+                  wake = resolve;
+                });
+                wake = undefined;
+              }
+              if (stopped) return { done: true, value: undefined };
+              pending = 0;
+              return { done: false, value: null };
+            },
+            cancel() {
+              stopped = true;
+              waiting.delete(listener);
+              wake?.();
+            },
+            close() {
+              waiting.delete(listener);
+            },
+          };
+        });
+        const notify = () => {
+          for (const listener of waiting) listener();
+        };
+        notify.close = () => registration.close();
+        return notify;
+      },
+      view,
+      column: (key, children, gap = 1) => ({ kind: 'column', key, gap, children }),
+      stack: (key, children) => ({ kind: 'column', key, gap: 0, children }),
+      row: (key, children, gap = 2) => ({ kind: 'row', key, gap, children }),
+      text,
+      spans: (key, spans) => ({
+        kind: 'text',
+        key,
+        spans: spans.map(([value, tone = 'normal']) => ({ text: String(value), tone })),
+      }),
+      heading: (key, value) => text(key, value, 'strong'),
+      rule: (key) => ({ kind: 'rule', key }),
+      scroll: (key, rows, child) => ({ kind: 'scroll', key, rows, child }),
+      split: (key, ratio, left, right) => ({ kind: 'split', key, ratio, left, right }),
+      tabs: (key, current, tabs) => ({ kind: 'tabs', key, current, tabs }),
+      link: (key, title, route, extra) => item(key, title, { kind: 'route', route }, extra),
+      act: (key, title, action, extra) => item(key, title, { kind: 'action', action }, extra),
+      open: (key, title, session, extra) => item(key, title, { kind: 'session', session }, extra),
+      button: (key, action, role = 'normal', label) => ({
+        kind: 'button',
+        key,
+        action,
+        role,
+        ...(label === undefined ? {} : { label }),
+      }),
+      input: (key, field, label = '') => ({ kind: 'input', key, field, label }),
+      progress: (key, value, max, label = '') => ({ kind: 'progress', key, value, max, label }),
+      markdown: (key, value) => ({ kind: 'markdown', key, text: String(value) }),
+      code: (key, value) => ({ kind: 'code', key, text: String(value) }),
+      slot: (key, name, context = null) => ({ kind: 'slot', key, name, context }),
+      action: (id, label, extra = {}) => ({ id, label, ...extra }),
+      toggle: (id, value) => ({ id, control: { kind: 'toggle', value: Boolean(value) } }),
+      line: (id, value = '', maxBytes = 256, extra = {}) => ({
+        id,
+        control: { kind: 'text', value: String(value), max_bytes: maxBytes, ...extra },
+      }),
+      area: (id, value = '', maxBytes = 8192, extra = {}) => ({
+        id,
+        control: {
+          kind: 'text',
+          value: String(value),
+          max_bytes: maxBytes,
+          multiline: true,
+          ...extra,
+        },
+      }),
+      choice: (id, value, options) => ({
+        id,
+        control: {
+          kind: 'choice',
+          value,
+          options: options.map(([option, label]) => ({ value: option, label })),
+        },
+      }),
+    });
+  };
   return Object.freeze({
     async activate(identity, config) {
       if (phase !== 'new') throw new Error('Plugin already initialized');
       phase = 'loading';
+      const remote = Object.freeze({
+        method: (name, invoke, options) =>
+          register('remote_method', { ...options, name }, (input, call) =>
+            remoteResult(() => invoke(input, call)),
+          ),
+        stream: (name, open, options) =>
+          register('remote_stream', { ...options, name }, (input, call) =>
+            remoteResult(async () => {
+              if (streams.size >= 32) throw new Error('Client stream capacity exceeded');
+              const handle = 'stream-' + ++streamSequence;
+              let stopped = false;
+              let stop;
+              const cancelled = new Promise((resolve) => {
+                stop = resolve;
+              });
+              const stream = {
+                value: undefined,
+                pending: undefined,
+                closing: undefined,
+                cancelledValue: false,
+                cancel() {
+                  stopped = true;
+                  stop();
+                  if (stream.value && !stream.cancelledValue) {
+                    stream.cancelledValue = true;
+                    stream.value.cancel();
+                  }
+                },
+              };
+              const streamSignal = Object.freeze({
+                get aborted() {
+                  return stopped || call.signal.aborted;
+                },
+                wait: () => Promise.race([cancelled, call.signal.wait()]),
+                throwIfAborted() {
+                  if (this.aborted) throw new Error('Client stream cancelled');
+                },
+              });
+              streams.set(handle, stream);
+              invocations.set(handle, stream.cancel);
+              try {
+                stream.value = await open(input, Object.freeze({ ...call, signal: streamSignal }));
+                if (
+                  !stream.value ||
+                  typeof stream.value.next !== 'function' ||
+                  typeof stream.value.cancel !== 'function' ||
+                  typeof stream.value.close !== 'function'
+                ) {
+                  throw new Error('Invalid Client stream');
+                }
+                if (stopped) stream.cancel();
+                return handle;
+              } catch (error) {
+                streams.delete(handle);
+                invocations.delete(handle);
+                throw error;
+              }
+            }),
+          ),
+      });
       const context = Object.freeze({
         identity: Object.freeze(identity),
         signal,
@@ -460,69 +682,8 @@
             });
           },
         }),
-        remote: Object.freeze({
-          method: (name, invoke, options) =>
-            register('remote_method', { ...options, name }, (input, call) =>
-              remoteResult(() => invoke(input, call)),
-            ),
-          stream: (name, open, options) =>
-            register('remote_stream', { ...options, name }, (input, call) =>
-              remoteResult(async () => {
-                if (streams.size >= 32) throw new Error('Client stream capacity exceeded');
-                const handle = 'stream-' + ++streamSequence;
-                let stopped = false;
-                let stop;
-                const cancelled = new Promise((resolve) => {
-                  stop = resolve;
-                });
-                const stream = {
-                  value: undefined,
-                  pending: undefined,
-                  closing: undefined,
-                  cancelledValue: false,
-                  cancel() {
-                    stopped = true;
-                    stop();
-                    if (stream.value && !stream.cancelledValue) {
-                      stream.cancelledValue = true;
-                      stream.value.cancel();
-                    }
-                  },
-                };
-                const streamSignal = Object.freeze({
-                  get aborted() {
-                    return stopped || call.signal.aborted;
-                  },
-                  wait: () => Promise.race([cancelled, call.signal.wait()]),
-                  throwIfAborted() {
-                    if (this.aborted) throw new Error('Client stream cancelled');
-                  },
-                });
-                streams.set(handle, stream);
-                invocations.set(handle, stream.cancel);
-                try {
-                  stream.value = await open(
-                    input,
-                    Object.freeze({ ...call, signal: streamSignal }),
-                  );
-                  if (
-                    !stream.value ||
-                    typeof stream.value.next !== 'function' ||
-                    typeof stream.value.cancel !== 'function' ||
-                    typeof stream.value.close !== 'function'
-                  ) {
-                    throw new Error('Invalid Client stream');
-                  }
-                  if (stopped) stream.cancel();
-                  return handle;
-                } catch (error) {
-                  streams.delete(handle);
-                  invocations.delete(handle);
-                  throw error;
-                }
-              }),
-            ),
-        }),
+        remote,
+        tui: terminal(remote),
         prompt: Object.freeze({
           section: (definition) => {
             const { text: value, ...metadata } = definition;

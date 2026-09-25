@@ -83,6 +83,9 @@ pub struct Instance {
     /// The binding this instance reads through; none until the directory
     /// names the entry that serves its key.
     pub(super) entry: Option<TerminalViewProjection>,
+    /// The directory still serves this owner. A retired entry remains only
+    /// as provenance for preserved drafts and uncertain submissions.
+    pub(super) live: Option<maka_plugins::remote::Target>,
     /// Where the view starts: null for a page, a slot's context for a filler.
     pub(super) origin: Value,
     pub(super) route: Value,
@@ -115,6 +118,7 @@ pub struct Instance {
 impl Instance {
     pub(super) fn new(entry: Option<TerminalViewProjection>, origin: Value) -> Self {
         let mut instance = Self {
+            live: entry.as_ref().map(|entry| entry.target.clone()),
             entry,
             route: origin.clone(),
             origin,
@@ -152,6 +156,9 @@ impl Instance {
         }
     }
     pub(super) fn read(&mut self, locale: &str) {
+        if self.live.is_none() {
+            return;
+        }
         self.stale = false;
         self.pending = self.entry.clone().map(|entry| Work::Call {
             entry: Box::new(entry),
@@ -192,7 +199,7 @@ impl Instance {
         let Some(view) = &self.view else {
             return false;
         };
-        if self.blocked || self.review.is_some() {
+        if self.live.is_none() || self.blocked || self.review.is_some() {
             return false;
         }
         match intent {
@@ -315,6 +322,7 @@ impl Instance {
     }
     /// Revokes every operation on the old registration but keeps drafts.
     pub(super) fn disconnect(&mut self) {
+        self.live = None;
         self.saving = false;
         self.unrecorded = false;
         self.confirm_discard = false;

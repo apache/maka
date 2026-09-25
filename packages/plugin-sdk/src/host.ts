@@ -344,6 +344,8 @@ export interface HostContext {
       options?: RemoteOptions,
     ): Promise<Registration>;
   };
+  /** Terminal apps: views a plugin presents in the Maka TUI. */
+  readonly tui: import('./terminal-view.js').TerminalApps;
   readonly identity: Identity;
   readonly signal: Cancellation;
   readonly tools: {

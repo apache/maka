@@ -185,3 +185,87 @@ export type TerminalReply =
   | { kind: 'unrecorded' }
   /** An inert proposal; only the user's explicit approval in the shell grants it. */
   | { kind: 'consent'; request: AuthorizationRequest };
+
+/** Who is reading a terminal view, and in which language. */
+export interface TerminalContext {
+  readonly locale: string;
+  readonly caller: import('./host.js').RemoteCaller;
+  /** Picks the reader's text from English, Simplified and Traditional Chinese. */
+  t(en: string, zhCN?: string, zhTW?: string): string;
+}
+export interface TerminalSubmission {
+  readonly route: Json;
+  readonly revision: string;
+  readonly action: string;
+  readonly fields: Readonly<Record<string, boolean | string>>;
+  /** A consent grant, present after the shell asked the user to approve. */
+  readonly grant: string | null;
+}
+/** A view without its version; the SDK adds the one it speaks. */
+export type TerminalViewBody = Omit<TerminalViewTree, 'version'> & { version?: 4 };
+export interface TerminalAppHandlers {
+  read(route: Json, cx: TerminalContext): Awaitable<TerminalViewBody>;
+  submit(submission: TerminalSubmission, cx: TerminalContext): Awaitable<TerminalReply>;
+  /** Only needed when actions declare recovery routes. */
+  recover?(route: Json, cx: TerminalContext): Awaitable<TerminalReply>;
+}
+type Awaitable<T> = T | Promise<T>;
+type Extra<T> = Partial<Omit<T, 'kind' | 'key'>>;
+type ItemExtra = Extra<Extract<TerminalNode, { kind: 'item' }>>;
+
+/** `ctx.tui`: terminal apps and the builders of their views. */
+export interface TerminalApps {
+  /** Serves a terminal app; the descriptor says where the shell shows it. */
+  app(
+    name: string,
+    handlers: TerminalAppHandlers,
+    descriptor: Omit<TerminalView, 'version'>,
+    options?: import('./host.js').RemoteOptions,
+  ): Promise<import('./host.js').Registration>;
+  /** Registers a changes stream; call the result to refresh open views. */
+  changes(name: string): Promise<(() => void) & { close(): Promise<void> }>;
+  view(body: TerminalViewBody): TerminalViewTree;
+  column(key: string, children: TerminalNode[], gap?: number): TerminalNode;
+  stack(key: string, children: TerminalNode[]): TerminalNode;
+  row(key: string, children: TerminalNode[], gap?: number): TerminalNode;
+  text(key: string, text: string, tone?: TerminalTone): TerminalNode;
+  spans(key: string, spans: [string, TerminalTone?][]): TerminalNode;
+  heading(key: string, text: string): TerminalNode;
+  rule(key: string): TerminalNode;
+  scroll(key: string, rows: number, child: TerminalNode): TerminalNode;
+  split(key: string, ratio: number, left: TerminalNode, right: TerminalNode): TerminalNode;
+  tabs(
+    key: string,
+    current: string,
+    tabs: { id: string; label: string; route: Json }[],
+  ): TerminalNode;
+  link(key: string, title: string, route: Json, extra?: ItemExtra): TerminalNode;
+  act(key: string, title: string, action: string, extra?: ItemExtra): TerminalNode;
+  open(key: string, title: string, session: string, extra?: ItemExtra): TerminalNode;
+  button(
+    key: string,
+    action: string,
+    role?: 'normal' | 'primary' | 'destructive',
+    label?: string,
+  ): TerminalNode;
+  input(key: string, field: string, label?: string): TerminalNode;
+  progress(key: string, value: number, max: number, label?: string): TerminalNode;
+  markdown(key: string, text: string): TerminalNode;
+  code(key: string, text: string): TerminalNode;
+  slot(key: string, name: string, context?: Json): TerminalNode;
+  action(id: string, label: string, extra?: Partial<TerminalAction>): TerminalAction;
+  toggle(id: string, value: boolean): TerminalField;
+  line(
+    id: string,
+    value?: string,
+    maxBytes?: number,
+    extra?: { placeholder?: string; secret?: boolean },
+  ): TerminalField;
+  area(
+    id: string,
+    value?: string,
+    maxBytes?: number,
+    extra?: { placeholder?: string },
+  ): TerminalField;
+  choice(id: string, value: string, options: [string, string][]): TerminalField;
+}

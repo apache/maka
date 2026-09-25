@@ -150,6 +150,18 @@ Native endpoints accepting caller-supplied Host paths declare `Endpoint::requiri
 
 `restoreRoot(operationId)` recovers a root created by this package/scope under current workspace and source ceilings, independently of its original model. Creation provenance does not make an ordinary root exclusively managed. `restoreChild` requires the original child creation request. Neither creates anything; absence does not exclude a concurrent creation. `configure` advances the Session revision on every committed choice, including identical values, fencing older configuration CASes without changing event history.
 
+## Terminal apps
+
+Host plugins use `ctx.tui.app(name, { read, submit, recover? }, descriptor)` to contribute a TUI application without a Desktop bundle or a new Maka binary. The descriptor selects `page`, `panel`, `status`, `settings`, or a named `slot`; its `context` is `application` or `session`. A view can embed `tui.slot(...)` to compose contributions from other plugins.
+
+`read(route, cx)` returns a View v4 body built with `ctx.tui` (columns, rows, splits, tabs, text, Markdown, controls and fields). The SDK adds the version. Stable sibling keys preserve focus and editing state; `cx.t(en, zhCN, zhTW)` selects the reader's language. The shell owns layout, local typing, scrolling, confirmation and draft recovery. Plugins use semantic tones and never emit terminal escapes.
+
+`submit({ route, revision, action, fields, grant }, cx)` applies an explicit user action and returns `applied`, `conflict`, `rejected`, or `consent`. Use the revision for storage CAS and enforce domain authority in the Host. Declare an action's `recovery` route only when `recover(route, cx)` can look up its durable outcome; the shell never blindly replays an uncertain write.
+
+For live updates, `const changed = await ctx.tui.changes('changed')` registers a stream. Set `changes: 'changed'` on the descriptor and call `changed()` after committing data. Invalidation is coalesced; the shell rereads clean views and preserves edited drafts. Subscriptions and controls retire with their registration.
+
+The [Board example](../../crates/cli/tests/fixtures/board-plugin/host.mjs) includes three columns, nested card editing, storage CAS and live refresh. Its [PTY test](../../crates/cli/tests/integration/tui/board.rs) installs it while the TUI is running, interacts with it and checks the persisted domain data.
+
 ## Usage
 
 `session.inspector.overview` receives the viewed Host's canonical `sessionId` and `locale`. It augments the overview without replacing native trace/context controls. Bind Remote reads to that Session; slot props alone grant no execution permission.

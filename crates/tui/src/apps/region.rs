@@ -95,9 +95,11 @@ pub(super) fn input<M: Clone>(
             .is_some_and(|field| field.enabled)
     };
     let editable = |apps: &Apps, well: &Well| {
-        apps.instances
-            .get(&well.key)
-            .is_some_and(|instance| (instance.idle() || instance.refreshing()) && !instance.blocked)
+        apps.instances.get(&well.key).is_some_and(|instance| {
+            instance.live.is_some()
+                && (instance.idle() || instance.refreshing())
+                && !instance.blocked
+        })
     };
     if let Event::Mouse(mouse) = event {
         let well = wells.iter().find(|well| {

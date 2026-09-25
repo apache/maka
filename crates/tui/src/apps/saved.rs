@@ -214,6 +214,7 @@ impl Instance {
             editor.restore_cursor(cursor)?;
         }
         instance.unresolved = checkpoint.pending;
+        instance.live = None;
         instance.blocked = true;
         instance.message = Some(Notice::Local(if instance.unresolved.is_some() {
             "extensions-unknown"

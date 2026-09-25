@@ -343,28 +343,53 @@ impl Apps {
     fn bind(&mut self) {
         let locale = self.locale.clone();
         for (key, instance) in &mut self.instances {
-            let Some(entry) = self.directory.iter().find(|entry| key.serves(entry)) else {
+            let entry = self.directory.iter().find(|entry| key.serves(entry));
+            let changed = instance.live.is_some()
+                && instance.live.as_ref() != entry.map(|entry| &entry.target);
+            if changed {
+                instance.disconnect();
+                if self
+                    .consent
+                    .as_ref()
+                    .is_some_and(|(holder, _)| holder == key)
+                {
+                    self.consent = None;
+                }
+                if self
+                    .confirming
+                    .as_ref()
+                    .is_some_and(|(holder, _)| holder == key)
+                {
+                    self.confirming = None;
+                }
+            }
+            let Some(entry) = entry else {
+                if instance.view.is_some() && !instance.keeps() {
+                    instance.message = Some(Notice::Local("extensions-unavailable"));
+                }
                 continue;
             };
             match &instance.entry {
                 None => {
                     instance.entry = Some(entry.clone());
+                    instance.live = Some(entry.target.clone());
                     instance.read(&locale);
                 }
                 // A fresh registration of the same entry serves a clean view;
                 // a kept one resumes only on an explicit request.
                 Some(current)
-                    if current.target.entry_id == entry.target.entry_id
-                        && !instance.keeps()
-                        && instance.idle() =>
+                    if current.target.entry_id == entry.target.entry_id || !instance.keeps() =>
                 {
-                    let fresh = current.target != entry.target;
-                    instance.entry = Some(entry.clone());
-                    if fresh || instance.stale {
-                        instance.read(&locale);
+                    let fresh = instance.live.is_none() || current.target != entry.target;
+                    instance.live = Some(entry.target.clone());
+                    if !instance.keeps() && instance.idle() {
+                        instance.entry = Some(entry.clone());
+                        if fresh || instance.stale {
+                            instance.read(&locale);
+                        }
                     }
                 }
-                _ => {}
+                _ => instance.message = Some(Notice::Local("extensions-unavailable")),
             }
         }
         // New entries may fill slots of views already open.
@@ -769,6 +794,7 @@ impl App {
                         && (!instance.blocked || instance.unresolved.is_some())
                         && self.app_visible(key)
                         && connected
+                        && instance.live.is_some()
                 }
                 _ => false,
             };
@@ -786,6 +812,15 @@ impl App {
             };
         }
         if !connected || !self.app_visible(key) {
+            return false;
+        }
+        if instance.live.is_none()
+            && apps.loaded
+            && !matches!(
+                command,
+                Command::Discard | Command::ConfirmDiscard | Command::CancelDiscard
+            )
+        {
             return false;
         }
         match command {
@@ -868,6 +903,9 @@ impl App {
             Message::Instance(key, command) => (key, command),
         };
         let apps = &mut self.apps;
+        let replacement = matches!(command, Command::Discard | Command::ConfirmDiscard)
+            .then(|| apps.entry(&key).cloned())
+            .flatten();
         let instance = apps.instances.get_mut(&key)?;
         instance.applied = None;
         if matches!(
@@ -1003,6 +1041,8 @@ impl App {
                 instance.editors.clear();
                 instance.history.clear();
                 instance.route = instance.origin.clone();
+                instance.live = replacement.as_ref().map(|entry| entry.target.clone());
+                instance.entry = replacement;
                 instance.arrive();
                 instance.read(&locale);
             }
@@ -1018,13 +1058,14 @@ impl App {
         self.apps
             .instances
             .iter()
-            .filter(|(key, _)| self.app_visible(key))
+            .filter(|(key, instance)| instance.live.is_some() && self.app_visible(key))
             .filter_map(|(key, instance)| {
                 let entry = instance.entry.as_ref()?;
                 Some(io::Watch {
                     package: entry.package_id.clone(),
                     method: entry.descriptor.changes.clone()?,
                     session: key.session.clone(),
+                    activation: instance.live.as_ref()?.activation.clone(),
                 })
             })
             .collect()
@@ -1069,7 +1110,11 @@ impl App {
             let Some(entry) = &instance.entry else {
                 continue;
             };
-            if entry.package_id != watch.package
+            if instance
+                .live
+                .as_ref()
+                .is_none_or(|target| target.activation != watch.activation)
+                || entry.package_id != watch.package
                 || entry.descriptor.changes.as_deref() != Some(watch.method.as_str())
                 || key.session != watch.session
             {
@@ -1686,6 +1731,77 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn retirement_revokes_the_open_view_and_preserves_drafts_for_explicit_recovery() {
+        for dirty in [false, true] {
+            let mut app = app();
+            instance_mut(&mut app)
+                .entry
+                .as_mut()
+                .unwrap()
+                .descriptor
+                .changes = Some("changes".into());
+            if dirty {
+                app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+            }
+            assert_eq!(app.apps_watches().len(), 1);
+            app.apps.directory.clear();
+            app.apps.bind();
+            app.apps_action(save());
+            assert!(
+                app.apps_requests().is_empty(),
+                "retired controls cannot submit"
+            );
+            assert!(
+                app.apps_watches().is_empty(),
+                "retired subscriptions must close"
+            );
+            assert!(!app.apps_enabled(&save()));
+            assert_eq!(instance(&app).drafts["enabled"], json!(!dirty));
+            if dirty {
+                assert_eq!(app.apps.checkpoints("root").len(), 1);
+                assert!(!app.apps_enabled(&command(Command::ResumeDraft)));
+            } else {
+                assert!(draw(&mut app, 100, 30).contains("This app is no longer available."));
+            }
+            let replacement = projection();
+            app.apps.directory.push(replacement.clone());
+            app.apps.bind();
+            if dirty {
+                assert!(
+                    app.apps_requests().is_empty(),
+                    "replacement must not discard a draft"
+                );
+                assert!(!app.apps_enabled(&save()));
+                assert!(app.apps_enabled(&command(Command::ResumeDraft)));
+                assert_eq!(instance(&app).drafts["enabled"], json!(false));
+            } else {
+                let request = next(&mut app).unwrap();
+                assert!(
+                    matches!(&request.work, Work::Call { entry, input: Input::Read { .. } }
+                    if entry.target == replacement.target)
+                );
+                app.apps_complete(request, Ok(Output::Reply(Reply::View { view: form() })));
+                assert!(app.apps_enabled(&save()));
+                assert!(!draw(&mut app, 100, 30).contains("This app is no longer available."));
+            }
+        }
+        let mut app = app();
+        app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+        let mut replacement = projection();
+        replacement.target.entry_id = "another-owner".into();
+        app.apps.directory = vec![replacement.clone()];
+        app.apps.bind();
+        assert!(!app.apps_enabled(&command(Command::ResumeDraft)));
+        assert_eq!(app.apps.checkpoints("root").len(), 1);
+        app.apps_action(command(Command::Discard));
+        let request = next(&mut app).unwrap();
+        assert!(
+            matches!(&request.work, Work::Call { entry, input: Input::Read { .. } }
+            if entry.target == replacement.target)
+        );
+    }
+
+    #[test]
     fn disconnect_revokes_controls_preserves_drafts_and_tiny_layout_has_no_stale_clicks() {
         let mut app = app();
         draw(&mut app, 80, 24);
@@ -2164,8 +2280,23 @@ pub(crate) mod tests {
             package: "example.notes".into(),
             method: "notes-changed".into(),
             session: Some("session".into()),
+            activation: instance(&app)
+                .entry
+                .as_ref()
+                .unwrap()
+                .target
+                .activation
+                .clone(),
         };
         assert_eq!(app.apps_watches(), [watch.clone()].into());
+        app.apps_changed(&io::Watch {
+            activation: uuid::Uuid::new_v4().to_string(),
+            ..watch.clone()
+        });
+        assert!(
+            next(&mut app).is_none(),
+            "late changes cannot refresh a replacement"
+        );
         app.apps_changed(&watch);
         let read = next(&mut app).expect("an untouched view reads again");
         app.apps_complete(read, Ok(Output::Reply(Reply::View { view: form() })));

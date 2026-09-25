@@ -154,6 +154,18 @@ Remote 回调可以抛出携带 `RemoteFailure.code` 的 `Error`。`outcome_unkn
 
 `restoreRoot(operationId)` 按当前工作区和来源上限恢复本包／作用域创建的根会话，不依赖原模型；创建记录不会使普通根会话变成独占托管会话。`restoreChild` 要求原始子会话创建请求。两者均不创建资源；不存在的观察不能排除并发创建。`configure` 每次成功选择都会推进 Session revision，包括相同值，以阻止较早的配置 CAS 覆盖它，不修改事件历史。
 
+## 终端应用
+
+Host 插件通过 `ctx.tui.app(name, { read, submit, recover? }, descriptor)` 贡献 TUI 应用，无需 Desktop bundle 或重新编译 Maka。descriptor 选择 `page`、`panel`、`status`、`settings` 或命名 `slot`，上下文为 `application` 或 `session`；视图通过 `tui.slot(...)` 组合其他插件的贡献。
+
+`read(route, cx)` 返回用 `ctx.tui` 构造的 View v4 内容，包括列、行、分栏、标签、文本、Markdown、控件和字段，SDK 自动添加版本。稳定的同级 key 保留焦点与编辑状态；`cx.t(en, zhCN, zhTW)` 选择当前语言。外壳负责布局、本地输入、滚动、确认与草稿恢复；插件使用语义颜色，不输出终端转义序列。
+
+`submit({ route, revision, action, fields, grant }, cx)` 执行明确的用户操作，返回 `applied`、`conflict`、`rejected` 或 `consent`。使用 revision 做存储 CAS，并在 Host 检查领域权限。只有 `recover(route, cx)` 能查询持久结果时才声明 action 的 `recovery` 路由；外壳不会盲目重放结果未知的写入。
+
+实时刷新使用 `const changed = await ctx.tui.changes('changed')` 注册流，在 descriptor 设置 `changes: 'changed'`，数据提交后调用 `changed()`。失效通知会合并，外壳重新读取干净视图并保留已有草稿；订阅与控件随注册退休。
+
+[Board 示例](../../crates/cli/tests/fixtures/board-plugin/host.mjs) 展示三列看板、卡片详情编辑、存储 CAS 与实时刷新。[PTY 测试](../../crates/cli/tests/integration/tui/board.rs) 在 TUI 运行期间安装它、执行交互并读回持久领域数据。
+
 ## 用量
 
 `session.inspector.overview` 接收当前 Host 的规范 `sessionId` 与 `locale`，补充概览而不替换原生轨迹／上下文控件。Remote 读取应绑定此 Session；插槽参数本身不授予执行权限。

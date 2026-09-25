@@ -20,6 +20,7 @@
 #![cfg(unix)]
 
 mod attachments;
+mod board;
 mod branch;
 mod changes;
 mod connection_test;

@@ -31,7 +31,7 @@ pub(crate) fn label_width(labels: impl IntoIterator<Item = usize>, terminal: u16
 }
 
 /// One row: its label, then the editor (masked for secrets), or a
-/// placeholder while the field is empty and unfocused.
+/// placeholder while the field is empty, focused or not, until typing.
 pub(crate) struct Row<'a> {
     pub label: &'a str,
     pub focused: bool,
@@ -71,7 +71,6 @@ pub(crate) fn draw(
     }
     if let Some(placeholder) = row.placeholder
         && editor.text().is_empty()
-        && !row.focused
     {
         frame.render_widget(
             Paragraph::new(placeholder).style(Style::default().fg(colors.subtle)),

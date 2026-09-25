@@ -263,6 +263,10 @@ mod tests {
         app
     }
     fn reload(app: &mut App, view: View) {
+        // The shell discovers the current owner before offering Resume.
+        if !app.apps.loaded {
+            assert!(next(app).is_none());
+        }
         app.apps_action(command(Command::ResumeDraft));
         let request = next(app).unwrap();
         assert!(!request.needs_checkpoint());

@@ -23,6 +23,7 @@
     "../../crates/runtime-host/tests/fixtures/files-plugin.mjs",
     "../../crates/runtime-host/tests/fixtures/clients-plugin.mjs",
     "../../crates/runtime-host/tests/fixtures/remote-plugin.mjs",
+    "../../crates/cli/tests/fixtures/board-plugin/host.mjs",
     "../workhub/src/client.tsx",
     "../workhub/src/styles.d.ts",
     "../../crates/assistant/src/todo/client.tsx"
