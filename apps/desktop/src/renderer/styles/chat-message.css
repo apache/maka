@@ -171,7 +171,7 @@
 /* Astryx sets the tool name in monospace for raw tool ids; Maka's names are
    localized sentences, which read badly in a code face. */
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
-  font-family: var(--maka-font-family);
+  --font-family-code: var(--maka-font-family);
 }
 
 /* These boxes need no !important to beat Astryx: its StyleX atoms live in the
@@ -218,18 +218,22 @@
   min-height: 0;
 }
 
-/* What a process row expands to reads at the row's own supporting size.
+/* What a process row expands to reads at the row's own supporting size, and
+   what titles something in there takes heading-5, the 12px title rung.
    Markdown and code blocks set body and code sizes on their own elements, so
    the step-down is made on the tokens as well as the inherited font. The Maka
-   roles are composed at :root and again on code elements, so they are
-   restated here for everything else. */
-.maka-turn :is(.maka-chat-tool-detail, .maka-chat-reasoning-content) {
+   roles are composed at :root, so the ones used in here are restated; code
+   elements recompose theirs from the code tokens. */
+.maka-chat-tool-detail,
+.maka-chat-reasoning-content {
   --text-body-size: var(--text-supporting-size);
   --text-body-leading: var(--text-supporting-leading);
   --text-code-size: var(--text-supporting-size);
   --text-code-leading: var(--text-supporting-leading);
   --maka-text-body: var(--maka-text-supporting);
-  --maka-text-code: var(--text-code-weight) var(--text-supporting-size)/var(--text-supporting-leading) var(--font-family-code);
+  --maka-text-label: var(--maka-text-heading-5);
+  --maka-text-heading-3: var(--maka-text-heading-5);
+  --maka-text-heading-4: var(--maka-text-heading-5);
   font: var(--maka-text-supporting);
 }
 

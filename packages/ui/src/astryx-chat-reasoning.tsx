@@ -15,11 +15,10 @@
  * The wrapper DOM, header, and keyboard behavior remain the official
  * component; the props interface is trimmed to what Maka passes.
  *
- * Product dialect lives in chat-message.css (cursor default, hover wash,
- * chevron size). In addition to the first-open body rendering change, the
- * chevron is Astryx `Icon` rather than the lab's own 12-viewBox SVG: at
- * the 10x10 chat-message.css forces, that glyph drew 1.25px of stroke beside
- * the tool rows' 0.73px. One registry, one chevron.
+ * Product dialect lives in chat-message.css (cursor default, hover wash). In
+ * addition to the first-open body rendering change, the chevron is Astryx
+ * `Icon` rather than the lab's own 12-viewBox SVG, whose stroke drew heavier
+ * than the tool rows' chevron beside it. One registry, one chevron.
  */
 import { useState, type HTMLAttributes, type ReactNode } from 'react';
 import { Icon } from '@astryxdesign/core/Icon';
