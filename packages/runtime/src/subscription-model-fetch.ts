@@ -153,14 +153,23 @@ function buildOpenAiCodexFetch(
       return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers }, refreshOAuthAccessToken);
     }
 
-    return checkedOpenAiCodexFetch(
+    // The Codex backend accepts only streamed requests and rejects
+    // `max_output_tokens`. Main turns already stream and never send the cap.
+    // Tool-free auxiliary calls (titles, goal evaluation, recap, Daily Review,
+    // prompt suggestions) go through `generateText`, so their request is
+    // streamed here and folded back into the one Responses body a
+    // non-streaming caller parses.
+    const foldStream = parsedBody.stream !== true;
+    const { max_output_tokens: _unsupportedOutputCap, ...forwardedBody } = parsedBody;
+    const response = await checkedOpenAiCodexFetch(
       fetchFn,
       url,
       {
         ...init,
         headers,
         body: JSON.stringify({
-          ...parsedBody,
+          ...forwardedBody,
+          ...(foldStream ? { stream: true } : {}),
           instructions: codexInstructionsFromBody(parsedBody),
           store: false,
           text: {
@@ -178,7 +187,74 @@ function buildOpenAiCodexFetch(
       },
       refreshOAuthAccessToken,
     );
+    return foldStream ? foldOpenAiCodexStream(response) : response;
   };
+}
+
+const OPENAI_CODEX_TERMINAL_EVENTS = new Set([
+  'response.completed',
+  'response.incomplete',
+  'response.failed',
+]);
+
+/**
+ * Folds a Codex Responses event stream into the single response body a
+ * non-streaming Responses caller expects. The backend's terminal event can
+ * carry an empty `output`; the items then arrive only as
+ * `response.output_item.done` events, so they are collected and restored.
+ */
+async function foldOpenAiCodexStream(response: Response): Promise<Response> {
+  // Decide by the body, not `content-type`: against the live backend the
+  // stream did not arrive here with an event-stream content type. A JSON body
+  // passes through unchanged.
+  const text = await response.text();
+  if (text.trimStart().startsWith('{')) {
+    return new Response(text, { status: response.status, headers: response.headers });
+  }
+  const doneItems: unknown[] = [];
+  let terminal: Record<string, unknown> | undefined;
+  let terminalType: string | undefined;
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n');
+    if (!data || data === '[DONE]') continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    if (event === null || typeof event !== 'object') continue;
+    const { type, item, response: eventResponse } = event as Record<string, unknown>;
+    if (type === 'response.output_item.done' && item !== undefined) doneItems.push(item);
+    if (
+      typeof type === 'string' &&
+      OPENAI_CODEX_TERMINAL_EVENTS.has(type) &&
+      eventResponse !== null &&
+      typeof eventResponse === 'object'
+    ) {
+      terminal = eventResponse as Record<string, unknown>;
+      terminalType = type;
+    }
+  }
+  if (!terminal) {
+    throw new Error('Codex OAuth request failed: the stream ended without a terminal response');
+  }
+  if (terminalType === 'response.failed') {
+    const error = terminal.error as { message?: unknown } | null | undefined;
+    throw new Error(
+      `Codex OAuth request failed: ${typeof error?.message === 'string' ? error.message : 'response.failed'}`,
+    );
+  }
+  const output =
+    Array.isArray(terminal.output) && terminal.output.length > 0 ? terminal.output : doneItems;
+  return new Response(JSON.stringify({ ...terminal, output }), {
+    status: response.status,
+    headers: { 'content-type': 'application/json' },
+  });
 }
 
 async function checkedOpenAiCodexFetch(

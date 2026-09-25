@@ -94,6 +94,136 @@ describe('subscription model fetch', () => {
     assert.equal(observedBody.parallel_tool_calls, true);
   });
 
+  test('streams a non-streaming Codex call and folds the events into one Responses body', async () => {
+    const connection = openAiCodexConnection();
+    let observedBody: Record<string, unknown> = {};
+    const message = {
+      type: 'message',
+      id: 'msg-1',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'Yes, give me a checklist.', annotations: [] }],
+    };
+    const modelFetch = buildSubscriptionModelFetch({
+      connection,
+      sessionId: 'session-auxiliary',
+      modelId: connection.defaultModel,
+      fetchFn: async (_url, init) => {
+        observedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        // The Codex backend's terminal event can omit the output items it
+        // already streamed as `response.output_item.done`.
+        return sse([
+          { type: 'response.created', response: { id: 'resp-1', status: 'in_progress' } },
+          { type: 'response.output_item.done', output_index: 0, item: message },
+          {
+            type: 'response.completed',
+            response: {
+              id: 'resp-1',
+              object: 'response',
+              created_at: 1,
+              model: connection.defaultModel,
+              status: 'completed',
+              output: [],
+              usage: { input_tokens: 12, output_tokens: 7, total_tokens: 19 },
+            },
+          },
+        ]);
+      },
+    });
+    assert.ok(modelFetch);
+    const model = getAIModel({
+      connection,
+      apiKey: codexToken('account-auxiliary'),
+      modelId: connection.defaultModel,
+      fetch: modelFetch,
+    });
+
+    const result = await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Suggest my next message.' }] }],
+      maxOutputTokens: 128,
+      providerOptions: buildProviderOptions(connection, connection.defaultModel),
+    });
+
+    assert.equal(observedBody.stream, true, 'the Codex backend rejects non-streaming requests');
+    assert.equal(
+      'max_output_tokens' in observedBody,
+      false,
+      'the Codex backend rejects max_output_tokens',
+    );
+    assert.deepEqual(
+      result.content.filter((part) => part.type === 'text').map((part) => part.text),
+      ['Yes, give me a checklist.'],
+    );
+    assert.equal(result.usage.outputTokens.total, 7);
+  });
+
+  test('passes a streaming Codex call through without folding it', async () => {
+    let observedBody: Record<string, unknown> = {};
+    const upstream = sse([{ type: 'response.completed', response: { id: 'resp-1', output: [] } }]);
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-turn',
+      modelId: 'gpt-5.5',
+      fetchFn: async (_url, init) => {
+        observedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return upstream;
+      },
+    });
+    assert.ok(modelFetch);
+
+    const response = await modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: [], stream: true, max_output_tokens: 64 }),
+    });
+
+    assert.equal(response, upstream);
+    assert.equal(observedBody.stream, true);
+    assert.equal('max_output_tokens' in observedBody, false);
+  });
+
+  test('rejects a folded Codex stream that ends without a terminal response', async () => {
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-truncated',
+      modelId: 'gpt-5.5',
+      fetchFn: async () =>
+        sse([{ type: 'response.output_text.delta', delta: 'Yes' }], { terminate: false }),
+    });
+    assert.ok(modelFetch);
+
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [] }),
+      }),
+      /without a terminal response/,
+    );
+  });
+
+  test('surfaces a failed folded Codex stream as an error, not an empty success', async () => {
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-failed',
+      modelId: 'gpt-5.5',
+      fetchFn: async () =>
+        sse([
+          {
+            type: 'response.failed',
+            response: { id: 'resp-1', status: 'failed', error: { message: 'model overloaded' } },
+          },
+        ]),
+    });
+    assert.ok(modelFetch);
+
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [] }),
+      }),
+      /model overloaded/,
+    );
+  });
+
   test('force-refreshes one Codex 401 without consuming the independent edge retry budget', async () => {
     const observed: Headers[] = [];
     let attempts = 0;
@@ -675,4 +805,15 @@ function codexToken(accountId: string): string {
     }),
   ).toString('base64url');
   return `${header}.${payload}.signature`;
+}
+
+// No `content-type`: the real Codex stream reaches this layer without a usable
+// event-stream header, so folding must not depend on it.
+function sse(events: readonly unknown[], options: { terminate?: boolean } = {}): Response {
+  const body = events
+    .map(
+      (event) => `event: ${(event as { type: string }).type}\ndata: ${JSON.stringify(event)}\n\n`,
+    )
+    .join('');
+  return new Response(options.terminate === false ? body : `${body}data: [DONE]\n\n`);
 }
