@@ -237,14 +237,17 @@ export const ExecutorCatalogLoading: Story = {
   },
 };
 
+// Real path: new-task composer → model picker → Antigravity, after its catalog loads.
 export const ExecutorCatalogReady: Story = {
   render: () => <ExecutorPickerFrame loading={false} />,
   play: async () => {
     const body = within(document.body);
     await userEvent.click(await body.findByRole('button', { name: /选择模型|Select model/ }));
     await userEvent.click(await body.findByRole('button', { name: 'Antigravity' }));
-    await expect(body.getByText('Gemini 3.8 Flash')).toBeVisible();
-    await expect(body.getByText('Gemini 3.1 Pro')).toBeVisible();
+    await waitFor(() => {
+      expect(body.getByText('Gemini 3.8 Flash')).toBeVisible();
+      expect(body.getByText('Gemini 3.1 Pro')).toBeVisible();
+    });
   },
 };
 
