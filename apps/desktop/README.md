@@ -63,7 +63,9 @@ Run `npm run dev:worktree` from the repository root to start desktop HMR with
 an independent data directory for this checkout. This prevents experimental
 branches from reading or writing another checkout's settings, sessions, and
 runtime policy. The first launch opens onboarding with an empty configuration;
-existing data and credentials are not copied.
+existing data and credentials are not copied. Only the profile is separate:
+user-level state outside it, such as skills in `~/.maka/skills` and
+`~/.agents/skills`, stays shared with every checkout.
 
 The launcher prints the selected directory before building. It uses the
 checkout's canonical path, not its branch name: restarting or switching branches
@@ -88,9 +90,13 @@ MAKA_DEV_TCC=1 npm run dev:worktree  # macOS permission development
 
 This command uses the existing desktop launcher, including its process cleanup
 and macOS TCC support. `npm run dev`, `npm start`, and the CLI retain their
-existing profile selection. Removing a Git worktree does not remove its data:
-quit the app and manually remove its printed profile directory when it is no
-longer needed.
+existing profile selection. With `MAKA_DEV_TCC=1`, every launch republishes the
+profile of this checkout's app bundle, so reopening the bundle from the Dock,
+Spotlight, or a permission prompt uses the profile of the last TCC launch here:
+after a TCC `npm run dev` or `npm start`, run `dev:worktree` again before
+reopening it. Removing a Git worktree does not remove its data, and a checkout
+later created at the same path reuses it: quit the app and manually remove its
+printed profile directory when it is no longer needed.
 
 ## macOS development permissions
 
