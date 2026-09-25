@@ -4148,10 +4148,11 @@ export const CompletedProcessExpanded: Story = {
       await expect(child.getBoundingClientRect().width, child.className.toString())
         .toBeLessThanOrEqual(processBox.width + 1);
     }
-    // The tool rows' hover surface still overhangs to the card edge: the body
-    // owns the 4px inline padding their negative margins eat into.
+    // Tool rows start on the answer's text edge; only their hover surface
+    // overhangs it.
     const row = processBody.querySelector('.astryx-chat-tool-calls [role="button"]')!;
-    await expect(row.getBoundingClientRect().left).toBeCloseTo(processBox.left, 1);
+    await expect(row.firstElementChild!.getBoundingClientRect().left).toBeCloseTo(processBox.left, 1);
+    await expect(row.getBoundingClientRect().left).toBeLessThan(processBox.left);
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');

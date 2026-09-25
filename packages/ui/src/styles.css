@@ -299,14 +299,9 @@
   min-height: 0;
   flex-direction: column;
   gap: 8px;
-  /* Astryx tool rows overhang their text by 4px on each inline edge so hover
-     surfaces reach the card edge (their padding/negative-margin pair); this
-     padding is where that overhang lands. It sits on the body rather than the
-     sequence so the statusbar summary stays flush with the answer text and
-     the turn footer it reads against. */
-  padding-inline: var(--space-1);
-  /* Block-axis clip for the disclosure wipe only; the rows' inline overhang
-     must reach this padding edge, so it cannot be clipped here. */
+  /* Block-axis clip for the disclosure wipe only: Astryx tool rows overhang
+     their text by 4px on each inline edge for their hover surface, so the
+     inline axis must stay unclipped. */
   overflow-y: clip;
 }
 /* Astryx ChatReasoning and ChatToolCalls bring their own top margin, which
