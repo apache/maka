@@ -20,6 +20,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   auth,
+  validateAuthorizationResponseIssuer,
   Client,
   extractWWWAuthenticateParams,
   LATEST_PROTOCOL_VERSION,
@@ -84,6 +85,7 @@ import { createMcpToolBinding, parseMcpToolBinding } from './tool-binding.js';
 import { McpToolCallError, normalizeToolCallError } from './tool-call-error.js';
 import { discoverMcpTools, type McpDiscoveredTool } from './tool-discovery.js';
 import { McpToolCallPreparer, type McpToolCallPreparationState } from './tool-output-validation.js';
+import { mapMcpToolProgress } from './tool-progress.js';
 import { McpCredentialCoordinator } from './credential-coordinator.js';
 import {
   assertTransportSecurity,
@@ -93,6 +95,9 @@ import {
 import {
   McpAuthRequiredError,
   McpOAuthProvider,
+  authorizationCallbackError,
+  mcpOAuthRecordBoundTo,
+  type McpAuthorizationCallback,
   type McpOAuthRecord,
   type McpOAuthStorage,
 } from './oauth.js';
@@ -105,6 +110,7 @@ export {
 } from './credential-oauth-storage.js';
 export {
   createMemoryMcpOAuthStorage,
+  type McpAuthorizationCallback,
   McpAuthRequiredError,
   McpOAuthProvider,
   type McpOAuthRecord,
@@ -542,7 +548,7 @@ export class McpClientManager {
             : undefined;
         if (owed) {
           try {
-            await this.forgetAuthorization(serverId, owed, { signal });
+            await this.forgetAuthorization(serverId, owed, { signal, successor: serverConfig });
           } catch (error) {
             if (signal?.aborted) throw error;
             await this.blockForCredentialCleanup(serverId, current, owed, error);
@@ -893,6 +899,9 @@ export class McpClientManager {
     options: {
       signal?: AbortSignal;
       timeoutMs?: number;
+      onProgress?: (current: number, total: number) => void;
+      /** McpToolProvider name; Desktop in-process tools pass this instead of onProgress. */
+      emitProgress?: (current: number, total: number) => void;
       requestInteraction?: (
         form: InteractionFormInput,
         options?: { cancellationSignal?: AbortSignal },
@@ -990,6 +999,26 @@ export class McpClientManager {
       )
         throw new McpToolCallError(serverId, toolName, 'tool binding is stale');
     };
+    const progressListener = options.onProgress ?? options.emitProgress;
+    let forwardedProgressTotal: number | undefined;
+    let forwardedProgressCurrent = -1;
+    const forwardProgress = (progress: unknown): void => {
+      const mapped = mapMcpToolProgress(progress);
+      if (!mapped) return;
+      if (
+        (forwardedProgressTotal !== undefined && mapped.total !== forwardedProgressTotal) ||
+        mapped.current <= forwardedProgressCurrent
+      ) {
+        return;
+      }
+      forwardedProgressTotal ??= mapped.total;
+      forwardedProgressCurrent = mapped.current;
+      try {
+        progressListener?.(mapped.current, mapped.total);
+      } catch {
+        // Progress is advisory: a listener failure must not fail the tool.
+      }
+    };
     try {
       const originalArguments = requestInteraction ? structuredClone(args) : args;
       let continuation: { inputResponses?: Record<string, ElicitResult>; requestState?: string } =
@@ -1013,6 +1042,7 @@ export class McpClientManager {
             signal,
             timeout: options.timeoutMs ?? this.timeouts.callToolMs,
             toolDefinition: structuredClone(preparation.value.definitionForSdk),
+            ...(progressListener ? { onprogress: forwardProgress } : {}),
             ...(requestInteraction ? { allowInputRequired: true } : {}),
           },
         );
@@ -1777,7 +1807,7 @@ export class McpClientManager {
    * that check. */
   async finishAuthorization(
     serverId: string,
-    callback: { code: string; iss?: string; state?: string },
+    callback: McpAuthorizationCallback,
     options: { signal?: AbortSignal } = {},
   ): Promise<McpServerStatus> {
     try {
@@ -1791,10 +1821,9 @@ export class McpClientManager {
 
   private async finishAuthorizationRound(
     serverId: string,
-    callback: { code: string; iss?: string; state?: string },
+    callback: McpAuthorizationCallback,
     options: { signal?: AbortSignal } = {},
   ): Promise<McpServerStatus> {
-    const authorizationCode = callback.code;
     const { config } = this.requireRemoteEntry(serverId);
     // The immediate read doubles as the flow's generation/version pin.
     const storage = this.flowStorage(serverId, options.signal);
@@ -1822,6 +1851,23 @@ export class McpClientManager {
     if (record?.pendingServerUrl !== config.url) {
       throw new Error(`MCP server "${serverId}" changed its URL during authorization`);
     }
+    const metadata = record.discovery?.authorizationServerMetadata;
+    const expectedIssuer = metadata?.issuer ?? record.discovery?.authorizationServerUrl;
+    if (!expectedIssuer) throw new Error('OAuth callback has no recorded issuer');
+    try {
+      validateAuthorizationResponseIssuer({
+        iss: callback.iss,
+        expectedIssuer: String(expectedIssuer),
+        issParameterSupported: metadata?.authorization_response_iss_parameter_supported === true,
+      });
+    } catch {
+      // SDK errors echo the untrusted iss parameter; it must not cross IPC.
+      throw new Error('OAuth callback issuer validation failed');
+    }
+    if ('error' in callback) {
+      throw authorizationCallbackError(callback.error);
+    }
+    const authorizationCode = callback.code;
     const provider = new McpOAuthProvider({
       serverId,
       serverUrl: config.url,
@@ -1971,6 +2017,7 @@ export class McpClientManager {
     options: {
       signal?: AbortSignal;
       onCommitStarted?: () => void;
+      successor?: McpServerConfig;
     } = {},
   ): Promise<void> {
     if (!this.coordinator) return;
@@ -1986,7 +2033,16 @@ export class McpClientManager {
     // erase() owns the write fence: once its storage commit starts it must
     // settle before sync can report cancellation, otherwise a tombstone can
     // land after the caller has already begun rollback/reconciliation.
-    await this.coordinator.erase(serverId, options);
+    const { successor, ...eraseOptions } = options;
+    await this.coordinator.erase(serverId, {
+      ...eraseOptions,
+      // Another process may have applied the same change and signed in first.
+      ...(successor &&
+        !isMcpStdioConfig(successor) && {
+          spare: (record: McpOAuthRecord) =>
+            mcpOAuthRecordBoundTo(record, successor.url, successor.oauth),
+        }),
+    });
   }
 
   /** Drops stored tokens and registration, returning the server to needs-auth. */
@@ -3237,7 +3293,13 @@ function reapTransport(transport: Transport): Promise<void> {
     // server process is still alive. The real-child regression test must stay
     // green before changing the SDK version or this private compatibility shim.
     const disposable = transport as unknown as { _dispose?(): Promise<void> };
-    if (disposable._dispose) return disposable._dispose().catch(() => {});
+    if (disposable._dispose) {
+      const reaped = disposable._dispose().catch(() => {});
+      // Auto negotiation temporarily wraps close() to cancel its disposable
+      // probe sibling. _dispose() only reaps this transport's own child, so
+      // keep the public lifecycle hook after capturing that child's reaper.
+      return Promise.all([reaped, transport.close().catch(() => {})]).then(() => undefined);
+    }
   }
   return transport.close().catch(() => {});
 }

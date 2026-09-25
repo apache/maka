@@ -683,6 +683,133 @@ test('TUI MCP import preserves unrelated external edits and rejects changed prev
   await controller.close();
 });
 
+test('TUI MCP follows a change Desktop makes to mcp.json and keeps an open import preview', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(emptyConfig(), order);
+  const manager = managementManager(order);
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready', 'TUI MCP initialization');
+  const preview = controller.previewImport('{"docs":{"url":"https://docs.example/mcp"}}');
+  if (preview.status !== 'ready') throw new Error('preview did not prepare');
+  order.length = 0;
+
+  const fromDesktop: McpConfigFile = { version: 3, mcpServers: { desktop: { command: 'server' } } };
+  store.replaceElsewhere(fromDesktop);
+  await waitFor(
+    () => controller.configForEdit('desktop') !== undefined,
+    'the change made in Desktop',
+  );
+  await waitFor(() => controller.snapshot().configuration === 'ready', 'the manager to follow it');
+  assert.deepEqual(order, ['get', 'sync']);
+
+  // A notification for a file it already has, such as its own write, changes nothing.
+  order.length = 0;
+  store.replaceElsewhere(fromDesktop);
+  await waitFor(() => order.length > 0, 'the echo to be read');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ['get']);
+
+  assert.deepEqual(
+    await controller.execute({ kind: 'commit_import', previewId: preview.preview.previewId }),
+    { status: 'applied', effect: 'published' },
+  );
+  assert.ok((await store.store.get()).mcpServers.desktop);
+  await controller.close();
+});
+
+test('closing TUI MCP cancels a stalled external configuration sync without reverting the edit', async (t) => {
+  const store = mutableConfigStore(emptyConfig(), []);
+  const manager = managementManager([]);
+  const sync = manager.manager.sync;
+  const syncing = deferred<void>();
+  const release = deferred<void>();
+  let syncSignal: AbortSignal | undefined;
+  manager.manager.sync = async (config, options) => {
+    if (config.mcpServers.desktop) {
+      syncSignal = options?.signal;
+      syncing.resolve();
+      await release.promise;
+    }
+    return sync(config, options);
+  };
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  t.after(async () => {
+    release.resolve();
+    await controller.close();
+  });
+  await waitFor(() => controller.snapshot().initialization === 'ready', 'TUI MCP initialization');
+  const fromDesktop: McpConfigFile = { version: 3, mcpServers: { desktop: { command: 'server' } } };
+  store.replaceElsewhere(fromDesktop);
+  await syncing.promise;
+  const closing = controller.close();
+  assert.equal(await settlesWithin(closing, 500), true);
+  assert.equal(syncSignal?.aborted, true);
+  assert.deepEqual(await store.store.get(), fromDesktop);
+  await closing;
+});
+
+test('TUI MCP follows a change Desktop makes while the TUI is still starting', async () => {
+  const store = mutableConfigStore(emptyConfig(), []);
+  const manager = managementManager([]);
+  const sync = manager.manager.sync;
+  const started = deferredValue<void>();
+  let first = true;
+  manager.manager.sync = async (config: McpConfigFile) => {
+    if (first) {
+      first = false;
+      await started.promise;
+    }
+    return sync(config);
+  };
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  // Startup has read the empty file and is still connecting.
+  await new Promise((resolve) => setImmediate(resolve));
+  store.replaceElsewhere({ version: 3, mcpServers: { desktop: { command: 'server' } } });
+  started.resolve();
+  await waitFor(
+    () => controller.configForEdit('desktop') !== undefined,
+    'the change made during startup',
+  );
+  await controller.close();
+});
+
+test('TUI MCP recovers on the next mcp.json change after a failed start or sync', async () => {
+  const store = mutableConfigStore(emptyConfig(), []);
+  const manager = managementManager([]);
+  manager.failNextSync();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'error', 'the failed start');
+
+  store.replaceElsewhere({ version: 3, mcpServers: { desktop: { command: 'server' } } });
+  await waitFor(
+    () => controller.snapshot().initialization === 'ready',
+    'recovery from the failed start',
+  );
+
+  const fixed: McpConfigFile = { version: 3, mcpServers: { fixed: { command: 'server' } } };
+  manager.failNextSync();
+  store.replaceElsewhere(fixed);
+  await waitFor(() => controller.snapshot().configuration === 'out_of_sync', 'the failed sync');
+  store.replaceElsewhere(fixed);
+  await waitFor(
+    () => controller.snapshot().configuration === 'ready',
+    'recovery from the failed sync',
+  );
+  await controller.close();
+});
+
 test('TUI MCP keeps a durable mutation visible when manager synchronization fails', async () => {
   const order: string[] = [];
   const store = mutableConfigStore(emptyConfig(), order);
@@ -789,6 +916,7 @@ for (const scenario of [
               throw error;
             }
           },
+          subscribeChanges: () => () => {},
         },
         manager: manager.manager,
         createProvider: (current) =>
@@ -922,6 +1050,7 @@ test('TUI MCP does not reconcile or replay a write that fails before publication
           transforms += 1;
           throw new Error('temporary file write failed');
         },
+        subscribeChanges: () => () => {},
       },
       manager: manager.manager,
       createProvider: () => undefined,
@@ -954,6 +1083,7 @@ test('TUI MCP close fences reconciliation while retaining the published write er
         transform: async () => {
           throw writeError;
         },
+        subscribeChanges: () => () => {},
       },
       manager: manager.manager,
       createProvider: () => undefined,
@@ -1000,6 +1130,7 @@ for (const scenario of ['during-cleanup', 'after-cleanup', 'late-without-retirem
       { workspaceRoot: '/unused', connection: connectionHarness().connection },
       {
         configStore: {
+          subscribeChanges: () => () => {},
           get: async () => structuredClone(current),
           transform: async (apply) => {
             transforms += 1;
@@ -1092,6 +1223,7 @@ test('TUI MCP cancels reconciliation without rolling back an already-published w
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     {
       configStore: {
+        subscribeChanges: () => () => {},
         get: async () => structuredClone(current),
         transform: async (apply) => {
           transforms += 1;
@@ -1175,6 +1307,7 @@ test('TUI MCP close fences an admitted mutation before persistence', async () =>
       writes += 1;
       return next;
     },
+    subscribeChanges: () => () => {},
   };
   const manager = managementManager([]);
   const connection = connectionHarness();
@@ -1215,6 +1348,7 @@ test('TUI MCP aborts a queued mutation before it reaches persistence', async () 
     if (syncCount === 2) await firstSync.promise;
   };
   const store = {
+    subscribeChanges: () => () => {},
     get: async () => emptyConfig(),
     transform: async (
       apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
@@ -1300,6 +1434,7 @@ test('TUI MCP action deadline bounds a config transaction waiting before its cal
   let transforms = 0;
   const blocked = deferred<McpConfigFile>();
   const store = {
+    subscribeChanges: () => () => {},
     get: async () => emptyConfig(),
     transform: async () => {
       transforms += 1;
@@ -1341,6 +1476,7 @@ test('TUI MCP compensates a config transaction that commits after its cleanup de
   let transforms = 0;
   const lateWrite = deferred<void>();
   const store = {
+    subscribeChanges: () => () => {},
     get: async () => structuredClone(config),
     transform: async (
       apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
@@ -1442,6 +1578,7 @@ test('TUI MCP late compensation preserves a successful same-value retry', async 
     {
       configStore: {
         get: () => store.get(),
+        subscribeChanges: (listener) => store.subscribeChanges(listener),
         transform: async (apply) => {
           const number = ++transforms;
           const committed = await store.transform(apply);
@@ -1484,6 +1621,7 @@ test('TUI MCP late compensation preserves another controller same-value retry', 
     {
       configStore: {
         get: () => storeA.get(),
+        subscribeChanges: (listener) => storeA.subscribeChanges(listener),
         transform: async (apply) => {
           const number = ++transforms;
           const committed = await storeA.transform(apply);
@@ -2116,6 +2254,7 @@ test('TUI MCP marks configuration out of sync when persistence fails after crede
   } satisfies McpConfigFile;
   let credentialRetired = false;
   const store = {
+    subscribeChanges: () => () => {},
     get: async () => structuredClone(initial),
     transform: async (
       apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
@@ -2228,6 +2367,7 @@ test('TUI MCP reports a failed cancellation rollback instead of claiming cancell
   let config = emptyConfig();
   let transforms = 0;
   const store = {
+    subscribeChanges: () => () => {},
     get: async () => structuredClone(config),
     transform: async (
       apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
@@ -2563,6 +2703,7 @@ test('TUI MCP rebases an action over an unrelated concurrent config edit', async
       });
       return structuredClone(config);
     },
+    subscribeChanges: () => () => {},
   };
   const manager = managementManager([]);
   const connection = connectionHarness();
@@ -2857,7 +2998,12 @@ function cancellableTestManager(
 
 function mutableConfigStore(initial: McpConfigFile, order: string[]) {
   let config = structuredClone(initial);
+  const listeners = new Set<(error?: Error) => void>();
   const store = {
+    subscribeChanges: (listener: (error?: Error) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     get: async () => {
       order.push('get');
       return structuredClone(config);
@@ -2874,6 +3020,11 @@ function mutableConfigStore(initial: McpConfigFile, order: string[]) {
     store,
     replace(next: McpConfigFile) {
       config = structuredClone(next);
+    },
+    /** Another process replacing the file. */
+    replaceElsewhere(next: McpConfigFile) {
+      config = structuredClone(next);
+      for (const listener of listeners) listener();
     },
   };
 }
@@ -3136,6 +3287,7 @@ function configStoreHarness(get: () => Promise<McpConfigFile>) {
     get,
     transform: async (apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>) =>
       apply(await get()),
+    subscribeChanges: () => () => {},
   };
 }
 function deferredValue<T>() {

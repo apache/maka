@@ -19,16 +19,17 @@
 
 import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { expect, fn, spyOn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
+import type { SessionEvent } from '@maka/core/events';
 import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
-import type { SessionSummary } from '@maka/core/session';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
-import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import { ChatSurfaceLayout, Composer, ToastProvider } from '@maka/ui';
+import { WorkbarHost, WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { WorkbarSurface, useWorkbarLayoutState, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -182,7 +183,109 @@ const artifactText: Record<string, string> = {
     '+    <Card variant="transparent" padding={0} height="100%">',
   ].join('\n'),
   'artifact-notes': '# Conversation review\n\n- Long transcript\n- Narrow viewport',
+  'artifact-html': '<!doctype html><html><body><h1>Preview document</h1><p>Sandboxed content</p></body></html>',
 };
+
+const htmlArtifact: ArtifactRecord = {
+  id: 'artifact-html',
+  sessionId: SESSION_ID,
+  turnId: 'turn-review',
+  createdAt: NOW,
+  name: 'preview.html',
+  kind: 'html',
+  relativePath: `${SESSION_ID}/preview.html`,
+  sizeBytes: artifactText['artifact-html']!.length,
+  mimeType: 'text/html',
+  source: 'subagent_writeback',
+};
+
+const officeArtifact: ArtifactRecord = {
+  ...htmlArtifact,
+  id: 'artifact-office',
+  name: 'report.xlsx',
+  kind: 'file',
+  relativePath: `${SESSION_ID}/report.xlsx`,
+  mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+
+artifactText['artifact-yaml'] = [
+  '# Repository configuration', 'github:', '  description: >-',
+  '    A workspace for durable agent tasks.', '  labels:',
+  '    - agent-runtime', '    - desktop', '    - electron',
+  '    - typescript', '    - cli', '    - documentation',
+  '    - testing', '    - infrastructure', '    - review',
+  'notifications:', '  issues: true', '  pullrequests: true',
+  '  discussions: false', '  commits: false',
+  'reviews:', '  profile: "chill"', '  request_changes_workflow: false',
+  '  auto_assign_reviewers: false', '  path_instructions:',
+  '    - path: "apps/desktop/**"', '      instructions: |',
+  '        Review the renderer diff and its state transitions.',
+  '        Verify the focused preview at narrow widths.',
+  '    - path: "packages/ui/**"', '      instructions: |',
+  '        Check shared component semantics and keyboard behavior.',
+  'checks:', '  lint: true', '  typecheck: true',
+  '  smoke: true', '  report: summary',
+].join('\n');
+
+const yamlArtifact: ArtifactRecord = {
+  ...htmlArtifact,
+  id: 'artifact-yaml', name: '.asf.yaml', kind: 'file',
+  relativePath: `${SESSION_ID}/.asf.yaml`, mimeType: 'application/yaml',
+  sizeBytes: artifactText['artifact-yaml']!.length,
+};
+
+const recentAnswer: StoredMessage = {
+  type: 'assistant', id: 'recent-answer', turnId: 'source-turn', ts: NOW,
+  text: 'The latest check is complete. The file remains unchanged and the review is ready.', modelId: 'story-model',
+};
+
+const previewStop = fn();
+const openPreviewConversation = fn();
+const longPreviewReply = Array.from({ length: 180 }, (_, index) => `Paragraph ${index + 1}: The document remains readable while this detailed reply explains the verification results.`).join('\n\n');
+
+const recentLiveEvents: SessionEvent[] = [
+  { type: 'tool_start', id: 'recent-tool', turnId: 'source-turn', toolUseId: 'tool-one',
+    toolName: 'Bash', displayName: 'Check working tree', args: {}, ts: NOW },
+  { type: 'tool_start', id: 'recent-hidden-tool', turnId: 'source-turn', toolUseId: 'tool-hidden',
+    toolName: 'Bash', displayName: 'Internal setup', modelVisibility: 'hidden', args: {}, ts: NOW + 1_000 },
+  { type: 'text_complete', id: 'recent-text', turnId: 'source-turn', messageId: 'step-one', ts: NOW + 2_000,
+    text: 'I checked the repository state and found the relevant changes.' },
+];
+
+const visualLiveEvents: SessionEvent[] = [
+  { type: 'text_complete', id: 'visual-text-1', turnId: 'source-turn', messageId: 'visual-step-1', ts: NOW,
+    text: '我先核对仓库和当前工作区，确认打开的变更与 review 状态，再逐项处理。开始修改前会确认本地分支与未提交改动，避免覆盖现有工作。' },
+  { type: 'tool_start', id: 'visual-hidden', turnId: 'source-turn', toolUseId: 'visual-hidden',
+    toolName: 'Bash', displayName: 'Internal setup', modelVisibility: 'hidden', args: {}, ts: NOW + 500 },
+  { type: 'tool_start', id: 'visual-tool-1', turnId: 'source-turn', toolUseId: 'visual-tool-1',
+    toolName: 'Read', displayName: '文件并运行了命令', args: {}, ts: NOW + 1_000 },
+  { type: 'tool_result', id: 'visual-result-1', turnId: 'source-turn', toolUseId: 'visual-tool-1',
+    isError: false, content: { kind: 'text', text: 'ok' }, ts: NOW + 1_500 },
+  { type: 'text_complete', id: 'visual-text-2', turnId: 'source-turn', messageId: 'visual-step-2', ts: NOW + 2_000,
+    text: '查到仓库中有多个待处理的变更，其中一部分已有独立 worktree。我会先读取关联的检查结果，再在对应工作区处理。' },
+  { type: 'tool_start', id: 'visual-tool-2', turnId: 'source-turn', toolUseId: 'visual-tool-2',
+    toolName: 'Bash', displayName: '检查 PR 状态', args: {}, ts: NOW + 3_000 },
+  { type: 'tool_result', id: 'visual-result-2', turnId: 'source-turn', toolUseId: 'visual-tool-2',
+    isError: false, content: { kind: 'text', text: 'ok' }, ts: NOW + 3_500 },
+  { type: 'text_complete', id: 'visual-text-3', turnId: 'source-turn', messageId: 'visual-step-3', ts: NOW + 4_000,
+    text: '目前真正处于 **BLOCKED** 的是 5 个；其余已经合并或验证通过，暂不纳入这轮处理。我会从最近的一项开始，先复核失败原因。' },
+  { type: 'tool_start', id: 'visual-tool-3', turnId: 'source-turn', toolUseId: 'visual-tool-3',
+    toolName: 'Bash', displayName: '核对失败检查', args: {}, ts: NOW + 5_000 },
+  { type: 'tool_result', id: 'visual-result-3', turnId: 'source-turn', toolUseId: 'visual-tool-3',
+    isError: false, content: { kind: 'text', text: 'ok' }, ts: NOW + 5_500 },
+  { type: 'text_complete', id: 'visual-text-4', turnId: 'source-turn', messageId: 'visual-step-4', ts: NOW + 6_000,
+    text: 'CI 的失败发生在另一个平台的 PTY 测试，而不是文件预览本身。正在对照日志和本地结果，确认能否复现。' },
+  { type: 'tool_start', id: 'visual-tool-4', turnId: 'source-turn', toolUseId: 'visual-tool-4',
+    toolName: 'Read', displayName: '读取测试日志', args: {}, ts: NOW + 7_000 },
+  { type: 'tool_result', id: 'visual-result-4', turnId: 'source-turn', toolUseId: 'visual-tool-4',
+    isError: false, content: { kind: 'text', text: 'ok' }, ts: NOW + 7_500 },
+  { type: 'text_complete', id: 'visual-text-5', turnId: 'source-turn', messageId: 'visual-step-5', ts: NOW + 8_000,
+    text: '日志表明控制命令已返回，但测试没有及时收到末尾输出。这一结果只说明当前测试路径尚未完成，不能据此宣称所有平台都通过。' },
+  { type: 'tool_start', id: 'visual-tool-5', turnId: 'source-turn', toolUseId: 'visual-tool-5',
+    toolName: 'Bash', displayName: '复核跨平台结果', args: {}, ts: NOW + 9_000 },
+  { type: 'text_complete', id: 'visual-text-6', turnId: 'source-turn', messageId: 'visual-step-6', ts: NOW + 10_000,
+    text: '我会继续检查平台差异，并在拿到可靠结果后再更新结论；这一步不会修改当前打开的文件。' },
+];
 
 const gitReviewFiles: GitReviewSnapshot['files'] = [
   {
@@ -766,6 +869,14 @@ function bridge(options: {
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
   browserState?: BrowserState;
+  artifactRecords?: ArtifactRecord[];
+  recentMessages?: StoredMessage[];
+  recentEvents?: SessionEvent[];
+  recentRunning?: boolean;
+  recentCompletesAfterMs?: number;
+  recentStopReason?: 'end_turn' | 'user_stop';
+  recentPendingReads?: number;
+  recentStartedAgoMs?: number;
   browserViewport?: (input: { sessionId: string; rect: unknown }) => void;
   browserCapture?: () => Promise<string | undefined>;
   popupMenu?: WorkbarServices['popupMenu'];
@@ -783,10 +894,11 @@ function bridge(options: {
   terminalWriteFails?: boolean;
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
+  let recentPendingReads = options.recentPendingReads ?? 0;
   const services = createFakeWorkbarServices({
     popupMenu: options.popupMenu ?? (async () => null),
     artifacts: {
-      list: async () => artifacts,
+      list: async () => options.artifactRecords ?? artifacts,
       readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
@@ -879,7 +991,9 @@ function bridge(options: {
           status: 'completed',
         },
       ],
-      readSettledMessages: async () => ({ messages: [], settled: true }),
+      readSettledMessages: async () => ({
+        messages: options.recentMessages ?? [], settled: recentPendingReads-- <= 0,
+      }),
       branchFromTurn: async () => ({ ok: true, session: SIDE_CHAT_SESSION }),
       cleanupSessionCopy: async () => undefined,
       abandonSessionCopy: async () => undefined,
@@ -912,14 +1026,27 @@ function bridge(options: {
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,
       }),
-      regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       respondToUserForm: async () => undefined,
-      subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      subscribeEvents: (_sessionId, handler, onSeeded, _onSeedError, onExecution) => {
+        if (options.recentRunning !== undefined) onExecution?.({ type: 'host_execution', available: true,
+          rootTurn: options.recentRunning
+            ? { sessionId: SESSION_ID, turnId: 'source-turn', runId: 'story-run', status: 'running' }
+            : null });
+        options.recentEvents?.forEach((event, index) => handler(options.recentStartedAgoMs === undefined
+          ? event : { ...event, ts: Date.now() - options.recentStartedAgoMs + index * 1_000 }));
         onSeeded?.();
-        return unsubscribe();
+        const timer = options.recentCompletesAfterMs === undefined ? undefined : window.setTimeout(() => {
+          if (options.recentStopReason === 'user_stop') handler({ type: 'abort', id: 'recent-abort', turnId: 'source-turn', ts: NOW + 2_000, reason: 'user_stop' });
+          handler({ type: 'complete', id: 'recent-complete', turnId: 'source-turn', ts: NOW + 2_000, stopReason: options.recentStopReason ?? 'end_turn' });
+          onExecution?.({ type: 'host_execution', available: true, rootTurn: {
+            sessionId: SESSION_ID, turnId: 'source-turn', runId: 'story-run', status: 'completed',
+            terminalEventId: 'recent-complete',
+          } });
+        }, options.recentCompletesAfterMs);
+        return () => { if (timer !== undefined) window.clearTimeout(timer); };
       },
       subscribeSessionChanges: unsubscribe,
     },
@@ -948,8 +1075,10 @@ function Workbar(props: {
    * affordance drive `rightCollapsed`, the way the app's reducer does.
    */
   collapsible?: boolean;
+  focusable?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [focused, setFocused] = useState(false);
   const emptyTabsState = createSessionWorkbarTabsState();
   let tab: SessionWorkbarTab | undefined;
   let quotes: QuoteCompanionPanelState[] | undefined;
@@ -996,6 +1125,7 @@ function Workbar(props: {
     <ToastProvider>
       <div
         className="maka-detail-with-artifacts"
+        data-preview-focused={focused ? props.tab : undefined}
         style={{
           // Fill the preview viewport like AppShell fills the window; a fixed
           // height pushes the stacked workbar below the fold in short windows.
@@ -1006,10 +1136,17 @@ function Workbar(props: {
           // stops showing the shell it exists to pin.
           '--maka-plate-titlebar-clearance': 'calc(var(--h-titlebar) - var(--agents-content-area-gap))',
           ...(props.width ? { '--maka-session-workbar-width': `${props.width}px` } : {}),
+          '--maka-focused-composer-space': '160px',
         } as CSSProperties}
       >
         <div className="mainColumn">
-
+          {props.focusable && (
+            <ChatSurfaceLayout composer={<div className="maka-session-composer-dock"><textarea aria-label="Session draft" placeholder="Ask about this file"
+              style={{ display: 'block', position: 'relative', zIndex: 5, boxSizing: 'border-box', width: '100%', minHeight: 72, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--background)', color: 'var(--foreground)' }} />
+            </div>}>
+              <div className="maka-chatContent">Conversation remains mounted while reading a file.</div>
+            </ChatSurfaceLayout>
+          )}
         </div>
         <WorkbarSurface
           workspace={props.workspace}
@@ -1019,6 +1156,9 @@ function Workbar(props: {
           onToggleRightPanel={() => setCollapsed((value) => !value)}
           panelsState={panels}
           rightCollapsed={collapsed}
+          focusedPreview={focused && (props.tab === 'files' || props.tab === 'browser') ? props.tab : null}
+          onTogglePreviewFocus={props.focusable ? () => setFocused((current) => !current) : undefined}
+          onPreviewExit={() => setFocused(false)}
           bottomOpen={false}
           onActivateTab={(placement, tabId) => setPanels((state) => reduceWorkbarPanels(state, { type: 'activate', placement, tabId }))}
           onCloseTab={(placement, tab) => setPanels((state) => reduceWorkbarPanels(state, { type: 'close', placement, tabIds: [tab.id] }))}
@@ -1041,6 +1181,46 @@ function Workbar(props: {
       </div>
     </ToastProvider>
   );
+}
+
+const storyResizable = {
+  _size: 480, _isCollapsed: false, _onResizeStart: noop, _onResizeMove: noop,
+  _onResizeEnd: noop, _minSizePx: 320, _maxSizePx: 600, _snaps: [],
+  _collapsedSize: 40, _collapsible: false, _isResizableProps: true,
+} as WorkbarHostModel['rightResizable'];
+
+function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boolean; streaming?: boolean; stagedFile?: boolean; frameWidth?: number; missingComposerHost?: boolean; onStop?: () => void; onOpenConversation?: (sessionId: string, turnId?: string) => void }) {
+  const layout = useWorkbarLayoutState(SESSION_ID, undefined);
+  const [panels, setPanels] = useState(() => createSessionWorkbarPanelsState(
+    openStaticSessionWorkbarTab(createSessionWorkbarTabsState(), props.tab),
+  ));
+  const model: WorkbarHostModel = {
+    workspace: 'session', activeId: SESSION_ID, sourceSession: TOOL_PICKER_SOURCE_SESSION,
+    rightCollapsed: false, bottomOpen: false, hidden: false, rightWidth: layout.workbarWidth, bottomHeight: 300,
+    onOpenConversation: props.onOpenConversation,
+    panelsState: panels, rightResizable: layout.workbarResizable, bottomResizable: storyResizable,
+    onActivateTab: (placement, tabId) => setPanels((state) => reduceWorkbarPanels(state, { type: 'activate', placement, tabId })),
+    onCloseTab: (placement, tab) => setPanels((state) => reduceWorkbarPanels(state, { type: 'close', placement, tabIds: [tab.id] })),
+    onOpenLauncher: noop, onRequestOpenTab: noop, onToggleRightPanel: noop, onDismissPanel: noop,
+    closeConfirmation: { key: 'none', open: false, sideChatCount: 0, onCancel: noop, onConfirm: noop },
+  };
+  return <ToastProvider><div className="maka-detail-with-artifacts" style={{
+    height: '100dvh', width: props.frameWidth, '--maka-plate-titlebar-clearance': 'calc(var(--h-titlebar) - var(--agents-content-area-gap))',
+    '--maka-session-workbar-width': `${layout.workbarWidth}px`,
+  } as CSSProperties}>
+    <div className="mainColumn">{props.missingComposerHost ? null : <ChatSurfaceLayout composer={props.realComposer
+      ? <Composer draftKey={SESSION_ID} streaming={props.streaming ?? true} onSend={noop} onStop={props.onStop ?? noop}
+          activeSession={TOOL_PICKER_SOURCE_SESSION} activeModel="claude-sonnet-4-5" activeModelLabel="Sonnet 4.5"
+          onPickAttachments={noop} permissionMode="ask" onPermissionModeChange={noop}
+          pendingAttachments={props.stagedFile ? [{ displayName: 'reference.md', kind: 'doc', size: 1024 }] : undefined}
+          onRemoveAttachment={noop} />
+      : <textarea aria-label="Session draft"
+        style={{ display: 'block', position: 'relative', zIndex: 5, boxSizing: 'border-box', width: '100%', minHeight: 72, padding: 16,
+          border: '1px solid var(--border)', borderRadius: 8, background: 'var(--background)', color: 'var(--foreground)' }} />}>
+      <div className="maka-chatContent">Conversation remains mounted while reading.</div>
+    </ChatSurfaceLayout>}</div>
+    <WorkbarHost model={model} />
+  </div></ToastProvider>;
 }
 
 const meta = {
@@ -1358,6 +1538,64 @@ export const BrowserLoaded: Story = {
     expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeNull();
     finishNativeMenu(null);
     await waitFor(() => expect(add).toHaveAttribute('aria-expanded', 'false'));
+
+    // An idle strip samples no geometry; a strip that moves or shrinks in place
+    // is mirrored again; a DOM overlay across it parks the page until it closes.
+    await userEvent.unhover(add);
+    await waitFor(() => expect(document.querySelector(':popover-open:not(:empty)')).toBeNull());
+    const strip = canvasElement.querySelector<HTMLElement>('.maka-browser-strip')!;
+    const measure = spyOn(strip, 'getBoundingClientRect');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(measure).not.toHaveBeenCalled();
+    measure.mockRestore();
+    const before = browserViewport.mock.lastCall![0].rect as { x: number; width: number };
+    strip.style.position = 'relative';
+    strip.style.left = '24px';
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x + 24, width: before.width }));
+    strip.style.removeProperty('position');
+    strip.style.removeProperty('left');
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    strip.style.width = `${before.width - 40}px`;
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width - 40 }));
+    strip.style.removeProperty('width');
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    const bounds = strip.getBoundingClientRect();
+    const overlay = document.createElement('div');
+    overlay.popover = 'manual';
+    overlay.textContent = 'menu';
+    Object.assign(overlay.style, { inset: 'auto', margin: '0', left: `${bounds.left + 8}px`, top: `${bounds.top + 8}px`, width: '80px', height: '40px' });
+    document.body.append(overlay);
+    // An open popover that moves, then grows, across the strip with no toggle.
+    for (const across of [{ left: `${bounds.left + 8}px` }, { width: '200px' }]) {
+      Object.assign(overlay.style, { left: `${bounds.left - 120}px`, width: '80px' });
+      overlay.showPopover();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width });
+      Object.assign(overlay.style, across);
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeNull());
+      overlay.hidePopover();
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    }
+    Object.assign(overlay.style, { left: `${bounds.left + 8}px`, width: '80px' });
+    // Closed by hiding, then by unmounting while still open.
+    for (const close of [() => overlay.hidePopover(), () => overlay.remove()]) {
+      overlay.showPopover();
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeNull());
+      await waitFor(() => expect(canvasElement.querySelector('.maka-browser-backdrop')).not.toBeNull());
+      close();
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+      expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeNull();
+    }
+    // Like the toast viewport: open while empty, then filled with no toggle.
+    overlay.replaceChildren();
+    document.body.append(overlay);
+    overlay.showPopover();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    overlay.textContent = 'toast';
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeNull());
+    overlay.replaceChildren();
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    overlay.remove();
   },
 };
 
@@ -1510,6 +1748,529 @@ export const BrowserNavigationFailed: Story = {
 export const Files: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="files" />,
+};
+
+// Real path: drag the divider left in an empty Browser, then restore the same conversation and draft.
+export const BrowserDividerFocus: Story = {
+  decorators: [bridge({ browserState: EMPTY_BROWSER_STATE })],
+  render: () => <FocusedHostFlow tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('textbox', { name: '浏览器地址' });
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    await userEvent.type(draft, 'Keep my divider draft');
+    const frame = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts')!;
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-session-workbar[data-placement="right"]')!;
+    const separator = canvas.getByRole('separator', { name: '调整任务工作栏宽度' });
+    const initialWidth = panel.getBoundingClientRect().width;
+    const box = separator.getBoundingClientRect();
+    const point = { clientX: box.x + 2, clientY: box.y + box.height / 2 };
+    const target = document.elementFromPoint(point.clientX, point.clientY)!;
+    expect(separator.contains(target)).toBe(true);
+    const end = { clientX: frame.getBoundingClientRect().left + 180, clientY: point.clientY };
+    const pointer = userEvent.setup();
+    await pointer.pointer([
+      { keys: '[MouseLeft>]', target, coords: point },
+      { target, coords: end },
+    ]);
+    expect(frame).toHaveAttribute('data-preview-collapse-ready', 'true');
+    expect(canvas.getByText('松开以聚焦网页')).toBeVisible();
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    // Reversing direction before release must cancel the collapse intent.
+    await pointer.pointer([
+      { target, coords: point },
+      { keys: '[/MouseLeft]', target, coords: point },
+    ]);
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    expect(frame).not.toHaveAttribute('data-preview-resizing');
+    await pointer.pointer([
+      { keys: '[MouseLeft>]', target, coords: point },
+      { target, coords: end },
+      { keys: '[/MouseLeft]', target, coords: end },
+    ]);
+    await waitFor(() => expect(frame).toHaveAttribute('data-preview-focused', 'browser'));
+    await waitFor(() => expect(draft).toHaveFocus());
+    expect(canvas.queryByText('松开以聚焦网页')).not.toBeVisible();
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    expect(draft).toHaveValue('Keep my divider draft');
+    await canvas.findByRole('button', { name: '收起输入区' });
+    await userEvent.click(canvas.getByRole('button', { name: '还原分栏' }));
+    await waitFor(() => expect(panel.getBoundingClientRect().width).toBe(initialWidth));
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    expect(draft).toHaveValue('Keep my divider draft');
+  },
+};
+
+// Keyboard resizing remains a normal panel operation; the explicit focus
+// button is the discoverable keyboard path into focused preview mode.
+export const BrowserKeyboardResizeDoesNotFocus: Story = {
+  decorators: [bridge({ browserState: EMPTY_BROWSER_STATE })],
+  render: () => <FocusedHostFlow tab="browser" frameWidth={800} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('textbox', { name: '浏览器地址' });
+    const frame = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts')!;
+    const separator = canvas.getByRole('separator', { name: '调整任务工作栏宽度' });
+    separator.focus();
+    await userEvent.keyboard('{End}');
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    expect(frame).not.toHaveAttribute('data-preview-collapse-ready');
+    expect(canvas.queryByText('松开以聚焦网页')).not.toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
+    await waitFor(() => expect(frame).toHaveAttribute('data-preview-focused', 'browser'));
+  },
+};
+
+// A missing main composer cannot leave the panel claiming to be focused.
+export const FocusedPreviewRequiresComposerHost: Story = {
+  decorators: [bridge({ artifactRecords: artifacts.map((record) => ({ ...record, source: 'subagent_writeback' })) })],
+  render: () => <FocusedHostFlow tab="files" missingComposerHost />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText('conversation-review-notes-with-a-deliberately-long-name.md'));
+    expect(canvas.queryByRole('button', { name: '聚焦文件' })).toBeNull();
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+  },
+};
+
+// Real path: session → Files → generated Markdown → focus, restore, or drag the input handle into the preview.
+export const FilesFocusFlow: Story = {
+  decorators: [bridge({ artifactRecords: artifacts.map((record) => ({ ...record, source: 'subagent_writeback' })) })],
+  render: () => <Workbar tab="files" focusable />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText('conversation-review-notes-with-a-deliberately-long-name.md'));
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    await userEvent.type(draft, 'Keep this draft');
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦文件' }));
+    expect(canvasElement.querySelector('[data-preview-focused="files"]')).toBeTruthy();
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    expect(draft).toHaveValue('Keep this draft');
+    await userEvent.click(canvas.getByRole('button', { name: '还原分栏' }));
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦文件' }));
+    canvas.getByRole('button', { name: '还原分栏' }).focus();
+    await userEvent.keyboard('{Escape}');
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+
+    const pane = canvasElement.querySelector('.maka-artifact-pane');
+    if (!pane) throw new Error('File preview is missing');
+    const otherSession = new DataTransfer();
+    otherSession.setData('application/x-maka-composer', 'another-session');
+    pane.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: otherSession }));
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+    const currentSession = new DataTransfer();
+    currentSession.setData('application/x-maka-composer', SESSION_ID);
+    pane.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: currentSession }));
+    await waitFor(() => expect(canvasElement.querySelector('[data-preview-focused="files"]')).toBeTruthy());
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+  },
+};
+
+// Real path: session → Browser with a loaded page → focus and restore; Desktop measures the strip for its native view.
+export const BrowserFocusFlow: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
+  render: () => <Workbar tab="browser" focusable />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    await userEvent.type(draft, 'Ask about this page');
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦网页' }));
+    expect(canvasElement.querySelector('[data-preview-focused="browser"]')).toBeTruthy();
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    expect(draft).toHaveValue('Ask about this page');
+    await waitFor(() => {
+      const strip = canvasElement.querySelector<HTMLElement>('.maka-browser-strip');
+      if (!strip) throw new Error('Browser viewport is missing');
+      expect(strip.getBoundingClientRect().bottom).toBeLessThan(draft.getBoundingClientRect().top);
+    });
+    await userEvent.click(canvas.getByRole('button', { name: '还原分栏' }));
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
+    const address = canvas.getByRole('textbox', { name: '浏览器地址' });
+    await userEvent.clear(address);
+    await userEvent.type(address, 'https://unsent.example.test');
+    await userEvent.keyboard('{Escape}');
+    expect(address).toHaveValue(LOADED_BROWSER_STATE.url);
+    expect(canvasElement.querySelector('[data-preview-focused="browser"]')).toBeTruthy();
+    canvas.getByRole('button', { name: '还原分栏' }).focus();
+    await userEvent.keyboard('{Escape}');
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+    expect(draft).toHaveValue('Ask about this page');
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
+  },
+};
+
+// Real path: session → Files → generated HTML → focus its sandboxed preview.
+export const FilesFocusHtml: Story = {
+  decorators: [bridge({ artifactRecords: [htmlArtifact] })],
+  render: () => <Workbar tab="files" focusable />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦文件' }));
+    const frame = canvasElement.querySelector<HTMLIFrameElement>('.maka-artifact-preview-html-iframe');
+    if (!frame) throw new Error('HTML preview is missing');
+    expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    expect(frame.getBoundingClientRect().bottom).toBeLessThan(draft.getBoundingClientRect().top);
+  },
+};
+
+// Real path: session → Files → generated XLSX → focus its unsupported-format fallback.
+export const FilesOfficeFallback: Story = {
+  decorators: [bridge({ artifactRecords: [officeArtifact] })],
+  render: () => <Workbar tab="files" focusable />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await canvas.findByText('暂不支持 Office 内联预览');
+    expect(canvas.queryByRole('button', { name: '复制' })).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦文件' }));
+    expect(canvasElement.querySelector('[data-preview-focused="files"]')).toBeTruthy();
+  },
+};
+
+// Real path: session → Files → generated source → move the same input into focused preview during a turn.
+export const FilesRecentHostIntegration: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentEvents: recentLiveEvents, recentRunning: true })],
+  render: () => <FocusedHostFlow tab="files" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    await userEvent.type(draft, 'Keep this draft');
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '拖到文件中继续输入' }));
+    expect(canvasElement.querySelector('[data-preview-focused="files"]')).toBeTruthy();
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    expect(draft).toHaveValue('Keep this draft');
+    const toggle = await canvas.findByRole('button', { name: /正在处理/ });
+    await userEvent.click(toggle);
+    await canvas.findByText('Check working tree', { exact: false });
+    await waitFor(() => {
+      const space = parseFloat(getComputedStyle(canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts')!)
+        .getPropertyValue('--maka-focused-composer-space'));
+      expect(space).toBeGreaterThan(160);
+    });
+  },
+};
+
+// Real path: session → Browser → focus a loaded page during a turn; the native viewport leaves room for the input.
+export const BrowserRecentHostIntegration: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, recentEvents: recentLiveEvents, recentRunning: true })],
+  render: () => <FocusedHostFlow tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦网页' }));
+    const toggle = await canvas.findByRole('button', { name: /正在处理/ });
+    await userEvent.click(toggle);
+    await waitFor(() => {
+      const strip = canvasElement.querySelector<HTMLElement>('.maka-browser-strip');
+      const panel = canvasElement.querySelector<HTMLElement>('.maka-recent-turn-overlay');
+      if (!strip || !panel) throw new Error('Focused browser layout is missing');
+      expect(strip.getBoundingClientRect().bottom).toBeLessThan(panel.getBoundingClientRect().top);
+      expect(Math.abs(panel.getBoundingClientRect().bottom - draft.getBoundingClientRect().top)).toBeLessThanOrEqual(8.5);
+    });
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+  },
+};
+
+// Real path: session → Files → focus during a turn, which settles while the latest-turn panel stays expanded.
+export const FilesRecentTurnHandoff: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentEvents: recentLiveEvents,
+    recentRunning: true, recentCompletesAfterMs: 2_000, recentPendingReads: 1,
+    recentMessages: [recentAnswer] })],
+  render: () => <FocusedHostFlow tab="files" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    await userEvent.type(draft, 'A follow-up draft');
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /正在处理/ }));
+    await waitFor(() => expect(canvas.getByRole('button', { name: '本轮已结束' })).toHaveAttribute('aria-expanded', 'true'),
+      { timeout: 5_000 });
+    await canvas.findByText(/The latest check is complete/);
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    expect(draft).toHaveValue('A follow-up draft');
+  },
+};
+
+// Real path: focused Browser → stop before text_complete → keep the partial reply readable.
+export const BrowserRecentInterrupted: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, recentRunning: true,
+    recentCompletesAfterMs: 1_500, recentStopReason: 'user_stop', recentMessages: [],
+    recentEvents: [{ type: 'text_delta', id: 'partial-delta', turnId: 'source-turn', messageId: 'partial-message',
+      text: 'The partial reply remains readable after stopping.', ts: NOW }] })],
+  render: () => <FocusedHostFlow tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦网页' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /正在处理|已处理/ }));
+    // The fixture deliberately stops at 1.5s, after the running panel opens.
+    await waitFor(() => expect(canvas.getByRole('button', { name: '已暂停' })).toBeVisible(), { timeout: 5_000 });
+    expect(canvas.getByText('The partial reply remains readable after stopping.')).toBeVisible();
+    expect(canvas.queryByText('暂无最近回复')).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '已暂停' }));
+    expect(canvas.queryByText('The partial reply remains readable after stopping.')).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '已暂停' }));
+    await userEvent.click(canvas.getByRole('button', { name: '还原分栏' }));
+    expect(canvas.queryByText('The partial reply remains readable after stopping.')).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
+    expect(canvas.getByRole('button', { name: '已暂停' })).toBeVisible();
+    expect(canvas.getByText('The partial reply remains readable after stopping.')).toBeVisible();
+  },
+};
+
+// Real path: session → Files → focused source with the current turn's expanded live stream.
+export const FilesRecentVisualRunning: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentEvents: visualLiveEvents,
+    recentRunning: true, recentStartedAgoMs: 10 * 60_000 })],
+  render: () => <FocusedHostFlow tab="files" realComposer />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /已处理/ }));
+    await canvas.findByText(/CI 的失败发生/);
+    const content = canvasElement.querySelector<HTMLElement>('.maka-recent-turn-content');
+    if (!content) throw new Error('Recent turn stream is missing');
+    expect(content.textContent).not.toContain('Internal setup');
+    expect(content.textContent!.indexOf('文件并运行了命令')).toBeLessThan(content.textContent!.indexOf('查到仓库中有多个待处理的变更'));
+    canvas.getByRole('button', { name: /已处理/ }).blur();
+  },
+};
+
+// Real path: session → Files → focused source with the last settled assistant reply expanded.
+export const FilesRecentVisualIdle: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentMessages: [{ ...recentAnswer,
+    text: '查明了：当前文件的测试已通过，但持续集成还在等待另一个平台的任务完成。那项任务中的 shell 没有展开测试命令里的范围表达式，导致触发完整性失败，而不是文件预览改动本身失败。\n\n当前分支与未提交改动保持原样，没有覆盖其他工作，也没有提交空提交。另一个修复分支正在处理相同测试，但它自己的最新检查尚未结束；不能把那条结果当作本分支的通过证明。\n\n下一步需要在有权限的环境中重跑失败的 job，确认 PTY 控制正确退出，再根据落盘结果继续审查。现在仍应把这项检查标为未完成。' }], recentRunning: false })],
+  render: () => <FocusedHostFlow tab="files" realComposer streaming={false} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '本轮已结束' }));
+    await canvas.findByText(/查明了：当前文件的测试已通过/);
+    await userEvent.click(canvas.getByRole('button', { name: '本轮已结束' }));
+    expect(canvas.getByRole('button', { name: '本轮已结束' })).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(canvas.getByRole('button', { name: '本轮已结束' }));
+    canvas.getByRole('button', { name: '本轮已结束' }).blur();
+  },
+};
+
+// Real path: session → Files → focused source while a turn runs, before expanding the latest-turn header.
+export const FilesRecentVisualRunningCollapsed: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentEvents: visualLiveEvents,
+    recentRunning: true, recentStartedAgoMs: 10 * 60_000 })],
+  render: () => <FocusedHostFlow tab="files" realComposer onStop={previewStop} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    expect(await canvas.findByRole('button', { name: /已处理/ })).toHaveAttribute('aria-expanded', 'false');
+    const card = canvasElement.querySelector('.maka-recent-turn-overlay .maka-progress-card');
+    expect(card?.querySelector('.maka-progress-card-summary')).toBeNull();
+    expect(card?.querySelector('[role="status"] i')).toHaveAttribute('data-active', 'true');
+    const draft = canvasElement.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    previewStop.mockClear();
+    await userEvent.type(draft, 'Keep this draft');
+    // The composer menu owns the first Escape, then the preview owns it.
+    await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
+    await within(document.body).findByRole('menu');
+    await userEvent.keyboard('{Escape}');
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeTruthy();
+    expect(previewStop).not.toHaveBeenCalled();
+    await userEvent.click(draft);
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull());
+    expect(previewStop).not.toHaveBeenCalled();
+    expect(draft).toHaveTextContent('Keep this draft');
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦文件' }));
+  },
+};
+
+// Real path: session → Files → focused source after a turn settles, with the latest-turn header collapsed.
+export const FilesRecentVisualIdleCollapsed: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentMessages: [recentAnswer], recentRunning: false })],
+  render: () => <FocusedHostFlow tab="files" realComposer streaming={false} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    expect(await canvas.findByRole('button', { name: '本轮已结束' })).toHaveAttribute('aria-expanded', 'false');
+    const summary = canvasElement.querySelector('.maka-progress-card-summary');
+    expect(summary).toBeNull();
+    expect(canvasElement.querySelector('.maka-progress-card-status i')).toHaveAttribute('data-active', 'false');
+  },
+};
+
+// Real path: session → Files → focused source with a file already staged in the session composer.
+export const FilesRecentVisualWithAttachment: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentMessages: [recentAnswer], recentRunning: false })],
+  render: () => <FocusedHostFlow tab="files" realComposer streaming={false} stagedFile />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await canvas.findByText('reference.md', { exact: true });
+    expect(canvasElement.querySelector('.maka-composer [contenteditable="true"]')).toBeTruthy();
+  },
+};
+
+// Real path: session → Files → focused source and staged file; minimize the input to read, then restore its draft.
+export const FilesRecentReadingClearance: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentMessages: [recentAnswer], recentRunning: false })],
+  render: () => <FocusedHostFlow tab="files" realComposer streaming={false} stagedFile />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await canvas.findByText('reference.md', { exact: true });
+    const draft = canvasElement.querySelector<HTMLElement>('.maka-composer [contenteditable="true"]');
+    const preview = canvasElement.querySelector<HTMLElement>('.maka-artifact-preview');
+    const codeEnd = preview?.querySelector<HTMLElement>('[data-line]:last-child');
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-recent-turn-overlay');
+    const composer = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!draft || !preview || !codeEnd || !panel || !composer) throw new Error('Focused reading surface is incomplete');
+    await userEvent.type(draft, 'Keep the same draft');
+    expect(Math.abs(panel.getBoundingClientRect().bottom - composer.getBoundingClientRect().top)).toBeLessThanOrEqual(2);
+    preview.scrollTop = preview.scrollHeight;
+    expect(codeEnd.getBoundingClientRect().bottom).toBeLessThan(panel.getBoundingClientRect().top);
+    await userEvent.click(canvas.getByRole('button', { name: '收起输入区' }));
+    await waitFor(() => expect(canvasElement.querySelector('[data-preview-dock-minimized]')).toBeTruthy());
+    await waitFor(() => expect(document.activeElement).toBe(canvas.getByRole('button', { name: /继续输入/ })));
+    preview.scrollTop = preview.scrollHeight;
+    expect(codeEnd.getBoundingClientRect().bottom).toBeLessThan(panel.getBoundingClientRect().top);
+    expect(canvasElement.querySelector('.maka-composer [contenteditable="true"]')).toBe(draft);
+    await userEvent.click(canvas.getByRole('button', { name: /继续输入/ }));
+    await waitFor(() => expect(canvasElement.querySelector('[data-preview-dock-minimized]')).toBeNull());
+    expect(canvasElement.querySelector('.maka-composer [contenteditable="true"]')).toBe(draft);
+    await waitFor(() => expect(document.activeElement).toBe(draft));
+    expect(draft).toHaveTextContent('Keep the same draft');
+  },
+};
+
+// Real path: session → Files → focused source with a staged file and an expanded running turn.
+export const FilesRecentRunningWithAttachment: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentEvents: visualLiveEvents,
+    recentRunning: true, recentStartedAgoMs: 10 * 60_000 })],
+  render: () => <FocusedHostFlow tab="files" realComposer stagedFile />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /已处理/ }));
+    await canvas.findByText(/CI 的失败发生/);
+    canvas.getByRole('button', { name: /已处理/ }).blur();
+  },
+};
+
+// Real path: session → Files → focused source after narrowing the content frame beside another app pane.
+export const FilesRecentVisualNarrowFrame: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentMessages: [recentAnswer], recentRunning: false })],
+  render: () => <FocusedHostFlow tab="files" realComposer streaming={false} frameWidth={600} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    const frame = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts');
+    const dock = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!frame || !dock) throw new Error('Focused composer is missing');
+    expect(dock.getBoundingClientRect().right).toBeLessThanOrEqual(frame.getBoundingClientRect().right);
+    expect(dock.getBoundingClientRect().left).toBeGreaterThanOrEqual(frame.getBoundingClientRect().left);
+    expect(getComputedStyle(dock.firstElementChild!).display).toBe('flex');
+    // Resize the actual containing frame: a wider frame must not narrow or
+    // make the composer taller, including the old 990/991 viewport boundary.
+    let previousWidth = 0;
+    let previousHeight = Infinity;
+    for (const width of [680, 720, 990, 991, 1100]) {
+      frame.style.width = `${width}px`;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const box = dock.getBoundingClientRect();
+      expect(box.width).toBeGreaterThanOrEqual(previousWidth);
+      expect(box.height).toBeLessThanOrEqual(previousHeight + 1);
+      previousWidth = box.width;
+      previousHeight = box.height;
+    }
+    frame.style.width = '600px';
+  },
+};
+
+// Real path: Files → focus → expand a long completed reply → continue in its full conversation.
+export const FilesRecentTruncatedReply: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact], recentMessages: [{ ...recentAnswer, text: longPreviewReply }], recentRunning: false })],
+  render: () => <FocusedHostFlow tab="files" realComposer streaming={false} onOpenConversation={openPreviewConversation} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    openPreviewConversation.mockClear();
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '本轮已结束' }));
+    await canvas.findByText('这里只显示部分回复，完整内容请查看对话。');
+    let content = canvasElement.querySelector<HTMLElement>('.maka-recent-turn-content')!;
+    expect(content.scrollHeight).toBeGreaterThan(content.clientHeight);
+    expect(content.scrollTop).toBe(0);
+    content.scrollTop = 360;
+    content.dispatchEvent(new Event('scroll'));
+    await userEvent.click(canvas.getByRole('button', { name: '本轮已结束' }));
+    await userEvent.click(canvas.getByRole('button', { name: '本轮已结束' }));
+    content = canvasElement.querySelector<HTMLElement>('.maka-recent-turn-content')!;
+    expect(content.scrollTop).toBe(360);
+    await userEvent.click(canvas.getByRole('button', { name: '收起输入区' }));
+    await userEvent.click(canvas.getByRole('button', { name: /继续输入/ }));
+    content = canvasElement.querySelector<HTMLElement>('.maka-recent-turn-content')!;
+    expect(content.scrollTop).toBe(360);
+    await userEvent.click(canvas.getByRole('button', { name: '查看完整对话' }));
+    expect(openPreviewConversation).toHaveBeenCalledWith(SESSION_ID, 'source-turn');
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+    // Leave the distinct bounded-reply state visible for the catalog.
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦文件' }));
+    expect(canvasElement.querySelector<HTMLElement>('.maka-recent-turn-content')!.scrollTop).toBe(360);
+  },
+};
+
+// Real path: session → Browser → focused loaded page with the current turn's expanded live stream.
+export const BrowserRecentVisualRunning: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, recentEvents: visualLiveEvents,
+    recentRunning: true, recentStartedAgoMs: 10 * 60_000 })],
+  render: () => <FocusedHostFlow tab="browser" realComposer />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦网页' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /已处理/ }));
+    await canvas.findByText(/CI 的失败发生/);
+    canvas.getByRole('button', { name: /已处理/ }).blur();
+  },
+};
+
+// Real path: session → Browser → focused loaded page with the last settled reply expanded.
+export const BrowserRecentVisualIdle: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, recentMessages: [recentAnswer], recentRunning: false })],
+  render: () => <FocusedHostFlow tab="browser" realComposer streaming={false} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦网页' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '本轮已结束' }));
+    await canvas.findByText(/The latest check is complete/);
+    canvas.getByRole('button', { name: '本轮已结束' }).blur();
+  },
 };
 
 // Real path: 任务工作栏 → 侧边对话. The fork and transcript boundary are both

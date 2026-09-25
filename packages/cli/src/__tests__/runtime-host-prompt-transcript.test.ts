@@ -23,6 +23,7 @@ import { setImmediate } from 'node:timers/promises';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  RuntimeHostOperationError,
   RuntimeHostSubscriptionError,
   type DecodedSessionTranscriptPage,
   type RuntimeHostSessionSubscription,
@@ -317,6 +318,42 @@ test('recovery across root turns rereads the old prompt below the new bootstrap 
   await channel.close();
 });
 
+test('prompt transcript recovers when a retired subscription page fails before its close frame', async () => {
+  const first = new TranscriptSubscription('first', 7);
+  const second = new TranscriptSubscription('second', 31);
+  let opens = 0;
+  const channel = await openChannel(async () => (++opens === 1 ? first : second));
+  const transcript = channel.trackPromptTranscript('turn');
+  try {
+    first.advance(31);
+    await setImmediate();
+    // The Host has removed the subscription but its close frame has not arrived.
+    first.readPage = async () => {
+      throw new RuntimeHostOperationError(
+        'session.transcript.page',
+        'not_found',
+        'Session subscription was not found',
+      );
+    };
+    const expected = [result('tool', 'Form completed'), terminal()];
+    second.readPage = async (input) =>
+      second.page(input, [
+        { identity: 16, message: expected[0]! },
+        { identity: 24, message: expected[1]! },
+      ]);
+    const observed: StoredMessage[] = [];
+    await transcript.reconcile(async (messages) => {
+      observed.push(...messages);
+    });
+    assert.equal(opens, 2);
+    assert.deepEqual(observed, expected);
+    assert.equal(second.pages[0]?.anchorSequence, 7);
+  } finally {
+    transcript.dispose();
+    await channel.close();
+  }
+});
+
 test('prompt transcript rejects nonadvancing cursors and propagates consumer failures', async () => {
   for (const failure of ['cursor', 'consumer'] as const) {
     const subscription = new TranscriptSubscription('first', 7);
@@ -383,6 +420,7 @@ class TranscriptSubscription
     interactions: { pending: [] },
   };
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
+  #transcriptWatermark: number | null;
   readonly pages: Omit<SessionTranscriptPageInput, 'subscriptionId'>[] = [];
   readonly #decoded = new WeakMap<
     SessionTranscriptPage,
@@ -417,6 +455,10 @@ class TranscriptSubscription
       [],
     );
     this.transcriptBootstrap = { durable };
+    this.#transcriptWatermark = durable.throughSequence;
+  }
+  get transcriptWatermark(): number | null {
+    return this.#transcriptWatermark;
   }
   subscribePtyData(): () => void {
     return () => {};
@@ -437,6 +479,7 @@ class TranscriptSubscription
     });
   }
   advance(throughSequence: number): void {
+    this.#transcriptWatermark = throughSequence;
     const frame: SubscriptionFrame = {
       kind: 'subscription.transcript_advanced',
       sessionId: 'session',

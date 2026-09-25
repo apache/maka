@@ -235,6 +235,33 @@ describe('createLiveContextUsageTracker', () => {
     tracker.dispose();
   });
 
+  it('discards an in-flight read invalidated by a newer event', async () => {
+    const timer = fakeTimer();
+    const query = scriptedQuery();
+    const seen: unknown[] = [];
+    const tracker = createLiveContextUsageTracker({
+      query: query.query,
+      delayMs: 400,
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+      onChange: (usage) => seen.push(usage),
+    });
+    tracker.setTarget({ sessionId: 's1', route: ROUTE });
+    tracker.observe(event('token_usage'));
+
+    // The old read resolves before the debounced replacement is even issued.
+    // It must not overwrite the state that the newer event invalidated.
+    query.pending[0]!.resolve(available({ inputTokens: 10_000 }));
+    await Promise.resolve();
+    assert.deepEqual(seen, [undefined]);
+
+    timer.fire();
+    query.pending[1]!.resolve(available({ inputTokens: 60_000 }));
+    await Promise.resolve();
+    assert.deepEqual(seen, [undefined, { usageTokens: 60_000, contextWindow: 128_000 }]);
+    tracker.dispose();
+  });
+
   it('keeps the last value when a read fails', async () => {
     const timer = fakeTimer();
     const query = scriptedQuery();

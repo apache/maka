@@ -2461,37 +2461,41 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal(statuses.at(-1), undefined);
   });
 
-  test('reopens a failed Session channel before starting the next turn', async () => {
-    const first = new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve([]));
-    const second = new FakeSubscription(
-      continuitySnapshot({ rootTurn: null }),
-      Promise.resolve([]),
-      'subscription-2',
-    );
-    const connection = new FakeConnection([first, second]);
-    const driver = createRuntimeHostMakaSessionDriver({
-      connection: connection.value,
-      cwd: '/tmp',
-      llmConnectionId: 'connection-1',
-      llmConnectionSlug: 'openai-main',
-      model: 'gpt-5',
-      newId: sequenceIds('turn-2'),
-    });
-    await driver.switchSession('session-1');
+  for (const reason of ['slow_consumer', 'transcript_changed'] as const)
+    test(`reopens a failed Session channel before starting the next turn (${reason})`, async () => {
+      const first = new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+      );
+      const second = new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+        'subscription-2',
+      );
+      const connection = new FakeConnection([first, second]);
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: '/tmp',
+        llmConnectionId: 'connection-1',
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        newId: sequenceIds('turn-2'),
+      });
+      await driver.switchSession('session-1');
 
-    first.push({
-      kind: 'subscription.closed',
-      hostEpoch: 'host-1',
-      subscriptionId: 'subscription-1',
-      sequence: 1,
-      reason: 'slow_consumer',
-    });
-    await new Promise((resolve) => setImmediate(resolve));
+      first.push({
+        kind: 'subscription.closed',
+        hostEpoch: 'host-1',
+        subscriptionId: 'subscription-1',
+        sequence: 1,
+        reason,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
 
-    const turn = await driver.preparePrompt('Continue');
-    second.push(deltaFrame(1, 'turn-2', 0, 'Recovered', 'subscription-2', 'run-2'));
-    assert.equal((await nextEvent(turn.events)).text, 'Recovered');
-  });
+      const turn = await driver.preparePrompt('Continue');
+      second.push(deltaFrame(1, 'turn-2', 0, 'Recovered', 'subscription-2', 'run-2'));
+      assert.equal((await nextEvent(turn.events)).text, 'Recovered');
+    });
 
   test('starts explicit Skills through the Host command and preserves its typed feedback', async () => {
     const subscription = new FakeSubscription(
@@ -3099,6 +3103,7 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
+  readonly transcriptWatermark = null;
   readonly subscriptionId: string;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{

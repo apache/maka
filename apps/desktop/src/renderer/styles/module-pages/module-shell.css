@@ -46,25 +46,6 @@
   min-height: 0;
 }
 
-/* The inspector's own surface — the tonal step module-page.tsx says this app
-   separates columns with. It was the one column claiming that treatment
-   without carrying it: the panel painted nothing and inherited the content
-   column's white, so it read as loose content on the page rather than as a
-   region beside it (owner msg `1158e599`).
-
-   `--muted`, not `--color-background-surface`: measured, that token resolves
-   to the same pure white as `--background` here, so it would have been a
-   no-op against a white content column. `--muted` is the app's inset step and
-   is the one that actually produces a difference on this plate.
-
-   Scoped to the module page so it cannot reach the session panel on the left,
-   which is a different Astryx Layout panel with its own canvas tone. Styling
-   the vendor's semantic class follows the same precedent as the sidenav
-   override in shell-layout.css. */
-.maka-module-page .astryx-layout-panel {
-  background: var(--muted);
-}
-
 /* The page's one control bar: module switch on the left, this page's view +
    filters on the right. It is the last row of the Layout header.
 
@@ -126,12 +107,13 @@
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: var(--space-4);
-  padding: var(--space-3) var(--space-5) var(--space-6);
+  /* LayoutContent owns the inline content-width gutters. Repeating the old
+     page inset here would move the rows one spacing step inside the title. */
+  padding: var(--space-3) 0 var(--space-6);
 }
 
-/* Rows keep the page inset rather than bleeding: the header, the control bar
-   and the rows then share one left edge, which is what makes the page read as
-   a single column. */
+/* LayoutContent supplies the page inset, so the header, control bar and rows
+   share one left edge and read as a single column. */
 .maka-module-page-rows {
   min-width: 0;
 }
@@ -170,16 +152,7 @@
   }
 }
 
-/* Browse-row icon plate, shared by the MCP and Skills module pages.
-   Lifted out of mcp.css so the two pages cannot drift into two icon
-   languages: a skill row and an MCP row are the same kind of thing (a
-   browsable entity) and must read the same.
-
-   The tinting BOUNDARY moves with it, because it is the part that took
-   thinking: a tile carrying a colourful official logo drops the tint and
-   rides the quiet neutral plate, since the logo already supplies identity
-   and tinting the plate too would fight the mark. Skills ship no logos, so
-   they always take the neutral plate. */
+/* Skill browse-row icon plate. */
 .maka-module-market-icon {
   width: 28px;
   height: 28px;
@@ -194,16 +167,6 @@
 .maka-module-market-icon span {
   font: var(--maka-text-heading-5);
   letter-spacing: var(--tracking-normal);
-}
-
-/* Tiles that carry an official brand logo (mcp-brand-marks.tsx) drop the
-   per-brand tint and ride a quiet neutral plate — a colourful logo already
-   supplies the brand identity, so tinting the plate too would double up and
-   fight the mark. Mirrors provider-brand-marks' neutral `.providerLogo`. */
-.maka-module-market-icon[data-logo="true"] {
-  background: var(--foreground-5);
-  color: var(--foreground);
-  box-shadow: inset 0 0 0 1px oklch(from var(--foreground) l c h / 0.06);
 }
 
 /* A browse row's supporting line is ONE truncating line, on both module

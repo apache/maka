@@ -245,13 +245,7 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
   throughSequence: number;
 }
 
-export const SESSION_DOMAINS = [
-  'todo',
-  'plan',
-  'deep_research',
-  'usage',
-  'runtime_resource',
-] as const;
+export const SESSION_DOMAINS = ['todo', 'plan', 'usage', 'runtime_resource'] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
 
@@ -297,7 +291,7 @@ export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
 
 export interface SubscriptionClosedFrame extends SubscriptionEnvelope {
   kind: 'subscription.closed';
-  reason: 'slow_consumer' | 'session_removed' | 'access_revoked';
+  reason: 'slow_consumer' | 'session_removed' | 'access_revoked' | 'transcript_changed';
 }
 
 export type SubscriptionFrame =
@@ -539,7 +533,8 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
     if (
       record.reason !== 'slow_consumer' &&
       record.reason !== 'session_removed' &&
-      record.reason !== 'access_revoked'
+      record.reason !== 'access_revoked' &&
+      record.reason !== 'transcript_changed'
     ) {
       throw invalidProtocolFrame('Invalid subscription close reason');
     }

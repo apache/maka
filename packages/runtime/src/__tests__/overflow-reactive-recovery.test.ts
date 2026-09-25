@@ -133,6 +133,7 @@ const BIG_RESULT = 'x'.repeat(20_000) + 'BIG_RESULT_';
 interface ReactiveFixtureOptions {
   script: CallKind[];
   contextWindow?: number;
+  modelMaxOutputTokens?: number;
   declareContextWindow?: boolean;
   /**
    * A model that declares no context window, on a provider whose default
@@ -168,8 +169,6 @@ interface ReactiveFixtureOptions {
   maxSteps?: number;
   /** The FIRST tool step reports an unusable usage object (no token counts). */
   firstStepUsageMissing?: boolean;
-  /** Per provider-call input tokens, keyed by 1-based call number. */
-  inputTokensByCall?: Record<number, number>;
   /** Tool-search availability with the deferred `Big` tool. */
   gatedToolGroup?: boolean;
   /**
@@ -266,7 +265,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       usage:
         options.firstStepUsageMissing && call === 1
           ? ({ inputTokens: {}, outputTokens: {} } as ReturnType<typeof usage>)
-          : usage(options.inputTokensByCall?.[call] ?? 100, 20),
+          : usage(100, 20),
     },
   ];
   const doneChunks = (call: number): LanguageModelV4StreamPart[] => [
@@ -277,7 +276,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     {
       type: 'finish',
       finishReason: { unified: 'stop', raw: 'stop' },
-      usage: usage(options.inputTokensByCall?.[call] ?? 120, 10),
+      usage: usage(120, 10),
     },
   ];
   const streamForCall = (call: number): ReadableStream<LanguageModelV4StreamPart> => {
@@ -682,7 +681,13 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       models: [
         options.withoutContextWindow
           ? { id: 'mock-model-id' }
-          : { id: 'mock-model-id', contextWindow },
+          : {
+              id: 'mock-model-id',
+              contextWindow,
+              ...(options.modelMaxOutputTokens !== undefined
+                ? { maxOutputTokens: options.modelMaxOutputTokens }
+                : {}),
+            },
       ],
       ...(options.declareContextWindow
         ? { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }
@@ -1239,27 +1244,18 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(lastCall?.totalTokens, 250);
   });
 
-  test('a fold-shrunk retry input is not reported as provider dropping', async () => {
-    // The retry of step 1 is the folded request, so its input is smaller than
-    // step 0's by construction. Blaming the provider for that would be wrong
-    // and it is a once-per-session note, so the real one could never be shown.
+  test('lowers a 128K output cap on the request after overflow recovery', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow', 'done'],
       bigPriors: true,
-      inputTokensByCall: { 3: 80 },
+      modelMaxOutputTokens: 128_000,
     });
     await runTurn(fixture);
 
-    assert.equal(complete(fixture)?.stopReason, 'end_turn');
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(
-      fixture.messages.some(
-        (message) =>
-          (message as { type?: string; kind?: string }).type === 'system_note' &&
-          (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[1]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[2]?.maxOutputTokens, 8_000);
   });
 
   test('drops hydrated images before the single overflow retry without rerunning tools', async () => {

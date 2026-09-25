@@ -61,7 +61,10 @@ type AutoOpenTarget =
   | 'detail-alibaba'
   | 'detail-static'
   | 'detail-relay'
+  | 'detail-large'
+  | 'detail-retired'
   | 'add'
+  | 'add-custom'
   | 'catalog'
   | 'oauth'
   | 'xai-device';
@@ -137,6 +140,18 @@ const configuredConnections = [
   }),
 ];
 
+const largeConnection = makeConnection({
+  slug: 'openrouter-large',
+  name: 'OpenRouter',
+  providerType: 'openrouter',
+  defaultModel: 'fixture/model-001',
+  models: Array.from({ length: 444 }, (_, index) => ({
+    id: `fixture/model-${String(index + 1).padStart(3, '0')}`,
+    displayName: `Fixture model ${String(index + 1).padStart(3, '0')}`,
+  })),
+  modelSource: 'fetched',
+});
+
 const alibabaTokenPlanConnections = [
   makeConnection({
     slug: 'alibaba-token-plan-cn',
@@ -177,20 +192,25 @@ const relayConnections = [
     ...makeConnection({
       slug: 'relay-house',
       name: 'House Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: 'https://relay.example.com/v1',
       defaultModel: 'gpt-5.6-luna',
       lastTestStatus: 'verified',
       models: [
         { id: 'gpt-5.6-luna' },
+        { id: 'claude-opus-4-8' },
         { id: 'deepseek-v4-flash-0731' },
         { id: 'glm-5.3-flash' },
         { id: 'gemini-3.8-flash' },
       ],
       modelSource: 'fetched',
     }),
-    enabledModelIds: ['gpt-5.6-luna', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
-    modelOverrides: { 'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const } },
+    defaultApiProtocol: 'openai-responses' as const,
+    enabledModelIds: ['gpt-5.6-luna', 'claude-opus-4-8', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
+    modelOverrides: {
+      'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const },
+      'claude-opus-4-8': { apiProtocol: 'anthropic-messages' as const, thinkingLevels: ['high', 'max'] as const },
+    },
   },
 ];
 
@@ -686,16 +706,22 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
     || target === 'detail-alibaba'
     || target === 'detail-static'
     || target === 'detail-relay'
+    || target === 'detail-large'
+    || target === 'detail-retired'
   ) {
     // ListItem's clickable surface is an invisible button inside the row, so
     // the row is located by its slug hook and the button taken from within it.
     const slug =
       target === 'detail'
         ? 'zai-live'
+        : target === 'detail-retired'
+          ? 'opencode-free'
         : target === 'detail-alibaba'
           ? 'alibaba-token-plan-cn'
           : target === 'detail-static'
             ? 'ark-plan'
+            : target === 'detail-large'
+              ? 'openrouter-large'
             : 'relay-house';
     const row = root.querySelector<HTMLElement>(`[data-connection-slug="${slug}"]`);
     const detailButton = row?.querySelector('button') ?? null;
@@ -725,7 +751,8 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
   // 'add': walk to the catalog, then into one provider's form.
   const catalog = reachCatalog(root);
   if (!catalog) return false;
-  const providerRow = catalog.querySelector<HTMLElement>('[data-provider="deepseek"]')?.querySelector('button') ?? null;
+  const provider = target === 'add-custom' ? 'custom' : 'deepseek';
+  const providerRow = catalog.querySelector<HTMLElement>(`[data-provider="${provider}"]`)?.querySelector('button') ?? null;
   providerRow?.click();
   return Boolean(providerRow);
 }
@@ -774,7 +801,8 @@ export const EmptyProviders: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: [] })} />,
   play: async ({ canvasElement }) => {
     await waitFor(() => {
-      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-free"]')).not.toBeNull();
+      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-go"]')).not.toBeNull();
+      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-free"]')).toBeNull();
     }, { timeout: 5_000 });
     expect(canvasElement.querySelector('[data-maka-contract="provider-catalog"]')).toBeNull();
   },
@@ -788,6 +816,41 @@ export const ConnectionDetailPage: Story = {
       autoOpen="detail"
     />
   ),
+};
+
+// Real path: after upgrading, open the retained OpenCode Free connection in Settings.
+export const RetiredFreeConnection: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: [makeConnection({
+        slug: 'opencode-free', name: 'OpenCode Free', providerType: 'opencode-free',
+        defaultModel: 'nemotron-3-ultra-free', models: [{ id: 'nemotron-3-ultra-free' }],
+      })] })}
+      autoOpen="detail-retired"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(within(canvasElement).getByRole('alert')).toHaveTextContent(/已停用|retired/);
+    });
+    expect(within(canvasElement).queryByRole('button', { name: /测试连接|測試連線|Test connection/ })).toBeNull();
+  },
+};
+
+// Real path: 设置 → 模型 → an OpenRouter connection after fetching hundreds of models.
+// The fetched snapshot is local; browsing it never needs an API key.
+export const LargeConnectionDetail: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: [largeConnection], defaultSlug: 'openrouter-large' })}
+      autoOpen="detail-large"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(444);
+    }, { timeout: 20_000 });
+  },
 };
 
 // Fixed endpoints are inspectable but not editable. Alibaba is the high-signal
@@ -879,6 +942,11 @@ export const ModelCapabilities: Story = {
     const configure = await within(canvasElement).findByRole('button', { name: /(?:参数|參數|parameters).*gpt-5.6-luna/i });
     configure.click();
     await waitFor(() => expect(document.querySelector('dialog[open] .astryx-form-layout')).not.toBeNull());
+    const patch = within(document.body).getByRole('combobox', { name: /^ApplyPatch/ });
+    expect(patch).toHaveTextContent(/^(自动|自動|Automatic)/);
+    await userEvent.click(patch);
+    expect(within(document.body).getAllByRole('option')).toHaveLength(3);
+    await userEvent.keyboard('{Escape}');
     const pane = canvasElement.querySelector('.settingsMainPane');
     if (pane) pane.scrollTop = 0;
   },
@@ -900,6 +968,10 @@ export const ModelParameterSave: Story = {
     const vision = () => body.getByRole('combobox', { name: /^(图片识别|圖片辨識|Send images to the model)$/i });
     await userEvent.click(vision());
     await userEvent.click(await body.findByRole('option', { name: /^(支持|支援|Allow images)$/i }));
+    const patch = () => body.getByRole('combobox', { name: /^ApplyPatch/ });
+    expect(patch()).toHaveTextContent(/^(自动|自動|Automatic)/);
+    await userEvent.click(patch());
+    await userEvent.click(await body.findByRole('option', { name: /^(启用|啟用|Enabled)$/ }));
     const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
     await userEvent.clear(field);
     await userEvent.type(field, '1MB');
@@ -920,12 +992,16 @@ export const ModelParameterSave: Story = {
     expect(reopened).toHaveValue('128000');
     expect(body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i })).toHaveValue('64000');
     expect(vision()).toHaveTextContent(/^(支持|支援|Allow images)$/i);
+    expect(patch()).toHaveTextContent(/^(启用|啟用|Enabled)$/);
+    await userEvent.click(patch());
+    await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Automatic)/ }));
     await userEvent.click(vision());
     await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
     await userEvent.click(body.getByRole('button', { name: /^(保存|儲存|Save)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
     expect(vision()).toHaveTextContent(/^(自动|自動|Model information)/i);
+    expect(patch()).toHaveTextContent(/^(自动|自動|Automatic)/);
     expect(body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i })).toHaveValue('64000');
     expect(enable).not.toBeChecked();
     const editable = body.getByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
@@ -952,10 +1028,10 @@ export const RefreshModelCatalog: Story = {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       refresh.click();
       await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*glm-5\.3$/i });
-      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(5));
+      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(6));
       await waitFor(() => expect(refresh).not.toBeDisabled());
     }
-    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(3);
+    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(4);
   },
 };
 
@@ -1057,6 +1133,43 @@ export const AddProvider: Story = {
       autoOpen="add"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 → 自定义连接.
+export const AddCustomConnection: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="add-custom"
+    />
+  ),
+  play: async () => {
+    const body = within(document.body);
+    const protocol = await body.findByRole('combobox', { name: /^默认请求协议/ });
+    expect(protocol).toHaveTextContent('OpenAI Chat Completions');
+    await userEvent.click(protocol);
+    expect(body.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'OpenAI Chat Completions',
+      'OpenAI Responses',
+      'Anthropic Messages',
+    ]);
+    await userEvent.keyboard('{Escape}');
+  },
+};
+
+// Real path: 设置 → 模型 → relay → configure a model that overrides the connection's protocol.
+export const CustomModelProtocol: Story = {
+  render: ModelCapabilities.render,
+  play: async ({ canvasElement }) => {
+    const body = within(document.body);
+    const configure = await within(canvasElement).findByRole('button', { name: /参数.*claude-opus-4-8/ });
+    await userEvent.click(configure);
+    const protocol = await body.findByRole('combobox', { name: /^请求协议/ });
+    expect(protocol).toHaveTextContent('Anthropic Messages');
+    await userEvent.click(protocol);
+    expect(await body.findByRole('option', { name: '跟随连接 · OpenAI Responses' })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+  },
 };
 
 // Real path: 设置 → 模型 → 添加连接 → DeepSeek. The common fixed-endpoint

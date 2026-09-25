@@ -38,6 +38,7 @@ import {
   type StopReason,
 } from '@agentclientprotocol/sdk';
 import type { SessionEvent } from '@maka/core/events';
+import type { McpConfigFile } from '@maka/core/mcp';
 import { isRuntimeHostTerminalTurn } from '@maka/runtime-host/adapter';
 import {
   readRuntimeHostConnectionCatalog,
@@ -72,6 +73,8 @@ import {
 } from './session-configuration.js';
 import { AcpSessionEventMapper } from './session-event-mapper.js';
 import { mapAcpPromptContent, publishAcpPromptAttachments } from './prompt-content.js';
+import { AcpSessionMcp, createAcpMcpConfig, type AcpMcpConnection } from './session-mcp.js';
+import { AcpSessionInteractions, type AcpInteractionClient } from './session-interactions.js';
 
 const ACP_SESSION_CURSOR_MAX_BYTES = 8 * 1024;
 const ADMISSION_QUERY_MAX_ATTEMPTS = 5;
@@ -94,13 +97,19 @@ type AcpSessionRegistryLifecycleOperation =
 
 export interface AcpSessionRegistryConnection
   extends Pick<
-    RuntimeHostReconnectingConnection,
-    'reconnecting' | 'request' | 'openSessionSubscription' | 'openSessionSubscriptionOnce' | 'close'
-  > {}
+      RuntimeHostReconnectingConnection,
+      | 'reconnecting'
+      | 'request'
+      | 'openSessionSubscription'
+      | 'openSessionSubscriptionOnce'
+      | 'close'
+    >,
+    AcpMcpConnection {}
 
 export interface AcpPromptContext {
   readonly signal: AbortSignal;
   readonly notify: (notification: SessionNotification) => Promise<void>;
+  readonly interactions?: AcpInteractionClient;
 }
 
 export interface AcpSessionRegistryOptions {
@@ -145,6 +154,9 @@ export class AcpSessionRegistry {
   readonly #newTurnId: () => string;
   readonly #inFlightOperations = new Set<Promise<unknown>>();
   readonly #ownedSessionIds = new Set<string>();
+  readonly #mcps = new Map<string, AcpSessionMcp>();
+  readonly #creationAbort = new AbortController();
+  readonly #attachmentInteractions = new Map<string, AcpSessionInteractions>();
   readonly #attachments = new Map<string, Promise<RuntimeHostSessionChannel>>();
   readonly #attachmentOpenControllers = new Map<string, AbortController>();
   readonly #attachmentConfigurations = new Map<string, AcpAttachmentConfiguration>();
@@ -164,10 +176,11 @@ export class AcpSessionRegistry {
     this.#newTurnId = options.newTurnId ?? randomUUID;
   }
 
-  async create(params: NewSessionRequest): Promise<NewSessionResponse> {
+  async create(params: NewSessionRequest, signal?: AbortSignal): Promise<NewSessionResponse> {
     this.#assertOpen('session.create');
     validateNewSessionParams(params);
-    return this.#track(this.#create(params));
+    const mcpConfig = createAcpMcpConfig(params);
+    return this.#track(this.#create(params, mcpConfig, signal));
   }
 
   async list(params: ListSessionsRequest): Promise<ListSessionsResponse> {
@@ -246,6 +259,7 @@ export class AcpSessionRegistry {
   dispose(): Promise<void> {
     this.#closing = true;
     this.#connectAbortController?.abort();
+    this.#creationAbort.abort();
     this.#disposeTask ??= this.#dispose();
     return this.#disposeTask;
   }
@@ -301,7 +315,7 @@ export class AcpSessionRegistry {
       const connection = await this.#getConnection('subscription.open');
       let attachment: RuntimeHostSessionChannel;
       try {
-        attachment = await this.#ensureAttachment(params.sessionId, connection, context.notify);
+        attachment = await this.#ensureAttachment(params.sessionId, connection, context);
       } catch (error) {
         if (active.cancelled) return { stopReason: await this.#cancelledStopReason(active) };
         throw error;
@@ -329,6 +343,8 @@ export class AcpSessionRegistry {
       }
       if (active.cancelled) return { stopReason: await this.#cancelledStopReason(active) };
 
+      await this.#mcps.get(params.sessionId)?.ready(active.projectionAbort.signal);
+      if (active.cancelled) return { stopReason: await this.#cancelledStopReason(active) };
       active.transcript = attachment.trackPromptTranscript(turnId);
       const observation = this.#consumePromptEvents(active, attachment.eventsForTurn(turnId));
       // Mark the observer as handled immediately: turn.start may still be in flight
@@ -384,6 +400,11 @@ export class AcpSessionRegistry {
       active.projectionAbort.abort();
       active.reconciliationAbort.abort();
       active.transcript?.dispose();
+      this.#attachmentInteractions.get(active.sessionId)?.settleTurn(active.turnId);
+      const observed = active.attachment?.snapshot.rootTurn;
+      if (observed?.turnId === active.turnId && isRuntimeHostTerminalTurn(observed)) {
+        this.#attachmentInteractions.get(active.sessionId)?.terminalTurn(active.turnId);
+      }
       active.finished = true;
       this.#wake(active);
       this.#removeActivePrompt(active);
@@ -488,6 +509,7 @@ export class AcpSessionRegistry {
     }
     active.projectionAbort.abort();
     active.reconciliationAbort.abort();
+    this.#attachmentInteractions.get(active.sessionId)?.cancelTurn(active.turnId);
     active.stopTask ??= this.#stopPromptWhenObservable(active);
     await Promise.all([
       active.mapper.flush().catch(() => undefined),
@@ -599,14 +621,14 @@ export class AcpSessionRegistry {
   async #ensureAttachment(
     sessionId: string,
     connection: AcpSessionRegistryConnection,
-    notify: AcpPromptContext['notify'],
+    context: AcpPromptContext,
   ): Promise<RuntimeHostSessionChannel> {
     const existing = this.#attachments.get(sessionId);
     if (existing) return existing;
     const openingController = new AbortController();
     this.#attachmentOpenControllers.set(sessionId, openingController);
     const configuration: AcpAttachmentConfiguration = {
-      notify,
+      notify: context.notify,
       // Setters can outlive an absent or failed attachment. Their responses
       // must precede refreshes delivered by the new attachment's queue.
       tail: Promise.allSettled([...(this.#pendingConfigSets.get(sessionId) ?? [])]),
@@ -622,6 +644,50 @@ export class AcpSessionRegistry {
       }
       this.#retireFailedAttachment(sessionId, task, attachment, error);
     };
+    const interactions = new AcpSessionInteractions({
+      sessionId,
+      connection,
+      client: context.interactions ?? {
+        capabilities: {},
+        requestPermission: async () => {
+          throw RequestError.methodNotFound('session/request_permission');
+        },
+        createElicitation: async () => {
+          throw RequestError.methodNotFound('elicitation/create');
+        },
+      },
+      onPending: async (pending) => {
+        for (const active of this.#activePrompts.get(sessionId) ?? []) {
+          if (active.turnId === pending.turnId && !active.cancelled) {
+            await active.mapper.pendingInteraction(pending);
+          }
+        }
+      },
+      onAnswered: (answered, pending) => attachment?.publishInteractionAnswer(answered, pending),
+      onResolved: async (resolved, pending) => {
+        for (const active of this.#activePrompts.get(sessionId) ?? []) {
+          if (active.turnId === pending.turnId && !active.cancelled && !active.finished) {
+            await active.mapper.resolvedInteraction(resolved, pending);
+          }
+        }
+      },
+      onFailure: (pending, error) => {
+        const active = [...(this.#activePrompts.get(sessionId) ?? [])].find(
+          (prompt) => prompt.turnId === pending.turnId && !prompt.finished,
+        );
+        if (active?.attachment) {
+          active.projectionFailure ??= error;
+          active.attachment.failTurn(active.turnId, error);
+        } else if (!attachment) failAttachment(error);
+      },
+      onCancelled: (pending) => {
+        for (const active of this.#activePrompts.get(sessionId) ?? []) {
+          if (active.turnId === pending.turnId)
+            void this.#cancelPrompt(active).catch(() => undefined);
+        }
+      },
+    });
+    this.#attachmentInteractions.set(sessionId, interactions);
     task = RuntimeHostSessionChannel.open({
       connection,
       signal: openingController.signal,
@@ -632,6 +698,9 @@ export class AcpSessionRegistry {
       onRuntimeResourceChanged: () => undefined,
       onSnapshotChanged: (snapshot) => {
         this.#wakeSession(sessionId);
+        if (snapshot.rootTurn && isRuntimeHostTerminalTurn(snapshot.rootTurn)) {
+          interactions.terminalTurn(snapshot.rootTurn.turnId);
+        }
         if (configuration.metadataRevision === undefined) {
           configuration.metadataRevision = snapshot.session.metadataRevision;
           return;
@@ -663,23 +732,27 @@ export class AcpSessionRegistry {
       },
       onInteractionPending: (pending) => {
         if (
+          !interactions.fencesTurn(pending.turnId) &&
           ![...(this.#activePrompts.get(sessionId) ?? [])].some(
             (active) => active.turnId === pending.turnId && active.dispatchStarted,
           )
         ) {
-          // An idle attachment may observe another client's Turn. Retain its
-          // identity so a later ACP cancel/close can still stop that root.
+          // An idle attachment can observe another client's Turn; it does not
+          // transfer that Turn's interaction authority to this ACP client.
           return;
         }
-        // Interaction mapping is added by the next independently reviewable ACP increment.
-        failAttachment(
-          RequestError.internalError(
-            { source: 'adapter', code: 'unsupported_interaction', kind: pending.request.kind },
-            'This ACP adapter does not support interactions yet; the prompt failed',
-          ),
-        );
+        void interactions.pending(pending);
       },
-      onInteractionResolved: () => undefined,
+      onInteractionResolved: (pending) => {
+        if (
+          !interactions.fencesTurn(pending.turnId) &&
+          ![...(this.#activePrompts.get(sessionId) ?? [])].some(
+            (active) => active.turnId === pending.turnId && active.dispatchStarted,
+          )
+        )
+          return;
+        void interactions.resolved(pending);
+      },
       onTranscriptSettlement: (turnId) => {
         for (const active of this.#activePrompts.get(sessionId) ?? []) {
           if (active.turnId === turnId) void this.#reconcilePrompt(active).catch(() => undefined);
@@ -721,6 +794,10 @@ export class AcpSessionRegistry {
         return channel;
       })
       .catch((error: unknown) => {
+        interactions.close();
+        if (this.#attachmentInteractions.get(sessionId) === interactions) {
+          this.#attachmentInteractions.delete(sessionId);
+        }
         if (this.#attachments.get(sessionId) === task) {
           this.#attachments.delete(sessionId);
           this.#attachmentConfigurations.delete(sessionId);
@@ -746,6 +823,8 @@ export class AcpSessionRegistry {
     if (this.#attachments.get(sessionId) === task) {
       this.#attachments.delete(sessionId);
       this.#attachmentConfigurations.delete(sessionId);
+      this.#attachmentInteractions.get(sessionId)?.close();
+      this.#attachmentInteractions.delete(sessionId);
     }
     for (const active of this.#activePrompts.get(sessionId) ?? []) {
       if (active.attachment !== attachment) continue;
@@ -759,6 +838,8 @@ export class AcpSessionRegistry {
 
   async #closeSession(sessionId: string, delivery?: Promise<void>): Promise<CloseSessionResponse> {
     const cancellation = await this.#cancelSession(sessionId);
+    this.#attachmentInteractions.get(sessionId)?.close();
+    this.#attachmentInteractions.delete(sessionId);
     const attachmentTask = this.#attachments.get(sessionId);
     this.#attachments.delete(sessionId);
     let closeError: unknown;
@@ -770,6 +851,13 @@ export class AcpSessionRegistry {
       } catch (error) {
         closeError = error;
       }
+    }
+    const mcp = this.#mcps.get(sessionId);
+    this.#mcps.delete(sessionId);
+    try {
+      await mcp?.close();
+    } catch (error) {
+      closeError ??= error;
     }
     await delivery;
     const failedCancellation = cancellation.find(
@@ -818,17 +906,48 @@ export class AcpSessionRegistry {
     if (!this.#ownedSessionIds.has(sessionId)) throw unknownSessionError();
   }
 
-  async #create(params: NewSessionRequest): Promise<NewSessionResponse> {
+  async #create(
+    params: NewSessionRequest,
+    mcpConfig: McpConfigFile,
+    signal?: AbortSignal,
+  ): Promise<NewSessionResponse> {
+    const lifetime = signal
+      ? AbortSignal.any([signal, this.#creationAbort.signal])
+      : this.#creationAbort.signal;
+    lifetime.throwIfAborted();
     const connection = await this.#getConnection('session.create');
     const sessionId = this.#newSessionId();
+    let mcp: AcpSessionMcp | undefined;
+    if (params.mcpServers.length > 0) {
+      mcp = new AcpSessionMcp(sessionId, mcpConfig, connection);
+      this.#mcps.set(sessionId, mcp);
+    }
     let result;
+    let dispatched = false;
     try {
+      await mcp?.prepare(lifetime);
+      lifetime.throwIfAborted();
+      this.#assertOpen('session.create');
+      dispatched = true;
       result = await connection.request('session.create', {
         sessionId,
         workspace: { kind: 'host_path', path: params.cwd },
         modelTarget: { kind: 'default' },
       });
     } catch (error) {
+      const outcomeUnknown =
+        dispatched &&
+        error instanceof RuntimeHostRequestInterruptedError &&
+        error.dispatch === 'dispatched';
+      if (outcomeUnknown && !this.#closing) {
+        // The error returns this ID. Keep its connection-local reservation usable
+        // without guessing whether Host committed or resending Session creation.
+        this.#ownedSessionIds.add(sessionId);
+      } else {
+        this.#mcps.delete(sessionId);
+        await mcp?.close().catch(() => undefined);
+      }
+      if (error instanceof RequestError) throw error;
       throw requestErrorFromRuntimeHost(error, 'session.create', { sessionId });
     }
     // Session creation has committed. Optional presentation failures must not
@@ -986,6 +1105,8 @@ export class AcpSessionRegistry {
       ...(this.#activePrompts.get(sessionId) ?? []),
     ]);
     const cancellations = [...sessionIds].map((sessionId) => this.#cancelSession(sessionId));
+    for (const interactions of this.#attachmentInteractions.values()) interactions.close();
+    this.#attachmentInteractions.clear();
     const attachments = [...this.#attachments.values()];
     this.#attachments.clear();
     const configurations = [...this.#attachmentConfigurations.values()];
@@ -1015,6 +1136,9 @@ export class AcpSessionRegistry {
       }
     }
     await Promise.allSettled(cancellations);
+    const mcps = [...this.#mcps.values()];
+    this.#mcps.clear();
+    await Promise.allSettled(mcps.map((mcp) => mcp.close()));
     await Promise.allSettled([this.#closeOwnedConnection()]);
     await Promise.allSettled([
       ...this.#inFlightOperations,
@@ -1112,12 +1236,6 @@ function registryClosedError(operation: AcpSessionRegistryLifecycleOperation): R
 
 function validateNewSessionParams(params: NewSessionRequest): void {
   assertBoundedAbsoluteCwd(params.cwd);
-  if (params.mcpServers.length > 0) {
-    throw RequestError.invalidParams(
-      { field: 'mcpServers', reason: 'unsupported' },
-      'MCP servers are not supported by this ACP adapter yet',
-    );
-  }
   if ((params.additionalDirectories?.length ?? 0) > 0) {
     throw RequestError.invalidParams(
       { field: 'additionalDirectories', reason: 'unsupported' },

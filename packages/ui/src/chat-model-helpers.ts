@@ -42,23 +42,11 @@
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
 import type { ProviderType } from '@maka/core/llm-connections';
+import { connectionModelChoiceValue } from '@maka/core/llm-connections';
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 export type { ChatModelChoice } from '@maka/core/chat-model-choice';
-
-export function modelChoiceDescription(
-  choice: Pick<ChatModelChoice, 'description' | 'knowledgeCutoff'>,
-  locale: UiLocale,
-): string | undefined {
-  const description = choice.description?.trim();
-  const knowledge = choice.knowledgeCutoff?.trim();
-  const copy = getSharedUiCopy(locale).modelPicker;
-  const parts = [description, knowledge ? copy.knowledgeCutoff(knowledge) : undefined].filter(
-    (value): value is string => Boolean(value),
-  );
-  return parts.length > 0 ? parts.join(' · ') : undefined;
-}
 
 export interface ModelMenuGroup {
   connectionSlug: string;
@@ -89,7 +77,7 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): M
   const copy = getSharedUiCopy(locale).providers;
   const localizedLabels: Partial<Record<ProviderType, string>> = {
     'MiniMax-cn': copy.minimaxChina,
-    'openai-compatible': copy.custom,
+    custom: copy.custom,
     'claude-subscription': copy.claudeSubscription,
   };
   const bySlug = new Map<string, { connectionSlug: string; providerType: ProviderType; providerLabel: string; connectionName?: string; choices: ChatModelChoice[] }>();
@@ -149,7 +137,7 @@ export function exactModelChoiceValue(
   connectionSlug: string,
   model: string,
 ): string {
-  return `${encodeURIComponent(connectionId)}:${modelChoiceValue(connectionSlug, model)}`;
+  return connectionModelChoiceValue(connectionId, connectionSlug, model);
 }
 
 export function parseModelChoiceValue(value: string): { llmConnectionSlug: string; model: string } | undefined {

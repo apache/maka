@@ -21,13 +21,14 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
-import { LocaleProvider } from '@maka/ui';
+import { LocaleProvider, useSessionRailData, type SessionRailData } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeSessionNavigationServices,
   createSessionOpenCommand,
   deriveSessionRail,
   sessionMatchesRail,
+  SessionNavigationProvider,
   SessionNavigationServicesProvider,
   useSessionNavigationController,
   useSessionNavigationReads,
@@ -36,11 +37,13 @@ import {
   type SessionNavigationSession,
   type UseSessionNavigationControllerInput,
 } from '../../renderer/features/session-navigation/testing.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
 function session(
   id: string,
-  overrides: Partial<SessionNavigationSession> = {},
-): SessionNavigationSession {
+  overrides: Partial<DesktopSessionSummary> = {},
+): DesktopSessionSummary {
   return {
     id,
     name: id,
@@ -57,6 +60,9 @@ function session(
     profileId: 'local',
     profileName: 'Local',
     profileKind: 'local',
+    revision: 0,
+    activityAt: 0,
+    runtimeHostId: 'local-host',
     ...overrides,
   };
 }
@@ -66,6 +72,20 @@ const project: ProjectRecord = {
   name: 'Project',
   locations: [{ path: '/repo', isWorktree: false }],
   available: true,
+};
+
+const localProjectScope = {
+  key: JSON.stringify(['local-host', project.id]),
+  profileId: 'local',
+  hostId: 'local-host',
+  profileName: 'Local',
+  profileKind: 'local' as const,
+  project,
+  capabilities: {
+    chooseClientDirectory: true,
+    chooseHostDirectory: false,
+    selectNoProject: true,
+  },
 };
 
 const hiddenSessionIds = new Set(['hidden']);
@@ -130,7 +150,24 @@ function input(
       activeSessionId,
       (candidate) => !hiddenSessionIds.has(candidate.id) && sessionMatchesRail(candidate),
     ),
-    projects: [project],
+    projectScopes: [
+      localProjectScope,
+      ...sessions
+        .filter((session) => session.profileKind !== 'local')
+        .map((session) => ({
+          key: JSON.stringify([session.runtimeHostId, project.id]),
+          profileId: session.profileId,
+          hostId: session.runtimeHostId,
+          profileName: session.profileName,
+          profileKind: session.profileKind,
+          project: { ...project },
+          capabilities: {
+            chooseClientDirectory: false,
+            chooseHostDirectory: true,
+            selectNoProject: false,
+          },
+        })),
+    ],
     ports: ports(sessions, activeSessionId, calls),
   };
 }
@@ -151,14 +188,24 @@ const linkedCatalog = [
     },
   }),
   session('remote', {
+    runtimeHostId: 'remote-host',
     profileId: 'remote-profile',
     profileName: 'Remote Mac',
     profileKind: 'remote',
+    projectId: 'project',
+    cwd: '/srv/project',
   }),
   session('environment', {
+    runtimeHostId: 'wsl-host',
     profileId: 'wsl-ubuntu',
     profileName: 'Ubuntu',
     profileKind: 'environment',
+    projectId: 'project',
+    cwd: '/home/user/project',
+  }),
+  session('side-conversation', {
+    parentSessionId: 'root',
+    labels: ['mode:side_conversation'],
   }),
   session('archived', { isArchived: true }),
   session('hidden'),
@@ -170,13 +217,29 @@ afterEach(() => {
 });
 
 describe('useSessionNavigationController', () => {
-  it('groups the rail by Project and Runtime Host, and names Host-workspace rows', async () => {
+  it('keeps same-named Projects from each Runtime Host at the same level', async () => {
     const { root } = installReactRenderer();
     await act(async () => renderController(root, input(linkedCatalog, 'child')));
 
     assert.deepEqual(
       controller().selectors.groups.map(({ id }) => id),
-      ['project:project', 'runtime-host:remote-profile', 'runtime-host:wsl-ubuntu'],
+      [
+        'project:["local-host","project"]',
+        'project:["remote-host","project"]',
+        'project:["wsl-host","project"]',
+      ],
+    );
+    assert.deepEqual(
+      controller().selectors.groups.map(({ label }) => label),
+      ['Project · Local', 'Project · Remote Mac', 'Project · Ubuntu'],
+    );
+    assert.equal(
+      controller().selectors.sessionMeta(linkedCatalog[2]!),
+      'Remote Mac',
+    );
+    assert.equal(
+      controller().selectors.sessionMeta(linkedCatalog[3]!),
+      'Ubuntu',
     );
     assert.equal(controller().selectors.sessionMeta(linkedCatalog[2]!), 'Remote Mac');
     assert.equal(controller().selectors.sessionMeta(linkedCatalog[3]!), 'Ubuntu');
@@ -195,39 +258,69 @@ describe('useSessionNavigationController', () => {
 
 describe('useSessionNavigationReads', () => {
   let latestReads: ReturnType<typeof useSessionNavigationReads> | undefined;
+  let latestRail: SessionRailData | undefined;
 
   function ReadsProbe(props: Parameters<typeof useSessionNavigationReads>[0]) {
     latestReads = useSessionNavigationReads(props);
     return null;
   }
 
+  function RailProbe() {
+    latestRail = useSessionRailData();
+    return null;
+  }
+
   afterEach(() => {
     latestReads = undefined;
+    latestRail = undefined;
   });
 
-  it('projects linked, archived, hidden, Project, and Runtime Host Sessions once', async () => {
+  it('projects linked, archived, hidden, side-conversation, Project, and Runtime Host Sessions once', async () => {
     const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
     await act(async () =>
       root.render(
         createElement(LocaleProvider, {
           locale: 'en',
-          children: createElement(ReadsProbe, {
-            sessions: linkedCatalog,
-            activeSessionId: 'child',
-            activeSession: linkedCatalog[1],
-            hiddenSessionIds,
-          }),
+          children: createElement(
+            SessionNavigationServicesProvider,
+            { services: fakeServices },
+            createElement(ReadsProbe, { catalog, activeSessionId: 'child' }),
+            createElement(
+              SessionNavigationProvider,
+              {
+                catalog,
+                activeSessionId: 'child',
+                hiddenSessionIds,
+                projectScopes: [localProjectScope],
+                streamingSessionIds: new Set<string>(),
+                sessionSendOutcomes: {},
+                ports: ports(linkedCatalog, 'child'),
+                commandsRef: { current: null },
+                selection: { section: 'sessions' },
+                workHubActive: false,
+                onSelect: () => undefined,
+                onOpenSettings: () => undefined,
+                onNew: () => undefined,
+                onExitWorkHub: () => undefined,
+                onSelectSession: () => undefined,
+              },
+              createElement(RailProbe),
+            ),
+          ),
         }),
       ),
     );
 
     assert.ok(latestReads);
+    assert.ok(latestRail);
     assert.deepEqual(
-      latestReads.rail.sessions.map(({ id }) => id),
+      latestRail.sessions.map(({ id }) => id),
       ['root', 'remote', 'environment'],
     );
-    assert.equal(latestReads.rail.activeRowId, 'root');
-    assert.equal(latestReads.rail.activeParentSession?.id, 'root');
+    assert.equal(latestRail.activeId, 'root');
+    assert.equal(latestReads.activeParentSession?.id, 'root');
     assert.deepEqual(latestReads.branchBanner, {
       parentSessionId: 'root',
       parentSessionName: 'root',

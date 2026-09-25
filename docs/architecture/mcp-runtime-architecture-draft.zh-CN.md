@@ -6,7 +6,7 @@ source_language: zh-CN
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-09-23
 owners:
   - maka-backend
 ---
@@ -49,9 +49,10 @@ Maka 的 MCP 接入必须复用现有 `MakaTool` execution boundary，而不是�
 - modern Streamable HTTP 对 SEP-2243 `x-mcp-header` 做 bounded validation；非法定义只排除对应 Tool，unsafe integer argument 在发送前本地失败。
 - text、image、audio、embedded resource、resource link content；MCP `isError` 进入 Maka error path。
 - workspace-scoped `mcp.json` 使用 version 3；version 1/2 wrapper 读取时保持各自 legacy 语义，只有显式 mutation 才迁移落盘。
-- 首页侧边栏「扩展 > MCP」模块，提供市场模板、搜索、JSON import、CRUD、test、status/tool list，以及配置变化后的 backend cache invalidation。
-- bundled catalog 对 executable package 固定已核验版本；需要 credential、OAuth 或路径选择的模板默认 `enabled: false`，setup 完成前不启动 server。
-- market install 是可取消 transaction：renderer 展示明确的 installing/cancelling 状态，main process abort 对应 connect、等待未完成的 config write settle，再 rollback config 并 reconcile tool snapshot。
+- 首页侧边栏「扩展 > MCP」模块只展示已配置连接，提供搜索、JSON import、添加、编辑、启停、测试、删除和 OAuth 登录；通过 Module Hub services/controller 接入客户端能力。
+- 页面不内置第三方服务目录或品牌资产；用户按服务文档添加本地命令或远程 URL。保存后由 mcp.json 表示连接配置；连接失败保留配置，用户显式停用或删除。
+
+若以后恢复「发现」目录，条目必须对应提供方公开文档中的 MCP endpoint，并经过实际连接、传输方式与 OAuth 验证；目录仍只预填配置，不成为安装状态。默认使用文字名称。第三方图标入库前须逐项确认来源、版权许可、发行包所需通知和商标使用条件；开源图形许可不能代替商标授权。ASF 的[第三方作品要求](https://www.apache.org/legal/src-headers.html#3party)、[第三方许可政策](https://www.apache.org/legal/resolved.html)和[项目品牌职责](https://www.apache.org/foundation/marks/responsibility)是审核依据。
 
 当前 rollout 不包含 resources UI、resource subscription 和给 subprocess 使用的 loopback proxy。协议层保留 transport 和 content contracts，后续按独立 PR 扩展。
 
@@ -69,20 +70,23 @@ Maka 的 MCP 接入必须复用现有 `MakaTool` execution boundary，而不是�
 
 ```mermaid
 flowchart LR
-  UI["Desktop 扩展 / MCP / IPC"] --> Store["McpConfigStore"]
-  Store --> Manager["McpClientManager singleton"]
-  Manager --> Transport["stdio / Streamable HTTP / SSE"]
-  Manager --> Adapter["buildMcpTools"]
-  Adapter --> Backend["AiSdkBackend"]
-  Backend --> Runtime["ToolRuntime recording + telemetry + optional T1/T2"]
-  Runtime --> Manager
+  UI["Desktop Module Hub / TUI"] --> Mutation["updateMcpConfiguration"]
+  Mutation --> Store["mcp.json 文件事务"]
+  Store --> Manager["客户端 McpClientManager"]
+  Manager --> Snapshot["generation-bound tool snapshot"]
+  Snapshot --> Provider["Desktop / TUI capability provider"]
+  Provider --> Host["Runtime Host admission / execution"]
+  Host --> Relay["客户端 relay"]
+  Relay --> Manager
+  Manager --> Transport["官方 SDK: stdio / Streamable HTTP / SSE"]
 ```
 
-- `@maka/core/mcp`：无 I/O 的 config、status、tool/content contract。
-- `@maka/storage`：owner-only atomic `mcp.json` store。
-- `@maka/mcp`：官方 SDK client lifecycle、transport、pagination、notifications、diagnostics。
-- `@maka/runtime/mcp-tools`：MCP schema/content/annotations 到 `MakaTool` 的适配。
-- Desktop main：唯一 manager 实例；renderer 永不持有 MCP client 或 child process。
+- `@maka/core/mcp`：无 I/O 的配置、状态、工具契约和凭据退休条件。
+- `@maka/storage/mcp-config-store`：配置唯一持久化入口；共享 mutation 在文件锁内执行配置标准化、端点策略检查、凭据退休和原子写入。
+- `@maka/mcp`：每个客户端持有自己的 manager，负责 transport、发现、调用及 OAuth 凭据协调。Desktop renderer 不持有 client 或 child process。
+- `@maka/runtime/mcp-tools`：schema、content 和工具名称投影，保留原始 server/tool identity 与 generation binding。
+- Desktop Module Hub controller：读取配置与状态、发起用户操作，抵御过期请求和默认 Host 切换；Desktop adapter 是 bridge 接缝。
+- Runtime Host：唯一的 Session、Turn、continuation、授权准入和执行终态权威。客户端发布 capability offer 并接受 relay 调用，不创建第二条执行链路。
 
 ## 4. 配置 contract
 
@@ -109,7 +113,7 @@ flowchart LR
 }
 ```
 
-Server id 是稳定 identity。配置 reconciliation 使用完整 normalized config fingerprint；新增/删除/修改只影响对应连接。`protocol` 可出现在 stdio 或 remote config，省略始终表示兼容旧配置的 legacy。新建 Desktop remote 显式写 `auto`，新建 Desktop stdio 显式写 `legacy`；SSE 则收敛为 legacy。
+Server id 是稳定 identity。配置 reconciliation 使用完整 normalized config fingerprint；新增/删除/修改只影响对应连接。`protocol` 可出现在 stdio 或 remote config，省略始终表示兼容旧配置的 legacy。手动新建连接默认显式写 `auto`；编辑已有配置时保留其协议偏好，SSE 则收敛为 legacy。
 
 version 1、缺失 version 或 version 2 的 wrapper 可单向读取为 version 3 projection，但 `get()` 不静默改写文件；`transform`、`upsert` 或 `remove` 才持久化 version 3。version 1 不接受任何 `protocol`，version 2 只接受 remote `protocol`，version 3 才允许 stdio `protocol`。当前客户端遇到显式未知/未来 wrapper 或 malformed JSON 必须拒绝，不能用一次导入绕过原文件的读取失败并覆盖其原始字节。Desktop renderer 只提交原始 JSON；main process 在 storage normalizer 内解释 wrapper/direct-map、与当前配置合并并持久化，因此导入和正常写入不会形成两套 schema authority。remote headers 仍位于 `mcp.json`，文件和目录分别强制 `0600`/`0700`；后续迁移到 Keychain-backed credential store。
 
@@ -123,7 +127,7 @@ stdio `protocol` 不只是 wire-format 偏好，也是进程副作用授权：
 
 探测和实际连接的协议判断由官方 SDK client v2 独占。Maka manager 只传递偏好、持有当前 actual transport，并在 abort/timeout 时关闭 candidate；它不复制 probe 状态机、不维护 PID registry，也不缓存另一份 negotiated-protocol truth。
 
-Bundled catalog 不是第二份 runtime truth：点击安装只把选中的模板写入同一个 `mcpServers` map。需要 setup 的模板以 disabled snapshot 落盘，用户补齐配置并主动启用后才参与连接；不允许用“已写入配置”冒充“已授权”或“已连接”。
+手动添加通过 create 写入同一个 `mcpServers` map；ID 已存在时返回字段错误，不覆盖旧连接。JSON import 则保留其明确声明的同名更新语义。
 
 ## 5. 安全与权限
 
@@ -132,8 +136,8 @@ Bundled catalog 不是第二份 runtime truth：点击安装只把选中的模�
 - Direct/Code Mode 的 managed execution 在 provider dispatch 前由 runtime adapter 检查 `ExecutionBoundary`；network 尚未启用时必须先通过 `requestSandboxBoundary`。协议协商只改变 manager 内部 wire codec，不能绕过这条授权路径。
 - manager 只提供 generation-bound tool snapshot 和远端调用。ToolRuntime 总是在 implementation 前投影 `tool_call` / `tool_start`；只有 host 配置 `runtimeCommitSink` 时，才要求 durable T1 在 provider side effect 前成功，并在结果后写 T2。没有 sink 的路径不得声称拥有 durable operation id 或 T1/T2 recovery authority。
 - main-process store boundary 对 IPC payload 做 runtime validation，不接受 prototype keys、空 command、非 HTTP(S) URL、非法 headers/env。
-- catalog 中的 executable package 必须 pin 到 reviewed version；stdio credential 优先走显式 env，不进入 process args。当前显式 env 仍受 owner-only 文件边界保护，不能等同于 encrypted secret storage。
-- tool 名为 `mcp__{serverId}__{toolName}`；仅允许 provider-safe characters，超过 64 chars 时使用 stable hash suffix，并检测 collision。
+- stdio credential 优先走显式 env，不进入 process args。当前显式 env 仍受 owner-only 文件边界保护，不能等同于 encrypted secret storage。
+- 普通工具名以 `mcp__{serverId}__{toolName}` 投影；超长、字符替换或分隔符歧义时使用独立的 `mcp_h__` 前缀和原始二元组的稳定 hash suffix，避免不同工具被清洗为同名。原始 identity 用于路由，投影名不作为 MCP server 的工具名。升级前涉及已改名工具的中断任务可能因 tool catalog mismatch 暂停自动恢复；历史保留，用户可发起新 turn。名称只由 identity 决定，不随同批工具的增删变化。
 - rich output 对 model text、image count/总 base64 大小和 summary block 数量做 aggregate bounds；audio、resource blob 和 unknown payload 不直接注入 model context。
 
 ## 6. Lifecycle 与错误语义
@@ -144,11 +148,15 @@ modern tool-list subscription 只有在 server 声明 capability 且 acknowledge
 
 每个 connection generation 只有一个 `ToolDiscoveryState`。initial discovery、显式 refresh、legacy notification 与 modern subscription signal 都推进同一个 change epoch，并共享同一个 in-flight promise；只有仍拥有当前 client、generation、discovery state 和最新 epoch 的 transaction 才能发布。发布结果仍是唯一的 immutable `ToolSnapshot { revision, tools }`，subscription、status 和 renderer 都不维护第二份 callable registry 或 revision。
 
-install operation 以 server id 串行化。取消时先标记 operation 并 abort active connect，再等待已经开始的 store write 完成；只有随后执行 remove + manager reconcile，才能避免迟到的 upsert 让已取消条目“复活”。renderer 也保留 cancellation marker，防止旧 install promise 覆盖 rollback 后的新 UI state。
+Desktop 和 TUI 共用 `updateMcpConfiguration`：先验证完整下一份配置，再在同一文件锁内退休被删除、端点变更或静态 OAuth 注册变更的凭据，最后发布配置。撤销失败则不写文件；已完成的部分撤销可以重新登录恢复。目录 durability fence 失败时，调用方重新读取配置并同步 manager，保留原始 commit-unknown 结果，不重放副作用。Desktop 还在同一进程操作 lane 内排除活跃 OAuth 登录与配置变更的交错；TUI 保留自己的配置 revision 和 Host publication 语义。
+
+OAuth 协议发现、PKCE、注册、交换和刷新由官方 SDK 实现。静态客户端在 `oauth.issuer` 下绑定 `clientId` / `clientSecret`；旧静态配置缺少 issuer 时拒绝授权，用户可在编辑表单补齐。凭据记录绑定 endpoint 和静态注册配置指纹，重启后也会拒绝复用配置不匹配的 token 或注册；缺少指纹的旧静态凭据需要重新登录。Desktop loopback listener 只检查请求来源、路径和 state，完整成功/错误响应交给 manager，先由 SDK 校验 issuer，再接受代码或已知错误码；远端 error_description 不进入页面或 IPC 错误。浏览器回调页面只确认收到响应，真正结果显示在连接详情中。
+
+凭据协调器保留 version CAS 与持久化 revocation generation：前者隔离过期写，后者防止退出授权、删除或跨进程撤销后旧 flow 恢复凭据。登录支持取消、超时和重启后恢复；这些生命周期不能由 renderer 的 busy 状态代替。
 
 timeout 默认值：remote connect 30s、stdio connect 60s、list 15s、call 10min。caller abort 优先于 timeout。协议 `isError` 转为带 server/tool context 的异常；modern `input_required` 不由 manager 自动满足或重试；transport/timeout/validation 分别保留可诊断 message，stdio error 附带最多十行经过 redaction/truncation 的 stderr tail。
 
-配置变更或任一 era 的 tool-list change 后 manager 先 reconcile，再使 cached backends 失效；正在执行的 turn 不被强杀，invalidation 会在最后一个 active run 完成时释放旧 backend，确保下个 turn 创建包含新 tool snapshot 的 backend。connected status 只展示本次 SDK 实际协商出的 era/revision；connecting、error 和 disconnected 不复用过期协商结果。
+配置或 tool-list 变化后，客户端重新发布 capability snapshot，由 Host 管理准入、generation 和后续执行。旧的工具 binding 不能调用新的连接 generation。connected 状态只展示本次实际协商出的 era/revision，connecting、error 和 disconnected 不复用过期协商结果。
 
 ## 7. 当前验收标准
 
@@ -156,10 +164,10 @@ timeout 默认值：remote connect 30s、stdio connect 60s、list 15s、call 10m
 2. `isError`、timeout、abort、startup failure 和经过 secret redaction 的 stderr diagnostics 有自动化覆盖。
 3. config store 能拒绝非法输入、并发写不损坏、POSIX mode 为 `0600`。
 4. tool name 在 64 chars 内稳定、无 collision；不可信 annotations 无法降低普通 MCP tool 的 `network_send` 分类或让它进入 Plan mode，model output aggregate bounds 有测试。
-5. Desktop 首页侧边栏仅在「扩展」分组下提供「技能」和「MCP」；MCP 模块可搜索市场模板、JSON import、添加、编辑、启停、测试和删除 server，状态与 tools 可见。
-6. market `+` 在安装中变为 progress indicator，hover/focus 变为可访问的取消操作；取消后 config 不复活、server 不残留、tools 不可见。
+5. Desktop 首页侧边栏仅在「扩展」分组下提供「技能」和「MCP」；MCP 模块可搜索已配置连接、JSON import、添加、编辑、启停、测试和删除 server，状态与 tools 可见。
+6. 重复 ID 不覆盖，连接失败不删除已保存配置；needs-auth 有登录入口，登录可取消，授权后可退出。表单明暗主题和窄窗口下只保留一个可见 modal，字段在同一列对齐。
 7. 更新配置后新 turn 看见新 tools，删除后 tools 消失。
-8. targeted tests、workspace typecheck/build、full tests 和 Electron smoke 必须通过。
+8. 受影响的配置、OAuth、工具投影与控制器测试，以及 workspace typecheck/build 和对应 Storybook play 必须通过；Electron 测试仅用于确实需要其进程边界的行为。
 9. remote legacy/auto/exact pin、modern missing-tools、structured JSON、`input_required`、窄 SSE fallback 和无响应 probe cancellation 有真实 HTTP fixture 覆盖。
 10. modern subscription acknowledgement、initial-list race、burst coalescing、独立 diagnostics、non-local close 和无响应 cancellation teardown 有真实 SDK/event-bus fixture 覆盖。
 11. SEP-2243 定义 partition、bounded warning、safe integer 和 wire 前失败有自动化覆盖；legacy 路径不误启用 modern header 语义。

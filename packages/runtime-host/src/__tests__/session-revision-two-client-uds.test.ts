@@ -448,6 +448,8 @@ async function verifyConcurrentRevisionAuthority(
     assert.equal(branch.branchOfTurnId, 'turn-1');
     assert.equal(branch.isFlagged, true);
     assert.equal(branch.connectionLocked, true);
+    assert.equal(branch.permissionMode, 'explore');
+    assert.deepEqual(branch.labels, ['mode:deep_research']);
 
     const artifactPage = await desktop.request('artifact.query', {
       kind: 'list_start',
@@ -455,8 +457,23 @@ async function verifyConcurrentRevisionAuthority(
     });
     assert.equal(artifactPage.kind, 'page');
     if (artifactPage.kind !== 'page') assert.fail('Branch Artifact query must return a page');
-    assert.equal(artifactPage.artifacts.length, 3);
+    assert.equal(artifactPage.artifacts.length, 4);
     assert.notEqual(artifactPage.artifacts[0]?.id, 'source-artifact');
+    const report = artifactPage.artifacts.find((item) => item.name === 'report.md');
+    assert.ok(report);
+    assert.deepEqual(
+      await desktop.request('artifact.query', {
+        kind: 'read_text',
+        sessionId: branch.id,
+        artifactId: report.id,
+      }),
+      {
+        kind: 'text',
+        sessionId: branch.id,
+        artifactId: report.id,
+        preview: { ok: true, text: '# Existing research report' },
+      },
+    );
     const todo = await tui.request('session.todo.query', { sessionId: branch.id });
     assert.deepEqual(todo.items, []);
 
@@ -858,7 +875,8 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'explore',
+      labels: ['mode:deep_research'],
     });
     const coordination = await execution.sessionStore.createStableSession({
       sessionId: WORKHUB_COORDINATION_SESSION_ID,
@@ -1001,6 +1019,16 @@ async function seedSource(
       mimeType: 'text/plain',
       source: 'user_upload',
       now: 1,
+    });
+    await artifacts.create({
+      id: 'legacy-research-report',
+      sessionId: source.id,
+      turnId: 'turn-1',
+      name: 'report.md',
+      kind: 'file',
+      content: '# Existing research report',
+      source: 'deep_research',
+      now: 2,
     });
     const projectionArtifact = await artifacts.create({
       id: 'source-projection-artifact',
@@ -1725,7 +1753,7 @@ async function verifyDurableBranch(
     // must rewrite it to a fresh target artifact id, never leave the source id.
     assert.notEqual(ref.relativePath, 'source-artifact');
     const branchArtifacts = await artifacts.listPage(branchSessionId, { offset: 0, limit: 10 });
-    assert.equal(branchArtifacts.total, 3);
+    assert.equal(branchArtifacts.total, 4);
     assert.deepEqual(await artifacts.readTextInSession(branchSessionId, ref.relativePath), {
       ok: true,
       text: 'retained bytes',

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { SessionChangedEvent } from '@maka/core/session';
+import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -36,6 +36,11 @@ export type ConversationSession = Pick<
   | 'shared'
 >;
 
+export interface ConversationHostChange {
+  readonly hostId?: string;
+  readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+}
+
 export interface ConversationNewTaskTarget {
   readonly profileId: string;
   readonly hostId: string;
@@ -50,10 +55,20 @@ export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
+  readonly promptSuggestions?: {
+    generate(sessionId: string): Promise<string | undefined>;
+    readEnabled(): boolean;
+    subscribeEnabled?(handler: () => void): () => void;
+    writeEnabled(enabled: boolean): void;
+  };
   readonly sessions: {
-    list(): Promise<ConversationSession[]>;
-    subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
+    getExecutorState?(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    setExecutorModelConfiguration?(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<import('../../../shared/desktop-session-projection.js').DesktopSessionUpdateResult<DesktopSessionSummary>>;
     readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
+  };
+  readonly runtimeHosts: {
+    subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;
   };
   readonly skills: {
     listInvocable(sessionId?: string): Promise<InvocableSkillEntry[]>;
@@ -65,6 +80,7 @@ export interface ConversationServices extends Pick<
     ): Promise<ConversationFileSearchResult>;
   };
   readonly newTasks: {
+    getExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     subscribeChanges(handler: () => void): () => void;
     listInvocableSkills(
       target: ConversationNewTaskTarget,

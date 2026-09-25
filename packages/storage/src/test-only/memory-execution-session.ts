@@ -72,10 +72,7 @@ import {
   normalizeProvenSteeringMessageHandoff,
   type PendingMessageAdmission,
 } from '../message-admission-store.js';
-import {
-  projectSessionCatalogMessages,
-  lastMessagePreviewForMessages,
-} from '../session-message-projection.js';
+import { projectSessionCatalogMessages } from '../session-message-projection.js';
 import {
   type MemoryExecutionAuthority,
   copy,
@@ -245,10 +242,14 @@ function catalog(s: MemoryState, id: string): SessionCatalogRecord {
     },
   };
 }
-function project(s: MemoryState, id: string, values: readonly StoredMessage[]): void {
+function project(
+  s: MemoryState,
+  id: string,
+  values: readonly StoredMessage[],
+  projection = projectSessionCatalogMessages(values),
+): void {
   const current = requireHeader(s, id);
-  const projection = projectSessionCatalogMessages(values);
-  const preview = lastMessagePreviewForMessages(values);
+  const preview = projection.lastMessagePreview;
   if (preview !== undefined) rows(s, 'previews').set(id, preview);
   const visible = values.some((m) => m.type === 'user' || m.type === 'assistant');
   if (visible || projection.lastMessageAt !== undefined) {
@@ -261,10 +262,18 @@ function project(s: MemoryState, id: string, values: readonly StoredMessage[]): 
   }
 }
 function append(s: MemoryState, id: string, inputs: readonly StoredMessage[]): void {
+  const canonicalValues = inputs.map((input) => decodeCanonicalMessage(copy(input)));
+  appendCanonical(s, id, canonicalValues);
+}
+function appendCanonical(
+  s: MemoryState,
+  id: string,
+  canonicalValues: readonly StoredMessage[],
+  projection = projectSessionCatalogMessages(canonicalValues),
+): void {
   requireHeader(s, id);
   const list = messages(s).get(id)!;
-  for (const input of inputs) {
-    const message = decodeCanonicalMessage(copy(input));
+  for (const message of canonicalValues) {
     const previous = list.find((m) => m.id === message.id);
     if (previous) {
       if (!equal(previous, message)) conflict('Message identity changed');
@@ -272,7 +281,7 @@ function append(s: MemoryState, id: string, inputs: readonly StoredMessage[]): v
     }
     list.push(message);
   }
-  project(s, id, inputs);
+  project(s, id, canonicalValues, projection);
 }
 function probe(s: MemoryState, id: string, fingerprint: string) {
   assertSafeSessionId(id);
@@ -423,29 +432,35 @@ export function createMemorySessionStore(
         externalOrigin: copy(origin),
         transcriptLedgerVersion: 0 as const,
       };
+      const catalogProjection = projectSessionCatalogMessages(canonicalValues);
       options?.onCommitStarted?.();
       return write('session.import', (s) => {
         insert(s, h);
-        append(s, h.id, canonicalValues);
+        appendCanonical(s, h.id, canonicalValues, catalogProjection);
         return requireHeader(s, h.id).header;
       });
     },
     lookupExternalSessionImports: async (adapterId, sourceIds, limit) =>
       read((s) =>
-        sourceIds.map((sourceSessionId) => {
+        sourceIds.flatMap((sourceSessionId) => {
           const matches = [...headers(s).values()].filter(
             (h) =>
+              h.header.transcriptLedgerVersion !== 0 &&
               h.header.externalOrigin?.adapterId === adapterId &&
               h.header.externalOrigin.sourceSessionId === sourceSessionId,
           );
-          return {
-            sourceSessionId,
-            livePublishedImportCount: matches.length,
-            recentSessionIds: matches
-              .sort((x, y) => y.header.createdAt - x.header.createdAt)
-              .slice(0, limit)
-              .map((h) => h.header.id),
-          };
+          return matches.length === 0
+            ? []
+            : [
+                {
+                  sourceSessionId,
+                  livePublishedImportCount: matches.length,
+                  recentSessionIds: matches
+                    .sort((x, y) => y.header.createdAt - x.header.createdAt)
+                    .slice(0, limit)
+                    .map((h) => h.header.id),
+                },
+              ];
         }),
       ),
     createSubagent: async (input, initial) =>
@@ -495,6 +510,7 @@ export function createMemorySessionStore(
         const ordinary = id !== HUB && header.role === undefined;
         const coordination = id === HUB && header.role === WORKHUB_COORDINATION_SESSION_ROLE;
         if (
+          header.transcriptLedgerVersion === 0 ||
           header.conversationCopy?.state === 'preparing' ||
           (!ordinary && !(roleScope === 'recoverable' && coordination))
         )
@@ -891,21 +907,48 @@ export function createMemorySessionStore(
           ? m
           : undefined;
       }),
-    readWorkHubStopRequest: async (id) =>
+    readWorkHubStopRequest: async (id, actionId) =>
       read((s) => {
-        const m = hubMessage(s, 'whq_' + suffix(id));
+        const first = hubMessage(s, 'whq_' + suffix(id));
+        const m =
+          actionId &&
+          first?.type === 'workhub_coordination' &&
+          first.kind === 'delegation_stop_requested' &&
+          first.actionId !== actionId
+            ? hubMessage(s, 'whq_' + suffix(JSON.stringify([id, actionId])))
+            : first;
         return m?.type === 'workhub_coordination' && m.kind === 'delegation_stop_requested'
           ? m
           : undefined;
       }),
-    readWorkHubStopResolution: async (id) =>
+    readWorkHubStopResolution: async (id, actionId) =>
       read((s) => {
-        const m = hubMessage(s, 'whz_' + suffix(id));
+        if (!actionId) {
+          const terminal = hubMessage(s, 'whzt_' + suffix(id));
+          if (
+            terminal?.type === 'workhub_coordination' &&
+            terminal.kind === 'delegation_stop_resolved' &&
+            terminal.outcome !== 'not_owned'
+          )
+            return terminal;
+        }
+        const scoped = actionId
+          ? hubMessage(s, 'whz_' + suffix(JSON.stringify([id, actionId])))
+          : undefined;
+        const primary = hubMessage(s, 'whz_' + suffix(id));
+        const m =
+          scoped ??
+          (actionId &&
+          primary?.type === 'workhub_coordination' &&
+          primary.kind === 'delegation_stop_resolved' &&
+          primary.actionId !== actionId
+            ? undefined
+            : primary);
         return m?.type === 'workhub_coordination' && m.kind === 'delegation_stop_resolved'
           ? m
           : undefined;
       }),
-    readActiveWorkHubAssignmentsByTarget: async (ids, limit) =>
+    readActiveWorkHubAssignmentsByTarget: async (ids, limit, includeStopped) =>
       read((s) => {
         ids.forEach(assertSafeSessionId);
         if (
@@ -928,8 +971,11 @@ export function createMemorySessionStore(
                 !memoryRootSourceReceipt(s, m.targetSessionId, m.targetMessageId))
             )
               return false;
-            const resolution = hubMessage(s, 'whz_' + suffix(m.delegationId));
+            const resolution =
+              hubMessage(s, 'whzt_' + suffix(m.delegationId)) ??
+              hubMessage(s, 'whz_' + suffix(m.delegationId));
             if (
+              !includeStopped &&
               resolution?.type === 'workhub_coordination' &&
               resolution.kind === 'delegation_stop_resolved' &&
               resolution.outcome !== 'not_owned'
@@ -1232,6 +1278,7 @@ function selectCatalog(s: MemoryState, filter: Parameters<SessionAuthorityStore[
     .filter(
       (r) =>
         r.header.role !== WORKHUB_COORDINATION_SESSION_ROLE &&
+        r.header.transcriptLedgerVersion !== 0 &&
         r.header.conversationCopy?.state !== 'preparing' &&
         (filter?.subagentParentSessionId === undefined ||
           r.header.subagentParent?.parentSessionId === filter.subagentParentSessionId),

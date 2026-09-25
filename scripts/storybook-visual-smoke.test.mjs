@@ -19,7 +19,14 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { catalogJobs, isExpectedConsoleError, storyUrl } from './storybook-visual-smoke.mjs';
+import { runInNewContext } from 'node:vm';
+import {
+  catalogJobs,
+  installStorybookRenderProbe,
+  isExpectedConsoleError,
+  rescuedRenderSummary,
+  storyUrl,
+} from './storybook-visual-smoke.mjs';
 
 const REFERENCE_STORY_ID = 'product-shell-official-appshell--native-conversation';
 const THEME_PALETTES = [
@@ -191,4 +198,61 @@ test('keeps unexpected settings errors fatal, including errors in the error stor
   );
   assert.equal(isExpectedConsoleError(errorStory, `${expectedError} unexpected detail`), false);
   assert.equal(isExpectedConsoleError(errorStory, 'unexpected render failure'), false);
+});
+
+// A gate that goes green leaves nobody reading its output, so what the retry
+// absorbed has to be recorded somewhere a passing run is still read. These pin
+// the record's content: the story id and why it failed, not a bare count.
+test('a rescued render is recorded with its story id and reason', () => {
+  const summary = rescuedRenderSummary([
+    {
+      job: {
+        storyId: 'product-x--y',
+        colorScheme: 'light',
+        palette: 'default',
+        forcedColors: 'none',
+      },
+      message: 'page.waitForFunction: Timeout 15000ms exceeded.',
+    },
+  ]);
+  assert.match(summary, /rescued by isolating a failure/);
+  assert.match(summary, /product-x--y \(light\/default\)/);
+  assert.match(summary, /Timeout 15000ms exceeded/);
+  // The recurrence is the signal, so the record must name the ambiguity it
+  // cannot resolve rather than implying every entry is harmless.
+  assert.match(summary, /load-dependent regression/);
+});
+
+test('a run with no rescued renders records nothing', () => {
+  assert.equal(rescuedRenderSummary([]).includes('- `'), false);
+});
+
+test('a play assertion exception fails the render even if Storybook emits a finished event', () => {
+  const listeners = new Map();
+  const window = {
+    addEventListener() {},
+    __STORYBOOK_PREVIEW__: {
+      channel: {
+        on: (event, handler) => listeners.set(event, handler),
+      },
+    },
+  };
+  runInNewContext(`(${installStorybookRenderProbe.toString()})({storyId: 'example'})`, { window });
+  listeners.get('playFunctionThrewException')({ storyId: 'example', message: 'glyphs moved' });
+  listeners.get('storyFinished')({ storyId: 'example' });
+  assert.equal(window.__makaStorybookSmoke.finished, true);
+  assert.match(window.__makaStorybookSmoke.failures[0], /glyphs moved/);
+});
+
+test('WorkHub suggestion geometry runs at both widths in both themes', () => {
+  const jobs = catalogJobs(storyIndex('product-workhub--next-prompt-suggestion'));
+  assert.deepEqual(
+    jobs.map(({ colorScheme, viewport }) => [colorScheme, viewport.width]),
+    [
+      ['light', 1280],
+      ['light', 720],
+      ['dark', 1280],
+      ['dark', 720],
+    ],
+  );
 });

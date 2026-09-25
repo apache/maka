@@ -35,9 +35,7 @@ export function deriveMessageQueueProjection(
   const entries = [
     ...(event.steeringEntries ?? []),
     ...(event.followupEntries ?? []),
-  ]
-    .filter((entry) => entry.state === 'queued')
-    .map((entry) => structuredClone(entry));
+  ].map((entry) => structuredClone(entry));
   return {
     entries,
     transientMessages: entries.map((entry) => ({

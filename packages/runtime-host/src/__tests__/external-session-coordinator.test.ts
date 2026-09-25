@@ -38,6 +38,7 @@ import {
   type ExternalSessionCatalogPageQuery,
   type ExternalSessionSummary,
 } from '@maka/core/external-session';
+import type { WorkspaceTarget } from '../protocol/index.js';
 import { type SessionHeader } from '@maka/core/session';
 import { headerToSummary } from '@maka/runtime/session-manager';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
@@ -673,6 +674,69 @@ test('coalesces a repeat import issued while the first is still running', async 
   assert.equal(fixture.creates.length, 2);
 });
 
+for (const workspace of [
+  { kind: 'host_path', path: '/workspace/A' },
+  { kind: 'project', projectId: 'project-A' },
+] satisfies WorkspaceTarget[]) {
+  test(`coalesces concurrent imports into the same ${workspace.kind} destination`, async () => {
+    const fixture = coordinatorFixture([adapterFixture()]);
+    const request = { adapterId: 'codex', sourceSessionId: 'source-0', workspace };
+    const [first, second] = await Promise.all([
+      fixture.coordinator.importSession(request),
+      fixture.coordinator.importSession({ ...request, workspace: { ...workspace } }),
+    ]);
+    assert.equal(first.ok, true);
+    assert.deepEqual(second, first);
+    assert.equal(fixture.creates.length, 1);
+  });
+}
+
+for (const [firstWorkspace, secondWorkspace] of [
+  [
+    { kind: 'host_path', path: '/workspace/A' },
+    { kind: 'host_path', path: '/workspace/B' },
+  ],
+  [
+    { kind: 'project', projectId: 'project-A' },
+    { kind: 'project', projectId: 'project-B' },
+  ],
+  [undefined, { kind: 'host_path', path: '/workspace/B' }],
+] satisfies Array<[WorkspaceTarget | undefined, WorkspaceTarget]>) {
+  test(`rejects a conflicting import destination (${firstWorkspace?.kind ?? 'source cwd'})`, async () => {
+    const fixture = coordinatorFixture([adapterFixture()]);
+    const source = { adapterId: 'codex', sourceSessionId: 'source-0' };
+    const [first, second] = await Promise.all([
+      fixture.coordinator.importSession({ ...source, workspace: firstWorkspace }),
+      fixture.coordinator.importSession({ ...source, workspace: secondWorkspace }),
+    ]);
+    assert.equal(first.ok, true);
+    assert.deepEqual(second, {
+      ok: false,
+      error: {
+        code: 'operation_conflict',
+        message: 'This source is already being imported into a different workspace',
+      },
+    });
+    assert.equal(fixture.creates.length, 1);
+    assert.equal(fixture.drainRequests(), 0);
+
+    // A conflict is scoped to the running import, not a permanent ban on
+    // making a second copy in the independently chosen destination.
+    const later = await fixture.coordinator.importSession({
+      ...source,
+      workspace: secondWorkspace,
+    });
+    assert.equal(later.ok, true);
+    assert.equal(fixture.creates.length, 2);
+    assert.equal(
+      secondWorkspace.kind === 'project'
+        ? fixture.creates[1]?.input.projectId
+        : fixture.creates[1]?.input.cwd,
+      secondWorkspace.kind === 'project' ? secondWorkspace.projectId : secondWorkspace.path,
+    );
+  });
+}
+
 test('reports conversion errors before persistence and store uncertainty after entry', async () => {
   let createAttempts = 0;
   const conversionFailure = coordinatorFixture(
@@ -740,7 +804,8 @@ test('reports conversion errors before persistence and store uncertainty after e
   assert.equal(canonicalizationFailure.drainRequests(), 0);
 
   const persistenceFailure = coordinatorFixture([adapterFixture()], {
-    createImportedSession: async () => {
+    createImportedSession: async (_input, _messages, _externalOrigin, options) => {
+      options?.onCommitStarted?.();
       throw new Error('commit acknowledgement lost');
     },
   });
@@ -759,6 +824,26 @@ test('reports conversion errors before persistence and store uncertainty after e
     },
   );
   assert.equal(persistenceFailure.drainRequests(), 1);
+
+  const projectionFailure = coordinatorFixture([adapterFixture()], {
+    createImportedSession: async () => {
+      throw new Error('forced projection failure');
+    },
+  });
+  assert.deepEqual(
+    await projectionFailure.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'source_unreadable',
+        message: 'External Session could not be read or converted',
+      },
+    },
+  );
+  assert.equal(projectionFailure.drainRequests(), 0);
 });
 
 test('classifies source absence only through the adapter error authority', async () => {
@@ -882,7 +967,8 @@ test('does not classify untyped source errors or errors after persistence as sou
     },
   );
   const committed = coordinatorFixture([adapterFixture()], {
-    createImportedSession: async () => {
+    createImportedSession: async (_input, _messages, _externalOrigin, options) => {
+      options?.onCommitStarted?.();
       throw new ExternalSessionLimitError('record_bytes', 100, 'private persistence details');
     },
   });
@@ -893,6 +979,32 @@ test('does not classify untyped source errors or errors after persistence as sou
   assert.ok(!outcome.ok);
   assert.equal(outcome.error.code, 'commit_outcome_unknown');
   assert.equal(committed.drainRequests(), 1);
+});
+
+test('uses the Host-resolved workspace as the imported Session cwd', async () => {
+  const fixture = coordinatorFixture([adapterFixture()]);
+
+  const outcome = await fixture.coordinator.handlers['external-session.import'](
+    {
+      adapterId: 'codex',
+      sourceSessionId: 'source-0',
+      workspace: { kind: 'project', projectId: 'project-1' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(fixture.creates[0]?.input, {
+    backend: 'ai-sdk',
+    cwd: '/resolved-project',
+    projectId: 'project-1',
+    llmConnectionSlug: 'default',
+    model: 'gpt-5',
+    permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+    name: 'Source 0',
+  });
 });
 
 test('reports a model-target failure before any commit is attempted', async () => {
@@ -1155,7 +1267,6 @@ function coordinatorFixture(
       if (!storeOverrides.createImportedSession) {
         return defaultCreate(input, messages, externalOrigin, options);
       }
-      options?.onCommitStarted?.();
       return storeOverrides.createImportedSession(input, messages, externalOrigin, options);
     },
     lookupExternalSessionImports: async (adapterId, sourceSessionIds, recentSessionIdLimit) => {

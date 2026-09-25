@@ -1443,6 +1443,93 @@ test('a later message cannot complete ahead of the prefix a subscriber is still 
   coordinator.close();
 });
 
+test('a steering message cannot overtake the prefix a subscriber is still being paid', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let first = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    first += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-steer-order', sink);
+  const opened = await open(coordinator, 'connection-steer-order');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('message-1', first));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'redirect' },
+  });
+  sink.release();
+  await waitFor(() => sink.frames.some((frame) => frame.kind === 'subscription.session_event'));
+
+  const order = sink.frames.flatMap((frame) =>
+    frame.kind === 'subscription.session_delta' && frame.delta.complete
+      ? [`complete:${frame.delta.messageId}`]
+      : frame.kind === 'subscription.session_event'
+        ? [frame.event.type]
+        : [],
+  );
+  assert.deepEqual(order, ['complete:message-1', 'steering_message']);
+  coordinator.close();
+});
+
+test('events held behind an unpaid prefix spend the slow-consumer budget', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  for (let index = 0; index < 24; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      ...textEvent(index),
+      text: `${index}:${'x'.repeat(8 * 1024)}`,
+    });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-held-budget', sink);
+  const opened = await open(coordinator, 'connection-held-budget');
+  connection.activate(opened.subscriptionId);
+
+  for (let seq = 0; seq < 40; seq += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      type: 'tool_output_delta',
+      id: `output-${seq}`,
+      turnId: 'turn-1',
+      ts: seq,
+      sessionId: SESSION_ID,
+      toolCallId: 'tool-1',
+      toolUseId: 'tool-1',
+      seq,
+      stream: 'stdout',
+      chunk: 'z'.repeat(8 * 1024),
+      redacted: false,
+      createdAt: seq,
+    });
+  }
+  sink.release();
+  await waitFor(() => sink.frames.some((frame) => frame.kind === 'subscription.closed'));
+
+  // Evicted while the sink was still stuck on its first frame, not after the
+  // whole prefix and the held events had been drained into the queue.
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.closed' ? `closed:${frame.reason}` : frame.kind,
+    ),
+    ['subscription.session_delta', 'closed:slow_consumer'],
+  );
+  coordinator.close();
+});
+
 // #5365: the Turn ending does not unsay what the Host already streamed. The
 // terminal publication used to drop every unpaid backlog, so a subscriber was
 // left holding a truncated answer that the client then reported as complete.
@@ -2396,3 +2483,48 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     message: 'Timed out waiting for continuity state',
   });
 }
+
+test('settled choice invalidates consumed transcript even without a new RuntimeEvent', async () => {
+  let projection = canonical({ interactions: { pending: [pendingInteraction()] } });
+  const durable: StoredMessage[] = [
+    { type: 'assistant', id: 'old', turnId: 'turn-1', ts: 1, text: 'Done', modelId: 'test' },
+  ];
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => projection,
+    new SessionAdmissionGate(),
+    undefined,
+    { ...transcriptReader(durable), readDurableHighWater: async () => 1 },
+  );
+  const sink = new RecordingSink();
+  const connection = attachTestConnection(coordinator, 'late-choice', sink);
+  const opened = await open(coordinator, 'late-choice', { kind: 'tail', maxBytes: 1 << 20 });
+  connection.activate(opened.subscriptionId);
+  const history: StoredMessage = {
+    type: 'form_interaction',
+    id: 'interaction-1',
+    turnId: 'turn-1',
+    ts: 2,
+    request: pendingInteraction().request,
+    outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 2 },
+  };
+  durable.push(history);
+  projection = canonical();
+  await coordinator.refreshCanonical(SESSION_ID);
+  await delayImmediate();
+  const closed = sink.frames.find((frame) => frame.kind === 'subscription.closed');
+  assert.equal(
+    closed?.kind === 'subscription.closed' ? closed.reason : undefined,
+    'transcript_changed',
+  );
+  const reopened = await open(coordinator, 'late-choice', { kind: 'tail', maxBytes: 1 << 20 });
+  const client = clientSubscription(
+    reopened,
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected pagination');
+    },
+  );
+  assert.deepEqual(await client.loadTranscript((value) => value), durable);
+  coordinator.close();
+});

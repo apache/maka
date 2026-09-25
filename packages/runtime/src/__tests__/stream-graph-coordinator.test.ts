@@ -68,6 +68,30 @@ import { projectAgentGraphRecords } from '../stream-graph-projection.js';
 import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('host-managed agent graph coordinator', () => {
+  test('does not enumerate Sessions when no durable graph schedule needs recovery', async () => {
+    let sessionLists = 0;
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => {
+          sessionLists += 1;
+          return [];
+        },
+      } as never,
+      runtimeEventStore: {} as never,
+      controlStore: {
+        listAgentGraphScheduleRecoveryGraphIds: async () => [],
+      } as never,
+      runtime: {} as never,
+      newId: randomUUID,
+    });
+    try {
+      assert.deepEqual(await coordinator.recover(), []);
+      assert.equal(sessionLists, 0);
+    } finally {
+      await coordinator.close();
+    }
+  });
+
   test('authorizes only selected committed results from an earlier epoch of the same root', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const rootSessionId = 'root-session';

@@ -18,8 +18,8 @@
  */
 
 import { useId, useState, type ReactNode } from 'react';
-import { isRelayProviderType, type ProviderType } from '@maka/core/llm-connections';
-import { supportsRelayFastServiceTier, modelLimitsConflict, type ModelOverride } from '@maka/core/model-thinking';
+import type { ModelApiProtocol, ProviderType } from '@maka/core/llm-connections';
+import { supportsCustomFastServiceTier, modelLimitsConflict, type ModelOverride } from '@maka/core/model-thinking';
 import { CapabilityEditor } from './provider-capability-editor.js';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
@@ -30,6 +30,7 @@ import { parseContextWindowInput } from './context-window-input.js';
 export function AddModelDialog(props: {
   isOpen: boolean;
   providerType: ProviderType;
+  defaultApiProtocol?: ModelApiProtocol;
   existingModelIds: readonly string[];
   /** Another write is in flight; the store would drop this one on the floor. */
   isSubmitDisabled?: boolean;
@@ -53,6 +54,14 @@ export function AddModelDialog(props: {
   const [isSaving, setSaving] = useState(false);
 
   const trimmedId = id.trim();
+  const showsFastMode = supportsCustomFastServiceTier(
+    {
+      providerType: props.providerType,
+      defaultApiProtocol: props.defaultApiProtocol,
+      modelOverrides: { [trimmedId]: profile },
+    },
+    trimmedId,
+  );
   const idError = !trimmedId
     ? copy.addModelIdRequired
     : props.existingModelIds.includes(trimmedId)
@@ -86,9 +95,7 @@ export function AddModelDialog(props: {
         await props.onSubmit(trimmedId, {
           ...parameters,
           ...(contextWindow === null ? {} : { contextWindow }),
-          ...(supportsRelayFastServiceTier(props.providerType, trimmedId) && serviceTier
-            ? { serviceTier }
-            : {}),
+          ...(showsFastMode && serviceTier ? { serviceTier } : {}),
         })
       )
         close();
@@ -110,7 +117,7 @@ export function AddModelDialog(props: {
       <CapabilityEditor
         copy={copy}
         modelId={trimmedId}
-        isRelay={isRelayProviderType(props.providerType)}
+        customDefaultApiProtocol={props.defaultApiProtocol}
         declared={profile}
         limitsConflict={limitsConflict}
         onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
@@ -125,8 +132,9 @@ export function AddModelDialog(props: {
             setProfile((current) => ({ ...current, [field]: value ?? undefined }));
         }}
         disabled={isSaving}
-        showsFastMode={supportsRelayFastServiceTier(props.providerType, trimmedId)}
+        showsFastMode={showsFastMode}
         defaultVision={undefined}
+        thinkingLevels={profile.thinkingLevels ?? []}
         onContextWindowInput={setContextWindowInput}
       >
         <TextInput

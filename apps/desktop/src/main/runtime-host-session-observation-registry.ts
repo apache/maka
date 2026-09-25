@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WebContents } from 'electron';
 import type { StoredMessage } from '@maka/core/session';
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type {
@@ -159,6 +160,7 @@ export class RuntimeHostSessionObservationRegistry {
     string,
     SessionObservationRegistration
   >();
+  readonly #renderers = new Map<number, { epoch: number; release(): void }>();
   readonly #transcripts = new Map<string, TranscriptRegistration>();
   readonly #onError: (error: unknown) => void;
   #source: SessionObservationSource | undefined;
@@ -274,6 +276,52 @@ export class RuntimeHostSessionObservationRegistry {
         registration.restore?.resolve();
       }
     }
+  }
+
+  /** A reload replaces the document, not WebContents. Retire its read replicas. */
+  trackRenderer(target: Pick<WebContents, 'id' | 'on' | 'once' | 'off'>): () => boolean {
+    this.#assertOpen();
+    let owner = this.#renderers.get(target.id);
+    if (!owner) {
+      const invalidate = () => {
+        registration.epoch++;
+        const source = this.#source;
+        const operations: Promise<unknown>[] = [];
+        for (const [id, observation] of this.#registrations) {
+          if (observation.target.id !== target.id) continue;
+          this.#cancelRegistration(id, observation);
+          if (source) operations.push(source.unobserve(id));
+        }
+        for (const [id, transcript] of this.#transcripts) {
+          if (transcript.target.id !== target.id) continue;
+          this.#cancelTranscript(id, transcript);
+          if (source?.closeTranscript) operations.push(source.closeTranscript(id));
+        }
+        void Promise.allSettled(operations).then(results => {
+          for (const result of results) if (result.status === 'rejected') this.#onError(result.reason);
+        });
+      };
+      const navigate = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => {
+        if (mainFrame && !inPlace) invalidate();
+      };
+      const destroy = () => { invalidate(); registration.release(); };
+      const registration = {
+        epoch: 0,
+        release: () => {
+          target.off('did-start-navigation', navigate);
+          target.off('render-process-gone', invalidate);
+          target.off('destroyed', destroy);
+          this.#renderers.delete(target.id);
+        },
+      };
+      owner = registration;
+      this.#renderers.set(target.id, owner);
+      target.on('did-start-navigation', navigate);
+      target.on('render-process-gone', invalidate);
+      target.once('destroyed', destroy);
+    }
+    const epoch = owner.epoch;
+    return () => !this.#closed && this.#renderers.get(target.id) === owner && owner.epoch === epoch;
   }
 
   async observe(
@@ -446,6 +494,13 @@ export class RuntimeHostSessionObservationRegistry {
     request: DesktopTranscriptTailAcknowledgement,
     targetId?: number,
   ): Promise<void> {
+    // A renderer can acknowledge its last delivery after navigation has already
+    // released the consumer. There is nothing left to advance in that case.
+    const registration = this.#transcripts.get(request.consumerId);
+    if (!registration) return;
+    if (targetId !== undefined && registration.target.id !== targetId) {
+      throw new Error('Desktop transcript consumer belongs to another renderer');
+    }
     await this.#runTranscriptOperation(request, async (source) => {
       source.acknowledgeTranscriptTail(request, targetId);
     });
@@ -488,6 +543,7 @@ export class RuntimeHostSessionObservationRegistry {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    for (const renderer of this.#renderers.values()) renderer.release();
     const source = this.#source;
     this.#source = undefined;
     this.#bindTarget = (target) => target;

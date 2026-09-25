@@ -24,12 +24,22 @@ import type {
   SessionCollaborationMountSummary,
 } from '../../../shared/session-collaboration.js';
 import type {
+  CollaborationAccessQueryResult,
+  CollaborationInvitationPrepareResult,
+  CollaborationGrantRevokeResult,
+  CollaborationPrincipalRevokeResult,
   CollaborationTurnRequestAcknowledgeResult,
   CollaborationTurnRequestDecideResult,
   CollaborationTurnRequestQueryResult,
   CollaborationTurnRequestWithdrawResult,
   SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
+
+export type PreparedSessionInvitation = CollaborationInvitationPrepareResult & {
+  readonly connectivity:
+    | { readonly kind: 'peer'; readonly coordinationRelayCount: number }
+    | { readonly kind: 'configured' };
+};
 
 export type {
   SessionCollaborationCancelResult,
@@ -39,6 +49,19 @@ export type {
 } from '../../../shared/session-collaboration.js';
 
 export interface SessionCollaborationServices {
+  isLocalRemoteAccessEnabled(): Promise<boolean>;
+  getAccess(sessionId: string): Promise<CollaborationAccessQueryResult>;
+  prepareInvitation(
+    sessionId: string,
+    preset: 'observe' | 'request_turn',
+    allowInsecure: boolean,
+  ): Promise<
+    | { readonly kind: 'prepared'; readonly invitation: PreparedSessionInvitation }
+    | { readonly kind: 'insecure_confirmation_required' }
+  >;
+  revokeGrant(sessionId: string, grantId: string): Promise<CollaborationGrantRevokeResult>;
+  revokePrincipal(sessionId: string, principalId: string): Promise<CollaborationPrincipalRevokeResult>;
+  writeInvitationClipboard(text: string): Promise<void>;
   importInvitation(input: {
     readonly code: string;
     readonly allowInsecure: boolean;
@@ -54,13 +77,7 @@ export interface SessionCollaborationServices {
   renamePrincipal(sessionId: string, principalId: string, displayName: string): Promise<{ readonly renamed: boolean }>;
   requestTurn(
     sessionId: string,
-    input:
-      | { readonly kind: 'start'; readonly turnId: string; readonly text: string }
-      | {
-          readonly kind: 'regenerate';
-          readonly turnId: string;
-          readonly sourceTurnId: string;
-        },
+    input: { readonly kind: 'start'; readonly turnId: string; readonly text: string },
   ): Promise<SessionTurnAccessRequest>;
   getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
   acknowledgeTurnRequest(

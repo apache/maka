@@ -21,7 +21,6 @@ import { openInteractiveArtifactStoreForWrite } from './artifact-stores.js';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { openInteractiveContextOffloadStoreForWrite } from './context-offload-store.js';
 import { openInteractiveDailyReviewAuthorityForWrite } from './daily-review-authority.js';
-import { openInteractiveDeepResearchStoreForWrite } from './deep-research-authority.js';
 import { openInteractiveExecutionStoresForWrite } from './execution-stores.js';
 import type { ExecutionPersistenceProvider } from './execution-persistence-provider.js';
 import type { InteractiveGoalAuthorityWriter } from './goal-authority.js';
@@ -53,7 +52,6 @@ export interface StorageWriterComposition {
   readonly runtimePolicy: Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>;
   readonly scheduledTasks: Awaited<ReturnType<typeof openInteractiveScheduledTaskStoreForWrite>>;
   readonly plan: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>>;
-  readonly deepResearch: Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>;
   readonly dailyReview: Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>;
   readonly goal: InteractiveGoalAuthorityWriter;
   readonly memoryBundle: Awaited<ReturnType<typeof openInteractiveMemoryBundleStoreForWrite>>;
@@ -141,10 +139,6 @@ async function createComposition(
     closeWriter,
   );
   const plan = await openWriter(() => openInteractivePlanStoreForWrite(lease), closeWriter);
-  const deepResearch = await openWriter(
-    () => openInteractiveDeepResearchStoreForWrite(lease),
-    closeWriter,
-  );
   const dailyReview = await openWriter(
     () => openInteractiveDailyReviewAuthorityForWrite(lease),
     closeWriter,
@@ -190,7 +184,6 @@ async function createComposition(
     runtimePolicy,
     scheduledTasks,
     plan,
-    deepResearch,
     dailyReview,
     goal,
     memoryBundle,

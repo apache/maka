@@ -28,7 +28,7 @@ import {
   type ModelCatalogEntry,
 } from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
-import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
+import { pickNewChatModel } from '../../renderer/features/conversation/index.js';
 import { buildCatalogDailyReviewModelOptions } from '../../renderer/model-catalog-choices.js';
 
 function connection(
@@ -74,7 +74,7 @@ describe('model catalog picker helpers', () => {
           {
             connectionId: 'connection-ready',
             connectionSlug: 'ready-second',
-            providerType: 'opencode-free',
+            providerType: 'opencode-go',
             providerLabel: 'OpenCode Zen',
             model: 'ready-model',
             label: 'Ready',
@@ -95,7 +95,8 @@ describe('model catalog picker helpers', () => {
       connection({
         slug: 'openrouter',
         name: 'Openrouter',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         models: [{ id: 'anthropic/claude-sonnet-5' }],
         modelSource: 'fetched',
       }),

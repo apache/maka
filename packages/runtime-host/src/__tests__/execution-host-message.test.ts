@@ -49,6 +49,7 @@ import {
   commitTerminalRunWithRuntimeFact,
 } from '@maka/runtime/terminal-run-commit';
 import {
+  FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
@@ -398,6 +399,52 @@ test('explicit retract is durable across connections and prevents successor admi
     );
   });
 });
+
+for (const [name, prompt] of [
+  ['question', FAKE_ASK_USER_QUESTION_PROMPT],
+  ['sandbox boundary', FAKE_ASK_SANDBOX_BOUNDARY_PROMPT],
+] as const) {
+  test(`a pending ${name} reaches catalog subscribers as waiting_for_user`, async () => {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const client = await connectClient(fixture.root);
+      let observedWaiting!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        observedWaiting = resolve;
+      });
+      const unsubscribe = client.subscribeSessionCatalogChanges(({ sessionId }) => {
+        if (sessionId !== fixture.sessionId) return;
+        void client.request('session.catalog.query', { kind: 'get', sessionId }).then((result) => {
+          const session = result.kind === 'session' ? result.session : null;
+          if (session && 'status' in session && session.status === 'waiting_for_user') {
+            observedWaiting();
+          }
+        });
+      });
+      const turnId = randomUUID();
+      const started = requireStartedTurn(
+        await client.request('turn.start', {
+          sessionId: fixture.sessionId,
+          turnId,
+          content: { text: prompt },
+        }),
+      );
+      await withTimeout(
+        waiting,
+        PROCESS_TIMEOUT_MS,
+        'no catalog change announced the waiting Session',
+      );
+      unsubscribe();
+      await client.request('turn.stop', {
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: started.runId,
+      });
+      await client.close();
+      await fixture.stopHost(host);
+    });
+  });
+}
 
 test('interrupt atomically retracts queued followup, stops the exact run, and is idempotent', async () => {
   await withExecutionRoot(async (fixture) => {

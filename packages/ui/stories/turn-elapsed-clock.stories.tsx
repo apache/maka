@@ -21,10 +21,10 @@ import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { StoredMessage } from '@maka/core/session';
-import { ProcessingBlock, TurnView } from '../src/chat-turn.js';
+import { TurnView } from '../src/chat-turn.js';
 import { useUiLocale } from '../src/locale-context.js';
 import { applyLiveTurnEvent, armLiveTurn } from '../src/live-turn-projection.js';
-import { materializeTurns, overlayLiveTurn } from '../src/materialize.js';
+import { materializeTurns, overlayLiveTurn, type TurnViewModel } from '../src/materialize.js';
 
 // Fidelity convention (#1433): the desktop transcript reaches this path
 // through app-shell live events → overlayLiveTurn → TurnView, which is what
@@ -160,13 +160,31 @@ export const AdoptsTheRecordedStart: Story = {
   },
 };
 
-// The same Turn once it settles: the duration is copy, not a clock, and the
-// zh number needs a space before its unit.
+// The same Turn once it settles. The outcome word and the duration stay in
+// the status row at the top of the answer — the same row that carried the
+// running cue — while the finish time drops to the footer as a semantic
+// timestamp. The zh number needs a space before its unit.
 export const SettledDuration: Story = {
-  render: () => <ProcessingBlock entries={[]} running={false} durationMs={RUNNING_FOR_MS} />,
+  render: () => <SettledTurn />,
   play: async ({ canvasElement }) => {
-    await expect(canvasElement.querySelector('.maka-processing-summary')).toHaveTextContent(
-      '用时 3 分 33 秒',
-    );
+    const statusbar = canvasElement.querySelector('.maka-turn-statusbar');
+    await expect(statusbar).toHaveTextContent('已完成 · 用时 3 分 33 秒');
+    // The finish time lives in the footer as a semantic <time>; the exact
+    // reading depends on the fixture's start, so assert the element exists.
+    await expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull();
   },
 };
+
+/** A settled Turn, so its status row states the outcome. */
+function SettledTurn() {
+  const turn: TurnViewModel = {
+    turnId: TURN_ID,
+    status: 'completed',
+    tools: [],
+    notes: [],
+    startedAt: Date.UTC(2026, 8, 19, 9, 0),
+    durationMs: RUNNING_FOR_MS,
+    timeline: [{ kind: 'text', messageId: 'answer', text: '已完成。' }],
+  };
+  return <TurnView turn={turn} />;
+}

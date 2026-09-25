@@ -39,7 +39,7 @@ import {
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
-import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShellTitlebar } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
 import {
@@ -367,6 +367,7 @@ function ComposedShell(props: {
   /** Drives the footer's update action; `undefined` is the silent phase. */
   updateReminder?: SessionListPanelProps['updateReminder'];
   workbarWidth?: number;
+  workbarToggle?: { collapsed: boolean; onToggle(): void };
   onShare?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
@@ -416,12 +417,13 @@ function ComposedShell(props: {
       sidebarCollapsed={collapsed}
       workbarWidth={props.workbarWidth}
     >
-      <header className="maka-window-titlebar">
-        <AppShellTopbarActions
-          sidebarCollapsed={collapsed}
-          onToggleSidebar={() => setCollapsed((current) => !current)}
-          onOpenSearchModal={noop}
-        />
+      <AppShellTitlebar
+        obscured={false} modalOpen={false} settingsOpen={false}
+        sidebarCollapsed={collapsed}
+        onToggleSidebar={() => setCollapsed((current) => !current)}
+        onOpenSearchModal={noop}
+        workbar={props.workbarToggle ? { togglePosition: 'titlebar', model: { activeId: active?.id, hidden: !active, rightCollapsed: props.workbarToggle.collapsed, onToggleRightPanel: props.workbarToggle.onToggle } } : undefined}
+      >
         {/* Derived from the same session and project catalog the sidebar reads,
             not hand-passed: a story cannot show a project the session does not
             belong to. Absent for the 新任务 state, where production has no
@@ -440,8 +442,7 @@ function ComposedShell(props: {
             })()}
           />
         )}
-
-      </header>
+      </AppShellTitlebar>
       <AstryxAppShell
         className="app maka-shell-astryx agents-layout-body"
         /* Astryx's default: nav column takes --color-background-body, content takes
@@ -536,6 +537,17 @@ export const DefaultLayout: Story = {
     expect(trailingInset).toBeGreaterThanOrEqual(0);
     expect(trailingInset).toBeLessThanOrEqual(16);
     expect(getComputedStyle(actions).columnGap).toBe('4px');
+    // Message metadata mirrors across senders: the prompt's time sits left of
+    // its actions, the answer's time right of its actions.
+    await waitFor(() => expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull());
+    const box = (selector: string) => {
+      const element = canvasElement.querySelector(selector);
+      if (!element) throw new Error(`${selector} did not render`);
+      return element.getBoundingClientRect();
+    };
+    expect(box('.maka-message-meta time').right).toBeLessThanOrEqual(box('.maka-message-meta [data-message-id]').left);
+    expect(box('.maka-turn-footer time').left).toBeGreaterThanOrEqual(box('.maka-turn-footer [data-action="copy"]').right);
+    await expect(canvasElement.querySelector('.maka-turn-footer')).not.toHaveTextContent('claude-sonnet-4-5');
   },
 };
 
@@ -644,8 +656,8 @@ export const RunningStatusDuringToolRun: Story = {
   ),
   play: async ({ canvasElement }) => {
     const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
-    const activity = process.querySelector('.maka-turn-processing')!;
     await expect(process.open).toBe(true);
+    const activity = process.querySelector('.maka-processing-summary .maka-turn-processing')!;
     await expect(activity).toHaveTextContent('正在琢磨…');
     await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
     await expect(canvasElement.querySelector('.maka-turn-footer .maka-turn-processing')).toBeNull();
@@ -692,13 +704,14 @@ export const PromptSentBeforeTurnLands: Story = {
       session={{ status: 'running', streaming: true, lastMessageAt: NOW - 3_000 }}
       chat={{
         activeTurn: { turnId: 'turn-sent' },
-        messages: [],
+        messages: conversation.slice(0, 2),
         transientMessages: [{
           id: 'msg-sent',
           text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
           ts: NOW,
           transientPlacement: 'current_turn',
           hostTurnId: 'turn-sent',
+          deliveryStatus: '已接收',
         }],
       }}
     />
@@ -707,6 +720,16 @@ export const PromptSentBeforeTurnLands: Story = {
     await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
     // No clock before the Turn's own start arrives.
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
+    // The pending prompt already sits a Turn's distance below the last Turn,
+    // so it does not move when its Turn lands.
+    const pending = canvasElement.querySelector<HTMLElement>('.maka-chat-session-swap + .maka-turn')!;
+    await waitFor(() => {
+      const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
+      expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
+    });
+    // Delivery is news, so its row stays up at rest.
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await expect(getComputedStyle(pending.querySelector('.maka-message-meta')!).opacity).toBe('1');
   },
 };
 
@@ -1299,6 +1322,15 @@ export const EmptyHome: Story = {
 // no other story, so without this one nothing renders the picker a user meets
 // before their first send.
 export const NewChatComposer: Story = {
+  beforeEach: () => {
+    // AppShell can mount the composer beneath an inert ancestor while a
+    // session is loading or a modal is open. Establish that state BEFORE
+    // mount: making an already laid-out editor inert does not reproduce it.
+    const root = document.documentElement;
+    const wasInert = root.inert;
+    root.inert = true;
+    return () => { root.inert = wasInert; };
+  },
   render: () => (
     <ComposedShell
       session={null}
@@ -1310,6 +1342,32 @@ export const NewChatComposer: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const editor = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]')!;
+    const card = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx')!;
+    // Read layout while inert, just as the loading frame is painted. A DOM
+    // shim cannot expose Chromium's missing empty line box on this path.
+    const initialEditorHeight = editor.getBoundingClientRect().height;
+    const initialCardHeight = card.getBoundingClientRect().height;
+    document.documentElement.inert = false;
+    await userEvent.click(editor);
+    await expect(editor).toHaveFocus();
+    await expect(editor.innerText).toBe('');
+    document.execCommand('insertText', false, 'x');
+    await waitFor(() => expect(editor.innerText).toBe('x'));
+    await expect(initialEditorHeight).toBe(editor.getBoundingClientRect().height);
+    await expect(initialCardHeight).toBe(card.getBoundingClientRect().height);
+    document.execCommand('selectAll');
+    document.execCommand('delete');
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    await expect(editor.getBoundingClientRect().height).toBe(initialEditorHeight);
+    await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
+
+    const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
+    await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
+  },
 };
 
 // A ready Local Host with no registered Projects must still expose its two
@@ -1355,6 +1413,12 @@ export const NewChatComposerProjectPending: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    // The spinner replaces the whole trigger content, host badge included.
+    const end = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker .maka-workspace-picker-end')!;
+    await expect(end.querySelector('.maka-workspace-picker-host-badge')).not.toBeNull();
+    await expect(getComputedStyle(end).visibility).toBe('hidden');
+  },
 };
 
 const longConversation: StoredMessage[] = [
@@ -1507,8 +1571,8 @@ export const LongSystemNotes: Story = {
     scrollBehavior: 'auto',
     messages: [
       user('diagnostic-user', 'diagnostic-turn', 2, 'Please continue reviewing the conversation.'),
-      { type: 'system_note', id: 'dropping', turnId: 'diagnostic-turn', ts: NOW - 90_000,
-        kind: 'context_provider_dropping', data: { inputTokens: 98_247, priorInputTokens: 124_832 } },
+      { type: 'system_note', id: 'overflow', turnId: 'diagnostic-turn', ts: NOW - 90_000,
+        kind: 'context_overflow_after_compaction' },
       { type: 'system_note', id: 'overrun', turnId: 'diagnostic-turn', ts: NOW - 80_000,
         kind: 'context_window_overrun', data: { usedTokens: 129_127, declaredContextWindow: 128_000 } },
       { type: 'system_note', id: 'short', turnId: 'diagnostic-turn', ts: NOW - 70_000,
@@ -1551,10 +1615,10 @@ export const LongSystemNotes: Story = {
 
 // Real path: a long session that has accumulated reasoning, several native
 // Astryx tool calls and long prose, a ScheduledTask-triggered turn, with an image
-// staged in the composer and thinking set to medium. Each part is individually
-// reachable; they are stacked into one screen on purpose, as the canonical
-// visual-acceptance scaffold for the transcript. Open this first, then the
-// focused stories above.
+// staged in the composer and thinking set to medium, and the multi-step turn's
+// work log opened. Each part is individually reachable; they are stacked into
+// one screen on purpose, as the canonical visual-acceptance scaffold for the
+// transcript. Open this first, then the focused stories above.
 export const NativeConversation: Story = {
   render: () => (
     <ComposedShell
@@ -1576,6 +1640,39 @@ export const NativeConversation: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const process = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    process.querySelector('summary')!.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    const rowGap = Number.parseFloat(getComputedStyle(body).rowGap);
+    const rows = [...body.children].map((row) => ({
+      kind: row.className.split(' ')[0],
+      rect: row.getBoundingClientRect(),
+    }));
+    await expect(new Set(rows.map((row) => row.kind))).toEqual(
+      new Set(['astryx-chat-reasoning', 'astryx-chat-message-bubble', 'astryx-chat-tool-calls']),
+    );
+    const gaps = rows.slice(1).map((row, index) => ({
+      between: `${rows[index]!.kind} → ${row.kind}`,
+      gap: Math.round(row.rect.top - rows[index]!.rect.bottom),
+    }));
+    await expect(gaps).toEqual(gaps.map(({ between }) => ({ between, gap: rowGap })));
+
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    const metadataRows = [
+      ...canvasElement.querySelectorAll<HTMLElement>('.maka-user-message .maka-message-meta, .maka-turn-footer'),
+    ];
+    await expect(metadataRows.length).toBeGreaterThan(1);
+    await waitFor(() => expect(metadataRows.map((row) => getComputedStyle(row).opacity)).toEqual(metadataRows.map(() => '0')));
+    const footer = canvasElement.querySelector<HTMLElement>('.maka-turn-footer')!;
+    footer.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(footer).opacity).toBe('1'));
+  },
 };
 
 // The relatives that make the active session a branch AND revision 2 of 3.
@@ -1653,7 +1750,7 @@ function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicato
 }
 
 // Real path: open a derived revision that is running an autonomous goal with
-// local memory and Deep Research enabled. Session metadata stays in one context
+// local memory and a legacy research label. Session metadata stays in one context
 // layer above the transcript instead of splitting across header pills and
 // standalone branch/revision rows. The long session name is the point: it is
 // what forces that layer to collapse rather than wrap.
@@ -1759,6 +1856,17 @@ export const TitlebarProjectFeedbackNarrow: Story = {
       expect(writeText).toHaveBeenLastCalledWith('/workspace/maka-agent');
       await userEvent.keyboard('{Escape}');
       expect(document.activeElement).toBe(page.getByRole('button', { name: '项目信息' }));
+      // Swap the chip for the rename input and back without renaming, then
+      // hover: the measurement must have rebound to the freshly rendered
+      // span, not the node observed before the swap.
+      await userEvent.click(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' }));
+      const renameInput = await page.findByRole('textbox', { name: '重命名任务' });
+      expect(renameInput).toHaveValue('检查项目菜单');
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(document.activeElement).toBe(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' })));
+      const renameChip = page.getByRole('button', { name: '检查项目菜单 — 重命名任务' });
+      await userEvent.hover(renameChip);
+      await waitFor(() => expect(page.getByRole('tooltip', { name: '重命名任务' })).toBeVisible());
     } finally {
       if (original) Object.defineProperty(navigator, 'clipboard', original);
       else Reflect.deleteProperty(navigator, 'clipboard');
@@ -1787,7 +1895,7 @@ export const TitlebarParentReturn: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     expect(canvas.queryByRole('button', { name: '项目信息' })).toBeNull();
-    await userEvent.click(canvas.getByRole('button', { name: '复现登录失败 任务操作' }));
+    await userEvent.click(canvas.getByRole('button', { name: '复现登录失败 — 任务操作' }));
     const page = within(canvasElement.ownerDocument.body);
     expect(await page.findByRole('menuitem', { name: '复制路径' })).toBeVisible();
     await userEvent.keyboard('{Escape}');
@@ -1802,16 +1910,29 @@ export const TitlebarParentReturn: Story = {
 
 // Real path: a long auto-generated session name, sidebar collapsed so the
 // identity sits closest to the conversation column. It must truncate itself
-// rather than push the workbar toggle off the strip.
+// rather than push the workbar toggle off the strip. Tripled so the name stays
+// clipped at the smoke runner's default 1280px viewport, not just narrow ones.
 export const TitlebarIdentityTruncated: Story = {
   render: () => (
     <ComposedShell
       sidebarCollapsed
       session={{
-        name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
+        name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证'.repeat(3),
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const full = 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证'.repeat(3);
+    const page = within(canvasElement.ownerDocument.body);
+    const rename = canvasElement.querySelector<HTMLElement>('.maka-titlebar-identity__segment--session')!.closest('button')!;
+    expect(rename.getAttribute('aria-label')).toBe(`${full} — 重命名任务`);
+    await userEvent.hover(rename);
+    await waitFor(() => expect(page.getByRole('tooltip', { name: full })).toBeVisible());
+    const menuButton = canvasElement.querySelector<HTMLElement>('[aria-label$="任务操作"]')!;
+    expect(menuButton.getAttribute('aria-label')).toBe(`${full} — 任务操作`);
+    await userEvent.hover(menuButton);
+    await waitFor(() => expect(page.getByRole('tooltip', { name: '任务操作' })).toBeVisible());
+  },
 };
 
 // Real path: 开启 Plan Mode from the ＋ menu. The mode is session-scoped — it
@@ -2334,12 +2455,19 @@ async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Pro
   await painted(40);
   const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
   if (!input) throw new Error('The composer input is missing');
-  await userEvent.type(input, '请简短说明当前提交过程发生了什么。', { delay: null });
-  for (let line = 1; line < lines; line += 1) {
-    await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
-    await userEvent.type(input, '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。', { delay: null });
+  // Prepare the draft with native text insertion so a tall prompt does not
+  // spend the render budget dispatching thousands of synthetic keystrokes.
+  // Keep line breaks and submission on the real composer's keyboard path.
+  const promptLines = Array.from({ length: lines }, (_, index) => index === 0
+    ? '请简短说明当前提交过程发生了什么。'
+    : '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。');
+  await userEvent.click(input);
+  for (const [index, line] of promptLines.entries()) {
+    if (index > 0) await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
+    document.execCommand('insertText', false, line);
   }
   await painted(40);
+  await expect(input.innerText).toBe(promptLines.join('\n'));
   // Observe admission itself: the correct final bottom can hide a reverse
   // jump when an offscreen block first uses an estimate, then its real size.
   const tops: number[] = [];
@@ -2358,21 +2486,25 @@ async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Pro
   await expect(tailMetrics().distance).toBeLessThanOrEqual(4);
 }
 
+// Real path: submit a prompt in an existing conversation and follow its new turn.
 export const SubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement),
 };
 
+// Real path: compose a multiline prompt with Shift+Enter, then submit it.
 export const MultilineSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 8),
 };
 
+// Real path: submit an overflowing draft and follow its turn as the composer shrinks.
 export const TallSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 80),
 };
 
+// Real path: submit a prompt and keep following its turn when the reply settles.
 export const SubmittedPromptSettlesWithoutReversing: Story = {
   render: () => <StreamingTailHarness pendingUser />,
   play: async ({ canvasElement }) => {
@@ -2662,14 +2794,15 @@ export const VirtualHistoryContinuity: Story = {
 
 // #4256: one Turn taller than several viewports, its reasoning / answer / tool
 // blocks each carrying a `data-maka-transcript-boundary` marker so sub-turn
-// content-visibility bounds them. Reasoning stays mounted while folded, so it is
-// real layout, not free collapsed bytes.
+// content-visibility bounds them. The process box now caps and scrolls, so the
+// height comes from the accumulated answers; reasoning stays mounted while
+// folded, so it is real layout, not free collapsed bytes.
 function oversizedTurnMessages(steps = 24): StoredMessage[] {
   const turnId = 'turn-oversized';
   const out: StoredMessage[] = [
     user('msg-oversized-user', turnId, 30, '逐项检查一组独立的合成步骤，并给出简短结果。'),
   ];
-  const prose = '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。'.repeat(8);
+  const prose = '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。'.repeat(16);
   const reasoning = '先确认输入边界（空 / 超长 / 并发），再对合成输出做一次去抖动检查，确保占位高度不随展开态漂移。'.repeat(4);
   for (let step = 1; step <= steps; step += 1) {
     const ts = NOW - (25 - step) * 20_000;
@@ -2761,12 +2894,14 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       process.querySelector('summary')!.click();
       await waitFor(() => expect(process.open).toBe(true));
       await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
-      // Start cold scrolling only once the expanding clip exposes its full body.
       await waitFor(() => {
-        const clip = process.querySelector('.maka-processing-clip')!.getBoundingClientRect();
-        const content = process.querySelector('.maka-processing-content')!.getBoundingClientRect();
-        expect(content.height).toBeGreaterThan(0);
-        expect(Math.abs(clip.height - content.height)).toBeLessThanOrEqual(1);
+        const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
+        expect(body.clientHeight).toBeGreaterThan(root.clientHeight * 3);
+        expect(body.scrollHeight - body.clientHeight).toBeLessThanOrEqual(1);
+        expect(body.lastElementChild!.getBoundingClientRect().bottom)
+          .toBeLessThanOrEqual(body.getBoundingClientRect().bottom + 1);
+        body.scrollTop = 240;
+        expect(body.scrollTop).toBe(0);
       });
       scrollAsReader(root, root.scrollHeight);
       await painted(4);
@@ -3426,7 +3561,7 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
 );
 
-function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean } = {}) {
+function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean; togglePosition?: 'titlebar' | 'edge' } = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
@@ -3443,6 +3578,7 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
         <ComposedShell
           motionEnabled
           workbarWidth={workbarWidth}
+          workbarToggle={props.togglePosition === 'titlebar' ? { collapsed: rightCollapsed, onToggle: () => collapseRight(!rightCollapsed) } : undefined}
           session={props.longTitle ? { name: '主对话标题与右侧工作栏的宽度和信息层级验证 Long conversation title' } : undefined}
           onShare={props.onShare}
           detailChildren={
@@ -3455,6 +3591,7 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
               {!rightCollapsed && <ResizeHandle className="maka-workbar-resize-handle maka-workbar-resize-handle-right" resizable={resizable.props}
                 direction="horizontal" isReversed isAlwaysVisible={false} pillPlacement="center" label="调整工作栏宽度" />}
               <WorkbarSurface
+                togglePosition={props.togglePosition ?? 'edge'}
                 sessionId="session-active"
                 hidden={false}
                 onDismissPanel={() => collapseRight(true)}
@@ -3533,7 +3670,25 @@ export const TitlebarWithWideWorkbar: Story = {
     await waitFor(() => expect(page.getByRole('menuitem', { name: '打开项目文件夹' })).toBeVisible());
     await waitFor(() => expect(page.getByRole('menuitem', { name: '复制路径' })).toBeVisible());
     expect(within(page.getByRole('menu', { name: '项目信息' })).queryByRole('menuitem', { name: '重命名' })).toBeNull();
+    // Synthetic pointer events cannot light-dismiss a native popover. Check
+    // its drag-region lifetime here; real browser clicks exercise dismissal.
+    const titlebar = canvasElement.querySelector<HTMLElement>('.maka-window-titlebar')!;
+    expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('no-drag');
     await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(page.queryByRole('menu', { name: '项目信息' })).toBeNull());
+    await waitFor(() => expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('drag'));
+    await userEvent.click(menuButton);
+    expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('no-drag');
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(page.queryByRole('menuitem', { name: '重命名' })).toBeNull());
+    const renameAgain = title.querySelector<HTMLButtonElement>('.maka-titlebar-identity__name')!;
+    await userEvent.click(renameAgain);
+    expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('no-drag');
+    await userEvent.click(titlebar);
+    await waitFor(() => expect(title.querySelector('input')).toBeNull());
+    await waitFor(() => expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('drag'));
+    expect(menuButton.getAttribute('aria-label')).toContain(' — 任务操作');
+    expect(renameAgain.getAttribute('aria-label')).toContain(' — 重命名任务');
     titlebarShare.mockClear();
     await userEvent.click(menuButton);
     await userEvent.click(await page.findByRole('menuitem', { name: '分享任务' }));
@@ -3543,7 +3698,7 @@ export const TitlebarWithWideWorkbar: Story = {
 };
 
 // Real path: hover the conversation/Workbar edge → collapse → restore from the
-// window edge. The native conversation and browser occupy neither hit target.
+// window edge. The full curved edge stays inside the toggle's activation area.
 export const WorkbarEdgeRevealAndCollapse: Story = {
   render: () => <WorkbarInShell withConversation />,
   play: async ({ canvasElement }) => {
@@ -3552,6 +3707,12 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     const panel = canvasElement.querySelector<HTMLElement>('.maka-session-workbar-panel[data-overlay][data-placement="right"]')!;
     const edge = canvas.getByRole('button', { name: '收起任务工作栏' });
     const glass = edge.querySelector<HTMLElement>('.maka-workbar-edge-glass')!;
+    const scrollButton = canvasElement.querySelector('.astryx-chat-layout-scroll-button')!;
+    const blur = scrollButton.nextElementSibling!;
+    const composer = canvasElement.querySelector('.maka-composer-astryx')!;
+    const fadeEnd = Number(getComputedStyle(blur).maskImage.match(/([\d.]+)px\)/)?.[1]);
+    expect(fadeEnd).toBeGreaterThanOrEqual(composer.getBoundingClientRect().top - blur.getBoundingClientRect().top);
+
     expect(canvas.queryByRole('toolbar', { name: '工作区辅助操作' })).toBeNull();
     expect(frame.querySelector('.maka-workbar-edge')).toBeNull();
     const width = frame.getBoundingClientRect().width;
@@ -3570,10 +3731,34 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     // same visible affordance without pretending to move the native pointer.
     edge.focus();
     await waitFor(() => expect(Number(getComputedStyle(glass).opacity)).toBe(1));
+    expect(getComputedStyle(glass).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(edge).outlineStyle).toBe('solid');
+    const scroller = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
+    const expectAttachedEdge = () => {
+      const boundary = scroller.getBoundingClientRect().right;
+      const glassBox = glass.getBoundingClientRect();
+      expect(Math.abs(glassBox.right - boundary)).toBeLessThan(1);
+      expect(glassBox.width).toBe(28);
+      // Moving from the arrow toward the scrollbar, including the ends of
+      // the arc, must not leave the toggle and make its decoration retract.
+      for (const y of [glassBox.top + 4, glassBox.y + glassBox.height / 2, glassBox.bottom - 4]) {
+        expect(document.elementFromPoint(boundary - 4, y)?.closest('button')).toBe(edge);
+      }
+    };
+    await waitFor(expectAttachedEdge);
+    const edgeBox = edge.getBoundingClientRect();
+    expect(edgeBox.width).toBeGreaterThanOrEqual(24);
+    expect(edgeBox.height).toBeGreaterThanOrEqual(44);
+    expect(edgeBox.height).toBeLessThanOrEqual(48);
+    const arrow = glass.querySelector('svg')!.getBoundingClientRect();
+    expect(arrow.left).toBeGreaterThan(edgeBox.left);
+    expect(arrow.right).toBeLessThan(edgeBox.right);
+    for (const x of [edgeBox.left + 2, edgeBox.right - 2]) {
+      expect(document.elementFromPoint(x, edgeBox.y + edgeBox.height / 2)?.closest('button')).toBe(edge);
+    }
     expect(frame.getBoundingClientRect().width).toBe(width);
     const conversation = canvasElement.querySelector('.maka-detail-with-artifacts > .mainColumn')!.getBoundingClientRect();
     expect(edge.getBoundingClientRect().left).toBeGreaterThan(conversation.left);
-    expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(conversation.right - 12);
     expect(frame.getBoundingClientRect().left - conversation.right).toBeLessThanOrEqual(8);
     expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(frame.getBoundingClientRect().left);
     const separator = canvas.getByRole('separator', { name: '调整工作栏宽度' });
@@ -3598,6 +3783,7 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     const restore = canvas.getByRole('button', { name: '展开任务工作栏' });
     expect(restore).toBe(edge);
     restore.focus();
+    await waitFor(expectAttachedEdge);
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(frame).toBeVisible());
     expect(panel).toBeVisible();
@@ -3605,6 +3791,36 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
   },
 };
 
+// Real path: Appearance → Show Workbar toggle in titlebar → open a task,
+// then collapse the Workbar. The same panel and tabs survive a restore.
+export const WorkbarTitlebarRestore: Story = {
+  render: () => <WorkbarInShell togglePosition="titlebar" withConversation />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvasElement.querySelector<HTMLElement>('[data-maka-contract="session-workbar-right"]')!;
+    const panel = canvasElement.querySelector('.maka-session-workbar-panel[data-overlay][data-placement="right"]')!;
+    const width = frame.getBoundingClientRect().width;
+    const tab = within(frame).getByRole('tab', { selected: true });
+    expect(canvasElement.querySelector('.maka-workbar-edge')).toBeNull();
+    const collapse = canvas.getByRole('button', { name: '收起任务工作栏' });
+    const buttonBox = collapse.getBoundingClientRect();
+    expect(document.elementFromPoint(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2)?.closest('button')).toBe(collapse);
+    await userEvent.click(collapse);
+    await waitFor(() => expect(frame).not.toBeVisible());
+    expect(panel).not.toBeVisible();
+    const restore = canvas.getByRole('button', { name: '展开任务工作栏' });
+    expect(restore.closest('.maka-window-titlebar')).not.toBeNull();
+    expect(restore).toHaveAttribute('aria-expanded', 'false');
+    restore.focus();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(frame).toBeVisible());
+    expect(panel).toBeVisible();
+    await waitFor(() => expect(frame.getBoundingClientRect().width).toBe(width));
+    expect(within(frame).getByRole('tab', { selected: true })).toBe(tab);
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    await waitFor(() => expect(frame).not.toBeVisible());
+  },
+};
 
 const narrowWorkbarShare = fn();
 
@@ -3742,8 +3958,8 @@ const processDisclosureMessages: StoredMessage[] = [
   { type: 'assistant', id: 'process-check', turnId: 'process-turn', ts: NOW - 184_000, text: '我先检查登录状态的存储和恢复逻辑。', thinking: { text: '检查初始化时机与会话恢复顺序。' }, modelId: 'claude-sonnet-4-5' },
   { type: 'tool_call', id: 'process-edit', turnId: 'process-turn', ts: NOW - 160_000, toolName: 'Edit', activityKind: 'edit', stepId: 'process-fix', args: { path: 'src/auth-store.ts', old_string: 'const session = null;', new_string: 'const session = restoreSession();' } },
   { type: 'tool_result', id: 'process-edit-result', turnId: 'process-turn', ts: NOW - 150_000, toolUseId: 'process-edit', isError: false, content: { kind: 'text', text: 'Updated src/auth-store.ts' } },
-  { type: 'assistant', id: 'process-fix', turnId: 'process-turn', ts: NOW - 149_000, text: '恢复时机有问题，接下来补上初始化。', modelId: 'claude-sonnet-4-5' },
-  { type: 'tool_call', id: 'process-test', turnId: 'process-turn', ts: NOW - 90_000, toolName: 'Bash', activityKind: 'command', stepId: 'process-verify', args: { command: 'npm test -- auth-store.test.ts' } },
+  { type: 'assistant', id: 'process-fix', turnId: 'process-turn', ts: NOW - 149_000, text: '恢复时机有问题，接下来补上初始化。\n\n```text\nconst session = restoreSession(readPersistedSessionSnapshotFromStorageWithMigratedLegacyKeyFormat(storage));\n```', modelId: 'claude-sonnet-4-5' },
+  { type: 'tool_call', id: 'process-test', turnId: 'process-turn', ts: NOW - 90_000, toolName: 'Bash', activityKind: 'command', stepId: 'process-verify', args: { command: 'npm test -- auth-store.test.ts --coverage --reporter=verbose && npm run lint -- src/auth-store.ts src/session/*.test.ts --max-warnings=0' } },
   { type: 'tool_result', id: 'process-test-result', turnId: 'process-turn', ts: NOW - 5_000, toolUseId: 'process-test', isError: false, content: { kind: 'text', text: 'Tests passed: 4' } },
   { type: 'assistant', id: 'process-verify', turnId: 'process-turn', ts: NOW - 4_000, text: '初始化已补齐，现在运行登录状态的回归测试。', modelId: 'claude-sonnet-4-5' },
   { type: 'assistant', id: 'process-answer', turnId: 'process-turn', ts: NOW, text: '已修复登录状态恢复。\n\n刷新页面后会恢复已有会话；相关测试通过。', modelId: 'claude-sonnet-4-5' },
@@ -3854,7 +4070,8 @@ export const ProcessReplyLifecycleComplete: Story = {
     const answerBubble = answer.closest('.maka-chat-message-bubble-assistant')!;
     await expect(answerBubble).toHaveAttribute('data-live-streaming', 'true');
     await waitFor(() => expect(process.open).toBe(false), { timeout: 3000 });
-    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(process.querySelector('summary')!.getBoundingClientRect().height + 1));
+    // Collapsed: header row + the frame's two hairlines.
+    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(process.querySelector('summary')!.getBoundingClientRect().height + 2));
     await expect(canvasElement.querySelector('.maka-processing-sequence')).toBe(process);
     // Streaming Markdown can replace its temporary text spans. The answer
     // surface itself must survive the live-to-durable handoff and folding.
@@ -3862,7 +4079,9 @@ export const ProcessReplyLifecycleComplete: Story = {
     await expect(finalAnswer.closest('.maka-chat-message-bubble-assistant')).toBe(answerBubble);
     await expect(answerBubble).not.toHaveAttribute('data-live-streaming');
     await expect(finalAnswer).toBeVisible();
-    await expect(finalAnswer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process.getBoundingClientRect().bottom);
+    // Folding leaves the framed header row above the answer, so the answer
+    // starts below the process frame's bottom edge (border included).
+    await expect(finalAnswer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process.getBoundingClientRect().bottom - 1);
     await expect(await canvas.findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
     // The completed scene is the landing state; reviewers can replay it.
     await expect(canvas.getByRole('button', { name: '重新播放' })).toBeVisible();
@@ -3884,10 +4103,19 @@ export const CompletedProcessCollapsed: Story = {
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
     await expect(answer).toBeVisible();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
-    // Real geometry: process consumes only its single summary row.
     const summary = process!.querySelector('summary')!;
-    await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 1);
-    await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom);
+    await expect(getComputedStyle(process!).borderTopWidth).toBe('0px');
+    await expect(getComputedStyle(process!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2);
+    await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom - 1);
+    // The status row reads against the same left edge as the answer text and
+    // the footer; the tool rows' 4px overhang padding belongs to the work-log
+    // body, not this summary (regression: the summary sat 4px right of both).
+    const footer = canvasElement.querySelector('.maka-turn-footer')!;
+    const answerLeft = answer.getBoundingClientRect().left;
+    await expect(process!.querySelector('.maka-turn-statusbar')!.getBoundingClientRect().left)
+      .toBeCloseTo(answerLeft, 1);
+    await expect(footer.getBoundingClientRect().left).toBeCloseTo(answerLeft, 1);
   },
 };
 
@@ -3918,7 +4146,31 @@ export const CompletedProcessExpanded: Story = {
     summary.focus();
     summary.click();
     await waitFor(() => expect(process.open).toBe(true));
-    await waitFor(() => expect(process.getBoundingClientRect().height).toBeGreaterThanOrEqual(summary.getBoundingClientRect().height + process.querySelector<HTMLElement>('.maka-processing-content')!.offsetHeight - 1));
+    await waitFor(() => expect(process.getBoundingClientRect().height).toBeGreaterThanOrEqual(summary.getBoundingClientRect().height + process.querySelector<HTMLElement>('.maka-processing-body')!.clientHeight - 1));
+    const processBody = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    await expect(getComputedStyle(processBody).overflowY).toBe('clip');
+    // One unbreakable child must not widen the body's box past the details'
+    // own: the disclosure grid's column track is pinned, so the code line
+    // scrolls inside its block instead of pushing every sibling to a
+    // clipped off-canvas width.
+    const processBox = process.getBoundingClientRect();
+    await expect(processBody.getBoundingClientRect().width).toBeLessThanOrEqual(processBox.width + 1);
+    for (const child of processBody.children) {
+      await expect(child.getBoundingClientRect().width, child.className.toString())
+        .toBeLessThanOrEqual(processBox.width + 1);
+    }
+    // Tool rows start on the answer's text edge.
+    const row = processBody.querySelector<HTMLElement>('.astryx-chat-tool-calls [role="button"]')!;
+    await expect(row.firstElementChild!.getBoundingClientRect().left).toBeCloseTo(processBox.left, 1);
+    // What a row expands to reads at the row's own size.
+    const rowSize = getComputedStyle(row.children[1]!).fontSize;
+    row.click();
+    await waitFor(() => expect(processBody.querySelector('.maka-chat-tool-detail')).not.toBeNull());
+    const detailText = [...processBody.querySelectorAll<HTMLElement>('.maka-chat-tool-detail *')]
+      .filter((element) => [...element.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent!.trim()));
+    await expect(detailText.length).toBeGreaterThan(0);
+    await expect(new Set(detailText.map((element) => getComputedStyle(element).fontSize))).toEqual(new Set([rowSize]));
+    row.click();
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
@@ -3934,7 +4186,7 @@ export const CompletedProcessExpanded: Story = {
     // this checks React/layout identity, rather than browser mouse semantics.
     summary.click();
     await waitFor(() => expect(process.open).toBe(false));
-    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 1));
+    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2));
     await expect(selection.toString()).toBe(selected);
     await expect(answer.isConnected).toBe(true);
     summary.click();

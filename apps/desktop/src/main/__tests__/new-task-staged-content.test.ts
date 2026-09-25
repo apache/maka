@@ -34,7 +34,7 @@ import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer
 import {
   composerModelSupportsVision,
   type NewChatModel,
-} from '../../renderer/shell-chat-model-selection.js';
+} from '../../renderer/features/conversation/index.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by
@@ -182,7 +182,7 @@ function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
   return {
     connectionId: 'connection-test',
     connectionSlug: 'test',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Test',
     model,
     label: model,

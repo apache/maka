@@ -349,11 +349,9 @@ describe('ShellRunProcessManager', () => {
         const initial = await manager.runBackgroundBash(
           shellInput({
             cwd,
-            // Keep READY last so observing it also observes the final cursor position,
-            // even when the PTY delivers the output in separate chunks.
             command: nodeCommand(`
               const { existsSync } = require('node:fs');
-              process.stdout.write('READY');
+              process.stdout.write('READY\\n');
               setInterval(() => {
                 if (existsSync(${JSON.stringify(exitGate)})) process.exit(0);
               }, 10);
@@ -365,7 +363,19 @@ describe('ShellRunProcessManager', () => {
         ref = initial.ref;
         assert.equal(initial.status, 'running');
         assert.equal(initial.pid, undefined);
-        await waitForPtyText(manager, ref, /READY/, 15_000);
+        // The PTY may deliver READY and its newline in separate chunks. Wait
+        // for the cursor move before asserting that the later PID-only persist
+        // leaves the output snapshot unchanged.
+        await waitForShellRun(
+          manager,
+          ref,
+          (result) =>
+            result.output?.mode === 'pty' &&
+            /READY/u.test(terminalText(result.output)) &&
+            result.output.cursor.x === 0 &&
+            result.output.cursor.y === 1,
+          15_000,
+        );
         const before = await store.readShellRun('session-1', 'shell-run-1');
         assert.equal(before.pid, undefined);
         assert.ok(driver);

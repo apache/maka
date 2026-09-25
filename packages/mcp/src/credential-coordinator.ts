@@ -94,12 +94,16 @@ export class McpCredentialCoordinator {
    *
    * The optional signal fences an ABANDONED erase: a logout whose round
    * timed out must not resume later, adopt whatever record a newer login
-   * just stored as its basis, and tombstone the fresh tokens. */
+   * just stored as its basis, and tombstone the fresh tokens.
+   *
+   * `spare` must be decided here, on the lane's read: checked outside, a
+   * login could land between the check and the erase. */
   async erase(
     serverId: string,
     options: {
       signal?: AbortSignal;
       onCommitStarted?: () => void;
+      spare?: (record: McpOAuthRecord) => boolean;
     } = {},
   ): Promise<void> {
     this.assertNotAbandoned(options.signal);
@@ -116,6 +120,7 @@ export class McpCredentialCoordinator {
       // storage read was in flight — committing past it would erase a
       // record the caller no longer owns.
       this.assertNotAbandoned(options.signal);
+      if (basis && options.spare?.(basis)) return;
       // Absence still gets a tombstone: a cross-process flow that captured
       // generation 0 on absence must not CAS its credentials back in after
       // this revocation.

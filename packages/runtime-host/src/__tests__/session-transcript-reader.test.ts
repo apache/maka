@@ -45,6 +45,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   createSessionTranscriptReader,
+  createTurnResultReader,
   TRANSCRIPT_TURN_MAX_BYTES,
 } from '../server/session-transcript-reader.js';
 import {
@@ -566,6 +567,10 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       stores,
       canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
     });
+    const readTurnResult = createTurnResultReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
     // Measure actual JSON decoded, not only the eventual response size.
     //
     // A read decodes the Turns it takes rows from, and no others. That bound is
@@ -588,6 +593,18 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       return result;
     };
     const through = await read.readDurableHighWater(session.id);
+    assert.equal(
+      await decoding('early Turn result', SMALL_TURN_BUDGET, () =>
+        readTurnResult(session.id, 'turn-0'),
+      ),
+      '',
+    );
+    assert.equal(
+      await decoding('large Turn result', ONE_BIG_TURN_BUDGET, () =>
+        readTurnResult(session.id, 'turn-4'),
+      ),
+      'final answer 中文',
+    );
     const tail = await decoding('tail page', ONE_BIG_TURN_BUDGET, () =>
       read.readDurablePage(session.id, { direction: 'older', maxBytes: 1024, maxMessages: 1 }),
     );
@@ -760,16 +777,16 @@ test('serves every row of a Turn nested inside another', async () => {
     await read.end('outer', 'outer-end');
 
     const throughSequence = (await read.readDurableHighWater(sessionId))!;
-    assert.equal(throughSequence, 10 * 8 + 7);
+    assert.equal(throughSequence, 10 * 4096 + 4095);
     await assertTranscriptRows(read, sessionId, throughSequence, [
-      [2 * 8, 'outer-before'],
-      [4 * 8, 'inner-0'],
-      [5 * 8, 'inner-1'],
-      [6 * 8, 'inner-2'],
-      [7 * 8, 'inner-3'],
-      [8 * 8, 'inner-end'],
-      [9 * 8, 'outer-after'],
-      [10 * 8, 'outer-end'],
+      [2 * 4096, 'outer-before'],
+      [4 * 4096, 'inner-0'],
+      [5 * 4096, 'inner-1'],
+      [6 * 4096, 'inner-2'],
+      [7 * 4096, 'inner-3'],
+      [8 * 4096, 'inner-end'],
+      [9 * 4096, 'outer-after'],
+      [10 * 4096, 'outer-end'],
     ]);
   });
 });
@@ -799,16 +816,16 @@ test('serves a running Turn that encloses two separated Turns', async () => {
 
     // A watermark inside the outer Turn: it is still running as of this read,
     // so it has no ending to be reached through.
-    const throughSequence = 10 * 8 + 7;
-    assert.equal(await read.readDurableHighWater(sessionId), 11 * 8 + 7);
+    const throughSequence = 10 * 4096 + 4095;
+    assert.equal(await read.readDurableHighWater(sessionId), 11 * 4096 + 4095);
     await assertTranscriptRows(read, sessionId, throughSequence, [
-      [2 * 8, 'outer-a'],
-      [4 * 8, 'first-a'],
-      [5 * 8, 'first-end'],
-      [6 * 8, 'outer-b'],
-      [8 * 8, 'second-a'],
-      [9 * 8, 'second-end'],
-      [10 * 8, 'outer-c'],
+      [2 * 4096, 'outer-a'],
+      [4 * 4096, 'first-a'],
+      [5 * 4096, 'first-end'],
+      [6 * 4096, 'outer-b'],
+      [8 * 4096, 'second-a'],
+      [9 * 4096, 'second-end'],
+      [10 * 4096, 'outer-c'],
     ]);
   });
 });
@@ -909,7 +926,7 @@ test('does not end a page where a handoff resumes the same Turn', async () => {
     const lookup = (turnId: string) =>
       read.readDurableTurnLandmarks(sessionId, { maxLandmarks: 1, turnId });
     assert.deepEqual((await lookup('turn-first')).landmarks, [
-      { turnId: 'turn-first', sequence: 1 * 8, lastSequence: 6 * 8 + 7, label: '' },
+      { turnId: 'turn-first', sequence: 1 * 4096, lastSequence: 6 * 4096 + 4095, label: '' },
     ]);
     assert.deepEqual((await lookup('turn-missing')).landmarks, []);
   });
@@ -1247,3 +1264,162 @@ function assertLargeBashResult(
   assert.equal(result.content.output.stdoutTruncated, true);
   assert.equal(result.content.output.stderrTruncated, true);
 }
+
+test('replays Host form choices and cancellations without model-authored form events', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-form-history-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: base,
+      llmConnectionSlug: 'fake',
+      model: 'fake',
+      permissionMode: 'ask',
+    });
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      openedAt: 1,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      session.id,
+      'run-1',
+      runtimeEvent(session.id, {
+        id: 'user-1',
+        ts: 2,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'Continue login' },
+      }),
+    );
+    const request = {
+      kind: 'form' as const,
+      toolUseId: 'tool-1',
+      message: 'Which login work?',
+      requester: { name: 'WorkHub' },
+      fields: [
+        {
+          kind: 'single_select' as const,
+          name: 'target',
+          label: 'Work',
+          required: true,
+          options: [
+            { value: 'ui', label: 'Login UI' },
+            { value: 'api', label: 'Login API' },
+          ],
+        },
+      ],
+    };
+    for (const requestId of [
+      'selected',
+      'cancelled',
+      ...Array.from({ length: 8 }, (_, i) => `closed-${i}`),
+    ]) {
+      await stores.interactionStore.establishRequest({
+        sessionId: session.id,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        requestId,
+        createdAt: 3,
+        request,
+      });
+      await stores.interactionStore.commitOutcome(
+        requestId,
+        requestId === 'selected'
+          ? { kind: 'form_answer', action: 'accept', values: { target: 'api' }, committedAt: 4 }
+          : requestId === 'cancelled'
+            ? { kind: 'form_answer', action: 'cancel', committedAt: 5 }
+            : { kind: 'closure', reason: 'turn_terminal', committedAt: 7 },
+      );
+    }
+    await stores.interactionStore.establishRequest({
+      sessionId: session.id,
+      turnId: 'turn-1',
+      runId: 'run-1',
+      requestId: 'question',
+      createdAt: 5,
+      request: {
+        kind: 'question',
+        toolUseId: 'question-tool',
+        questions: [
+          {
+            question: 'Which work should stop?',
+            options: [{ label: 'Both' }, { label: 'Only UI' }],
+          },
+        ],
+      },
+    });
+    await stores.interactionStore.commitOutcome('question', {
+      kind: 'question_answer',
+      answers: ['Only UI'],
+      committedAt: 6,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      session.id,
+      'run-1',
+      runtimeEvent(session.id, {
+        id: 'answer-1',
+        ts: 6,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'Done.' },
+      }),
+    );
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'run-2',
+      turnId: 'turn-1',
+      openedAt: 8,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'run-2', {
+      ...runtimeEvent(session.id, {
+        id: 'continued',
+        ts: 9,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'Continued.' },
+      }),
+      runId: 'run-2',
+      invocationId: 'run-2',
+      turnId: 'turn-1',
+    });
+    const read = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
+    const page = await read.readDurableRecords(session.id, {
+      direction: 'newer',
+      position: 0,
+      maxStoredBytes: TRANSCRIPT_TURN_MAX_BYTES,
+      maxMessages: 64,
+    });
+    const forms = page.records
+      .map(({ message }) => message)
+      .filter((message) => message.type === 'form_interaction');
+    assert.equal(forms.length, 11);
+    assert.deepEqual(forms.find((form) => form.id === 'question')?.outcome, {
+      kind: 'question_answer',
+      answers: ['Only UI'],
+      committedAt: 6,
+    });
+    assert.deepEqual(forms[0]?.request, request);
+    assert.deepEqual(
+      forms
+        .filter((form) => form.outcome.kind === 'form_answer')
+        .map((form) => form.outcome.kind === 'form_answer' && form.outcome.action),
+      ['accept', 'cancel'],
+    );
+    assert.deepEqual(forms.find((form) => form.id === 'selected')?.outcome, {
+      kind: 'form_answer',
+      action: 'accept',
+      values: { target: 'api' },
+      committedAt: 4,
+    });
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});

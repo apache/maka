@@ -68,6 +68,30 @@ export {
   parseAllowedUserIdsFromText,
 } from './bot-chat-settings.js';
 
+export const USAGE_SCREEN_SEARCH_MAX_BYTES = 1024;
+const USAGE_SCREEN_UTF8 = new TextEncoder();
+
+/** Shared domain for the Usage screen's free-text query at every boundary. */
+export function isUsageScreenSearch(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    USAGE_SCREEN_UTF8.encode(value).byteLength <= USAGE_SCREEN_SEARCH_MAX_BYTES
+  );
+}
+
+/**
+ * Persisted Usage timestamps may retain sub-millisecond precision. Keep them
+ * JSON/SQLite round-trip safe so a stored value can also name a continuation.
+ */
+export function isUsageTimestamp(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= Number.MAX_SAFE_INTEGER
+  );
+}
+
 export const SETTINGS_SECTIONS = [
   'general',
   'appearance',
@@ -439,7 +463,11 @@ export function normalizeTerminalFontSize(value: unknown): number {
   );
 }
 
+export type WorkbarTogglePosition = 'titlebar' | 'edge';
+
 export interface AppearanceSettings {
+  /** Where the desktop exposes the Workbar expand/collapse control. */
+  workbarTogglePosition?: WorkbarTogglePosition;
   theme: ThemePreference;
   /** Optional palette override; missing values normalize to `default`. */
   palette?: ThemePalette;
@@ -486,7 +514,7 @@ export interface PrivacySettings {
 }
 
 /**
- * `explore` is excluded — it's reserved for Deep Research sessions and
+ * `explore` is excluded — it's reserved for read-only sessions and
  * Bot-incoming guards and is never a mode the user picks, in the composer
  * dropdown or here. Derived from the canonical PERMISSION_MODES (not a
  * hand-copied literal) so adding a future mode updates every consumer —
@@ -513,15 +541,7 @@ export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
   /** Applies only when a new task is created. */
   codeModeEnabled?: boolean;
-  /**
-   * Seeds new sessions' thinking level. `undefined` means "whatever the model
-   * does on its own" — the absence of a preference, not a level.
-   *
-   * A chosen level is a wish, not a guarantee: models expose different ladders,
-   * so one that does not offer the chosen rung falls back to its own default
-   * for that session rather than being forced to the nearest neighbour. The
-   * composer already resolves it that way for the per-session picker.
-   */
+  /** @deprecated Read-only compatibility for older settings; new tasks ignore it. */
   thinkingLevel?: ThinkingLevel;
 }
 
@@ -532,9 +552,10 @@ export interface ChatDefaultsSettings {
  */
 export interface NotificationSettings {
   /**
-   * When enabled, the desktop app raises a native notification once an
-   * agent turn finishes (completed or errored) **while its window is not
-   * focused**. Focus + OS-permission gating live in the main process.
+   * When enabled, the desktop app raises a native notification and bounces
+   * the dock once an agent turn finishes (completed or errored) or waits on the user
+   * **while its window is not focused**. Focus + OS-permission gating live
+   * in the main process.
    */
   runComplete: boolean;
 }
@@ -571,6 +592,8 @@ export interface ShellSettings {
 }
 
 export interface AppSettings {
+  /** Host-owned projection. apiKey is masked; writes go to the Host credential vault. */
+  jev: { enabled: boolean; apiKey: string };
   schemaVersion: 1;
   network: AppNetworkSettings;
   botChat: BotChatSettings;
@@ -762,6 +785,7 @@ export type SettingsTestResultCode =
   | 'bot_connection_failed';
 
 export type UpdateAppSettingsInput = Partial<{
+  jev: Partial<AppSettings['jev']>;
   network: Partial<{
     proxy: NetworkProxySettingsPatch;
   }>;
@@ -835,6 +859,7 @@ export function createDefaultSettings(): AppSettings {
       activeTab: 'requests',
     },
     appearance: {
+      workbarTogglePosition: 'edge',
       theme: 'auto',
       palette: 'default',
       appIcon: DEFAULT_APP_ICON,
@@ -857,6 +882,7 @@ export function createDefaultSettings(): AppSettings {
     },
     privacy: defaultPrivacySettings(),
     projects: defaultProjectPreferencesSettings(),
+    jev: { enabled: false, apiKey: '' },
     chatDefaults: defaultChatDefaultsSettings(),
     notifications: {
       runComplete: true,
@@ -1027,6 +1053,8 @@ export function normalizeSettings(input: unknown): AppSettings {
     // position; UI density is no longer a product setting.
     appearance: {
       ...appearanceWithoutLegacyFields,
+      workbarTogglePosition:
+        base.appearance.workbarTogglePosition === 'titlebar' ? 'titlebar' : 'edge',
       palette: isThemePalette(base.appearance.palette) ? base.appearance.palette : 'default',
       // Same fail-closed rule as `palette` above, for the same reason: an
       // unknown id would otherwise reach the main process and resolve to a
@@ -1150,9 +1178,8 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
     ...(settings.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
-    // Same fail-closed reasoning as the mode below: a garbage persisted level
-    // drops to "no preference" (the model's own default) rather than reaching
-    // session creation as a rung no picker recognizes.
+    // Preserve the retired field while older settings documents still carry it.
+    // No task creation path consumes it; defaults now live on model overrides.
     thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
     // A retired mode is decoded (not rejected) so an existing settings file
     // keeps working; knowing which modes are retired lives in one place.

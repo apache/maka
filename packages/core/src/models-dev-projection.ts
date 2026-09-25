@@ -55,7 +55,7 @@ export const MODELS_DEV_PROVIDERS = {
   google: 'google',
   groq: 'groq',
   huggingface: 'huggingface',
-  'kimi-coding-plan': 'kimi-for-coding',
+  'kimi-coding-plan': 'kimi-code-plan-cn',
   MiniMax: 'minimax',
   'MiniMax-cn': 'minimax-cn',
   'minimax-coding-plan': 'minimax-coding-plan',
@@ -109,7 +109,15 @@ export interface ModelsDevModel {
   readonly modalities?: { readonly input: string[]; readonly output: string[] };
   readonly reasoning_options?: ReadonlyArray<{ readonly type?: string; readonly values?: unknown }>;
   readonly cost?: Readonly<Record<string, unknown>>;
-  readonly provider?: { readonly npm?: string; readonly api?: string };
+  // Upstream models.dev entries are per-model hints keyed by provider id. An
+  // override without an `npm` field does not select a runtime adapter. The
+  // `body` member seen on some upstream entries carries request-body defaults
+  // that no downstream projection reads.
+  readonly provider?: {
+    readonly npm?: string;
+    readonly api?: string;
+    readonly body?: unknown;
+  };
 }
 
 export type ModelsDevCatalog = Readonly<Record<string, ModelsDevProvider>>;
@@ -278,7 +286,6 @@ export function projectModelsDevModel(
     ...(model.knowledge !== undefined ? { knowledgeCutoff: model.knowledge } : {}),
     ...(model.structured_output !== undefined ? { structuredOutput: model.structured_output } : {}),
     ...(model.last_updated !== undefined ? { lastUpdated: model.last_updated } : {}),
-    ...(model.cost?.input === 0 ? { isFree: true } : {}),
     capabilities: {
       ...(modalities ? { vision: modalities.input.includes('image') } : {}),
       reasoning: model.reasoning === true,

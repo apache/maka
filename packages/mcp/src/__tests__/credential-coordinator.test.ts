@@ -24,6 +24,36 @@ import { McpCredentialCoordinator } from '../credential-coordinator.js';
 import type { McpOAuthRecord, McpOAuthStorage } from '../oauth.js';
 
 describe('McpCredentialCoordinator', () => {
+  test('sparing successor credentials preserves the active flow without entering the erase commit', async () => {
+    let stored: McpOAuthRecord = {
+      version: 1,
+      generation: 0,
+      tokens: { access_token: 'successor-token', token_type: 'Bearer' },
+    };
+    const coordinator = new McpCredentialCoordinator({
+      get: async () => structuredClone(stored),
+      set: async (_id, record) => {
+        stored = structuredClone(record);
+      },
+      delete: async () => {},
+    });
+    const flow = coordinator.flowStorage('remote');
+    await flow.get('remote');
+    let commitStarted = false;
+    await coordinator.erase('remote', {
+      signal: new AbortController().signal,
+      spare: (record) => record.tokens?.access_token === 'successor-token',
+      onCommitStarted: () => {
+        commitStarted = true;
+      },
+    });
+    assert.equal(commitStarted, false);
+    assert.equal(stored.tokens?.access_token, 'successor-token');
+    await flow.set('remote', { tokens: { access_token: 'refreshed-token', token_type: 'Bearer' } });
+    assert.equal(stored.tokens?.access_token, 'refreshed-token');
+    assert.equal(stored.generation, 0);
+  });
+
   test('an abort landing during the storage read blocks the commit', async () => {
     // The guard is checked before the read; without the re-check after it,
     // an abort arriving while the read waits would still commit the stale

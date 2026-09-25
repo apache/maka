@@ -25,6 +25,7 @@ import {
 } from '@agentclientprotocol/sdk';
 import type { SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
+import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
 import { whileActive } from './active-promise.js';
 import { AcpToolEventMapper } from './tool-event-mapper.js';
 
@@ -117,6 +118,17 @@ export class AcpSessionEventMapper {
     return this.#enqueue(() => this.#tools.finishTools(turnId, terminalStatus));
   }
 
+  pendingInteraction(pending: InteractionPendingSnapshot): Promise<void> {
+    return this.#enqueue(() => this.#tools.pendingInteraction(pending));
+  }
+
+  resolvedInteraction(
+    resolved: InteractionSnapshot,
+    pending: InteractionPendingSnapshot,
+  ): Promise<void> {
+    return this.#enqueue(() => this.#tools.resolvedInteraction(resolved, pending));
+  }
+
   /** Waits until every notification already accepted by this mapper has settled. */
   flush(): Promise<void> {
     return this.#tail.then(() => {
@@ -176,10 +188,7 @@ function deltaText(
   event: Extract<SessionEvent, { type: 'text_delta' | 'thinking_delta' }>,
   current = '',
 ): string {
-  return foldRuntimeHostAssistantDelta(current, {
-    startOffset: event.startOffset ?? current.length,
-    text: event.text,
-  }).text;
+  return foldRuntimeHostAssistantDelta(current, event).text;
 }
 
 function streamKey(kind: StreamKind, messageId: string): string {

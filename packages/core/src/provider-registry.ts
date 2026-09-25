@@ -23,12 +23,24 @@ import {
   GENERATED_MODELS_DEV_PROVIDER_FACTS,
 } from './model-metadata.generated.js';
 
-export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
-
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
+
+export type ModelApiProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+
+export const MODEL_API_PROTOCOL_LABELS: Readonly<Record<ModelApiProtocol, string>> = {
+  'openai-chat': 'OpenAI Chat Completions',
+  'openai-responses': 'OpenAI Responses',
+  'anthropic-messages': 'Anthropic Messages',
+};
+
+export const MODEL_API_PROTOCOLS = Object.keys(MODEL_API_PROTOCOL_LABELS) as ModelApiProtocol[];
+
+export function isModelApiProtocol(value: unknown): value is ModelApiProtocol {
+  return MODEL_API_PROTOCOLS.includes(value as ModelApiProtocol);
+}
 
 /**
  * Provider-specific request mutation the Runtime applies to an
@@ -55,7 +67,6 @@ export type ProviderResponsesContract =
 
 type OpenAiCompatibleRuntimeAdapterBase = {
   kind: 'openai-compatible';
-  name: 'provider' | 'connection';
   includeUsage?: boolean;
   requireBaseUrl?: boolean;
   replayAssistantReasoningAs?: 'reasoning';
@@ -90,8 +101,6 @@ type ProviderRuntimeAdapterDefinition =
   | { kind: 'openai-codex'; responses: ProviderResponsesContract }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'cohere' }
-  /** The Command Code CLI's `/alpha/generate` wire, used by the GO plan. */
-  | { kind: 'commandcode-cli' }
   | OpenAiCompatibleRuntimeAdapter;
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
@@ -133,34 +142,18 @@ export interface ProviderDefaults {
   authKind: 'api_key' | 'optional_api_key' | 'oauth_token' | 'none';
   /**
    * The baseline this provider ships: what it offers with no live list to go
-   * on. Read it through `providerFallbackModelIds`, never directly — the
-   * accessor subtracts `brokenModelIds`.
+   * on.
    */
   fallbackModels: string[];
-  /**
-   * A new connection to this provider starts with its whole shipped baseline
-   * enabled instead of nothing. Set where a provider costs the user nothing to
-   * call, so the models are on the moment the connection exists.
-   */
-  enableShippedModelsByDefault?: true;
   status: 'ready' | 'phase3-experimental';
   runtimeAdapter: ProviderRuntimeAdapter;
   /** Additional request protocols; omitted models still use runtimeAdapter. */
-  protocolAdapters?: Partial<
-    Record<'openai-chat' | 'openai-responses' | 'anthropic-messages', ProviderRuntimeAdapter>
-  >;
+  protocolAdapters?: Partial<Record<ModelApiProtocol, ProviderRuntimeAdapter>>;
   /**
    * Maka used to offer this provider and no longer does. The entry stays
    * registered so stored connections still decode; it just cannot be used.
    */
   retired?: true;
-  /**
-   * Models with dated evidence of persistent breakage whose failure shape the
-   * send itself cannot surface (e.g. empty completions that still bill).
-   * Vetoed in `authorizeConnectionModel` and omitted from catalog offers —
-   * the one exception to "the user's selection is the authorization".
-   */
-  brokenModelIds?: readonly string[];
   modelDiscovery: ProviderModelDiscovery;
   category: ProviderCategory;
   catalogGroup?: ProviderCatalogGroup;
@@ -327,8 +320,8 @@ if (!fireworks.api) throw new Error('models.dev Fireworks AI provider facts are 
 const fireworksModelIds = toolCallingModelIds(
   'Fireworks AI',
   GENERATED_MODELS_DEV_METADATA['fireworks-ai'],
-  ['accounts/fireworks/models/kimi-k2p6'],
-);
+  ['accounts/fireworks/models/kimi-k3'],
+).filter((id) => GENERATED_MODELS_DEV_METADATA['fireworks-ai'][id]?.lifecycle !== 'deprecated');
 const tencentTokenHub = GENERATED_MODELS_DEV_PROVIDER_FACTS['tencent-tokenhub'];
 if (tencentTokenHub.id !== 'tencent-tokenhub') {
   throw new Error(
@@ -695,48 +688,6 @@ const opencodeGoModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA['opencode-go'],
   ['minimax-m3'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA['opencode-go'][id]?.lifecycle !== 'deprecated');
-// opencode-free is Maka's first-class free anonymous default. It shares the
-// OpenCode Zen endpoint and model ids, exposing the active tool-capable
-// models the models.dev snapshot marks `isFree` (zero input cost). Deriving
-// the set from the snapshot lets routine metadata refreshes rotate free
-// models in and out instead of letting a hardcoded pin rot (#3409).
-//
-// Persistently broken free models, excluded with dated evidence. Deny-only:
-// a stale entry hides at most one healthy model, the opposite failure mode of
-// the allow-list pin this replaced. Entries should be re-probed on snapshot
-// refreshes and removed once the model produces content again.
-// 2026-08-21 muse-spark-1.2-contributor-free: anonymous completions return
-// 200 with an empty message and bill the full token budget (4 consecutive
-// probes, max_tokens 8–200) — a failure shape that even "the send settles it"
-// cannot surface, which is why these ids are also vetoed in
-// `authorizeConnectionModel` rather than merely dropped from this derivation.
-// 2026-08-30 x-preview-f-free (Ox Alpha Free): retired upstream — dropped from
-// the anonymous /models listing and every completion returns HTTP 401
-// {"type":"ModelError","message":"Model x-preview-f-free is not supported"}.
-// models.dev still snapshots it as free+active, so the derivation kept offering
-// it as a default-enabled, picker-visible row until this quarantine. Remove
-// once the snapshot marks it deprecated (or upstream serves it again).
-const OPENCODE_FREE_BROKEN_MODEL_IDS = new Set([
-  'muse-spark-1.2-contributor-free',
-  'x-preview-f-free',
-]);
-const opencodeFreeModelIds = toolCallingModelIds(
-  'OpenCode Free',
-  Object.fromEntries(
-    Object.entries(GENERATED_MODELS_DEV_METADATA.opencode).filter(
-      ([id, model]) =>
-        model.isFree === true &&
-        model.lifecycle !== 'deprecated' &&
-        !OPENCODE_FREE_BROKEN_MODEL_IDS.has(id),
-    ),
-  ),
-  [OPENCODE_FREE_DEFAULT_MODEL],
-);
-if (opencodeFreeModelIds[0] !== OPENCODE_FREE_DEFAULT_MODEL) {
-  throw new Error(
-    `models.dev opencode snapshot no longer serves ${OPENCODE_FREE_DEFAULT_MODEL} as an active tool-capable free model; pick a new OPENCODE_FREE_DEFAULT_MODEL`,
-  );
-}
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {
   throw new Error('models.dev GitHub Copilot provider facts are missing stable id github-copilot');
@@ -807,7 +758,6 @@ const providerRegistry = {
     protocolAdapters: {
       'openai-chat': {
         kind: 'openai-compatible',
-        name: 'provider',
         normalizeUsage: true,
         normalizeBaseUrl: true,
       },
@@ -837,7 +787,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...tencentCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -850,7 +800,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...volcengineCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -884,7 +834,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...tencentTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -931,18 +881,10 @@ const providerRegistry = {
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     authKind: 'api_key',
-    fallbackModels: [
-      'deepseek-v4-flash',
-      'deepseek-v4-flash-vision-exp',
-      'deepseek-v4-pro',
-      'deepseek-reasoner',
-      'deepseek-chat',
-    ],
+    fallbackModels: ['deepseek-flash', 'deepseek-v4-pro'],
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
-      applyPatchProtocol: 'codex-v4a-freeform',
       responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     },
     modelDiscovery: { kind: 'protocol' },
@@ -957,7 +899,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: moonshotModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -988,7 +930,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1027,7 +969,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: siliconflowModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', query: { sub_type: 'chat' } },
     category: 'domestic',
     catalogGroup: 'aggregators',
@@ -1040,7 +982,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: vercelModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', auth: 'none', filter: 'language-models' },
     category: 'overseas',
     catalogGroup: 'aggregators',
@@ -1055,7 +997,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: { kind: 'protocol' },
@@ -1072,7 +1013,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: {
@@ -1088,7 +1028,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: zaiModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1101,7 +1041,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: xiaomiModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1114,7 +1054,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1127,7 +1067,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1140,7 +1080,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1153,7 +1093,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: cerebrasModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1166,7 +1106,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: mistralModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', responseShape: 'array-or-data' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1192,7 +1132,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: huggingfaceModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', filter: 'tool-capable' },
     category: 'overseas',
     catalogGroup: 'aggregators',
@@ -1207,7 +1147,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       replayAssistantReasoningAs: 'reasoning',
       replayAssistantReasoningDetails: true,
     },
@@ -1223,7 +1162,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: opencodeModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
       'openai-responses': {
@@ -1244,7 +1183,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: opencodeGoModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
       'openai-responses': {
@@ -1264,23 +1203,15 @@ const providerRegistry = {
     label: 'OpenCode Free',
     baseUrl: opencode.api,
     authKind: 'none',
-    fallbackModels: [...opencodeFreeModelIds],
-    // Free and keyless: nothing is spent by having every shipped model on, and
-    // a user who just added the connection can send immediately.
-    enableShippedModelsByDefault: true,
-    brokenModelIds: [...OPENCODE_FREE_BROKEN_MODEL_IDS],
-    status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    fallbackModels: [],
+    status: 'phase3-experimental',
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
     modelDiscovery: {
       kind: 'fallback',
-      reason:
-        'The anonymous /models listing describes the full Zen catalog with no cost facts; which models are FREE is a models.dev fact, so the derived candidates are the inventory and the send settles availability.',
+      reason: 'OpenCode restricts its free tier to the OpenCode client.',
     },
     category: 'overseas',
-    catalogGroup: 'plans',
-    signupUrl: 'https://opencode.ai/zen',
-    catalogOrder: 0,
-    recommendedOrder: 0,
   },
   togetherai: {
     label: together.name,
@@ -1288,7 +1219,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: togetherModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1301,7 +1232,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: fireworksModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: {
       kind: 'fireworks',
       accountsPath: '/v1/accounts',
@@ -1319,7 +1250,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: nvidiaModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1332,7 +1263,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: tencentTokenHubModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1345,7 +1276,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: stepfunModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1358,7 +1289,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...stepfunStepPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1371,7 +1302,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...stepfunGlobalStepPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1384,7 +1315,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: stepfunGlobalModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1397,7 +1328,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: ['doubao-seed-2-0-pro-260215'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: {
       kind: 'fallback',
       reason:
@@ -1414,7 +1345,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: deepinfraModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', path: '/v1/models' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1427,7 +1358,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: groqModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1440,7 +1371,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: openrouterModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'aggregators',
@@ -1453,7 +1384,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: alibabaModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1466,7 +1397,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: alibabaCnModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1479,7 +1410,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...alibabaCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1492,7 +1423,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...alibabaCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1507,7 +1438,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: {
         adapter: 'open-responses',
         reasoningReplay: 'plaintext-summary',
@@ -1528,7 +1458,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: {
         adapter: 'open-responses',
         reasoningReplay: 'plaintext-summary',
@@ -1547,7 +1476,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: true },
     },
@@ -1557,20 +1486,26 @@ const providerRegistry = {
     signupUrl: 'https://commandcode.ai/docs/plans/goat',
     catalogOrder: 41.5,
   },
+  // Retired rather than removed: an existing connection must stay identifiable
+  // and must answer `provider_retired` at readiness. Removing the entry would
+  // leave it *unknown*, which `isConnectionReady` does not reject, so a send
+  // would be admitted and only fail deep in model construction. Its transport
+  // presented the official CLI's identity to a private endpoint, which is why
+  // nothing can send through it any more.
   'commandcode-go': {
     label: 'Command Code GO',
-    // The API root, not `/provider/v1`: generation posts to `/alpha/generate`
-    // and discovery reads `/provider/v1/models`, both under it.
     baseUrl: 'https://api.commandcode.ai',
     authKind: 'api_key',
     fallbackModels: [],
-    status: 'ready',
-    runtimeAdapter: { kind: 'commandcode-cli' },
-    modelDiscovery: { kind: 'protocol', path: 'provider/v1/models' },
+    status: 'phase3-experimental',
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
+    modelDiscovery: {
+      kind: 'fallback',
+      reason: 'The GO plan was reached through the official CLI\u2019s private transport.',
+    },
     category: 'overseas',
     catalogGroup: 'plans',
-    signupUrl: 'https://commandcode.ai/docs/plans/go',
-    catalogOrder: 41.6,
   },
   'cloudflare-workers-ai': {
     label: cloudflareWorkersAi.name,
@@ -1581,7 +1516,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       requireBaseUrl: true,
       replayAssistantReasoningAs: 'reasoning',
     },
@@ -1599,7 +1533,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       includeUsage: true,
       replayAssistantReasoningAs: 'reasoning',
     },
@@ -1615,7 +1548,7 @@ const providerRegistry = {
     authKind: 'none',
     fallbackModels: ['llama3.2', 'qwen2.5-coder', 'gemma3'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'ollama' },
     category: 'local',
     catalogGroup: 'local',
@@ -1627,7 +1560,7 @@ const providerRegistry = {
     authKind: 'none',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'local',
     catalogGroup: 'local',
@@ -1639,51 +1572,31 @@ const providerRegistry = {
     authKind: 'optional_api_key',
     fallbackModels: ['qwen3-8b'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'local',
     catalogGroup: 'local',
     catalogOrder: 17.5,
   },
-  'openai-compatible': {
-    label: 'Custom relay (OpenAI Chat-compatible)',
+  custom: {
+    label: 'Custom connection',
     baseUrl: '',
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'connection', requireBaseUrl: true },
-    modelDiscovery: { kind: 'protocol' },
-    category: 'custom',
-    catalogGroup: 'aggregators',
-    catalogOrder: 18,
-  },
-  'openai-responses-compatible': {
-    label: 'Custom relay (OpenAI Responses)',
-    baseUrl: '',
-    authKind: 'api_key',
-    fallbackModels: [],
-    status: 'ready',
-    runtimeAdapter: {
-      kind: 'openai',
-      apiProtocol: 'openai-responses',
-      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    runtimeAdapter: { kind: 'openai-compatible', requireBaseUrl: true },
+    protocolAdapters: {
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
-    catalogOrder: 18.1,
-  },
-  'anthropic-compatible': {
-    label: 'Custom relay (Anthropic)',
-    baseUrl: '',
-    authKind: 'api_key',
-    fallbackModels: [],
-    status: 'ready',
-    runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
-    modelDiscovery: { kind: 'protocol' },
-    category: 'custom',
-    catalogGroup: 'aggregators',
-    catalogOrder: 18.2,
+    catalogOrder: 18,
   },
   'github-copilot': {
     label: githubCopilot.name,
@@ -1691,7 +1604,7 @@ const providerRegistry = {
     authKind: 'oauth_token',
     fallbackModels: githubCopilotModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider', includeUsage: false },
+    runtimeAdapter: { kind: 'openai-compatible', includeUsage: false },
     protocolAdapters: {
       'anthropic-messages': {
         kind: 'anthropic',
@@ -1775,18 +1688,13 @@ export function providerDefaultsOf(providerType: string): ProviderDefaults | und
 
 /**
  * The models a provider offers with no live list to go on: the baseline it
- * ships, minus anything quarantined. This is the only reader of
+ * ships. This is the only reader of
  * `fallbackModels` — a provider's offline offer has exactly one authority.
- *
- * `brokenModelIds` subtracts here rather than being pruned from the baseline at
- * the source because the ids it names are ones a stored connection may still
- * carry from an older shipped list.
  */
 export function providerFallbackModelIds(
-  defaults: Pick<ProviderDefaults, 'fallbackModels' | 'brokenModelIds'>,
+  defaults: Pick<ProviderDefaults, 'fallbackModels'>,
 ): string[] {
-  const broken = new Set(defaults.brokenModelIds ?? []);
-  return defaults.fallbackModels.filter((id) => !broken.has(id));
+  return [...defaults.fallbackModels];
 }
 
 /**

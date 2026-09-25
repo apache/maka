@@ -26,6 +26,7 @@ import {
   decodeConnectionCredentialTarget,
   decodeConnectionName,
   decodeConnectionSlug,
+  decodeDefaultApiProtocol,
   decodeProviderType,
   decodeRuntimePolicyEntityId,
   decodeCredentialLocator,
@@ -58,7 +59,6 @@ import {
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
-  type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
   type UpdateNetworkProxyInput,
@@ -75,6 +75,7 @@ import {
   providerFallbackModelIds,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
+  type ModelApiProtocol,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { deepFreeze, nextRevision } from './codec.js';
@@ -224,6 +225,7 @@ interface ConnectionOnboardingCandidateIdentity {
   readonly connectionId: string;
   readonly slug: string;
   readonly providerType: ProviderType;
+  readonly defaultApiProtocol?: ModelApiProtocol;
 }
 
 interface ConnectionOnboardingBasis {
@@ -469,10 +471,6 @@ export class RuntimePolicyCoordinator {
     return this.inLane(async (root) =>
       this.projectCatalogMutation(root, await this.catalog.setDefaultTarget(root, input)),
     );
-  }
-
-  migrateSystemSeed(input: MigrateSystemSeedInput) {
-    return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
   }
 
   setCredential(rawInput: SetCredentialInput) {
@@ -1244,6 +1242,9 @@ export class RuntimePolicyCoordinator {
           requestedTarget.slug === undefined
             ? null
             : decodeConnectionInput(() => decodeConnectionSlug(requestedTarget.slug));
+        const defaultApiProtocol = decodeConnectionInput(() =>
+          decodeDefaultApiProtocol(requestedTarget.defaultApiProtocol, providerType),
+        );
         target = {
           kind: 'create',
           candidate: {
@@ -1255,6 +1256,7 @@ export class RuntimePolicyCoordinator {
                 catalog.connections.map((connection) => connection.slug),
               ),
             providerType,
+            ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
           },
           slugRequested: requestedSlug !== null,
           name:
@@ -1274,6 +1276,9 @@ export class RuntimePolicyCoordinator {
             connectionId: existing.connectionId,
             slug: existing.slug,
             providerType: existing.providerType,
+            ...(existing.defaultApiProtocol === undefined
+              ? {}
+              : { defaultApiProtocol: existing.defaultApiProtocol }),
           },
           revision: existing.revision,
         };
@@ -1548,6 +1553,7 @@ export class RuntimePolicyCoordinator {
       connectionId,
       slug: candidate.slug,
       providerType: candidate.providerType,
+      defaultApiProtocol: candidate.defaultApiProtocol,
       name: basis.target.kind === 'create' ? basis.target.name : null,
       baseUrl: basis.baseUrl,
       invalidateLastTest,
@@ -1557,6 +1563,7 @@ export class RuntimePolicyCoordinator {
       intent.connectionId,
       intent.slug,
       intent.providerType,
+      intent.defaultApiProtocol,
       intent.name,
       intent.baseUrl,
       intent.enabledModelIds,
@@ -2156,6 +2163,7 @@ export class RuntimePolicyCoordinator {
       intent.connectionId,
       slug,
       intent.providerType,
+      intent.defaultApiProtocol,
       intent.name,
       intent.baseUrl,
       intent.enabledModelIds,
@@ -2438,7 +2446,12 @@ function assertConnectionIsWritable(connection: { readonly providerType: Provide
 }
 
 function ticketLabel(kind: ConnectionTicketKind): string {
-  return kind === 'model_fetch' ? 'model fetch' : 'connection test';
+  switch (kind) {
+    case 'model_fetch':
+      return 'model fetch';
+    case 'connection_test':
+      return 'connection test';
+  }
 }
 
 function networkProxyCredentialLocator(): Extract<CredentialLocator, { scope: 'network_proxy' }> {
