@@ -165,6 +165,17 @@ export function catalogJobs(
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
     .flatMap((entry) => {
+      // Reuse the Pricing states at both widths so validation/recovery banners
+      // and footer actions are exercised in a narrow window, without duplicate stories.
+      if (entry.id.startsWith('product-settings-pricing--')) {
+        return [RENDER_VIEWPORT, { width: 480, height: 720 }].map((viewport) => ({
+          storyId: entry.id,
+          colorScheme: 'light',
+          forcedColors: 'none',
+          palette: 'default',
+          viewport,
+        }));
+      }
       // These diagnostics must wrap in both locales at the reading measure
       // and in a narrow Desktop window; toolbar defaults cover neither matrix.
       if (entry.id === 'product-shell-official-appshell--long-system-notes') {
@@ -232,7 +243,7 @@ export function storyViewport(storyId) {
 
 export function jobLabel(job) {
   const forcedColors = job.forcedColors === 'active' ? '/forced-colors' : '';
-  const scenario = job.locale ? `/${job.locale}/${job.viewport.width}px` : '';
+  const scenario = `${job.locale ? `/${job.locale}` : ''}${job.viewport ? `/${job.viewport.width}px` : ''}`;
   return `${job.storyId} (${job.colorScheme}/${job.palette}${forcedColors}${scenario})`;
 }
 
@@ -276,6 +287,57 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
       if (browserFailures.length === 0) {
         browserFailures.push(`story did not finish rendering: ${describeBrowserValue(error)}`);
       }
+    }
+
+    if (job.storyId === 'product-settings-pricing--populated' && browserFailures.length === 0) {
+      // userEvent implements implicit submit by querying descendants of form,
+      // missing the Pricing dialog's associated footer button. Real key input
+      // catches a broken form association without simulating submit ourselves.
+      const edit = page.getByRole('button', { name: '编辑「zai:glm-4.7」定价' });
+      await edit.click();
+      const dialog = page.getByRole('dialog', { name: '编辑定价' });
+      const input = dialog.getByRole('textbox', { name: /输入价格/ });
+      await input.fill('0.875');
+      await input.press('Enter');
+      await dialog.waitFor({ state: 'hidden' });
+      await page.getByRole('cell', { name: '$0.875', exact: true }).waitFor({ state: 'visible' });
+    }
+
+    if (job.storyId.startsWith('product-settings-pricing--')) {
+      const geometry = await page.evaluate(() => {
+        const failures = [];
+        if (document.documentElement.scrollWidth > window.innerWidth)
+          failures.push('page overflows horizontally');
+        const dialog = document.querySelector('dialog[open]');
+        if (dialog) {
+          const rect = dialog.getBoundingClientRect();
+          if (
+            rect.left < 0 ||
+            rect.right > window.innerWidth ||
+            rect.top < 0 ||
+            rect.bottom > window.innerHeight
+          )
+            failures.push('dialog extends beyond the viewport');
+          for (const button of dialog.querySelectorAll('.astryx-layout-footer button')) {
+            const action = button.getBoundingClientRect();
+            if (
+              action.left < rect.left ||
+              action.right > rect.right ||
+              action.top < rect.top ||
+              action.bottom > rect.bottom
+            )
+              failures.push('footer action is clipped');
+          }
+          const focusedInvalid = dialog.querySelector('[aria-invalid="true"]:focus');
+          if (focusedInvalid) {
+            const input = focusedInvalid.getBoundingClientRect();
+            if (input.top < rect.top || input.bottom > rect.bottom)
+              failures.push('focused invalid field is clipped');
+          }
+        }
+        return failures;
+      });
+      browserFailures.push(...geometry);
     }
 
     const result = await page.evaluate(() => {

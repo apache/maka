@@ -234,6 +234,11 @@ import {
   type TestProxyInput,
 } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
+import type {
+  DesktopPricingMutationOutcome,
+  DesktopPricingSnapshot,
+} from '../shared/desktop-pricing.js';
+import type { PricingMutation } from '@maka/runtime-host/protocol';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
@@ -3585,6 +3590,34 @@ const makaBridge = {
       const stats = await invokeWhenReady('settings:usageStats', scope, range, query) as UsageStats | Extract<UsageScreenFailure, {kind: 'screen_response_too_large'}>;
       if ('kind' in stats) return stats;
       return projectDesktopUsageStats(scope, stats);
+    },
+    pricing: {
+      // Load one complete effective snapshot (built-in ∪ overrides), stamped to
+      // its Host connection/revision; the renderer round-trips it as the CAS base.
+      async load(host: DesktopRuntimeHostRef): Promise<DesktopPricingSnapshot> {
+        const result = await invokeSelectedRuntimeHost<Result<DesktopPricingSnapshot>>(
+          host,
+          'usage:pricing:load',
+        );
+        if (!result.ok) throw new Error(result.error.message);
+        return result.data;
+      },
+      // Apply one upsert/delete against the viewed revision (`base`). The adapter
+      // owns CAS + reconciliation; the outcome encodes committed/conflict/uncertain.
+      async mutate(
+        base: DesktopPricingSnapshot,
+        mutation: PricingMutation,
+        host: DesktopRuntimeHostRef,
+      ): Promise<DesktopPricingMutationOutcome> {
+        const result = await invokeSelectedRuntimeHost<Result<DesktopPricingMutationOutcome>>(
+          host,
+          'usage:pricing:mutate',
+          base,
+          mutation,
+        );
+        if (!result.ok) throw new Error(result.error.message);
+        return result.data;
+      },
     },
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>> {

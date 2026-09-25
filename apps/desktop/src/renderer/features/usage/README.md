@@ -37,12 +37,38 @@ to a thin wrapper).
 ## Boundary
 
 - `ports.ts` — `UsageServices`: `loadUsageStats(range, query)`, revision-checked
-  `loadUsageActivity(input)`, and `updateUsageSettings(patch)`. All narrow — the feature consumes only
+  `loadUsageActivity(input)`, and `updateUsageSettings(patch)`. The feature consumes only
   `UsageSettings`/`UsageStats`, never the whole `AppSettings`.
+- `pricing-ports.ts` + `pricing-services-context.tsx` — the two Host-backed
+  Pricing capabilities: load one complete effective snapshot and apply one CAS
+  mutation against the settings-selected Host.
+- `controller/pricing-controller.ts` — disposable Pricing authority, conflict,
+  mutation execution, and Host-generation fencing. An open editor/reset dialog
+  pins its viewed CAS snapshot; a list refresh cannot advance that write base or
+  its catalog/duplicate validation. A Host change or view remount recovers only
+  the scope-owned draft, reloads authority, and requires explicit review of the
+  new Host's price before the next save. Recovery errors and Retry stay inside
+  the editor. Review reclassifies Add/Edit against the new Host without changing
+  rate input. A save retains its submitted draft identity, so its result only
+  closes that draft; input typed while saving remains open for a later submit.
+  If reconciliation was temporarily unavailable, it retains that same attempt
+  and compares its exact intent with the next successful snapshot via the shared
+  pure reconciliation rules in `@maka/runtime-host/protocol`, without replaying it.
+  Each attempt also belongs to its dialog generation: cancellation or a different
+  model key detaches the dialog while authority reconciliation continues. A late
+  result cannot reopen a cancelled dialog or carry its conflict into another edit.
 - `services-context.tsx` — `UsageFeatureScope`, the persistent state owner
   (single complete snapshot with range/query labels, screen/page request tickets,
   fixed filter time bounds, Host invalidation, and visible stale/capacity failures), plus `useUsageServices()`
-  and `useUsageStats(range)`.
+  and `useUsageStats(range)`. It also keeps the Pricing editor's input (mode,
+  raw rate text, and cache-section state) through `usePricingEditorDraft()`, so
+  Settings' Host-keyed content and loading gate cannot discard the user's work.
+  Pricing snapshots and in-flight operations never persist in this scope.
+- `pricing-view-model.ts` — validates raw decimal/scientific rate text at the
+  submission boundary, preserving partial input through remounts. Invalid and
+  negative rates remain visible for correction; blank cache prices are omitted
+  and an explicit zero remains zero. Astryx `TextInput` reports every keystroke;
+  `NumberInput`'s private, blur-committed pending text cannot satisfy this lifetime.
 - `ui/usage-settings-view.tsx` — the surface (overview + tabs + per-tab panels).
   A disposable view: it unmounts on a section change and reads the snapshot from
   the scope via `useUsageStats`, so leaving/returning re-displays the last
@@ -50,13 +76,12 @@ to a thin wrapper).
 - `ui/usage-stats-table.tsx`, `ui/metric-card.tsx`, `controller/*` — feature-owned
   presentational + framework helpers (external-only deps).
 
-## Wiring (one deviation from the composition-feature pattern, forced by the ratchet)
+## Wiring
 
-Unlike the composition-wired features, `settings-surface.tsx` is itself a frozen
+Usage stats remain a transitional exception because `settings-surface.tsx` is a frozen
 legacy closure file, so it cannot import the feature or a `platform/` adapter, and
 usage stats are scoped to the *settings-selected* Runtime Host (a settings concept
-the app-global composition root does not have). So there is **no `platform/desktop`
-adapter / no composition registration — a transitional seam.** `settings-surface.tsx`
+the app-global composition root does not have). `settings-surface.tsx`
 builds a host-bound `loadUsageStats` (via its existing `window.maka.settings.usageStats`
 call) plus an `updateUsageSettings` that projects the app-settings update down to
 `UsageSettings`, bundles them as `UsageServices`, and mounts the legacy shim
@@ -65,13 +90,18 @@ call) plus an `updateUsageSettings` that projects the app-settings update down t
 survives a Skeleton/Banner state or a section change; the disposable
 `UsageSettingsPage` view is rendered in the section content slot and reads the scope
 via context. The scope takes a `host:epoch` `targetKey` as a **prop** (not a React
-`key`): on a change it clears the snapshot and fences the in-flight load *in place*,
-so a Host change never remounts the rest of the Settings surface. The Host-change
+`key`): on a change it clears the snapshot and fences the in-flight load *in place*.
+The scope survives even when Settings replaces its Host-keyed page content. The Host-change
 handler also calls the scope's imperative `fenceTarget()` *synchronously* (alongside
 the other Host-scoped resources), rejecting an in-flight old-Host load before React
-re-renders the new target. When #4425's composition step lands, only this mounting
-seam moves to `composition/desktop-feature-services.tsx` + a stateless
-`platform/desktop` adapter — the scope stays feature-owned.
+re-renders the new target. That same fence is exposed to the Pricing controller as
+an `isCurrent` witness, so an old-Host mutation result cannot land in the event-to-
+render gap. Pricing itself is already composition-wired through
+`platform/desktop/create-usage-pricing-services.ts` and
+`composition/desktop-feature-services.tsx`; only the selected Host is threaded
+from the settings surface. When #4425's remaining composition step lands, only
+the Usage-stats mounting seam moves to composition plus a stateless Desktop
+adapter; the scope stays feature-owned.
 
 Copy is **not** a deviation: the view imports `getUsageSettingsCopy` +
 `UsageSettingsCopy` from `locales/settings-usage-copy.ts` directly. A feature import
@@ -82,17 +112,11 @@ shim, since `settings-error-copy` is not a copy catalog.
 
 ## Follow-up
 
-- Add a `SettingsSurface` integration test for the mount seam this PR moves.
-  `usage-settings-view.test.ts` mounts `UsageFeatureScope` + `UsageSettingsView`
-  directly and drives `fenceTarget()` / `targetKey` by hand; it does not load
-  `settings-surface.tsx`, so the surface's fence call sites
-  (`commitSelectedRuntimeHostProfile`, the generation-change handler) and the
-  `usageTargetKey` derivation are not exercised end-to-end. Those three lifecycle
-  obligations are exactly what a stale head had regressed with every test green, so
-  a surface-level test guarding them is the real coverage; it is deferred to keep
-  this extraction PR contained.
-- Add the editable pricing tab (#2015 / PR #4164) as a feature-internal tab,
-  replacing the read-only pricing tab preserved here.
+- The `UsagePricingHostSwitch` Settings story now exercises a real Host lifecycle
+  event before input blur, page unmount, profile selection, recovered draft, and
+  save against the replacement Host's CAS base. `usage-settings-view.test.ts` still drives the
+  stats scope's fence and target key directly; broader stats integration coverage
+  remains a follow-up.
 - De-duplicate the controllers. `controller/action-guard.ts` and
   `controller/optimistic-settings-draft.ts` are feature-local copies of the legacy
   `settings/` helpers (which keep ~9 consumers and their own tests). They are

@@ -18,14 +18,8 @@
  */
 
 import { resolveUsageRange } from "@maka/core/model-call-usage-projection";
-import { tryResult } from "@maka/core/result";
 import type { UsageRange, UsageStats, UsageScreenQuery, UsageScreenFailure } from "@maka/core/settings";
-import {
-  normalizePricingConfig,
-  normalizePricingModelKey,
-} from "@maka/core/usage-stats/pricing";
 import type {
-  PricingConfig,
   UsageGroupBy,
   UsageQuery,
 } from "@maka/core/usage-stats/types";
@@ -43,23 +37,12 @@ import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 interface RuntimeHostUsageIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
-  readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
 }
 
 
 export function registerRuntimeHostUsageIpc(
   deps: RuntimeHostUsageIpcDeps,
 ): void {
-  let pricingMutationQueue: Promise<void> = Promise.resolve();
-  const enqueuePricingMutation = <T>(operation: () => Promise<T>): Promise<T> => {
-    const result = pricingMutationQueue.then(operation);
-    pricingMutationQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  };
-
   handleReconnectableRead(
     deps.ipcMain,
     "settings:usageStats",
@@ -119,45 +102,7 @@ export function registerRuntimeHostUsageIpc(
         };
       }, "USAGE_LOGS_FAILED"),
   );
-  handleReconnectableRead(deps.ipcMain, "usage:pricing:list", () =>
-    tryReconnectableReadResult(async () => {
-      const snapshot = await deps.client.loadPricingSnapshot();
-      return snapshot.entries
-        .filter((entry) => entry.source === "custom")
-        .map((entry) => entry.pricing);
-    }, "USAGE_PRICING_LIST_FAILED"),
-  );
-  deps.ipcMain.handle("usage:pricing:put", (_event, pricing: unknown) =>
-    tryResult(
-      () =>
-        enqueuePricingMutation(async () => {
-          const normalized = normalizePricingConfig(pricing);
-          if (!normalized.ok) throw new Error(normalized.error);
-          await applyPricingMutation(deps.client, {
-            kind: "upsert",
-            pricing: normalized.value,
-          });
-          deps.sendToRenderer("usage:pricing:changed");
-          return normalized.value;
-        }),
-      "USAGE_PRICING_PUT_FAILED",
-    ),
-  );
-  deps.ipcMain.handle("usage:pricing:reset", (_event, modelKey: unknown) =>
-    tryResult(
-      () =>
-        enqueuePricingMutation(async () => {
-          const normalized = normalizePricingModelKey(modelKey);
-          if (!normalized.ok) throw new Error(normalized.error);
-          await applyPricingMutation(deps.client, {
-            kind: "delete",
-            modelKey: normalized.value,
-          });
-          deps.sendToRenderer("usage:pricing:changed");
-        }),
-      "USAGE_PRICING_RESET_FAILED",
-    ),
-  );
+
 }
 
 async function loadUsageStats(
@@ -170,7 +115,7 @@ async function loadUsageStats(
   }});
   if (result.kind === "screen_response_too_large") return result;
   if (result.kind !== "screen") throw invalidUsageProjection();
-  const {revision, queryIdentity, query: resolvedQuery, nextCursor, activityTotal, ...stats} = result.screen;
+  const {revision, queryIdentity, query: resolvedQuery, nextCursor, activityTotal, pricing: _pricing, ...stats} = result.screen;
   return {...stats, navigation: {revision, queryIdentity, query: resolvedQuery, nextCursor, activityTotal}};
 }
 
@@ -224,26 +169,6 @@ function toToolQuery(query: UsageQuery) {
     ...(query.toolName === undefined ? {} : { toolName: query.toolName }),
     ...(query.status === undefined ? {} : { status: query.status }),
   };
-}
-
-async function applyPricingMutation(
-  client: DesktopRuntimeHostClient,
-  mutation:
-    | { readonly kind: "upsert"; readonly pricing: PricingConfig }
-    | { readonly kind: "delete"; readonly modelKey: string },
-): Promise<void> {
-  const outcome = await client.applyPricingMutation({
-    base: await client.loadPricingSnapshot(),
-    mutation,
-  });
-  if (
-    outcome.kind === "saved" ||
-    outcome.kind === "saved_refresh_failed" ||
-    outcome.kind === "synchronized"
-  ) {
-    return;
-  }
-  throw new Error("Pricing changed concurrently; reload it before retrying");
 }
 
 function invalidUsageProjection(): Error {

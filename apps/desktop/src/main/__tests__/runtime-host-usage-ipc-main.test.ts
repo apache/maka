@@ -78,12 +78,11 @@ function handlers(queryUsage: (input: UsageQueryInput) => Promise<UsageQueryResu
         throw new Error('Independent pricing read');
       },
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => {},
   });
   return handlers;
 }
 const event = {} as Parameters<IpcHandler>[0];
-test('one screen call atomically supplies totals, complete groups, pricing, and only the first activity page', async () => {
+test('one screen call supplies complete usage groups and the first activity page without legacy pricing', async () => {
   const calls: UsageQueryInput[] = [];
   const fixture = screen();
   const h = handlers(async (input) => {
@@ -102,6 +101,7 @@ test('one screen call atomically supplies totals, complete groups, pricing, and 
   assert.equal(stats.logs[0]?.sessionName, 'Host title');
   assert.equal(stats.navigation?.nextCursor, 'next');
   assert.equal(stats.navigation?.revision, fixture.revision);
+  assert.equal('pricing' in stats, false, 'Pricing loads its own revisioned Host snapshot');
 });
 test('initial All load fixes its time bound before dispatch', async () => {
   let sent: UsageQueryInput | undefined;

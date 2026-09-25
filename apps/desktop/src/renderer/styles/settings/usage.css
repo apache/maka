@@ -95,6 +95,12 @@
   min-width: 0;
 }
 
+/* Astryx stacks own pricing layout; allow their table and heading to shrink. */
+.settingsPricing,
+.settingsPricingHeading {
+  min-width: 0;
+}
+
 /* 任务 column: the session-name link truncates inside its fixed column width and
    surfaces the full name via the button tooltip. StyleX owns the button's own
    layout; these rules only cap its width and ellipsis the label text (descendant
