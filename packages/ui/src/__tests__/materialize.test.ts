@@ -331,6 +331,69 @@ test('retains persisted nested tool activity identity', () => {
   });
 });
 
+test('scopes persisted tool results to their turn when opaque call ids repeat', () => {
+  const turns = materializeTurns([
+    userMsg('turn-1', 1, 'first'),
+    {
+      type: 'tool_call',
+      id: 'call-1',
+      turnId: 'turn-1',
+      ts: 2,
+      toolName: 'Read',
+      args: { path: 'first.txt' },
+    },
+    {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 3,
+      toolUseId: 'call-1',
+      isError: false,
+      outcome: 'success',
+      content: { kind: 'text', text: 'first result' },
+    },
+    userMsg('turn-2', 4, 'second'),
+    {
+      type: 'tool_call',
+      id: 'call-1',
+      turnId: 'turn-2',
+      ts: 5,
+      toolName: 'Read',
+      args: { path: 'second.txt' },
+    },
+    {
+      type: 'tool_result',
+      id: 'result-2',
+      turnId: 'turn-2',
+      ts: 6,
+      toolUseId: 'call-1',
+      isError: true,
+      outcome: 'aborted',
+      content: { kind: 'text', text: 'second result' },
+    },
+  ] satisfies StoredMessage[], 'en');
+
+  assert.deepEqual(
+    turns.map((turn) => ({
+      turnId: turn.turnId,
+      status: turn.tools[0]?.status,
+      result: turn.tools[0]?.result,
+    })),
+    [
+      {
+        turnId: 'turn-1',
+        status: 'completed',
+        result: { kind: 'text', text: 'first result' },
+      },
+      {
+        turnId: 'turn-2',
+        status: 'interrupted',
+        result: { kind: 'text', text: 'second result' },
+      },
+    ],
+  );
+});
+
 function shellRunResult(revision: number) {
   return {
     kind: "shell_run" as const,

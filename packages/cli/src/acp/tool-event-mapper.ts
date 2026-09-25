@@ -33,6 +33,7 @@ import {
 import type { StoredMessage } from '@maka/core/session';
 import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
 import { toolResultActivityStatus } from '@maka/core/tool-result-status';
+import type { ToolCallOutcome } from '@maka/core/tool-result-status';
 import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
 import { BoundedChunkBuffer } from '../bounded-chunk-buffer.js';
 import { formatToolResultContent } from '../pi-transcript-format.js';
@@ -142,6 +143,7 @@ export class AcpToolEventMapper {
           event.content,
           event.durationMs,
           event.contentOmitted === true,
+          event.outcome,
         );
         return;
     }
@@ -159,6 +161,7 @@ export class AcpToolEventMapper {
         message.content,
         message.durationMs,
         false,
+        message.outcome,
       );
     }
   }
@@ -283,9 +286,11 @@ export class AcpToolEventMapper {
     result: ToolResultContent,
     durationMs: number | undefined,
     omitted: boolean,
+    outcome?: ToolCallOutcome,
   ): Promise<void> {
     const resultDigest = digestValue({
       isError,
+      outcome,
       result: omitted ? null : result,
       durationMs,
       omitted,
@@ -293,7 +298,7 @@ export class AcpToolEventMapper {
     if (tool.resultDigest === resultDigest) return;
     if (omitted) tool.resultAnnounced = true;
     tool.terminal = true;
-    const hostStatus = toolResultActivityStatus(isError, omitted ? undefined : result);
+    const hostStatus = toolResultActivityStatus(isError, omitted ? undefined : result, outcome);
     tool.status = hostStatus === 'completed' ? 'completed' : 'failed';
     tool.meta.hostStatus = hostStatus;
     if (durationMs !== undefined) tool.meta.durationMs = durationMs;

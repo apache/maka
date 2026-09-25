@@ -276,6 +276,32 @@ describe('ACP Session event mapper', () => {
     assert.equal(notifications.length, count);
   });
 
+  test('updates ACP host status when only the explicit outcome changes', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    for (const outcome of ['error', 'aborted'] as const) {
+      await mapper.accept(
+        event({
+          type: 'tool_result',
+          toolUseId: 'tool',
+          contentOmitted: true,
+          isError: true,
+          outcome,
+          content: { kind: 'text', text: '' },
+        }),
+      );
+    }
+    const updates = notifications.map(toolUpdate);
+    assert.deepEqual(
+      updates.map((update) => (update._meta?.maka as { hostStatus?: string })?.hostStatus),
+      ['errored', 'interrupted'],
+    );
+    assert.deepEqual(
+      updates.map((update) => update.status),
+      ['failed', 'failed'],
+    );
+  });
+
   test('result before start creates one terminal card and late start only fills identity', async () => {
     const notifications: SessionNotification[] = [];
     const mapper = eventMapper(notifications);

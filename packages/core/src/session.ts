@@ -29,6 +29,7 @@ import {
   type InteractionCanonicalOutcome,
 } from './interaction.js';
 import { isExecutorId } from './executor-id.js';
+import { isToolCallOutcome } from './tool-result-status.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
 import {
@@ -913,6 +914,7 @@ export interface ToolResultMessage {
   /** Matches ToolCallMessage.id. */
   toolUseId: string;
   isError: boolean;
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   content: ToolResultContent;
   providerExecuted?: boolean;
   /** Raw provider result retained only for provider-native replay. */
@@ -1359,6 +1361,7 @@ const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'isError', 'content'],
   [
     'durationMs',
+    'outcome',
     'providerExecuted',
     'providerOutput',
     'origin',
@@ -1665,6 +1668,9 @@ function decodeMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.toolUseId === 'string' &&
         typeof message.isError === 'boolean' &&
+        (message.outcome === undefined ||
+          (isToolCallOutcome(message.outcome) &&
+            (message.outcome !== 'success') === message.isError)) &&
         (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
         isOptionalFiniteDuration(message.durationMs) &&
         isToolActivityIdentity(message)

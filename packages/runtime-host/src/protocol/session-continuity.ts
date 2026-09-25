@@ -207,7 +207,7 @@ export type SessionToolEvent =
   | (SessionToolEventIdentity & {
       type: 'tool_result';
       operationId?: string;
-      status: 'completed' | 'errored';
+      status: 'completed' | 'errored' | 'interrupted';
       sandboxFailureReason?: SandboxBoundaryFailureSignal['reason'];
       durationMs?: number;
     })
@@ -982,7 +982,11 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'status',
     ]);
-    if (record.status !== 'completed' && record.status !== 'errored') {
+    if (
+      record.status !== 'completed' &&
+      record.status !== 'errored' &&
+      record.status !== 'interrupted'
+    ) {
       throw invalidProtocolFrame('Invalid Session tool result status');
     }
     if (record.status === 'completed' && record.sandboxFailureReason !== undefined) {

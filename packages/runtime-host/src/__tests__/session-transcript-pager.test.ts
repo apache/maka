@@ -141,6 +141,7 @@ test('projects durable transcript records before sharing them', async () => {
       ts: 2,
       toolUseId: 'tool-1',
       isError: false,
+      outcome: 'aborted',
       content: { kind: 'text', text: 'visible result' },
       modelVisibility: 'hidden',
       providerOutput: { replay: 'private' },
@@ -216,6 +217,7 @@ test('projects durable transcript records before sharing them', async () => {
   assert.equal('displayText' in sharedDurable[0]!, false);
   assert.equal(sharedDurable[0]?.steeringEventId, 'steering-event-1');
   assert.equal('providerOutput' in sharedDurable[1]!, false);
+  assert.equal(sharedDurable[1]?.outcome, 'aborted');
   assert.equal('providerOptions' in sharedDurable[2]!, false);
   assert.deepEqual(sharedDurable[2]!.thinking, { text: 'visible thought' });
   const projectedState = projectSharedSessionTranscriptMessage(

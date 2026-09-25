@@ -2247,6 +2247,36 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('retains an aborted tool outcome after reopening the T2 ledger', async () => {
+    await withStore(async (store, dbPath) => {
+      await commitPrepared(store);
+      const response = functionResponseEvent({
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Read',
+          result: { kind: 'text', text: 'stopped' },
+          isError: true,
+          outcome: 'aborted',
+        },
+      });
+      await store.commitToolOutcome({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_outcome',
+        runtimeEvent: response,
+        committedAt: 20,
+      });
+      store.close();
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        const events = await reopened.readRuntimeEvents('session-1', 'run-1');
+        assert.deepEqual(events.at(-1), response);
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
   it('keeps projected T2 prepared when its atomic model projection is missing', async () => {
     await withStore(async (store) => {
       await commitPrepared(store, { resultProjectionVersion: 1 });

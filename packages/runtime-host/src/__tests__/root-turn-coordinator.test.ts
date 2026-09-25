@@ -4642,7 +4642,10 @@ async function assertSessionSuccessorCapabilityDegradation(
         previousProvider.accept({
           kind: 'client.capability.result',
           invocationId: frame.invocationId,
-          result: { content: [{ type: 'text', text: 'previous' }] },
+          result: {
+            outcome: 'success',
+            content: [{ type: 'text', text: 'previous' }],
+          },
         });
       },
     },
@@ -4662,7 +4665,10 @@ async function assertSessionSuccessorCapabilityDegradation(
         followupProvider.accept({
           kind: 'client.capability.result',
           invocationId: frame.invocationId,
-          result: { content: [{ type: 'text', text: 'followup' }] },
+          result: {
+            outcome: 'success',
+            content: [{ type: 'text', text: 'followup' }],
+          },
         });
       },
     },

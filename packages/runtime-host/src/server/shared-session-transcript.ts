@@ -111,6 +111,7 @@ export function projectSharedSessionTranscriptMessage(
         ts: message.ts,
         toolUseId: message.toolUseId,
         isError: message.isError,
+        ...(message.outcome === undefined ? {} : { outcome: message.outcome }),
         content: message.content,
         ...(message.durationMs === undefined ? {} : { durationMs: message.durationMs }),
         ...(message.origin === undefined ? {} : { origin: message.origin }),

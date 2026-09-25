@@ -661,7 +661,9 @@ function projectSessionEvent(
     type: 'tool_result',
     ...base,
     contentOmitted: true,
-    isError: event.status === 'errored',
+    isError: event.status !== 'completed',
+    outcome:
+      event.status === 'interrupted' ? 'aborted' : event.status === 'errored' ? 'error' : 'success',
     content: {
       kind: 'text',
       text: '',

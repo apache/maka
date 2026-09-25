@@ -428,7 +428,10 @@ function dummyProvider(id: string) {
         ],
       },
     ],
-    call: async () => ({ content: [{ type: 'text' as const, text: id }] }),
+    call: async () => ({
+      outcome: 'success' as const,
+      content: [{ type: 'text' as const, text: id }],
+    }),
   };
 }
 

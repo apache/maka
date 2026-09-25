@@ -26,6 +26,7 @@ import {
   type McpToolProvider,
 } from '@maka/runtime/mcp-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { requireToolCallOutcome } from '@maka/core/tool-result-status';
 import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import {
   clientCapabilityScopeIdentity,
@@ -680,6 +681,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     assertUniqueSnapshotToolIdentities(selected);
     const tools = [
       ...buildMcpTools(this.#snapshotProvider(state?.initiatingProviderId, interactive), {
+        resultOutcome: (output) => requireToolCallOutcome(output.outcome),
         callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
         categoryHint: 'client_capability',
         hostAdmission: 'client_capability',
@@ -687,6 +689,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         executionLocation: 'remote',
       }),
       ...buildMcpTools(this.#snapshotProvider(state?.initiatingProviderId, trusted), {
+        resultOutcome: (output) => requireToolCallOutcome(output.outcome),
         callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
         categoryHint: 'custom_tool',
         hostAdmission: 'client_capability',

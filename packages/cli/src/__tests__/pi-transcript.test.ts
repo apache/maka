@@ -1417,6 +1417,60 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('scopes stored tool results to their turn when opaque call ids repeat', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'tool_call',
+        id: 'call-1',
+        turnId: 'turn-1',
+        ts: 1,
+        toolName: 'Read',
+        args: { path: 'first.txt' },
+      },
+      {
+        type: 'tool_result',
+        id: 'result-1',
+        turnId: 'turn-1',
+        ts: 2,
+        toolUseId: 'call-1',
+        isError: false,
+        outcome: 'success',
+        content: { kind: 'text', text: 'first result' },
+      },
+      {
+        type: 'tool_call',
+        id: 'call-1',
+        turnId: 'turn-2',
+        ts: 3,
+        toolName: 'Read',
+        args: { path: 'second.txt' },
+      },
+      {
+        type: 'tool_result',
+        id: 'result-2',
+        turnId: 'turn-2',
+        ts: 4,
+        toolUseId: 'call-1',
+        isError: true,
+        outcome: 'aborted',
+        content: { kind: 'text', text: 'second result' },
+      },
+    ] satisfies StoredMessage[]);
+
+    const tools = state.entries.filter((entry): entry is MakaPiToolEntry => entry.kind === 'tool');
+    assert.deepEqual(
+      tools.map((tool) => ({
+        status: toolStatus(tool),
+        result: tool.result,
+      })),
+      [
+        { status: 'done', result: { kind: 'text', text: 'first result' } },
+        { status: 'aborted', result: { kind: 'text', text: 'second result' } },
+      ],
+    );
+  });
+
   test('explains a stored tool call whose turn ended without a result', () => {
     const state = createMakaPiTranscriptState();
     replaceTranscriptWithStoredMessages(state, [
@@ -1978,7 +2032,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(after.slice(0, viewportTop), before.slice(0, viewportTop));
   });
 
-  test('replays WriteStdin as a human-readable operation row while merging its PTY revision into Bash', () => {
+  test('replays a unique cross-turn WriteStdin result while merging its PTY revision into Bash', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/pty-1';
     const rawInput = 'echo hello\r';
@@ -2017,7 +2071,7 @@ describe('Maka Pi TUI transcript', () => {
       {
         type: 'tool_result',
         id: 'write-result',
-        turnId: 'turn-2',
+        turnId: 'turn-results',
         ts: 4,
         toolUseId: 'write-pty',
         isError: false,
@@ -2053,6 +2107,7 @@ describe('Maka Pi TUI transcript', () => {
       },
       size: { cols: 100, rows: 30 },
     });
+    assert.equal(toolStatus(tools[1]), 'done');
     assert.equal(tools[1]?.durationMs, undefined);
     refreshRunningShellRunElapsed(state, 3_000);
     assert.equal(tools[1]?.durationMs, undefined);
