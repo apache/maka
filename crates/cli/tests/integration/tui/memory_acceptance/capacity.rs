@@ -156,7 +156,7 @@ async fn changes(client: &Client, document: Uuid) -> Uuid {
             binding: case::binding("memory-changed"),
             target,
             document,
-            input: json!({"kind":"watch","route":null,"locale":"en"}),
+            input: Value::Null,
         })
         .await
         .unwrap();
