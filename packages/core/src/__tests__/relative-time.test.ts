@@ -98,8 +98,7 @@ describe('relative timestamp labels', () => {
     assert.equal(delay, 60_000);
     assert.equal(formatRelativeTimestamp(futureTs, NOW, 'en'), 'just now');
     assert.equal(formatCompactTimestamp(futureTs, NOW, 'en'), 'just now');
-    // The sidebar's compact scan column spells en just-now as "now".
-    assert.equal(formatSidebarTimestamp(futureTs, NOW, 'en'), 'now');
+    assert.equal(formatSidebarTimestamp(futureTs, NOW, 'en'), 'just now');
   });
 
   it('keeps timestamp refresh delays within the scheduler bound', () => {

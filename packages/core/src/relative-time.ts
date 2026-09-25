@@ -53,15 +53,6 @@ const JUST_NOW: UiCatalog<string> = {
   en: 'just now',
 };
 
-// The sidebar column is sized to the scan tokens ("59min"); the spelled-out
-// "just now" is wider than any of them, so the slot gets its own compact en
-// label.
-const SIDEBAR_JUST_NOW: UiCatalog<string> = {
-  'zh-CN': '刚刚',
-  'zh-TW': '剛剛',
-  en: 'now',
-};
-
 /** Future timestamps are treated as age zero and therefore display as just now. */
 function relativeAgeMs(ts: number, now: number): number {
   return Math.max(0, now - ts);
@@ -179,7 +170,7 @@ export function formatCompactTimestamp(ts: number, now: number, locale: UiLocale
  */
 export function formatSidebarTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
-  if (diffMs < JUST_NOW_MS) return SIDEBAR_JUST_NOW[locale];
+  if (diffMs < JUST_NOW_MS) return JUST_NOW[locale];
   const bucket = sidebarTimeBucket(diffMs);
   return `${bucket.value}${bucket.suffix}`;
 }
