@@ -1518,7 +1518,7 @@ pub(crate) mod tests {
             vec![
                 tabs(
                     "tabs",
-                    "all",
+                    "mine",
                     vec![
                         ("all".into(), "All".into(), json!("all")),
                         ("mine".into(), "Mine".into(), json!("mine")),
@@ -1540,6 +1540,12 @@ pub(crate) mod tests {
         view.validate().unwrap();
         instance_mut(&mut app).view = Some(view);
         let root = "app/body/frame/content/root";
+        draw(&mut app, 100, 32);
+        assert_eq!(
+            instance(&app).surface.focused(),
+            Some(format!("{root}/tabs/tabs/mine").as_str()),
+            "arrival starts at the selected tab, not the first tab"
+        );
         for (width, height) in [(100, 32), (44, 24)] {
             instance_mut(&mut app)
                 .surface
@@ -1690,6 +1696,17 @@ pub(crate) mod tests {
         draw(&mut app, 90, 26);
         click(&mut app, "app/body/frame/content/root/page");
         let request = next(&mut app).unwrap();
+        assert!(instance(&app).view.is_none());
+        assert!(instance(&app).drafts.is_empty());
+        assert!(
+            !app.apps_enabled(&save()),
+            "the old page cannot submit against the destination route"
+        );
+        draw(&mut app, 90, 26);
+        assert!(
+            instance(&app).surface.focused().is_none(),
+            "focus waits for destination controls"
+        );
         assert!(matches!(
             &request.work,
             Work::Call { input: Input::Read { route, .. }, .. } if route == &json!({"page":1})
@@ -1700,6 +1717,10 @@ pub(crate) mod tests {
         let screen = draw(&mut app, 90, 26);
         assert!(screen.contains("‹ Notebook") && screen.contains("First page"));
         app.input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(
+            instance(&app).view.is_none(),
+            "Back also retires the departing view"
+        );
         assert!(matches!(
             next(&mut app).unwrap().work,
             Work::Call {

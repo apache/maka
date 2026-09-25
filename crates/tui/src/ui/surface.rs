@@ -169,6 +169,16 @@ impl<M: Clone> Surface<M> {
             None if self.focus.is_none() && self.start.is_some() => {
                 let start = self.start.as_deref().unwrap_or_default();
                 if let Some(index) = stops.iter().position(|item| item.id.starts_with(start)) {
+                    let index = stops[index]
+                        .tab_group
+                        .and_then(|group| {
+                            stops.iter().position(|item| {
+                                item.tab_group == Some(group)
+                                    && item.current
+                                    && item.id.starts_with(start)
+                            })
+                        })
+                        .unwrap_or(index);
                     self.focus = Some(stops[index].id.clone());
                     self.focus_index = index;
                     self.start = None;

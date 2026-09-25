@@ -170,6 +170,10 @@ impl Instance {
     }
     /// Another place: a fresh surface starts at its top, focus on its content.
     pub(super) fn arrive(&mut self) {
+        // A route's controls and revision must never serve its destination.
+        self.view = None;
+        self.drafts.clear();
+        self.editors.clear();
         self.surface = ui::Surface::default();
         self.surface.start_at(super::page::BODY);
         self.wells.clear();
