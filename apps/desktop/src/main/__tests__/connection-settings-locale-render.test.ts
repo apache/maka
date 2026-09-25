@@ -369,6 +369,49 @@ test('endpoint editing previews the default model protocol override', async () =
   );
 });
 
+test('legacy credential endpoint editing shows one preview and retains its accessible description', async () => {
+  const harness = installRenderer();
+  const connection: ProjectedLlmConnection = {
+    ...relayConnection(),
+    baseUrl: 'https://relay.example/v1?token=legacy-secret',
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = harness.document.querySelector<HTMLButtonElement>('button[aria-label="Edit: Service URL"]');
+  assert.ok(edit);
+  await act(async () => edit.click());
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input);
+  assert.equal(input.type, 'password');
+  assert.equal(harness.document.querySelector('.providerRequestUrlPreview'), null);
+  await act(async () => {
+    input.value = 'https://relay.example/v1';
+    const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key);
+    const props = (input as unknown as Record<string, unknown>)[key] as {
+      onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+    };
+    props.onChange({ target: input, defaultPrevented: false });
+  });
+  const previews = harness.document.querySelectorAll('.providerRequestUrlPreview');
+  assert.equal(previews.length, 1);
+  const preview = previews[0]!;
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  const descriptions = describedElements(input);
+  assert.ok(descriptions.some((element) => element.textContent.includes(preview.textContent)));
+  assert.ok(descriptions.some((element) =>
+    element.querySelector('.maka-visually-hidden')?.textContent.trim() === preview.textContent,
+  ), 'the accessible copy of the URL must not render a second visible preview');
+});
+
 test('credential probing does not flash a page-level loading warning', async () => {
   const harness = installRenderer();
   const credential = deferred<boolean>();

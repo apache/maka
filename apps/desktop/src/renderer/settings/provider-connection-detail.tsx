@@ -575,9 +575,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                     placeholder={defaults.baseUrl}
                     label={copy.endpoint}
                     isLabelHidden
-                    description={requestDescription
-                      ? `${copy.endpointCredentialsMasked} ${requestDescription}`
-                      : copy.endpointCredentialsMasked}
+                    description={<>
+                      {copy.endpointCredentialsMasked}
+                      {requestDescription && <span className="maka-visually-hidden"> {requestDescription}</span>}
+                    </>}
                     isDisabled={allActionsBusy}
                   />
                 ) : (

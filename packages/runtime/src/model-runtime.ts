@@ -153,7 +153,7 @@ export function resolveModelRuntime(
       : adapter.kind === 'google' && adapter.normalizeBaseUrl !== false
         ? googleV1BetaBaseUrl(resolvedBaseUrl)
         : adapter.kind === 'openai-compatible' && adapter.normalizeBaseUrl
-          ? anthropicV1BaseUrl(resolvedBaseUrl)
+          ? anthropicV1BaseUrl(openAiChatBaseUrl(resolvedBaseUrl))
           : wire === 'openai-responses' && resolvedBaseUrl
             ? openAiResponsesBaseUrl(resolvedBaseUrl)
             : wire === 'openai-chat' && resolvedBaseUrl

@@ -224,6 +224,13 @@ test('switching a custom connection protocol replaces the full OpenAI endpoint',
     'https://relay.example/proxy/chat/completions');
 });
 
+test('draft request previews redact token-shaped path segments without changing URL normalization', () => {
+  assert.equal(
+    providerRequestUrlPreview('custom', `https://relay.example/${longOpaqueToken}/v1`),
+    'https://relay.example/<redacted>/v1/chat/completions',
+  );
+});
+
 test('empty, incomplete, unsaveable and unsupported protocol drafts have no request preview', () => {
   for (const draft of ['', '  ', 'http', 'https://', 'https:relay.example', 'relay.example/v1',
     'file:///v1', 'https://relay.example:abc/v1', 'https://user:secret@relay.example/v1',

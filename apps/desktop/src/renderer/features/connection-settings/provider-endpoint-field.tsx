@@ -61,6 +61,8 @@ export function providerRequestUrlPreview(
   try {
     const baseUrl = normalizeCatalogConnectionBaseUrl(draftBaseUrl);
     if (!baseUrl) return null;
+    // Token-shaped path segments are masked only for display. In that case
+    // the preview intentionally differs from the actual request URL.
     return redactSecrets(apiProtocol === 'openai-chat'
       ? openAiChatUrl(baseUrl)
       : openResponsesUrl(baseUrl));

@@ -34,12 +34,14 @@ export function openResponsesUrl(baseUrl: string): string {
   return openAiRequestUrl(baseUrl, '/responses');
 }
 
-function openAiBaseUrl(baseUrl: string): string {
+export function openAiBaseUrl(baseUrl: string): string {
   const url = new URL(baseUrl);
   let path = url.pathname.replace(/\/+$/, '');
   // Accept both a base and a full endpoint, including previously duplicated
   // suffixes. Models on one connection may use either OpenAI protocol.
   // Preserve the gateway's prefix; never assume or insert /v1.
+  // A terminal OpenAI endpoint is always treated as an endpoint: a gateway
+  // mounted at that exact path cannot be distinguished from a full request URL.
   const endpoint = /\/(?:chat\/completions|responses)$/i;
   while (endpoint.test(path)) {
     path = path.replace(endpoint, '').replace(/\/+$/, '');
