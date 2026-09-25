@@ -680,8 +680,6 @@ export interface TextDeltaEvent extends BaseEvent {
 export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
   interrupted?: true;
-  /** `text` replaces the streamed deltas instead of extending them. */
-  replaced?: true;
   messageId: string;
   text: string;
   /** Provider-owned text metadata such as Responses URL citations. */
@@ -715,8 +713,6 @@ export function foldAssistantDelta(
 export interface ThinkingCompleteEvent extends BaseEvent {
   type: 'thinking_complete';
   interrupted?: true;
-  /** `text` replaces the streamed deltas instead of extending them. */
-  replaced?: true;
   messageId: string;
   text: string;
   /** Anthropic signed thinking — MUST be re-sent on replay. */

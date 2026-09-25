@@ -64,6 +64,7 @@ type AutoOpenTarget =
   | 'detail-large'
   | 'detail-retired'
   | 'add'
+  | 'add-custom'
   | 'catalog'
   | 'oauth'
   | 'xai-device';
@@ -191,20 +192,25 @@ const relayConnections = [
     ...makeConnection({
       slug: 'relay-house',
       name: 'House Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: 'https://relay.example.com/v1',
       defaultModel: 'gpt-5.6-luna',
       lastTestStatus: 'verified',
       models: [
         { id: 'gpt-5.6-luna' },
+        { id: 'claude-opus-4-8' },
         { id: 'deepseek-v4-flash-0731' },
         { id: 'glm-5.3-flash' },
         { id: 'gemini-3.8-flash' },
       ],
       modelSource: 'fetched',
     }),
-    enabledModelIds: ['gpt-5.6-luna', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
-    modelOverrides: { 'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const } },
+    defaultApiProtocol: 'openai-responses' as const,
+    enabledModelIds: ['gpt-5.6-luna', 'claude-opus-4-8', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
+    modelOverrides: {
+      'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const },
+      'claude-opus-4-8': { apiProtocol: 'anthropic-messages' as const, thinkingLevels: ['high', 'max'] as const },
+    },
   },
 ];
 
@@ -745,7 +751,8 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
   // 'add': walk to the catalog, then into one provider's form.
   const catalog = reachCatalog(root);
   if (!catalog) return false;
-  const providerRow = catalog.querySelector<HTMLElement>('[data-provider="deepseek"]')?.querySelector('button') ?? null;
+  const provider = target === 'add-custom' ? 'custom' : 'deepseek';
+  const providerRow = catalog.querySelector<HTMLElement>(`[data-provider="${provider}"]`)?.querySelector('button') ?? null;
   providerRow?.click();
   return Boolean(providerRow);
 }
@@ -1021,10 +1028,10 @@ export const RefreshModelCatalog: Story = {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       refresh.click();
       await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*glm-5\.3$/i });
-      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(5));
+      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(6));
       await waitFor(() => expect(refresh).not.toBeDisabled());
     }
-    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(3);
+    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(4);
   },
 };
 
@@ -1126,6 +1133,43 @@ export const AddProvider: Story = {
       autoOpen="add"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 → 自定义连接.
+export const AddCustomConnection: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="add-custom"
+    />
+  ),
+  play: async () => {
+    const body = within(document.body);
+    const protocol = await body.findByRole('combobox', { name: /^默认请求协议/ });
+    expect(protocol).toHaveTextContent('OpenAI Chat Completions');
+    await userEvent.click(protocol);
+    expect(body.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'OpenAI Chat Completions',
+      'OpenAI Responses',
+      'Anthropic Messages',
+    ]);
+    await userEvent.keyboard('{Escape}');
+  },
+};
+
+// Real path: 设置 → 模型 → relay → configure a model that overrides the connection's protocol.
+export const CustomModelProtocol: Story = {
+  render: ModelCapabilities.render,
+  play: async ({ canvasElement }) => {
+    const body = within(document.body);
+    const configure = await within(canvasElement).findByRole('button', { name: /参数.*claude-opus-4-8/ });
+    await userEvent.click(configure);
+    const protocol = await body.findByRole('combobox', { name: /^请求协议/ });
+    expect(protocol).toHaveTextContent('Anthropic Messages');
+    await userEvent.click(protocol);
+    expect(await body.findByRole('option', { name: '跟随连接 · OpenAI Responses' })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+  },
 };
 
 // Real path: 设置 → 模型 → 添加连接 → DeepSeek. The common fixed-endpoint

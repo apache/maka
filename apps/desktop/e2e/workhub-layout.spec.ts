@@ -114,7 +114,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     return visible(window.contentView);
   });
   const actions = page.getByRole('button', { name: /Sidebar task.*任务操作$/ });
-  await page.getByRole('button', { name: 'Sidebar task', exact: true }).hover();
+  await page.getByRole('button').filter({ has: page.getByText('Sidebar task', { exact: true }) }).hover();
   await actions.click();
   await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
@@ -124,7 +124,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await page.keyboard.press('Escape');
   await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeHidden();
   await expect(actions).toBeFocused();
-  const actionTooltip = page.getByRole('tooltip', { name: 'Sidebar task 任务操作', exact: true });
+  const actionTooltip = page.getByRole('tooltip', { name: /^Sidebar task.*任务操作$/ });
   await expect(actionTooltip).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
   const workHubNavigation = page.getByRole('button', { name: 'WorkHub', exact: true });
@@ -446,7 +446,9 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('ControlOrMeta+Enter');
-  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
+  await expect(workhub.locator('.maka-bubble-streaming', {
+    hasText: 'Acknowledged steering: 立即调整方向，保持当前任务',
+  })).toHaveCount(1);
   const steered = workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' });
   await expect(steered).toHaveCount(1);
   // A queued message is only ever durable at the tail, so sending one has to

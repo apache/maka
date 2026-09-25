@@ -185,7 +185,7 @@ function describeChange(change: ClientSettingsChange): string {
     theme: 'Theme',
     palette: 'Palette',
     uiLocale: 'UI language',
-    runComplete: 'Run-complete notifications',
+    runComplete: 'System notifications',
     keepSystemAwake: 'Keep system awake',
   };
   return `${labels[change.key]}: ${String(change.current)} → ${String(change.next)}`;

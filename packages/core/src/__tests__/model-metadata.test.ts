@@ -122,7 +122,7 @@ describe('model-metadata vision capability', () => {
   });
 
   it('confines the default to the providers that serve Anthropic their own models', () => {
-    const providerType = 'anthropic-compatible' satisfies ProviderType;
+    const providerType = 'custom' satisfies ProviderType;
     assert.equal(resolveModelVisionSupport(providerType, undefined, 'claude-opus-6'), false);
   });
 
@@ -135,21 +135,12 @@ describe('model-metadata vision capability', () => {
 
   it('lets a user declaration outrank every other signal, in both directions', () => {
     const stored: ModelInfo[] = [{ id: 'my-reasoner', capabilities: { vision: true } }];
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', false),
-      false,
-    );
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', true),
-      true,
-    );
+    assert.equal(resolveModelVisionSupport('custom', stored, 'my-reasoner', false), false);
+    assert.equal(resolveModelVisionSupport('custom', undefined, 'some-unlisted-model', true), true);
     assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-6', false), false);
+    assert.equal(resolveModelVisionSupport('custom', stored, 'my-reasoner', undefined), true);
     assert.equal(
-      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', undefined),
-      true,
-    );
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', undefined),
+      resolveModelVisionSupport('custom', undefined, 'some-unlisted-model', undefined),
       false,
     );
   });
@@ -205,10 +196,8 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     );
   });
 
-  it('keeps the model present in the deepseek shipped baseline', () => {
-    assert.ok(
-      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
-    );
+  it('keeps the vision-capable baseline model in the deepseek shipped baseline', () => {
+    assert.ok(providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-flash'));
   });
 
   it('returns expected metadata from lookupModelMetadata', () => {

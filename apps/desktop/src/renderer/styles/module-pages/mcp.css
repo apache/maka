@@ -46,6 +46,13 @@
   flex: none;
 }
 
+/* A tile-shaped brand mark replaces the plate, so it takes the plate's box:
+   .maka-module-market-icon in module-shell.css. */
+svg.maka-mcp-mark {
+  width: 28px;
+  height: 28px;
+}
+
 .maka-mcp-mark > img,
 .maka-mcp-mark > svg,
 .maka-mcp-mark > .providerAssetMask {

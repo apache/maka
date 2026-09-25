@@ -92,7 +92,6 @@ test('applies authoritative replacement once and does not complete it again at T
     deltaFrame(2, 5, '', { complete: true, interrupted: true }),
   ).events;
   assert.ok(completed[0]?.type === 'text_complete' && completed[0].interrupted === true);
-  assert.equal(completed[0].replaced, true);
   assert.deepEqual(
     completed.map((event) => [event.type, 'text' in event ? event.text : '']),
     [['text_complete', 'final']],
@@ -794,15 +793,13 @@ test('projects the durable steering echo even when the in-flight queue state was
   });
 });
 
-test('projects a steering message exactly once across both authoritative paths', () => {
-  // The queue in-flight synthesis and the durable session-event echo race;
-  // whichever projects the message first suppresses the other.
-  const inFlightFirst = new RuntimeHostSessionProjector(
+test('leaves an in-flight steering message in the queue until the runtime event places it', () => {
+  const projector = new RuntimeHostSessionProjector(
     snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
     createRuntimeHostSessionProjectionSeed([], snapshot()),
     () => 10,
   );
-  const synthesized = inFlightFirst.accept({
+  const pulled = projector.accept({
     kind: 'subscription.session_projection',
     hostEpoch: 'host-1',
     subscriptionId: 'subscription-1',
@@ -810,42 +807,34 @@ test('projects a steering message exactly once across both authoritative paths',
     snapshot: snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
   });
   assert.deepEqual(
-    synthesized.events.map((event) => event.type),
-    ['steering_message', 'queue_update'],
-  );
-  assert.deepEqual(inFlightFirst.accept(steeringFrame(2)).events, []);
-
-  const echoFirst = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-  assert.equal(echoFirst.accept(steeringFrame(1)).events.length, 1);
-  const suppressed = echoFirst.accept({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 2,
-    snapshot: snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
-  });
-  assert.deepEqual(
-    suppressed.events.map((event) => event.type),
+    pulled.events.map((event) => event.type),
     ['queue_update'],
-  );
-});
-
-test('seeds an unrendered in-flight steering message once on rejoin', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
   );
   assert.deepEqual(
     projector.seedActive(false).map((event) => event.type),
-    ['steering_message', 'queue_update'],
+    ['queue_update'],
   );
-  // A live echo of the same message arriving after the seed is the duplicate.
-  assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
+  // The runtime event takes the entry out of the queue as it places the row…
+  assert.deepEqual(
+    projector
+      .accept(steeringFrame(2))
+      .events.map((event) => (event.type === 'queue_update' ? event.steeringEntries : event.type)),
+    [[], 'steering_message'],
+  );
+  // …and the lease ack can trail it, so a queue revision before the ack keeps it out.
+  const beforeAck = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 3,
+    snapshot: snapshot({ queue: queue(4, [steeringEntry('in_flight')]) }),
+  });
+  assert.deepEqual(
+    beforeAck.events.map((event) =>
+      event.type === 'queue_update' ? event.steeringEntries : event.type,
+    ),
+    [[]],
+  );
 });
 
 test('suppresses the live echo for a steering message already durable in the bootstrap', () => {
@@ -862,10 +851,12 @@ test('suppresses the live echo for a steering message already durable in the boo
     () => 10,
   );
 
-  // Durable and in-flight: no synthesis seed…
+  // Durable and in-flight: the queue no longer lists it…
   assert.deepEqual(
-    projector.seedActive(false).map((event) => event.type),
-    ['queue_update'],
+    projector
+      .seedActive(false)
+      .map((event) => (event.type === 'queue_update' ? event.steeringEntries : event.type)),
+    [[]],
   );
   // …and the late echo of the same message is the duplicate.
   assert.deepEqual(projector.accept(steeringFrame(1)).events, []);

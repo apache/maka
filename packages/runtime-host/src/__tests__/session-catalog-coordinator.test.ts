@@ -664,7 +664,7 @@ test('WorkHub thinking level persists, clears to default and rejects unsupported
       permissionMode: 'bypass',
     },
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       modelOverrides: { 'model-1': { thinkingLevels: ['low', 'high'] } },
     },
   });
@@ -741,7 +741,7 @@ test('ordinary metadata and configuration reject a corrupt Coordination role on 
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('creation on a relay connection honours declared levels via the catalog projection', async () => {
+test('creation on a custom connection honours declared levels via the catalog projection', async () => {
   // The catalog entry carries the typed modelOverrides projection (never
   // the extras bag), so a declared relay level passes the gate — and what
   // passes is exactly what execution rebuilds the runtime connection from.
@@ -750,7 +750,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   let persistedConnectionId: unknown;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
       modelOverrides: { 'relay-model': { thinkingLevels: ['minimal', 'low'] } },
@@ -793,7 +793,7 @@ test("creation applies the selected model's configured thinking default", async 
   let persistedThinkingLevel: unknown;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
       modelOverrides: {
@@ -836,7 +836,7 @@ test('creation can explicitly bypass a configured model thinking default', async
   let persistedThinkingLevel: unknown = 'not-called';
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
       modelOverrides: {
@@ -1243,14 +1243,14 @@ test('creation admits an enabled model a live list omits', async () => {
   assert.equal(createAttempts, 1);
 });
 
-test('creation on a relay connection without declarations still fails closed on any thinkingLevel', async () => {
+test('creation on a custom connection without declarations still fails closed on any thinkingLevel', async () => {
   // Undeclared relay models resolve no variants — accepting an unverifiable
   // level would be worse than rejecting it, because the wire could never
   // honour what the catalog cannot see.
   let createAttempts = 0;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
     },
@@ -2260,7 +2260,7 @@ type FixtureConnection = {
     | 'claude-subscription'
     | 'deepseek'
     | 'openai'
-    | 'openai-compatible'
+    | 'custom'
     | 'volcengine-agent-plan';
   /** Lets a case exercise a resolver verdict other than `ready`. */
   readonly executionResolution?: ResolveExecutionConnectionResult;
@@ -2284,6 +2284,9 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
     slug: 'test',
     name: 'Test',
     providerType: overrides.providerType ?? ('openai' as const),
+    ...(overrides.providerType === 'custom'
+      ? { baseUrl: 'https://relay.example/v1', defaultApiProtocol: 'openai-chat' as const }
+      : {}),
     enabled: true,
     enabledModelIds: overrides.enabledModelIds ?? ['model-1'],
     models: overrides.models ?? [{ id: 'model-1' }],

@@ -256,7 +256,6 @@ export function createAppShellChatActions(deps: {
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
     const directoryReferences = input.command.directoryReferences;
-    const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
       messageId,
@@ -283,17 +282,17 @@ export function createAppShellChatActions(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: placement,
-      pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
+      transientPlacement: result.disposition === 'turn_started' ? 'current_turn' : placement,
+      pendingSteering: result.disposition !== 'turn_started' && input.pendingSteering,
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
-      ...copiedArray('quotes', quotes),
+      ...copiedArray('quotes', input.quotes ?? []),
       inlineReferences: [...(result.inlineReferences ?? [])],
     }, true);
     return {
       kind: 'projected',
       skillInvocation: result.skillInvocation,
-      ...(result.turnId ? { turnId: result.turnId } : {}),
+      ...(result.turnId ? { turnId: result.turnId } : {})
     };
   }
 
@@ -342,6 +341,7 @@ export function createAppShellChatActions(deps: {
       async function submitIntoSession(sessionId: string, messageId: string) {
         const sendCommand = {
           text,
+          localDisplayPlacement: 'current_turn' as const,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray(
             'attachmentItems',
@@ -393,7 +393,6 @@ export function createAppShellChatActions(deps: {
           id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
-          inlineReferences: [],
         });
         // Main owns observation-before-dispatch. This only selects the local
         // surface; saving a draft never waits for the Host's event stream.
@@ -426,7 +425,6 @@ export function createAppShellChatActions(deps: {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
-        inlineReferences: [],
       });
       const submitted = await submitIntoSession(initialSessionId, messageId);
       // An existing-Session send never reports a resolved Session.

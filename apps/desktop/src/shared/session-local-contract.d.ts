@@ -35,6 +35,7 @@ export interface DesktopLocalMessage {
   readonly state: DesktopLocalMessageState;
   readonly canCancel: boolean;
   readonly placement: 'current_turn' | 'next_turn';
+  readonly localDisplayPlacement?: 'current_turn' | 'next_turn';
   readonly text: string;
   readonly attachments: readonly AttachmentRef[];
   readonly directoryReferences?: readonly DirectoryReference[];

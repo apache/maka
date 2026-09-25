@@ -31,7 +31,7 @@ import { isSessionWorkspaceUnavailableError, showSessionWorkspaceUnavailableToas
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 
 export interface RendererAppInfo {
   projectId?: string | null;

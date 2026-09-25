@@ -77,7 +77,7 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): M
   const copy = getSharedUiCopy(locale).providers;
   const localizedLabels: Partial<Record<ProviderType, string>> = {
     'MiniMax-cn': copy.minimaxChina,
-    'openai-compatible': copy.custom,
+    custom: copy.custom,
     'claude-subscription': copy.claudeSubscription,
   };
   const bySlug = new Map<string, { connectionSlug: string; providerType: ProviderType; providerLabel: string; connectionName?: string; choices: ChatModelChoice[] }>();

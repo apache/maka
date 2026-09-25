@@ -54,14 +54,16 @@ describe('project-grouped session hierarchy', () => {
       'project sessions must not be inset from the project row',
     );
 
-    // The gutter that replaces the nest: the same 1rem box as the project
-    // folder icon, so titles still share one x.
-    const signalRule = sidebarCss.match(/\.maka-session-row-signal\s*\{([^}]*)\}/);
-    assert.ok(signalRule, 'the session status gutter must be declared');
+    // What replaces the nest: the task title, which has no icon, is pushed past
+    // the project folder's 1rem box so titles still share one x.
+    const titleInsetRule = sidebarCss.match(
+      /\.maka-project-row\s+\.maka-session-row\s*>\s*div\s*>\s*\.astryx-side-nav-item\s*\{([^}]*)\}/,
+    );
+    assert.ok(titleInsetRule, 'project sessions must declare their title inset');
     assert.match(
-      signalRule[1] ?? '',
-      /width:\s*1rem;/,
-      'the session status gutter must match the project folder icon width',
+      titleInsetRule[1] ?? '',
+      /padding-inline-start:\s*calc\(var\(--spacing-2\)\s*\+\s*1rem\s*\+\s*var\(--spacing-2\)\);/,
+      'the title inset must match the project row padding, folder icon and gap',
     );
   });
 });

@@ -374,6 +374,8 @@ export interface SessionSummary {
   isArchived: boolean;
   labels: string[];
   hasUnread: boolean;
+  /** Host-owned recency, including creation before the first message; present on catalog rows. */
+  activityAt?: number;
   lastMessageAt?: number;
   lastMessagePreview?: string;
   status: SessionStatus;
@@ -1164,7 +1166,7 @@ export interface WorkHubDelegationStopResolvedMessage {
  * The exact durable operation one WorkHub action identity is allowed to own.
  *
  * Per-record identity is keyed by the thing each record is about — an
- * assignment by its action, a stop or replacement by its delegation — so no
+ * assignment by its action, a replacement by its delegation, a stop by its delegation and action — so no
  * single record can reject an action id that crossed to another delegation or
  * another disposition. This vocabulary names the one global owner that can.
  */

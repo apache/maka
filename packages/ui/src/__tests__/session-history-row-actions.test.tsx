@@ -22,7 +22,7 @@ import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ProjectRecord } from '@maka/core/project';
-import type { SessionSummary } from '@maka/core/session';
+import type { SessionCatalogSummary, SessionSummary } from '@maka/core/session';
 import { LocaleProvider } from '../locale-context.js';
 import {
   SessionHistoryList,
@@ -181,6 +181,61 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   }
 });
 
+for (const lastMessageAt of [undefined, Date.UTC(2026, 6, 24)]) {
+  test(`shows a new branch's activity time without newer messages (${lastMessageAt})`, () => {
+    const now = Date.UTC(2026, 7, 24, 12);
+    const originalDateNow = Date.now;
+    Date.now = () => now;
+    try {
+      const branch: SessionCatalogSummary = {
+        ...session,
+        id: 'branch',
+        parentSessionId: session.id,
+        branchOfTurnId: 'turn-1',
+        activityAt: now,
+        lastMessageAt,
+      };
+      const { document } = parseHTML(renderToStaticMarkup(
+        <LocaleProvider locale="en">
+          <Rail sessions={[branch]} />
+        </LocaleProvider>,
+      ));
+
+      assert.equal(document.querySelector('.maka-session-row-time-label')?.textContent, 'now');
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+}
+
+test('sorts a newly created branch ahead of older conversations by catalog activity', () => {
+  const now = Date.UTC(2026, 7, 24, 12);
+  const source: SessionCatalogSummary = {
+    ...session,
+    activityAt: now - 60_000,
+    lastMessageAt: now - 60_000,
+  };
+  const branch: SessionCatalogSummary = {
+    ...session,
+    id: 'branch',
+    parentSessionId: source.id,
+    branchOfTurnId: 'turn-1',
+    activityAt: now,
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail sessions={[source, branch]} />
+    </LocaleProvider>,
+  ));
+
+  assert.deepEqual(
+    [...document.querySelectorAll('.maka-session-row')].map((row) =>
+      row.getAttribute('data-session-id'),
+    ),
+    [branch.id, source.id],
+  );
+});
+
 test('identifies an external executor in the session rail', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
@@ -246,6 +301,44 @@ test('a responding row spins where an unread row shows a dot', () => {
   assert.equal(signal(responding.id).querySelector('.astryx-status-dot'), null);
   assert.ok(signal(unread.id).querySelector('.astryx-status-dot'));
   assert.equal(signal(unread.id).querySelector('.astryx-spinner'), null);
+});
+
+test('a row shows its state in place of the timestamp and still names it when covered', () => {
+  const now = Date.UTC(2026, 7, 24, 12, 0, 0);
+  const waiting = {
+    ...session,
+    status: 'waiting_for_user' as const,
+    lastMessageAt: now - 46 * 60_000,
+  };
+  const idle = { ...session, id: 'session-idle', lastMessageAt: now - 46 * 60_000 };
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  try {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={[waiting, idle]}
+          onSelectSession={() => undefined}
+          rowActions={rowActions}
+        />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+    const row = (id: string) => document.querySelector(`[data-session-id="${id}"]`)!;
+    const slot = (id: string) => row(id).querySelector('.maka-session-row-signal')!;
+
+    assert.ok(slot(waiting.id).querySelector('.astryx-status-dot'));
+    assert.equal(slot(waiting.id).querySelector('.maka-session-row-time-label'), null);
+    assert.equal(slot(idle.id).querySelector('.astryx-status-dot'), null);
+    assert.equal(slot(idle.id).querySelector('.maka-session-row-time-label')?.textContent, '46min');
+    assert.match(
+      row(waiting.id).querySelector('.astryx-side-nav-item .maka-visually-hidden')?.textContent ??
+        '',
+      /Waiting for you/,
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {

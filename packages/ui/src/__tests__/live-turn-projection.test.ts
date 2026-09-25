@@ -743,6 +743,19 @@ describe('reconcileTerminalLiveTurn', () => {
     }]), toolOnly);
   });
 
+  it('hands a running live steering row to the transcript once its user row is durable', () => {
+    const live = applyLiveTurnEvent(undefined, {
+      type: 'steering_message', id: 'steer-event', messageId: 'steer-1',
+      turnId: 'turn-1', ts: 2, content: { text: 'change direction' },
+    })!;
+
+    assert.equal(reconcileTerminalLiveTurn(live, []), live);
+    assert.deepEqual(reconcileTerminalLiveTurn(live, [{
+      type: 'user', id: 'steer-1', turnId: 'turn-1', ts: 2,
+      text: 'change direction', steeringEventId: 'steer-event',
+    }])?.steps, []);
+  });
+
   it('keeps steering-only aborts visible for transcript handoff', () => {
     const message = { id: 'steer-1', content: { text: 'change direction' }, ts: 2 };
     const withSteering = applyLiveTurnEvent(undefined, {
