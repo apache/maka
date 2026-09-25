@@ -517,6 +517,20 @@ export const PinnedAndRecentSections: Story = {
       />
     </StoryFrame>
   ),
+  play: async ({ canvasElement }) => {
+    // The ring and the timestamps end on the row's padding edge, not on a
+    // centered column that leaves them floating inside the row.
+    for (const row of canvasElement.querySelectorAll<HTMLElement>('.maka-session-row')) {
+      const signal = row.querySelector('.maka-session-row-signal');
+      const content = signal?.firstElementChild;
+      if (!signal || !content) throw new Error(`${row.dataset.sessionId} has no signal`);
+      const item = row.querySelector('.astryx-side-nav-item');
+      if (!item) throw new Error('nav item is missing');
+      const paddingEdge =
+        item.getBoundingClientRect().right - Number.parseFloat(getComputedStyle(item).paddingRight);
+      expect(Math.abs(content.getBoundingClientRect().right - paddingEdge)).toBeLessThanOrEqual(1);
+    }
+  },
 };
 
 // Real path: group-by-project — collapsible project rows, sessions on the

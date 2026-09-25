@@ -404,14 +404,14 @@
 .maka-session-row-signal {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  /* The ring, the dot and the time all end on the row's padding edge. */
+  justify-content: flex-end;
   flex: none;
   min-width: var(--h-control-sm, 24px);
   min-height: var(--h-control-sm, 24px);
 }
 
 .maka-session-row-time-label {
-  margin-inline-start: auto;
   color: var(--muted-foreground);
   font: var(--typography-caption);
   white-space: nowrap;
