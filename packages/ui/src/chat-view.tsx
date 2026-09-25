@@ -828,7 +828,7 @@ export function ChatView(props: {
                         data-turn-accent={decoration?.accentColor ? 'true' : undefined}
                         style={{
                           // The list's row gap does not reach inside the virtualizer.
-                          paddingBlockEnd: index < turns.length - 1 ? 'var(--spacing-4)' : undefined,
+                          paddingBlockEnd: index < turns.length - 1 ? 'var(--space-10)' : undefined,
                           ...(decoration?.accentColor
                             ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
                         }}
