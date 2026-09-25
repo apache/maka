@@ -358,6 +358,8 @@ export interface HostContext {
       capture: (
         request: {
           readonly invocation: Invocation;
+          /** Frozen behavior identity for visibility, never execution authority. */
+          readonly behavior: string | null;
           readonly cwd: string;
           readonly tools: readonly string[];
           readonly model: ModelToolContext | null;

@@ -265,13 +265,6 @@ impl Executions {
                 "Cannot resume an archived Session",
             ));
         }
-        use maka_protocol::session::CollaborationMode;
-        if session.configuration.collaboration_mode != CollaborationMode::Agent {
-            return Err(failure(
-                Code::OperationUnavailable,
-                "This execution mode does not support resume",
-            ));
-        }
         Ok(session.configuration)
     }
 

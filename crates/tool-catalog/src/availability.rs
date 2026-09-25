@@ -31,6 +31,7 @@ pub const SEARCH: &str = "tool_search";
 #[derive(Clone)]
 pub struct Availability {
     catalog: ToolCatalog,
+    behavior: Option<maka_runtime::execution::BehaviorId>,
     active: Arc<Mutex<BTreeSet<String>>>,
 }
 
@@ -91,6 +92,7 @@ impl Availability {
         .map_err(|error| ToolError::Failed(error.to_string()))?;
         let context = if let Some(captured) = &captured {
             let request = crate::plugins::BindingRequest {
+                behavior: self.behavior.clone(),
                 model,
                 invocation,
                 cwd,
@@ -104,6 +106,7 @@ impl Availability {
         Ok((
             Self {
                 catalog,
+                behavior: self.behavior.clone(),
                 active: self.active.clone(),
             },
             captured,
@@ -114,8 +117,12 @@ impl Availability {
     pub fn new(catalog: ToolCatalog) -> Self {
         Self {
             catalog,
+            behavior: None,
             active: Arc::default(),
         }
+    }
+    pub fn set_behavior(&mut self, behavior: maka_runtime::execution::BehaviorId) {
+        self.behavior = Some(behavior);
     }
     pub fn enabled(&self) -> bool {
         self.catalog.discovery
@@ -127,6 +134,7 @@ impl Availability {
     pub fn nested(&self) -> Self {
         Self {
             catalog: self.catalog.nested(),
+            behavior: self.behavior.clone(),
             active: self.active.clone(),
         }
     }

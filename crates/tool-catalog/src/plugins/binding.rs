@@ -26,6 +26,8 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct BindingRequest {
+    /// Frozen behavior identity for visibility decisions, never authority.
+    pub behavior: Option<maka_runtime::execution::BehaviorId>,
     pub model: Option<maka_runtime::tools::ModelToolContext>,
     pub invocation: Invocation,
     pub cwd: String,

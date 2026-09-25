@@ -68,6 +68,7 @@ mod model_overrides;
 mod model_providers;
 mod oauth;
 mod oauth_execution;
+mod plan_plugin;
 mod plugin_authorization;
 mod plugin_clients;
 mod plugin_commands;

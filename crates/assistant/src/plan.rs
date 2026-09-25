@@ -19,6 +19,8 @@
 
 //! Plan intent and model-reported progress. Neither is Host execution authority.
 mod artifact;
+mod owner;
+pub mod plugin;
 pub mod repository;
 mod transition;
 pub use artifact::{Artifact, Complexity, Step};
@@ -37,6 +39,12 @@ pub enum Error {
     Corrupt(String),
     #[error(transparent)]
     Storage(#[from] maka_plugins::storage::StoreError),
+    #[error(transparent)]
+    Execution(#[from] maka_plugins::execution::CommandError),
+    #[error(transparent)]
+    Capability(#[from] maka_plugins::Error),
+    #[error(transparent)]
+    Tool(#[from] maka_runtime::tools::ToolError),
 }
 
 /// An exact operation is replayable even after subsequent state changes.
@@ -72,6 +80,17 @@ pub enum Command {
         proposal_id: String,
         proposal_revision: u64,
         behavior: BehaviorId,
+        grant: maka_plugins::authorization::Id,
+    },
+    Dispatch {
+        execution_id: String,
+    },
+    Defer {
+        execution_id: String,
+    },
+    Reconcile {
+        execution_id: String,
+        grant: maka_plugins::authorization::Id,
     },
     Accept {
         execution_id: String,
@@ -95,11 +114,25 @@ pub enum Command {
     },
     Resume {
         execution_id: String,
+        grant: maka_plugins::authorization::Id,
     },
     Cancel {
         execution_id: String,
         reason: String,
+        grant: Option<maka_plugins::authorization::Id>,
     },
+    Settle {
+        execution_id: String,
+        invocation: Invocation,
+        outcome: Settlement,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Settlement {
+    Completed,
+    Interrupted { reason: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +175,9 @@ pub struct Execution {
     pub steps: Vec<Progress>,
     /// Frozen before calling Host. Recover the exact operation, never a new attempt.
     pub request: Submit,
+    pub grant: maka_plugins::authorization::Id,
+    pub dispatched: bool,
+    pub cancellation: Option<String>,
     pub phase: Phase,
     pub updated_at: u64,
 }

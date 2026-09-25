@@ -29,6 +29,7 @@ pub struct Repository {
     storage: Arc<dyn Store>,
     prefix: String,
     session: String,
+    index: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -72,6 +73,7 @@ impl Repository {
             storage,
             session: session.into(),
             prefix: format!("plans/{}/", digest(&(entry, session))?),
+            index: format!("plan-sessions/{}/{session}", digest(&entry)?),
         })
     }
 
@@ -133,7 +135,7 @@ impl Repository {
             fingerprint: digest(request)?,
             snapshot: snapshot.clone(),
         };
-        let writes = vec![
+        let mut writes = vec![
             mutation(format!("{}head", self.prefix), expected, &head)?,
             mutation(self.decision_key(snapshot.revision), None, &decision)?,
             mutation(
@@ -142,6 +144,9 @@ impl Repository {
                 &snapshot.revision,
             )?,
         ];
+        if expected.is_none() {
+            writes.push(mutation(self.index.clone(), None, &self.session)?);
+        }
         match self.storage.batch(writes).await {
             Ok(_) => Ok(snapshot),
             Err(StoreError::Conflict { .. }) => {
@@ -151,6 +156,35 @@ impl Repository {
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    pub async fn sessions(storage: &dyn Store, entry: &str) -> Result<Vec<String>, Error> {
+        let prefix = format!("plan-sessions/{}/", digest(&entry)?);
+        let mut after = None;
+        let mut sessions = Vec::new();
+        loop {
+            let page = storage
+                .scan(maka_plugins::storage::Scan {
+                    prefix: prefix.clone(),
+                    after,
+                })
+                .await?;
+            for item in page.entries {
+                let session: String = decode(item.record)?;
+                identifier(&session)?;
+                sessions.push(session);
+            }
+            after = page.next_after;
+            if after.is_none() {
+                return Ok(sessions);
+            }
+        }
+    }
+
+    pub async fn at(&self, revision: u64) -> Result<Snapshot, Error> {
+        self.decision(revision)
+            .await
+            .map(|decision| decision.snapshot)
     }
 
     /// A bounded historical read, not a live projection assembled across writes.

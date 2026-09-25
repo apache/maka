@@ -51,6 +51,7 @@ async fn plan_receipts_survive_lost_replies_restart_and_competing_approvals() {
     assert_eq!(proposed.proposal.as_ref().unwrap().submitted_at, 1);
     let proposal = proposed.proposal.as_ref().unwrap();
     let approval = Command::Approve {
+        grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
         proposal_id: proposal.id.clone(),
         proposal_revision: proposal.revision,
         behavior: "example.plan.execute".to_owned().try_into().unwrap(),
@@ -87,6 +88,7 @@ async fn plan_receipts_survive_lost_replies_restart_and_competing_approvals() {
                     "approve_a",
                     1,
                     Command::Approve {
+                        grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
                         proposal_id: proposal.id,
                         proposal_revision: 1,
                         behavior: "example.plan.execute".to_owned().try_into().unwrap(),
@@ -162,6 +164,7 @@ async fn plan_receipts_survive_lost_replies_restart_and_competing_approvals() {
                 "resume",
                 interrupted.revision,
                 Command::Resume {
+                    grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
                     execution_id: id.clone(),
                 },
             ),
@@ -217,14 +220,33 @@ async fn plan_receipts_survive_lost_replies_restart_and_competing_approvals() {
             &request(
                 "complete",
                 active.revision,
-                progress(next_receipt.invocation),
+                progress(next_receipt.invocation.clone()),
             ),
             10,
         )
         .await
         .unwrap();
     assert!(matches!(
-        completed.execution.unwrap().phase,
+        completed.execution.as_ref().unwrap().phase,
+        Phase::Active { .. }
+    ));
+    let settled = repository
+        .apply(
+            &request(
+                "settle",
+                completed.revision,
+                Command::Settle {
+                    execution_id: id,
+                    invocation: next_receipt.invocation,
+                    outcome: maka_assistant::plan::Settlement::Completed,
+                },
+            ),
+            11,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        settled.execution.unwrap().phase,
         Phase::Completed { .. }
     ));
     assert_eq!(repository.apply(&accept, 11).await.unwrap().revision, 3);

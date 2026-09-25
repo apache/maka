@@ -152,6 +152,7 @@ mod tests {
         snapshot
             .apply(
                 &Command::Approve {
+                    grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
                     proposal_id: snapshot.proposal.as_ref().unwrap().id.clone(),
                     proposal_revision: 1,
                     behavior: Default::default(),

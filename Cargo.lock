@@ -4893,6 +4893,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-normalization",
+ "uuid",
 ]
 
 [[package]]

@@ -36,6 +36,7 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+uuid.workspace = true
 unicode-normalization = "0.1.25"
 
 [dev-dependencies]

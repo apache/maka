@@ -28,6 +28,15 @@ impl BehaviorId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A collaboration-specific registration is required; never silently fall
+    /// back to an unconstrained behavior for another collaboration mode.
+    pub fn for_collaboration(&self, mode: super::CollaborationMode) -> Result<Self, &'static str> {
+        match mode {
+            super::CollaborationMode::Agent => Ok(self.clone()),
+            super::CollaborationMode::Plan => format!("{}:plan", self.0).try_into(),
+        }
+    }
 }
 impl Default for BehaviorId {
     fn default() -> Self {
