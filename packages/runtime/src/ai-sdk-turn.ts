@@ -1424,6 +1424,7 @@ export class AiSdkTurn {
 
         const completedProviderSteps: RequestProjectionContext['completedSteps'][number][] = [];
         let requestMessages: ModelMessage[] = messages;
+        let finishFeedback: string | undefined;
         let result: ModelStreamResult;
         let providerOutcome: ModelStepOutcome;
         let finishReason: ModelFinishReason = 'stop';
@@ -1468,10 +1469,12 @@ export class AiSdkTurn {
           }
           const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
+            finishFeedback,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
           ]);
+          finishFeedback = undefined;
           const codeModeCatalogPrompt =
             toolMode === 'code_mode'
               ? renderCodeModeCatalogPrompt(
@@ -2279,6 +2282,33 @@ export class AiSdkTurn {
                 break agentLoop;
               }
               if (this.aborted || this.loopStopRequested) break agentLoop;
+              currentStepMessageId = this.deps.newId();
+              continue agentLoop;
+            }
+          }
+          if (
+            mayTakeAnotherStep &&
+            returnedToolCalls.length === 0 &&
+            this.deps.backend.beforeTurnFinish &&
+            this.deps.backend.loadTurnRuntimeEvents &&
+            this.deps.modelAdapter.mapFinishReason(finishReason) === 'end_turn'
+          ) {
+            const decision = await this.deps.backend.beforeTurnFinish({
+              sessionId: this.deps.backend.sessionId,
+              turnId,
+              signal: turnAbortController.signal,
+            });
+            if (!decision.allow && !this.aborted && !this.loopStopRequested) {
+              if (
+                (await input.handoffBoundary?.(
+                  turnAbortController.signal,
+                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
+                )) === 'pause'
+              ) {
+                this.handoffPaused = true;
+                break agentLoop;
+              }
+              finishFeedback = decision.feedback;
               currentStepMessageId = this.deps.newId();
               continue agentLoop;
             }

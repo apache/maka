@@ -100,6 +100,7 @@
     "./plugin-runtime": "./dist/plugin-runtime.js",
     "./plugin-scope-registry": "./dist/plugin-scope-registry.js",
     "./plugin-system-prompt-service": "./dist/plugin-system-prompt-service.js",
+    "./plugin-turn-finish-service": "./dist/plugin-turn-finish-service.js",
     "./plugin-shell-service": "./dist/plugin-shell-service.js",
     "./plugin-user-question-service": "./dist/plugin-user-question-service.js",
     "./plugin-web-service": "./dist/plugin-web-service.js",

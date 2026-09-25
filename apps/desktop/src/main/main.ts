@@ -48,7 +48,12 @@ import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
 import { showBrowserMessageBox } from './browser-message-box.js';
 import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
-import { MAKA_CLIENT_PLUGIN_SCHEME } from './client-plugin-transport.js';
+import {
+  clientPluginTransport,
+  MAKA_CLIENT_PLUGIN_SCHEME,
+  MAKA_CLIENT_PLUGIN_SCHEME_PRIVILEGES,
+  registerClientPluginProtocol,
+} from './client-plugin-transport.js';
 
 let recoveryJournal: MainProcessRecoveryJournal | undefined;
 installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
@@ -66,7 +71,7 @@ app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
 protocol.registerSchemesAsPrivileged([
   {
     scheme: MAKA_CLIENT_PLUGIN_SCHEME,
-    privileges: { standard: true, secure: true, supportFetchAPI: true },
+    privileges: MAKA_CLIENT_PLUGIN_SCHEME_PRIVILEGES,
   },
 ]);
 
@@ -209,6 +214,10 @@ if (!app.requestSingleInstanceLock()) {
     .then(async () => {
       console.log('[startup] app ready');
       installDesktopStartupBranding(revealMode);
+      // Register before constructing the main BrowserWindow. Client Plugin
+      // scripts are requested by the first renderer paint, while the much
+      // heavier Runtime Host module graph is deliberately loaded afterwards.
+      await registerClientPluginProtocol(protocol, clientPluginTransport);
       // early-window holds the light slice (storage root, settings, window
       // controller) and fires the renderer load; the heavy Runtime Host
       // module graph starts only once the window exists — evaluating ~1100

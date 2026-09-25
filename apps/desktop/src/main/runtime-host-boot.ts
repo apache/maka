@@ -28,7 +28,6 @@ import {
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
-  protocol,
   shell,
   Tray,
 } from "electron";
@@ -239,8 +238,7 @@ import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
 import {
-  ClientPluginTransport,
-  MAKA_CLIENT_PLUGIN_SCHEME,
+  clientPluginTransport,
   registerClientPluginIpc,
 } from './client-plugin-transport.js';
 import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
@@ -276,8 +274,6 @@ bootContext.prepareToQuit = prepareRuntimeHostDesktopQuit;
 bootContext.cleanup = closeRuntimeHostDesktop;
 bootContext.activeRuntimeHostRef = activeRuntimeHostRef;
 bootContext.resolveRuntimeHostDiagnostics = resolveRuntimeHostDiagnostics;
-const clientPluginTransport = new ClientPluginTransport();
-protocol.handle(MAKA_CLIENT_PLUGIN_SCHEME, (request) => clientPluginTransport.serve(request.url));
 const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
   enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
