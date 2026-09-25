@@ -90,7 +90,14 @@ localization-errors = 本地化回退：{ $count } 個問題
 help = Tab / Shift+Tab     在控制項間移動焦點
     上 / 下             選擇導覽、頁面或命令項
     Enter              啟用焦點項
-    Ctrl+P             開啟命令面板
+    Enter              傳送訊息 / 執行中排入下一輪
+    Shift+Enter        輸入框內換行
+    Ctrl+J             訊息輸入框換行（所有終端機）
+    Ctrl+Enter         提交問答 / 執行訊息修訂
+    Ctrl+K / Ctrl+P     開啟命令面板
+    Ctrl+F             尋找對話內容
+    Ctrl+N             建立對話
+    Ctrl+A / Ctrl+Z    編輯器內全選 / 復原
     Ctrl+B             展開 / 收合導覽
     Ctrl+PgUp/PgDn     切換對話分頁
     Ctrl+W             關閉分頁（保留草稿與工作）
@@ -111,6 +118,8 @@ help = Tab / Shift+Tab     在控制項間移動焦點
 
     滑鼠：點擊控制項或訊息三角；滾輪捲動正文。
     無需特殊字型。調整視窗大小會改變導覽佈局。
+    Shift+Enter、Ctrl+Enter 需要終端機支援；Ctrl+J 始終可在訊息輸入框內換行。
+
 command-workspace = 開啟工作區
 command-host = 開啟 Host 連線
 command-settings = 開啟設定
@@ -135,7 +144,7 @@ shutdown-failed = 無法確認 Host 已停止。你可以留在此處，或僅�
 shutdown-working = 正在停止 Host 並儲存…
 button-theme = 切換配色
 button-language = 切換語言：{ $language }
-footer-commands = Ctrl+P 命令
+footer-commands = Ctrl+K 命令
 footer-back = < 返回
 footer-forward = 前進 >
 footer-quit = Ctrl+Q 離開
@@ -231,7 +240,7 @@ tool-parent = 父呼叫
 tool-arguments = 參數
 tool-result = 結果
 tool-toggle = { $state } · { $action }
-chat-send = 傳送訊息 · Ctrl+S
+chat-send = 傳送訊息 · Enter
 chat-sending = 正在傳送…
 feedback-send-failed = 未傳送 · 草稿已保留
 feedback-send-unknown = 傳送結果待確認 · Ctrl+R 核對
@@ -243,7 +252,7 @@ feedback-chat-failed = 對話暫不可用 · 查看詳情
 feedback-host-failed = 連線需要處理 · 查看 Host
 chat-stop = 中止目前執行
 chat-stopping = 正在中止…
-queue-send = 排入下一輪 · Ctrl+S
+queue-send = 排入下一輪 · Enter
 queue-steer = 在下一安全邊界補充目前輪次 · Ctrl+O
 queue-focus = 待處理訊息
 queue-steering = 目前輪次 · 等待安全邊界
@@ -272,8 +281,8 @@ chat-retry-original = 重試原訊息
 chat-send-unknown-retry = 結果未知 · Ctrl+R 僅核對；可從命令面板重試原訊息，不會傳送之後的新編輯。{ $id } · { $error }
 chat-checking = 正在核對傳送結果…
 chat-send-unconfirmed = 尚未確認 · 草稿已保留；Ctrl+R 再次核對 · { $id }
-chat-send-cancelled = Host 已確認取消 · 草稿已保留；Ctrl+S 作為新訊息傳送
-chat-send-not-admitted = 未送達 · 草稿已保留；Ctrl+S 傳送
+chat-send-cancelled = Host 已確認取消 · 草稿已保留；Enter 作為新訊息傳送
+chat-send-not-admitted = 未送達 · 草稿已保留；Enter 傳送
 session-create = 在目前目錄建立工作階段 · Ctrl+N
 session-new = 新對話
 shell-error = 錯誤 · { $error }
@@ -335,7 +344,7 @@ question-custom = 輸入自己的回答…
 question-skip = 跳過此問題
 question-too-large = 回答超過 2,048 位元組 UTF-8 上限，未插入此次輸入。
 question-progress = 已回答 { $value } / { $count } · 每題請選擇、填寫或明確跳過。
-question-help = Tab：焦點 · Enter：選擇 / 換行 · Ctrl+S：提交 · Esc：稍後
+question-help = Tab：焦點 · Enter：選擇 / 換行 · Ctrl+Enter：提交 · Esc：稍後
 form-switch = 切換欄位
 form-empty = 設為空值
 form-omit = 不填寫
@@ -371,7 +380,7 @@ form-previous = ‹ 上一項
 form-next = 下一項 ›
 form-empty-value = 空值（會提交）
 form-input = 輸入值…
-form-help = Tab 焦點 · Enter 編輯/選擇 · Ctrl+S 提交 · Esc 稍後
+form-help = Tab 焦點 · Enter 編輯/選擇 · Ctrl+Enter 提交 · Esc 稍後
 chat-newer = 載入較新的訊息
 host-root-changed = 此路徑已指向不同的 Host Root。請確認本機變更已儲存後再重新啟動；已儲存的草稿仍屬於原 Root 的 profile。
 tabs-next = 下一個對話分頁 · Ctrl+PgDn
@@ -944,3 +953,8 @@ settings-host-failed = 無法使用
 sidebar-title = 對話
 sidebar-all = 全部
 sidebar-pending = 待處理
+
+transcript-capacity = 開啟的閱讀區過多。關閉另一檢視後可在此閱讀。
+transcript-failed = 此閱讀區無法更新。
+transcript-buffer-full = 閱讀區已達本機容量上限。
+transcript-expired = 此閱讀區的資料已過期。

@@ -19,7 +19,6 @@
 
 //! Presentation only: canonical identities pair calls; names affect labels, not execution.
 use crate::i18n::I18n;
-use ratatui::style::Color;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use unicode_segmentation::UnicodeSegmentation;
@@ -27,75 +26,10 @@ use unicode_segmentation::UnicodeSegmentation;
 mod changes;
 mod outcome;
 
-#[derive(Default)]
-pub(super) struct Content {
-    pub text: String,
-    pub changes: Vec<super::layout::diff::Row>,
-    pub file: Option<crate::files::Link>,
-    /// Source bytes of the header's verb, emphasized like a label.
-    pub emphasis: Option<std::ops::Range<usize>>,
-}
-impl From<String> for Content {
-    fn from(text: String) -> Self {
-        Self {
-            text,
-            changes: vec![],
-            file: None,
-            emphasis: None,
-        }
-    }
-}
+pub(super) use crate::ui::transcript::{Activity, Content, ToolState as State};
 
 type Identity<'a> = (&'a str, &'a str);
 type Row<'a> = (u64, &'a Value);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Activity {
-    Read,
-    Search,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum State {
-    Pending,
-    Waiting,
-    Returned,
-    Attention,
-    Failed,
-    TimedOut,
-    Cancelled,
-    Completed,
-    Missing,
-}
-impl State {
-    pub fn color(self, colors: crate::theme::Palette) -> Color {
-        match self {
-            Self::Waiting | Self::TimedOut | Self::Cancelled | Self::Missing => colors.warning,
-            Self::Attention | Self::Failed => colors.error,
-            Self::Completed => colors.success,
-            Self::Returned | Self::Pending => colors.subtle,
-        }
-    }
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Pending => "tool-pending",
-            Self::Waiting => "tool-waiting",
-            Self::Returned => "tool-returned",
-            Self::Attention => "tool-attention",
-            Self::Failed => "tool-failed",
-            Self::TimedOut => "tool-timed-out",
-            Self::Cancelled => "tool-cancelled",
-            Self::Completed => "tool-completed",
-            Self::Missing => "tool-missing",
-        }
-    }
-    pub fn problem(self) -> bool {
-        matches!(
-            self,
-            Self::Attention | Self::Failed | Self::TimedOut | Self::Cancelled
-        )
-    }
-}
 
 pub(super) struct Card<'a> {
     pub turn: &'a str,

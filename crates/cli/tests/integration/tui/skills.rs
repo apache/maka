@@ -103,7 +103,7 @@ fn skills_candidates_page_without_execution_and_restore_exact_selection_before_s
         .join(&client.identity.root_id)
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-    assert_eq!(saved["version"], 18);
+    assert_eq!(saved["version"], 19);
     let picked = saved["skills"]["skills"].as_array().unwrap();
     assert_eq!(picked.len(), 1);
     assert_eq!(picked[0]["name"], "Candidate 128");
@@ -112,7 +112,7 @@ fn skills_candidates_page_without_execution_and_restore_exact_selection_before_s
     let mut reopened = Pty::spawn(&args);
     reopened.wait_for("Candidate 128");
     reopened.wait_for("fixture-model");
-    reopened.send(b"\x13");
+    reopened.send(b"\r");
     reopened.wait_for("Skill accepted.");
     reopened.close_terminal();
     reopened.finish();

@@ -83,9 +83,15 @@ pub(super) fn input<M: Clone>(
     wells: &[Well],
     event: &Event,
     keyboard: bool,
+    ascii: bool,
 ) -> Option<bool> {
     if surface.captures() {
         return None;
+    }
+    if let Some(redraw) =
+        super::transcript::input(&mut apps.readers, surface, event, keyboard, ascii)
+    {
+        return Some(redraw);
     }
     let enabled = |apps: &Apps, well: &Well| {
         apps.instances

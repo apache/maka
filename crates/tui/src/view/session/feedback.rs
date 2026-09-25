@@ -121,10 +121,9 @@ fn items(app: &App) -> Vec<Feedback> {
     }
     if let Some(error) = app
         .chat
-        .view
-        .search
+        .history
         .as_ref()
-        .and_then(|search| search.history.as_ref())
+        .filter(|_| app.chat.history_scope())
         .and_then(|history| history.error.as_ref())
     {
         items.push(Feedback {

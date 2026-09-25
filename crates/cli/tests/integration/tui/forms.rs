@@ -58,7 +58,7 @@ fn real_host_code_mode_form_waits_without_model_progress_and_submits_from_tui() 
     tui.wait_for("Form keyboard fixture");
     tui.click_text("Form keyboard fixture");
     tui.wait_for("Message…");
-    tui.send(b"Collect a form\x13");
+    tui.send(b"Collect a form\r");
     tui.click_text("Settings");
     tui.wait_for("Maka dark ▾");
     // Global discovery while this session has no transcript subscription.

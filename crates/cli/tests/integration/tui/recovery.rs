@@ -68,7 +68,7 @@ fn recover(after_acceptance: bool) {
             if checkpoint.exists() { std::fs::remove_file(&checkpoint).unwrap(); }
             std::fs::create_dir(&checkpoint).unwrap();
         }
-        tui.send("original 中文🦀\x13".as_bytes());
+        tui.send("original 中文🦀\r".as_bytes());
         if !after_acceptance {
             tui.wait_for("Local changes not saved");
             assert!(proxy.requests.lock().unwrap().is_empty(), "failed persistence must prevent dispatch");
@@ -261,7 +261,7 @@ impl LostReply {
                                     assert_eq!(original["origin_epoch"], value["input"]["originHostEpoch"]);
                                     assert_eq!(original["session"], value["input"]["sessionId"]);
                                     assert_eq!(original["id"], value["input"]["messageId"]);
-                                    assert_eq!(saved["version"], 18);
+                                    assert_eq!(saved["version"], 19);
                                     assert_eq!(original["content"], value["input"]["content"]);
                                     assert_eq!(original["placement"], value["input"]["placement"]);
                                     assert_eq!(original["input_selections"], value["input"].get("inputSelections").cloned().unwrap_or_else(|| json!({})));

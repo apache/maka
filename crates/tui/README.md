@@ -25,6 +25,10 @@ Terminal client for the Runtime Host, launched by `maka tui`.
 
 The sidebar groups sessions by workspace. **Needs you** filters that directory without leaving the current conversation. `Ctrl+B` opens navigation in a sheet on narrow terminals or in focus mode; `Esc` returns to the current draft. Tab crosses lists and fields, while arrow keys move within a list. `F1` opens help over the current page; Host connection details live in Settings.
 
+`Enter` sends a message, or queues it for the next turn while the model is working. `Shift+Enter` inserts a new line on terminals with enhanced keyboard support; `Ctrl+J` works on legacy terminals, including Windows Terminal through WSL. Pasting multiple lines never sends them. `Ctrl+K` opens commands, `Ctrl+F` searches the conversation, and `Ctrl+N` creates a session. Dialogs and search keep their own input scope.
+
+Chat and plugin transcripts share Markdown, selection, search and streaming presentation. New streamed text briefly fades to its final color without delaying the received content or changing its layout. Reduced motion and terminal-owned colors display it immediately.
+
 - `maka-client` owns transport and protocol validation; the TUI owns presentation and input.
 - Provider setup consumes public descriptors, configuration and authentication contracts.
 - Local state stores drafts and recovery identities, never authentication input. Uncertain writes require observation, not automatic replay.

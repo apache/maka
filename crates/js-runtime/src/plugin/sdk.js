@@ -366,6 +366,501 @@
     }
   };
 
+  // The store owns source data; each Remote document owns one immutable snapshot.
+  // No page call can allocate a snapshot or borrow another document's fence.
+  const transcriptResource = async (remote, name, initial = {}, options) => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const RECORD_BYTES = 16 * 1024 * 1024;
+    const SOURCE_BYTES = 32 * 1024 * 1024;
+    const WIRE_BYTES = 60 * 1024; // room for the enclosing Remote response
+    const sources = new Map();
+    const timings = new Map();
+    const mounts = new Map();
+    const counters = { opened: 0, closed: 0, invalidated: 0, pageReads: 0, updates: 0 };
+    let sourceBytes = 0;
+    let revision = 0;
+    let mountSequence = 0;
+    let closed = false;
+    const fail = (message, code = 'invalid') => {
+      throw Object.assign(new Error(message), { code });
+    };
+    const bytes = (value) => encoder.encode(value).length;
+    const encodedSize = (value) => bytes(JSON.stringify(value));
+    const safe = (value, multiline = false) =>
+      typeof value === 'string' &&
+      !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value) &&
+      !(
+        multiline
+          ? /[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u
+          : /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u
+      ).test(value);
+    const identifier = (value) => {
+      if (!safe(value) || !value.length || bytes(value) > 256) fail('Invalid transcript identity');
+      return value;
+    };
+    const fields = (value, names) => {
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        Array.isArray(value) ||
+        Object.keys(value).some((key) => !names.includes(key))
+      )
+        fail('Invalid transcript fields');
+    };
+    const keyOf = (key) => {
+      fields(key, ['turn', 'message', 'part']);
+      identifier(key?.turn);
+      identifier(key?.message);
+      if (!['text', 'thinking', 'tool'].includes(key?.part)) fail('Invalid transcript part');
+      return JSON.stringify([key.turn, key.message, key.part]);
+    };
+    const integer = (value) => Number.isSafeInteger(value) && value >= 0;
+    const copyBlock = (input) => {
+      const block = JSON.parse(JSON.stringify(input));
+      fields(block, ['key', 'revision', 'kind', 'state', 'content', 'timestamp_ms', 'affinity']);
+      const key = keyOf(block.key);
+      identifier(block.revision);
+      if (
+        !['user', 'assistant', 'thinking', 'tool', 'failure', 'other', 'meta'].includes(block.kind)
+      )
+        fail('Invalid transcript kind');
+      if (
+        block.key.part !==
+        (block.kind === 'tool' || block.kind === 'thinking' ? block.kind : 'text')
+      )
+        fail('Transcript kind does not match its key');
+      const states = [
+        'pending',
+        'waiting',
+        'returned',
+        'attention',
+        'failed',
+        'timed_out',
+        'cancelled',
+        'completed',
+        'missing',
+      ];
+      if (
+        (block.kind === 'tool') !== (block.state != null) ||
+        (block.state != null && !states.includes(block.state)) ||
+        (block.affinity != null &&
+          (block.kind !== 'tool' || !['read', 'search'].includes(block.affinity))) ||
+        (block.timestamp_ms != null && !integer(block.timestamp_ms))
+      )
+        fail('Invalid transcript metadata');
+      const content = block.content;
+      fields(content, ['text', 'diff', 'link', 'emphasis']);
+      if (!safe(content?.text, true)) fail('Invalid transcript text');
+      const textBytes = encoder.encode(content.text);
+      const range = (value) => {
+        fields(value, ['start', 'end']);
+        if (
+          !value ||
+          !integer(value.start) ||
+          !integer(value.end) ||
+          value.start >= value.end ||
+          value.end > textBytes.length ||
+          (textBytes[value.start] & 0xc0) === 0x80 ||
+          (textBytes[value.end] & 0xc0) === 0x80
+        )
+          fail('Invalid transcript UTF-8 range');
+      };
+      if (
+        content.diff !== undefined &&
+        (!Array.isArray(content.diff) || content.diff.length > 131072)
+      )
+        fail('Invalid transcript diff');
+      let end = 0;
+      for (const row of content.diff ?? []) {
+        fields(row, ['source', 'kind', 'language']);
+        range(row.source);
+        if (
+          row.source.start < end ||
+          !['removed', 'added', 'context', 'content'].includes(row.kind)
+        )
+          fail('Invalid transcript diff order');
+        end = row.source.end;
+        if (row.language != null && bytes(identifier(row.language)) > 64)
+          fail('Invalid transcript language');
+      }
+      if (content.emphasis != null) range(content.emphasis);
+      if (content.link != null) {
+        fields(content.link, ['source', 'path']);
+        range(content.link.source);
+        const path = content.link.path;
+        if (
+          !safe(path) ||
+          !path.trim() ||
+          bytes(path) > 4096 ||
+          path.includes('://') ||
+          /[\u061c\u200e\u200f]/u.test(path)
+        )
+          fail('Invalid transcript link');
+      }
+      const json = JSON.stringify(block);
+      const encoded = encoder.encode(json);
+      if (encoded.length > RECORD_BYTES) fail('Transcript record exceeds 16 MiB');
+      return { block, key, json, encoded, textBytes: textBytes.length };
+    };
+    const copyTiming = (input) => {
+      const value = JSON.parse(JSON.stringify(input));
+      fields(value, ['turn', 'start_ms', 'end', 'active']);
+      if (value.end != null) fields(value.end, ['at_ms', 'outcome']);
+      identifier(value.turn);
+      if (
+        !integer(value.start_ms) ||
+        (value.active != null && typeof value.active !== 'boolean') ||
+        (value.end != null &&
+          (!integer(value.end.at_ms) ||
+            value.end.at_ms < value.start_ms ||
+            !['completed', 'failed', 'aborted'].includes(value.end.outcome) ||
+            value.active))
+      )
+        fail('Invalid transcript timing');
+      return value;
+    };
+    if (
+      typeof name !== 'string' ||
+      !/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/.test(name) ||
+      name.length > 121
+    )
+      fail('Invalid transcript resource name');
+    const resource = Object.freeze({
+      id: name,
+      read: `${name}.read`,
+      stream: `${name}.stream`,
+      route: null,
+    });
+    for (const block of initial.blocks ?? []) {
+      const entry = copyBlock(block);
+      if (sources.has(entry.key)) fail('Duplicate transcript key');
+      sources.set(entry.key, entry);
+      sourceBytes += entry.encoded.length;
+      if (sources.size > 4096 || sourceBytes > SOURCE_BYTES)
+        fail('Transcript source capacity exceeded');
+    }
+    for (const timing of initial.timings ?? []) {
+      const value = copyTiming(timing);
+      if (timings.has(value.turn)) fail('Duplicate transcript timing');
+      timings.set(value.turn, value);
+      if (timings.size > 4096) fail('Transcript timing capacity exceeded');
+    }
+    const owner = (caller) => {
+      if (!caller?.documentId || !caller?.clientInstanceId)
+        fail('Missing Remote document identity');
+      caller.signal.throwIfAborted();
+      return JSON.stringify([caller.clientInstanceId, caller.documentId, caller.sessionId]);
+    };
+    const recordAt = (entry, offset) => {
+      if (offset === 0 && entry.encoded.length < 48 * 1024)
+        return { record: { kind: 'block', block: entry.block }, next: entry.encoded.length };
+      let end = Math.min(entry.encoded.length, offset + 8192);
+      while (end < entry.encoded.length && (entry.encoded[end] & 0xc0) === 0x80) end--;
+      return {
+        record: {
+          kind: 'fragment',
+          key: entry.block.key,
+          revision: entry.block.revision,
+          offset,
+          total: entry.encoded.length,
+          json: decoder.decode(entry.encoded.subarray(offset, end)),
+        },
+        next: end,
+      };
+    };
+    const invalidate = () => {
+      for (const mount of [...mounts.values()]) mount.invalidate();
+    };
+    const publish = (makeEvents) => {
+      if (closed) fail('Transcript resource is closed', 'revoked');
+      if (!Number.isSafeInteger(revision + 1)) {
+        invalidate();
+        fail('Transcript revision exhausted');
+      }
+      const base = revision++;
+      counters.updates++;
+      for (const mount of [...mounts.values()]) mount.enqueue(makeEvents(base, revision));
+    };
+    const replaceEvents = function* (entry, append, base, revision) {
+      let offset = 0;
+      while (offset < entry.encoded.length) {
+        const part = recordAt(entry, offset);
+        yield { kind: 'replace', base, revision, append, record: part.record };
+        offset = part.next;
+      }
+    };
+    const put = (entry) => {
+      if (closed) fail('Transcript resource is closed', 'revoked');
+      const previous = sources.get(entry.key);
+      if (previous?.json === entry.json) return false;
+      if (previous?.block.revision === entry.block.revision)
+        fail('Changed transcript needs a new revision');
+      const size = sourceBytes - (previous?.encoded.length ?? 0) + entry.encoded.length;
+      if ((!previous && sources.size >= 4096) || size > SOURCE_BYTES) {
+        invalidate();
+        fail('Transcript source capacity exceeded');
+      }
+      sources.set(entry.key, entry);
+      sourceBytes = size;
+      return true;
+    };
+    const page = (input, caller) => {
+      const mount = mounts.get(owner(caller));
+      if (closed || !mount || input?.resource !== name || input.fence !== mount.fence)
+        fail('Transcript snapshot is no longer available', 'revoked');
+      counters.pageReads++;
+      return mount.page(input);
+    };
+    const open = (input, caller) => {
+      const document = owner(caller);
+      if (closed) fail('Transcript resource is closed', 'revoked');
+      if (
+        input?.resource !== name ||
+        input.route !== null ||
+        !safe(input.locale) ||
+        !input.locale ||
+        bytes(input.locale) > 32
+      )
+        fail('Invalid transcript open');
+      if (mounts.has(document) || mounts.size >= 4) fail('Transcript document capacity exceeded');
+      const fence = revision;
+      let snapshot = [...sources.values()];
+      let snapshotTimings = new Map(timings);
+      const cursors = new Map();
+      const cursorValues = new Map();
+      const prefix = `m${++mountSequence}`;
+      let queue = [{ kind: 'ready', fence }];
+      let queueBytes = encodedSize(queue[0]);
+      let live = true;
+      let wake;
+      const release = () => {
+        if (live) {
+          live = false;
+          mounts.delete(document);
+          counters.closed++;
+          snapshot = [];
+          snapshotTimings.clear();
+          cursors.clear();
+          cursorValues.clear();
+        }
+        wake?.();
+      };
+      const token = (value) => {
+        const identity = JSON.stringify(value);
+        let result = cursorValues.get(identity);
+        if (!result) {
+          if (cursors.size >= 8192) {
+            mount.invalidate();
+            fail('Transcript cursor capacity exceeded');
+          }
+          result = `${prefix}-c${cursors.size + 1}`;
+          cursors.set(result, value);
+          cursorValues.set(identity, result);
+        }
+        return result;
+      };
+      const mount = {
+        fence,
+        invalidate() {
+          if (!live) return;
+          counters.invalidated++;
+          queue = [...queue.filter((event) => event.kind === 'ready'), { kind: 'invalidated' }];
+          queueBytes = queue.reduce((total, event) => total + encodedSize(event), 0);
+          release();
+        },
+        cancel() {
+          queue = [];
+          queueBytes = 0;
+          release();
+        },
+        enqueue(events) {
+          for (const event of events) {
+            const size = encodedSize(event);
+            if (size > WIRE_BYTES || queue.length >= 8192 || queueBytes + size > SOURCE_BYTES) {
+              mount.invalidate();
+              return;
+            }
+            queue.push(event);
+            queueBytes += size;
+          }
+          wake?.();
+        },
+        page(input) {
+          let spec;
+          if (input.direction === 'tail' && input.cursor == null) {
+            spec = { kind: 'older', boundary: snapshot.length };
+          } else {
+            spec = cursors.get(input.cursor);
+            if (!spec || spec.kind !== input.direction) fail('Invalid transcript cursor');
+          }
+          let { start, end, index, offset = 0, timingIndex = 0 } = spec;
+          if (spec.kind !== 'continue') {
+            start = end = spec.boundary;
+            let size = 0;
+            if (spec.kind === 'older') {
+              while (start > 0 && end - start < 256) {
+                const next = snapshot[start - 1].encoded.length;
+                if (size && size + next > 4 * 1024 * 1024) break;
+                size += next;
+                start--;
+              }
+            } else {
+              while (end < snapshot.length && end - start < 256) {
+                const next = snapshot[end].encoded.length;
+                if (size && size + next > 4 * 1024 * 1024) break;
+                size += next;
+                end++;
+              }
+            }
+            index = start;
+          }
+          const turns = new Set(snapshot.slice(start, end).map((entry) => entry.block.key.turn));
+          const pageTimings = [...turns].map((turn) => snapshotTimings.get(turn)).filter(Boolean);
+          const reply = {
+            fence,
+            records: [],
+            timings: [],
+            older: null,
+            newer: null,
+            continuation: null,
+          };
+          while (index < end && reply.records.length < 256) {
+            const entry = snapshot[index];
+            const part = recordAt(entry, offset);
+            reply.records.push(part.record);
+            if (encodedSize(reply) > WIRE_BYTES - 1024) {
+              reply.records.pop();
+              break;
+            }
+            offset = part.next;
+            if (offset === entry.encoded.length) {
+              index++;
+              offset = 0;
+            }
+          }
+          while (index === end && timingIndex < pageTimings.length) {
+            reply.timings.push(pageTimings[timingIndex]);
+            if (encodedSize(reply) > WIRE_BYTES - 1024) {
+              reply.timings.pop();
+              break;
+            }
+            timingIndex++;
+          }
+          if (index < end || timingIndex < pageTimings.length) {
+            reply.continuation = token({
+              kind: 'continue',
+              start,
+              end,
+              index,
+              offset,
+              timingIndex,
+            });
+          } else {
+            if (start > 0) reply.older = token({ kind: 'older', boundary: start });
+            if (end < snapshot.length) reply.newer = token({ kind: 'newer', boundary: end });
+          }
+          return reply;
+        },
+      };
+      // There is no await between snapshot capture and subscription registration.
+      mounts.set(document, mount);
+      counters.opened++;
+      return {
+        async next() {
+          while (live && queue.length === 0) {
+            await new Promise((resolve) => {
+              wake = resolve;
+            });
+            wake = undefined;
+          }
+          if (!queue.length) return { done: true, value: undefined };
+          const value = queue.shift();
+          queueBytes -= encodedSize(value);
+          return { done: false, value };
+        },
+        cancel: () => mount.cancel(),
+        close: () => mount.cancel(),
+      };
+    };
+    const reader = await remote.method(resource.read, page, options);
+    let streamer;
+    try {
+      streamer = await remote.stream(resource.stream, open, options);
+    } catch (error) {
+      await reader.close();
+      throw error;
+    }
+    let closing;
+    return Object.freeze({
+      resource,
+      get stats() {
+        return Object.freeze({ active: mounts.size, ...counters });
+      },
+      replace(block) {
+        const entry = copyBlock(block);
+        const append = !sources.has(entry.key);
+        if (put(entry)) publish((base, revision) => replaceEvents(entry, append, base, revision));
+      },
+      append(key, text, blockRevision) {
+        const previous = sources.get(keyOf(key));
+        if (!previous || !safe(text, true) || !text) fail('Invalid transcript append');
+        identifier(blockRevision);
+        const entry = copyBlock({
+          ...previous.block,
+          revision: blockRevision,
+          content: { ...previous.block.content, text: previous.block.content.text + text },
+        });
+        if (put(entry))
+          publish((base, revision) => {
+            const event = {
+              kind: 'append',
+              base,
+              revision,
+              key: entry.block.key,
+              block_base: previous.block.revision,
+              block_revision: blockRevision,
+              offset: previous.textBytes,
+              text,
+            };
+            return encodedSize(event) <= WIRE_BYTES
+              ? [event]
+              : replaceEvents(entry, false, base, revision);
+          });
+      },
+      remove(key) {
+        if (closed) fail('Transcript resource is closed', 'revoked');
+        const identity = keyOf(key);
+        const previous = sources.get(identity);
+        if (!previous) return;
+        sources.delete(identity);
+        sourceBytes -= previous.encoded.length;
+        publish((base, revision) => [{ kind: 'remove', base, revision, key: previous.block.key }]);
+      },
+      timing(input) {
+        if (closed) fail('Transcript resource is closed', 'revoked');
+        const value = copyTiming(input);
+        if (!timings.has(value.turn) && timings.size >= 4096) {
+          invalidate();
+          fail('Transcript timing capacity exceeded');
+        }
+        if (JSON.stringify(timings.get(value.turn)) === JSON.stringify(value)) return;
+        timings.set(value.turn, value);
+        publish((base, revision) => [{ kind: 'timing', base, revision, timing: value }]);
+      },
+      close() {
+        closing ??= (async () => {
+          closed = true;
+          for (const mount of [...mounts.values()]) mount.cancel();
+          sources.clear();
+          timings.clear();
+          await Promise.all([reader.close(), streamer.close()]);
+        })();
+        return closing;
+      },
+    });
+  };
+
   /** Terminal apps: a Remote method that answers terminal view requests,
    * with builders for the view tree the terminal renders. */
   const terminal = (remote) => {
@@ -376,7 +871,7 @@
       return en;
     };
     const view = ({ title, revision, fields = [], actions = [], root }) => ({
-      version: 4,
+      version: 5,
       title,
       revision: String(revision),
       fields,
@@ -428,7 +923,7 @@
                 throw Object.assign(new Error('Unknown terminal request'), { code: 'invalid' });
             }
           },
-          { ...options, terminalView: { version: 4, ...descriptor } },
+          { ...options, terminalView: { version: 5, ...descriptor } },
         ),
       /** A changes stream for a descriptor's `changes`; calling the
        * returned function tells every open view it is stale. */
@@ -471,6 +966,9 @@
         notify.close = () => registration.close();
         return notify;
       },
+      transcriptResource: (name, initial, options) =>
+        transcriptResource(remote, name, initial, options),
+      transcript: (key, resource) => ({ kind: 'transcript', key, resource }),
       view,
       column: (key, children, gap = 1) => ({ kind: 'column', key, gap, children }),
       stack: (key, children) => ({ kind: 'column', key, gap: 0, children }),

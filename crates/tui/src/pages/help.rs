@@ -24,7 +24,7 @@ use crate::{
 
 /// Help is a temporary sheet over the current place, never a navigation entry.
 pub fn sheet(app: &App) -> Sheet<Action> {
-    let narrow = ui::content_width(app.frame_size.map_or(80, |size| size.0)) < 44;
+    let narrow = ui::content_width(app.frame_size.map_or(80, |size| size.0)) < 54;
     let rows = app
         .i18n
         .text("help")
@@ -42,7 +42,7 @@ pub fn sheet(app: &App) -> Sheet<Action> {
                 } else {
                     Node::row(
                         index.to_string(),
-                        vec![keys.size(Size::Fixed(18)), description.size(Size::Fill)],
+                        vec![keys.size(Size::Fixed(24)), description.size(Size::Fill)],
                     )
                     .gap(2)
                 }

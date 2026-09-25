@@ -226,6 +226,7 @@ where
     let mut notifications: Option<mpsc::Receiver<Notification>> = None;
     let mut oauth_service: Option<maka_client::OAuthPresentationService> = None;
     let (mut watches, mut changes) = apps::io::Watches::new();
+    let (mut transcript_runner, mut transcript_deliveries) = apps::io::transcript::Runner::new();
     let mut effect = app.apply(Action::Connect);
     let mut dirty = true;
     let mut flushed = false;
@@ -247,6 +248,25 @@ where
             } else {
                 break;
             }
+        }
+        if let Some(text) = app.apps_transcript_copy() {
+            let result = terminal::copy(&mut std::io::stdout(), &text);
+            app.notice = Some(Notice::Clipboard {
+                key: if result.is_ok() {
+                    "chat-copy-requested"
+                } else {
+                    "chat-copy-failed"
+                },
+                until: std::time::Instant::now() + Duration::from_secs(3),
+            });
+            dirty = true;
+        }
+        if let Some(key) = app.apps_transcript_notice() {
+            app.notice = Some(Notice::Clipboard {
+                key,
+                until: std::time::Instant::now() + Duration::from_secs(3),
+            });
+            dirty = true;
         }
         app.advance_revision_uploads();
         if !app.closing
@@ -496,6 +516,14 @@ where
                 });
             }
             watches.reconcile(client, app.apps_watches());
+            if transcript_runner
+                .reconcile(client, app.apps_transcript_mounts())
+                .is_err()
+            {
+                app.apps_transcript_failed();
+                dirty = true;
+            }
+            app.apps_transcript_pages(&transcript_runner);
             for request in app.apps_requests() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
@@ -727,6 +755,7 @@ where
                     app.skills.disconnect();
                     app.apps.disconnect();
                     watches.stop();
+                    transcript_runner.stop();
                     app.recap.disconnect();
                     app.resume.disconnect();
                     app.branch.disconnect();
@@ -762,6 +791,7 @@ where
                     app.skills.disconnect();
                     app.apps.disconnect();
                     watches.stop();
+                    transcript_runner.stop();
                     app.recap.disconnect();
                     app.resume.disconnect();
                     app.creating = false;
@@ -1029,7 +1059,7 @@ where
                 }
             } => { app.notice = None; dirty = true; }
             _ = async {
-                let wait = app.chat.view.search.as_ref().and_then(|search| search.history.as_ref())
+                let wait = app.chat.history.as_ref()
                     .and_then(|history| history.wait())
                     .filter(|_| history_job.is_none() && client.is_some() && app.chat.error.is_none() && app.chat.snapshot.is_some());
                 match wait { Some(wait) => tokio::time::sleep(wait).await, None => std::future::pending().await }
@@ -1248,7 +1278,7 @@ where
                     }
                     Some(Err(error)) if history_job == Some(error.id()) => {
                         history_job = None;
-                        if let Some(history) = app.chat.view.search.as_mut().and_then(|search| search.history.as_mut()) {
+                        if let Some(history) = app.chat.history.as_mut() {
                             history.fail(error.to_string());
                         }
                     }
@@ -1316,6 +1346,7 @@ where
                 app.skills.disconnect();
                 app.apps.disconnect();
                 watches.stop();
+                    transcript_runner.stop();
                 app.recap.disconnect();
                 app.resume.disconnect();
                 app.abandon_management();
@@ -1332,6 +1363,11 @@ where
                 app.connection = ConnectionState::Failed(error.to_string());
                 app.chat.error = Some(error.to_string());
                 dirty = true;
+            }
+            delivery = transcript_deliveries.recv() => {
+                if let Some(delivery) = delivery {
+                    dirty |= app.apps_transcript_delivery(delivery);
+                }
             }
             change = changes.recv() => {
                 match change {
@@ -1351,6 +1387,7 @@ where
     app.skills.disconnect();
     app.apps.disconnect();
     watches.stop();
+    let _ = transcript_runner.shutdown().await;
     app.recap.disconnect();
     app.resume.disconnect();
     attachment_jobs.abort_all();

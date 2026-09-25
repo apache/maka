@@ -106,7 +106,7 @@ fn host_inherits_proxy_for_model_discovery_and_tui_turn_without_manual_configura
     tui.wait_for("Environment proxy");
     tui.click_text("Environment proxy");
     tui.wait_for("Message…");
-    tui.send(b"hello through inherited proxy\x13");
+    tui.send(b"hello through inherited proxy\r");
     tui.wait_for("Inherited proxy works");
     runtime.block_on(server).unwrap();
     assert!(!String::from_utf8_lossy(&tui.output).contains("proxy-secret"));

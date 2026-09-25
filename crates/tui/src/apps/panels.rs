@@ -189,6 +189,17 @@ pub fn draw_inspector(frame: &mut Frame<'_>, app: &mut App, area: Rect, session:
         focused.as_deref(),
         context.colors,
     );
+    if let Some(wait) = super::transcript::paint(
+        frame,
+        &mut app.apps.readers,
+        &mut surface,
+        context,
+        &app.i18n,
+        app.chrome.animation.frame_time(),
+    ) && app.chrome.window_focused
+    {
+        app.chrome.animation.wake_after(wait);
+    }
     surface.repaint_popover(frame, &context);
     app.apps.inspector = surface;
     app.apps.inspector_wells = wells;
@@ -300,6 +311,9 @@ fn status(app: &App, key: &Key, width: u16) -> Node<Message> {
     if let Some(view) = &instance.view {
         let offered = |intent: &Intent| instance.offered(intent);
         let env = tree::Env {
+            readers: &app.apps.readers,
+            resources_live: instance.live.is_some() && !instance.blocked,
+            i18n: &app.i18n,
             key,
             drafts: &instance.drafts,
             ascii: app.chrome.ascii,
@@ -332,7 +346,14 @@ impl App {
         }
         let mut surface = std::mem::take(&mut self.apps.inspector);
         let wells = std::mem::take(&mut self.apps.inspector_wells);
-        let owned = region::input(&mut self.apps, &mut surface, &wells, event, keyboard);
+        let owned = region::input(
+            &mut self.apps,
+            &mut surface,
+            &wells,
+            event,
+            keyboard,
+            self.chrome.ascii,
+        );
         let outcome = owned.is_none().then(|| surface.input(event));
         self.apps.inspector = surface;
         self.apps.inspector_wells = wells;

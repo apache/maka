@@ -57,6 +57,9 @@ pub(crate) struct Well {
 }
 
 pub(crate) struct Env<'a, M> {
+    pub readers: &'a super::transcript::Readers,
+    pub resources_live: bool,
+    pub i18n: &'a crate::i18n::I18n,
     pub key: &'a super::Key,
     pub drafts: &'a BTreeMap<String, Value>,
     pub ascii: bool,
@@ -251,6 +254,7 @@ impl<M> Builder<'_, M> {
         let key = node.key().to_owned();
         match node {
             wire::Node::Column { gap, children, .. } => {
+                let expands = has_transcript(node);
                 // Item-only collections are lists. Decorative headings may
                 // sit among them; inputs and actions keep separate Tab stops.
                 let list = children
@@ -275,6 +279,7 @@ impl<M> Builder<'_, M> {
                     })
                     .collect();
                 let node = Node::column(key, children).gap(u16::from(*gap));
+                let node = if expands { node.size(Size::Fill) } else { node };
                 if list { node.focus_group() } else { node }
             }
             wire::Node::Row { gap, children, .. } => self.row(key, path, *gap, children, width),
@@ -380,6 +385,19 @@ impl<M> Builder<'_, M> {
             } => self.progress(key, *value, *max, label, width),
             wire::Node::Markdown { text, .. } => Node::column(key, markdown(text, self.env.ascii)),
             wire::Node::Code { text, .. } => Node::column(key, code(text, self.env.ascii)),
+            wire::Node::Transcript { .. } => {
+                if !self.env.resources_live {
+                    return Node::column(key, vec![]);
+                }
+                if let Some(token) = self.env.readers.token(self.env.key, &self.wire.join("/")) {
+                    Node::transcript(key, token)
+                } else {
+                    Node::text(
+                        key,
+                        vec![(self.env.i18n.text("transcript-capacity"), Tone::Subtle)],
+                    )
+                }
+            }
             // An unfilled slot takes no room.
             wire::Node::Slot { name, .. } => {
                 let (fillers, wells) = (self.env.slots)(name, &self.wire.join("/"), &path, width);
@@ -435,7 +453,12 @@ impl<M> Builder<'_, M> {
                 }
             })
             .collect();
-        Node::row(key, nodes).gap(gap)
+        let node = Node::row(key, nodes).gap(gap);
+        if children.iter().any(has_transcript) {
+            node.size(Size::Fill)
+        } else {
+            node
+        }
     }
 
     fn split(
@@ -447,6 +470,7 @@ impl<M> Builder<'_, M> {
         right: &wire::Node,
         width: u16,
     ) -> Node<M> {
+        let expands = has_transcript(left) || has_transcript(right);
         // Both layouts keep the same paths, so focus survives a resize
         // across the breakpoint.
         let (left_path, right_path) = (
@@ -456,21 +480,30 @@ impl<M> Builder<'_, M> {
         if width < SPLIT {
             let left = self.node(left, left_path, width, Axis::Column);
             let right = self.node(right, right_path, width, Axis::Column);
-            return Node::column(
+            let node = Node::column(
                 key,
                 vec![
-                    Node::column("leading", vec![left]),
+                    Node::column("leading", vec![left]).size(if expands {
+                        Size::Fill
+                    } else {
+                        Size::Content
+                    }),
                     Node::rule("divider"),
-                    Node::column("trailing", vec![right]),
+                    Node::column("trailing", vec![right]).size(if expands {
+                        Size::Fill
+                    } else {
+                        Size::Content
+                    }),
                 ],
             )
             .gap(1);
+            return if expands { node.size(Size::Fill) } else { node };
         }
         let leading = width.saturating_sub(3) * u16::from(ratio) / 100;
         let trailing = width.saturating_sub(3 + leading);
         let left = self.node(left, left_path, leading, Axis::Column);
         let right = self.node(right, right_path, trailing, Axis::Column);
-        Node::row(
+        let node = Node::row(
             key,
             vec![
                 Node::column("leading", vec![left]).size(Size::Fixed(leading)),
@@ -478,7 +511,8 @@ impl<M> Builder<'_, M> {
                 Node::column("trailing", vec![right]).size(Size::Fill),
             ],
         )
-        .gap(1)
+        .gap(1);
+        if expands { node.size(Size::Fill) } else { node }
     }
 
     fn button_label(&self, action: &str, label: Option<&str>) -> String {
@@ -651,11 +685,16 @@ impl<M> Builder<'_, M> {
 }
 
 /// Whether a node takes whatever width it is given rather than its content's.
+pub(super) fn has_transcript(node: &wire::Node) -> bool {
+    matches!(node, wire::Node::Transcript { .. }) || node.children().into_iter().any(has_transcript)
+}
+
 fn stretchy(node: &wire::Node) -> bool {
     matches!(
         node,
         wire::Node::Column { .. }
             | wire::Node::Input { .. }
+            | wire::Node::Transcript { .. }
             | wire::Node::Progress { .. }
             | wire::Node::Split { .. }
             | wire::Node::Scroll { .. }
@@ -671,6 +710,7 @@ fn interactive(node: &wire::Node) -> bool {
         wire::Node::Item { .. }
             | wire::Node::Button { .. }
             | wire::Node::Input { .. }
+            | wire::Node::Transcript { .. }
             | wire::Node::Tabs { .. }
     ) || node.children().into_iter().any(interactive)
 }

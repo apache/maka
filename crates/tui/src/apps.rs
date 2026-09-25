@@ -33,6 +33,7 @@ pub(crate) mod page;
 pub(crate) mod panels;
 mod region;
 mod saved;
+mod transcript;
 mod tree;
 pub(crate) use consent::{confirm as confirm_sheet, sheet as consent_sheet};
 pub use instance::{Command, Instance};
@@ -125,6 +126,7 @@ const INSTANCES: usize = 32;
 
 #[derive(Default)]
 pub struct Apps {
+    readers: transcript::Readers,
     /// Plugins localize their own text; every request names the language.
     locale: String,
     pub(super) directory: Vec<TerminalViewProjection>,
@@ -263,8 +265,30 @@ impl Apps {
         self.filling(host, name, wire)
             .into_iter()
             .map(|(key, _)| key)
-            .filter(|key| self.instances.contains_key(key))
+            .filter(|key| self.slot_current(key))
             .collect()
+    }
+    /// A retained child draft belongs to the context it was read for. It may
+    /// reappear on return, but cannot become the controls of another entity.
+    fn slot_current(&self, key: &Key) -> bool {
+        let Some((host, path)) = key.within.as_deref() else {
+            return true;
+        };
+        let Some(instance) = self.instances.get(key) else {
+            return false;
+        };
+        let Some(view) = self
+            .instances
+            .get(host)
+            .and_then(|instance| instance.view.as_ref())
+        else {
+            return false;
+        };
+        tree::slots(view).into_iter().any(|(wire, name, context)| {
+            &wire == path && context == instance.origin && instance.entry.as_ref().is_some_and(|entry| {
+                matches!(&entry.descriptor.placement, Placement::Slot { name: declared } if declared == &name)
+            })
+        })
     }
     /// Opens the views filling `host`'s slots, starts over any whose slot's
     /// context changed, and closes clean ones whose slot is gone.
@@ -318,6 +342,9 @@ impl Apps {
             let key = self.recent.remove(index);
             self.instances.remove(&key);
         }
+    }
+    pub fn invalidate_readers(&mut self) {
+        self.readers.invalidate_interaction();
     }
     pub fn invalidate_geometry(&mut self) {
         if let Some((_, consent)) = &mut self.consent {
@@ -729,7 +756,7 @@ impl App {
     /// Whether an instance is on screen now, so a modal it asks for belongs here.
     pub(crate) fn app_visible(&self, key: &Key) -> bool {
         if let Some(within) = &key.within {
-            return self.app_visible(&within.0);
+            return self.apps.slot_current(key) && self.app_visible(&within.0);
         }
         let placement = self
             .apps
@@ -1074,7 +1101,10 @@ impl App {
                 instance.arrive();
                 instance.read(&locale);
             }
-            Command::Refresh => instance.read(&locale),
+            Command::Refresh => {
+                instance.read(&locale);
+                self.apps.readers.refresh(&key);
+            }
         }
         None
     }
@@ -1190,8 +1220,23 @@ pub(crate) fn paint_settings(
     focused: Option<&str>,
     colors: crate::theme::Palette,
 ) {
-    let surface = std::mem::take(&mut app.settings.surface);
+    let mut surface = std::mem::take(&mut app.settings.surface);
     region::paint(frame, &mut app.apps, &surface, &wells, focused, colors);
+    if let Some(wait) = transcript::paint(
+        frame,
+        &mut app.apps.readers,
+        &mut surface,
+        ui::Context {
+            colors,
+            ascii: app.chrome.ascii,
+            focused: focused.is_some(),
+        },
+        &app.i18n,
+        app.chrome.animation.frame_time(),
+    ) && app.chrome.window_focused
+    {
+        app.chrome.animation.wake_after(wait);
+    }
     app.settings.surface = surface;
     app.apps.settings_wells = wells;
 }
@@ -1202,7 +1247,14 @@ impl App {
         let keyboard = self.focus == crate::app::Focus::Page;
         let mut surface = std::mem::take(&mut self.settings.surface);
         let wells = std::mem::take(&mut self.apps.settings_wells);
-        let outcome = region::input(&mut self.apps, &mut surface, &wells, event, keyboard);
+        let outcome = region::input(
+            &mut self.apps,
+            &mut surface,
+            &wells,
+            event,
+            keyboard,
+            self.chrome.ascii,
+        );
         self.settings.surface = surface;
         self.apps.settings_wells = wells;
         outcome
@@ -2431,6 +2483,28 @@ pub(crate) mod tests {
         );
         click(&mut app, &path);
         assert_eq!(app.apps.instances[&card].drafts["enabled"], json!(false));
+        // A parent's context may change while the child's draft is retained.
+        // Its old controls and live resources must not appear under that entity.
+        app.apps_action(Message::Instance(board.clone(), Command::Refresh));
+        let read = app.apps_requests().pop().unwrap();
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: view(2) })));
+        assert!(!app.app_visible(&card));
+        assert!(
+            app.apps
+                .fillers(&board, "board.card", "root/card")
+                .is_empty()
+        );
+        assert!(!draw(&mut app, 110, 30).contains("Ship the board"));
+        assert!(!app.apps_enabled(&Message::Instance(
+            card.clone(),
+            Command::View(Intent::Submit("save".into()))
+        )));
+        assert_eq!(app.apps.instances[&card].drafts["enabled"], json!(false));
+        app.apps_action(Message::Instance(board.clone(), Command::Refresh));
+        let read = app.apps_requests().pop().unwrap();
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: view(1) })));
+        assert!(app.app_visible(&card));
+        assert!(draw(&mut app, 110, 30).contains("Ship the board"));
         // A new context starts a clean filler over at the slot's new place.
         app.apps
             .instances

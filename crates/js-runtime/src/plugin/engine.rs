@@ -226,13 +226,32 @@ pub(super) fn call(
 pub(super) fn value(runtime: &mut JsRuntime, value: v8::Global<v8::Value>) -> Result<Value> {
     deno_core::scope!(scope, runtime);
     let value = v8::Local::new(scope, value);
-    let value: Value = if value.is_undefined() {
+    let mut value: Value = if value.is_undefined() {
         Value::Null
     } else {
         deno_core::serde_v8::from_v8(scope, value).map_err(failed)?
     };
+    json_integers(&mut value);
     if serde_json::to_vec(&value).map_err(failed)?.len() > 1024 * 1024 {
         return Err(failed("plugin result exceeds 1 MiB"));
     }
     Ok(value)
+}
+
+/// JavaScript has one Number type. serde_v8 represents larger integers as
+/// f64, while typed Remote results expect JSON integers (timestamps, counts).
+/// Match Number.isSafeInteger without rounding fractional or imprecise values.
+fn json_integers(value: &mut Value) {
+    match value {
+        Value::Number(number) if number.is_f64() => {
+            if let Some(integer) = number.as_f64().filter(|value| {
+                value.is_finite() && value.abs() <= 9_007_199_254_740_991.0 && value.fract() == 0.0
+            }) {
+                *number = serde_json::Number::from(integer as i64);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(json_integers),
+        Value::Object(items) => items.values_mut().for_each(json_integers),
+        _ => {}
+    }
 }

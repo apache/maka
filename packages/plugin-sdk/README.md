@@ -154,13 +154,30 @@ Native endpoints accepting caller-supplied Host paths declare `Endpoint::requiri
 
 Host plugins use `ctx.tui.app(name, { read, submit, recover? }, descriptor)` to contribute a TUI application without a Desktop bundle or a new Maka binary. The descriptor selects `page`, `panel`, `status`, `settings`, or a named `slot`; its `context` is `application` or `session`. A view can embed `tui.slot(...)` to compose contributions from other plugins.
 
-`read(route, cx)` returns a View v4 body built with `ctx.tui` (columns, rows, splits, tabs, text, Markdown, controls and fields). The SDK adds the version. Stable sibling keys preserve focus and editing state; `cx.t(en, zhCN, zhTW)` selects the reader's language. The shell owns layout, local typing, scrolling, confirmation and draft recovery. Plugins use semantic tones and never emit terminal escapes.
+`read(route, cx)` returns a View v5 body built with `ctx.tui` (columns, rows, splits, tabs, text, Markdown, controls and fields). The SDK adds the version. Stable sibling keys preserve focus and editing state; `cx.t(en, zhCN, zhTW)` selects the reader's language. The shell owns layout, local typing, scrolling, confirmation and draft recovery. Plugins use semantic tones and never emit terminal escapes.
 
 Tabs and columns of items each contribute one keyboard Tab stop; arrow keys move inside them. Reentering a group restores its last focused item. A list column may include decorative text, Markdown, code, rules or progress; put fields and buttons outside it so each remains reachable with Tab. Focus changes alone never submit an action or follow a plugin route.
 
 `submit({ route, revision, action, fields, grant }, cx)` applies an explicit user action and returns `applied`, `conflict`, `rejected`, or `consent`. Use the revision for storage CAS and enforce domain authority in the Host. Declare an action's `recovery` route only when `recover(route, cx)` can look up its durable outcome; the shell never blindly replays an uncertain write.
 
 For live updates, `const changed = await ctx.tui.changes('changed')` registers a stream. Set `changes: 'changed'` on the descriptor and call `changed()` after committing data. Invalidation is coalesced; the shell rereads clean views and preserves edited drafts. Subscriptions and controls retire with their registration.
+
+Use a transcript resource for paged history and streaming text. It shares native Chat's Markdown, grouping, selection and local search, while keeping data outside the View's 64 KiB budget:
+
+```js
+const key = { turn: 'build-42', message: 'log', part: 'text' };
+const log = await ctx.tui.transcriptResource('build-log', {
+  blocks: [{ key, revision: '0', kind: 'assistant', content: { text: 'Started\n' } }],
+});
+ctx.effect(() => log.close());
+// Return this node in a view; append when the observed work produces text.
+const reader = ctx.tui.transcript('log', log.resource);
+log.append(key, 'Finished\n', '1');
+```
+
+`replace`, `append`, `remove` and `timing` publish contiguous resource updates without rereading the View. Record keys and revisions are stable presentation identities; they grant no native Session, file or mutation authority. Surrounding actions still use the usual authorization, CAS and recovery contract. `Ctrl+F` finds within the loaded page; End or the new-content marker follows the tail. Selecting text pauses following.
+
+The helper owns document-scoped snapshots, cursors and cancellation. It retains at most 4,096 records / 32 MiB of source; pages retain up to 256 records / 4 MiB, with one larger record allowed up to 16 MiB. Large records use ordered UTF-8 JSON fragments within Remote's message budget. An exhausted update queue explicitly invalidates the reader. Rust providers can serve the same [public records and resource protocol](../../crates/plugins/src/terminal_ui/transcript.rs) through ordinary Remote method/stream handlers; resource endpoints must belong to the containing view's exact entry and activation. A slot's context should contain stable entity identities, and its node key must distinguish independently editable entities.
 
 The [Board example](../../crates/cli/tests/fixtures/board-plugin/host.mjs) includes three columns, nested card editing, storage CAS and live refresh. Its [PTY test](../../crates/cli/tests/integration/tui/board.rs) installs it while the TUI is running, interacts with it and checks the persisted domain data.
 

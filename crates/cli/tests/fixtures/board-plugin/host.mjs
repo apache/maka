@@ -42,6 +42,57 @@ export default async function activate(ctx) {
     );
     return { revision: record?.revision ?? null, cards: value?.cards ?? [] };
   };
+  // This read-only activity source uses the public SDK store. Text updates never
+  // invalidate the Board View; the same kernel transcript renders each record.
+  /** @typedef {import('../../../../../packages/plugin-sdk/src/host.js').TranscriptBlock} Block */
+  /** @param {string} message @param {string} text @returns {Block} */
+  const note = (message, text) => ({
+    key: { turn: 'board-activity', message, part: 'text' },
+    revision: '1',
+    kind: 'assistant',
+    content: { text },
+  });
+  const liveKey = { turn: 'board-activity', message: 'live', part: /** @type {const} */ ('text') };
+  const history = Array.from({ length: 300 }, (_, index) =>
+    note(`history-${index}`, `Board history ${String(index).padStart(3, '0')} — 卡片活动`),
+  );
+  const report =
+    '# Board report — 看板记录\n\n' +
+    'Unicode **progress**: 卡片已核对，下一步继续。 🚀\n\n'.repeat(1800) +
+    'Board report end — 完整记录。';
+  const activity = await tui.transcriptResource('board-activity', {
+    blocks: [
+      ...history,
+      note('report', report),
+      ...['cards', 'notes'].map(
+        (name) =>
+          /** @type {Block} */ ({
+            key: { turn: 'board-activity', message: `read-${name}`, part: 'tool' },
+            revision: '1',
+            kind: 'tool',
+            state: 'returned',
+            affinity: 'read',
+            content: { text: `Read ${name}\nBoard ${name} checked.` },
+          }),
+      ),
+      { ...note('live', 'Live activity — ready.\n'), key: liveKey },
+    ],
+    timings: [{ turn: 'board-activity', start_ms: Date.now(), active: true }],
+  });
+  ctx.effect(() => activity.close());
+  let activityRevision = 1;
+  let viewReads = 0;
+  let activityViewReads = 0;
+  await ctx.remote.method('activity-append', (input) => {
+    activity.append(liveKey, String(input), String(++activityRevision));
+    return activityRevision;
+  });
+  await ctx.remote.method('activity-stats', () => ({
+    ...activity.stats,
+    viewReads,
+    activityViewReads,
+    reportBytes: new TextEncoder().encode(report).length,
+  }));
   const changed = await tui.changes('board-changed');
   /** Writes the whole board if nobody wrote it since `revision`.
    * @param {number | null} revision
@@ -64,6 +115,22 @@ export default async function activate(ctx) {
     'board',
     {
       async read(route, cx) {
+        viewReads++;
+        if (route && typeof route === 'object' && 'activity' in route && route.activity === true) {
+          activityViewReads++;
+          return {
+            title: cx.t('Board activity', '看板活动', '看板活動'),
+            revision: 'activity',
+            root: tui.column('root', [
+              tui.text(
+                'intro',
+                cx.t('Live board activity and history', '看板实时活动与历史', '看板即時活動與歷史'),
+                'muted',
+              ),
+              tui.transcript('activity', activity.resource),
+            ]),
+          };
+        }
         const { revision, cards } = await load();
         const stamp = String(revision ?? 0);
         const card =
@@ -148,6 +215,9 @@ export default async function activate(ctx) {
               tui.input('new', 'new', cx.t('Card', '卡片', '卡片')),
               tui.button('add', 'add', 'primary'),
             ]),
+            tui.link('activity', cx.t('Board activity', '看板活动', '看板活動'), {
+              activity: true,
+            }),
           ]),
         };
       },

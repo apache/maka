@@ -240,7 +240,7 @@ pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 impl App {
-    /// The answer and value fields' keys, pastes and pointer, and Ctrl+S to
+    /// The answer and value fields' keys, pastes and pointer, and Ctrl+Enter to
     /// submit, taken before the sheet while it is on screen.
     pub(crate) fn interaction_sheet_input(
         &mut self,
@@ -255,9 +255,9 @@ impl App {
             return None;
         }
         if let Event::Key(key) = event
-            && key.kind != KeyEventKind::Release
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('s')
+            && key.kind == KeyEventKind::Press
+            && key.modifiers == KeyModifiers::CONTROL
+            && key.code == KeyCode::Enter
         {
             let command = if review.questions.is_some() {
                 Command::Submit

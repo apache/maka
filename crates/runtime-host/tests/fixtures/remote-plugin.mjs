@@ -199,7 +199,7 @@ export default async function activate(ctx) {
   const state = { generation: 0, opening: 0, active: 0, stopped: 0 };
   /** @type {import('../../../../packages/plugin-sdk/src/host.js').TerminalView} */
   const terminalView = {
-    version: 4,
+    version: 5,
     context: 'application',
     title: { fallback: 'Echo', translations: { 'zh-CN': '回显', 'zh-TW': '回顯' } },
   };

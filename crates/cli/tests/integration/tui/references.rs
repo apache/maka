@@ -103,7 +103,7 @@ fn host_directory_reference_survives_restart_and_sends_without_text_or_registrat
         .join(&client.identity.root_id)
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
-    assert_eq!(saved["version"], 18);
+    assert_eq!(saved["version"], 19);
     assert_eq!(
         saved["directories"]["refs"],
         json!([{"hostId":client.identity.root_id,"path":selected}])
@@ -112,7 +112,7 @@ fn host_directory_reference_survives_restart_and_sends_without_text_or_registrat
     let mut reopened = Pty::spawn(&args);
     reopened.wait_for("目录 target");
     reopened.wait_for("fixture-model");
-    reopened.send(b"\x13");
+    reopened.send(b"\r");
     reopened.wait_for("Directory received.");
     reopened.close_terminal();
     reopened.finish();

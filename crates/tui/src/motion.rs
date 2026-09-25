@@ -91,6 +91,10 @@ impl Motion {
     pub fn wait(&self, now: Instant) -> Option<Duration> {
         self.next.map(|at| at.saturating_duration_since(now))
     }
+    /// One shared frame time; decorative effects settle immediately when disabled.
+    pub fn frame_time(&self) -> Option<Instant> {
+        self.enabled.then_some(self.now)
+    }
     /// A changing value is not decorative motion; reduced motion still updates it.
     pub fn wake_after(&mut self, duration: Duration) {
         let at = self.now + duration;

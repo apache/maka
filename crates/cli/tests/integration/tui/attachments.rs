@@ -120,7 +120,7 @@ fn local_file_upload_survives_routes_and_restart_then_sends_without_text() {
         .join(&client.identity.root_id)
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-    assert_eq!(saved["version"], 18);
+    assert_eq!(saved["version"], 19);
     let attachment = saved["attachments"]["files"][0]["attachment"].clone();
     assert!(attachment.is_object());
     let artifact = attachment["ref"]["relativePath"].as_str().unwrap();
@@ -168,7 +168,7 @@ fn local_file_upload_survives_routes_and_restart_then_sends_without_text() {
             .screen
             .contains("Local files")
     );
-    reopened.send(b"\x13");
+    reopened.send(b"\r");
     reopened.wait_for("Attachment accepted.");
     let screen = reopened.screen.snapshot().unwrap().screen;
     assert!(screen.contains("attachment 中文.txt"));

@@ -65,8 +65,8 @@ pub enum Action {
     ToggleInspector,
     ToggleTrace,
     BrowseTranscript,
-    Search(crate::pages::chat::render::search::Command),
-    Copy(crate::pages::chat::render::selection::CopyMode),
+    Search(crate::ui::transcript::search::Command),
+    Copy(crate::ui::transcript::selection::CopyMode),
     CopyFile(String),
     Branch(crate::pages::branch::Command),
     Recap(crate::pages::recap::Command),
@@ -86,7 +86,7 @@ pub enum Action {
     OlderMessages,
     NewerMessages,
     LatestMessages,
-    ToggleMessage(crate::pages::chat::render::MessageKey),
+    ToggleMessage(crate::ui::transcript::MessageKey),
     SendMessage,
     SteerMessage,
     Queue(crate::pages::queue::Command),
@@ -362,9 +362,9 @@ impl App {
             }
             commands.push((Action::BrowseTranscript, "chat-browse"));
             for mode in [
-                crate::pages::chat::render::selection::CopyMode::Selection,
-                crate::pages::chat::render::selection::CopyMode::Message,
-                crate::pages::chat::render::selection::CopyMode::Source,
+                crate::ui::transcript::selection::CopyMode::Selection,
+                crate::ui::transcript::selection::CopyMode::Message,
+                crate::ui::transcript::selection::CopyMode::Source,
             ] {
                 commands.push((Action::Copy(mode), mode.label()));
             }
@@ -377,11 +377,11 @@ impl App {
                 commands.push((Action::CopyFile(path), "file-copy-path"));
             }
             commands.push((
-                Action::Search(crate::pages::chat::render::search::Command::Open),
+                Action::Search(crate::ui::transcript::search::Command::Open),
                 "chat-search",
             ));
             commands.push((
-                Action::Search(crate::pages::chat::render::search::Command::Scope),
+                Action::Search(crate::ui::transcript::search::Command::Scope),
                 "chat-search-scope-toggle",
             ));
             commands.push((
@@ -524,9 +524,7 @@ impl App {
             !matches!(
                 action,
                 Action::ToggleMessage(_)
-                    | Action::Search(crate::pages::chat::render::search::Command::PreviewToggle(
-                        _
-                    ))
+                    | Action::Search(crate::ui::transcript::search::Command::PreviewToggle(_))
             )
         })
     }
@@ -717,11 +715,12 @@ impl App {
                     .view
                     .search
                     .as_ref()
-                    .is_some_and(|search| search.history.is_some())
+                    .is_some_and(|search| search.history)
                 {
                     self.focus = Focus::Page;
                 } else {
-                    self.chat.view.search = None;
+                    self.chat
+                        .search_command(crate::ui::transcript::search::Command::Close);
                 }
                 self.chrome.details = !self.chrome.details;
                 if self.chrome.details && self.focus == Focus::Transcript {
@@ -737,7 +736,8 @@ impl App {
                 self.invalidate_editor_geometry();
             }
             Action::BrowseTranscript => {
-                self.chat.view.search = None;
+                self.chat
+                    .search_command(crate::ui::transcript::search::Command::Close);
                 self.chrome.details = false;
                 self.chat.view.enter();
                 self.focus = Focus::Transcript;
@@ -745,14 +745,14 @@ impl App {
             Action::Search(command) => {
                 if matches!(
                     command,
-                    crate::pages::chat::render::search::Command::Open
-                        | crate::pages::chat::render::search::Command::Scope
+                    crate::ui::transcript::search::Command::Open
+                        | crate::ui::transcript::search::Command::Scope
                 ) && let Some(reader) = self.chat.reader_mut()
                 {
                     reader.text_selection.clear();
                 }
                 self.chrome.details = false;
-                self.chat.view.search_command(command);
+                self.chat.search_command(command);
                 self.hover = None;
             }
             Action::ToggleTrace => self.chat.toggle_trace(),
@@ -771,7 +771,8 @@ impl App {
             Action::NewerMessages => self.chat.request_newer(),
             Action::LatestMessages => self.chat.latest(),
             Action::ToggleMessage(key) => {
-                self.chat.view.search = None;
+                self.chat
+                    .search_command(crate::ui::transcript::search::Command::Close);
                 self.chat.view.select(key.clone());
                 self.chat.view.toggle(&key);
                 self.focus = Focus::Transcript;
@@ -906,7 +907,7 @@ impl App {
                 matches!(self.navigation.current(), Route::Session(_))
                     && !self.chrome.details
                     && self.chat.reader().is_some_and(|reader| {
-                        if *mode == crate::pages::chat::render::selection::CopyMode::Selection {
+                        if *mode == crate::ui::transcript::selection::CopyMode::Selection {
                             reader.text_selection.active()
                         } else {
                             reader.selection().is_some()
@@ -1099,6 +1100,7 @@ impl App {
     pub fn invalidate_editor_geometry(&mut self) {
         self.layer.invalidate();
         self.apps.invalidate_geometry();
+        self.apps.invalidate_readers();
         if let Some(editor) = &mut self.theme.editor {
             editor.invalidate();
         }
@@ -1110,13 +1112,14 @@ impl App {
         self.resume.invalidate_geometry();
         self.revision.invalidate_geometry();
         self.onboarding.invalidate_geometry();
+        self.chat.reader_surface.invalidate();
         if let Some(reader) = self.chat.reader_mut() {
             reader.text_selection.invalidate_geometry();
             reader.invalidate_scrollbar();
         }
         if let Some(search) = &mut self.chat.view.search {
             search.editor.invalidate_geometry();
-            if let Some(history) = &mut search.history {
+            if let Some(history) = &mut self.chat.history {
                 history.invalidate_geometry();
             }
         }
@@ -1290,6 +1293,7 @@ impl App {
             && key.modifiers == KeyModifiers::CONTROL
         {
             let action = match key.code {
+                KeyCode::Char('k' | 'p') => Some(Action::Palette),
                 KeyCode::PageDown => Some(Action::NextTab),
                 KeyCode::PageUp => Some(Action::PreviousTab),
                 KeyCode::Char('w') => match self.navigation.current() {
@@ -1301,6 +1305,13 @@ impl App {
             if let Some(action) = action {
                 return (true, self.apply(action));
             }
+        }
+        if matches!(&event, Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                && matches!(key.code, KeyCode::Char('p' | 'P')))
+        {
+            return (true, self.apply(Action::Palette));
         }
         if let Some(outcome) = self.surface_input(&event) {
             return outcome;
@@ -1342,7 +1353,7 @@ impl App {
                     return (
                         true,
                         self.apply(Action::Copy(
-                            crate::pages::chat::render::selection::CopyMode::Selection,
+                            crate::ui::transcript::selection::CopyMode::Selection,
                         )),
                     );
                 }
@@ -1376,10 +1387,14 @@ impl App {
                         Action::ToggleMessage(_)
                             | Action::CopyFile(_)
                             | Action::Search(
-                                crate::pages::chat::render::search::Command::PreviewToggle(_)
+                                crate::ui::transcript::search::Command::PreviewToggle(_)
                             )
                     )
                 });
+                let preview = self.chat.history_scope();
+                let local = target
+                    .as_ref()
+                    .and_then(|action| self.chat.local_effect(action));
                 if (content
                     || self
                         .chat
@@ -1388,18 +1403,23 @@ impl App {
                     && let Some(outcome) = self
                         .chat
                         .reader_mut()
-                        .and_then(|reader| reader.text_mouse(*mouse, target))
+                        .and_then(|reader| reader.text_mouse(*mouse, local))
                 {
                     self.focus = Focus::Transcript;
                     self.hover = None;
-                    return (true, outcome.and_then(|action| self.apply(action)));
+                    return (
+                        true,
+                        outcome
+                            .and_then(|effect| self.chat.effect(effect, preview))
+                            .and_then(|action| self.apply(action)),
+                    );
                 }
             }
         }
         if self.palette.is_none()
             && !self.chrome.details
             && matches!(self.navigation.current(), Route::Session(_))
-            && let Some(outcome) = self.chat.view.search_input(&event)
+            && let Some(outcome) = self.chat.search_input(&event)
         {
             if matches!(event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left))
                 && let Some(reader) = self.chat.reader_mut()
@@ -1432,9 +1452,7 @@ impl App {
                     && key.code == KeyCode::Char('f')
                     && matches!(self.navigation.current(), Route::Session(_))
                 {
-                    Some(Action::Search(
-                        crate::pages::chat::render::search::Command::Open,
-                    ))
+                    Some(Action::Search(crate::ui::transcript::search::Command::Open))
                 } else if key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('a')
                     && self.focus != Focus::Composer
@@ -1472,11 +1490,25 @@ impl App {
                     && !self.queue_rows().is_empty()
                 {
                     Some(Action::Queue(crate::pages::queue::Command::Focus))
-                } else if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('s')
+                } else if key.code == KeyCode::Enter
+                    && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::CONTROL)
+                    && self.focus == Focus::Composer
                     && matches!(self.navigation.current(), Route::Session(_))
                 {
+                    // Enhanced terminals report repeats separately from a fresh press.
+                    if key.kind != KeyEventKind::Press {
+                        return (false, None);
+                    }
                     Some(Action::SendMessage)
+                } else if key.code == KeyCode::Char('j')
+                    && key.modifiers == KeyModifiers::CONTROL
+                    && self.focus == Focus::Composer
+                {
+                    // Legacy terminals cannot distinguish Shift+Enter from Enter.
+                    return (
+                        self.editor().is_some_and(|editor| editor.insert("\n")),
+                        None,
+                    );
                 } else if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
                     && self.focus != Focus::Composer
                     && matches!(self.navigation.current(), Route::Session(_))
@@ -1487,10 +1519,6 @@ impl App {
                         self.chat.scroll(false, 10);
                     }
                     return (true, None);
-                } else if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('p')
-                {
-                    Some(Action::Palette)
                 } else if key.modifiers.contains(KeyModifiers::ALT)
                     && key.code == KeyCode::Down
                     && self.focus != Focus::Composer
@@ -1710,7 +1738,8 @@ impl App {
                             if let Some(reader) = self.chat.reader_mut() {
                                 reader.text_selection.clear();
                             }
-                            self.chat.view.search = None;
+                            self.chat
+                                .search_command(crate::ui::transcript::search::Command::Close);
                             self.focus = Focus::Composer;
                         }
                         self.hover = None;
@@ -1781,7 +1810,8 @@ impl App {
                                 Action::Search(_) | Action::Palette | Action::ToggleDetails
                             )
                         }) {
-                            self.chat.view.search = None;
+                            self.chat
+                                .search_command(crate::ui::transcript::search::Command::Close);
                         }
                         if self.palette.is_none()
                             && let Some(index) = self
@@ -1820,6 +1850,102 @@ mod tests {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
     #[test]
+    fn composer_shortcuts_preserve_multiline_drafts_and_respect_input_scopes() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for locale in crate::Locale::ALL {
+            let mut app = App::new(
+                "/unused".into(),
+                crate::i18n::I18n::new(crate::LocalePreference::Explicit(locale), locale),
+            );
+            app.connection = ConnectionState::Connected {
+                root_id: "root".into(),
+                epoch: "epoch".into(),
+            };
+            app.apply(Action::Visit(Route::Session("chat".into())));
+            app.focus = Focus::Composer;
+            let chord = |code, modifiers| Event::Key(KeyEvent::new(code, modifiers));
+            // A pasted newline is content, never an implicit submission.
+            assert!(
+                app.input(Event::Paste("first 中文\nsecond 🦀".into()))
+                    .1
+                    .is_none()
+            );
+            assert!(
+                app.input(chord(KeyCode::Enter, KeyModifiers::SHIFT))
+                    .1
+                    .is_none()
+            );
+            assert!(
+                app.input(chord(KeyCode::Char('j'), KeyModifiers::CONTROL))
+                    .1
+                    .is_none()
+            );
+            assert_eq!(app.drafts["chat"].text(), "first 中文\nsecond 🦀\n\n");
+            for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+                assert!(
+                    app.input(Event::Key(KeyEvent::new_with_kind(
+                        KeyCode::Enter,
+                        KeyModifiers::NONE,
+                        kind,
+                    )))
+                    .1
+                    .is_none()
+                );
+            }
+            assert_eq!(app.input(key(KeyCode::Enter)).1, Some(Action::SendMessage));
+            assert_eq!(
+                app.input(chord(KeyCode::Enter, KeyModifiers::CONTROL)).1,
+                Some(Action::SendMessage)
+            );
+            assert!(
+                app.input(chord(KeyCode::Char('s'), KeyModifiers::CONTROL))
+                    .1
+                    .is_none()
+            );
+            let draft = app.drafts["chat"].text().to_owned();
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+            // Commands and sheets own Enter before the composer does.
+            app.input(chord(KeyCode::Char('k'), KeyModifiers::CONTROL));
+            assert!(app.palette.is_some());
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            app.input(Event::Paste("no such command 71937".into()));
+            assert!(app.input(key(KeyCode::Enter)).1.is_none());
+            app.input(key(KeyCode::Esc));
+            assert_eq!(app.focus, Focus::Composer);
+            app.input(key(KeyCode::F(1)));
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            assert!(app.input(key(KeyCode::Enter)).1.is_none());
+            app.input(key(KeyCode::Esc));
+            app.input(chord(KeyCode::Char('f'), KeyModifiers::CONTROL));
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            assert!(app.input(key(KeyCode::Enter)).1.is_none());
+            app.input(key(KeyCode::Esc));
+            assert_eq!(app.drafts["chat"].text(), draft);
+            app.focus = Focus::Composer;
+            let request = app.submission().unwrap();
+            assert_eq!(
+                request.placement,
+                maka_protocol::message::Placement::NextTurn
+            );
+            assert!(
+                app.input(key(KeyCode::Enter)).1.is_none(),
+                "pending send stays locked"
+            );
+            app.abandon_checkpoint(&request);
+            assert!(
+                app.input(key(KeyCode::Enter)).1.is_none(),
+                "unknown send is never retried by Enter"
+            );
+            assert_eq!(app.drafts["chat"].text(), draft);
+        }
+    }
+    #[test]
     fn mouse_disclosure_does_not_leave_keyboard_focus_decoration() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new(
@@ -1840,7 +1966,16 @@ mod tests {
         app.frame_size = Some((60, 10));
         let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
         terminal
-            .draw(|frame| app.hits = app.chat.view.draw(frame, frame.area(), false).unwrap())
+            .draw(|frame| {
+                app.hits = app
+                    .chat
+                    .view
+                    .draw(frame, frame.area(), false)
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|hit| app.chat.hit(hit, false))
+                    .collect();
+            })
             .unwrap();
         let hit = app
             .hits
@@ -1928,7 +2063,7 @@ mod tests {
             assert_eq!(app.drafts["b"].text(), "other draft");
             app.chat
                 .view
-                .search_command(crate::pages::chat::render::search::Command::Open);
+                .search_command(crate::ui::transcript::search::Command::Open);
             app.chat.view.search.as_mut().unwrap().editor.insert("find");
             terminal
                 .draw(|frame| crate::view::draw(frame, &mut app))

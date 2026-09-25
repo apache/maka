@@ -26,6 +26,8 @@ use maka_protocol::{
 use serde_json::{Value, json};
 use tokio::{io::AsyncWriteExt, sync::oneshot};
 
+const ROOT_TASK: &str = "root task\npasted 中文🦀\nshift line\nfallback line";
+
 #[test]
 fn real_host_queue_edits_retracts_promotes_and_steers_at_the_model_boundary() {
     let directory = tempfile::tempdir().unwrap();
@@ -61,7 +63,12 @@ fn real_host_queue_edits_retracts_promotes_and_steers_at_the_model_boundary() {
     tui.wait_for("Queue fixture session");
     tui.click_text("Queue fixture session");
     tui.wait_for("Message…");
-    tui.send(b"root task\x13");
+    tui.send("\x1b[200~root task\npasted 中文🦀\x1b[201~".as_bytes());
+    tui.send(b"\x1b[13;2ushift line\x0afallback line");
+    tui.wait_for("fallback line");
+    assert!(runtime.block_on(observe(&client)).root_turn.is_none());
+    tui.send(b"\x1b[13;1:2u\x1b[13;1:3u"); // Repeat/release cannot submit.
+    tui.send(b"\r");
     tui.wait_for("Queue gate one");
     tui.wait_for("Message…");
     let start = runtime.block_on(observe(&client));
@@ -78,7 +85,7 @@ fn real_host_queue_edits_retracts_promotes_and_steers_at_the_model_boundary() {
         if text == "remove-me" {
             tui.click_text("↳  ↗"); // Actual composer queue icon, not a queue row.
         } else {
-            tui.send(b"\x13");
+            tui.send(b"\r");
         }
         tui.wait_for("Message…");
         runtime.block_on(wait_queue(&client, |snapshot| {
@@ -265,6 +272,14 @@ async fn provider(
             let (mut stream, body) = model_request(&listener).await;
             let wire = body.to_string();
             assert!(wire.contains("root task"));
+            if index == 0 {
+                assert!(
+                    body["messages"].as_array().unwrap().iter().any(|message| {
+                        message["role"] == "user" && message["content"] == ROOT_TASK
+                    }),
+                    "multiline draft must arrive intact: {body}"
+                );
+            }
             assert!(
                 !wire.contains("remove-me")
                     && !wire.contains("follow-first-original")

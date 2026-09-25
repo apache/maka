@@ -54,7 +54,7 @@ fn composer_stop_cancels_the_observed_run_and_keeps_unsent_text() {
     tui.wait_for("Stop fixture session");
     tui.click_text("Stop fixture session");
     tui.wait_for("Message…");
-    tui.send("草稿 first\x13".as_bytes());
+    tui.send("草稿 first\r".as_bytes());
     tui.wait_for("Streamed 中文🦀");
     tui.wait_for("■");
     let running = runtime.block_on(async {

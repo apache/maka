@@ -90,7 +90,14 @@ localization-errors = Localization fallback: { $count } issue(s)
 help = Tab / Shift+Tab     Move focus between controls
     Up / Down          Select a navigation, page or command item
     Enter              Activate the focused item
-    Ctrl+P             Open command palette
+    Enter              Send from composer / queue for next turn
+    Shift+Enter        New line in composer
+    Ctrl+J             New line in composer (all terminals)
+    Ctrl+Enter         Submit answers / run message revision
+    Ctrl+K / Ctrl+P     Open command palette
+    Ctrl+F             Find in conversation
+    Ctrl+N             New session
+    Ctrl+A / Ctrl+Z    Select all / undo in editor
     Ctrl+B             Expand / collapse navigation
     Ctrl+PgUp/PgDn     Switch session tabs
     Ctrl+W             Close tab (keeps draft and running tasks)
@@ -111,6 +118,8 @@ help = Tab / Shift+Tab     Move focus between controls
 
     Mouse: click controls or message triangles; wheel scrolls the conversation.
     No special font is required. Resize adapts the navigation layout.
+    Shift+Enter and Ctrl+Enter require terminal keyboard support; Ctrl+J always inserts a new line in the composer.
+
 command-workspace = Open workspace
 command-host = Open Host connection
 command-settings = Open settings
@@ -135,7 +144,7 @@ shutdown-failed = Could not confirm that the Host stopped. You can stay here or 
 shutdown-working = Stopping Host and saving…
 button-theme = Toggle palette
 button-language = Change language: { $language }
-footer-commands = Ctrl+P Commands
+footer-commands = Ctrl+K Commands
 footer-back = < Back
 footer-forward = Forward >
 footer-quit = Ctrl+Q Quit
@@ -231,7 +240,7 @@ tool-parent = Parent call
 tool-arguments = Arguments
 tool-result = Result
 tool-toggle = { $state } · { $action }
-chat-send = Send message · Ctrl+S
+chat-send = Send message · Enter
 chat-sending = Sending…
 feedback-send-failed = Not sent · Draft kept
 feedback-send-unknown = Delivery uncertain · Ctrl+R to check
@@ -243,7 +252,7 @@ feedback-chat-failed = Conversation unavailable · Review details
 feedback-host-failed = Connection needs attention · See Host
 chat-stop = Stop current run
 chat-stopping = Stopping…
-queue-send = Queue for next turn · Ctrl+S
+queue-send = Queue for next turn · Enter
 queue-steer = Add to current turn at its next safe boundary · Ctrl+O
 queue-focus = Queued messages
 queue-steering = Current turn · Awaiting a safe boundary
@@ -272,8 +281,8 @@ chat-retry-original = Retry original message
 chat-send-unknown-retry = Outcome unknown · Ctrl+R checks without resending. Commands can retry the original message, not your newer edits. { $id } · { $error }
 chat-checking = Checking delivery…
 chat-send-unconfirmed = Not yet confirmed · Draft kept; Ctrl+R to check again · { $id }
-chat-send-cancelled = Host confirms cancellation · Draft kept; Ctrl+S to send as a new message
-chat-send-not-admitted = Not delivered · Draft kept; Ctrl+S to send
+chat-send-cancelled = Host confirms cancellation · Draft kept; Enter to send as a new message
+chat-send-not-admitted = Not delivered · Draft kept; Enter to send
 session-create = New session in current directory · Ctrl+N
 session-new = New conversation
 shell-error = Error · { $error }
@@ -335,7 +344,7 @@ question-custom = Write your own answer…
 question-skip = Skip this question
 question-too-large = Answer exceeds 2,048 UTF-8 bytes; input was not inserted.
 question-progress = { $value } / { $count } answered · Choose, write, or explicitly skip every question.
-question-help = Tab: focus · Enter: choose / newline · Ctrl+S: submit · Esc: later
+question-help = Tab: focus · Enter: choose / newline · Ctrl+Enter: submit · Esc: later
 form-switch = Switch field
 form-empty = Set empty value
 form-omit = Leave unset
@@ -371,7 +380,7 @@ form-previous = ‹ Previous
 form-next = Next ›
 form-empty-value = Empty value (included)
 form-input = Enter a value…
-form-help = Tab: focus · Enter: edit/choose · Ctrl+S: submit · Esc: later
+form-help = Tab: focus · Enter: edit/choose · Ctrl+Enter: submit · Esc: later
 chat-newer = Load newer messages
 host-root-changed = This path now identifies a different Host Root. Check that local changes are saved before restarting; saved drafts remain with the original Root profile.
 tabs-next = Next session tab · Ctrl+PgDn
@@ -944,3 +953,8 @@ settings-host-failed = Unavailable
 sidebar-title = Sessions
 sidebar-all = All
 sidebar-pending = Needs you
+
+transcript-capacity = Too many readers are open. Close another view to read this one.
+transcript-failed = This reader could not be updated.
+transcript-buffer-full = The reader reached its local capacity.
+transcript-expired = This reader has expired.

@@ -24,6 +24,10 @@ use maka_protocol::{
 };
 use serde_json::{Value, json};
 
+mod activity;
+mod lifecycle;
+mod wire;
+
 /// A JavaScript plugin the binary has never heard of, installed while the
 /// TUI runs: its app appears in the sidebar, works like any built-in one,
 /// and redraws when someone else changes its data.
@@ -123,10 +127,14 @@ fn a_javascript_plugin_installed_at_runtime_brings_its_own_app_into_the_running_
     assert_eq!(count, 2);
     tui.wait_until(|screen| screen.contains("To do  1") && screen.contains("From elsewhere"));
 
+    runtime.block_on(wire::preflight(&client));
+    activity::exercise(&mut tui, &runtime, &client);
+
     // Retirement cancels the live changes stream and revokes the open page.
     runtime.block_on(toggle(&client, true));
     tui.wait_for("This app is no longer available.");
     runtime.block_on(toggle(&client, false));
+    activity::replacement(&mut tui, &runtime, &client);
     tui.wait_until(|screen| {
         screen.contains("From elsewhere")
             && screen.contains("Doing  1")
@@ -165,13 +173,16 @@ fn a_javascript_plugin_installed_at_runtime_brings_its_own_app_into_the_running_
 }
 
 async fn toggle(client: &maka_client::Client, disabled: bool) {
-    client
+    let receipt = client
         .request(
             Operation::PluginCompositionApply,
             json!({"operations":[{"type":"update","entryId":"board","patch":{"disabled":disabled}}]}),
         )
         .await
         .unwrap();
+    if !disabled {
+        lifecycle::settle(client, disabled, &receipt).await;
+    }
 }
 
 async fn remote(client: &maka_client::Client, method: &str, input: Value) -> Value {

@@ -79,6 +79,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, key: &Key) {
         focused.as_deref(),
         context.colors,
     );
+    if let Some(wait) = super::transcript::paint(
+        frame,
+        &mut app.apps.readers,
+        &mut surface,
+        context,
+        &app.i18n,
+        app.chrome.animation.frame_time(),
+    ) && app.chrome.window_focused
+    {
+        app.chrome.animation.wake_after(wait);
+    }
     surface.repaint_popover(frame, &context);
     if let Some(instance) = app.apps.instances.get_mut(key) {
         instance.surface = surface;
@@ -102,6 +113,9 @@ fn page(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
             fill(app, key, name, wire, path, width)
         };
         let env = tree::Env {
+            readers: &app.apps.readers,
+            resources_live: instance.live.is_some() && !instance.blocked,
+            i18n: &app.i18n,
             key,
             drafts: &instance.drafts,
             ascii: app.chrome.ascii,
@@ -124,13 +138,22 @@ fn page(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
             .then(|| Node::text("status", vec![(app.i18n.text(text.0), text.1)]));
         (node.into_iter().collect(), vec![])
     };
-    rows.push(Node::scroll(
-        "body",
-        Node::row(
-            "frame",
-            vec![Node::column("content", content).size(Size::Fixed(width))],
-        ),
-    ));
+    let frame = Node::row(
+        "frame",
+        vec![Node::column("content", content).size(Size::Fixed(width))],
+    )
+    .size(Size::Fill);
+    rows.push(
+        if instance
+            .view
+            .as_ref()
+            .is_some_and(|view| tree::has_transcript(&view.root))
+        {
+            Node::column("body", vec![frame]).size(Size::Fill)
+        } else {
+            Node::scroll("body", frame)
+        },
+    );
     (Node::column("app", rows).gap(1), wells)
 }
 
@@ -258,29 +281,39 @@ impl App {
     pub(crate) fn app_page_input(&mut self, key: &Key, event: &Event) -> Option<bool> {
         let keyboard = self.focus == Focus::Page;
         let instance = self.apps.instances.get_mut(key)?;
-        if let Event::Key(press) = event
-            && press.kind != KeyEventKind::Release
-            && press.code == KeyCode::Esc
-            && press.modifiers.is_empty()
-            && keyboard
-            && !instance.surface.captures()
-        {
-            let command = if instance.review.is_some() {
-                Command::CancelDraft
-            } else if !instance.history.is_empty() {
-                Command::Back
-            } else {
-                return None;
-            };
-            self.apps_action(Message::Instance(key.clone(), command));
-            return Some(true);
-        }
         let mut surface = std::mem::take(&mut instance.surface);
         let wells = std::mem::take(&mut instance.wells);
-        let outcome = region::input(&mut self.apps, &mut surface, &wells, event, keyboard);
+        let outcome = region::input(
+            &mut self.apps,
+            &mut surface,
+            &wells,
+            event,
+            keyboard,
+            self.chrome.ascii,
+        );
         if let Some(instance) = self.apps.instances.get_mut(key) {
             instance.surface = surface;
             instance.wells = wells;
+        }
+        if outcome.is_none() {
+            let instance = self.apps.instances.get(key)?;
+            if let Event::Key(press) = event
+                && press.kind != KeyEventKind::Release
+                && press.code == KeyCode::Esc
+                && press.modifiers.is_empty()
+                && keyboard
+                && !instance.surface.captures()
+            {
+                let command = if instance.review.is_some() {
+                    Command::CancelDraft
+                } else if !instance.history.is_empty() {
+                    Command::Back
+                } else {
+                    return None;
+                };
+                self.apps_action(Message::Instance(key.clone(), command));
+                return Some(true);
+            }
         }
         let redraw = outcome?;
         if matches!(event, Event::Mouse(mouse) if matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)))
@@ -484,6 +517,9 @@ pub(crate) fn pane(
     let slots =
         |name: &str, wire: &str, path: &str, width: u16| fill(app, key, name, wire, path, width);
     let env = tree::Env {
+        readers: &app.apps.readers,
+        resources_live: instance.live.is_some() && !instance.blocked,
+        i18n: &app.i18n,
         key,
         drafts: &instance.drafts,
         ascii: app.chrome.ascii,

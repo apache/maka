@@ -129,14 +129,36 @@ pub(super) fn draw(
         );
     } else if let Some(preview) = &mut history.preview {
         preview.colors = colors;
-        match preview.draw(frame, body, ascii) {
-            Ok(found) => hits.extend(found.into_iter().map(|hit| Hit {
-                area: hit.area,
-                action: if let Action::ToggleMessage(key) = hit.action {
-                    Action::Search(Command::PreviewToggle(key))
-                } else {
-                    hit.action
-                },
+        let context = crate::ui::Context {
+            colors,
+            ascii,
+            focused: preview.focused,
+        };
+        history.reader_surface.render(
+            frame,
+            body,
+            crate::ui::Node::transcript("transcript", uuid::Uuid::nil()),
+            context,
+        );
+        match history.reader_surface.paint_transcript(
+            frame,
+            uuid::Uuid::nil(),
+            preview,
+            context,
+            false,
+        ) {
+            Ok(found) => hits.extend(found.into_iter().filter_map(|hit| {
+                use crate::ui::transcript::Effect;
+                let action = match hit.effect {
+                    Effect::Disclosure(key) => Action::Search(Command::PreviewToggle(key)),
+                    Effect::Link { key, revision } => {
+                        Action::CopyFile(preview.link(&key, &revision)?.into())
+                    }
+                };
+                Some(Hit {
+                    area: hit.area,
+                    action,
+                })
             })),
             Err(error) => history.fail(error.into()),
         }

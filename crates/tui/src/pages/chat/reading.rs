@@ -117,7 +117,15 @@ impl Chat {
     fn reading_range(&self) -> Option<Window> {
         if self.snapshot.is_none() {
             self.restore_range
-        } else if !self.view.following() && !self.view.anchored_to_live(&self.live) {
+        } else if !self.view.following()
+            && !self.view.anchored_to(
+                self.live
+                    .iter()
+                    .map(|(id, _)| presentation::live_key(id))
+                    .collect::<Vec<_>>()
+                    .iter(),
+            )
+        {
             self.rows
                 .first_key_value()
                 .zip(self.rows.last_key_value())

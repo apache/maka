@@ -267,6 +267,11 @@ pub enum Node {
         key: String,
         text: String,
     },
+    /// A locally interactive reader backed by a bounded page/live resource.
+    Transcript {
+        key: String,
+        resource: super::transcript::Resource,
+    },
     /// Where other plugins' views that fill `name` are shown, each given
     /// `context` as its starting route.
     Slot {
@@ -297,6 +302,7 @@ impl Node {
             | Self::Progress { key, .. }
             | Self::Markdown { key, .. }
             | Self::Code { key, .. }
+            | Self::Transcript { key, .. }
             | Self::Slot { key, .. } => key,
         }
     }
@@ -441,6 +447,7 @@ pub(crate) fn route(value: &Value) -> Result<(), Error> {
 #[derive(Default)]
 struct Walk<'a> {
     nodes: usize,
+    transcripts: usize,
     inputs: BTreeSet<&'a str>,
     actions: BTreeSet<&'a str>,
 }
@@ -641,6 +648,13 @@ impl View {
             Node::Slot { name, context, .. } => {
                 identifier(name)?;
                 route(context)?;
+            }
+            Node::Transcript { resource, .. } => {
+                walk.transcripts += 1;
+                if walk.transcripts > 4 {
+                    return Err(invalid());
+                }
+                resource.validate()?;
             }
         }
         for child in node.children() {
@@ -966,6 +980,15 @@ pub mod build {
             key: key.into(),
             name: name.into(),
             context,
+        }
+    }
+    pub fn transcript(
+        key: impl Into<String>,
+        resource: super::super::transcript::Resource,
+    ) -> Node {
+        Node::Transcript {
+            key: key.into(),
+            resource,
         }
     }
     pub fn action(id: impl Into<String>, label: impl Into<String>) -> Action {

@@ -18,18 +18,13 @@
  */
 
 use super::*;
-use crate::pages::chat::render::search::Command;
+use crate::ui::transcript::search::Command;
 mod history;
 
 pub(super) fn body(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> bool {
     let available = app.chat.subscription.is_some() && app.chat.error.is_none();
-    let Some(history) = app
-        .chat
-        .view
-        .search
-        .as_mut()
-        .and_then(|search| search.history.as_mut())
-    else {
+    app.chat.sync_history();
+    let Some(history) = app.chat.history.as_mut() else {
         return false;
     };
     app.hits.extend(history::draw(
@@ -49,11 +44,15 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
     let search = app.chat.view.search.as_ref().unwrap();
-    let count = search.count();
+    let count = app
+        .chat
+        .history
+        .as_ref()
+        .map_or_else(|| search.count(), |history| history.count());
     let count_width = (count.width() as u16).min(area.width / 3);
     let controls = 9;
     let label = if area.width >= 60 {
-        app.i18n.text(if search.history.is_some() {
+        app.i18n.text(if search.history {
             "chat-search-all"
         } else {
             "chat-search-scope"
@@ -63,7 +62,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
     let prefix = format!(
         "{} {label} ",
-        if search.history.is_some() {
+        if search.history {
             app.chrome.symbol("∞", "*")
         } else {
             app.chrome.symbol("⌕", "/")

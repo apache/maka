@@ -91,6 +91,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), parts[0]);
     } else {
         app.chat.view.colors = app.theme.colors();
+        app.chat.view.motion(app.chrome.animation.frame_time());
         app.chat.view.focused = app.focus == Focus::Transcript
             && !app.chat.view.mouse_selected
             && !app.chat.view.text_selection.active()
@@ -132,6 +133,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
         if app.chrome.window_focused
             && let Some(wait) = app.chat.stream_wait()
         {
+            app.chrome.animation.wake_after(wait);
+        }
+        if let Some(wait) = app.chat.view.motion_wait() {
             app.chrome.animation.wake_after(wait);
         }
     }

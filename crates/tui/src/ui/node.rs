@@ -85,6 +85,8 @@ pub enum On<M> {
     /// Set on a Scroll node: a read-only viewport that takes keyboard focus
     /// and scrolls with the arrows, Home and End.
     Scroll,
+    /// Focus belongs to the mounted transcript's local reader.
+    Transcript,
 }
 
 #[derive(Clone)]
@@ -109,6 +111,11 @@ pub enum Kind<M> {
     /// kernel places it and makes it a focus stop: a click only focuses it,
     /// Enter activates it, and the owner takes every other key.
     Slot,
+    /// A shared reader placed and driven by the kernel. The local token
+    /// identifies a source mount; it is never a plugin-provided authority.
+    Transcript {
+        token: uuid::Uuid,
+    },
     /// Vertical scrolling for content taller than its rectangle.
     Scroll(Box<Node<M>>),
 }
@@ -193,6 +200,11 @@ impl<M> Node<M> {
     pub fn slot(key: impl Into<Cow<'static, str>>, rows: u16) -> Self {
         Self::new(key, Kind::Slot).size(Size::Fixed(rows))
     }
+    pub fn transcript(key: impl Into<Cow<'static, str>>, token: uuid::Uuid) -> Self {
+        Self::new(key, Kind::Transcript { token })
+            .size(Size::Fill)
+            .on(On::Transcript)
+    }
     pub fn rule(key: impl Into<Cow<'static, str>>) -> Self {
         Self::new(key, Kind::Rule).size(Size::Fixed(1))
     }
@@ -265,6 +277,7 @@ impl<M> Node<M> {
             Kind::Text { spans, align, clip } => Kind::Text { spans, align, clip },
             Kind::Rule => Kind::Rule,
             Kind::Slot => Kind::Slot,
+            Kind::Transcript { token } => Kind::Transcript { token },
             Kind::Scroll(child) => Kind::Scroll(Box::new(child.map(f))),
         };
         let on = self.on.map(|on| match on {
@@ -280,6 +293,7 @@ impl<M> Node<M> {
                 current,
             },
             On::Scroll => On::Scroll,
+            On::Transcript => On::Transcript,
         });
         Node {
             key: self.key,

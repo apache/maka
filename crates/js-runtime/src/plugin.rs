@@ -428,10 +428,21 @@ impl Module {
         } else {
             &self.0.vm.0.bytes
         };
-        let slot = calls
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| failed("VM call capacity exhausted"))?;
+        let slot = if control {
+            // Retirement and several stream cancellations may arrive together.
+            // Wait in the reserved lane instead of rejecting cleanup while its
+            // other signals are making progress; ordinary calls stay fail-fast.
+            tokio::select! {
+                biased;
+                _ = self.0.vm.0.health.stopped.cancelled() => return Err(self.0.vm.0.health.error()),
+                slot = calls.clone().acquire_owned() => slot.map_err(|_| self.0.vm.0.health.error())?,
+            }
+        } else {
+            calls
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| failed("VM call capacity exhausted"))?
+        };
         let bytes = budget
             .clone()
             .try_acquire_many_owned(size.max(1) as u32)

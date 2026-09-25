@@ -31,6 +31,12 @@ use crossterm::{
         enable_raw_mode,
     },
 };
+// Native Windows already reports modifiers and key event kinds through WinAPI.
+// Crossterm's keyboard enhancement commands are unsupported on that backend.
+#[cfg(unix)]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::{self, IsTerminal, Stdout};
 
@@ -74,6 +80,14 @@ impl Guard {
             EnableFocusChange,
             EnableBracketedPaste
         )?;
+        #[cfg(unix)]
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )?;
         let screen = Terminal::new(CrosstermBackend::new(io::stdout()))?;
         Ok((guard, screen))
     }
@@ -84,6 +98,8 @@ impl Drop for Guard {
     }
 }
 pub fn restore() {
+    #[cfg(unix)]
+    let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     let _ = execute!(
         io::stdout(),
         EndSynchronizedUpdate,

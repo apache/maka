@@ -28,11 +28,13 @@ use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 pub mod context;
 pub mod history;
-pub(super) mod layout;
+pub(super) use crate::ui::transcript::layout;
 pub mod reading;
-pub mod render;
+use crate::ui::transcript as render;
+pub mod presentation;
+mod search;
 pub mod stopping;
-mod streaming;
+use crate::ui::transcript::streaming;
 mod tools;
 
 const WINDOW_ROWS: usize = 256;
@@ -84,6 +86,9 @@ pub struct Chat {
     pub error: Option<String>,
     pub removed: bool,
     pub view: render::Transcript,
+    pub presentation: presentation::Presentation,
+    pub history: Option<Box<history::History>>,
+    pub reader_surface: crate::ui::Surface<()>,
     live_revision: u64,
     pub area: Option<Rect>,
     dirty: bool,
@@ -106,31 +111,15 @@ impl Chat {
         };
     }
     pub fn reader(&self) -> Option<&render::Transcript> {
-        if let Some(history) = self
-            .view
-            .search
-            .as_ref()
-            .and_then(|search| search.history.as_ref())
-        {
-            history.preview.as_ref()
+        if self.history_scope() {
+            self.history.as_ref()?.preview.as_ref()
         } else {
             Some(&self.view)
         }
     }
     pub fn reader_mut(&mut self) -> Option<&mut render::Transcript> {
-        if self
-            .view
-            .search
-            .as_ref()
-            .is_some_and(|search| search.history.is_some())
-        {
-            self.view
-                .search
-                .as_mut()?
-                .history
-                .as_mut()?
-                .preview
-                .as_mut()
+        if self.history_scope() {
+            self.history.as_mut()?.preview.as_mut()
         } else {
             Some(&mut self.view)
         }
@@ -461,7 +450,10 @@ impl Chat {
                     .map(|through| (Some(through), String::new()));
                 removed
             };
-            self.view.discarded(&removed.1);
+            self.view.discarded(
+                removed.1["turnId"].as_str().unwrap(),
+                removed.1["id"].as_str().unwrap(),
+            );
             self.bytes -= serde_json::to_vec(&removed.1)?.len();
         }
         if self.through >= self.wanted {
@@ -549,12 +541,7 @@ impl Chat {
     }
     pub fn invalidate_layout(&mut self) {
         self.cadence.flush();
-        if let Some(history) = self
-            .view
-            .search
-            .as_mut()
-            .and_then(|search| search.history.as_mut())
-        {
+        if let Some(history) = self.history.as_mut() {
             history.invalidate_labels();
         }
         self.view.invalidate_labels();
@@ -576,12 +563,8 @@ impl Chat {
             subscription: self.subscription.clone()?,
             through: self.wanted.or(self.through),
         };
-        self.view
-            .search
-            .as_mut()?
-            .history
-            .as_mut()?
-            .request(context)
+        self.sync_history();
+        self.history.as_mut()?.request(context)
     }
     pub fn history_completed(
         &mut self,
@@ -590,13 +573,10 @@ impl Chat {
         i18n: &I18n,
         ascii: bool,
     ) {
+        self.sync_history();
         if request.context.generation == self.generation
             && self.subscription.as_ref() == Some(&request.context.subscription)
-            && let Some(history) = self
-                .view
-                .search
-                .as_mut()
-                .and_then(|search| search.history.as_mut())
+            && let Some(history) = self.history.as_mut()
         {
             history.complete(request, result, i18n, ascii);
         }
@@ -614,7 +594,7 @@ impl Chat {
     pub fn toggle_trace(&mut self) {
         self.view.trace = !self.view.trace;
         if let Some(search) = &mut self.view.search
-            && let Some(history) = &mut search.history
+            && let Some(history) = &mut self.history
         {
             history.changed(search.editor.text(), self.view.trace);
         }
@@ -628,6 +608,7 @@ impl Chat {
         ascii: bool,
     ) -> Vec<crate::app::Hit> {
         self.area = Some(area);
+        self.reader_surface.invalidate();
         if self.removed {
             frame.render_widget(
                 Paragraph::new(i18n.text("session-removed-draft"))
@@ -661,17 +642,18 @@ impl Chat {
             })
             .filter(|_| !self.reading_history)
             .map(|turn| turn.turn_id.clone());
-        if self.view.active_turn != active_turn {
-            self.view.active_turn = active_turn;
+        if self.presentation.active_turn != active_turn {
+            self.presentation.active_turn = active_turn;
             self.cadence.flush();
             self.dirty = true;
         }
         // Keep text under the pointer stable until release. Incoming content is
         // still retained in the bounded model and applied on the next draw.
         if self.dirty && !self.view.text_selection.dragging() && self.stream_wait().is_none() {
-            self.view
+            self.presentation
                 .interactions(&self.snapshot.as_ref().unwrap().interactions);
-            self.view.sync(
+            self.presentation.sync(
+                &mut self.view,
                 &self.rows,
                 if self.reading_history {
                     &[]
@@ -689,8 +671,28 @@ impl Chat {
             frame.render_widget(Paragraph::new(i18n.text("chat-empty")), area);
             return vec![];
         }
-        match self.view.draw(frame, area, ascii) {
-            Ok(hits) => hits,
+        let context = crate::ui::Context {
+            colors: self.view.colors,
+            ascii,
+            focused: self.view.focused,
+        };
+        self.reader_surface.render(
+            frame,
+            area,
+            crate::ui::Node::transcript("transcript", uuid::Uuid::nil()),
+            context,
+        );
+        match self.reader_surface.paint_transcript(
+            frame,
+            uuid::Uuid::nil(),
+            &mut self.view,
+            context,
+            false,
+        ) {
+            Ok(hits) => hits
+                .into_iter()
+                .filter_map(|hit| self.hit(hit, false))
+                .collect(),
             Err(error) => {
                 self.error = Some(error.into());
                 frame.render_widget(Paragraph::new(i18n.text("chat-failed")), area);
@@ -746,6 +748,14 @@ pub async fn open(client: &Client, request: &OpenRequest) -> Result<Opened, Erro
             let _ = client.close_subscription(&snapshot.subscription_id).await;
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+impl Chat {
+    pub(crate) fn fixture_rows(&mut self, rows: BTreeMap<u64, Value>) {
+        self.rows = rows;
+        self.dirty = true;
     }
 }
 

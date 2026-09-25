@@ -313,7 +313,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                         .view
                         .search
                         .as_ref()
-                        .is_some_and(|search| search.history.is_some())
+                        .is_some_and(|search| search.history)
                     {
                         "chat-search-history-help"
                     } else {
@@ -558,14 +558,14 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         Action::ToggleTrace => ("⋯", "."),
         Action::BrowseTranscript => ("▤", "B"),
         Action::Search(command) => match command {
-            crate::pages::chat::render::search::Command::Open => ("⌕", "/"),
-            crate::pages::chat::render::search::Command::Close => ("×", "x"),
-            crate::pages::chat::render::search::Command::Next => ("↓", "v"),
-            crate::pages::chat::render::search::Command::Previous => ("↑", "^"),
-            crate::pages::chat::render::search::Command::Scope => ("∞", "*"),
-            crate::pages::chat::render::search::Command::Restart => ("↻", "R"),
-            crate::pages::chat::render::search::Command::Pick(_) => ("›", ">"),
-            crate::pages::chat::render::search::Command::PreviewToggle(_) => ("▾", "v"),
+            crate::ui::transcript::search::Command::Open => ("⌕", "/"),
+            crate::ui::transcript::search::Command::Close => ("×", "x"),
+            crate::ui::transcript::search::Command::Next => ("↓", "v"),
+            crate::ui::transcript::search::Command::Previous => ("↑", "^"),
+            crate::ui::transcript::search::Command::Scope => ("∞", "*"),
+            crate::ui::transcript::search::Command::Restart => ("↻", "R"),
+            crate::ui::transcript::search::Command::Pick(_) => ("›", ">"),
+            crate::ui::transcript::search::Command::PreviewToggle(_) => ("▾", "v"),
         },
         Action::ToggleTheme => ("◐", "T"),
         Action::Theme(_) => ("◒", "C"),
@@ -718,14 +718,14 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::ToggleTrace => "command-trace-show",
         Action::BrowseTranscript => "chat-browse",
         Action::Search(command) => match command {
-            crate::pages::chat::render::search::Command::Open => "chat-search",
-            crate::pages::chat::render::search::Command::Close => "chat-search-close",
-            crate::pages::chat::render::search::Command::Next => "chat-search-next",
-            crate::pages::chat::render::search::Command::Previous => "chat-search-previous",
-            crate::pages::chat::render::search::Command::Scope => "chat-search-scope-toggle",
-            crate::pages::chat::render::search::Command::Restart => "chat-search-restart",
-            crate::pages::chat::render::search::Command::Pick(_) => "chat-search-preview",
-            crate::pages::chat::render::search::Command::PreviewToggle(_) => "chat-toggle-message",
+            crate::ui::transcript::search::Command::Open => "chat-search",
+            crate::ui::transcript::search::Command::Close => "chat-search-close",
+            crate::ui::transcript::search::Command::Next => "chat-search-next",
+            crate::ui::transcript::search::Command::Previous => "chat-search-previous",
+            crate::ui::transcript::search::Command::Scope => "chat-search-scope-toggle",
+            crate::ui::transcript::search::Command::Restart => "chat-search-restart",
+            crate::ui::transcript::search::Command::Pick(_) => "chat-search-preview",
+            crate::ui::transcript::search::Command::PreviewToggle(_) => "chat-toggle-message",
         },
         Action::ToggleSymbols => "command-symbols",
         Action::ToggleMotion => "command-motion",

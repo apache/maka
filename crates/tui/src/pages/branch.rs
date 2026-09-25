@@ -198,7 +198,7 @@ impl App {
         if self.chat.view.search.is_some() {
             return None;
         }
-        let (turn, text) = self.chat.view.selected_branch_point()?;
+        let (turn, text) = self.chat.presentation.branch_point(&self.chat.view)?;
         let super::sessions::Detail::Ready(item) = &self.sessions.detail else {
             return None;
         };
@@ -459,7 +459,9 @@ pub(crate) mod tests {
             1,
             json!({"type":"user","id":"original","turnId":"turn","text":"Selected prompt 中文"}),
         )]);
-        app.chat.view.sync(&rows, &[], 0, &app.i18n, false);
+        app.chat
+            .presentation
+            .sync(&mut app.chat.view, &rows, &[], 0, &app.i18n, false);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal
             .draw(|f| {

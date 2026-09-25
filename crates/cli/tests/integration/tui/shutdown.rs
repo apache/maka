@@ -63,7 +63,7 @@ fn force_quit_cancels_active_turn_and_preserves_history_and_unsent_draft() {
     tui.wait_for("Shutdown fixture");
     tui.click_text("Shutdown fixture");
     tui.wait_for("Message…");
-    tui.send("草稿 first\x13".as_bytes());
+    tui.send("草稿 first\r".as_bytes());
     tui.wait_for("Streamed 中文🦀");
     let turn = runtime.block_on(async {
         let snapshot = client

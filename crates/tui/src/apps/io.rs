@@ -18,6 +18,7 @@
  */
 
 use super::{Request, Work};
+pub mod transcript;
 use maka_client::{Client, ClientError, RequestFailure};
 use maka_plugins::terminal_ui::view::{Reply, Request as Input};
 use maka_protocol::plugin::{

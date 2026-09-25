@@ -429,7 +429,7 @@ mod tests {
             }
             assert!(app.i18n.diagnostics().is_empty());
         }
-        let (ticket, answer) = key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        let (ticket, answer) = key(&mut app, KeyCode::Enter, KeyModifiers::CONTROL).unwrap();
         assert_eq!(
             answer,
             Some(InteractionAnswer::Question {

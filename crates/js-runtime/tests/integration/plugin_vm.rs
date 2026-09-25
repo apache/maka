@@ -52,7 +52,11 @@ async fn cross_vm_host_calls_preserve_values_and_retirement_does_not_retarget_or
             }
         "#.into(), Some(std::sync::Arc::new(Relay(service.clone())))).unwrap();
         let key = caller.host_key();
-        let payload = json!({"nested":[1, null, {"text":"跨 VM"}]});
+        let payload = json!({"nested":[1, null, {"text":"跨 VM",
+            "timestamp":1_790_320_333_732_i64,
+            "safe":[9_007_199_254_740_991_i64,-9_007_199_254_740_991_i64],
+            "fraction":1.25,"outsideSafeRange":9_007_199_254_740_992.0
+        }]});
         assert_eq!(caller.call(vec!["invoke".into()], vec![json!(key), json!("echo"), payload.clone()]).await.unwrap(), payload);
         let running = tokio::spawn({
             let caller = caller.clone();
@@ -85,6 +89,33 @@ async fn cross_vm_host_calls_preserve_values_and_retirement_does_not_retarget_or
 
 async fn call(module: &Module, name: &str) -> Value {
     module.call(vec![name.into()], vec![]).await.unwrap()
+}
+
+#[tokio::test]
+async fn reserved_control_calls_queue_without_rejecting_retirement() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let vm=Vm::new(Limits::default()).unwrap();
+        let module=vm.load("control-contention.mjs".into(), r#"
+            const pending = new Map();
+            export function cancel(id) { return new Promise(resolve => pending.set(id, resolve)); }
+            export function count() { return pending.size; }
+            export function release() { for (const done of pending.values()) done(); pending.clear(); }
+            export function retire() { return true; }
+        "#.into()).unwrap();
+        let first=tokio::spawn({ let module=module.clone(); async move { module.cancel_call("one".into()).await } });
+        let second=tokio::spawn({ let module=module.clone(); async move { module.cancel_call("two".into()).await } });
+        while call(&module,"count").await != json!(2) { tokio::task::yield_now().await; }
+        let mut retirement=Box::pin(module.lifecycle(maka_js_runtime::plugin::Lifecycle::Retire));
+        assert!(futures_util::poll!(retirement.as_mut()).is_pending(),
+            "cleanup queues behind admitted control calls instead of failing capacity");
+        call(&module,"release").await;
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        retirement.await.unwrap();
+        module.close().await.unwrap();
+        assert_eq!(vm.statistics(false).await.unwrap().pending_calls,0);
+        vm.shutdown().await;
+    }).await.unwrap();
 }
 
 #[tokio::test]

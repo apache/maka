@@ -86,7 +86,7 @@ fn real_edits_show_request_diff_without_claiming_a_file_snapshot_and_copy_withou
     tui.wait_for("Change preview fixture");
     tui.click_text("Change preview fixture");
     tui.wait_for("Message…");
-    tui.send(b"change the isolated files\x13");
+    tui.send(b"change the isolated files\r");
     tui.wait_for("Changes recorded");
     runtime.block_on(model).unwrap();
     assert_eq!(
@@ -230,7 +230,7 @@ fn code_mode_patch_stops_after_failure_and_keeps_real_tools_visible() {
     tui.wait_for("Partial patch fixture");
     tui.click_text("Partial patch fixture");
     tui.wait_for("Message…");
-    tui.send(b"Apply the isolated patch\x13");
+    tui.send(b"Apply the isolated patch\r");
     tui.wait_for("Patch stopped after the failed update");
     runtime.block_on(model).unwrap();
     assert_eq!(

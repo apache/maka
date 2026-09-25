@@ -208,7 +208,7 @@ fn model_choice_preserves_session_draft_and_default_and_uses_selected_context_wi
     tui.click_last_text("Use model");
     tui.wait_until(|s| !s.contains("Cancel") && s.contains("fixture-model · High"));
     tui.click_text("switch-keeps-draft");
-    tui.send(b"\x13"); // Ctrl+S sends; Enter is a composer newline.
+    tui.send(b"\r"); // Enter sends the current draft.
     tui.wait_for("Selected model replied");
     tui.wait_for("≈16.1k / 64.0k");
     runtime.block_on(model_task).unwrap();

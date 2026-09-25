@@ -112,6 +112,7 @@ pub(super) struct Pass<'a, M> {
     pub scrollers: Vec<Scroller>,
     /// Slots without an activation: where their owner paints, by id.
     pub canvases: Vec<(String, Rect)>,
+    pub transcripts: Vec<super::surface::reader::Placement>,
     groups: usize,
 }
 
@@ -130,6 +131,7 @@ impl<'a, M> Pass<'a, M> {
             items: vec![],
             scrollers: vec![],
             canvases: vec![],
+            transcripts: vec![],
             groups: 0,
         }
     }
@@ -211,7 +213,7 @@ impl<'a, M> Pass<'a, M> {
                 submit,
                 hint,
                 role,
-                slot: matches!(kind, Kind::Slot),
+                slot: matches!(kind, Kind::Slot | Kind::Transcript { .. }),
             });
         }
         match kind {
@@ -266,6 +268,15 @@ impl<'a, M> Pass<'a, M> {
                 if canvas {
                     self.canvases.push((id, visible));
                 }
+            }
+            Kind::Transcript { token } => {
+                self.transcripts.push(super::surface::reader::Placement {
+                    path: id,
+                    token,
+                    area: visible,
+                    hits: vec![],
+                    latest: None,
+                });
             }
             Kind::Rule => {
                 let symbol = match (scope.axis, self.ascii) {
@@ -466,6 +477,7 @@ pub(super) fn height<M>(node: &Node<M>, width: u16) -> u16 {
         Kind::Text { clip: true, .. } => 1,
         Kind::Text { spans, .. } => wrap(spans, width).len() as u16,
         Kind::Rule | Kind::Slot => 1,
+        Kind::Transcript { .. } => 12,
         Kind::Scroll(child) => height(child, width.saturating_sub(1)),
     }
 }
@@ -478,7 +490,7 @@ pub(crate) fn width<M>(node: &Node<M>) -> u16 {
             u16::saturating_add,
         ),
         Kind::Text { spans, .. } => spans.iter().map(|(text, _)| text.width() as u16).sum(),
-        Kind::Rule | Kind::Slot => 1,
+        Kind::Rule | Kind::Slot | Kind::Transcript { .. } => 1,
         Kind::Scroll(child) => width(child).saturating_add(1),
     }
 }

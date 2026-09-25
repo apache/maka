@@ -33,6 +33,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
+pub(super) mod reader;
 
 #[derive(Clone, Copy)]
 pub struct Context {
@@ -92,6 +93,7 @@ struct Committed<M> {
     items: Vec<Item<M>>,
     scrollers: Vec<Scroller>,
     canvases: Vec<(String, Rect)>,
+    transcripts: Vec<reader::Placement>,
     popover: Option<Chooser>,
 }
 
@@ -157,7 +159,8 @@ impl<M: Clone> Surface<M> {
             &self.offsets,
         );
         pass.run(tree, area);
-        let (items, scrollers, canvases) = (pass.items, pass.scrollers, pass.canvases);
+        let (items, scrollers, canvases, transcripts) =
+            (pass.items, pass.scrollers, pass.canvases, pass.transcripts);
         let stops: Vec<_> = items.iter().filter(|item| item.enabled).collect();
         match stops
             .iter()
@@ -254,6 +257,7 @@ impl<M: Clone> Surface<M> {
             items,
             scrollers,
             canvases,
+            transcripts,
             popover,
         });
     }
@@ -476,6 +480,12 @@ impl<M: Clone> Surface<M> {
     /// pointer; the keyboard still reaches every item.
     pub fn occlude(&mut self, rect: Rect) {
         if let Some(committed) = &mut self.committed {
+            for placed in &mut committed.transcripts {
+                if !placed.area.intersection(rect).is_empty() {
+                    placed.area = Rect::default();
+                    placed.hits.clear();
+                }
+            }
             for item in &mut committed.items {
                 if !item.rect.intersection(rect).is_empty() {
                     item.rect = Rect::default();
@@ -627,7 +637,7 @@ impl<M: Clone> Surface<M> {
                     // Clicking into a field or a viewer places focus; only
                     // Enter submits.
                     On::Activate(_) if item.slot => Outcome::handled(true),
-                    On::Scroll => Outcome::handled(true),
+                    On::Scroll | On::Transcript => Outcome::handled(true),
                     On::Activate(message) => Outcome::emit(message.clone()),
                     On::Choose { current, .. } => {
                         self.popover = Some(Popover {
@@ -686,7 +696,7 @@ impl<M: Clone> Surface<M> {
                 On::Choose { choices, .. } => {
                     choices.get(index).map(|choice| choice.action.clone())
                 }
-                On::Activate(_) | On::Scroll => None,
+                On::Activate(_) | On::Scroll | On::Transcript => None,
             });
         match message {
             Some(message) => Outcome::emit(message),
@@ -812,7 +822,7 @@ impl<M: Clone> Surface<M> {
                         });
                         Outcome::handled(true)
                     }
-                    On::Scroll => Outcome::handled(false),
+                    On::Scroll | On::Transcript => Outcome::handled(false),
                 };
             }
             (
@@ -958,7 +968,7 @@ impl<M: Clone> Surface<M> {
             .and_then(|committed| committed.items.iter().find(|item| item.id == popover.owner))
             .map_or(0, |item| match &item.on {
                 On::Choose { choices, .. } => choices.len(),
-                On::Activate(_) | On::Scroll => 0,
+                On::Activate(_) | On::Scroll | On::Transcript => 0,
             });
         match code {
             KeyCode::Up => {

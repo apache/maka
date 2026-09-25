@@ -68,6 +68,7 @@ pub struct History {
     pub scanning: bool,
     preview_wanted: bool,
     pub preview: Option<Transcript>,
+    pub reader_surface: crate::ui::Surface<()>,
     preview_rows: BTreeMap<u64, Value>,
     preview_dirty: bool,
     pub preview_loading: bool,
@@ -96,6 +97,7 @@ impl Default for History {
             scanning: false,
             preview_wanted: false,
             preview: None,
+            reader_surface: Default::default(),
             preview_rows: BTreeMap::new(),
             preview_dirty: false,
             preview_loading: false,
@@ -142,6 +144,7 @@ impl History {
         self.invalidate_geometry();
     }
     pub fn invalidate_geometry(&mut self) {
+        self.reader_surface.invalidate();
         self.list_area = None;
         self.preview_area = None;
     }
@@ -350,7 +353,14 @@ impl History {
         let fresh = self.preview.is_none();
         let preview = self.preview.get_or_insert_with(Transcript::default);
         preview.trace = self.trace;
-        preview.sync(&self.preview_rows, &[], 0, i18n, ascii);
+        presentation::Presentation::default().sync(
+            preview,
+            &self.preview_rows,
+            &[],
+            0,
+            i18n,
+            ascii,
+        );
         if fresh {
             if let Some(key) = preview.first_visible()
                 && preview.folded(&key)
@@ -523,7 +533,8 @@ mod tests {
         let mut search = render::search::Search::default();
         history.restart();
         let request = request(&mut history);
-        search.history = Some(Box::new(history));
+        search.history = true;
+        chat.history = Some(Box::new(history));
         chat.view.search = Some(search);
         chat.select(&Route::Session("other".into()));
         chat.history_completed(request, Ok(results([1], None)), &i18n, false);

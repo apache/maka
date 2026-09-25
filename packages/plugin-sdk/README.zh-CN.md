@@ -158,13 +158,30 @@ Remote 回调可以抛出携带 `RemoteFailure.code` 的 `Error`。`outcome_unkn
 
 Host 插件通过 `ctx.tui.app(name, { read, submit, recover? }, descriptor)` 贡献 TUI 应用，无需 Desktop bundle 或重新编译 Maka。descriptor 选择 `page`、`panel`、`status`、`settings` 或命名 `slot`，上下文为 `application` 或 `session`；视图通过 `tui.slot(...)` 组合其他插件的贡献。
 
-`read(route, cx)` 返回用 `ctx.tui` 构造的 View v4 内容，包括列、行、分栏、标签、文本、Markdown、控件和字段，SDK 自动添加版本。稳定的同级 key 保留焦点与编辑状态；`cx.t(en, zhCN, zhTW)` 选择当前语言。外壳负责布局、本地输入、滚动、确认与草稿恢复；插件使用语义颜色，不输出终端转义序列。
+`read(route, cx)` 返回用 `ctx.tui` 构造的 View v5 内容，包括列、行、分栏、标签、文本、Markdown、控件和字段，SDK 自动添加版本。稳定的同级 key 保留焦点与编辑状态；`cx.t(en, zhCN, zhTW)` 选择当前语言。外壳负责布局、本地输入、滚动、确认与草稿恢复；插件使用语义颜色，不输出终端转义序列。
 
 标签组和由 item 组成的列各占一个 Tab 停靠点，方向键在组内移动，重新进入时恢复上次焦点。列表列可包含文本、Markdown、代码、分隔线和进度；字段与按钮放在列表外，保持逐个 Tab 可达。仅移动焦点不会提交动作或进入插件路由。
 
 `submit({ route, revision, action, fields, grant }, cx)` 执行明确的用户操作，返回 `applied`、`conflict`、`rejected` 或 `consent`。使用 revision 做存储 CAS，并在 Host 检查领域权限。只有 `recover(route, cx)` 能查询持久结果时才声明 action 的 `recovery` 路由；外壳不会盲目重放结果未知的写入。
 
 实时刷新使用 `const changed = await ctx.tui.changes('changed')` 注册流，在 descriptor 设置 `changes: 'changed'`，数据提交后调用 `changed()`。失效通知会合并，外壳重新读取干净视图并保留已有草稿；订阅与控件随注册退休。
+
+分页历史与流式文本使用 transcript 资源，复用原生 Chat 的 Markdown、分组、选择与本地搜索，数据不嵌入有 64 KiB 上限的 View：
+
+```js
+const key = { turn: 'build-42', message: 'log', part: 'text' };
+const log = await ctx.tui.transcriptResource('build-log', {
+  blocks: [{ key, revision: '0', kind: 'assistant', content: { text: 'Started\n' } }],
+});
+ctx.effect(() => log.close());
+// Return this node in a view; append when the observed work produces text.
+const reader = ctx.tui.transcript('log', log.resource);
+log.append(key, 'Finished\n', '1');
+```
+
+`replace`、`append`、`remove`、`timing` 发布连续的资源更新，不需重新读取 View。记录 key 与 revision 是稳定的展示身份，不授予原生会话、文件或写入权限；周围的动作仍使用原有授权、CAS 与恢复契约。Ctrl+F 搜索已加载页，End 或新内容标记回到最新位置；选择文本会暂停跟随。
+
+SDK 管理文档范围内的快照、游标与取消。数据源最多保留 4,096 条／32 MiB；一页最多 256 条／4 MiB，单条较大记录可放宽至 16 MiB。大记录用有序 UTF-8 JSON 分片传输，每条消息仍受 Remote 上限约束。更新队列超限会明确使阅读区失效。Rust 插件可通过普通 Remote method/stream 实现同一[公共记录与资源协议](../../crates/plugins/src/terminal_ui/transcript.rs)，资源端点必须属于包含该节点的视图的同一 entry 和 activation。Slot context 应携带稳定实体身份，节点 key 应区分可独立编辑的实体。
 
 [Board 示例](../../crates/cli/tests/fixtures/board-plugin/host.mjs) 展示三列看板、卡片详情编辑、存储 CAS 与实时刷新。[PTY 测试](../../crates/cli/tests/integration/tui/board.rs) 在 TUI 运行期间安装它、执行交互并读回持久领域数据。
 

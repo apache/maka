@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(written.revision, Some(request.clone()));
         assert!(written.result.is_ok());
         let bytes = read(&directory);
-        assert_eq!(bytes["version"], 18);
+        assert_eq!(bytes["version"], 19);
         assert_eq!(bytes["revision"]["copy"]["targetSessionId"], "revised");
         assert_eq!(bytes["revision"]["inputs"][0]["content"]["text"], "edited");
         let mut incomplete = bytes.clone();
@@ -585,7 +585,7 @@ mod tests {
         app.sessions.detail = crate::pages::sessions::Detail::Ready(Box::new(
             crate::pages::sessions::tests::item("a"),
         ));
-        app.chat.view.sync(&std::collections::BTreeMap::from([(1,serde_json::json!({"type":"user","id":"message","turnId":"turn","text":"Branch point"}))]),&[],0,&app.i18n,false);
+        app.chat.presentation.sync(&mut app.chat.view, &std::collections::BTreeMap::from([(1,serde_json::json!({"type":"user","id":"message","turnId":"turn","text":"Branch point"}))]),&[],0,&app.i18n,false);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         terminal

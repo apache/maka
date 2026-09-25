@@ -105,7 +105,7 @@ fn reauthentication_uses_the_new_credential_and_stale_removal_cannot_delete_it()
     tui.wait_for("Key verification");
     tui.click_text("Key verification");
     tui.wait_for("Message…");
-    tui.send(b"Verify saved key\x13");
+    tui.send(b"Verify saved key\r");
     tui.wait_for("New key accepted");
     runtime.block_on(provider).unwrap();
     connections(&mut tui);

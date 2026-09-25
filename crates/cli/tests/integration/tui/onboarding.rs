@@ -124,7 +124,7 @@ fn anonymous_setup_verifies_without_writes_and_creates_first_chat() {
     tui.send(b"\x0e");
     tui.wait_for("Message…");
     tui.wait_for("fixture-model");
-    tui.send(b"hello after onboarding\x13");
+    tui.send(b"hello after onboarding\r");
     tui.wait_for("Onboarded model replied");
     runtime.block_on(provider).unwrap();
     tui.close_terminal();

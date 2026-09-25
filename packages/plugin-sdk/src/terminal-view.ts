@@ -27,6 +27,12 @@
 
 import type { AuthorizationRequest } from './authorization.js';
 import type { Json } from './host.js';
+import type {
+  TranscriptInitial,
+  TranscriptResource,
+  TranscriptStore,
+} from './terminal-transcript.js';
+export type * from './terminal-transcript.js';
 
 export interface TerminalText {
   fallback: string;
@@ -48,7 +54,7 @@ export type TerminalPlacement =
   | { kind: 'slot'; name: string };
 
 export interface TerminalView {
-  version: 4;
+  version: 5;
   title: TerminalText;
   context: 'application' | 'session';
   placement?: TerminalPlacement;
@@ -119,6 +125,8 @@ export type TerminalNode =
   | { kind: 'progress'; key: string; value: number; max: number; label?: string }
   | { kind: 'markdown'; key: string; text: string }
   | { kind: 'code'; key: string; text: string }
+  /** A document-owned, paged semantic transcript; data stays outside the View. */
+  | { kind: 'transcript'; key: string; resource: TranscriptResource }
   /** Where other plugins' views placed in slot `name` appear, given `context`. */
   | { kind: 'slot'; key: string; name: string; context?: Json };
 
@@ -154,7 +162,7 @@ export interface TerminalAction {
 }
 
 export interface TerminalViewTree {
-  version: 4;
+  version: 5;
   title: string;
   /** Opaque; echoed with every submission so writes can compare and swap. */
   revision: string;
@@ -202,7 +210,7 @@ export interface TerminalSubmission {
   readonly grant: string | null;
 }
 /** A view without its version; the SDK adds the one it speaks. */
-export type TerminalViewBody = Omit<TerminalViewTree, 'version'> & { version?: 4 };
+export type TerminalViewBody = Omit<TerminalViewTree, 'version'> & { version?: 5 };
 export interface TerminalAppHandlers {
   read(route: Json, cx: TerminalContext): Awaitable<TerminalViewBody>;
   submit(submission: TerminalSubmission, cx: TerminalContext): Awaitable<TerminalReply>;
@@ -224,6 +232,12 @@ export interface TerminalApps {
   ): Promise<import('./host.js').Registration>;
   /** Registers a changes stream; call the result to refresh open views. */
   changes(name: string): Promise<(() => void) & { close(): Promise<void> }>;
+  /** Registers a document-scoped page/stream pair backed by an immutable managed store. */
+  transcriptResource(
+    name: string,
+    initial?: TranscriptInitial,
+    options?: import('./host.js').RemoteOptions,
+  ): Promise<TranscriptStore>;
   view(body: TerminalViewBody): TerminalViewTree;
   column(key: string, children: TerminalNode[], gap?: number): TerminalNode;
   stack(key: string, children: TerminalNode[]): TerminalNode;
@@ -252,6 +266,7 @@ export interface TerminalApps {
   progress(key: string, value: number, max: number, label?: string): TerminalNode;
   markdown(key: string, text: string): TerminalNode;
   code(key: string, text: string): TerminalNode;
+  transcript(key: string, resource: TranscriptResource): TerminalNode;
   slot(key: string, name: string, context?: Json): TerminalNode;
   action(id: string, label: string, extra?: Partial<TerminalAction>): TerminalAction;
   toggle(id: string, value: boolean): TerminalField;

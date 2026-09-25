@@ -384,7 +384,7 @@ pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 impl App {
-    /// Shortcuts and the owner-drawn text taken before the sheet: Ctrl+S
+    /// Shortcuts and the owner-drawn text taken before the sheet: Ctrl+Enter
     /// runs, Alt+A switches text and resources, Alt+D the display text,
     /// PgUp/PgDn the input; the focused editor takes its keys (Enter breaks
     /// the line), and the Host detail only scrolls.
@@ -401,7 +401,12 @@ impl App {
                 let control = key.modifiers.contains(KeyModifiers::CONTROL);
                 let alt = key.modifiers.contains(KeyModifiers::ALT);
                 match key.code {
-                    KeyCode::Char('s') if control => Command::Send,
+                    KeyCode::Enter
+                        if key.modifiers == KeyModifiers::CONTROL
+                            && key.kind == KeyEventKind::Press =>
+                    {
+                        Command::Send
+                    }
                     KeyCode::Char('a') if alt => {
                         if state.resources.visible {
                             Command::Content
