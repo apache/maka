@@ -32,7 +32,6 @@ import {
 } from '@maka/runtime-host/adapter';
 import {
   isRuntimeHostReconnectingConnection,
-  RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   RuntimeHostSubscriptionError,
   type RuntimeHostConnection,
@@ -801,11 +800,6 @@ export class RuntimeHostSessionChannel {
 
   #canRecover(error: unknown): boolean {
     if (!isRuntimeHostReconnectingConnection(this.#connection)) return false;
-    // The Host can retire a transcript subscription before its close frame is
-    // consumed. Recover the invalidated read through the same bounded policy.
-    if (error instanceof RuntimeHostOperationError) {
-      return error.operation === 'session.transcript.page' && error.code === 'not_found';
-    }
     if (error instanceof RuntimeHostRequestInterruptedError) {
       return error.reason === 'connection_lost';
     }
@@ -814,7 +808,6 @@ export class RuntimeHostSessionChannel {
       (error.reason === 'connection_closed' ||
         error.reason === 'sequence_gap' ||
         error.reason === 'projection_revision_invalid' ||
-        error.reason === 'transcript_changed' ||
         error.reason === 'slow_consumer')
     );
   }
@@ -835,10 +828,10 @@ export class RuntimeHostSessionChannel {
       return;
     }
     if (frame.kind === 'subscription.closed') {
-      if (frame.reason === 'slow_consumer' || frame.reason === 'transcript_changed') {
+      if (frame.reason === 'slow_consumer') {
         throw new RuntimeHostSubscriptionError(
-          frame.reason,
-          'Runtime Host Session transcript requires a fresh subscription',
+          'slow_consumer',
+          'Runtime Host Session subscription consumer fell behind',
         );
       }
       this.#fail(new Error(`Runtime Host Session subscription closed: ${frame.reason}`));

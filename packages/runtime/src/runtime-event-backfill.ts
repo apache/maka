@@ -362,7 +362,6 @@ export function backfillRuntimeEventsFromStoredMessages(
       // Both are already accounted for elsewhere: the turn's ending becomes the
       // terminal RuntimeEvent below, and a coordination record is the WorkHub's
       // own durable proof, which no run ledger owns a copy of.
-      case 'form_interaction': // InteractionStore owns this read projection.
       case 'turn_state':
       case 'workhub_coordination':
         break;

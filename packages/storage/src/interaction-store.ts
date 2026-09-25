@@ -122,8 +122,6 @@ export async function openSqliteInteractiveInteractionStoreForRead(
     access: 'read' as const,
     readInteraction: (requestId: string) => run(() => store.readInteraction(requestId)),
     listSessionPending: (sessionId: string) => run(() => store.listSessionPending(sessionId)),
-    listTurnInteractions: (sessionId: string, turnId: string) =>
-      run(() => store.listTurnInteractions(sessionId, turnId)),
     listPending: (filter?: PendingInteractionFilter) => run(() => store.listPending(filter)),
     readClientCapabilitySessionGrant: (key: ClientCapabilitySessionGrantKey) =>
       run(() => store.readClientCapabilitySessionGrant(key)),
@@ -203,8 +201,6 @@ export async function openSqliteInteractiveInteractionStoreForWrite(
       access: 'write' as const,
       readInteraction: (requestId: string) => run(() => store.readInteraction(requestId)),
       listSessionPending: (sessionId: string) => run(() => store.listSessionPending(sessionId)),
-      listTurnInteractions: (sessionId: string, turnId: string) =>
-        run(() => store.listTurnInteractions(sessionId, turnId)),
       listPending: (filter?: PendingInteractionFilter) => run(() => store.listPending(filter)),
       readClientCapabilitySessionGrant: (key: ClientCapabilitySessionGrantKey) =>
         run(() => store.readClientCapabilitySessionGrant(key)),
@@ -441,18 +437,6 @@ class SqliteInteractionStore implements InteractionStoreWriter {
   async readInteraction(requestId: string): Promise<InteractionRecord | undefined> {
     assertId(requestId);
     return readSqliteInteraction(this.#lease, requestId);
-  }
-
-  async listTurnInteractions(sessionId: string, turnId: string): Promise<InteractionRecord[]> {
-    assertId(sessionId);
-    assertId(turnId);
-    const rows = this.#lease.database
-      .prepare(`
-      SELECT request_id FROM core_interaction_requests
-      WHERE session_id = ? AND turn_id = ? ORDER BY created_at, request_id
-    `)
-      .all(sessionId, turnId) as { request_id: string }[];
-    return rows.map(({ request_id }) => readSqliteInteraction(this.#lease, request_id)!);
   }
 
   async listSessionPending(sessionId: string): Promise<StoredInteractionRequest[]> {
