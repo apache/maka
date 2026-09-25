@@ -63,7 +63,7 @@ npm run cli:dev      # TUI; `npm run cli:dev -- run "…"` runs one non-interact
 npm test             # all workspaces, or: npm --workspace @maka/core run test:dist
 ```
 
-Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`, so `test:dist` covers whatever the last build produced; rebuild before running it. `npm test` from the root does both.
+Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`, so `test:dist` covers whatever the last build produced; rebuild before running it. `npm test` from the root does both. If `npm run build` reports compiled tests with no matching source after a pull or branch switch, run `npm run rebuild` to clear old output and incremental build state.
 
 Before pushing, match CI locally:
 
