@@ -69,6 +69,13 @@
     white-space: nowrap !important;
     border: 0 !important;
   }
+.maka-running-indicator {
+    display: inline-flex;
+    /* The astryx Spinner reads its period from this token (525ms stock). A
+       row's running state stays on screen for the whole run, unlike a
+       transient loading spinner, so it turns slower. */
+    --duration-slow-min: 1.3s;
+  }
 button {
     transition:
       background var(--duration-base) var(--ease-out-strong),

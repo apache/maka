@@ -77,6 +77,7 @@ export interface InspectAgentRunOptions {
   invocation?: RuntimeInvocationRecord;
   isFatalReadError?: (error: unknown) => boolean;
   includeModelReplay?: boolean;
+  includeProjection?: boolean;
 }
 
 export type AgentRunInspectReader = Pick<AgentRunStore, 'readEvents'>;
@@ -131,7 +132,7 @@ export async function inspectAgentRunReadModel(
   }
 
   const projection =
-    runtimeEvents.length > 0
+    runtimeEvents.length > 0 && options.includeProjection !== false
       ? projectRuntimeEventsToStoredMessages(runtimeEvents, { invocations: [invocation] })
       : undefined;
   if (projection) {

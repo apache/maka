@@ -111,6 +111,7 @@ export {
 } from './ssh-tunnel.js';
 export {
   RuntimeHostPermanentReconnectError,
+  createRuntimeHostReconnectLifecycle,
   startRuntimeHostReconnectLifecycle,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,

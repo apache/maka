@@ -21,6 +21,7 @@ import type { ProjectRecord } from '@maka/core/project';
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
+import { Icon } from '@astryxdesign/core/Icon';
 import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, RefreshCcw, Settings, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -28,6 +29,8 @@ import { NewProjectDialog } from './new-project-dialog.js';
 
 export interface WorkspacePickerGroup {
   id: string;
+  /** Runtime Host identity for session-scoped recovery actions. */
+  hostId?: string;
   label: string;
   status?: string;
   disabled?: boolean;
@@ -50,6 +53,11 @@ export interface WorkspacePickerModel {
   hostBadge?: string;
   branch?: string | null;
   pending?: boolean;
+  /** Keep the picker mounted when it is repairing an existing Session. */
+  showForActiveSession?: boolean;
+  /** Optional controlled open state used by an external recovery action. */
+  isMenuOpen?: boolean;
+  onOpenChange?(isOpen: boolean): void;
   selectedGroupId?: string;
   groups: readonly WorkspacePickerGroup[];
   retry?: { label: string; onClick(): void };
@@ -70,7 +78,8 @@ export function WorkspacePicker({ workspacePicker: picker }: {
     <>
     <DropdownMenu
       placement="above"
-      hasChevron={false}
+      isMenuOpen={picker.isMenuOpen}
+      onOpenChange={picker.onOpenChange}
       className="maka-composer-quiet-menu"
       button={{
         label: picker.label ?? copy.choose,
@@ -81,12 +90,19 @@ export function WorkspacePicker({ workspacePicker: picker }: {
         isLoading: locked,
         tooltip: copy.chooseTitle(picker.branch ?? undefined),
         className: 'maka-workspace-picker',
-        endContent: picker.hostBadge ? (
-          <span className="maka-workspace-picker-host-badge">
-            <Network size={ICON_SIZE.meta} aria-hidden="true" />
-            <span>{picker.hostBadge}</span>
+        // Any endContent replaces DropdownMenu's own chevron, so the chevron is
+        // drawn here, as the model and thinking Selectors draw theirs.
+        endContent: (
+          <span className="maka-workspace-picker-end">
+            {picker.hostBadge ? (
+              <span className="maka-workspace-picker-host-badge">
+                <Network size={ICON_SIZE.meta} aria-hidden="true" />
+                <span>{picker.hostBadge}</span>
+              </span>
+            ) : null}
+            <Icon icon="chevronDown" size="sm" color="secondary" className="maka-workspace-picker-chevron" />
           </span>
-        ) : undefined,
+        ),
         'aria-label': copy.chooseAriaLabel(
           picker.hostBadge
             ? `${picker.hostBadge} · ${picker.label ?? copy.current}`

@@ -157,7 +157,11 @@ const conversationServices: ConversationServices = {
     readSnapshot: async () => {
       throw new Error('Session snapshots are not used in slash menu stories');
     },
+    readExecutionBoundary: async () => {
+      throw new Error('Execution boundaries are not used in slash menu stories');
+    },
   },
+  runtimeHosts: { subscribeChanges: () => () => undefined },
   skills: { listInvocable: loadProjection },
   workspace: { searchFiles: async () => ({ ok: true, files: [] }) },
   newTasks: {

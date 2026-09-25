@@ -17,88 +17,13 @@
  * under the License.
  */
 
-/* Library brand marks (simple-icons) render as inline <svg>. Light theme fills
-   each with its official brand hex, carried on the --mcp-brand-fill custom
-   property set per-mark in mcp-brand-marks.tsx. Marks sit at the same 64% ratio
-   as the provider plates. */
-.maka-module-market-icon .maka-mcp-brand-mark {
-  width: 64%;
-  height: 64%;
-  display: block;
-  fill: var(--mcp-brand-fill);
-}
-
-/* Dark theme: near-black brand marks (Vercel ▲, Notion, Slack aubergine) are
-   flagged data-contrast="low" by the luminance gate and inherit the plate's
-   light foreground instead of vanishing on the dark neutral plate. */
-.dark .maka-module-market-icon .maka-mcp-brand-mark[data-contrast="low"] {
-  fill: currentColor;
-}
-
-.maka-mcp-install-icon {
-  position: relative;
-  display: grid;
-  place-items: center;
-}
-
-.maka-mcp-install-icon svg {
-  position: absolute;
-}
-
-.maka-mcp-install-spinner { animation: maka-spin 1s linear infinite; }
-
-.maka-mcp-install-cancel {
-  opacity: 0;
-  color: var(--destructive-text);
-  transform: scale(var(--scale-press));
-  transition: transform var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-mcp-install-button:hover .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-spinner,
-.maka-mcp-install-button:focus-visible .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-spinner {
-  opacity: 0;
-}
-
-.maka-mcp-install-button:hover .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-cancel,
-.maka-mcp-install-button:focus-visible .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-cancel,
-.maka-mcp-install-icon[data-phase="cancelling"] .maka-mcp-install-cancel {
-  opacity: 1;
-  transform: scale(1);
-}
-
-.maka-mcp-install-icon[data-phase="cancelling"] .maka-mcp-install-spinner {
-  opacity: 0;
-}
-
-
-/* The endpoint <code> inside a browse row's supporting line. Follows the
-   description to the shared class; the rule is still live, it just lost its
-   old parent selector when the class moved. */
 .maka-module-row-description code {
   font: var(--maka-text-supporting);
 }
 
-.maka-mcp-inspector {
-  min-width: 0;
-}
-
-.maka-mcp-inspector-endpoint {
+.maka-mcp-detail-endpoint {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.maka-mcp-tool-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-}
-
-.maka-mcp-tool-list code {
-  font: var(--maka-text-code);
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-control);
-  background: var(--muted);
-  color: var(--muted-foreground);
 }
 
 .maka-mcp-stderr {
@@ -108,32 +33,43 @@
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
-  background: var(--color-error-muted);
-  color: var(--destructive-text);
+  background: var(--muted);
+  color: var(--muted-foreground);
   white-space: pre-wrap;
 }
 
-
-.maka-mcp-editor-choice {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: var(--border-width-hairline) solid var(--border);
-  background: var(--muted);
+.maka-mcp-section-heading {
+  font: var(--maka-text-heading-4);
 }
 
-.maka-mcp-choice-icon {
-  margin-inline-start: var(--space-1);
-  /* The icon shares Item's startContent flex slot with the 24px radio circle.
-     That slot defaults to align-items: stretch, which top-aligns a definite-height
-     child, leaving the 14px icon riding above the radio dot and the centered label.
-     Center it so all three sit on the same axis. */
-  align-self: center;
+.maka-mcp-mark {
+  flex: none;
+}
+
+/* A tile-shaped brand mark replaces the plate, so it takes the plate's box:
+   .maka-module-market-icon in module-shell.css. */
+svg.maka-mcp-mark {
+  width: 28px;
+  height: 28px;
+}
+
+.maka-mcp-mark > img,
+.maka-mcp-mark > svg,
+.maka-mcp-mark > .providerAssetMask {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.maka-mcp-status-dot {
+  display: inline-flex;
 }
 
 .maka-mcp-manual-form,
 .maka-mcp-json-form {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
   overflow: hidden;
 }
@@ -152,9 +88,7 @@
 .maka-mcp-primary-fields {
   min-width: 0;
   display: grid;
-  /* The second column holds a full command line or URL; the first is a short
-     slug. Equal halves squeezed the field that actually carries content. */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
 }
 
@@ -164,14 +98,11 @@
 
 .maka-mcp-json-field {
   overflow: auto;
-  padding-inline: var(--space-4);
+  padding: var(--space-4);
 }
 
-.maka-mcp-json-form > p {
-  font: var(--maka-text-supporting);
-  margin: 0;
-  padding-inline: var(--space-4);
-  color: var(--muted-foreground);
+.maka-mcp-editor-mode {
+  margin-inline-end: auto;
 }
 
 .maka-mcp-editor-footer {

@@ -28,6 +28,7 @@ export type HostOperationErrorCode =
   | 'not_found'
   | 'session_archived'
   | 'session_busy'
+  | 'session_binding_conflict'
   | 'transcript_preparing'
   | 'candidate_set_stale'
   | 'operation_conflict'

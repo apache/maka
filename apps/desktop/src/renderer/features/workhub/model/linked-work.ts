@@ -18,6 +18,7 @@
  */
 
 
+import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import { workspaceNameFromCwd } from './workspace-name.js';
 
 import type { StoredMessage } from '@maka/core/session';
@@ -54,6 +55,9 @@ export interface WorkHubLinkedWork {
   readonly targetTurnId?: string;
   readonly state?: WorkHubDelegationState;
   readonly resultPreview?: string;
+  readonly operation?: 'stop' | 'resume';
+  readonly operationState?: 'pending' | 'succeeded' | 'failed';
+  readonly operationOutcome?: string;
 }
 
 /** Links come from successful tool results in the same durable conversation. */
@@ -61,13 +65,48 @@ export function workHubLinkedWork(
   messages: readonly StoredMessage[],
   sessions: readonly { id: string; name: string; cwd?: string }[],
   fallbackName: string,
+  coordinationSessionKey?: string,
 ): WorkHubLinkedWork[] {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const workspaceName = (id: string) => workspaceNameFromCwd(sessionById.get(id)?.cwd);
   const taskCalls = new Set(messages.flatMap((message) =>
     message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks' ? [message.id] : [],
   ));
+  const readResult = (message: StoredMessage | undefined): Record<string, unknown> | undefined => {
+    if (message?.type !== 'tool_result') return undefined;
+    let value: unknown;
+    if (message.content.kind === 'json') value = message.content.value;
+    else if (message.content.kind === 'text') {
+      try { value = JSON.parse(message.content.text); } catch { return undefined; }
+    }
+    if (value && typeof value === 'object' && 'structuredContent' in value) value = value.structuredContent;
+    return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+  };
+  const results = new Map(messages.flatMap((message) => message.type === 'tool_result' ? [[message.toolUseId, message] as const] : []));
   return messages.flatMap((message): WorkHubLinkedWork[] => {
+    if (message.type === 'tool_call' && taskCalls.has(message.id)) {
+      const args = message.args;
+      const request = args && typeof args === 'object' && 'request' in args ? args.request : undefined;
+      if (!request || typeof request !== 'object' || !('operation' in request) ||
+        (request.operation !== 'stop' && request.operation !== 'resume')) return [];
+      const resultMessage = results.get(message.id);
+      const result = readResult(resultMessage);
+      let target = typeof result?.targetSessionKey === 'string' && !resultMessage?.isError ? result.targetSessionKey : undefined;
+      if (!target && coordinationSessionKey && 'targetSessionId' in request && typeof request.targetSessionId === 'string') {
+        try {
+          const key = desktopSessionKey({ hostId: parseDesktopSessionKey(coordinationSessionKey).hostId, sessionId: request.targetSessionId });
+          if (sessionById.has(key)) target = key;
+        } catch { /* An unscoped identity cannot identify a Host-owned Session. */ }
+      }
+      if (!target) return [];
+      return [{ id: message.id, coordinationTurnId: message.turnId, targetSessionId: target,
+        targetSessionName: sessionById.get(target)?.name ?? fallbackName, workspaceName: workspaceName(target),
+        operation: request.operation,
+        operationState: !resultMessage ? 'pending' : resultMessage.isError || result?.disposition !== `${request.operation}_work` || result?.outcome === 'not_owned' ? 'failed' : 'succeeded',
+        operationOutcome: typeof result?.outcome === 'string' ? result.outcome : undefined,
+      }];
+    }
+
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') return [{
       id: message.id,
       coordinationTurnId: message.coordinationTurnId,

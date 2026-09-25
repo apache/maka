@@ -2239,7 +2239,7 @@ export const GeneralHostSettingsLoading: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText('显示名称');
-    await canvas.findByRole('switch', { name: '完成时发送系统通知' });
+    await canvas.findByRole('switch', { name: '发送系统通知' });
     await expect(
       await canvas.findByRole('button', { name: '默认模型' }),
     ).toBeEnabled();
@@ -2283,7 +2283,7 @@ export const GeneralCachedRevalidation: Story = {
     await expect(tone).toBeDisabled();
     await expect(defaultModel).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
@@ -2384,7 +2384,7 @@ export const GeneralHostGenerationRevalidation: Story = {
     await expect(tone).toBeDisabled();
     await expect(defaultModel).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
@@ -2449,7 +2449,7 @@ export const GeneralBackgroundHostReconnectThenSelect: Story = {
     const currentTone = canvas.queryByRole('textbox', { name: '助手语气偏好' });
     if (currentTone) await expect(currentTone).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
   },
@@ -2466,7 +2466,7 @@ export const GeneralHostSettingsError: Story = {
     await expect(alert).toHaveTextContent('载入设置失败');
     await canvas.findByRole('button', { name: '重试' });
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
     await expect(canvas.queryByText('显示名称')).not.toBeInTheDocument();
@@ -2485,7 +2485,7 @@ export const GeneralRuntimeHostUnavailable: Story = {
     const alert = await canvas.findByRole('alert');
     await expect(alert).toHaveTextContent('Runtime Host');
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(
       Array.from(canvasElement.querySelectorAll('[role="status"]')).some(
@@ -2566,6 +2566,15 @@ export const Appearance: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByRole('heading', { name: 'App icon' });
+    const workbarToggle = await canvas.findByRole('switch', { name: 'Show Workbar toggle in titlebar' });
+    expect(workbarToggle).not.toBeChecked();
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).not.toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('edge');
+
     for (const name of ['Azure', 'Classic']) {
       const input = await canvas.findByRole('checkbox', { name });
       const card = input.parentElement;

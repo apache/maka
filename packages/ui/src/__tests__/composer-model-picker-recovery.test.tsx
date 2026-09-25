@@ -27,6 +27,7 @@ import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, type ComposerHandle } from '../composer.js';
 import { ThinkingLevelSelector } from '../chat-model-switcher.js';
+import { MakaClientSlotCore, MakaClientSlotProvider } from '../client-plugin-slots.js';
 import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -76,6 +77,42 @@ test('the native model pair remains the model-selection slot fallback', () => {
   assert.match(pluginExecutorWithoutClientContribution, /maka-model-switcher-trigger/u);
   assert.match(pluginExecutorWithoutClientContribution, /maka-thinking-level-selector/u);
   assert.match(pluginExecutorWithoutClientContribution, /conversation\.composer\.model-selection/u);
+});
+
+test('a client model contribution remains inside the unified executor picker', () => {
+  const core = new MakaClientSlotCore();
+  core.register(
+    { name: 'conversation.composer.model-selection', select: () => ({}) },
+    () => <span>Client model control</span>,
+  );
+  const markup = renderToStaticMarkup(
+    <MakaClientSlotProvider core={core}>
+      <LocaleProvider locale="en">
+        <Composer
+          executorPicker={{
+            catalog: [
+              {
+                id: 'antigravity',
+                displayName: 'Antigravity',
+                readiness: 'ready',
+                models: [{ id: 'fast', name: 'Fast' }],
+                supportsAttachments: false,
+                supportsModelChange: true,
+              },
+            ],
+            onSelect: () => undefined,
+            onSetup: () => undefined,
+            onRetry: () => undefined,
+            onNewTask: () => undefined,
+          }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>
+    </MakaClientSlotProvider>,
+  );
+
+  assert.match(markup, /maka-executor-selector/u);
 });
 
 test('model switch availability has one priority-ordered contract', () => {

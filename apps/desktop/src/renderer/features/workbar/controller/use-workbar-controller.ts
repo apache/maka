@@ -114,22 +114,13 @@ export interface UseWorkbarControllerInput {
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
-  /**
-   * The grid container holding both the conversation column and the rail. The
-   * shell owns the element; the Workbar owns what to do with its width.
-   */
-  layoutContainerRef?: RefObject<HTMLElement | null>;
-  /**
-   * The spacing between those two columns, in CSS pixels. The shell resolves it
-   * because a custom property reads back as its declaration, not a length (see
-   * `ink-ladder-contract`), so the Workbar cannot read the variable itself.
-   */
+  /** The CSS gap between conversation and rail, supplied by the shell. */
   layoutGap?: number;
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
   openNewTaskSurface?(): number;
-  openSessionInChat?(sessionId: string): void;
+  openSessionInChat?(sessionId: string, turnId?: string): void;
   resolveWorkBoardTarget?(item: WorkBoardItem):
     | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
     | { ok: false; message: string };
@@ -137,6 +128,8 @@ export interface UseWorkbarControllerInput {
 }
 
 export interface WorkbarController {
+  /** Ref for the shell grid whose width sets the rail's available space. */
+  layoutContainerRef: RefObject<HTMLDivElement | null>;
   host: WorkbarHostModel;
   commands: WorkbarControllerCommands;
   selectors: WorkbarControllerSelectors;
@@ -199,10 +192,11 @@ export function useWorkbarController(
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
+  const layoutContainerRef = useRef<HTMLDivElement>(null);
   const layout = useWorkbarLayoutState(
     input.layoutSessionId,
     input.authoritativeSessionIds,
-    input.layoutContainerRef,
+    layoutContainerRef,
     input.layoutGap,
   );
   const sideConversations = useSideConversationWorkspace();
@@ -943,6 +937,7 @@ export function useWorkbarController(
 
   return {
     commands,
+    layoutContainerRef,
     LiveContextUsageProbe,
     selectors: {
       rightCollapsed: layout.workbarCollapsed,
@@ -999,6 +994,7 @@ export function useWorkbarController(
       },
       onActivityStateChange: sideConversations.setActive,
       sourceSession: input.activeSession,
+      onOpenConversation: input.openSessionInChat,
       modelChoices: input.modelChoices,
       onStartWorkBoardTask: startWorkBoardTask,
       resolveWorkBoardStartTask: input.resolveWorkBoardTarget,

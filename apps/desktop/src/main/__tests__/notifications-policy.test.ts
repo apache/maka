@@ -43,7 +43,7 @@ it('gates native notifications through every required condition', () => {
 });
 
 it('recognizes terminal kinds and keeps distinct localized fallback copy', () => {
-  for (const value of ['completed', 'errored']) assert.equal(isRunNotificationKind(value), true);
+  for (const value of ['completed', 'errored', 'waiting']) assert.equal(isRunNotificationKind(value), true);
   for (const value of ['complete', 'error', 'aborted', '', undefined, null, 1, {}]) {
     assert.equal(isRunNotificationKind(value), false);
   }

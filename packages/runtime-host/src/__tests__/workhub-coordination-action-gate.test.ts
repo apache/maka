@@ -501,7 +501,7 @@ describe('WorkHub Coordination Action Gate', () => {
     });
     assert.equal(effects.retirements.length, 1);
     assert.equal(effects.stopRequests.size, 1);
-    assert.equal(effects.stopResolutions.size, 1);
+    assert.equal(effects.stopResolutions.size, 2);
 
     const replay = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
     assert.deepEqual(replay, first);
@@ -949,8 +949,8 @@ describe('WorkHub Coordination Action Gate', () => {
     );
 
     assert.deepEqual(retried, first);
-    assert.equal(retirements, 1);
-    assert.equal(effects.stopResolutions.size, 1);
+    assert.equal(retirements, 2);
+    assert.equal(effects.stopResolutions.size, 3);
   });
 
   test('a committed stop converges once its target Session is durably removed', async () => {
@@ -1003,7 +1003,7 @@ describe('WorkHub Coordination Action Gate', () => {
       await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
       resolved,
     );
-    assert.equal(effects.stopResolutions.size, 1);
+    assert.equal(effects.stopResolutions.size, 2);
   });
 
   test('keeps display names as stop evidence rather than admission authority', async () => {
@@ -1913,11 +1913,16 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     async readSupersession(delegationId: string) {
       return supersessions.get(delegationId);
     },
-    async readStopRequest(delegationId: string) {
-      return stopRequests.get(delegationId);
+    async readStopRequest(delegationId: string, actionId?: string) {
+      const first = stopRequests.get(delegationId);
+      return !actionId || first?.actionId === actionId
+        ? first
+        : stopRequests.get(JSON.stringify([delegationId, actionId]));
     },
-    async readStopResolution(delegationId: string) {
-      return stopResolutions.get(delegationId);
+    async readStopResolution(delegationId: string, actionId?: string) {
+      return actionId
+        ? stopResolutions.get(JSON.stringify([delegationId, actionId]))
+        : stopResolutions.get(delegationId);
     },
 
     async assign(input: WorkHubDelegationAssignmentInput) {
@@ -1999,7 +2004,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       return aborted;
     },
     async prepareStop(input: WorkHubDelegationStopInput) {
-      const existing = stopRequests.get(input.stopsDelegationId);
+      const first = stopRequests.get(input.stopsDelegationId);
+      const key =
+        first && first.actionId !== input.actionId
+          ? JSON.stringify([input.stopsDelegationId, input.actionId])
+          : input.stopsDelegationId;
+      const existing = stopRequests.get(key);
       if (existing) return existing;
       const requested: WorkHubDelegationStopRequestedMessage = {
         type: 'workhub_coordination',
@@ -2018,12 +2028,14 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         targetSessionName: input.targetSessionName,
         userText: input.userText,
       };
-      stopRequests.set(input.stopsDelegationId, requested);
+      stopRequests.set(key, requested);
+
       return requested;
     },
     async resolveStop(input: WorkHubDelegationStopResolutionInput) {
       const request = input.request;
-      const existing = stopResolutions.get(request.stopsDelegationId);
+      const key = JSON.stringify([request.stopsDelegationId, request.actionId]);
+      const existing = stopResolutions.get(key);
       if (existing) return existing;
       const resolved: WorkHubDelegationStopResolvedMessage = {
         type: 'workhub_coordination',
@@ -2041,7 +2053,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         outcome: input.outcome,
         ...(input.targetTurnId ? { targetTurnId: input.targetTurnId } : {}),
       };
-      stopResolutions.set(request.stopsDelegationId, resolved);
+      stopResolutions.set(key, resolved);
+      if (
+        stopResolutions.get(request.stopsDelegationId)?.outcome === undefined ||
+        stopResolutions.get(request.stopsDelegationId)?.outcome === 'not_owned'
+      )
+        stopResolutions.set(request.stopsDelegationId, resolved);
       return resolved;
     },
     async readDelegationRetirement(

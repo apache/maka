@@ -85,7 +85,7 @@ import { runtimeHostLogBuffer } from '../process-diagnostics.js';
 import {
   type HostCompositionDescriptor,
   type RuntimeHostCompositionSource,
-} from './host-composition.js';
+} from './host-composition-source.js';
 import {
   startLocalRuntimeHostListenerSet,
   type RuntimeHostListenerConnection,
@@ -96,6 +96,9 @@ import { HostResidencyRegistry, type HostResidencyKind } from './host-residency-
 import type { PeerMeshNode } from '../peer-mesh/node.js';
 import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
 import { createHostResourceCollector } from './host-resource-collector.js';
+import { RuntimeHostProcessTerminationRequiredError } from './process-termination-error.js';
+
+export { RuntimeHostProcessTerminationRequiredError } from './process-termination-error.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -109,15 +112,6 @@ const HOST_PROTOCOL = {
 } as const;
 
 export type RuntimeHostResidency = OperationResidency;
-
-export class RuntimeHostProcessTerminationRequiredError extends Error {
-  readonly code = 'process_termination_required';
-
-  constructor(readonly shutdownGraceMs: number) {
-    super(`Runtime Host did not shut down within ${shutdownGraceMs} ms`);
-    this.name = 'RuntimeHostProcessTerminationRequiredError';
-  }
-}
 
 export interface RuntimeHostCompositionContext {
   owner: InteractiveRootOwner;

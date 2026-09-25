@@ -392,7 +392,8 @@ function connection(): LlmConnection {
   return {
     slug: 'test',
     name: 'Test',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
     baseUrl: 'https://example.invalid',
     defaultModel: 'mock-model',
     enabled: true,

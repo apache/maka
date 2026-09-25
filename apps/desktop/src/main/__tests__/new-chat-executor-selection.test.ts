@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveNewChatExecutionThinkingLevel } from '../../renderer/use-shell-chat-model.js';
+import { resolveNewChatExecutionThinkingLevel } from '../../renderer/features/conversation/index.js';
 
 test('new plugin-executor Sessions preserve the selected thinking level', () => {
   assert.equal(

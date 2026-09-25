@@ -313,6 +313,25 @@ test('gives each answer in a steered turn its own stable element', async () => {
   assert.equal(settledAnswers[1]?.isSameNode(answers[1]), true, 'the second answer keeps its element');
 });
 
+test('a turn identity header appears once, above the root prompt', async () => {
+  const { container, root } = domRoot();
+  const turn = turnWith([
+    { kind: 'text', text: 'first answer', messageId: 'answer-1', live: false },
+    { kind: 'user', message: { id: 'steer-1', role: 'user', text: 'actually...', ts: 2 }, messageId: 'steer-1' },
+    { kind: 'text', text: 'second answer', messageId: 'answer-2', live: false },
+  ]);
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} messageHeader={<span className="turn-identity">Work</span>} />
+      </LocaleProvider>,
+    );
+  });
+  const headers = [...container.querySelectorAll('.turn-identity')];
+  assert.equal(headers.length, 1);
+  assert.ok(headers[0]!.closest('.maka-user-message:not(.maka-steering-message)'));
+});
+
 test('uses human conversation context instead of raw ids in action names', async () => {
   const { container, root } = domRoot();
   const turn = {
@@ -853,4 +872,18 @@ test('states the outcome without a duration when none is recorded, and localizes
     container.querySelector('.maka-processing-summary')?.textContent ?? '',
     /^已完成 · 用时 3 分 33 秒$/,
   );
+});
+
+
+test('WorkHub feedback is a system notice without a user message bubble', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root,{
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed',
+    user:{id:'feedback',role:'user',text:'Order summary',ts:1,hostOrigin:{kind:'workhub_result',eventId:'feedback',actionId:'action',delegationId:'delegation',targetSessionId:'target',targetTurnId:'target-turn'}},
+  });
+  assert.ok(container.textContent.includes('Task result update · Order summary'));
+  assert.equal(container.querySelectorAll('.maka-user-message').length, 0);
+  assert.ok(container.querySelector('[role="status"][aria-label="Task result update · Order summary"]'));
+  assert.ok(container.textContent.includes('the answer'));
 });

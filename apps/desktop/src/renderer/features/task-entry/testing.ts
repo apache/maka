@@ -57,6 +57,9 @@ export function createFakeTaskEntryServices(
       archiveProject: async () => undefined,
       restoreProject: async () => undefined,
     },
+    sessions: {
+      relocateWorkspace: async () => ({ ok: false, reason: 'operation_unavailable' }),
+    },
     ...overrides,
   };
 }
