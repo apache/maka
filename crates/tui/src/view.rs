@@ -238,7 +238,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Route::Connections => crate::pages::connections::draw(frame, app, page),
         Route::Projects => crate::pages::projects::draw(frame, app, page),
         Route::Workspace => crate::pages::home::draw(frame, app, page, nav_width > 0),
-        Route::Inbox => crate::pages::sessions::draw_catalog(frame, app, page),
         Route::Session(id) => session::draw(frame, app, page, &id),
         Route::Settings => crate::pages::settings::draw(frame, app, page),
     }
@@ -483,7 +482,7 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
             crate::pages::projects::Command::Next => ("›", ">"),
             crate::pages::projects::Command::Previous => ("‹", "<"),
         },
-        Action::Visit(Route::Inbox) => {
+        Action::Inbox => {
             if app.inbox.error.is_some() {
                 ("?", "?")
             } else if app.inbox_attention() {
@@ -492,7 +491,7 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
                 ("◇", "I")
             }
         }
-        Action::Back | Action::PreviousSessions => ("‹", "<"),
+        Action::Back => ("‹", "<"),
         Action::OlderMessages => ("↑", "^"),
         Action::NewerMessages => ("↓", "v"),
         Action::LatestMessages if app.chat.view.unseen => ("⇣", "v!"),
@@ -543,7 +542,7 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         Action::Branch(_) => ("↳", "+"),
         Action::Revision(_) => ("↶", "<"),
         Action::Onboard(_) => ("⊕", "+"),
-        Action::Forward | Action::NextSessions => ("›", ">"),
+        Action::Forward => ("›", ">"),
         Action::Refresh | Action::RefreshSession | Action::RefreshSessions => ("↻", "R"),
         Action::Connect => ("⏻", "C"),
         Action::Palette | Action::ClosePalette => ("⌘", ":"),
@@ -687,9 +686,10 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::Onboard(command) => command.label(),
         Action::Project(command) => command.label(),
         Action::Connection(command) => command.label(),
-        Action::Visit(Route::Inbox) if app.inbox.error.is_some() => "inbox-unavailable",
-        Action::Visit(Route::Inbox) if app.inbox_attention() => "inbox-pending",
+        Action::Inbox if app.inbox.error.is_some() => "inbox-unavailable",
+        Action::Inbox if app.inbox_attention() => "inbox-pending",
         Action::Visit(route) => route.title(),
+        Action::Inbox => "route-inbox",
         Action::Host => "route-host",
         Action::Help | Action::CloseHelp => "route-help",
         Action::Back => "footer-back",
@@ -705,8 +705,6 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
                 &[("language", &app.i18n.language_name())],
             );
         }
-        Action::PreviousSessions => "sessions-previous",
-        Action::NextSessions => "sessions-next",
         Action::ToggleSidebar => "command-sidebar",
         Action::ToggleFullscreen => "command-fullscreen",
         Action::ToggleDetails => "command-details",

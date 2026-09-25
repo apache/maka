@@ -61,7 +61,7 @@ route-settings = Settings
 route-help = Help
 route-inbox = Inbox
 command-inbox = Open pending requests
-inbox-empty = No requests waiting for you.
+inbox-empty = Nothing waiting
 inbox-pending = Sessions are waiting for your response
 inbox-unavailable = Pending requests could not be checked · Open to retry
 inbox-failed = Couldn't load pending requests. Press F5 to retry.
@@ -939,3 +939,7 @@ settings-host-connected = Connected
 settings-host-connecting = Connecting…
 settings-host-disconnected = Not connected
 settings-host-failed = Unavailable
+
+sidebar-title = Sessions
+sidebar-all = All
+sidebar-pending = Needs you

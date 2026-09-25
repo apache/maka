@@ -70,7 +70,7 @@ impl Saved {
             Focus::Navigation => true,
             Focus::List => matches!(
                 route,
-                Route::Workspace | Route::Inbox | Route::Projects | Route::Connections
+                Route::Workspace | Route::Projects | Route::Connections
             ),
             Focus::Composer | Focus::Transcript | Focus::Inspector => {
                 matches!(route, Route::Session(_))
@@ -118,10 +118,7 @@ impl State {
     fn saved(&self, route: &Route, app: &App) -> Saved {
         let focus = match (route, self.focus) {
             (Route::Session(_), Focus::Page | Focus::Queue | Focus::Inspector) => Focus::Composer,
-            (
-                Route::Workspace | Route::Inbox | Route::Projects | Route::Connections,
-                Focus::Page,
-            ) => Focus::List,
+            (Route::Workspace | Route::Projects | Route::Connections, Focus::Page) => Focus::List,
             (_, focus) => focus,
         };
         Saved {
@@ -197,11 +194,8 @@ impl App {
         if route == Route::Projects {
             self.projects.refresh();
         }
-        if route == Route::Inbox && self.inbox.selected.is_none() {
-            self.inbox.selected = self.inbox.items.first().map(|item| item.id.clone());
-        }
         self.focus = match route {
-            Route::Inbox | Route::Projects | Route::Connections => Focus::List,
+            Route::Projects | Route::Connections => Focus::List,
             Route::Session(_) => Focus::Composer,
             _ => Focus::Page,
         };

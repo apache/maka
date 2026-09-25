@@ -24,7 +24,6 @@ use std::time::{Duration, Instant};
 pub enum Loop {
     Familiar,
     Spring,
-    Orbit,
     OrbitSmall,
 }
 
@@ -53,18 +52,9 @@ const SPRING: &[(&str, u64)] = &[
     ("⠰⠆ ", 85),
     ("⣤  ", 65),
 ];
-const ORBIT: &[(&str, u64)] = &[
-    ("⠃⢠", 120),
-    ("⠉⣀", 120),
-    ("⢈⡁", 120),
-    ("⣀⠉", 120),
-    ("⡄⠘", 120),
-    ("⠆⠰", 120),
-];
 const ORBIT_SMALL: &[(&str, u64)] = &[("⢁", 180), ("⡈", 180), ("⠔", 180), ("⠢", 180)];
 const ORBIT_SMALL_ASCII: &[(&str, u64)] = &[("/", 180), ("-", 180), ("\\", 180), ("|", 180)];
 const SPRING_ASCII: &[(&str, u64)] = &[("o  ", 150), (" o ", 150), ("  o", 150), (" o ", 150)];
-const ORBIT_ASCII: &[(&str, u64)] = &[("/\\", 150), ("--", 150), ("\\/", 150), ("||", 150)];
 
 pub struct Motion {
     origin: Instant,
@@ -111,8 +101,6 @@ impl Motion {
             (Loop::Familiar, _) => FAMILIAR,
             (Loop::Spring, false) => SPRING,
             (Loop::Spring, true) => SPRING_ASCII,
-            (Loop::Orbit, false) => ORBIT,
-            (Loop::Orbit, true) => ORBIT_ASCII,
             (Loop::OrbitSmall, false) => ORBIT_SMALL,
             (Loop::OrbitSmall, true) => ORBIT_SMALL_ASCII,
         };
@@ -152,9 +140,7 @@ mod tests {
             (ORBIT_SMALL, 1),
             (ORBIT_SMALL_ASCII, 1),
             (SPRING, 3),
-            (ORBIT, 2),
             (SPRING_ASCII, 3),
-            (ORBIT_ASCII, 2),
         ] {
             for &(text, ms) in frames {
                 assert_eq!(text.width(), width);
@@ -183,17 +169,17 @@ mod tests {
         );
         motion.begin(start + Duration::from_millis(170), true);
         assert_eq!(motion.frame(Loop::Spring, false), "⣤  ");
-        motion.frame(Loop::Orbit, false);
+        motion.frame(Loop::OrbitSmall, false);
         assert_eq!(
             motion.wait(start + Duration::from_millis(170)),
-            Some(Duration::from_millis(65))
+            Some(Duration::from_millis(10))
         );
         motion.begin(start + Duration::from_millis(1400), true);
         assert_eq!(motion.breath(), 1.0);
         motion.begin(start + Duration::from_millis(2800), true);
         assert_eq!(motion.breath(), 0.0);
         motion.begin(start, false);
-        motion.frame(Loop::Orbit, true);
+        motion.frame(Loop::OrbitSmall, true);
         motion.breath();
         assert!(motion.wait(start).is_none());
         motion.begin(start, true); // no widget requested a frame after navigation

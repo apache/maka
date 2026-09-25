@@ -261,7 +261,7 @@ impl LostReply {
                                     assert_eq!(original["origin_epoch"], value["input"]["originHostEpoch"]);
                                     assert_eq!(original["session"], value["input"]["sessionId"]);
                                     assert_eq!(original["id"], value["input"]["messageId"]);
-                                    assert_eq!(saved["version"], 17);
+                                    assert_eq!(saved["version"], 18);
                                     assert_eq!(original["content"], value["input"]["content"]);
                                     assert_eq!(original["placement"], value["input"]["placement"]);
                                     assert_eq!(original["input_selections"], value["input"].get("inputSelections").cloned().unwrap_or_else(|| json!({})));

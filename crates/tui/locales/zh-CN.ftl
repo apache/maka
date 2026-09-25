@@ -61,7 +61,7 @@ route-settings = 设置
 route-help = 帮助
 route-inbox = 待处理
 command-inbox = 打开待处理请求
-inbox-empty = 暂无需要你处理的请求。
+inbox-empty = 暂无待处理
 inbox-pending = 有会话等待你的回应
 inbox-unavailable = 无法确认待处理请求 · 打开后重试
 inbox-failed = 暂时无法读取待处理请求。按 F5 重试。
@@ -939,3 +939,7 @@ settings-host-connected = 已连接
 settings-host-connecting = 正在连接…
 settings-host-disconnected = 未连接
 settings-host-failed = 不可用
+
+sidebar-title = 会话
+sidebar-all = 全部
+sidebar-pending = 待处理

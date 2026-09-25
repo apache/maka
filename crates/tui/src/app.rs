@@ -53,6 +53,7 @@ pub enum Action {
     Help,
     CloseHelp,
     Host,
+    Inbox,
     Connect,
     Refresh,
     ToggleTheme,
@@ -81,8 +82,6 @@ pub enum Action {
     ToggleSymbols,
     ToggleMotion,
     RefreshSessions,
-    NextSessions,
-    PreviousSessions,
     RefreshSession,
     OlderMessages,
     NewerMessages,
@@ -262,7 +261,7 @@ impl App {
                 "onboard-title",
             ),
             (Action::Help, "command-help"),
-            (Action::Visit(Route::Inbox), "command-inbox"),
+            (Action::Inbox, "command-inbox"),
             (Action::Visit(Route::Projects), "route-projects"),
             (Action::CreateSession, "session-create"),
             (Action::Connect, "command-connect"),
@@ -425,15 +424,6 @@ impl App {
             Route::Extensions | Route::App(_) => vec![],
             Route::Connections => self.connection_actions(),
             Route::Projects => self.project_actions(),
-            Route::Inbox => {
-                if self.inbox.error.is_some() {
-                    vec![Action::RefreshSessions]
-                } else if self.inbox.can_previous() || self.inbox.can_next() {
-                    vec![Action::PreviousSessions, Action::NextSessions]
-                } else {
-                    vec![]
-                }
-            }
             // Home controls live in its kernel surface.
             Route::Workspace => vec![],
             Route::Session(_) => {
@@ -468,15 +458,13 @@ impl App {
             Route::Settings => vec![],
         };
         if self.fullscreen() && self.inbox_attention() {
-            actions.push(Action::Visit(Route::Inbox));
+            actions.push(Action::Inbox);
         }
         actions
     }
     pub fn inbox_attention(&self) -> bool {
         matches!(self.connection, ConnectionState::Connected { .. })
-            && (!self.inbox.items.is_empty()
-                || self.inbox.can_previous()
-                || self.inbox.error.is_some())
+            && (!self.inbox.items.is_empty() || self.inbox.error.is_some())
     }
     pub fn begin_frame(&mut self, area: Rect) {
         self.attachments.begin_frame();
@@ -553,7 +541,7 @@ impl App {
                 crate::pages::connections::Command::Refresh,
             )),
             Route::Projects => Some(Action::Project(crate::pages::projects::Command::Refresh)),
-            Route::Workspace | Route::Inbox => Some(Action::RefreshSessions),
+            Route::Workspace => Some(Action::RefreshSessions),
             Route::Session(_) => Some(Action::RefreshSession),
             Route::Settings
                 if self.settings.category == crate::pages::settings::Category::Host
@@ -569,6 +557,18 @@ impl App {
             return None;
         }
         match action {
+            Action::Inbox => {
+                self.palette = None;
+                self.sidebar.pending_only = true;
+                self.sidebar.surface.focus("sidebar/filter/pending".into());
+                if self.frame_size.is_some_and(|size| size.0 < 60) || self.fullscreen() {
+                    self.sidebar.drawer = true;
+                } else {
+                    self.chrome.sidebar_expanded = Some(true);
+                    self.focus = Focus::Navigation;
+                }
+                self.invalidate_editor_geometry();
+            }
             Action::Help => {
                 self.palette = None;
                 self.help = true;
@@ -643,7 +643,7 @@ impl App {
                 if route == self.navigation.current() {
                     return None;
                 }
-                if matches!(self.navigation.current(), Route::Workspace | Route::Inbox)
+                if matches!(self.navigation.current(), Route::Workspace)
                     && let Route::Session(id) = &route
                     && self.catalog().items.iter().any(|item| item.id == *id)
                 {
@@ -692,13 +692,14 @@ impl App {
             Action::ToggleTheme => self.theme.cycle(),
             Action::Theme(command) => self.theme_action(command),
             Action::ToggleSidebar => {
-                if self.fullscreen() {
-                    self.chrome.session_fullscreen = false;
+                let width = self.frame_size.map_or(120, |size| size.0);
+                if self.sidebar.drawer {
+                    self.sidebar.drawer = false;
+                } else if width < 60 || self.fullscreen() {
+                    self.sidebar.drawer = true;
+                } else {
+                    self.chrome.toggle_sidebar(width, std::time::Instant::now());
                 }
-                self.chrome.toggle_sidebar(
-                    self.frame_size.map_or(120, |size| size.0),
-                    std::time::Instant::now(),
-                );
                 self.invalidate_editor_geometry();
             }
             Action::ToggleFullscreen => {
@@ -762,8 +763,6 @@ impl App {
                 self.set_locale(self.i18n.preference);
             }
             Action::RefreshSessions => self.catalog_mut().restart(),
-            Action::NextSessions => self.catalog_mut().next(),
-            Action::PreviousSessions => self.catalog_mut().previous(),
             Action::RefreshSession => {
                 self.sessions.refresh_detail();
                 return Some(action);
@@ -920,8 +919,6 @@ impl App {
             Action::Refresh => connected && !self.refreshing,
             Action::Connect => !matches!(self.connection, ConnectionState::Connecting),
             Action::RefreshSessions => connected && !self.catalog().loading,
-            Action::NextSessions => connected && self.catalog().can_next(),
-            Action::PreviousSessions => connected && self.catalog().can_previous(),
             Action::RefreshSession => connected && self.sessions.can_refresh_detail(),
             Action::OlderMessages => connected && self.chat.can_older(),
             Action::NewerMessages => connected && self.chat.can_newer(),
@@ -1040,15 +1037,15 @@ impl App {
     }
 
     pub(crate) fn catalog(&self) -> &crate::pages::sessions::Sessions {
-        if self.navigation.current() == Route::Inbox {
+        if self.sidebar.pending_only {
             &self.inbox
         } else {
             &self.sessions
         }
     }
 
-    fn catalog_mut(&mut self) -> &mut crate::pages::sessions::Sessions {
-        if self.navigation.current() == Route::Inbox {
+    pub(crate) fn catalog_mut(&mut self) -> &mut crate::pages::sessions::Sessions {
+        if self.sidebar.pending_only {
             &mut self.inbox
         } else {
             &mut self.sessions
@@ -1525,7 +1522,7 @@ impl App {
                                     self.focus = if !backwards
                                         && matches!(
                                             self.navigation.current(),
-                                            Route::Inbox | Route::Projects | Route::Connections
+                                            Route::Projects | Route::Connections
                                         ) {
                                         Focus::List
                                     } else if !backwards
@@ -1581,7 +1578,7 @@ impl App {
                                     self.focus = if backwards
                                         && matches!(
                                             self.navigation.current(),
-                                            Route::Inbox | Route::Projects | Route::Connections
+                                            Route::Projects | Route::Connections
                                         ) {
                                         Focus::List
                                     } else if backwards && self.inspector_shown() {
@@ -1821,17 +1818,6 @@ impl App {
                     {
                         self.focus = Focus::List;
                         self.projects
-                            .move_selection(mouse.kind == MouseEventKind::ScrollDown);
-                        None
-                    }
-                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                        if self.navigation.current() == Route::Inbox
-                            && target
-                                .as_ref()
-                                .is_some_and(|a| matches!(a, Action::Visit(Route::Session(_)))) =>
-                    {
-                        self.focus = Focus::List;
-                        self.catalog_mut()
                             .move_selection(mouse.kind == MouseEventKind::ScrollDown);
                         None
                     }

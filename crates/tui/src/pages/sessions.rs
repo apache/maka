@@ -17,21 +17,11 @@
  * under the License.
  */
 
-use crate::{
-    app::{Action, App, ConnectionState, Focus, Hit},
-    navigation::Route,
-    view::{safe, tone},
-};
+use crate::{app::App, view::safe};
 use maka_protocol::session::{
     SessionCatalogProjection, SessionCatalogQueryInput, SessionCatalogQueryResult, SessionStatus,
 };
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Paragraph, Wrap},
-};
+use ratatui::text::Line;
 
 #[derive(Default)]
 pub struct Sessions {
@@ -41,7 +31,6 @@ pub struct Sessions {
     revision: Option<String>,
     cursor: Option<String>,
     next_cursor: Option<String>,
-    previous: std::collections::VecDeque<Option<String>>,
     pub loading: bool,
     pub loaded: bool,
     requested: bool,
@@ -94,6 +83,8 @@ pub struct DetailRequest {
 impl Sessions {
     pub fn retire(&mut self, id: &str) {
         self.items.retain(|item| item.id != id);
+        self.cursor = None;
+        self.staged = None;
         if self.selected.as_deref() == Some(id) {
             self.selected = None;
         }
@@ -120,14 +111,8 @@ impl Sessions {
             return;
         }
         self.cursor = None;
-        self.previous.clear();
+        self.staged = None;
         self.refresh();
-    }
-    pub fn can_next(&self) -> bool {
-        !self.loading && self.next_cursor.is_some()
-    }
-    pub fn can_previous(&self) -> bool {
-        !self.loading && !self.previous.is_empty()
     }
     pub fn can_refresh_detail(&self) -> bool {
         !self.detail_inflight && self.detail.id().is_some()
@@ -153,7 +138,7 @@ impl Sessions {
     }
     /// Keep one more page of the listed catalog.
     pub fn more(&mut self) {
-        if self.loading || self.pending_only {
+        if self.loading {
             return;
         }
         if let Some(cursor) = self.next_cursor.clone() {
@@ -164,31 +149,10 @@ impl Sessions {
         }
     }
     pub fn can_more(&self) -> bool {
-        !self.pending_only && !self.loading && self.next_cursor.is_some()
+        !self.loading && self.next_cursor.is_some()
     }
-    pub fn next(&mut self) {
-        if self.loading {
-            return;
-        }
-        if let Some(cursor) = self.next_cursor.clone() {
-            self.changed = false;
-            if self.previous.len() == 128 {
-                self.previous.pop_front();
-            }
-            self.previous.push_back(self.cursor.clone());
-            self.cursor = Some(cursor);
-            self.requested = true;
-        }
-    }
-    pub fn previous(&mut self) {
-        if self.loading {
-            return;
-        }
-        if let Some(cursor) = self.previous.pop_back() {
-            self.changed = false;
-            self.cursor = cursor;
-            self.requested = true;
-        }
+    pub fn has_more(&self) -> bool {
+        self.next_cursor.is_some()
     }
     pub fn query(&mut self) -> Option<SessionCatalogQueryInput> {
         if self.loading || !self.requested {
@@ -222,7 +186,7 @@ impl Sessions {
                 revision,
                 sessions,
                 next_cursor,
-            }) if !self.pending_only => {
+            }) => {
                 let (mut items, pages) = self.staged.take().unwrap_or_default();
                 for session in sessions {
                     if !items.iter().any(|item| item.id == session.id) {
@@ -252,33 +216,17 @@ impl Sessions {
                 self.cursor = None;
                 self.loaded = true;
             }
-            Ok(SessionCatalogQueryResult::Page {
-                revision,
-                sessions,
-                next_cursor,
-            }) => {
-                if !self.loaded {
-                    self.selected = sessions.first().map(|item| item.id.clone());
-                } else if !sessions
-                    .iter()
-                    .any(|item| Some(&item.id) == self.selected.as_ref())
-                {
-                    // A removed/reordered row must not silently select another entity.
-                    self.selected = None;
-                }
-                self.items = sessions;
-                self.revision = Some(revision);
-                self.next_cursor = next_cursor;
-                self.loaded = true;
-            }
             Ok(SessionCatalogQueryResult::RevisionChanged { .. }) => {
                 self.cursor = None;
                 self.staged = None;
-                self.previous.clear();
                 self.changed = true;
                 self.requested = true; // One fresh list_start; the client rejects revision_changed for it.
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                self.cursor = None;
+                self.staged = None;
+                self.error = Some(error);
+            }
             _ => unreachable!("client checks catalog reply variants"),
         }
     }
@@ -339,145 +287,6 @@ impl Sessions {
     }
 }
 
-pub fn draw_catalog(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let area = area.inner(ratatui::layout::Margin::new(
-        1,
-        u16::from(area.height >= 18),
-    ));
-    let connected = matches!(app.connection, ConnectionState::Connected { .. });
-    let state = if app.navigation.current() == Route::Inbox {
-        &app.inbox
-    } else {
-        &app.sessions
-    };
-    let message = if !connected {
-        "workspace-connect"
-    } else if state.loading && state.items.is_empty() {
-        "sessions-loading"
-    } else if state.error.is_some() {
-        if state.pending_only {
-            "inbox-failed"
-        } else {
-            "sessions-failed"
-        }
-    } else if state.changed && state.items.is_empty() {
-        "sessions-changed"
-    } else if state.items.is_empty() {
-        if state.pending_only {
-            "inbox-empty"
-        } else {
-            "sessions-empty"
-        }
-    } else {
-        "sessions-help"
-    };
-    let heading_rows = if message == "sessions-help" {
-        0
-    } else if state.error.is_some() && !state.pending_only {
-        3
-    } else {
-        2
-    };
-    let parts =
-        Layout::vertical([Constraint::Length(heading_rows), Constraint::Min(0)]).split(area);
-    let heading = if let Some(error) = &state.error
-        && !state.pending_only
-    {
-        format!("{}\n{}", app.i18n.text(message), safe(error))
-    } else {
-        app.i18n.text(message)
-    };
-    frame.render_widget(Paragraph::new(heading).wrap(Wrap { trim: false }), parts[0]);
-    let stride = if area.height >= 18 { 3 } else { 2 };
-    let visible = parts[1].height as usize / stride;
-    let selected = state
-        .items
-        .iter()
-        .position(|item| Some(&item.id) == state.selected.as_ref());
-    let offset = selected.map_or(0, |index| (index + 1).saturating_sub(visible));
-    for (index, item) in state.items.iter().enumerate().skip(offset).take(visible) {
-        let rect = Rect::new(
-            parts[1].x,
-            parts[1].y + ((index - offset) * stride) as u16,
-            parts[1].width,
-            2,
-        );
-        let action = Action::Visit(Route::Session(item.id.clone()));
-        let active = app.palette.is_none()
-            && (app.focus == Focus::List && selected == Some(index)
-                || app.hover.as_ref() == Some(&action));
-        let style = if active {
-            tone::selection(app.theme.colors())
-        } else {
-            Style::default()
-        };
-        let working = connected
-            && item.status != SessionStatus::WaitingForUser
-            && (item.status == SessionStatus::Running
-                || item
-                    .live_run_state
-                    .as_ref()
-                    .is_some_and(|run| !run.running_turn_ids.is_empty()));
-        let orbit = if working {
-            app.chrome
-                .animation
-                .frame(crate::motion::Loop::Orbit, app.chrome.ascii)
-        } else {
-            "  "
-        };
-        let mut title = vec![
-            Span::styled(
-                if active {
-                    app.chrome.symbol("› ", "> ")
-                } else {
-                    "  "
-                },
-                Style::default().fg(tone::accent(app.theme.colors())),
-            ),
-            Span::styled(orbit, Style::default().fg(tone::accent(app.theme.colors()))),
-            Span::raw(" "),
-            Span::styled(
-                safe(&item.name),
-                Style::default()
-                    .fg(tone::session(&item.id, app.theme.colors()))
-                    .add_modifier(if active || item.has_unread {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            ),
-        ];
-        if item.status != SessionStatus::Active && !working && !state.pending_only {
-            title.push(Span::raw(format!(
-                "  {}",
-                app.i18n.text(status_key(item.status))
-            )));
-        }
-        if item.is_archived {
-            title.push(Span::raw(format!(
-                " · {}",
-                app.i18n.text("session-archived")
-            )));
-        }
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(title),
-                Line::styled(
-                    format!(
-                        "     {} · {}",
-                        safe(&item.workspace.host_cwd),
-                        safe(&item.model)
-                    ),
-                    Style::default().fg(tone::secondary(app.theme.colors())),
-                ),
-            ])
-            .style(style),
-            rect,
-        );
-        app.hits.push(Hit { area: rect, action });
-    }
-}
-
 pub fn detail_lines(app: &App) -> Vec<Line<'static>> {
     let i18n = &app.i18n;
     match &app.sessions.detail {
@@ -518,6 +327,10 @@ fn status_key(status: SessionStatus) -> &'static str {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::{
+        app::{Action, ConnectionState, Focus},
+        navigation::Route,
+    };
     pub(crate) fn item(id: &str) -> SessionCatalogProjection {
         maka_protocol::session::decode_session_catalog_projection(&serde_json::json!({
             "id":id,"revision":1,"workspace":{"target":{"kind":"host_path","path":"/work"},"hostCwd":"/work"},
@@ -553,7 +366,7 @@ pub(crate) mod tests {
                 sessions: vec![item("A")],
                 next_cursor: Some("cursor".into()),
             }));
-            state.next();
+            state.more();
             let continuation = state.query().unwrap();
             assert_eq!(
                 matches!(
@@ -567,32 +380,60 @@ pub(crate) mod tests {
                 actual_revision: "two".into(),
             }));
             assert_eq!(state.query(), Some(start.clone()));
-            assert!(state.previous.is_empty());
             assert!(state.changed);
             state.complete(Err("offline".into()));
             assert!(state.query().is_none(), "failed reads do not spin");
-            for index in 0..130 {
-                state.complete(Ok(SessionCatalogQueryResult::Page {
-                    revision: "one".into(),
-                    sessions: vec![item("A")],
-                    next_cursor: Some(format!("cursor-{index}")),
-                }));
-                assert!(
-                    state.can_next(),
-                    "bounded Back history must not hide more pages"
-                );
-                state.next();
-                assert!(state.query().is_some());
-            }
-            assert_eq!(state.previous.len(), 128);
+            state.restart();
+            assert_eq!(state.query(), Some(start.clone()));
             state.complete(Ok(SessionCatalogQueryResult::Page {
-                revision: "one".into(),
-                sessions: vec![],
+                revision: "two".into(),
+                sessions: vec![item("C")],
+                next_cursor: Some("next".into()),
+            }));
+            assert_eq!(
+                state.items[0].id, "A",
+                "keep old rows until the remembered depth is refreshed"
+            );
+            assert!(state.query().is_some());
+            state.complete(Ok(SessionCatalogQueryResult::Page {
+                revision: "two".into(),
+                sessions: vec![item("D")],
                 next_cursor: None,
             }));
+            assert_eq!(
+                state
+                    .items
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["C", "D"]
+            );
+            assert!(!state.can_more());
+            state.restart();
+            assert_eq!(state.query(), Some(start.clone()));
+            state.complete(Ok(SessionCatalogQueryResult::Page {
+                revision: "three".into(),
+                sessions: vec![item("E")],
+                next_cursor: Some("next".into()),
+            }));
+            assert!(state.query().is_some());
+            state.complete(Err("offline during the second page".into()));
             state.restart();
             assert_eq!(state.query(), Some(start));
-            assert!(state.previous.is_empty());
+            state.complete(Ok(SessionCatalogQueryResult::Page {
+                revision: "four".into(),
+                sessions: vec![item("F")],
+                next_cursor: None,
+            }));
+            assert_eq!(
+                state
+                    .items
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["F"],
+                "a retry cannot carry staged rows from the failed revision"
+            );
         }
     }
 
@@ -677,33 +518,26 @@ pub(crate) mod tests {
         app.apply(Action::ToggleFullscreen);
         app.inbox.complete(page(&["A", "B"]));
         assert_eq!(app.focus, Focus::Composer);
-        assert!(app.page_actions().contains(&Action::Visit(Route::Inbox)));
+        assert!(app.page_actions().contains(&Action::Inbox));
         assert!(!app.interactions.visible);
-        app.apply(Action::Visit(Route::Inbox));
-        assert_eq!(app.focus, Focus::List);
-        assert_eq!(app.inbox.selected.as_deref(), Some("A"));
+        app.apply(Action::Inbox);
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(app.sidebar.drawer && app.sidebar.pending_only);
+        assert_eq!(app.navigation.current(), Route::Session("draft".into()));
         let mut screen =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         screen
             .draw(|frame| crate::view::draw(frame, &mut app))
             .unwrap();
-        let row = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Visit(Route::Session("A".into())))
-            .unwrap()
-            .area;
+        let row = app.layer.rect("sidebar/list/rows/session-A").unwrap();
+        app.layer.focus_path("sidebar/list/rows/session-A");
         app.inbox.refresh();
         assert!(app.inbox.query().is_some());
         screen
             .draw(|frame| crate::view::draw(frame, &mut app))
             .unwrap();
         assert_eq!(
-            app.hits
-                .iter()
-                .find(|hit| hit.action == Action::Visit(Route::Session("A".into())))
-                .unwrap()
-                .area,
+            app.layer.rect("sidebar/list/rows/session-A").unwrap(),
             row,
             "background refresh must not move visible rows under the pointer"
         );
@@ -717,9 +551,12 @@ pub(crate) mod tests {
         app.input(key(crossterm::event::KeyCode::Enter));
         assert_eq!(
             app.navigation.current(),
-            Route::Inbox,
+            Route::Session("draft".into()),
             "resolved A cannot silently activate B"
         );
+        screen
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
         app.input(key(crossterm::event::KeyCode::Down));
         app.input(key(crossterm::event::KeyCode::Enter));
         assert_eq!(app.navigation.current(), Route::Session("B".into()));

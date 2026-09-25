@@ -52,6 +52,7 @@ pub(crate) enum Overlay {
     QueueEdit,
     Palette,
     Help,
+    Navigation,
 }
 
 impl Overlay {
@@ -77,6 +78,7 @@ impl Overlay {
             Self::QueueEdit => Action::Queue(queue::Command::Close),
             Self::Palette => Action::ClosePalette,
             Self::Help => Action::CloseHelp,
+            Self::Navigation => Action::Sidebar(crate::pages::sidebar::Message::Close),
         }
     }
 }
@@ -103,6 +105,7 @@ impl App {
             (QueueEdit, self.queue.edit.is_some()),
             (Palette, self.palette.is_some()),
             (Help, self.help),
+            (Navigation, self.sidebar.drawer),
         ]
         .into_iter()
         .find_map(|(overlay, open)| open.then_some(overlay))
@@ -128,6 +131,7 @@ impl App {
             Overlay::Interactions => crate::pages::interactions::sheet(self),
             Overlay::Palette => crate::pages::commands::sheet(self),
             Overlay::Help => Some(crate::pages::help::sheet(self)),
+            Overlay::Navigation => Some(crate::pages::sidebar::sheet(self)),
         }
     }
 

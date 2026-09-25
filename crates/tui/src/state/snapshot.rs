@@ -43,6 +43,7 @@ pub struct Snapshot {
     ascii: bool,
     motion: bool,
     sidebar: Option<bool>,
+    pending_only: bool,
     fullscreen: bool,
     #[serde(default)]
     inspector: bool,
@@ -68,7 +69,7 @@ impl Snapshot {
             .collect();
         unresolved.sort_by(|left, right| left.session.cmp(&right.session));
         Self {
-            version: 17,
+            version: 18,
             attachments: app.attachments.saved.clone(),
             directories: app.directories.clone(),
             skills: app.skills.saved.clone(),
@@ -85,6 +86,7 @@ impl Snapshot {
             ascii: app.chrome.ascii,
             motion: app.chrome.motion,
             sidebar: app.chrome.sidebar_expanded,
+            pending_only: app.sidebar.pending_only,
             fullscreen: app.chrome.session_fullscreen,
             inspector: app.chrome.inspector,
             readings: app.chat.checkpoints(),
@@ -103,7 +105,7 @@ impl Snapshot {
         let id = |id: &str| {
             !id.is_empty() && id.encode_utf16().count() <= 256 && !id.chars().any(char::is_control)
         };
-        if self.version != 17
+        if self.version != 18
             || self.root != root
             || self.tabs.len() > LIMIT
             || self.drafts.len() > LIMIT
@@ -270,6 +272,7 @@ impl Snapshot {
         app.chrome.ascii = self.ascii;
         app.chrome.motion = self.motion;
         app.chrome.sidebar_expanded = self.sidebar;
+        app.sidebar.pending_only = self.pending_only;
         app.chrome.session_fullscreen = self.fullscreen;
         app.chrome.inspector = self.inspector;
         if !keep_locale {
@@ -328,6 +331,8 @@ mod tests {
         original.drafts.get_mut("a").unwrap().insert(" new edits");
         original.i18n.preference = LocalePreference::Explicit(Locale::ZhTw);
         original.chrome.ascii = true;
+        original.sidebar.pending_only = true;
+        original.sidebar.drawer = true;
         original.theme.choice = crate::theme::Choice::Paper;
         original.apply(Action::Visit(Route::Settings));
         original.apply(Action::Onboard(crate::pages::onboarding::Command::Open));
@@ -351,6 +356,11 @@ mod tests {
             "credential entry is never restored or replayed"
         );
         assert_eq!(restored.navigation.current(), Route::Settings);
+        assert!(restored.sidebar.pending_only);
+        assert!(
+            !restored.sidebar.drawer,
+            "a temporary navigation sheet does not reopen"
+        );
         assert_eq!(restored.drafts["a"].text(), "中文🦀 new edits");
         assert_eq!(
             restored.directories["a"],
@@ -447,7 +457,7 @@ mod tests {
         request.input().validate().unwrap();
         original.sending.get_mut("a").unwrap().request = request.clone();
         let saved = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
-        assert_eq!(saved["version"], 17);
+        assert_eq!(saved["version"], 18);
         let mut restored = app();
         serde_json::from_value::<Snapshot>(saved.clone())
             .unwrap()

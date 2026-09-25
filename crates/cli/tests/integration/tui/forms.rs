@@ -129,8 +129,8 @@ fn real_host_code_mode_form_waits_without_model_progress_and_submits_from_tui() 
     tui.send(b"\x1b");
     tui.wait_for("Form received exactly once");
     tui.command("Open pending requests");
-    tui.wait_for("No requests waiting for you.");
-    tui.send(b"\x1b[1;3D");
+    tui.wait_for("Nothing waiting");
+    tui.send(b"\x02"); // Close the sidebar; filtering never left the conversation.
     tui.wait_for("Form received exactly once");
     let result = runtime.block_on(fixture.provider).unwrap();
     runtime.block_on(fixture.model).unwrap();

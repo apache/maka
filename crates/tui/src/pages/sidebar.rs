@@ -23,7 +23,7 @@
 use crate::{
     app::{Action, App, ConnectionState, Focus},
     navigation::Route,
-    ui::{self, Node, On, Size, Tone},
+    ui::{self, Node, On, Role, Sheet, Size, Tone},
     view::activity::Activity,
 };
 use maka_protocol::session::SessionCatalogProjection;
@@ -36,6 +36,9 @@ pub enum Message {
     New,
     Open(String),
     Group(String),
+    Filter(bool),
+    Close,
+    Refresh,
     More,
     /// A plugin page, pinned above Settings.
     App(crate::apps::Key),
@@ -48,6 +51,8 @@ pub enum Message {
 #[derive(Default)]
 pub struct State {
     pub surface: ui::Surface<Message>,
+    pub pending_only: bool,
+    pub drawer: bool,
     /// Groups the reader toggled away from their default: workspaces start
     /// open, Archived starts closed.
     toggled: BTreeSet<String>,
@@ -86,7 +91,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .animation
             .frame(crate::motion::Loop::OrbitSmall, app.chrome.ascii)
     });
-    let tree = tree(app, orbit, area.height);
+    let tree = tree(app, orbit, area.height, false);
     let context = ui::Context {
         colors: app.theme.colors(),
         ascii: app.chrome.ascii,
@@ -98,7 +103,27 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 /// Below this height sessions keep every row; plugin pages move into the list.
 const PINNED: u16 = 30;
 
-fn tree(app: &App, orbit: Option<&'static str>, height: u16) -> Node<Message> {
+/// A narrow terminal offers the same directory over the current page.
+pub fn sheet(app: &App) -> Sheet<Action> {
+    let height = app.frame_size.map_or(24, |size| size.1);
+    Sheet::new("navigation", app.i18n.text("sidebar-title"))
+        .body(tree(app, None, height.saturating_sub(8), true).map(&Action::Sidebar))
+        .button(
+            "close",
+            app.i18n.text("help-close"),
+            Role::Normal,
+            Action::Sidebar(Message::Close),
+            true,
+        )
+        .focus_node(if app.sidebar.pending_only {
+            "sidebar/filter/pending"
+        } else {
+            "sidebar/filter/all"
+        })
+        .back(Action::Sidebar(Message::Close))
+}
+
+fn tree(app: &App, orbit: Option<&'static str>, height: u16, drawer: bool) -> Node<Message> {
     let i18n = &app.i18n;
     let connected = matches!(app.connection, ConnectionState::Connected { .. });
     let new = labelled("new", "+", i18n.text("sidebar-new-session"), Tone::Accent)
@@ -106,29 +131,21 @@ fn tree(app: &App, orbit: Option<&'static str>, height: u16) -> Node<Message> {
         .enabled(connected)
         .hint(i18n.text("session-create"));
     let mut rows = vec![];
-    // On a short terminal the pages lead the list and scroll away with it,
-    // leaving every pinned row to sessions.
-    if height < PINNED {
-        let pages = apps(app);
-        if !pages.is_empty() {
-            rows.push(
-                Node::text(
-                    "apps-title",
-                    vec![(format!("  {}", i18n.text("sidebar-apps")), Tone::Muted)],
-                )
-                .clip(),
-            );
-            rows.extend(pages);
-            rows.push(Node::text("gap-apps", vec![]).size(Size::Fixed(1)));
-        }
-    }
-    let catalog = &app.sessions;
+    let catalog = app.catalog();
     if !connected || (catalog.loading && catalog.items.is_empty()) {
         rows.push(status(i18n.text("sessions-loading")));
-    } else if catalog.error.is_some() && catalog.items.is_empty() {
+    } else if catalog.error.is_some() {
         rows.push(status(i18n.text("sessions-failed")));
+        rows.push(
+            Node::text("retry", vec![(i18n.text("list-retry"), Tone::Accent)])
+                .on(On::Activate(Message::Refresh)),
+        );
     } else if catalog.items.is_empty() {
-        rows.push(status(i18n.text("sidebar-empty")));
+        rows.push(status(i18n.text(if app.sidebar.pending_only {
+            "inbox-empty"
+        } else {
+            "sidebar-empty"
+        })));
     }
     let current = match app.navigation.current() {
         Route::Session(id) => Some(id),
@@ -145,7 +162,11 @@ fn tree(app: &App, orbit: Option<&'static str>, height: u16) -> Node<Message> {
         hint: i18n.text("session-archived"),
         members: archived,
     });
-    for (index, group) in groups(app).into_iter().chain(archived).enumerate() {
+    for (index, group) in group_items(app, &catalog.items)
+        .into_iter()
+        .chain(archived)
+        .enumerate()
+    {
         let open = (group.key != ARCHIVED) != app.sidebar.toggled.contains(&group.key);
         if index > 0 {
             rows.push(Node::text(format!("gap-{}", group.key), vec![]).size(Size::Fixed(1)));
@@ -193,10 +214,69 @@ fn tree(app: &App, orbit: Option<&'static str>, height: u16) -> Node<Message> {
             .on(On::Activate(Message::More)),
         );
     }
+    // Short terminals keep sessions first and let plugin pages scroll below them.
+    if height < PINNED {
+        let pages = apps(app);
+        if !pages.is_empty() {
+            rows.push(Node::text("gap-apps", vec![]).size(Size::Fixed(1)));
+            rows.push(
+                Node::text(
+                    "apps-title",
+                    vec![(format!("  {}", i18n.text("sidebar-apps")), Tone::Muted)],
+                )
+                .clip(),
+            );
+            rows.extend(pages);
+        }
+    }
+    let pending = format!(
+        "{}{}",
+        i18n.text("sidebar-pending"),
+        if app.inbox.error.is_some() {
+            " ?".into()
+        } else if !app.inbox.items.is_empty() {
+            format!(
+                " · {}{}",
+                app.inbox.items.len(),
+                if app.inbox.has_more() { "+" } else { "" }
+            )
+        } else {
+            String::new()
+        }
+    );
+    let filter = Node::row(
+        "filter",
+        vec![
+            Node::text("all", vec![(i18n.text("sidebar-all"), Tone::Muted)])
+                .on(On::Activate(Message::Filter(false)))
+                .current(!app.sidebar.pending_only),
+            Node::text(
+                "pending",
+                vec![(
+                    pending,
+                    if app.inbox_attention() {
+                        Tone::Warning
+                    } else {
+                        Tone::Muted
+                    },
+                )],
+            )
+            .on(On::Activate(Message::Filter(true)))
+            .current(app.sidebar.pending_only),
+        ],
+    )
+    .gap(2)
+    .focus_group();
+    let list = Node::scroll("list", Node::column("rows", rows).focus_group());
     let mut children = vec![
         new.size(Size::Fixed(1)),
+        filter,
         Node::text("gap", vec![]).size(Size::Fixed(1)),
-        Node::scroll("list", Node::column("rows", rows).focus_group()),
+        if drawer {
+            list.size(Size::Upto(height.saturating_sub(6).max(3)))
+        } else {
+            list
+        },
     ];
     if height >= PINNED {
         children.extend(apps(app));
@@ -311,7 +391,7 @@ fn session(
     orbit: Option<&'static str>,
 ) -> Node<Message> {
     let (glyph, tone) = match app.session_activity(&item.id) {
-        Activity::Working => (orbit.unwrap_or(" "), Tone::Accent),
+        Activity::Working => (orbit.unwrap_or(app.chrome.symbol("⢁", "*")), Tone::Accent),
         Activity::Waiting => (app.chrome.symbol("◇", "!"), Tone::Warning),
         _ if item.has_unread => (app.chrome.symbol("●", "*"), Tone::Accent),
         _ => (" ", Tone::Subtle),
@@ -349,8 +429,12 @@ pub(crate) struct Group<'a> {
 /// Unarchived sessions grouped by workspace, in catalog (recency) order of
 /// first appearance.
 pub(crate) fn groups(app: &App) -> Vec<Group<'_>> {
+    group_items(app, &app.sessions.items)
+}
+
+fn group_items<'a>(app: &App, items: &'a [SessionCatalogProjection]) -> Vec<Group<'a>> {
     let mut groups: Vec<Group<'_>> = vec![];
-    for item in app.sessions.items.iter().filter(|item| !item.is_archived) {
+    for item in items.iter().filter(|item| !item.is_archived) {
         let (key, name, hint) = match &item.workspace.target {
             WorkspaceTarget::Project { project_id } => {
                 let (id, name) = app.projects.resolve(project_id).map_or_else(
@@ -391,7 +475,38 @@ fn host_problem(app: &App) -> Option<String> {
 
 impl App {
     pub(crate) fn sidebar_action(&mut self, message: Message) -> Option<Action> {
+        // Old geometry cannot open a row that has left the active filter.
+        if let Message::Open(id) = &message
+            && !self.catalog().items.iter().any(|item| item.id == *id)
+        {
+            return None;
+        }
+        if matches!(
+            message,
+            Message::New
+                | Message::Open(_)
+                | Message::App(_)
+                | Message::Apps
+                | Message::Settings
+                | Message::Host
+        ) {
+            self.sidebar.drawer = false;
+        }
         match message {
+            Message::Close => {
+                self.sidebar.drawer = false;
+                None
+            }
+            Message::Filter(pending) => {
+                self.sidebar.pending_only = pending;
+                self.sidebar.surface.invalidate();
+                self.layer.retire();
+                None
+            }
+            Message::Refresh => {
+                self.catalog_mut().restart();
+                None
+            }
             Message::New => self.apply(Action::CreateSession),
             Message::Open(id) => self.apply(Action::Visit(Route::Session(id))),
             Message::Group(key) => {
@@ -401,7 +516,7 @@ impl App {
                 None
             }
             Message::More => {
-                self.sessions.more();
+                self.catalog_mut().more();
                 None
             }
             Message::App(key) => self.apply(Action::Apps(crate::apps::Message::Open(key))),
@@ -490,5 +605,65 @@ mod tests {
         app.sidebar_action(Message::Group(ARCHIVED.into()));
         let open = screen(&mut app);
         assert!(open.contains("▾ Archived") && open.contains("shelved"));
+    }
+
+    #[test]
+    fn narrow_navigation_filters_in_place_and_closes_back_to_the_draft() {
+        use crossterm::event::{
+            Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        for locale in crate::Locale::ALL {
+            let mut app = App::new(
+                "/unused".into(),
+                crate::i18n::I18n::new(
+                    crate::LocalePreference::Explicit(locale),
+                    crate::Locale::En,
+                ),
+            );
+            app.connection = ConnectionState::Connected {
+                root_id: "root".into(),
+                epoch: "epoch".into(),
+            };
+            app.sessions.items = vec![
+                crate::pages::sessions::tests::item("A"),
+                crate::pages::sessions::tests::item("B"),
+            ];
+            app.inbox.items = vec![crate::pages::sessions::tests::item("A")];
+            app.apply(Action::Visit(Route::Session("draft".into())));
+            app.drafts.get_mut("draft").unwrap().insert("Keep this");
+            let mut terminal = Terminal::new(TestBackend::new(44, 24)).unwrap();
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Char('b'),
+                KeyModifiers::CONTROL,
+            )));
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            assert!(app.sidebar.drawer);
+            assert!(app.layer.rect("sidebar/list/rows/session-B").is_some());
+            let filter = app.layer.rect("sidebar/filter/pending").unwrap();
+            app.input(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: filter.x,
+                row: filter.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            assert!(app.sidebar.pending_only);
+            assert!(app.layer.rect("sidebar/list/rows/session-A").is_some());
+            assert!(app.layer.rect("sidebar/list/rows/session-B").is_none());
+            assert_eq!(app.navigation.current(), Route::Session("draft".into()));
+            app.input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+            assert!(!app.sidebar.drawer);
+            assert_eq!(app.focus, Focus::Composer);
+            app.input(Event::Paste("?".into()));
+            assert_eq!(app.drafts["draft"].text(), "Keep this?");
+            assert!(app.i18n.diagnostics().is_empty());
+        }
     }
 }

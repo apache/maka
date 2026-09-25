@@ -399,7 +399,9 @@ fn real_host_catalog_subscription_and_remote_updates_reach_clients() {
     // open a second session, then return via the catalog and cycle tabs. The
     // original stream is still running and the other composer's draft survives.
     tui.send(b"\x17"); // Ctrl+W
-    tui.wait_until(|screen| screen.contains(&first[0].name) && !screen.contains("Streamed 中文🦀"));
+    tui.wait_until(|screen| screen.contains("Workspace") && !screen.contains("Streamed 中文🦀"));
+    tui.send(b"\x1b[H"); // Return to the start of the scrollable session directory.
+    tui.wait_for(&first[0].name);
     tui.wait_for(&first[1].name);
     tui.click_text(&first[1].name);
     tui.wait_for("Message…");
@@ -407,10 +409,12 @@ fn real_host_catalog_subscription_and_remote_updates_reach_clients() {
     tui.wait_for("另一份草稿🦀");
     // Straight from the sidebar, where the older page sits below the fold.
     tui.wheel_at(&first[2].name, true, 12);
-    // The last row showing means the wheel has reached the end of the list,
-    // so rows no longer move under the click.
+    // Short sidebars include apps after the sessions. The final app showing
+    // means the wheel has reached the end, so rows no longer move under a click.
     tui.wait_until(|screen| {
-        screen.contains("Renamed from another") && screen.contains(&second[1].name)
+        screen.contains("Renamed from another")
+            && screen.contains(&second[1].name)
+            && screen.contains("Recall")
     }); // Long names end in an ellipsis there.
     tui.click_last_text("Renamed from another");
     tui.wait_for("Streamed 中文🦀");

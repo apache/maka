@@ -461,7 +461,7 @@ impl App {
                     item
                 }
             },
-            Route::Workspace | Route::Inbox => {
+            Route::Workspace => {
                 let catalog = self.catalog();
                 let Some(item) = catalog
                     .items

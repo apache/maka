@@ -23,9 +23,6 @@ use ratatui::style::{Color, Style};
 pub fn accent(colors: Palette) -> Color {
     colors.accent
 }
-pub fn secondary(colors: Palette) -> Color {
-    colors.muted
-}
 pub fn thinking(colors: Palette) -> Color {
     colors.thinking
 }
@@ -52,9 +49,6 @@ pub fn hue(index: u8, colors: Palette) -> Color {
         colors.syntax[0],
     ];
     variants[usize::from(index) % variants.len()]
-}
-pub fn session(id: &str, colors: Palette) -> Color {
-    hue(session_hue(id), colors)
 }
 pub fn border(colors: Palette, focused: bool, breath: Option<f32>) -> Color {
     colors.breath(focused, breath)

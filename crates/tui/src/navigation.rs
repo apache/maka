@@ -33,7 +33,6 @@ pub enum Route {
     Workspace,
     Session(String),
     Settings,
-    Inbox,
     Projects,
     Connections,
     /// The directory of every plugin view.
@@ -44,13 +43,12 @@ pub enum Route {
 
 impl Route {
     pub const PAGE_COUNT: usize = Self::ALL.len() + 2;
-    pub const ALL: [Self; 4] = [Self::Workspace, Self::Settings, Self::Inbox, Self::Projects];
+    pub const ALL: [Self; 3] = [Self::Workspace, Self::Settings, Self::Projects];
     pub fn title(&self) -> &'static str {
         match self {
             Self::Workspace => "route-workspace",
             Self::Session(_) => "route-session",
             Self::Settings => "route-settings",
-            Self::Inbox => "route-inbox",
             Self::Projects => "route-projects",
             Self::Connections => "route-connections",
             Self::Extensions | Self::App(_) => "route-extensions",
@@ -160,15 +158,15 @@ mod tests {
         nav.visit(Route::Settings);
         nav.back();
         assert_eq!(nav.current(), Route::Projects);
-        nav.visit(Route::Inbox);
+        nav.visit(Route::Extensions);
         nav.forward();
-        assert_eq!(nav.current(), Route::Inbox);
-        nav.visit(Route::Inbox);
+        assert_eq!(nav.current(), Route::Extensions);
+        nav.visit(Route::Extensions);
         nav.back();
         assert_eq!(nav.current(), Route::Projects);
         for _ in 0..200 {
             nav.visit(Route::Settings);
-            nav.visit(Route::Inbox);
+            nav.visit(Route::Extensions);
         }
         assert_eq!(nav.entries.len(), 128);
         for _ in 0..200 {
