@@ -108,7 +108,11 @@ pub(super) struct Record {
 }
 
 impl super::plugin::Manager {
-    pub(super) async fn configure_creation(&self, creation: Creation) -> Result<(), Error> {
+    pub(super) async fn configure_creation(
+        &self,
+        creation: Creation,
+        revision: Option<u64>,
+    ) -> Result<(), Error> {
         let authorization::Target::Workspace { sandbox_mode, .. } = &creation.authorization else {
             return Err(invalid("New work requires explicit workspace consent"));
         };
@@ -117,12 +121,10 @@ impl super::plugin::Manager {
         }
         creation.settings.validate().map_err(invalid)?;
         self.access.commands(&creation.authorization).await?;
-        let repository = &self.assignments.repository;
-        let revision = repository
-            .read::<Creation>("creation")
-            .await?
-            .map(|(revision, _)| revision);
-        repository.put("creation", revision, &creation).await
+        self.assignments
+            .repository
+            .put("creation", revision, &creation)
+            .await
     }
 
     pub(super) async fn candidates(&self) -> Result<crate::candidates::Candidates, Error> {

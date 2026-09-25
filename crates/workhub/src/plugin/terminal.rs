@@ -32,7 +32,7 @@ use maka_plugins::{
     contributions::Staged,
     remote::{Caller, Error, Method, key},
     terminal_ui::{
-        Context, Descriptor, Text, VERSION,
+        Context, Descriptor, Placement, Text, VERSION,
         app::{self, App, Cx, Submission, Words},
         view::{self, Action, Confirm, Node, Reply, Role, Tone, View, build::*},
     },
@@ -41,22 +41,45 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod setup;
+
 pub(super) fn publish(
     staged: &mut Staged,
     manager: Arc<Manager>,
     package: &str,
 ) -> Result<(), String> {
     let endpoint = app::endpoint(
-        Hub(manager),
+        Hub(manager.clone()),
         Descriptor::new(Text::plain("WorkHub"), Context::Application)
             .icon("◈", "H")
             .order(10),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.to_string())?
+    .requiring_host_paths();
     staged
         .insert(
             key(package, "terminal").map_err(|error| error.to_string())?,
             endpoint,
+        )
+        .map_err(|error| error.to_string())?;
+    staged
+        .insert(
+            key(package, "task-models").map_err(|error| error.to_string())?,
+            app::endpoint(
+                setup::SessionModels(Hub(manager)),
+                Descriptor::new(
+                    Text::localized(
+                        "WorkHub task models",
+                        "WorkHub 任务模型",
+                        "WorkHub 任務模型",
+                    ),
+                    Context::Session,
+                )
+                .placement(Placement::Panel)
+                .icon("◈", "H")
+                .order(40),
+            )
+            .map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())
 }
@@ -132,9 +155,42 @@ struct Place {
     filter: Option<String>,
     after: Option<String>,
     assignment: Option<String>,
+    setup: Option<setup::Route>,
 }
 
 impl Hub {
+    async fn detail(&self, id: &str) -> Result<Option<Summary>, Error> {
+        let assignment = self
+            .0
+            .assignments
+            .repository
+            .read::<crate::assignment::Assignment>(
+                &crate::assignment::key(id).map_err(super::remote::failure)?,
+            )
+            .await
+            .map_err(super::remote::failure)?;
+        Ok(assignment.map(|(_, assignment)| Summary {
+            operation_id: assignment.request.operation_id,
+            title: match assignment.request.target {
+                crate::assignment::Target::Create { request } => request.name,
+                crate::assignment::Target::Existing { .. } => {
+                    assignment.request.content.text.chars().take(160).collect()
+                }
+            },
+            source: Invocation {
+                session_id: assignment.request.source.session_id,
+            },
+            delivery: assignment.delivery.map(|delivery| Delivery {
+                receipt: Receipt {
+                    invocation: Invocation {
+                        session_id: delivery.invocation().session_id.clone(),
+                    },
+                },
+            }),
+            retired: assignment.retired,
+            control: assignment.control,
+        }))
+    }
     async fn call<T: for<'de> Deserialize<'de>>(
         &self,
         action: Call,
@@ -182,19 +238,32 @@ impl App for Hub {
         let this = Hub(self.0.clone());
         Box::pin(async move {
             let words = &cx.words;
+            let place: Place = serde_json::from_value(route).unwrap_or_default();
+            if let Some(route) = place.setup {
+                return setup::read(&this, route, &cx).await;
+            }
             if !this.ready(&cx.caller).await? {
                 return Ok(welcome(words));
             }
-            let query: Query = this.call(Call::Query, Value::Null, &cx.caller).await?;
-            let place: Place = serde_json::from_value(route).unwrap_or_default();
-            let (page, feedback) = this.board(&cx.caller, place.after.clone()).await?;
             if let Some(id) = &place.assignment {
-                let summary = page.entries.iter().find(|entry| &entry.operation_id == id);
-                let state = feedback.iter().find(|item| &item.id == id);
-                return Ok(assignment(words, id, summary, state));
+                let summary = this.detail(id).await?;
+                let feedback: Vec<Feedback> =
+                    this.call(Call::Feedback, json!([id]), &cx.caller).await?;
+                return Ok(assignment(words, id, summary.as_ref(), feedback.first()));
             }
+            let query: Query = this.call(Call::Query, Value::Null, &cx.caller).await?;
+            let (page, feedback) = this.board(&cx.caller, place.after.clone()).await?;
             let filter = place.filter.unwrap_or_else(|| "active".into());
-            Ok(board(words, &query, &page, &feedback, &filter))
+            let mut view = board(
+                words,
+                &query,
+                &page,
+                &feedback,
+                &filter,
+                place.after.as_deref(),
+            );
+            setup::entries(&this, &mut view, &cx).await?;
+            Ok(view)
         })
     }
 
@@ -210,7 +279,16 @@ impl App for Hub {
                 }),
                 error => Err(error),
             };
+            if submission.action == "search" || submission.action == "save-target" {
+                return match setup::submit(&this, submission, &cx).await {
+                    Err(Error::Invalid(message)) => Ok(Reply::Rejected {
+                        message: clean(&message, false).chars().take(256).collect(),
+                    }),
+                    result => result,
+                };
+            }
             match submission.action.as_str() {
+                "discovery" => setup::discovery(&this, submission, &cx).await,
                 "setup" => {
                     let Some(grant) = submission.grant else {
                         return Ok(Reply::Consent {
@@ -310,6 +388,8 @@ fn welcome(words: &Words) -> View {
                     Tone::Subtle,
                 ),
                 row("setup", vec![button("setup", "setup", Role::Primary)]),
+                link("coordinator-model", words.t("Choose coordinator model", "选择协调器模型", "選擇協調器模型"),
+                    json!({"setup":{"purpose":{"kind":"coordinator"}}})).into(),
             ],
         ),
     )
@@ -330,7 +410,14 @@ fn state(words: &Words, state: Option<&str>) -> (String, Tone, &'static str) {
     (words.t(en, zh_cn, zh_tw), tone, group)
 }
 
-fn board(words: &Words, query: &Query, page: &Page, feedback: &[Feedback], filter: &str) -> View {
+fn board(
+    words: &Words,
+    query: &Query,
+    page: &Page,
+    feedback: &[Feedback],
+    filter: &str,
+    after: Option<&str>,
+) -> View {
     let mut children = vec![];
     let mut actions = vec![];
     match &query.coordinator_session_id {
@@ -414,7 +501,7 @@ fn board(words: &Words, query: &Query, page: &Page, feedback: &[Feedback], filte
             let mut row = link(
                 format!("work-{}", entry.operation_id).replace('/', ":"),
                 view::build::clean(&entry.title, false),
-                json!({"assignment": entry.operation_id, "filter": filter}),
+                json!({"assignment": entry.operation_id, "filter": filter, "after": after}),
             )
             .meta(label)
             .tone(tone);
@@ -525,9 +612,29 @@ fn assignment(
             session: summary.source.session_id.clone(),
         },
     });
+    if !summary.retired {
+        children.push(
+            link(
+                "model",
+                words.t("Change task model", "更换任务模型", "更換任務模型"),
+                json!({"setup":{"purpose":{"kind":"delegation","assignment":id}}}),
+            )
+            .into(),
+        );
+        // Only stable task/session identities cross the extension boundary.
+        // A filler owns its own data; it receives no result text or authority.
+        children.push(slot(
+            format!("extensions-{}", crate::repository::digest(&id).expect("assignment identity serializes")),
+            "workhub.task.detail",
+            json!({"assignmentId":id,"sourceSessionId":summary.source.session_id,
+                "sessionId":summary.delivery.as_ref().map(|delivery| &delivery.receipt.invocation.session_id)}),
+        ));
+    }
     let mut actions = vec![];
     let stopped = feedback.is_some_and(|item| item.state == "aborted");
-    if summary.control.is_some() {
+    if summary.retired {
+        // Retired assignments keep their history but offer no new controls.
+    } else if summary.control.is_some() {
         // A stop or resume is already on its way; another waits for it.
         children.push(text(
             "applying",
@@ -630,13 +737,14 @@ mod tests {
                 result_preview: Some("Which branch?".into()),
             },
         ];
-        let active = board(&words, &query, &page, &feedback, "active");
+        let active = board(&words, &query, &page, &feedback, "active", None);
         active.validate().unwrap();
         let text = serde_json::to_string(&active).unwrap();
         assert!(text.contains("Task a") && !text.contains("Task b"));
         assert!(text.contains("\"kind\":\"session\"") && text.contains("Could not reach"));
         let attention =
-            serde_json::to_string(&board(&words, &query, &page, &feedback, "attention")).unwrap();
+            serde_json::to_string(&board(&words, &query, &page, &feedback, "attention", None))
+                .unwrap();
         assert!(attention.contains("Task b") && attention.contains("Which branch?"));
         let detail = assignment(&words, "a", page.entries.first(), feedback.first());
         detail.validate().unwrap();
@@ -650,5 +758,57 @@ mod tests {
                 .destructive
         );
         assert!(serde_json::to_string(&detail).unwrap().contains("worker-a"));
+        let Node::Column { children, .. } = &detail.root else {
+            panic!("task detail column");
+        };
+        let context = children
+            .iter()
+            .find_map(|node| match node {
+                Node::Slot { name, context, .. } if name == "workhub.task.detail" => Some(context),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            context,
+            &json!({"assignmentId":"a","sourceSessionId":"coordinator","sessionId":"worker-a"})
+        );
+        let slot_key = |view: &View| {
+            let Node::Column { children, .. } = &view.root else {
+                panic!("task detail")
+            };
+            children
+                .iter()
+                .find_map(|node| match node {
+                    Node::Slot { key, .. } => Some(key.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let second = assignment(&words, "b", page.entries.get(1), feedback.get(1));
+        second.validate().unwrap();
+        assert_ne!(slot_key(&detail), slot_key(&second));
+        assert_eq!(
+            slot_key(&detail),
+            slot_key(&assignment(
+                &words,
+                "a",
+                page.entries.first(),
+                feedback.get(1)
+            ))
+        );
+
+        let mut retired = summary("retired");
+        retired.retired = true;
+        let history = assignment(&words, "retired", Some(&retired), feedback.first());
+        history.validate().unwrap();
+        assert!(history.actions.is_empty());
+        let Node::Column { children, .. } = history.root else {
+            panic!("task history")
+        };
+        assert!(
+            !children
+                .iter()
+                .any(|node| matches!(node, Node::Slot { .. }))
+        );
     }
 }

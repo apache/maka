@@ -306,21 +306,14 @@ impl Method for Call {
                 }
                 Action::Creation => {
                     let creation: crate::decision::Creation = decode(input)?;
-                    let authority = caller
-                        .views
-                        .authorize(Authorization {
-                            operation_id: uuid::Uuid::new_v4(),
-                            title: "Choose WorkHub task defaults".into(),
-                            target: creation.authorization.clone(),
-                            capabilities: [Capability::Executions].into(),
-                        })
-                        .await?;
-                    let result = manager.configure_creation(creation).await.map_err(failure);
-                    authority
-                        .finish()
+                    let revision = manager
+                        .assignments
+                        .repository
+                        .read::<crate::decision::Creation>("creation")
                         .await
-                        .map_err(|_| Error::CleanupUnconfirmed)?;
-                    result.map(|()| Value::Null)
+                        .map_err(failure)?
+                        .map(|(revision, _)| revision);
+                    configure_creation(&manager, &caller, creation, revision).await
                 }
                 Action::Decide => {
                     #[derive(Deserialize)]
@@ -514,6 +507,34 @@ impl Method for Call {
         })
     }
 }
+/// Both clients use the same authority and configuration boundary. The terminal
+/// can retain its observed revision across editing and consent.
+pub(super) async fn configure_creation(
+    manager: &Manager,
+    caller: &Caller,
+    creation: crate::decision::Creation,
+    revision: Option<u64>,
+) -> Result<Value, Error> {
+    let _wake = Wake(manager);
+    let authority = caller
+        .views
+        .authorize(Authorization {
+            operation_id: uuid::Uuid::new_v4(),
+            title: "Choose WorkHub task defaults".into(),
+            target: creation.authorization.clone(),
+            capabilities: [Capability::Executions].into(),
+        })
+        .await?;
+    let result = manager
+        .configure_creation(creation, revision)
+        .await
+        .map_err(failure);
+    authority
+        .finish()
+        .await
+        .map_err(|_| Error::CleanupUnconfirmed)?;
+    result.map(|()| Value::Null)
+}
 fn decode<T: DeserializeOwned>(input: Value) -> Result<T, Error> {
     serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))
 }
@@ -530,7 +551,7 @@ fn empty(input: Value) -> Result<(), Error> {
 fn command(error: CommandError) -> Error {
     failure(error.into())
 }
-fn failure(error: WorkhubError) -> Error {
+pub(super) fn failure(error: WorkhubError) -> Error {
     match error {
         WorkhubError::Storage(maka_plugins::storage::StoreError::OutcomeUnknown(reason))
         | WorkhubError::Execution(CommandError::OutcomeUnknown(reason)) => {
