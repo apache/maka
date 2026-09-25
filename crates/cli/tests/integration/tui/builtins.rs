@@ -137,15 +137,8 @@ async fn remote(client: &maka_client::Client, package: &str, method: &str, input
 fn category(tui: &mut Pty, name: &str, ready: &str) {
     tui.wait_for("Settings");
     tui.click_text("Settings");
-    // Settings uses a fixed 14-column category list, even in a wide terminal.
-    let shown = match name {
-        "Usage & pricing" => "Usage & prici…",
-        "Conversation import" => "Conversation …",
-        "External agents" => "External agen…",
-        _ => name,
-    };
-    tui.wait_for(shown);
-    tui.click_text(shown);
+    tui.wait_for(name);
+    tui.click_text(name);
     tui.wait_for(ready);
 }
 

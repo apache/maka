@@ -60,6 +60,7 @@ pub(super) async fn read(
 ) -> Result<(), Failure> {
     let direction = command.direction;
     let mut request = Read {
+        mount: mount.token,
         resource: mount.resource.id.clone(),
         fence,
         direction,

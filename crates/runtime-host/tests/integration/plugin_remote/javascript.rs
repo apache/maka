@@ -56,12 +56,17 @@ async fn scenario(vm: &str) {
         include_str!("../../fixtures/remote-plugin.mjs"),
     )
     .unwrap();
+    std::fs::write(
+        path.join("echo-ui.mjs"),
+        include_str!("../../fixtures/echo-ui.mjs"),
+    )
+    .unwrap();
     std::fs::write(path.join("client.js"), "immutable client fixture").unwrap();
     std::fs::write(
         path.join("maka.extension.json"),
         serde_json::to_vec(&json!({
             "schemaVersion":1,"id":"example.remote",
-            "runtime":{"entry":"host.mjs","sdkVersion":1,"vm":vm},
+            "runtime":{"entry":"host.mjs","sdkVersion":2,"vm":vm},
             "client":{"entry":"client.js","sdkVersion":1},
         }))
         .unwrap(),
@@ -240,6 +245,7 @@ async fn scenario(vm: &str) {
     )
     .await;
     let (binding, target) = bind(&mut peer, &client, "echo").await;
+    let (_, view_target) = bind(&mut peer, &client, "echo-view").await;
     let views = success(
         peer.rpc(
             "plugin.platform.query",
@@ -259,8 +265,11 @@ async fn scenario(vm: &str) {
     assert_eq!(page.items.len(), 1);
     let descriptor = &page.items[0];
     assert_eq!(descriptor.package_id, "example.remote");
-    assert_eq!(descriptor.method, "echo");
-    assert_eq!(serde_json::to_value(&descriptor.target).unwrap(), target);
+    assert_eq!(descriptor.method, "echo-view");
+    assert_eq!(
+        serde_json::to_value(&descriptor.target).unwrap(),
+        view_target
+    );
     assert_eq!(descriptor.descriptor.title.resolve("zh-CN"), "回显");
     assert_eq!(descriptor.descriptor.title.resolve("zh-TW"), "回顯");
     let continuation = json!({"view":"terminal_views", "rootId":"profile", "limit":1,
@@ -290,17 +299,28 @@ async fn scenario(vm: &str) {
         assert_ne!(page["items"][0]["packageId"], "example.remote");
         cursor = page["nextCursor"].clone();
     }
-    // Discovery pins the actual registration; a native caller need not load any bundle.
-    let native_binding = json!({"packageId":"example.remote", "method":"echo", "sessionId":null});
+    // Discovery pins a real presenter; its document stays separate from generic RPCs.
+    let native_binding =
+        json!({"packageId":"example.remote", "method":"echo-view", "sessionId":null});
+    let view_document = rpc(&mut peer, json!({"kind":"open_document"})).await["document"].clone();
+    let view = rpc(
+        &mut peer,
+        json!({"kind":"call", "binding":native_binding,
+            "target":view_target,"document":view_document,
+            "input":{"kind":"read","route":"from view","locale":"en"}}),
+    )
+    .await;
+    assert_eq!(view["value"]["kind"], "view");
+    assert_eq!(view["value"]["view"]["version"], 7);
     assert_eq!(
-        rpc(
-            &mut peer,
-            json!({"kind":"call", "binding":native_binding,
-        "target":target,"document":document,"input":"from view"})
-        )
-        .await["value"]["input"],
+        view["value"]["view"]["root"]["spans"][0]["text"],
         "from view"
     );
+    rpc(
+        &mut peer,
+        json!({"kind":"close_document","document":view_document}),
+    )
+    .await;
     let call = json!({"kind":"call","binding":binding,"target":target,"document":document,"input":"hello"});
     assert_eq!(rpc(&mut peer, call.clone()).await["value"]["generation"], 0);
     let (replace, replacement) = bind(&mut peer, &client, "replace").await;
@@ -321,7 +341,10 @@ async fn scenario(vm: &str) {
         )
         .await,
     );
-    assert_eq!(views["items"][0]["target"], next);
+    let (_, next_view) = bind(&mut peer, &client, "echo-view").await;
+    assert_eq!(views["items"][0]["target"], next_view);
+    assert_eq!(view_target["activation"], next_view["activation"]);
+    assert_ne!(view_target["registration"], next_view["registration"]);
     assert_eq!(target["activation"], next["activation"]);
     assert_ne!(target["registration"], next["registration"]);
     assert_eq!(

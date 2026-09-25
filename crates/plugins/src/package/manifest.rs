@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use super::validate_path;
 use crate::{Error, identifier};
 
-pub const SDK_VERSION: u32 = 1;
+pub const SDK_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

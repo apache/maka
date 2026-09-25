@@ -22,7 +22,7 @@
 //! region's surface does. A region is any surface: a page, a panel, a
 //! settings pane.
 
-use super::{Apps, tree::Well};
+use super::{App, Apps, tree::Well};
 use crate::{theme::Palette, ui, view::form};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::Frame;
@@ -78,13 +78,14 @@ pub(super) fn paint<M: Clone>(
 /// editor, and while the region has the keyboard, typing and pastes into
 /// the focused field. Some(redraw) when a field consumed the event.
 pub(super) fn input<M: Clone>(
-    apps: &mut Apps,
+    app: &mut App,
     surface: &mut ui::Surface<M>,
     wells: &[Well],
     event: &Event,
     keyboard: bool,
-    ascii: bool,
 ) -> Option<bool> {
+    let ascii = app.chrome.ascii;
+    let apps = &mut app.apps;
     if surface.captures() {
         return None;
     }
@@ -138,8 +139,8 @@ pub(super) fn input<M: Clone>(
         return None;
     }
     let editable = editable(apps, well);
-    let instance = apps.instances.get_mut(&well.key)?;
-    let changed = match event {
+    let editor = apps.instances.get(&well.key)?.editors.get(&well.field)?;
+    let proposed = match event {
         Event::Key(key) if key.kind != KeyEventKind::Release => {
             if key
                 .modifiers
@@ -162,22 +163,36 @@ pub(super) fn input<M: Clone>(
                 // A field waiting on a request keeps its text; the keys
                 // still stay with it rather than reaching the shell.
                 _ if !editable => return Some(false),
-                _ => instance.editors.get_mut(&well.field)?.key(*key),
+                _ => editor.preview_key_text(*key),
             }
         }
         Event::Paste(_) if !editable => return Some(false),
         Event::Paste(text) => {
-            let editor = instance.editors.get_mut(&well.field)?;
             if well.multiline {
-                editor.insert(text)
+                editor.preview_insert_text(text)
             } else {
-                editor.insert(&crate::view::safe(text))
+                editor.preview_insert_text(&crate::view::safe(text))
             }
         }
         _ => return None,
     };
-    if changed {
-        // Typing overtakes a refresh in flight; the draft reads again later.
+    let edits_text = proposed.is_some();
+    if let Some(text) = proposed
+        && !app.admit_field(&well.key, &well.field, &Value::String(text))
+    {
+        return Some(true);
+    }
+    let instance = app.apps.instances.get_mut(&well.key)?;
+    let editor = instance.editors.get_mut(&well.field)?;
+    let changed = match event {
+        Event::Key(key) => editor.key(*key),
+        Event::Paste(text) if well.multiline => editor.insert(text),
+        Event::Paste(text) => editor.insert(&crate::view::safe(text)),
+        _ => return None,
+    };
+    if changed && edits_text {
+        // Selection and cursor keys are handled without changing the draft.
+        // Only text edits overtake a read or reserve a new field value.
         if instance.refreshing() {
             instance.overtake();
             instance.stale = true;

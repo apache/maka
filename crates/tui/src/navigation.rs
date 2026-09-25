@@ -19,7 +19,10 @@
 
 use std::collections::VecDeque;
 
+mod location;
 pub mod state;
+pub(crate) use location::Intent;
+pub use location::{Location, SettingsPlace};
 pub mod tabs;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -71,13 +74,13 @@ impl Route {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Navigation {
-    entries: VecDeque<Route>,
+    entries: VecDeque<Location>,
     cursor: usize,
 }
 impl Default for Navigation {
     fn default() -> Self {
         Self {
-            entries: VecDeque::from([Route::Workspace]),
+            entries: VecDeque::from([Route::Workspace.into()]),
             cursor: 0,
         }
     }
@@ -87,21 +90,45 @@ impl Navigation {
         !self.entries.is_empty()
             && self.entries.len() <= 128
             && self.cursor < self.entries.len()
-            && self.entries.iter().all(route)
+            && self.entries.iter().all(|location| location.valid(&route))
     }
     pub fn current(&self) -> Route {
-        self.entries[self.cursor].clone()
+        self.location().route.clone()
     }
-    pub fn visit(&mut self, route: Route) {
-        if route == self.current() {
+    pub fn location(&self) -> &Location {
+        &self.entries[self.cursor]
+    }
+    /// A shell destination returns to its last selected place.
+    pub fn resolve(&self, route: Route) -> Location {
+        self.entries
+            .iter()
+            .take(self.cursor + 1)
+            .rev()
+            .find(|location| location.route == route)
+            .cloned()
+            .unwrap_or_else(|| route.into())
+    }
+    pub fn visit(&mut self, location: impl Into<Location>) {
+        let location = location.into();
+        if &location == self.location() {
             return;
         }
         self.entries.truncate(self.cursor + 1);
-        self.entries.push_back(route);
+        self.entries.push_back(location);
         if self.entries.len() > 128 {
             self.entries.pop_front();
         }
         self.cursor = self.entries.len() - 1;
+    }
+    pub(crate) fn replace(&mut self, location: Location) -> bool {
+        if !location.valid(|_| true) {
+            return false;
+        }
+        self.entries[self.cursor] = location;
+        true
+    }
+    pub(crate) fn can_back(&self) -> bool {
+        self.cursor > 0
     }
     /// The session most recently visited up to here, the one that
     /// session-scoped places act on.
@@ -110,7 +137,7 @@ impl Navigation {
             .iter()
             .take(self.cursor + 1)
             .rev()
-            .find_map(|route| match route {
+            .find_map(|location| match &location.route {
                 Route::Session(id) => Some(id.clone()),
                 _ => None,
             })
@@ -118,7 +145,7 @@ impl Navigation {
     pub fn back(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
-    pub fn destination(&self, forward: bool) -> Route {
+    pub fn destination(&self, forward: bool) -> Location {
         self.entries[if forward {
             (self.cursor + 1).min(self.entries.len() - 1)
         } else {
@@ -129,21 +156,21 @@ impl Navigation {
     /// Closing a reading tab is not deleting the session. Remove its history
     /// entries so Back cannot immediately reopen the tab the user just closed.
     pub fn close_session(&mut self, id: &str, fallback: Route) {
-        let target = Route::Session(id.into());
-        let current = self.current();
+        let closing_current = self.location().references_session(id);
         let before = self
             .entries
             .iter()
             .take(self.cursor + 1)
-            .filter(|r| **r != target)
+            .filter(|location| !location.references_session(id))
             .count();
-        self.entries.retain(|route| *route != target);
+        self.entries
+            .retain(|location| !location.references_session(id));
         if self.entries.is_empty() {
-            self.entries.push_back(Route::Workspace);
+            self.entries.push_back(Route::Workspace.into());
         }
         self.cursor = before.saturating_sub(1).min(self.entries.len() - 1);
-        if current == target {
-            self.visit(fallback);
+        if closing_current {
+            self.visit(self.resolve(fallback));
         }
     }
     pub fn forward(&mut self) {
@@ -176,5 +203,27 @@ mod tests {
             nav.back();
         }
         assert_eq!(nav.cursor, 0);
+    }
+    #[test]
+    fn locations_keep_settings_in_order_and_validate_the_selected_address() {
+        use crate::pages::settings::Category;
+        let mut nav = Navigation::default();
+        let interface = Location::settings(SettingsPlace::Builtin(Category::Interface));
+        let host = Location::settings(SettingsPlace::Builtin(Category::Host));
+        nav.visit(interface.clone());
+        nav.visit(host.clone());
+        nav.back();
+        assert_eq!(nav.location(), &interface);
+        nav.forward();
+        assert_eq!(nav.location(), &host);
+        nav.visit(Route::Projects);
+        assert_eq!(nav.resolve(Route::Settings), host);
+        assert!(nav.valid(|_| true));
+        let mut invalid = Location::from(Route::Workspace);
+        invalid.settings = interface.settings;
+        assert!(!invalid.valid(|_| true));
+        let mut key = crate::apps::tests::key();
+        key.package.clear();
+        assert!(!Location::from(Route::App(key)).valid(|_| true));
     }
 }

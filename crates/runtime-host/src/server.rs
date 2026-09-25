@@ -53,6 +53,7 @@ mod resources;
 pub(crate) mod retirement;
 mod sessions;
 pub(crate) use sessions::workspace::resolve_path as resolve_workspace_path;
+mod startup;
 mod subscriptions;
 mod turns;
 pub mod websocket;

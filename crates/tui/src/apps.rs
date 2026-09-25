@@ -24,11 +24,13 @@
 //! is an instance with the same lifecycle: reads, drafts, confirmed writes,
 //! consent and recovery from a write whose outcome is unknown.
 
+mod admission;
 mod consent;
 mod drafts;
 mod instance;
 pub(crate) mod io;
 mod key;
+mod mount;
 pub(crate) mod page;
 pub(crate) mod panels;
 mod region;
@@ -38,8 +40,10 @@ mod tree;
 pub(crate) use consent::{confirm as confirm_sheet, sheet as consent_sheet};
 pub use instance::{Command, Instance};
 pub use io::{Output, execute};
-pub use key::Key;
+pub use key::ViewAddress;
+pub type Key = ViewAddress;
 pub use saved::Checkpoint;
+pub(crate) use saved::MAX_BYTES as CHECKPOINT_MAX_BYTES;
 pub use tree::Intent;
 pub(crate) use tree::Well;
 
@@ -65,6 +69,8 @@ pub enum Message {
     Reload,
     /// Visit a page, opening it if it is not open.
     Open(Key),
+    Recover(Key),
+    Result(Key),
     /// Show what belongs with a status line: its panel, else its page.
     Reveal(Key),
     Instance(Key, Command),
@@ -72,8 +78,11 @@ pub enum Message {
 impl Message {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Directory | Self::Open(_) | Self::Reveal(_) => "route-extensions",
+            Self::Directory | Self::Open(_) | Self::Reveal(_) | Self::Recover(_) => {
+                "route-extensions"
+            }
             Self::Reload => "extensions-refresh",
+            Self::Result(_) => "extensions-open-result",
             Self::Instance(_, command) => command.label(),
         }
     }
@@ -82,6 +91,7 @@ impl Message {
 #[derive(Clone)]
 pub struct Request {
     generation: u64,
+    execution: uuid::Uuid,
     replaying: bool,
     root: String,
     epoch: String,
@@ -90,6 +100,19 @@ pub struct Request {
     pub(super) work: Work,
 }
 impl Request {
+    fn reads_view(&self) -> bool {
+        !self.replaying
+            && matches!(
+                &self.work,
+                Work::Call {
+                    input: Input::Read { .. },
+                    ..
+                } | Work::Rebind {
+                    input: Input::Read { .. },
+                    ..
+                }
+            )
+    }
     pub fn needs_checkpoint(&self) -> bool {
         matches!(
             self.work,
@@ -137,6 +160,7 @@ pub struct Apps {
     /// The directory page to read next, when a read is due.
     due: Option<Option<String>>,
     listed: u64,
+    serial: u64,
     /// A change arrived while a listing was in progress.
     stale: bool,
     pub(super) failed: bool,
@@ -169,6 +193,17 @@ impl Apps {
     }
     pub fn instance(&self, key: &Key) -> Option<&Instance> {
         self.instances.get(key)
+    }
+    /// Secret edits remain in their owner even when its placement is hidden.
+    pub(crate) fn has_memory_drafts(&self) -> bool {
+        self.instances.values().any(|instance| {
+            instance.view.as_ref().is_some_and(|view| {
+                view.fields.iter().any(|field| {
+                    matches!(&field.control, Control::Text { secret: true, .. })
+                        && instance.drafts.get(&field.id) != Some(&drafts::value(&field.control))
+                })
+            })
+        })
     }
     pub fn consent_visible(&self) -> bool {
         self.consent.is_some()
@@ -226,12 +261,29 @@ impl Apps {
         self.recent.push(key.clone());
         if !self.instances.contains_key(key) {
             let entry = self.entry(key).cloned();
-            let mut instance = Instance::new(entry, Value::Null);
+            let mut instance = Instance::new(entry, key.clone());
             instance.read(&self.locale);
             self.instances.insert(key.clone(), instance);
-            self.prune();
         }
         self.instances.get_mut(key).unwrap()
+    }
+    /// Explicit entry refreshes a clean cache once. Drawing never retries reads.
+    pub(crate) fn enter(&mut self, key: &Key) {
+        self.open(key);
+        let instance = self.instances.get_mut(key).unwrap();
+        if instance.idle() && !instance.keeps() {
+            if instance.live.as_ref() != instance.entry.as_ref().map(|entry| &entry.target) {
+                instance.pending = instance.entry.clone().map(|entry| Work::Rebind {
+                    entry: Box::new(entry),
+                    input: Input::Read {
+                        route: key.route.clone(),
+                        locale: self.locale.clone(),
+                    },
+                });
+            } else {
+                instance.read(&self.locale);
+            }
+        }
     }
     /// Keys of the views filling one slot of `host`'s view, whether open or not.
     fn filling(&self, host: &Key, name: &str, wire: &str) -> Vec<(Key, TerminalViewProjection)> {
@@ -255,16 +307,25 @@ impl Apps {
                     method: entry.method.clone(),
                     session,
                     within: Some(Box::new((host.clone(), wire.to_owned()))),
+                    placement: entry.descriptor.placement.clone(),
+                    origin: self.slot_origin(host, wire).unwrap_or(Value::Null),
+                    route: self.slot_origin(host, wire).unwrap_or(Value::Null),
                 };
                 Some((key, entry.clone()))
             })
             .collect()
     }
     /// The open views filling one slot, in the directory's order.
-    pub(super) fn fillers(&self, host: &Key, name: &str, wire: &str) -> Vec<Key> {
+    pub(super) fn fillers(
+        &self,
+        host: &Key,
+        name: &str,
+        wire: &str,
+        location: &crate::navigation::Location,
+    ) -> Vec<Key> {
         self.filling(host, name, wire)
             .into_iter()
-            .map(|(key, _)| key)
+            .filter_map(|(key, _)| location.selected(&key).cloned())
             .filter(|key| self.slot_current(key))
             .collect()
     }
@@ -280,62 +341,34 @@ impl Apps {
         let Some(view) = self
             .instances
             .get(host)
+            .filter(|instance| {
+                instance.live.is_some() && !instance.blocked && instance.review.is_none()
+            })
             .and_then(|instance| instance.view.as_ref())
         else {
             return false;
         };
         tree::slots(view).into_iter().any(|(wire, name, context)| {
-            &wire == path && context == instance.origin && instance.entry.as_ref().is_some_and(|entry| {
+            &wire == path && context == key.origin && instance.entry.as_ref().is_some_and(|entry| {
                 matches!(&entry.descriptor.placement, Placement::Slot { name: declared } if declared == &name)
             })
         })
     }
-    /// Opens the views filling `host`'s slots, starts over any whose slot's
-    /// context changed, and closes clean ones whose slot is gone.
-    fn fill(&mut self, host: &Key) {
-        let Some(view) = self
-            .instances
-            .get(host)
-            .and_then(|instance| instance.view.as_ref())
-        else {
-            return;
-        };
-        let wanted: Vec<_> = tree::slots(view)
+    fn slot_origin(&self, host: &Key, wire: &str) -> Option<Value> {
+        tree::slots(self.instances.get(host)?.view.as_ref()?)
             .into_iter()
-            .flat_map(|(wire, name, context)| {
-                self.filling(host, &name, &wire)
-                    .into_iter()
-                    .map(move |(key, entry)| (key, entry, context.clone()))
-            })
-            .collect();
-        let locale = self.locale.clone();
-        for (key, entry, context) in &wanted {
-            match self.instances.get_mut(key) {
-                Some(instance) if instance.origin != *context && !instance.keeps() => {
-                    instance.restart(context.clone(), &locale)
-                }
-                Some(_) => {}
-                None => {
-                    let mut instance = Instance::new(Some(entry.clone()), context.clone());
-                    instance.read(&locale);
-                    self.instances.insert(key.clone(), instance);
-                    self.recent.push(key.clone());
-                }
-            }
-        }
-        self.instances.retain(|key, instance| {
-            key.within.as_ref().is_none_or(|within| &within.0 != host)
-                || wanted.iter().any(|(wanted, ..)| wanted == key)
-                || instance.keeps()
-        });
+            .find(|(path, _, _)| path == wire)
+            .map(|(_, _, context)| context)
     }
     /// Closes clean instances beyond the limit, least recently used first.
-    fn prune(&mut self) {
+    fn prune(&mut self, protected: &[Key]) {
         while self.instances.len() > INSTANCES {
             let Some(index) = self.recent.iter().position(|key| {
-                self.instances
-                    .get(key)
-                    .is_some_and(|instance| !instance.keeps() && instance.idle())
+                !protected.contains(key)
+                    && self
+                        .instances
+                        .get(key)
+                        .is_some_and(|instance| !instance.keeps() && instance.idle())
             }) else {
                 return;
             };
@@ -355,6 +388,7 @@ impl Apps {
         }
     }
     pub fn disconnect(&mut self) {
+        self.readers.disconnect();
         self.consent = None;
         self.confirming = None;
         self.listing = false;
@@ -411,6 +445,9 @@ impl Apps {
                     instance.live = Some(entry.target.clone());
                     if !instance.keeps() && instance.idle() {
                         instance.entry = Some(entry.clone());
+                        if fresh {
+                            instance.arrive();
+                        }
                         if fresh || instance.stale {
                             instance.read(&locale);
                         }
@@ -418,16 +455,6 @@ impl Apps {
                 }
                 _ => instance.message = Some(Notice::Local("extensions-unavailable")),
             }
-        }
-        // New entries may fill slots of views already open.
-        let hosts: Vec<_> = self
-            .instances
-            .iter()
-            .filter(|(_, instance)| instance.view.is_some())
-            .map(|(key, _)| key.clone())
-            .collect();
-        for host in hosts {
-            self.fill(&host);
         }
     }
 }
@@ -438,25 +465,14 @@ impl App {
             return vec![];
         };
         let (root, epoch) = (root_id.clone(), epoch.clone());
-        // A page restored or reached through history opens on arrival, and
-        // a session opens the views it shows.
-        if let Route::App(key) = self.navigation.current() {
-            self.apps.open(&key);
-        }
-        if self.apps.loaded {
-            self.open_session_views();
-            if self.navigation.current() == Route::Settings {
-                let keys: Vec<_> = self
-                    .apps
-                    .settings_views()
-                    .into_iter()
-                    .map(|(key, _)| key)
-                    .collect();
-                for key in keys {
-                    self.apps.open(&key);
-                }
-            }
-        }
+        self.admit_pending_writes();
+        let visible: Vec<_> = self
+            .apps
+            .instances
+            .keys()
+            .filter(|key| self.app_selected(key))
+            .cloned()
+            .collect();
         let apps = &mut self.apps;
         let mut requests = vec![];
         if !apps.loaded && !apps.listing && apps.loading.is_none() && apps.due.is_none() {
@@ -469,6 +485,7 @@ impl App {
             apps.listed += 1;
             requests.push(Request {
                 generation: apps.listed,
+                execution: uuid::Uuid::nil(),
                 replaying: false,
                 root: root.clone(),
                 epoch: epoch.clone(),
@@ -483,6 +500,19 @@ impl App {
             apps.confirming = None;
         }
         for (key, instance) in &mut apps.instances {
+            if !visible.contains(key) {
+                instance.overtake();
+                if matches!(
+                    instance.pending,
+                    Some(Work::Call {
+                        input: Input::Read { .. },
+                        ..
+                    })
+                ) {
+                    instance.pending = None;
+                    instance.stale = true;
+                }
+            }
             if apps
                 .confirming
                 .as_ref()
@@ -507,7 +537,15 @@ impl App {
                 continue;
             };
             let replaying = instance.unresolved.is_some();
-            instance.generation += 1;
+            if instance.execution.is_nil() || matches!(work, Work::Rebind { .. }) {
+                instance.execution = uuid::Uuid::new_v4();
+            }
+            apps.serial = apps
+                .serial
+                .max(instance.generation)
+                .checked_add(1)
+                .expect("view generation exhausted");
+            instance.generation = apps.serial;
             instance.busy = true;
             instance.reading = matches!(
                 work,
@@ -524,33 +562,14 @@ impl App {
                 } | Work::Authorize { .. }
             );
             if instance.writing {
-                let (input, proposal) = match &work {
-                    Work::Call { input, .. } => (input.clone(), None),
-                    Work::Authorize {
-                        input, proposal, ..
-                    } => (input.clone(), Some(proposal.clone())),
-                    _ => unreachable!(),
-                };
-                let recovery = match &input {
-                    Input::Submit { action, .. } => instance
-                        .view
-                        .as_ref()
-                        .and_then(|view| view.action(action))
-                        .and_then(|action| action.recovery.clone()),
-                    _ => None,
-                };
-                instance.unresolved = Some(saved::Pending {
-                    input,
-                    proposal,
-                    recovery,
-                    withheld: false,
-                });
+                instance.unresolved = instance.frozen_pending(&work);
                 instance.saving = true;
                 instance.unrecorded = false;
             }
             instance.message = None;
             requests.push(Request {
                 generation: instance.generation,
+                execution: instance.execution,
                 replaying,
                 root: root.clone(),
                 epoch: epoch.clone(),
@@ -574,7 +593,7 @@ impl App {
         let Some(instance) = self.apps.instances.get_mut(&key) else {
             return;
         };
-        if request.generation != instance.generation {
+        if request.generation != instance.generation || request.execution != instance.execution {
             return;
         }
         instance.busy = false;
@@ -600,10 +619,19 @@ impl App {
                 entry,
                 reply: Reply::View { view },
             }) if reloading => {
-                instance.reload_draft(*entry, view);
+                instance.live = Some(entry.target.clone());
+                if instance.keeps() {
+                    instance.reload_draft(*entry, view, &request.root);
+                } else {
+                    instance.entry = Some(*entry);
+                    instance.install(view);
+                    instance.message = None;
+                }
+                self.mount_app_views();
                 return;
             }
             Ok(Output::Rebound { entry, reply }) if recovering || reloading => {
+                instance.live = Some(entry.target.clone());
                 instance.entry = Some(*entry);
                 Ok(Output::Reply(reply))
             }
@@ -612,6 +640,17 @@ impl App {
             }
             result => result,
         };
+        // A Read (including explicit Read-only rebinding) cannot settle a
+        // write. Every unsuccessful Read revokes its old tree consistently.
+        if request.reads_view() && !matches!(&result, Ok(Output::Reply(Reply::View { .. }))) {
+            let notice = match result {
+                Ok(Output::Reply(Reply::Conflict)) => Notice::Local("extensions-conflict"),
+                Ok(Output::Reply(Reply::Rejected { message })) => Notice::Remote(message),
+                _ => Notice::Local("extensions-failed"),
+            };
+            instance.fail_read(notice);
+            return;
+        }
         // A rejected recovery read says nothing about the original write.
         if !recovering
             && !request.replaying
@@ -634,10 +673,13 @@ impl App {
             }
             Ok(Output::Reply(Reply::View { view })) => {
                 instance.install(view);
+                if instance.result.as_ref() == Some(&key) {
+                    instance.result = None;
+                }
                 if instance.stale {
                     instance.read(&locale);
                 }
-                self.apps.fill(&key);
+                self.mount_app_views();
             }
             Ok(Output::Reply(Reply::Consent { request: proposal })) => {
                 // A retry needing consent does not settle an earlier lost write.
@@ -671,6 +713,16 @@ impl App {
                 instance.unresolved = None;
                 instance.unrecorded = false;
                 instance.blocked = false;
+                // A valid receipt completes this form. Its Page may already
+                // have retired after the backend committed the result.
+                instance.execution = uuid::Uuid::new_v4();
+                // Observation failure may have revoked the old tree before
+                // this receipt arrived. Read the captured entry again; real
+                // retirement is still checked by the exact Target admission.
+                if let Work::Call { entry, .. } | Work::Authorize { entry, .. } = &request.work {
+                    instance.entry = Some((**entry).clone());
+                }
+                instance.live = instance.entry.as_ref().map(|entry| entry.target.clone());
                 instance.applied = match &request.work {
                     Work::Call {
                         input:
@@ -683,30 +735,50 @@ impl App {
                     } if source == &route => Some(action.clone()),
                     _ => None,
                 };
-                // A write that lands elsewhere (a created item) opens there,
-                // with Back leading to where the app starts, not to the form.
-                if instance.route != route {
-                    instance.history.clear();
-                    if route != instance.origin {
-                        let title = instance.entry.as_ref().map_or_else(String::new, |entry| {
-                            entry.descriptor.title.resolve(&locale).to_owned()
-                        });
-                        instance.history.push_back((instance.origin.clone(), title));
-                    }
-                    instance.arrive();
-                }
-                instance.route = route;
+                // Settle only the source address. A background result never
+                // takes over the place the reader selected in the meantime.
                 instance.view = None;
                 instance.drafts.clear();
                 instance.editors.clear();
-                instance.read(&locale);
+                let target = key.at(route.clone());
+                instance.result = Some(target.clone());
+                instance.message = Some(Notice::Local("extensions-result-ready"));
+                if !visible {
+                    return;
+                }
+                if key.route == route {
+                    instance.message = None;
+                    instance.read(&locale);
+                } else if self.navigation.location().contains(&key) {
+                    self.navigate(crate::navigation::Intent::ChangeView {
+                        source: key.clone(),
+                        route,
+                        replace: true,
+                    });
+                    if !self.navigation.location().contains(&target) {
+                        return;
+                    }
+                    if let Some(source) = self.apps.instances.get_mut(&key) {
+                        source.result = None;
+                        source.message = None;
+                    }
+                    if let Some(destination) = self.apps.instances.get_mut(&target)
+                        && !destination.keeps()
+                    {
+                        destination.overtake();
+                        destination.arrive();
+                        destination.read(&locale);
+                    }
+                    self.mount_app_views();
+                }
             }
+
             Ok(Output::Reply(Reply::Conflict)) => {
                 instance.blocked = true;
                 instance.message = Some(Notice::Local("extensions-conflict"));
             }
             Ok(Output::Reply(Reply::Rejected { message })) => {
-                instance.blocked = recovering || reloading || request.replaying;
+                instance.blocked = recovering || request.replaying;
                 instance.message = Some(Notice::Remote(message));
             }
             Err(failure) => {
@@ -750,32 +822,49 @@ impl App {
                 if std::mem::take(&mut apps.stale) {
                     apps.due = Some(None);
                 }
+                self.mount_app_views();
             }
         }
     }
-    /// Whether an instance is on screen now, so a modal it asks for belongs here.
-    pub(crate) fn app_visible(&self, key: &Key) -> bool {
-        if let Some(within) = &key.within {
-            return self.apps.slot_current(key) && self.app_visible(&within.0);
+    /// Logical selection controls reads; frame geometry controls interactions.
+    fn app_selected(&self, key: &Key) -> bool {
+        let location = self.navigation.location();
+        if !location.contains(key) {
+            return false;
         }
-        let placement = self
-            .apps
-            .instances
-            .get(key)
-            .and_then(|instance| instance.entry.as_ref())
-            .map_or(Placement::Page, |entry| entry.descriptor.placement.clone());
-        let current = self.navigation.current();
-        let in_session = matches!(&current, Route::Session(id) if key.session.as_ref() == Some(id));
-        match placement {
-            Placement::Page => current == Route::App(key.clone()),
-            Placement::Panel => in_session && self.inspector_shown(),
-            Placement::Status => in_session,
+        if location.recovery {
+            return location.route == Route::App(key.clone());
+        }
+        if let Some(within) = &key.within {
+            return self.apps.slot_current(key) && self.app_selected(&within.0);
+        }
+        match &key.placement {
+            Placement::Page => location.route == Route::App(key.clone()),
+            Placement::Panel => {
+                matches!(&location.route, Route::Session(id) if key.session.as_ref() == Some(id))
+                    && location.inspector
+            }
+            Placement::Status => {
+                matches!(&location.route, Route::Session(id) if key.session.as_ref() == Some(id))
+            }
             Placement::Settings => {
-                current == Route::Settings
-                    && (self.settings.single || self.settings.pane.as_ref() == Some(key))
+                location.route == Route::Settings
+                    && (self.settings.single || location.settings_pane() == Some(key))
             }
             Placement::Slot { .. } => false,
         }
+    }
+    pub(crate) fn app_visible(&self, key: &Key) -> bool {
+        if !self.app_selected(key) {
+            return false;
+        }
+        if self.navigation.location().recovery {
+            return true;
+        }
+        if let Some(within) = &key.within {
+            return self.app_visible(&within.0);
+        }
+        key.placement != Placement::Panel || self.inspector_shown()
     }
     /// The language changed: open, untouched views read themselves again.
     pub(crate) fn apps_relocalize(&mut self) {
@@ -805,9 +894,11 @@ impl App {
             return false;
         };
         match command {
-            Command::DismissConsent | Command::CancelConfirm => self.apps_offered(message),
+            Command::DismissConsent | Command::CancelConfirm | Command::Back => {
+                self.apps_offered(message)
+            }
             // A background refresh never stands in the reader's way.
-            Command::View(_) | Command::Back | Command::Refresh | Command::Discard => {
+            Command::View(_) | Command::Refresh | Command::Discard => {
                 (instance.idle() || instance.refreshing()) && self.apps_offered(message)
             }
             _ => instance.idle() && self.apps_offered(message),
@@ -819,15 +910,25 @@ impl App {
         let connected = matches!(self.connection, ConnectionState::Connected { .. });
         let apps = &self.apps;
         let (key, command) = match message {
-            Message::Directory => return connected,
+            Message::Directory => return true,
+            Message::Recover(key) => return apps.instances.get(key).is_some_and(Instance::keeps),
+            Message::Result(key) => {
+                return connected
+                    && apps
+                        .instances
+                        .get(key)
+                        .is_some_and(|instance| instance.result.is_some());
+            }
             Message::Reload => return connected && !apps.listing,
             Message::Reveal(key) => return apps.instances.contains_key(key),
             Message::Open(key) => {
                 return connected
+                    && key.placement == Placement::Page
                     && key.within.is_none()
                     && (apps.instances.contains_key(key)
                         || apps.entry(key).is_some_and(|entry| {
-                            Key::of(entry, key.session.as_deref()).as_ref() == Some(key)
+                            Key::of(entry, key.session.as_deref())
+                                .is_some_and(|initial| initial.same_mount(key))
                         }));
             }
             Message::Instance(key, command) => (key, command),
@@ -861,14 +962,38 @@ impl App {
                 _ => false,
             };
         }
-        if !connected || !self.app_visible(key) {
+        if matches!(command, Command::Back) {
+            return self.navigation.can_back();
+        }
+        if !self.app_visible(key) {
+            return false;
+        }
+        if self.navigation.location().recovery
+            && matches!(
+                command,
+                Command::View(_) | Command::Refresh | Command::Retry
+            )
+        {
+            return false;
+        }
+        if !connected
+            && !matches!(
+                command,
+                Command::Discard | Command::ConfirmDiscard | Command::CancelDiscard
+            )
+        {
             return false;
         }
         if instance.live.is_none()
             && apps.loaded
             && !matches!(
                 command,
-                Command::Discard | Command::ConfirmDiscard | Command::CancelDiscard
+                Command::Discard
+                    | Command::ConfirmDiscard
+                    | Command::CancelDiscard
+                    | Command::Refresh
+                    | Command::ResumeDraft
+                    | Command::Reconcile
             )
         {
             return false;
@@ -879,6 +1004,15 @@ impl App {
                     && instance.view.is_some()
                     && instance.unresolved.is_none()
                     && instance.review.is_none()
+                    && instance.entry.as_ref().is_some_and(|original| {
+                        // A cold/failed directory has not established retirement.
+                        // Rebind still verifies the original entry before reading.
+                        !apps.loaded
+                            || apps.failed
+                            || apps.entry(key).is_some_and(|current| {
+                                current.target.entry_id == original.target.entry_id
+                            })
+                    })
             }
             Command::ApplyDraft => {
                 instance
@@ -909,12 +1043,7 @@ impl App {
             }
             Command::ConfirmDiscard | Command::CancelDiscard => instance.confirm_discard,
             Command::Discard => instance.dirty() || instance.blocked,
-            Command::Back => {
-                !instance.history.is_empty()
-                    && !instance.dirty()
-                    && instance.unresolved.is_none()
-                    && !instance.blocked
-            }
+            Command::Back => self.navigation.can_back(),
             Command::Refresh => instance.entry.is_some() && !instance.dirty() && !instance.blocked,
             Command::View(Intent::Commit(field)) => {
                 instance.offered(&Intent::Commit(field.clone()))
@@ -934,6 +1063,7 @@ impl App {
             return None;
         }
         let locale = self.apps.locale.clone();
+        let root = self.checkpoint_root().to_owned();
         let (key, command) = match message {
             Message::Directory => {
                 if self.apps.loaded && !self.apps.listing {
@@ -945,13 +1075,59 @@ impl App {
                 self.apps.due = Some(None);
                 return None;
             }
+            Message::Recover(key) => {
+                self.navigate(crate::navigation::Intent::Recovery(key));
+                return None;
+            }
+            Message::Result(key) => {
+                let target = self.apps.instances.get(&key)?.result.clone()?;
+                self.navigate(crate::navigation::Intent::Result(target.clone()));
+                if self.navigation.location().contains(&target) {
+                    let source = self.apps.instances.get_mut(&key)?;
+                    source.result = None;
+                    source.message = None;
+                    if key == target {
+                        self.apps.enter(&target);
+                    }
+                }
+                return None;
+            }
             Message::Reveal(key) => return self.reveal(&key),
             Message::Open(key) => {
-                self.apps.open(&key);
                 return self.apply(Action::Visit(Route::App(key)));
             }
             Message::Instance(key, command) => (key, command),
         };
+        match &command {
+            Command::Back => return self.apply(Action::Back),
+            Command::View(Intent::Navigate(route)) => {
+                self.navigate(crate::navigation::Intent::ChangeView {
+                    source: key,
+                    route: route.clone(),
+                    replace: false,
+                });
+                return None;
+            }
+            _ => {}
+        }
+        let change = match &command {
+            Command::View(Intent::Toggle(field)) => self
+                .apps
+                .instances
+                .get(&key)
+                .and_then(|instance| instance.drafts.get(field))
+                .and_then(Value::as_bool)
+                .map(|value| (field, Value::Bool(!value))),
+            Command::View(Intent::Pick(field, value)) => {
+                Some((field, Value::String(value.clone())))
+            }
+            _ => None,
+        };
+        if let Some((field, value)) = change
+            && !self.admit_field(&key, field, &value)
+        {
+            return None;
+        }
         let apps = &mut self.apps;
         let replacement = matches!(command, Command::Discard | Command::ConfirmDiscard)
             .then(|| apps.entry(&key).cloned())
@@ -969,14 +1145,15 @@ impl App {
                 instance.pending = Some(Work::Rebind {
                     entry: Box::new(instance.entry.clone()?),
                     input: Input::Read {
-                        route: instance.route.clone(),
+                        route: instance.address.route.clone(),
                         locale,
                     },
                 });
             }
             Command::ApplyDraft => {
-                instance.accept_draft();
-                apps.fill(&key);
+                if instance.accept_draft(&root) {
+                    self.mount_app_views();
+                }
             }
             Command::CancelDraft => {
                 instance.review = None;
@@ -1039,7 +1216,7 @@ impl App {
                     instance.read(&locale);
                 }
             }
-            Command::View(Intent::Navigate(route)) => instance.navigate(route, &locale),
+            Command::View(Intent::Navigate(_)) | Command::Back => unreachable!(),
             Command::View(Intent::Open(session)) => {
                 return self.apply(Action::Visit(Route::Session(session)));
             }
@@ -1076,13 +1253,8 @@ impl App {
                     instance.drafts.insert(field, Value::String(value));
                 }
             }
-            Command::Back => {
-                let (route, _) = instance.history.pop_back()?;
-                instance.route = route;
-                instance.arrive();
-                instance.read(&locale);
-            }
             Command::Discard | Command::ConfirmDiscard => {
+                instance.result = None;
                 instance.review = None;
                 instance.unresolved = None;
                 instance.unrecorded = false;
@@ -1094,15 +1266,28 @@ impl App {
                 instance.view = None;
                 instance.drafts.clear();
                 instance.editors.clear();
-                instance.history.clear();
-                instance.route = instance.origin.clone();
                 instance.live = replacement.as_ref().map(|entry| entry.target.clone());
                 instance.entry = replacement;
                 instance.arrive();
                 instance.read(&locale);
             }
             Command::Refresh => {
-                instance.read(&locale);
+                // Explicitly reopening the source starts a new form. Its
+                // drafts and frozen write must not be hidden by an old result.
+                instance.result = None;
+                if instance.blocked
+                    || instance.live.as_ref() != instance.entry.as_ref().map(|entry| &entry.target)
+                {
+                    instance.pending = Some(Work::Rebind {
+                        entry: Box::new(instance.entry.clone()?),
+                        input: Input::Read {
+                            route: key.route.clone(),
+                            locale,
+                        },
+                    });
+                } else {
+                    instance.read(&locale);
+                }
                 self.apps.readers.refresh(&key);
             }
         }
@@ -1116,10 +1301,16 @@ impl App {
         self.apps
             .instances
             .iter()
-            .filter(|(key, instance)| instance.live.is_some() && self.app_visible(key))
+            .filter(|(key, instance)| {
+                instance.live.is_some()
+                    && !instance.blocked
+                    && instance.review.is_none()
+                    && self.app_visible(key)
+            })
             .filter_map(|(key, instance)| {
                 let entry = instance.entry.as_ref()?;
                 Some(io::Watch {
+                    owner: instance.execution,
                     package: entry.package_id.clone(),
                     method: entry.descriptor.changes.clone()?,
                     session: key.session.clone(),
@@ -1175,6 +1366,7 @@ impl App {
                 || entry.package_id != watch.package
                 || entry.descriptor.changes.as_deref() != Some(watch.method.as_str())
                 || key.session != watch.session
+                || instance.execution != watch.owner
             {
                 continue;
             }
@@ -1247,14 +1439,7 @@ impl App {
         let keyboard = self.focus == crate::app::Focus::Page;
         let mut surface = std::mem::take(&mut self.settings.surface);
         let wells = std::mem::take(&mut self.apps.settings_wells);
-        let outcome = region::input(
-            &mut self.apps,
-            &mut surface,
-            &wells,
-            event,
-            keyboard,
-            self.chrome.ascii,
-        );
+        let outcome = region::input(self, &mut surface, &wells, event, keyboard);
         self.settings.surface = surface;
         self.apps.settings_wells = wells;
         outcome
@@ -1346,11 +1531,17 @@ pub(crate) mod tests {
     pub(crate) fn command(command: Command) -> Message {
         Message::Instance(key(), command)
     }
+    fn selected_key(app: &App) -> Key {
+        match app.navigation.current() {
+            Route::App(selected) if selected.same_mount(&key()) => selected,
+            _ => key(),
+        }
+    }
     pub(crate) fn instance(app: &App) -> &Instance {
-        &app.apps.instances[&key()]
+        &app.apps.instances[&selected_key(app)]
     }
     pub(crate) fn instance_mut(app: &mut App) -> &mut Instance {
-        app.apps.instances.get_mut(&key()).unwrap()
+        app.apps.instances.get_mut(&selected_key(app)).unwrap()
     }
     /// The one instance request an action queued. Directory reads are
     /// answered on the spot with the fixture's single entry.
@@ -1715,7 +1906,7 @@ pub(crate) mod tests {
         ))));
         assert_eq!(instance(&app).drafts["mode"], json!("careful"));
         // Leaving with a changed field is not offered; Discard is.
-        assert!(!app.apps_enabled(&command(Command::View(Intent::Navigate(json!({"page":1}))))));
+        assert!(app.apps_enabled(&command(Command::View(Intent::Navigate(json!({"page":1}))))));
         instance_mut(&mut app)
             .drafts
             .insert("mode".into(), json!("fast"));
@@ -1767,14 +1958,219 @@ pub(crate) mod tests {
         detail.title = "First page".into();
         app.apps_complete(request, Ok(Output::Reply(Reply::View { view: detail })));
         let screen = draw(&mut app, 90, 26);
-        assert!(screen.contains("‹ Notebook") && screen.contains("First page"));
+        assert!(screen.contains("‹ Back") && screen.contains("First page"));
         app.input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(
-            instance(&app).view.is_none(),
-            "Back also retires the departing view"
+            instance(&app).view.is_some(),
+            "Back reuses the original address's view"
         );
+        assert!(
+            matches!(
+                next(&mut app).unwrap().work,
+                Work::Call {
+                    input: Input::Read {
+                        route: Value::Null,
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "a clean returned address refreshes without losing its identity"
+        );
+    }
+
+    #[test]
+    fn public_boundary_keeps_field_and_bottom_action_on_their_presented_rows() {
+        let mut app = app();
+        let view: View = serde_json::from_str(include_str!(
+            "../../../packages/plugin-sdk/tests/fixtures/terminal-boundary.json"
+        ))
+        .unwrap();
+        view.validate().unwrap();
+        instance_mut(&mut app).install(view);
+        let screen = draw(&mut app, 110, 32);
+        assert!(
+            screen.contains("Hello") && screen.contains("Save"),
+            "{screen}"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(110, 32)).unwrap();
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                let mut row = String::new();
+                let mut x = 0;
+                while x < buffer.area.width {
+                    let symbol = buffer[(x, y)].symbol();
+                    row.push_str(symbol);
+                    x += (unicode_width::UnicodeWidthStr::width(symbol) as u16).max(1);
+                }
+                row.chars().collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(text.contains("中文 🦀"), "{text}");
+        let input = instance(&app)
+            .surface
+            .rect("app/body/frame/content/review/note")
+            .unwrap();
+        let button = instance(&app)
+            .surface
+            .rect("app/body/frame/content/review/meta/save")
+            .unwrap();
+        assert!(button.y >= input.bottom());
+        app.input(Event::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: button.x,
+            row: button.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        let request = next(&mut app).unwrap();
+        assert!(
+            matches!(request.work, Work::Call { input: Input::Submit { action, fields, .. }, .. } if action == "save" && fields["note"] == "Hello")
+        );
+    }
+
+    #[test]
+    fn unchanged_directory_and_local_field_edits_do_not_schedule_host_reads() {
+        let mut app = app();
+        let entry = instance(&app).entry.clone().unwrap();
+        draw(&mut app, 100, 30);
+        click(&mut app, NAME);
+        for _ in 0..10 {
+            app.apps.directory = vec![entry.clone()];
+            app.apps.bind();
+            assert!(
+                app.apps_requests().is_empty(),
+                "unchanged binding needs no read"
+            );
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            )));
+            assert!(instance(&app).dirty());
+            assert!(app.apps_requests().is_empty(), "typing stays local");
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Backspace,
+                KeyModifiers::NONE,
+            )));
+            assert!(!instance(&app).dirty());
+            assert!(
+                app.apps_requests().is_empty(),
+                "undoing the edit stays local"
+            );
+            draw(&mut app, 100, 30);
+        }
+    }
+
+    #[test]
+    fn read_failures_share_revocation_without_inventing_drafts_or_retrying() {
+        for rebind in [false, true] {
+            for result in [
+                Err(io::Failure { unknown: false }),
+                Ok(Reply::Rejected {
+                    message: "Task no longer exists".into(),
+                }),
+                Ok(Reply::Conflict),
+            ] {
+                let mut app = app();
+                if rebind {
+                    instance_mut(&mut app).live = None;
+                }
+                app.apps_action(command(Command::Refresh));
+                let read = next(&mut app).unwrap();
+                let result = result.map(|reply| {
+                    if rebind {
+                        Output::Rebound {
+                            entry: Box::new(instance(&app).entry.clone().unwrap()),
+                            reply,
+                        }
+                    } else {
+                        Output::Reply(reply)
+                    }
+                });
+                app.apps_complete(read, result);
+                assert!(
+                    !instance(&app).keeps(),
+                    "clean read failures are not drafts"
+                );
+                assert!(instance(&app).live.is_none());
+                assert!(
+                    !app.apps_enabled(&save()),
+                    "failed read revokes stale controls"
+                );
+                assert!(
+                    app.apps_enabled(&command(Command::Refresh)),
+                    "explicit clean rebind stays available"
+                );
+                for _ in 0..2 {
+                    draw(&mut app, 100, 30);
+                    assert!(next(&mut app).is_none(), "render must not retry");
+                    assert!(instance(&app).message.is_some());
+                }
+            }
+        }
+        let mut missing = app();
+        missing.apps_action(command(Command::View(Intent::Navigate(
+            json!({"missing":true}),
+        ))));
+        let read = next(&mut missing).unwrap();
+        missing.apps_complete(
+            read,
+            Ok(Output::Reply(Reply::Rejected {
+                message: "Task no longer exists".into(),
+            })),
+        );
+        for _ in 0..2 {
+            assert!(draw(&mut missing, 100, 30).contains("Task no longer exists"));
+            assert!(next(&mut missing).is_none());
+        }
+        let mut app = app();
+        app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+        app.apps.disconnect();
+        list(&mut app, vec![(vec![projection()], None)]);
+        app.apps_action(command(Command::ResumeDraft));
+        let read = next(&mut app).unwrap();
+        app.apps_complete(
+            read,
+            Ok(Output::Rebound {
+                entry: Box::new(instance(&app).entry.clone().unwrap()),
+                reply: Reply::Conflict,
+            }),
+        );
+        assert!(instance(&app).keeps());
+        assert_eq!(instance(&app).drafts["enabled"], json!(false));
+        assert!(!app.apps_enabled(&save()));
+        assert!(
+            app.apps_enabled(&command(Command::ResumeDraft)),
+            "explicit draft reread remains available"
+        );
+    }
+
+    #[test]
+    fn applied_redirect_refreshes_a_cached_destination_before_exposing_old_controls() {
+        let mut app = app();
+        app.apps_action(command(Command::View(Intent::Navigate(
+            json!({"create":true}),
+        ))));
+        let read = next(&mut app).unwrap();
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: form() })));
+        let source = selected_key(&app);
+        app.apps_action(Message::Instance(
+            source,
+            Command::View(Intent::Submit("save".into())),
+        ));
+        let submit = next(&mut app).unwrap();
+        app.apps_complete(
+            submit,
+            Ok(Output::Reply(Reply::Applied { route: Value::Null })),
+        );
+        assert_eq!(app.navigation.current(), Route::App(key()));
+        assert!(instance(&app).view.is_none());
+        let read = next(&mut app).unwrap();
         assert!(matches!(
-            next(&mut app).unwrap().work,
+            read.work,
             Work::Call {
                 input: Input::Read {
                     route: Value::Null,
@@ -1783,6 +2179,244 @@ pub(crate) mod tests {
                 ..
             }
         ));
+        assert!(
+            !app.apps_enabled(&save()),
+            "cached list controls wait for fresh readback"
+        );
+    }
+
+    #[test]
+    fn reopening_the_same_address_never_reuses_an_old_request_generation() {
+        let mut app = app();
+        app.apps_action(command(Command::Refresh));
+        let old = next(&mut app).unwrap();
+        app.apps.instances.remove(&key());
+        app.apps.open(&key());
+        let current = next(&mut app).unwrap();
+        assert_ne!(old.generation, current.generation);
+        let mut fresh = form();
+        fresh.title = "Current instance".into();
+        app.apps_complete(current, Ok(Output::Reply(Reply::View { view: fresh })));
+        let mut stale = form();
+        stale.title = "Old instance".into();
+        app.apps_complete(old, Ok(Output::Reply(Reply::View { view: stale })));
+        assert_eq!(
+            instance(&app).view.as_ref().unwrap().title,
+            "Current instance"
+        );
+    }
+
+    #[test]
+    fn distinct_routes_keep_independent_edits_in_one_shell_history() {
+        let mut app = app();
+        app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+        app.apps_action(command(Command::View(Intent::Navigate(json!({"page":2})))));
+        let second = key().at(json!({"page":2}));
+        assert_eq!(app.navigation.current(), Route::App(second.clone()));
+        let read = next(&mut app).unwrap();
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: form() })));
+        app.apps_action(Message::Instance(
+            second.clone(),
+            Command::View(Intent::Toggle("enabled".into())),
+        ));
+        app.apps
+            .instances
+            .get_mut(&second)
+            .unwrap()
+            .editors
+            .get_mut("name")
+            .unwrap()
+            .insert(" second");
+        app.apps
+            .instances
+            .get_mut(&second)
+            .unwrap()
+            .drafts
+            .insert("name".into(), json!("My notes second"));
+        app.apply(Action::Back);
+        assert_eq!(app.navigation.current(), Route::App(key()));
+        assert_eq!(instance(&app).drafts["name"], json!("My notes"));
+        assert_eq!(instance(&app).drafts["enabled"], json!(false));
+        app.apply(Action::Forward);
+        assert_eq!(instance(&app).drafts["name"], json!("My notes second"));
+        assert_eq!(app.apps.checkpoints("root").len(), 2);
+        app.apply(Action::Back);
+        app.apply(Action::Visit(Route::Settings));
+        assert!(
+            app.apps.instances[&second].keeps(),
+            "truncating forward history never drops edits"
+        );
+    }
+
+    #[test]
+    fn background_applied_has_a_checkpointed_explicit_result_without_stealing_the_page() {
+        for route in [Value::Null, json!({"saved": "one"})] {
+            let mut app = app();
+            app.apps_action(save());
+            let submit = next(&mut app).unwrap();
+            app.apply(Action::Visit(Route::Workspace));
+            app.apps_complete(
+                submit,
+                Ok(Output::Reply(Reply::Applied {
+                    route: route.clone(),
+                })),
+            );
+            assert_eq!(app.navigation.current(), Route::Workspace);
+            assert!(next(&mut app).is_none());
+            let saved = serde_json::to_vec(&app.apps.checkpoints("root")).unwrap();
+            app.apps = Apps::new("en");
+            app.apps
+                .restore(serde_json::from_slice(&saved).unwrap())
+                .unwrap();
+            app.apply(Action::Visit(Route::Extensions));
+            assert!(draw(&mut app, 100, 30).contains("Open completed result"));
+            app.apps_action(Message::Result(key()));
+            assert_eq!(app.navigation.current(), Route::App(key().at(route)));
+            let read = next(&mut app).unwrap();
+            assert!(!read.needs_checkpoint());
+            app.apps_complete(read, Err(io::Failure { unknown: false }));
+            assert!(app.apps.instances[&key()].unresolved.is_none());
+            assert!(app.apps.instances[&key()].result.is_none());
+        }
+    }
+
+    #[test]
+    fn refreshing_a_completed_source_checkpoints_its_new_draft_and_frozen_write() {
+        for rebind in [false, true] {
+            let mut app = app();
+            app.apps_action(save());
+            let completed = next(&mut app).unwrap();
+            app.apply(Action::Visit(Route::Workspace));
+            app.apps_complete(
+                completed,
+                Ok(Output::Reply(Reply::Applied {
+                    route: json!({"saved": "one"}),
+                })),
+            );
+            app.apply(Action::Back);
+            assert_eq!(app.navigation.current(), Route::App(key()));
+            assert!(instance(&app).result.is_some());
+            assert!(instance(&app).view.is_none());
+            if rebind {
+                instance_mut(&mut app).live = None;
+            }
+            app.apps_action(command(Command::Refresh));
+            assert!(instance(&app).result.is_none());
+            let read = next(&mut app).unwrap();
+            assert!(!read.needs_checkpoint());
+            let reply = Reply::View { view: form() };
+            let output = if rebind {
+                Output::Rebound {
+                    entry: Box::new(instance(&app).entry.clone().unwrap()),
+                    reply,
+                }
+            } else {
+                Output::Reply(reply)
+            };
+            app.apps_complete(read, Ok(output));
+            app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+            let draft = app.apps.checkpoints("root").pop().unwrap();
+            draft.validate("root").unwrap();
+            let draft = serde_json::to_value(draft).unwrap();
+            assert_eq!(draft["drafts"]["enabled"], false);
+            assert!(draft["result"].is_null());
+            app.apps_action(save());
+            let write = next(&mut app).unwrap();
+            assert!(write.needs_checkpoint());
+            assert!(instance(&app).saving);
+            let original = instance(&app).unresolved.as_ref().unwrap().input.clone();
+            let encoded = serde_json::to_vec(&app.apps.checkpoints("root")).unwrap();
+            let mut restored = Apps::new("en");
+            restored
+                .restore(serde_json::from_slice(&encoded).unwrap())
+                .unwrap();
+            let source = &restored.instances[&key()];
+            assert_eq!(source.drafts["enabled"], false);
+            assert_eq!(source.unresolved.as_ref().unwrap().input, original);
+            assert!(source.pending.is_none());
+            assert!(source.result.is_none());
+            assert!(!app.apps_after_checkpoint(&write, &Err("disk full".into())));
+            assert_eq!(instance(&app).unresolved.as_ref().unwrap().input, original);
+            assert!(
+                next(&mut app).is_none(),
+                "failed Written never dispatches the new write"
+            );
+        }
+    }
+
+    #[test]
+    fn restored_results_rebind_the_original_entry_after_directory_targets_change() {
+        for refresh in [false, true] {
+            for replaced in [false, true] {
+                let mut app = app();
+                app.apps_action(save());
+                let completed = next(&mut app).unwrap();
+                app.apply(Action::Visit(Route::Workspace));
+                app.apps_complete(
+                    completed,
+                    Ok(Output::Reply(Reply::Applied { route: Value::Null })),
+                );
+                let original = app.apps.instances[&key()].entry.clone().unwrap();
+                let saved = serde_json::to_vec(&app.apps.checkpoints("root")).unwrap();
+                app.apps = Apps::new("en");
+                app.apps
+                    .restore(serde_json::from_slice(&saved).unwrap())
+                    .unwrap();
+                let mut current = projection();
+                if replaced {
+                    current.target.entry_id = "replacement-owner".into();
+                }
+                list(&mut app, vec![(vec![current.clone()], None)]);
+                assert_eq!(
+                    app.apps.instances[&key()].entry.as_ref().unwrap().target,
+                    original.target
+                );
+                assert_eq!(
+                    app.apps.instances[&key()].live.as_ref(),
+                    (!replaced).then_some(&current.target)
+                );
+                if refresh {
+                    app.apply(Action::Back);
+                    app.apps_action(command(Command::Refresh));
+                } else {
+                    app.apps_action(Message::Result(key()));
+                }
+                let request = next(&mut app).unwrap();
+                let Work::Rebind {
+                    entry,
+                    input: Input::Read { .. },
+                } = &request.work
+                else {
+                    panic!("a retained old target must be rebound before reading")
+                };
+                assert_eq!(
+                    entry.target, original.target,
+                    "the Rebind checks the original entry identity"
+                );
+                assert!(!request.needs_checkpoint());
+                if replaced {
+                    assert_ne!(entry.target.entry_id, current.target.entry_id);
+                    // The executor rejects a Bind that names a replacement owner.
+                    app.apps_complete(request, Err(io::Failure { unknown: false }));
+                    assert!(!app.apps_enabled(&save()));
+                } else {
+                    app.apps_complete(
+                        request,
+                        Ok(Output::Rebound {
+                            entry: Box::new(current.clone()),
+                            reply: Reply::View { view: form() },
+                        }),
+                    );
+                    assert_eq!(
+                        instance(&app).entry.as_ref().unwrap().target,
+                        current.target
+                    );
+                    assert!(app.apps_enabled(&save()));
+                }
+                assert!(instance(&app).unresolved.is_none());
+                assert!(instance(&app).result.is_none());
+            }
+        }
     }
 
     fn save_like(action: &str) -> Message {
@@ -2031,6 +2665,127 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn cold_restore_can_resume_before_directory_knowledge_but_known_retirement_blocks_it() {
+        for directory in [
+            "unknown",
+            "partial",
+            "failed",
+            "retired",
+            "replacement",
+            "current",
+        ] {
+            let mut app = app();
+            app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+            let original = instance(&app).entry.clone().unwrap();
+            let saved = serde_json::to_vec(&app.apps.checkpoints("root")).unwrap();
+            app.apps = Apps::new("en");
+            app.apps
+                .restore(serde_json::from_slice(&saved).unwrap())
+                .unwrap();
+            let listing = app.apps_requests().pop().unwrap();
+            assert!(listing.key.is_none());
+            if directory != "unknown" {
+                let mut current = projection();
+                if directory == "replacement" {
+                    current.target.entry_id = "another-owner".into();
+                }
+                let result = if directory == "failed" {
+                    Err(io::Failure { unknown: false })
+                } else {
+                    Ok(Output::Directory(maka_protocol::plugin::Page {
+                        items: if matches!(directory, "current" | "replacement") {
+                            vec![current]
+                        } else {
+                            vec![]
+                        },
+                        next_cursor: (directory == "partial").then(|| "next-page".into()),
+                    }))
+                };
+                app.apps_complete(listing, result);
+            }
+            let permitted = !matches!(directory, "retired" | "replacement");
+            assert_eq!(
+                app.apps_enabled(&command(Command::ResumeDraft)),
+                permitted,
+                "{directory}"
+            );
+            assert!(
+                !app.apps_enabled(&save()),
+                "{directory}: restored controls remain blocked"
+            );
+            app.apps_action(command(Command::ResumeDraft));
+            let requests: Vec<_> = app
+                .apps_requests()
+                .into_iter()
+                .filter(|request| request.key.is_some())
+                .collect();
+            assert_eq!(requests.len(), usize::from(permitted), "{directory}");
+            if let Some(request) = requests.first() {
+                assert!(!request.needs_checkpoint());
+                assert!(
+                    matches!(&request.work, Work::Rebind { entry, input: Input::Read { route, .. } }
+                    if entry.target == original.target && route == &key().route)
+                );
+            }
+            assert_eq!(instance(&app).drafts["enabled"], false);
+            assert!(instance(&app).unresolved.is_none());
+        }
+    }
+
+    #[test]
+    fn hidden_secret_drafts_require_the_visible_exit_choice_without_leaking_to_disk() {
+        for exit in [Action::Quit, Action::Detach] {
+            let mut app = app();
+            let mut child = key();
+            child.method = "secret-child".into();
+            child.placement = Placement::Slot {
+                name: "private".into(),
+            };
+            child.within = Some(Box::new((key(), "root/private".into())));
+            child.origin = json!({"entity": "one"});
+            child.route = child.origin.clone();
+            let mut entry = projection();
+            entry.method = child.method.clone();
+            entry.descriptor.placement = child.placement.clone();
+            let mut retained = Instance::new(Some(entry), child.clone());
+            let mut view = form();
+            let Control::Text { secret, .. } = &mut view.fields[1].control else {
+                panic!("text fixture")
+            };
+            *secret = true;
+            retained.install(view);
+            let field = retained.view.as_ref().unwrap().fields[1].id.clone();
+            retained
+                .editors
+                .get_mut(&field)
+                .unwrap()
+                .insert("never-save-this");
+            retained.drafts.insert(field, json!("never-save-this"));
+            app.apps.instances.insert(child.clone(), retained);
+            app.apply(Action::Visit(Route::Workspace));
+            assert!(app.apply(exit.clone()).is_none());
+            assert!(app.plugins.confirm_visible());
+            assert!(
+                !serde_json::to_string(&app.apps.checkpoints("root"))
+                    .unwrap()
+                    .contains("never-save-this")
+            );
+            draw(&mut app, 100, 30);
+            app.apply(Action::Plugins(crate::pages::plugins::Command::Cancel));
+            assert!(app.apps.has_memory_drafts());
+            assert!(app.apply(exit.clone()).is_none());
+            draw(&mut app, 100, 30);
+            app.layer.focus_path("footer/confirm");
+            draw(&mut app, 100, 30);
+            let (_, effect) = app.input(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )));
+            assert_eq!(effect, Some(exit));
+        }
+    }
+
+    #[test]
     fn disconnect_revokes_controls_preserves_drafts_and_tiny_layout_has_no_stale_clicks() {
         let mut app = app();
         draw(&mut app, 80, 24);
@@ -2091,7 +2846,7 @@ pub(crate) mod tests {
             .unwrap();
         assert!(next(&mut app).is_none());
         assert!(!app.apps_enabled(&command(Command::Retry)));
-        assert!(!app.apps_enabled(&command(Command::Back)));
+        assert!(app.apps_enabled(&command(Command::Back)));
         assert!(!app.apps_enabled(&save()));
         app.apply(Action::Visit(Route::Workspace));
         app.apps_action(Message::Open(key()));
@@ -2223,6 +2978,11 @@ pub(crate) mod tests {
         app.apps.disconnect();
         assert!(instance(&app).blocked && !app.apps.instances[&page].blocked);
         list(&mut app, vec![(vec![notes, board], None)]);
+        assert!(
+            app.apps_requests().is_empty(),
+            "hidden clean pages need no background read"
+        );
+        app.apps_action(Message::Open(page.clone()));
         let requests = app.apps_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].key.as_ref(), Some(&page));
@@ -2255,7 +3015,7 @@ pub(crate) mod tests {
             epoch: "epoch".into(),
         };
         app.apply(Action::Visit(Route::Session("session".into())));
-        app.chrome.inspector = true;
+        app.navigate(crate::navigation::Intent::Inspector(true));
         draw(&mut app, 170, 40);
         list(&mut app, vec![(vec![panel.clone(), status.clone()], None)]);
         let reads = app.apps_requests();
@@ -2353,10 +3113,13 @@ pub(crate) mod tests {
         app.apply(Action::Visit(Route::Settings));
         list(&mut app, vec![(vec![web.clone()], None)]);
         let key = Key::of(&web, None).unwrap();
+        app.apply(Action::Settings(crate::pages::settings::Message::Pane(
+            key.clone(),
+        )));
         let read = app
             .apps_requests()
             .pop()
-            .expect("settings panes open with Settings");
+            .expect("selected settings pane opens");
         let mut view = form();
         view.title = "Web search".into();
         app.apps_complete(read, Ok(Output::Reply(Reply::View { view })));
@@ -2390,9 +3153,27 @@ pub(crate) mod tests {
             crate::pages::settings::Category::Interface,
         )));
         assert!(!app.apps_enabled(&save));
+        let location = app.navigation.location().clone();
         // Narrow, every category is a section of one list, the pane included.
         let screen = draw(&mut app, 50, 40);
         assert!(screen.contains("Web search") && screen.contains("A plugin-owned"));
+        assert_eq!(
+            app.navigation.location(),
+            &location,
+            "resize never navigates"
+        );
+        app.apply(Action::Back);
+        assert_eq!(app.navigation.location().settings_pane(), Some(&key));
+        assert_eq!(app.apps.instances[&key].drafts["enabled"], json!(false));
+        app.apply(Action::Back);
+        assert_eq!(
+            app.navigation.location().settings_category(),
+            crate::pages::settings::Category::Appearance
+        );
+        app.apply(Action::Forward);
+        assert_eq!(app.navigation.location().settings_pane(), Some(&key));
+        app.apply(Action::Forward);
+        assert_eq!(app.navigation.location(), &location);
     }
 
     #[test]
@@ -2489,11 +3270,16 @@ pub(crate) mod tests {
         let read = app.apps_requests().pop().unwrap();
         app.apps_complete(read, Ok(Output::Reply(Reply::View { view: view(2) })));
         assert!(!app.app_visible(&card));
-        assert!(
+        let fillers =
             app.apps
-                .fillers(&board, "board.card", "root/card")
-                .is_empty()
-        );
+                .fillers(&board, "board.card", "root/card", app.navigation.location());
+        assert_eq!(fillers.len(), 1);
+        let second = fillers[0].clone();
+        assert_ne!(card, second);
+        assert_eq!(second.origin, json!({"card":2}));
+        let read = app.apps_requests().pop().unwrap();
+        assert_eq!(read.key.as_ref(), Some(&second));
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: form() })));
         assert!(!draw(&mut app, 110, 30).contains("Ship the board"));
         assert!(!app.apps_enabled(&Message::Instance(
             card.clone(),
@@ -2505,20 +3291,29 @@ pub(crate) mod tests {
         app.apps_complete(read, Ok(Output::Reply(Reply::View { view: view(1) })));
         assert!(app.app_visible(&card));
         assert!(draw(&mut app, 110, 30).contains("Ship the board"));
-        // A new context starts a clean filler over at the slot's new place.
-        app.apps
-            .instances
-            .get_mut(&card)
-            .unwrap()
-            .drafts
-            .insert("enabled".into(), json!(true));
+        let saved = serde_json::to_value(app.apps.checkpoints("root")).unwrap();
+        assert_eq!(saved[0]["key"]["origin"], json!({"card":1}));
+        let mut restored = Apps::new("en");
+        restored
+            .restore(serde_json::from_value(saved).unwrap())
+            .unwrap();
+        assert_eq!(restored.instances[&card].drafts["enabled"], json!(false));
+        assert_eq!(restored.instances[&card].address.origin, json!({"card":1}));
         app.apps_action(Message::Instance(board.clone(), Command::Refresh));
         let read = app.apps_requests().pop().unwrap();
         app.apps_complete(read, Ok(Output::Reply(Reply::View { view: view(2) })));
-        assert!(matches!(
-            &app.apps_requests().pop().unwrap().work,
-            Work::Call { input: Input::Read { route, .. }, .. } if route == &json!({"card": 2})
-        ));
+        assert!(app.app_visible(&second));
+        assert!(!app.app_visible(&card));
+        assert_eq!(app.apps.instances[&card].drafts["enabled"], json!(false));
+        app.apps_action(Message::Directory);
+        assert!(draw(&mut app, 110, 35).contains("Retained edits and submissions"));
+        app.apps_action(Message::Recover(card.clone()));
+        assert!(app.navigation.location().recovery);
+        assert!(draw(&mut app, 110, 30).contains("Ship the board"));
+        assert!(!app.apps_enabled(&Message::Instance(
+            card.clone(),
+            Command::View(Intent::Submit("save".into()))
+        )));
     }
 
     #[test]
@@ -2528,6 +3323,7 @@ pub(crate) mod tests {
         entry.descriptor = entry.descriptor.changes("notes-changed");
         instance_mut(&mut app).entry = Some(entry);
         let watch = io::Watch {
+            owner: instance(&app).execution,
             package: "example.notes".into(),
             method: "notes-changed".into(),
             session: Some("session".into()),

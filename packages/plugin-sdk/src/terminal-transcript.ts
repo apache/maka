@@ -76,11 +76,15 @@ export type TranscriptResource = {
   route?: Json;
 };
 export type TranscriptOpen = {
+  /** Reader UUID scoped to this caller and stable document. */
+  mount: string;
   resource: string;
   route: Json;
   locale: string;
 };
 export type TranscriptRead = {
+  /** Must match the UUID supplied when opening this reader. */
+  mount: string;
   resource: string;
   fence: number;
   direction: 'tail' | 'older' | 'newer' | 'continue';
@@ -136,10 +140,10 @@ export interface TranscriptStats {
   updates: number;
 }
 /** A bounded, SDK-managed source. Mutations are synchronous and clone their input.
- * Each open document captures its own immutable snapshot before subscribing.
+ * Each open document mount captures its own immutable snapshot before subscribing.
  * Pages contain at most 256 records / 4 MiB, allowing one larger record; encoded
  * records are capped at 16 MiB. The source holds at most 4096 blocks / 32 MiB,
- * 4096 timings, and four documents. Slow readers get Invalidated on queue overflow.
+ * 4096 timings, and four concurrent mounts. Slow readers get Invalidated on queue overflow.
  * Close the store during plugin cleanup. Local reading never changes the View.
  */
 export interface TranscriptStore extends Registration {

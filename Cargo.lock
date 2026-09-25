@@ -4917,6 +4917,7 @@ dependencies = [
 name = "maka-cli"
 version = "0.2.0"
 dependencies = [
+ "alacritty_terminal",
  "base64 0.22.1",
  "clap",
  "flate2",

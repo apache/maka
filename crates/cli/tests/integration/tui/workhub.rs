@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 mod composition;
 mod manual;
 mod model;
+mod navigation;
 mod readback;
 mod setup;
 
@@ -94,7 +95,7 @@ fn new_root_delegates_repairs_the_same_task_and_composes_a_runtime_js_filler() {
     tui.click_page_text("Note draft");
     tui.send(b"\x1b[Z\r");
     tui.wait_for("Find a model or executor");
-    tui.click_last_text("‹ WorkHub");
+    tui.click_last_text("‹ Back");
     tui.wait_for("Note draft");
     tui.click_page_text("Note draft");
     tui.send(b"\x1b[Z\t");
@@ -103,7 +104,7 @@ fn new_root_delegates_repairs_the_same_task_and_composes_a_runtime_js_filler() {
 
     // Remove only the selected task model. The coordinator remains available.
     runtime.block_on(readback::remove_worker_model(&client));
-    tui.click_last_text("‹ WorkHub");
+    tui.click_last_text("‹ Back");
     tui.wait_for("Coordinator conversation");
     setup::delegate(&mut tui, "beta");
     let beta = runtime.block_on(readback::assignment(&client, "Task beta", false));
@@ -160,7 +161,7 @@ fn new_root_delegates_repairs_the_same_task_and_composes_a_runtime_js_filler() {
     );
     tui.click_page_text("Save note");
     tui.wait_until(|s| s.contains("Saved note: beta private draft"));
-    tui.click_last_text("‹ WorkHub");
+    tui.click_last_text("‹ Back");
     setup::select_task(&mut tui, "Task alpha");
     tui.wait_for("alpha private draft");
     assert!(

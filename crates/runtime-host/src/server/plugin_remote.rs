@@ -24,13 +24,12 @@ pub(super) use registry::Registry;
 
 use super::Host;
 use futures_util::FutureExt;
-use maka_plugins::remote::{Caller, Error, Handler, validate_payload};
+use maka_plugins::remote::{Caller, Error, Handler};
 use maka_protocol::{
     OperationError, OperationErrorCode as Code,
     plugin::{RemoteKind, RemoteRequest, RemoteResult},
 };
-use serde_json::Value;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub(super) async fn execute(
@@ -124,7 +123,12 @@ pub(super) async fn execute(
                     },
                 });
             };
-            let reservation = host.plugin_remotes.get(connection, document)?.reserve()?;
+            let reservation = host.plugin_remotes.get(connection, document)?.reserve(
+                &binding,
+                &bound.target,
+                stream,
+                &input,
+            )?;
             let cancellation = reservation.document.cancellation.child_token();
             let resources = Arc::new(maka_plugins::call::Resources::default());
             let caller = Caller {
@@ -166,29 +170,68 @@ pub(super) async fn execute(
                     Ok(RemoteResult::Opened { stream })
                 }
                 (Handler::Method(method), RemoteKind::Method) => {
+                    let (submitting, settling) = if bound.endpoint.value.terminal_view().is_some() {
+                        use maka_plugins::terminal_ui::view::Request;
+                        let request: Request = serde_json::from_value(input.clone())
+                            .map_err(|error| failure(Error::Invalid(error.to_string())))?;
+                        request
+                            .validate()
+                            .map_err(|error| failure(Error::Invalid(error.to_string())))?;
+                        (
+                            matches!(request, Request::Submit { .. }),
+                            matches!(request, Request::Submit { .. } | Request::Recover { .. }),
+                        )
+                    } else {
+                        (false, false)
+                    };
                     let method = method.clone();
                     let leases = bound.admit()?;
+                    let bound = Arc::new(bound);
+                    let method = reservation.document.method(
+                        &binding,
+                        bound.clone(),
+                        method,
+                        &host.plugin_tasks,
+                        &input,
+                    )?;
+                    let preserve_receipt = method.isolated() && settling;
                     let resources = caller.resources.clone();
                     let cancellation = caller.cancellation.clone();
                     let (send, receive) = tokio::sync::oneshot::channel();
                     host.plugin_tasks.spawn(async move {
                         let _leases = leases;
-                        let mut result = std::panic::AssertUnwindSafe(call_method(
-                            &bound, method, input, caller,
+                        let mut result = std::panic::AssertUnwindSafe(method.run(
+                            &bound,
+                            input,
+                            caller,
+                            preserve_receipt,
                         ))
                         .catch_unwind()
                         .await
-                        .unwrap_or(Err(Error::CleanupUnconfirmed));
+                        .unwrap_or_else(|_| {
+                            Err(if method.isolated() {
+                                Error::Provider("Terminal page panicked".into())
+                            } else {
+                                Error::CleanupUnconfirmed
+                            })
+                        });
                         cancellation.cancel();
-                        if resources.finish().await.is_err() {
-                            result = Err(Error::CleanupUnconfirmed);
-                        }
-                        if matches!(result, Err(Error::CleanupUnconfirmed)) {
+                        let mut cleanup_failed = result.is_err()
+                            && method
+                                .close_failed_page(&reservation.document)
+                                .await
+                                .is_err();
+                        cleanup_failed |= resources.finish().await.is_err();
+                        cleanup_failed |= matches!(result, Err(Error::CleanupUnconfirmed));
+                        if cleanup_failed {
                             reservation.document.cleanup_failed();
                             bound
                                 .endpoint
                                 .owner
                                 .cleanup_failed("Remote method cleanup is unconfirmed".into());
+                            if !(preserve_receipt && result.as_ref().is_ok_and(registry::receipt)) {
+                                result = Err(Error::CleanupUnconfirmed);
+                            }
                         }
                         let _ = send.send(result);
                         drop(reservation);
@@ -196,8 +239,17 @@ pub(super) async fn execute(
                     drop(gate);
                     let value = receive
                         .await
-                        .map_err(|_| failure(Error::CleanupUnconfirmed))?
-                        .map_err(failure)?;
+                        .unwrap_or(Err(Error::CleanupUnconfirmed))
+                        .map_err(|error| {
+                            // An admitted Submit may have committed before its
+                            // callback failed. Cleanup fences above are independent
+                            // of the missing business result; only recovery can settle it.
+                            let mut error = failure(error);
+                            if submitting {
+                                error.code = Code::OutcomeUnknown;
+                            }
+                            error
+                        })?;
                     Ok(RemoteResult::Value { value })
                 }
                 _ => Err(failure(Error::Invalid(
@@ -208,40 +260,6 @@ pub(super) async fn execute(
     }
 }
 
-async fn call_method(
-    bound: &crate::plugins::remote::Bound,
-    method: Arc<dyn maka_plugins::remote::Method>,
-    input: Value,
-    caller: Caller,
-) -> Result<Value, Error> {
-    let cancellation = caller.cancellation.clone();
-    let _cancel_on_exit = cancellation.clone().drop_guard();
-    let mut call = method.call(input, caller);
-    let result = tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => Err(Error::Cancelled),
-        _ = bound.retired() => Err(Error::Retired),
-        _ = tokio::time::sleep(Duration::from_secs(30)) => Err(Error::Cancelled),
-        result = &mut call => {
-            if matches!(result, Err(Error::CleanupUnconfirmed)) {
-                bound.endpoint.owner.cleanup_failed("Remote method cleanup is unconfirmed".into());
-            }
-            return result.and_then(|value| { validate_payload(&value)?; Ok(value) });
-        }
-    };
-    cancellation.cancel();
-    match tokio::time::timeout(Duration::from_secs(5), call).await {
-        Ok(result) if !matches!(result, Err(Error::CleanupUnconfirmed)) => {}
-        _ => {
-            bound
-                .endpoint
-                .owner
-                .cleanup_failed("Remote method ignored cancellation".into());
-            return Err(Error::CleanupUnconfirmed);
-        }
-    };
-    result
-}
 fn failure(error: Error) -> OperationError {
     OperationError {
         code: match error {

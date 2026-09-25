@@ -127,7 +127,10 @@ fn real_host_import_and_recall_open_the_exact_imported_session() {
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(checkpoint).unwrap()).unwrap();
     let cursor = saved["navigation"]["cursor"].as_u64().unwrap() as usize;
-    assert_eq!(saved["navigation"]["entries"][cursor]["id"], imported);
+    assert_eq!(
+        saved["navigation"]["entries"][cursor]["route"]["id"],
+        imported
+    );
     fixture.client.disconnect();
     let mut host = fixture.host;
     host.retire_registered();

@@ -20,6 +20,7 @@ use crate::{
     app::{Action, App, ConnectionState, Focus},
     editor::Editor,
     navigation::Route,
+    ui::Surface,
 };
 use maka_client::{Client, ClientError, RequestFailure};
 use maka_protocol::{
@@ -41,6 +42,21 @@ pub struct Target {
     pub session: String,
     pub entry: String,
     pub revision: u64,
+}
+impl Target {
+    pub(crate) fn surface_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.session.len(),
+            self.session,
+            self.entry.len(),
+            self.entry
+        )
+    }
+
+    pub(crate) fn control_key(&self, control: &str) -> String {
+        format!("queue/entries/{}/{control}", self.surface_key())
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -102,6 +118,7 @@ pub struct Ticket {
 pub struct Queue {
     pub selected: Option<String>,
     pub area: Option<Rect>,
+    pub surface: Surface<Command>,
     pub edit: Option<Edit>,
     pending: Option<Ticket>,
     awaiting: Option<(Target, u64)>,
@@ -218,14 +235,15 @@ impl App {
     }
     pub fn queue_move(&mut self, down: bool) {
         let rows = self.queue_rows();
-        if rows.is_empty() {
-            self.focus = Focus::Composer;
-            return;
-        }
         let index = rows
             .iter()
-            .position(|row| Some(&row.target.entry) == self.queue.selected.as_ref())
-            .unwrap_or(rows.len() - 1);
+            .position(|row| Some(&row.target.entry) == self.queue.selected.as_ref());
+        if rows.is_empty() || (self.focus == Focus::Queue && index.is_none()) {
+            self.focus = Focus::Composer;
+            self.queue.selected = None;
+            return;
+        }
+        let index = index.unwrap_or(rows.len() - 1);
         let next = if down {
             (index + 1).min(rows.len() - 1)
         } else {
@@ -233,14 +251,25 @@ impl App {
         };
         self.queue.selected = Some(rows[next].target.entry.clone());
         self.focus = Focus::Queue;
+        self.queue
+            .surface
+            .focus_within(rows[next].target.control_key("preview"));
     }
     pub fn queue_action(&mut self, command: Command) -> Option<Action> {
         match command {
             Command::Focus => {
-                self.queue.selected = self.queue_rows().last().map(|row| row.target.entry.clone());
-                self.focus = Focus::Queue;
+                if let Some(row) = self.queue_rows().last() {
+                    self.queue.selected = Some(row.target.entry.clone());
+                    self.queue
+                        .surface
+                        .focus_within(row.target.control_key("preview"));
+                    self.focus = Focus::Queue;
+                }
             }
             Command::Select(target) => {
+                self.queue
+                    .surface
+                    .focus_within(target.control_key("preview"));
                 self.queue.selected = Some(target.entry);
                 self.focus = Focus::Queue;
             }
@@ -423,6 +452,143 @@ mod tests {
     fn key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         app.input(Event::Key(KeyEvent::new(code, modifiers))).1
     }
+    fn mouse(app: &mut App, area: Rect, kind: MouseEventKind) -> Option<Action> {
+        app.input(Event::Mouse(MouseEvent {
+            kind,
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        }))
+        .1
+    }
+
+    #[test]
+    fn queue_surface_keeps_hover_actions_stable_and_activates_the_exact_presented_target() {
+        let mut app = fixture(Locale::En);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        let target = app.queue_rows()[2].target.clone();
+        let preview = app
+            .queue
+            .surface
+            .rect(&target.control_key("preview"))
+            .unwrap();
+        assert!(!preview.is_empty());
+        assert!(!app.hits.iter().any(|hit| matches!(
+            hit.action,
+            Action::Queue(
+                Command::Select(_)
+                    | Command::Edit(_)
+                    | Command::Retract(_)
+                    | Command::Promote(_)
+                    | Command::Reorder(_, _)
+            )
+        )));
+        mouse(&mut app, preview, MouseEventKind::Moved);
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        let edit = app.queue.surface.rect(&target.control_key("edit")).unwrap();
+        let up = app.queue.surface.rect(&target.control_key("up")).unwrap();
+        assert!(!edit.is_empty());
+        assert!(!app.queue_enabled(&Command::Reorder(target.clone(), false)));
+        for _ in 0..2 {
+            mouse(&mut app, up, MouseEventKind::Moved);
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            assert_eq!(
+                app.queue.surface.rect(&target.control_key("edit")),
+                Some(edit)
+            );
+            assert_eq!(
+                app.queue.surface.hovered().unwrap().key,
+                target.control_key("up")
+            );
+        }
+        assert!(mouse(&mut app, up, MouseEventKind::Down(MouseButton::Left)).is_none());
+        assert!(app.queue.pending.is_none());
+        assert!(app.queue.selected.is_none());
+
+        // Geometry still carries the last presented revision, even if a newer
+        // projection has already arrived before the redraw.
+        app.chat.snapshot.as_mut().unwrap().queue.queue_revision += 1;
+        mouse(&mut app, edit, MouseEventKind::Down(MouseButton::Left));
+        assert!(app.queue.edit.is_none());
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        let current = app.queue_rows()[2].target.clone();
+        assert_eq!(target.control_key("edit"), current.control_key("edit"));
+        mouse(&mut app, edit, MouseEventKind::Down(MouseButton::Left));
+        assert_eq!(app.queue.edit.as_ref().unwrap().target, current);
+        assert!(
+            app.queue.selected.is_none(),
+            "a sibling action is not row selection"
+        );
+        assert!(
+            app.queue.pending.is_none(),
+            "presentation does not create a mutation ticket"
+        );
+    }
+
+    #[test]
+    fn queue_scroll_and_consumed_selection_do_not_change_mutation_targets() {
+        let mut app = fixture(Locale::En);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        let target = app.queue_rows().last().unwrap().target.clone();
+        assert!(
+            app.queue
+                .surface
+                .rect(&target.control_key("preview"))
+                .unwrap()
+                .is_empty()
+        );
+        let area = app.queue.area.unwrap();
+        mouse(&mut app, area, MouseEventKind::ScrollDown);
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        assert!(
+            !app.queue
+                .surface
+                .rect(&target.control_key("preview"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(app.queue.selected.is_none());
+        app.apply(Action::Queue(Command::Focus));
+        assert_eq!(app.queue.selected.as_deref(), Some("f3"));
+        app.chat.snapshot.as_mut().unwrap().queue.followup.pop();
+        app.chat.snapshot.as_mut().unwrap().queue.queue_revision += 1;
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(app.queue.selected.is_none());
+        assert!(app.queue.edit.is_none());
+        assert!(app.queue.pending.is_none());
+        app.input(Event::Resize(20, 5));
+        assert!(
+            app.queue
+                .surface
+                .rect(&target.control_key("preview"))
+                .is_none()
+        );
+        assert!(
+            app.queue_surface_input(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }))
+            .is_none()
+        );
+    }
+
     #[test]
     fn queue_mutations_bind_revision_scope_and_preserve_drafts_across_conflicts_and_unknown_results()
      {
@@ -520,11 +686,17 @@ mod tests {
                     terminal
                         .draw(|frame| crate::view::draw(frame, &mut app))
                         .unwrap();
-                    let hit = app.hits.iter().find(|hit| matches!(&hit.action, Action::Queue(Command::Select(target)) if target.entry == "f3")).unwrap().clone();
+                    let target = app.queue_selected().unwrap().target;
+                    let preview = app
+                        .queue
+                        .surface
+                        .rect(&target.control_key("preview"))
+                        .unwrap();
+                    assert!(!preview.is_empty());
                     app.input(Event::Mouse(MouseEvent {
                         kind: MouseEventKind::Down(MouseButton::Left),
-                        column: hit.area.x,
-                        row: hit.area.y,
+                        column: preview.x,
+                        row: preview.y,
                         modifiers: KeyModifiers::NONE,
                     }));
                     key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);

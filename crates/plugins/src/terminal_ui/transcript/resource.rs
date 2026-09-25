@@ -17,15 +17,15 @@
  * under the License.
  */
 
-//! A mount owns one Remote document and one stream. The first item is Ready:
-//! it captures a snapshot and subscribes atomically. Page reads use that fence;
-//! later stream revisions are contiguous. Cancellation closes the document.
+//! A mount borrows its page's Remote document and owns one stream. Ready
+//! captures a snapshot and subscribes atomically. Page reads use that fence;
+//! later stream revisions are contiguous. Cancellation closes only the stream.
 
 use super::{Block, Key, Timing};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Resource {
     pub id: String,
@@ -40,6 +40,7 @@ pub struct Resource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Open {
+    pub mount: uuid::Uuid,
     pub resource: String,
     pub route: Value,
     pub locale: String,
@@ -57,6 +58,7 @@ pub enum Direction {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Read {
+    pub mount: uuid::Uuid,
     pub resource: String,
     pub fence: u64,
     pub direction: Direction,
@@ -135,4 +137,33 @@ pub enum Event {
     /// The snapshot expired or the provider could not retain a contiguous
     /// update stream. The reader must close and open a fresh resource.
     Invalidated,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn source_requests_require_an_independent_uuid_mount() {
+        let open = json!({"resource":"activity", "route":null, "locale":"en"});
+        let read = json!({"resource":"activity", "fence":1, "direction":"tail"});
+        assert!(serde_json::from_value::<Open>(open.clone()).is_err());
+        assert!(serde_json::from_value::<Read>(read.clone()).is_err());
+        for mount in [json!(null), json!("not-a-uuid"), json!(123)] {
+            let mut open = open.clone();
+            let mut read = read.clone();
+            open["mount"] = mount.clone();
+            read["mount"] = mount;
+            assert!(serde_json::from_value::<Open>(open).is_err());
+            assert!(serde_json::from_value::<Read>(read).is_err());
+        }
+        let mount = uuid::Uuid::new_v4();
+        let mut open = open;
+        let mut read = read;
+        open["mount"] = json!(mount);
+        read["mount"] = json!(mount);
+        assert_eq!(serde_json::from_value::<Open>(open).unwrap().mount, mount);
+        assert_eq!(serde_json::from_value::<Read>(read).unwrap().mount, mount);
+    }
 }

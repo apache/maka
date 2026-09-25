@@ -18,14 +18,14 @@
  */
 
 use crate::{
-    app::{Action, App, ConnectionState, Focus, Hit, Notice},
+    app::{Action, App, ConnectionState, Focus, Notice},
     navigation::Route,
     pages::sessions::Detail,
 };
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -34,6 +34,7 @@ pub(crate) mod activity;
 pub(crate) mod form;
 pub(crate) mod queue;
 mod session;
+pub(crate) mod shell;
 pub(crate) mod tone;
 
 pub fn safe(text: &str) -> String {
@@ -92,125 +93,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Constraint::Length(1),
     ])
     .split(area);
-    let session = matches!(app.navigation.current(), Route::Session(_));
-    let settings = app.navigation.current() == Route::Settings;
-    let actions = app.page_actions();
-    let header = Layout::horizontal([
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Min(1),
-        Constraint::Length(if settings {
-            0
-        } else if session {
-            actions
-                .iter()
-                .filter(|action| !composer_action(action))
-                .count() as u16
-                * 3
-        } else {
-            actions.len() as u16 * 3
-        }),
-        Constraint::Length(3),
-    ])
-    .split(rows[0]);
-    icon_button(frame, app, header[0], Action::ToggleSidebar, false);
-    icon_button(frame, app, header[1], Action::Back, false);
-    let connection = match app.connection {
-        ConnectionState::Disconnected => "connection-disconnected",
-        ConnectionState::Connecting => "connection-connecting",
-        ConnectionState::Connected { .. } => "connection-connected",
-        ConnectionState::Failed(_) | ConnectionState::WrongEpoch => "connection-failed",
-    };
-    let title = match (&app.navigation.current(), &app.sessions.detail) {
-        (Route::Session(id), Detail::Ready(item)) if *id == item.id => safe(&item.name),
-        (Route::App(key), _) => app
-            .apps
-            .instance(key)
-            .and_then(|instance| instance.title(app.i18n.locale().id()))
-            .map(|title| safe(&title))
-            .unwrap_or_else(|| app.i18n.text(Route::Extensions.title())),
-        _ => app.i18n.text(app.navigation.current().title()),
-    };
-    // Center against the whole viewport, reserving equal space for both edges.
-    // More contextual actions must not shift the title's visual center.
-    let title_area = if session {
-        let side = (header[3].width + header[4].width).max(header[0].width + header[1].width);
-        Rect::new(
-            area.x + side,
-            header[2].y,
-            area.width.saturating_sub(side * 2),
-            1,
-        )
-        .intersection(header[2])
-    } else {
-        header[2]
-    };
-    let title = if matches!(app.connection, ConnectionState::Connected { .. }) {
-        title
-    } else {
-        format!("{title} · {}", app.i18n.text(connection))
-    };
-    let title = if let Route::Session(id) = app.navigation.current()
-        && title_area.width >= 16
-    {
-        let activity = app.session_activity(&id);
-        let face = match activity {
-            activity::Activity::Working => app
-                .chrome
-                .animation
-                .frame(crate::motion::Loop::Spring, app.chrome.ascii),
-            activity::Activity::Waiting => "-_-",
-            activity::Activity::Idle => app
-                .chrome
-                .animation
-                .frame(crate::motion::Loop::Familiar, app.chrome.ascii),
-            activity::Activity::Unknown => "o_o",
-        };
-        let color = if activity == activity::Activity::Waiting {
-            app.theme.colors().warning
-        } else {
-            app.theme.colors().accent
-        };
-        Line::from(vec![
-            ratatui::text::Span::styled(face, Style::default().fg(color)),
-            " ".into(),
-            session::fit(&title, usize::from(title_area.width - 8)).into(),
-            "    ".into(),
-        ])
-    } else {
-        Line::raw(title)
-    };
-    frame.render_widget(
-        Paragraph::new(title)
-            .style(Style::default().add_modifier(Modifier::BOLD))
-            .alignment(if session {
-                ratatui::layout::Alignment::Center
-            } else {
-                ratatui::layout::Alignment::Left
-            }),
-        title_area,
-    );
-    {
-        let mut slot = 0;
-        for (index, action) in actions.iter().enumerate() {
-            if settings {
-                break;
-            }
-            if composer_action(action) {
-                continue;
-            }
-            let rect = Rect::new(header[3].x + slot * 3, header[3].y, 3, 1).intersection(header[3]);
-            icon_button(
-                frame,
-                app,
-                rect,
-                action.clone(),
-                app.focus == Focus::Page && app.selected_control == index,
-            );
-            slot += 1;
-        }
-    }
-    icon_button(frame, app, header[4], Action::Palette, false);
+    shell::header(frame, app, rows[0]);
 
     let nav_width = if app.fullscreen() {
         app.chrome.stop_animation();
@@ -234,6 +117,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
     let page = columns[1].inner(Margin::new(1, 0));
 
+    if !matches!(app.navigation.current(), Route::Session(_)) {
+        app.chrome.composer.invalidate();
+        app.chrome.feedback.invalidate();
+    }
     match app.navigation.current() {
         Route::Extensions => crate::apps::page::draw_directory(frame, app, page),
         Route::App(key) => crate::apps::page::draw(frame, app, page, &key),
@@ -245,10 +132,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Route::Plugins(_) => crate::pages::plugins::draw(frame, app, page),
     }
     crate::files::resolve_hits(app);
-    let focused = match app.focus {
-        Focus::Page => app.page_actions().get(app.selected_control).cloned(),
-        _ => None,
-    };
     let hint = if app.shutdown.stopping {
         app.i18n.text("shutdown-working")
     } else if app.closing {
@@ -272,6 +155,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         && !app.chrome.details
     {
         app.i18n.text("chat-selection-help")
+    } else if let Some(hint) = app
+        .chrome
+        .header
+        .hint(app.focus == Focus::Header)
+        .or_else(|| app.chrome.composer.hint(app.focus == Focus::Page))
+        .or_else(|| app.chrome.feedback.hint(false))
+    {
+        hint.to_owned()
     } else if let Some(action) = app.hover.as_ref() {
         action_label(app, action)
     } else if let Some(hint) = app
@@ -286,9 +177,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Route::Projects => app.projects.surface.hint(app.focus == Focus::List),
             Route::Extensions => app.apps.surface.hint(app.focus == Focus::Page),
             Route::Session(_) => app
-                .apps
-                .inspector
-                .hint(app.focus == Focus::Inspector)
+                .queue
+                .surface
+                .hint(app.focus == Focus::Queue)
+                .or_else(|| {
+                    app.chat
+                        .view
+                        .search
+                        .as_ref()
+                        .and_then(|search| search.bar.hint(false))
+                })
+                .or_else(|| app.apps.inspector.hint(app.focus == Focus::Inspector))
                 .or_else(|| app.apps.status.hint(false)),
             Route::App(key) => app
                 .apps
@@ -297,8 +196,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         })
     {
         hint.to_owned()
-    } else if let Some(action) = focused.as_ref() {
-        action_label(app, action)
     } else if app.chat.view.search.is_some()
         && !app.chrome.details
         && matches!(app.navigation.current(), Route::Session(_))
@@ -347,22 +244,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         // No standing tutorial: shortcuts live in Help and the command palette.
         String::new()
     };
-    frame.render_widget(
-        Paragraph::new(hint).centered().style(Style::default().fg(
-            if matches!(&app.notice, Some(Notice::Diagnostic(_))) {
-                app.theme.colors().warning
-            } else {
-                app.theme.colors().subtle
-            },
-        )),
+    shell::footer(
+        frame,
+        app,
         Rect::new(page.x, rows[2].y, page.width, 1),
+        hint,
     );
-    if matches!(&app.notice, Some(Notice::Diagnostic(_))) {
-        app.hits.push(Hit {
-            area: Rect::new(page.x, rows[2].y, page.width, 1),
-            action: Action::Host,
-        });
-    }
     if let Some(overlay) = app.overlay() {
         crate::overlay::draw(frame, app, overlay, area, base);
     } else {
@@ -373,22 +260,64 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-fn draw_tooltip(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
-    let Some(action) = &app.hover else {
-        return;
-    };
-    let Some(anchor) = app.hover_area else {
-        return;
-    };
-    // Animation/resize can retire the region without another mouse event.
-    if !app
-        .hits
-        .iter()
-        .any(|hit| hit.area == anchor && &hit.action == action)
-    {
-        return;
+pub(crate) fn widget_hover(app: &App) -> Option<crate::ui::Hover<'_>> {
+    if app.overlay().is_some() {
+        return None;
     }
-    let label = action_label(app, action);
+    if let Some(hover) = app
+        .chrome
+        .header
+        .hovered()
+        .or_else(|| app.chrome.footer.hovered())
+    {
+        return hover.hint.is_some().then_some(hover);
+    }
+    if !matches!(app.navigation.current(), Route::Session(_)) {
+        return None;
+    }
+    app.chrome
+        .composer
+        .hovered()
+        .filter(|hover| hover.hint.is_some())
+        .or_else(|| {
+            app.chrome
+                .feedback
+                .hovered()
+                .filter(|hover| hover.hint.is_some())
+        })
+        .or_else(|| app.queue.surface.hovered())
+        .filter(|hover| hover.hint.is_some())
+        .or_else(|| {
+            app.chat
+                .view
+                .search
+                .as_ref()?
+                .bar
+                .hovered()
+                .filter(|hover| hover.hint.is_some())
+        })
+}
+
+fn draw_tooltip(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
+    let (anchor, label) = if let Some(hover) = widget_hover(app) {
+        (hover.area, hover.hint.unwrap().to_owned())
+    } else {
+        let Some(action) = &app.hover else {
+            return;
+        };
+        let Some(anchor) = app.hover_area else {
+            return;
+        };
+        // Animation/resize can retire the region without another mouse event.
+        if !app
+            .hits
+            .iter()
+            .any(|hit| hit.area == anchor && &hit.action == action)
+        {
+            return;
+        }
+        (anchor, action_label(app, action))
+    };
     let width = (Line::raw(label.as_str()).width() as u16 + 2)
         .min(area.width - 2)
         .clamp(3, 62);
@@ -415,10 +344,38 @@ fn draw_tooltip(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
     app.hits
         .retain(|hit| hit.area.intersection(popup).is_empty());
     // Kernel surfaces drawn underneath lose pointer targets the tooltip covers.
+    if app
+        .chrome
+        .composer
+        .rect(shell::EDITOR)
+        .is_some_and(|rect| !rect.intersection(popup).is_empty())
+        && let Route::Session(id) = app.navigation.current()
+        && let Some(editor) = app.drafts.get_mut(&id)
+    {
+        editor.invalidate_geometry();
+    }
+    app.chrome.composer.occlude(popup);
+    app.chrome.feedback.occlude(popup);
+    app.chrome.header.occlude(popup);
+    app.chrome.footer.occlude(popup);
     app.sidebar.surface.occlude(popup);
     app.settings.surface.occlude(popup);
     app.plugins.surface.occlude(popup);
     app.home.surface.occlude(popup);
+    app.queue.surface.occlude(popup);
+    if let Some(search) = &mut app.chat.view.search {
+        if search
+            .bar
+            .rect("find/input")
+            .is_some_and(|rect| !rect.intersection(popup).is_empty())
+        {
+            search.editor.invalidate_geometry();
+        }
+        search.bar.occlude(popup);
+    }
+    if let Some(history) = &mut app.chat.history {
+        history.reader_surface.occlude(popup);
+    }
     if let Some(surface) = app.apps_surface() {
         surface.occlude(popup);
     }
@@ -432,15 +389,6 @@ fn draw_tooltip(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
     );
 }
 
-fn composer_action(action: &Action) -> bool {
-    matches!(
-        action,
-        Action::SendMessage
-            | Action::SteerMessage
-            | Action::ReconcileSubmission
-            | Action::StopTurn(_)
-    )
-}
 pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
     let (unicode, ascii) = match action {
         Action::NextTab => ("›", ">"),
@@ -560,6 +508,7 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         Action::ToggleDetails => ("ⓘ", "i"),
         Action::ToggleInspector => ("◨", "]"),
         Action::ToggleTrace => ("⋯", "."),
+        Action::Compose => ("✎", "E"),
         Action::BrowseTranscript => ("▤", "B"),
         Action::Search(command) => match command {
             crate::ui::transcript::search::Command::Open => ("⌕", "/"),
@@ -716,10 +665,11 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::ToggleSidebar => "command-sidebar",
         Action::ToggleFullscreen => "command-fullscreen",
         Action::ToggleDetails => "command-details",
-        Action::ToggleInspector if app.chrome.inspector => "command-inspector-hide",
+        Action::ToggleInspector if app.navigation.location().inspector => "command-inspector-hide",
         Action::ToggleInspector => "command-inspector-show",
         Action::ToggleTrace if app.chat.view.trace => "command-trace-hide",
         Action::ToggleTrace => "command-trace-show",
+        Action::Compose => "composer-placeholder",
         Action::BrowseTranscript => "chat-browse",
         Action::Search(command) => match command {
             crate::ui::transcript::search::Command::Open => "chat-search",
@@ -742,89 +692,6 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::CancelQuit => "shutdown-cancel",
     };
     app.i18n.text(key)
-}
-
-fn icon_button(frame: &mut Frame<'_>, app: &mut App, area: Rect, action: Action, focused: bool) {
-    let title = icon(app, &action);
-    button(frame, app, area, title, action, focused);
-}
-
-pub(crate) fn button(
-    frame: &mut Frame<'_>,
-    app: &mut App,
-    rect: Rect,
-    title: &str,
-    action: Action,
-    focused: bool,
-) {
-    control(
-        frame,
-        app,
-        rect,
-        Paragraph::new(title).centered(),
-        action,
-        focused,
-    );
-}
-
-/// List entries and field-like selectors share interaction styling, not the
-/// centering of standalone actions. Keep their leading scan edge stable.
-pub(crate) fn list_item(
-    frame: &mut Frame<'_>,
-    app: &mut App,
-    rect: Rect,
-    title: &str,
-    action: Action,
-    focused: bool,
-) {
-    control(frame, app, rect, Paragraph::new(title), action, focused);
-}
-
-fn control(
-    frame: &mut Frame<'_>,
-    app: &mut App,
-    rect: Rect,
-    label: Paragraph<'_>,
-    action: Action,
-    focused: bool,
-) {
-    if rect.is_empty() {
-        return;
-    }
-    let enabled = app.enabled(&action);
-    let destructive = action == Action::ConfirmQuit
-        || (matches!(action, Action::Manage(crate::pages::manage::Command::Save))
-            && app.management.destructive());
-    let caution = matches!(action, Action::Manage(crate::pages::manage::Command::Save))
-        && app.sandbox_disabling();
-    let style = if !enabled {
-        Style::default()
-            .fg(app.theme.colors().subtle)
-            .add_modifier(Modifier::DIM)
-    } else if focused || app.hover.as_ref() == Some(&action) {
-        app.theme.colors().focused().fg(if destructive {
-            app.theme.colors().error
-        } else if caution {
-            app.theme.colors().warning
-        } else {
-            app.theme.colors().accent
-        })
-    } else if destructive {
-        Style::default().fg(app.theme.colors().error)
-    } else if caution {
-        Style::default().fg(app.theme.colors().warning)
-    } else if matches!(
-        action,
-        Action::SendMessage | Action::SteerMessage | Action::StopTurn(_)
-    ) {
-        Style::default().fg(app.theme.colors().accent)
-    } else {
-        Style::default().fg(app.theme.colors().muted)
-    };
-    frame.render_widget(label.style(style), rect);
-    if enabled {
-        app.hits.push(Hit { area: rect, action });
-    }
 }
 
 #[cfg(test)]
@@ -1041,15 +908,14 @@ mod tests {
             epoch: "epoch".into(),
         };
         let mut terminal = render(&mut app, 120, 40);
-        let anchor = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::ToggleSidebar)
-            .unwrap()
-            .area;
+        let anchor = app.chrome.header.rect("header/left/sidebar").unwrap();
         let covered = locate(&terminal, "New session");
-        app.hover = Some(Action::ToggleSidebar);
-        app.hover_area = Some(anchor);
+        app.input(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: anchor.x,
+            row: anchor.y,
+            modifiers: KeyModifiers::NONE,
+        }));
         terminal
             .draw(|frame| {
                 draw(frame, &mut app);
@@ -1057,7 +923,11 @@ mod tests {
             })
             .unwrap();
         // The sidebar row under the tooltip is not clickable through it.
-        assert_eq!(app.input(click(covered.0, covered.1)), (true, None));
+        assert!(
+            app.sidebar.surface.rect("sidebar/new").unwrap().is_empty(),
+            "tooltip occludes the committed target"
+        );
+        assert_eq!(app.input(click(covered.0, covered.1)).1, None);
         assert!(!app.creating);
         assert_eq!(app.focus, Focus::Navigation);
         let screen = terminal
@@ -1069,6 +939,56 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(screen.contains("Expand / collapse navigation · Ctrl+B"));
+        app.input(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 119,
+            row: 39,
+            modifiers: KeyModifiers::NONE,
+        }));
+        render(&mut app, 120, 40);
+        assert!(!app.sidebar.surface.rect("sidebar/new").unwrap().is_empty());
+        assert_eq!(
+            app.input(click(covered.0, covered.1)).1,
+            Some(Action::CreateSession)
+        );
+        assert!(
+            app.creating,
+            "the same target activates after the tooltip leaves"
+        );
+    }
+
+    #[test]
+    fn a_local_chooser_consumes_the_first_header_click_before_navigation() {
+        let mut app = App::new(
+            "/fixture".into(),
+            crate::i18n::I18n::new(
+                crate::LocalePreference::Explicit(crate::Locale::En),
+                crate::Locale::En,
+            ),
+        );
+        app.apply(Action::Visit(Route::Settings));
+        let terminal = render(&mut app, 100, 30);
+        let choice = locate(&terminal, "Maka dark");
+        app.input(click(choice.0, choice.1));
+        render(&mut app, 100, 30);
+        assert!(app.settings.surface.captures());
+        let location = app.navigation.location().clone();
+        let back = app.chrome.header.rect("header/left/back").unwrap();
+        assert_eq!(app.input(click(back.x, back.y)).1, None);
+        assert!(!app.settings.surface.captures());
+        assert_eq!(
+            app.navigation.location(),
+            &location,
+            "outside click only dismisses the chooser"
+        );
+        render(&mut app, 100, 30);
+        let back = app.chrome.header.rect("header/left/back").unwrap();
+        app.input(click(back.x, back.y));
+        assert_eq!(
+            app.navigation.current(),
+            Route::Workspace,
+            "the next header click can navigate"
+        );
     }
 
     #[test]
@@ -1172,66 +1092,13 @@ mod tests {
             "Tab past the first control leaves the page"
         );
         app.apply(Action::Back);
+        assert_eq!(app.navigation.current(), Route::Settings);
+        assert_eq!(
+            app.navigation.location().settings_category(),
+            crate::pages::settings::Category::Appearance
+        );
+        app.apply(Action::Back);
         assert_eq!(app.navigation.current(), Route::Extensions);
-    }
-
-    #[test]
-    fn buttons_center_cell_width_without_centering_lists_or_shrinking_hit_targets() {
-        use unicode_width::UnicodeWidthStr;
-        for title in ["关闭", "關閉", "Close", "⛭", "e\u{301}", "🦀"] {
-            for padding in [2, 3] {
-                let mut app = App::new(
-                    "/unused".into(),
-                    crate::i18n::I18n::new(crate::LocalePreference::Auto, crate::Locale::En),
-                );
-                let width = title.width() as u16 + padding;
-                let rect = Rect::new(2, 0, width, 1);
-                let row = Rect::new(2, 1, width, 1);
-                let disabled = Rect::new(2, 2, width, 1);
-                let mut terminal = Terminal::new(TestBackend::new(20, 3)).unwrap();
-                terminal
-                    .draw(|frame| {
-                        button(frame, &mut app, rect, title, Action::ToggleSymbols, true);
-                        list_item(frame, &mut app, row, title, Action::ToggleMotion, true);
-                        button(frame, &mut app, disabled, title, Action::SendMessage, true);
-                        button(frame, &mut app, Rect::default(), title, Action::Quit, true);
-                    })
-                    .unwrap();
-                let buffer = terminal.backend().buffer();
-                let first = unicode_segmentation::UnicodeSegmentation::graphemes(title, true)
-                    .next()
-                    .unwrap();
-                let centered_x = (rect.x..rect.right())
-                    .find(|x| buffer[(*x, rect.y)].symbol() == first)
-                    .expect("complete label start");
-                let left = centered_x - rect.x;
-                let right = rect.right() - centered_x - title.width() as u16;
-                assert!(
-                    left >= 1 && right >= 1 && left.abs_diff(right) <= 1,
-                    "{title}: {left}/{right}"
-                );
-                assert_eq!(buffer[(centered_x, rect.y)].symbol(), first, "{title}");
-                assert_eq!(buffer[(row.x, row.y)].symbol(), first);
-                assert_eq!(buffer[(centered_x, disabled.y)].symbol(), first);
-                for x in rect.x..centered_x {
-                    assert_eq!(buffer[(x, rect.y)].symbol(), " ");
-                }
-                for x in centered_x + title.width() as u16..rect.right() {
-                    assert_eq!(buffer[(x, rect.y)].symbol(), " ");
-                }
-                assert_eq!(
-                    buffer[(rect.x, rect.y)].bg,
-                    buffer[(rect.right() - 1, rect.y)].bg
-                );
-                assert_eq!(
-                    app.hits.len(),
-                    2,
-                    "disabled/empty buttons have no hit targets"
-                );
-                assert_eq!(app.hits[0].area, rect, "padding remains clickable");
-                assert_eq!(app.hits[1].area, row);
-            }
-        }
     }
 
     #[test]

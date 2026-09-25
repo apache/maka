@@ -19,12 +19,14 @@
 
 use crate::{
     app::{Action, App, Focus},
-    navigation::Route,
+    navigation::{Location, Route},
 };
 
 /// Includes the current page captured alongside the retained past pages.
 pub(crate) const PAGE_LIMIT: usize = super::tabs::LIMIT + Route::PAGE_COUNT;
+mod admission;
 
+#[derive(Clone)]
 pub struct State {
     focus: Focus,
     control: Option<Action>,
@@ -68,7 +70,8 @@ pub struct Saved {
 }
 
 impl Saved {
-    pub fn valid(&self, route: &Route, destination: impl Fn(&Route) -> bool) -> bool {
+    pub fn valid(&self, location: &Location, destination: impl Fn(&Route) -> bool) -> bool {
+        let route = &location.route;
         let focus = match self.focus {
             Focus::Navigation => true,
             Focus::List => matches!(
@@ -86,7 +89,7 @@ impl Saved {
                     | Route::Extensions
                     | Route::App(_)
             ),
-            Focus::Queue => false,
+            Focus::Header | Focus::Queue => false,
         };
         focus
             && (self.setting.is_none() || *route == Route::Settings)
@@ -113,7 +116,7 @@ impl State {
             control: if app.navigation.current() == Route::Settings {
                 app.settings.focused_setting()
             } else {
-                app.page_actions().get(app.selected_control).cloned()
+                None
             },
             details: app.chrome.details,
             navigation: (app.focus == Focus::Navigation)
@@ -122,8 +125,11 @@ impl State {
         }
     }
 
-    fn saved(&self, route: &Route, app: &App) -> Saved {
+    fn saved(&self, route: &Route, tab: &impl Fn(&str) -> bool) -> Saved {
         let focus = match (route, self.focus) {
+            (Route::Session(_), Focus::Header) => Focus::Composer,
+            (Route::Connections | Route::Projects, Focus::Header) => Focus::List,
+            (_, Focus::Header) => Focus::Page,
             (Route::Session(_), Focus::Page | Focus::Queue | Focus::Inspector) => Focus::Composer,
             (Route::Workspace | Route::Projects | Route::Connections, Focus::Page) => Focus::List,
             (_, focus) => focus,
@@ -146,23 +152,27 @@ impl State {
                 None
             },
             details: self.details,
-            navigation: self.navigation.clone().filter(|route| match route {
-                Route::Session(id) => app.tabs.contains(id),
-                _ => true,
+            navigation: self.navigation.clone().filter(|route| {
+                focus == Focus::Navigation
+                    && match route {
+                        Route::Session(id) => tab(id),
+                        _ => true,
+                    }
             }),
         }
     }
 }
 
 impl App {
-    pub(crate) fn saved_pages(&self) -> Vec<(Route, Saved)> {
-        let current = self.navigation.current();
+    pub(crate) fn saved_pages(&self) -> Vec<(Location, Saved)> {
+        let tab = |id: &str| self.tabs.contains(id);
+        let current = self.navigation.location().clone();
         self.page_states
             .iter()
-            .filter(|(route, _)| {
-                *route != current
-                    && match route {
-                        Route::Session(id) => self.tabs.contains(id),
+            .filter(|(location, _)| {
+                *location != current
+                    && match &location.route {
+                        Route::Session(id) => tab(id),
                         _ => true,
                     }
             })
@@ -171,10 +181,10 @@ impl App {
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
-            .map(|(route, state)| (route.clone(), state.saved(route, self)))
+            .map(|(location, state)| (location.clone(), state.saved(&location.route, &tab)))
             .chain(std::iter::once((
                 current.clone(),
-                State::capture(self).saved(&current, self),
+                State::capture(self).saved(&current.route, &tab),
             )))
             .collect()
     }
@@ -195,13 +205,17 @@ impl App {
             _ => {}
         }
         let state = State::capture(self);
-        self.page_states.retain(|(key, _)| *key != route);
-        self.page_states.push_back((route, state));
+        let location = self.navigation.location().clone();
+        self.page_states.retain(|(key, _)| *key != location);
+        self.page_states.push_back((location, state));
         while self.page_states.len() >= PAGE_LIMIT {
             self.page_states.pop_front();
         }
     }
     pub(crate) fn enter_page(&mut self) {
+        self.enter_page_focused(None);
+    }
+    pub(crate) fn enter_page_focused(&mut self, preserved: Option<Focus>) {
         let route = self.navigation.current();
         if let Route::Plugins(place) = &route {
             self.plugins.enter(place);
@@ -212,40 +226,21 @@ impl App {
         if route == Route::Projects {
             self.projects.refresh();
         }
-        self.focus = match route {
-            Route::Projects | Route::Connections => Focus::List,
-            Route::Session(_) => Focus::Composer,
-            _ => Focus::Page,
-        };
-        self.selected_control = 0;
-        self.chrome.details = false;
-        if let Some(index) = self.page_states.iter().position(|(key, _)| *key == route) {
-            let (_, state) = self.page_states.remove(index).unwrap();
-            self.focus = state.focus;
-            self.chrome.details = state.details;
-            if let Some(route) = &state.navigation {
-                self.sidebar.focus_route(route);
-            }
-            // Home was a list before the sidebar became the session directory.
-            if route == Route::Workspace && self.focus == Focus::List {
-                self.focus = Focus::Page;
-            }
-            if route == Route::Settings
-                && let Some(action) = &state.control
-            {
-                self.settings.focus_setting(action);
-            }
-            self.selected_control = state
-                .control
-                .and_then(|action| {
-                    self.page_actions()
-                        .iter()
-                        .position(|candidate| *candidate == action)
-                })
-                .unwrap_or(0);
+        let restored = self
+            .page_states
+            .iter()
+            .position(|(key, _)| key == self.navigation.location())
+            .map(|index| self.page_states.remove(index).unwrap().1);
+        let state = self.arrival_state(self.navigation.location(), restored.as_ref(), preserved);
+        self.focus = state.focus;
+        self.chrome.details = state.details;
+        if let Some(route) = &state.navigation {
+            self.sidebar.focus_route(route);
         }
-        if self.fullscreen() && self.focus == Focus::Navigation {
-            self.focus = Focus::Composer;
+        if route == Route::Settings
+            && let Some(action) = &state.control
+        {
+            self.settings.focus_setting(action);
         }
     }
 }

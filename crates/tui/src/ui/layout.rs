@@ -74,14 +74,14 @@ pub(super) enum Axis {
 
 /// A placement whose top may lie above the screen inside a scrolled viewport.
 #[derive(Clone, Copy)]
-struct Area {
-    x: u16,
-    y: i32,
-    width: u16,
-    height: u16,
+pub(super) struct Area {
+    pub(super) x: u16,
+    pub(super) y: i32,
+    pub(super) width: u16,
+    pub(super) height: u16,
 }
 impl Area {
-    fn visible(self, clip: Rect) -> Rect {
+    pub(super) fn visible(self, clip: Rect) -> Rect {
         let top = self.y.max(i32::from(clip.top()));
         let bottom = (self.y + i32::from(self.height)).min(i32::from(clip.bottom()));
         if bottom <= top {
@@ -113,6 +113,8 @@ pub(super) struct Pass<'a, M> {
     /// Slots without an activation: where their owner paints, by id.
     pub canvases: Vec<(String, Rect)>,
     pub transcripts: Vec<super::surface::reader::Placement>,
+    pub motion: Option<&'a mut crate::motion::Motion>,
+    pub focused: bool,
     groups: usize,
 }
 
@@ -132,6 +134,8 @@ impl<'a, M> Pass<'a, M> {
             scrollers: vec![],
             canvases: vec![],
             transcripts: vec![],
+            motion: None,
+            focused: false,
             groups: 0,
         }
     }
@@ -260,6 +264,70 @@ impl<'a, M> Pass<'a, M> {
             }
             Kind::Text { spans, align, clip } => {
                 self.text(&spans, align, clip, area, visible, scope.style)
+            }
+            Kind::Boundary {
+                body,
+                bottom,
+                padding,
+                emphasis,
+                activity,
+            } => {
+                super::boundary::paint(
+                    self.buffer,
+                    area,
+                    scope.clip,
+                    super::Context {
+                        colors: self.colors,
+                        ascii: self.ascii,
+                        focused: self.focused,
+                    },
+                    emphasis,
+                    activity,
+                    self.motion.as_deref_mut(),
+                );
+                let inner = padding.body(area);
+                self.groups += 1;
+                let body_scope = Scope {
+                    clip: inner.visible(scope.clip),
+                    axis: Axis::Vertical,
+                    group: self.groups,
+                    ..scope
+                };
+                let body_id = format!("{id}/{}", body.key);
+                self.place(*body, inner, body_id, body_scope);
+                if let Some(bottom) = bottom {
+                    let width = inline_width(&bottom).min(area.width.saturating_sub(4));
+                    if width > 0 && area.height >= 2 {
+                        let placed = Area {
+                            x: area.x.saturating_add(area.width - width - 2),
+                            y: area.y + i32::from(area.height) - 1,
+                            width,
+                            height: 1,
+                        };
+                        let blank = Area {
+                            x: placed.x - 1,
+                            width: width + 2,
+                            ..placed
+                        };
+                        let blank = blank.visible(scope.clip);
+                        for x in blank.left()..blank.right() {
+                            for y in blank.top()..blank.bottom() {
+                                self.buffer[(x, y)]
+                                    .set_symbol(" ")
+                                    .set_style(self.colors.base());
+                            }
+                        }
+                        self.groups += 1;
+                        let bottom_scope = Scope {
+                            clip: placed.visible(scope.clip),
+                            axis: Axis::Horizontal,
+                            group: self.groups,
+                            ..scope
+                        };
+                        let bottom_id = format!("{id}/{}", bottom.key);
+                        self.place(*bottom, placed, bottom_id, bottom_scope);
+                    }
+                }
             }
             Kind::Slot => {
                 // The field's well; its owner draws the content on top.
@@ -475,6 +543,15 @@ pub(super) fn height<M>(node: &Node<M>, width: u16) -> u16 {
                 .unwrap_or(0)
         }
         Kind::Text { clip: true, .. } => 1,
+        Kind::Boundary { body, padding, .. } => {
+            let inner = width.saturating_sub(padding.width());
+            let body = match body.size {
+                Size::Fixed(rows) => rows,
+                Size::Upto(rows) => height(body, inner).min(rows),
+                _ => height(body, inner),
+            };
+            body.saturating_add(padding.height())
+        }
         Kind::Text { spans, .. } => wrap(spans, width).len() as u16,
         Kind::Rule | Kind::Slot => 1,
         Kind::Transcript { .. } => 12,
@@ -485,13 +562,33 @@ pub(super) fn height<M>(node: &Node<M>, width: u16) -> u16 {
 pub(crate) fn width<M>(node: &Node<M>) -> u16 {
     match &node.kind {
         Kind::Column { children, .. } => children.iter().map(width).max().unwrap_or(0),
-        Kind::Row { children, gap } => children.iter().map(width).fold(
+        Kind::Row { children, gap } => children.iter().map(inline_width).fold(
             gap.saturating_mul(children.len().saturating_sub(1) as u16),
             u16::saturating_add,
         ),
         Kind::Text { spans, .. } => spans.iter().map(|(text, _)| text.width() as u16).sum(),
+        Kind::Boundary {
+            body,
+            bottom,
+            padding,
+            ..
+        } => width(body).saturating_add(padding.width()).max(
+            bottom
+                .as_ref()
+                .map_or(0, |node| inline_width(node).saturating_add(4)),
+        ),
         Kind::Rule | Kind::Slot | Kind::Transcript { .. } => 1,
         Kind::Scroll(child) => width(child).saturating_add(1),
+    }
+}
+
+/// In a Row, a child's main-axis size is its width. A Column still measures
+/// its children with `width`: their fixed sizes describe rows, not columns.
+fn inline_width<M>(node: &Node<M>) -> u16 {
+    match node.size {
+        Size::Fixed(cells) => cells,
+        Size::Upto(cells) => width(node).min(cells),
+        _ => width(node),
     }
 }
 

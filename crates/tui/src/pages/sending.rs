@@ -610,21 +610,17 @@ mod tests {
             original.clone(),
             Err(RequestFailure::Unknown(ClientError::Timeout)),
         );
-        assert_eq!(app.page_actions()[0], Action::ReconcileSubmission);
+        assert_eq!(app.send_action(), Action::ReconcileSubmission);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         terminal
             .draw(|frame| crate::view::draw(frame, &mut app))
             .unwrap();
-        let hit = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::ReconcileSubmission)
-            .unwrap();
+        let hit = app.chrome.composer.rect(crate::view::shell::SEND).unwrap();
         let click = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: hit.area.x,
-            row: hit.area.y,
+            column: hit.x,
+            row: hit.y,
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.input(click).1, Some(Action::ReconcileSubmission));
@@ -704,7 +700,7 @@ mod tests {
                     "draft plus edits"
                 }
             );
-            assert_eq!(app.page_actions()[0], Action::SendMessage);
+            assert_eq!(app.send_action(), Action::SendMessage);
         }
     }
     #[test]

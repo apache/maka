@@ -46,6 +46,10 @@ const DELIVERY_CAPACITY: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mount {
     pub token: Uuid,
+    /// The containing page's execution mount; never a request generation.
+    pub owner: Uuid,
+    /// Populated by the runtime only after the parent app Call succeeds.
+    pub document: Uuid,
     pub package: String,
     pub session: Option<String>,
     pub parent: Target,
@@ -108,7 +112,7 @@ struct Command {
 }
 
 impl Runner {
-    /// Close current and retired documents before disconnecting the Client or
+    /// Close current and retired streams before disconnecting the Client or
     /// shutting down the runtime. Dropping this future never aborts cleanup.
     pub async fn shutdown(&mut self) -> Result<(), Failure> {
         self.stop();
@@ -132,7 +136,7 @@ impl Runner {
 impl Drop for Runner {
     fn drop(&mut self) {
         self.stop();
-        // JoinSet normally aborts on drop. A document cleanup task must retain
+        // JoinSet normally aborts on drop. A stream cleanup task must retain
         // ownership even when the caller omitted explicit shutdown.
         self.tasks.detach_all();
     }
@@ -144,6 +148,7 @@ impl Command {
             return Err(Failure::Invalid);
         }
         Read {
+            mount: Uuid::nil(),
             resource: resource.into(),
             fence: 0,
             direction,
@@ -158,6 +163,7 @@ impl Command {
 impl Mount {
     fn open(&self) -> Open {
         Open {
+            mount: self.token,
             resource: self.resource.id.clone(),
             route: self.resource.route.clone(),
             locale: self.locale.clone(),
@@ -177,7 +183,7 @@ async fn deliver(
 }
 
 #[cfg(test)]
-mod test_peer;
+pub(in crate::apps::io) mod test_peer;
 
 #[cfg(test)]
 mod tests {

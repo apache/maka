@@ -66,7 +66,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, key: &Key) {
         return;
     };
     let mut surface = std::mem::take(&mut instance.surface);
-    surface.render(frame, area, tree, context);
+    surface.render_motion(frame, area, tree, context, &mut app.chrome.animation);
     let focused = context
         .focused
         .then(|| surface.focused().map(str::to_owned))
@@ -166,22 +166,21 @@ fn bar(app: &App, key: &Key, width: u16) -> Option<Node<Message>> {
     let message = |command: Command| Message::Instance(key.clone(), command);
     let offered = |command: Command| app.apps_offered(&message(command));
     let mut items = vec![];
-    if let Some((_, title)) = instance.history.back()
-        && instance.review.is_none()
-    {
-        let target = if title.is_empty() {
-            i18n.text(Command::Back.label())
-        } else {
-            title.clone()
-        };
+    if app.navigation.can_back() && instance.review.is_none() {
         let chevron = if app.chrome.ascii { "<" } else { "‹" };
         items.push(
-            Node::text("back", vec![(format!("{chevron} {target}"), Tone::Accent)])
-                .clip()
-                .size(Size::Upto(width / 2))
-                .on(On::Activate(message(Command::Back)))
-                .enabled(offered(Command::Back))
-                .hint(i18n.text(Command::Back.label())),
+            Node::text(
+                "back",
+                vec![(
+                    format!("{chevron} {}", i18n.text("extensions-back")),
+                    Tone::Accent,
+                )],
+            )
+            .clip()
+            .size(Size::Upto(width / 2))
+            .on(On::Activate(message(Command::Back)))
+            .enabled(offered(Command::Back))
+            .hint(i18n.text(Command::Back.label())),
         );
     }
     items.push(Node::text("spacer", vec![]).size(Size::Fill));
@@ -224,13 +223,21 @@ pub(super) fn notice(app: &App, key: &Key, width: u16) -> Option<Node<Message>> 
         Notice::Remote(text) => (text.clone(), Tone::Warning),
     });
     let remedies = instance.remedies();
-    if message.is_none() && remedies.is_empty() {
+    if message.is_none() && remedies.is_empty() && instance.result.is_none() {
         return None;
     }
     let mut children: Vec<_> = message
         .into_iter()
         .map(|(text, tone)| Node::text("message", vec![(text, tone)]))
         .collect();
+    if instance.result.is_some() {
+        let message = Message::Result(key.clone());
+        children.push(
+            Node::button("result", i18n.text("extensions-open-result"), Role::Primary)
+                .enabled(app.apps_offered(&message))
+                .on(On::Activate(message)),
+        );
+    }
     if !remedies.is_empty() {
         let buttons: Vec<_> = remedies
             .into_iter()
@@ -283,14 +290,7 @@ impl App {
         let instance = self.apps.instances.get_mut(key)?;
         let mut surface = std::mem::take(&mut instance.surface);
         let wells = std::mem::take(&mut instance.wells);
-        let outcome = region::input(
-            &mut self.apps,
-            &mut surface,
-            &wells,
-            event,
-            keyboard,
-            self.chrome.ascii,
-        );
+        let outcome = region::input(self, &mut surface, &wells, event, keyboard);
         if let Some(instance) = self.apps.instances.get_mut(key) {
             instance.surface = surface;
             instance.wells = wells;
@@ -306,7 +306,7 @@ impl App {
             {
                 let command = if instance.review.is_some() {
                     Command::CancelDraft
-                } else if !instance.history.is_empty() {
+                } else if self.navigation.can_back() {
                     Command::Back
                 } else {
                     return None;
@@ -345,7 +345,9 @@ pub fn draw_directory(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let width = area.width.saturating_sub(1).min(READING);
     let tree = directory(app, width);
     let context = context(app);
-    app.apps.surface.render(frame, area, tree, context);
+    app.apps
+        .surface
+        .render_motion(frame, area, tree, context, &mut app.chrome.animation);
     app.apps.surface.repaint_popover(frame, &context);
 }
 
@@ -466,6 +468,54 @@ fn directory(app: &App, width: u16) -> Node<Message> {
             ],
         ));
     }
+    let retained: Vec<_> = apps
+        .instances
+        .iter()
+        .filter(|(_, instance)| instance.keeps())
+        .enumerate()
+        .map(|(index, (key, instance))| {
+            let title = instance
+                .title(locale)
+                .unwrap_or_else(|| key.package.clone());
+            let title = if instance.result.is_some() {
+                format!("{} · {title}", i18n.text("extensions-open-result"))
+            } else {
+                title
+            };
+            let source = format!(
+                "{} · {} · {}",
+                key.package,
+                key.session
+                    .as_deref()
+                    .unwrap_or(&i18n.text("extensions-scope-application")),
+                key.route
+            );
+            Node::column(
+                format!("retained-{index}"),
+                vec![
+                    Node::text("title", vec![(title, Tone::Normal)]).clip(),
+                    Node::text("source", vec![(source, Tone::Subtle)]).clip(),
+                ],
+            )
+            .on(On::Activate(if instance.result.is_some() {
+                Message::Result(key.clone())
+            } else {
+                Message::Recover(key.clone())
+            }))
+        })
+        .collect();
+    if !retained.is_empty() {
+        sections.push(Node::column(
+            "retained",
+            vec![
+                Node::text(
+                    "title",
+                    vec![(i18n.text("extensions-section-retained"), Tone::Muted)],
+                ),
+                Node::column("rows", retained).gap(1).focus_group(),
+            ],
+        ));
+    }
     let content = Node::column("content", sections)
         .gap(2)
         .size(Size::Fixed(width));
@@ -546,7 +596,10 @@ fn fill(
     let locale = app.i18n.locale().id();
     let mut nodes = vec![];
     let mut wells = vec![];
-    for key in app.apps.fillers(host, name, wire) {
+    for key in app
+        .apps
+        .fillers(host, name, wire, app.navigation.location())
+    {
         let node = key.node();
         let Some(instance) = app.apps.instances.get(&key) else {
             continue;

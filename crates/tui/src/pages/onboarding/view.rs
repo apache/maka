@@ -152,8 +152,15 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
             })
             .enabled(enabled),
         ];
+        let field_width = ui::content_width(app.frame_size.map_or(80, |(width, _)| width))
+            .saturating_sub(label_width(app));
         rows.extend((0..LABELS.len()).map(|index| {
-            Node::slot(index.to_string(), 1)
+            let height = if index == 1 {
+                f.fields[index].rows(field_width).clamp(1, 4)
+            } else {
+                1
+            };
+            Node::slot(index.to_string(), height)
                 .on(On::Activate(action(Command::Field(index))))
                 .enabled(app.onboarding_offered(&Command::Field(index)))
         }));

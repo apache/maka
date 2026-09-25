@@ -55,6 +55,11 @@ struct Mounted {
     cadence: ui::transcript::streaming::Cadence,
 }
 impl Readers {
+    pub fn disconnect(&mut self) {
+        self.mounts.clear();
+        self.copy = None;
+        self.notice = None;
+    }
     pub fn invalidate_interaction(&mut self) {
         for mount in self.mounts.values_mut() {
             mount.view.text_selection.invalidate_geometry();
@@ -122,7 +127,7 @@ impl Readers {
         match effect {
             ReaderEffect::Copy(text) => self.copy = Some(text),
             ReaderEffect::Error(key) => self.notice = Some(key),
-            ReaderEffect::Refresh => {
+            ReaderEffect::Refresh if mount.failure != Some(transport::Failure::Stopped) => {
                 mount.view.text_selection.invalidate_geometry();
                 mount.view.invalidate_scrollbar();
                 mount.binding.token = Uuid::new_v4();

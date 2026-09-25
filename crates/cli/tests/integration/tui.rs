@@ -24,18 +24,21 @@ mod board;
 mod branch;
 mod builtins;
 mod changes;
+mod cold_startup;
 mod connection_test;
 mod connections;
 mod credentials;
 mod enabled_models;
 mod environment;
 mod extensions;
+mod fault_acceptance;
 mod forms;
 mod frames;
 mod goal;
 mod imports;
 mod input;
 mod management;
+mod memory_acceptance;
 mod model_fetch;
 mod model_profiles;
 mod models;
@@ -655,8 +658,18 @@ fn real_host_catalog_subscription_and_remote_updates_reach_clients() {
             .unwrap();
     });
     observer.disconnect();
-    tui.send(b"\x1b"); // Leave transcript focus, not the session.
-    tui.wait_for("Show / hide session details"); // The last selected page control was Details.
+    tui.send(b"\x1b"); // Leave transcript focus for composer controls, not the session.
+    tui.wait_for("Attachments");
+    assert!(
+        tui.screen
+            .snapshot()
+            .unwrap()
+            .screen
+            .lines()
+            .next()
+            .is_some_and(|header| header.contains("Renamed from another")),
+        "first Esc preserves the session route"
+    );
     tui.send(b"\x1b"); // Separate Esc events, not the terminal's Alt+Esc encoding.
     tui.wait_for("另一份草稿🦀"); // Back follows the actual most recent tab visit.
     tui.wait_for("Renamed from another");
@@ -914,6 +927,7 @@ impl Pty {
         let mut command = Command::new(env!("CARGO_BIN_EXE_maka"));
         // Theme fixtures must never read the developer's account-level file.
         command.env_remove("MAKA_TUI_THEME");
+        command.env_remove("NO_COLOR");
         if let Some(root) = args.windows(2).find(|pair| pair[0] == "--root") {
             command.env(
                 "MAKA_TUI_STATE_DIR",

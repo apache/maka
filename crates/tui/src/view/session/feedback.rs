@@ -222,13 +222,7 @@ mod tests {
             assert!(!screen.contains("diagnostic-only-marker"));
             assert!(!screen.contains(&request.id));
             assert!(!app.enabled(&Action::SendMessage));
-            let hit = app
-                .hits
-                .iter()
-                .filter(|hit| hit.action == Action::ToggleDetails)
-                .max_by_key(|hit| hit.area.y)
-                .unwrap();
-            let point = hit.area;
+            let point = app.chrome.feedback.rect("feedback/notice").unwrap();
             app.input(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: point.x + point.width / 2,

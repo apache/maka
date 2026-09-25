@@ -19,19 +19,11 @@
 
 use super::*;
 use crate::{
-    app::Hit,
     ui::{Node, On, Role, Sheet, Size, Tone},
     view::safe,
 };
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::Style,
-    text::{Line, Span},
-    widgets::Paragraph,
-};
-use unicode_segmentation::UnicodeSegmentation;
+use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 /// The path field of the file browser.
@@ -411,13 +403,12 @@ impl App {
     }
 }
 
-pub fn chips(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &str) {
-    if area.is_empty() {
-        return;
-    }
-    let Some(items) = app.attachments.saved.get(session).filter(|i| !i.is_empty()) else {
-        return;
-    };
+pub fn chips(app: &App, session: &str) -> Option<Node<Action>> {
+    let items = app
+        .attachments
+        .saved
+        .get(session)
+        .filter(|items| !items.is_empty())?;
     let item = items
         .iter()
         .find(|item| {
@@ -445,40 +436,19 @@ pub fn chips(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &str) {
     {
         "!"
     } else if app.attachments.ready(session) {
-        "✓"
+        app.chrome.symbol("✓", "+")
     } else {
-        "↑"
+        app.chrome.symbol("↑", "^")
     };
     let suffix = format!("{extra} · {}", app.i18n.text(status));
-    let name = safe(name);
-    let limit = usize::from(area.width).saturating_sub(2 + suffix.width());
-    let name = if name.width() > limit {
-        let mut cells = 0;
-        let mut visible: String = name
-            .graphemes(true)
-            .take_while(|glyph| {
-                cells += glyph.width();
-                cells <= limit.saturating_sub(1)
-            })
-            .collect();
-        if limit > 0 {
-            visible.push(if app.chrome.ascii { '.' } else { '…' });
-        }
-        visible
-    } else {
-        name
-    };
-    let text = Line::from(vec![
-        Span::styled(
-            format!("{icon} "),
-            Style::default().fg(app.theme.colors().accent),
-        ),
-        Span::raw(name),
-        Span::styled(suffix, Style::default().fg(app.theme.colors().subtle)),
-    ]);
-    frame.render_widget(Paragraph::new(text), area);
-    app.hits.push(Hit {
-        area,
-        action: Action::Attachment(Command::Open),
-    });
+    let action = Action::Attachment(Command::Open);
+    Some(crate::view::shell::controls::summary(
+        "attachments",
+        format!("{icon} "),
+        safe(name),
+        suffix,
+        action.clone(),
+        app.enabled(&action),
+        crate::view::action_label(app, &action),
+    ))
 }

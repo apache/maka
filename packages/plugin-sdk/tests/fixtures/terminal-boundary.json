@@ -1,0 +1,29 @@
+{
+  "version": 7,
+  "title": "Review",
+  "revision": "r1",
+  "fields": [
+    {
+      "id": "note",
+      "control": { "kind": "text", "value": "Hello", "max_bytes": 4096, "multiline": true }
+    }
+  ],
+  "actions": [{ "id": "save", "label": "Save", "fields": ["note"] }],
+  "root": {
+    "kind": "boundary",
+    "key": "review",
+    "body": { "kind": "input", "key": "note", "field": "note", "label": "Note" },
+    "bottom": {
+      "kind": "row",
+      "key": "meta",
+      "gap": 2,
+      "children": [
+        { "kind": "text", "key": "status", "spans": [{ "text": "中文 🦀", "tone": "muted" }] },
+        { "kind": "button", "key": "save", "action": "save", "role": "primary" }
+      ]
+    },
+    "padding": { "horizontal": 1, "vertical": 0 },
+    "emphasis": "accent",
+    "activity": "busy"
+  }
+}

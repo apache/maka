@@ -19,13 +19,10 @@
 
 use super::*;
 use maka_protocol::{session::SessionStatus, turn::TurnState};
-use ratatui::{
-    text::Span,
-    widgets::{BorderType, Padding},
-};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+pub(super) mod composer;
 mod feedback;
 mod search;
 
@@ -140,208 +137,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
         }
     }
     super::queue::draw(frame, app, parts[1]);
-    let feedback = feedback::current(app);
-    let status = feedback
-        .as_ref()
-        .map_or_else(|| activity(app), |item| app.i18n.text(item.key));
-    let gap = parts[2];
-    let count = app.queue_rows().len();
-    let reserved = if count > 0 {
-        format!(" ≡ {count} ").width() as u16
-    } else {
-        0
-    };
-    let has_details = feedback.as_ref().is_some_and(|item| item.detail.is_some());
-    let notice_area = Rect::new(gap.x, gap.y, gap.width.saturating_sub(reserved), gap.height);
-    let summary = fit(
-        &status,
-        usize::from(
-            notice_area
-                .width
-                .saturating_sub(if has_details { 4 } else { 0 }),
-        ),
-    );
-    let summary = if has_details {
-        format!("{summary}  {}", app.chrome.symbol("ⓘ", "i"))
-    } else {
-        summary
-    };
-    frame.render_widget(
-        Paragraph::new(summary)
-            .centered()
-            .style(
-                Style::default().fg(if feedback.as_ref().is_some_and(|item| item.warning) {
-                    app.theme.colors().warning
-                } else {
-                    app.theme.colors().muted
-                }),
-            ),
-        notice_area,
-    );
-    if has_details && !notice_area.is_empty() {
-        app.hits.push(Hit {
-            area: notice_area,
-            action: Action::ToggleDetails,
-        });
-    }
-    if count > 0 {
-        let title = format!(" {} {count} ", app.chrome.symbol("≡", "Q"));
-        let width = title.width() as u16;
-        button(
-            frame,
-            app,
-            Rect::new(gap.right().saturating_sub(width), gap.y, width, 1),
-            &title,
-            Action::Queue(crate::pages::queue::Command::Focus),
-            false,
-        );
-    }
-
-    let focused =
-        app.focus == Focus::Composer && app.chat.view.search.is_none() && app.overlay().is_none();
-    let (mut metadata, model_width) = metadata(app, parts[3].width.saturating_sub(4));
-    let model_action = app.model_action();
-    if model_width > 0
-        && model_action
-            .as_ref()
-            .is_some_and(|action| app.hover.as_ref() == Some(action))
-    {
-        metadata.spans[1].style = Style::default().fg(app.theme.colors().accent);
-    }
-    let metadata_width = metadata.width() as u16;
-    let sandbox_width = metadata
-        .spans
-        .iter()
-        .rev()
-        .nth(1)
-        .map_or(0, |span| span.width() as u16);
-    let sandbox_action = app.sandbox_action();
-    if sandbox_width > 0
-        && sandbox_action
-            .as_ref()
-            .is_some_and(|action| app.hover.as_ref() == Some(action))
-    {
-        let index = metadata.spans.len().saturating_sub(2);
-        metadata.spans[index].style = Style::default().fg(app.theme.colors().accent);
-    }
-    let metadata_area = Rect::new(
-        parts[3].right().saturating_sub(metadata_width + 4),
-        parts[3].bottom().saturating_sub(1),
-        metadata_width,
-        1,
-    );
-    let working = app.session_activity(id) == super::activity::Activity::Working;
-    let breath = (working && (app.theme.choice != crate::theme::Choice::Terminal))
-        .then(|| app.chrome.animation.breath());
-    let border = Block::bordered()
-        .border_type(if app.chrome.ascii {
-            BorderType::Plain
-        } else {
-            BorderType::Rounded
-        })
-        .padding(Padding::new(4, control_width, 0, 0))
-        .border_style(Style::default().fg(app.theme.colors().breath(focused, breath)));
-    let mut input = border.inner(parts[3]);
-    frame.render_widget(border, parts[3]);
-    frame.render_widget(Paragraph::new(metadata), metadata_area);
-    if model_width > 0
-        && let Some(action) = model_action
-        && app.enabled(&action)
-    {
-        app.hits.push(Hit {
-            area: Rect::new(metadata_area.x + 1, metadata_area.y, model_width, 1),
-            action,
-        });
-    }
-    if sandbox_width > 0
-        && let Some(action) = sandbox_action
-        && app.enabled(&action)
-    {
-        app.hits.push(Hit {
-            area: Rect::new(
-                metadata_area.right().saturating_sub(sandbox_width + 1),
-                metadata_area.y,
-                sandbox_width,
-                1,
-            ),
-            action,
-        });
-    }
-    if attachment_rows > 0 && input.height > 1 {
-        crate::pages::attachments::chips(
-            frame,
-            app,
-            Rect::new(input.x, input.y, input.width, 1),
-            id,
-        );
-        input.y += 1;
-        input.height -= 1;
-    }
-    if directory_rows > 0 && input.height > 1 {
-        crate::pages::references::chips(
-            frame,
-            app,
-            Rect::new(input.x, input.y, input.width, 1),
-            id,
-        );
-        input.y += 1;
-        input.height -= 1;
-    }
-    if skill_rows > 0 && input.height > 1 {
-        crate::pages::skills::chips(frame, app, Rect::new(input.x, input.y, input.width, 1), id);
-        input.y += 1;
-        input.height -= 1;
-    }
-    if input.is_empty() {
-        app.invalidate_editor_geometry();
-        return;
-    }
-    button(
-        frame,
-        app,
-        Rect::new(parts[3].x + 1, input.y, 3, 1),
-        "+",
-        Action::Attachment(crate::pages::attachments::Command::Open),
-        false,
-    );
-    if let Some(editor) = app.drafts.get_mut(id) {
-        editor.draw(frame, input, focused, app.theme.colors());
-        if editor.text().is_empty() {
-            frame.render_widget(
-                Paragraph::new(app.i18n.text("composer-placeholder"))
-                    .style(Style::default().fg(app.theme.colors().subtle)),
-                input,
-            );
-        }
-    } else {
-        frame.render_widget(
-            Paragraph::new(app.i18n.text("composer-draft-limit")).wrap(Wrap { trim: false }),
-            input,
-        );
-    }
-    let action = app.send_action();
-    let selected =
-        app.focus == Focus::Page && app.page_actions().get(app.selected_control) == Some(&action);
-    icon_button(
-        frame,
-        app,
-        Rect::new(parts[3].right() - 4, input.y, 3, 1),
-        action,
-        selected,
-    );
-    if extras {
-        for (offset, action) in [(10, Action::SendMessage), (7, Action::SteerMessage)] {
-            let selected = app.focus == Focus::Page
-                && app.page_actions().get(app.selected_control) == Some(&action);
-            icon_button(
-                frame,
-                app,
-                Rect::new(parts[3].right() - offset, input.y, 3, 1),
-                action,
-                selected,
-            );
-        }
-    }
+    composer::feedback(frame, app, parts[2]);
+    composer::draw(frame, app, parts[3], id, editor_height, extras);
 }
 
 fn activity(app: &App) -> String {
@@ -378,62 +175,6 @@ fn sandbox_key(item: &maka_protocol::session::SessionCatalogProjection) -> &'sta
     crate::pages::manage::sandbox::current_label(item.sandbox_mode, item.approval_policy)
 }
 
-fn metadata(app: &App, width: u16) -> (Line<'static>, u16) {
-    let Detail::Ready(item) = &app.sessions.detail else {
-        return (Line::default(), 0);
-    };
-    let sandbox = app.i18n.text(sandbox_key(item));
-    let context = app
-        .chat
-        .context
-        .current_label(
-            &item.model,
-            item.llm_connection_id.as_deref(),
-            app.chrome.ascii,
-        )
-        .filter(|_| {
-            app.chat.error.is_none() && matches!(app.connection, ConnectionState::Connected { .. })
-        })
-        .filter(|text| usize::from(width) >= sandbox.width() + text.width() + 15);
-    let model = safe(&item.model);
-    let available = usize::from(width)
-        .saturating_sub(sandbox.width() + 8 + context.as_ref().map_or(0, |text| text.width() + 3));
-    let thinking = item.thinking_level.map(|level| {
-        app.i18n
-            .text(crate::pages::manage::models::thinking_key(Some(level)))
-    });
-    let model = if available >= 6 {
-        match thinking.filter(|level| available >= level.width() + 9) {
-            Some(level) => format!("{} · {level}", fit(&model, available - level.width() - 3)),
-            None => fit(&model, available),
-        }
-    } else {
-        String::new()
-    };
-    let warning = item.sandbox_mode == maka_sandbox::Mode::DangerFullAccess;
-    let mut spans = vec![Span::raw(" ")];
-    if !model.is_empty() {
-        spans.push(Span::raw(format!("{model} · ")));
-    }
-    if let Some(context) = context {
-        spans.push(Span::raw(format!("{context} · ")));
-    }
-    spans.push(Span::styled(
-        sandbox,
-        Style::default().fg(if warning {
-            app.theme.colors().warning
-        } else {
-            app.theme.colors().subtle
-        }),
-    ));
-    // Only label padding; the right offset belongs to its rectangle so the border continues.
-    spans.push(Span::raw(" "));
-    (
-        Line::from(spans).style(Style::default().fg(app.theme.colors().subtle)),
-        model.width() as u16,
-    )
-}
-
 pub(super) fn fit(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_owned();
@@ -455,7 +196,9 @@ pub(super) fn fit(text: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::{Locale, LocalePreference, i18n::I18n};
-    use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{Terminal, backend::TestBackend, layout::Position};
 
     #[test]
@@ -491,9 +234,11 @@ mod tests {
                 terminal
                     .draw(|frame| super::super::draw(frame, &mut app))
                     .unwrap();
-                let hits: Vec<_> = app.hits.iter().filter(|hit| hit.action == action).collect();
-                assert_eq!(hits.len(), 1);
-                let area = hits[0].area;
+                assert!(
+                    !app.hits.iter().any(|hit| hit.action == action),
+                    "Surface owns the stop control exclusively"
+                );
+                let area = app.chrome.composer.rect(composer::SEND).unwrap();
                 let button: String = (area.x..area.right())
                     .map(|x| terminal.backend().buffer()[(x, area.y)].symbol())
                     .collect();
@@ -515,6 +260,25 @@ mod tests {
                 );
             }
             assert!(app.chat.start_stop(&target));
+            assert_eq!(app.focus, Focus::Composer);
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Char('!'),
+                KeyModifiers::NONE,
+            )));
+            assert_eq!(app.drafts["chat"].text(), "next draft 中文🦀!");
+            assert_eq!(
+                app.input(Event::Key(KeyEvent::new(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE
+                )))
+                .1,
+                Some(Action::SendMessage),
+                "Enter after Stop queues the draft, never repeats Stop"
+            );
+            app.input(Event::Key(KeyEvent::new(
+                KeyCode::Backspace,
+                KeyModifiers::NONE,
+            )));
             assert!(!app.enabled(&action));
             assert!(!app.chat.start_stop(&target));
             app.chat
@@ -590,13 +354,9 @@ mod tests {
             terminal
                 .draw(|frame| super::super::draw(frame, &mut app))
                 .unwrap();
-            let send = app
-                .hits
-                .iter()
-                .find(|hit| hit.action == Action::SendMessage)
-                .unwrap();
+            let send = app.chrome.composer.rect(composer::SEND).unwrap();
             assert_ne!(
-                terminal.backend().buffer()[(send.area.x, send.area.y - 1)].fg,
+                terminal.backend().buffer()[(send.x, send.y - 1)].fg,
                 app.theme.colors().breath(true, Some(0.45))
             );
             app.chat.snapshot = Some(snapshot.clone());
@@ -712,71 +472,49 @@ mod tests {
                         );
                     }
                     assert!(!text.contains("Ctrl+Z") && !text.contains("Draft"));
-                    let model_hit = app.hits.iter().find(|hit| {
-                        matches!(
-                            &hit.action,
-                            Action::Manage(crate::pages::manage::Command::Open(
-                                _,
-                                crate::pages::manage::Kind::Model
-                            ))
-                        )
-                    });
-                    let sandbox_hit = app
-                        .hits
-                        .iter()
-                        .find(|hit| {
-                            matches!(
-                                &hit.action,
-                                Action::Manage(crate::pages::manage::Command::Open(
-                                    _,
-                                    crate::pages::manage::Kind::Sandbox
-                                ))
-                            )
-                        })
+                    let model = app.chrome.composer.rect("composer/metadata/model");
+                    let sandbox = app
+                        .chrome
+                        .composer
+                        .rect("composer/metadata/sandbox")
                         .expect("sandbox label opens mode selection");
                     assert_eq!(
-                        sandbox_hit.area.width as usize,
+                        sandbox.width as usize,
                         app.i18n.text("chat-sandbox-none").width()
                     );
-                    assert!(sandbox_hit.area.right() <= width);
-                    assert!(model_hit.is_none_or(|model| !model.area.intersects(sandbox_hit.area)));
+                    assert!(sandbox.right() <= width);
+                    assert!(model.is_none_or(|model| !model.intersects(sandbox)));
                     if width >= 80 {
-                        let hit = model_hit.expect("model label opens model selection");
+                        let model = model.expect("model label opens model selection");
                         assert!(text.contains(&format!(" · {}", app.i18n.text("thinking-high"))));
                         assert!(
-                            super::super::action_label(&app, &hit.action)
+                            super::super::action_label(&app, &app.model_action().unwrap())
                                 .contains(&app.i18n.text("thinking-high"))
                         );
                         let buffer = terminal.backend().buffer();
                         let corner = (0..width)
                             .rev()
                             .find(|x| {
-                                buffer[(*x, hit.area.y)].symbol()
-                                    == if ascii { "┘" } else { "╯" }
+                                buffer[(*x, model.y)].symbol() == if ascii { "+" } else { "╯" }
                             })
                             .expect("composer keeps its bottom-right corner");
-                        for x in corner - 3..corner {
-                            assert_eq!(
-                                buffer[(x, hit.area.y)].symbol(),
-                                "─",
-                                "metadata offset must not erase the border"
-                            );
-                        }
-                        assert_eq!(buffer[(hit.area.x, hit.area.y)].symbol(), "v");
-                        assert_eq!(
-                            buffer[(hit.area.right(), hit.area.y)].symbol(),
-                            " ",
-                            "model hit excludes the separator, context count and sandbox"
+                        assert!(
+                            sandbox.right() < corner,
+                            "metadata leaves the Boundary corner intact"
                         );
-                        assert_eq!(hit.area.height, 1);
+                        assert_eq!(buffer[(model.x, model.y)].symbol(), "v");
+                        assert_eq!(
+                            buffer[(model.right(), model.y)].symbol(),
+                            " ",
+                            "model hit excludes separator, context and sandbox"
+                        );
+                        assert_eq!(model.height, 1);
                     }
-                    let sends: Vec<_> = app
-                        .hits
-                        .iter()
-                        .filter(|hit| hit.action == Action::SendMessage)
-                        .collect();
-                    assert_eq!(sends.len(), 1, "one send button, inside composer");
-                    let send = sends[0].area;
+                    assert!(
+                        !app.hits.iter().any(|hit| hit.action == Action::SendMessage),
+                        "no duplicate legacy send target"
+                    );
+                    let send = app.chrome.composer.rect(composer::SEND).unwrap();
                     assert!(send.y >= height.saturating_sub(6));
                     assert!(!app.drafts["chat"].contains(Position::new(send.x, send.y)));
                     assert_eq!(
@@ -810,5 +548,181 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn composer_mouse_controls_preserve_typing_and_pending_submission_gates() {
+        let connected = || {
+            let mut app = App::new(
+                "/fixture".into(),
+                I18n::new(LocalePreference::Explicit(Locale::En), Locale::En),
+            );
+            app.connection = ConnectionState::Connected {
+                root_id: "r".into(),
+                epoch: "e".into(),
+            };
+            app.apply(Action::Visit(Route::Session("chat".into())));
+            app
+        };
+        let click = |area: Rect| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut app = connected();
+        app.input(Event::Paste("draft".into()));
+        terminal
+            .draw(|frame| super::super::draw(frame, &mut app))
+            .unwrap();
+        let send = app.chrome.composer.rect(composer::SEND).unwrap();
+        assert_eq!(app.input(click(send)).1, Some(Action::SendMessage));
+        // The runner prepares the submission synchronously after receiving Send.
+        let original = app.submission().unwrap();
+        assert_eq!(app.focus, Focus::Composer);
+        app.input(key(KeyCode::Char('x')));
+        assert_eq!(app.drafts["chat"].text(), "draftx");
+        assert_eq!(
+            app.input(key(KeyCode::Enter)).1,
+            None,
+            "pending Send remains gated"
+        );
+        app.submitted(
+            original.clone(),
+            Err(maka_client::RequestFailure::Unknown(
+                maka_client::ClientError::Timeout,
+            )),
+        );
+        terminal
+            .draw(|frame| super::super::draw(frame, &mut app))
+            .unwrap();
+        let reconcile = app.chrome.composer.rect(composer::SEND).unwrap();
+        assert_eq!(
+            app.input(click(reconcile)).1,
+            Some(Action::ReconcileSubmission)
+        );
+        let _checking = app.reconciliation().unwrap();
+        assert_eq!(app.focus, Focus::Composer);
+        app.input(key(KeyCode::Char('y')));
+        assert_eq!(app.drafts["chat"].text(), "draftxy");
+        assert_eq!(
+            app.input(key(KeyCode::Enter)).1,
+            None,
+            "Enter does not activate Reconcile or bypass unknown delivery"
+        );
+        assert_eq!(app.sending["chat"].request, original);
+
+        let mut app = connected();
+        terminal
+            .draw(|frame| super::super::draw(frame, &mut app))
+            .unwrap();
+        let disabled = app.chrome.composer.rect(composer::SEND).unwrap();
+        app.focus = Focus::Page;
+        assert_eq!(app.input(click(disabled)).1, None);
+        assert_eq!(app.focus, Focus::Composer);
+        app.input(key(KeyCode::Char('a')));
+        assert_eq!(app.drafts["chat"].text(), "a");
+        app.focus = Focus::Page;
+        assert_eq!(
+            app.input(click(Rect::new(disabled.x, disabled.y - 1, 1, 1)))
+                .1,
+            None
+        );
+        assert_eq!(
+            app.focus,
+            Focus::Composer,
+            "blank input border returns to typing"
+        );
+        app.input(key(KeyCode::Char('b')));
+        assert_eq!(app.drafts["chat"].text(), "ab");
+        assert_eq!(app.input(key(KeyCode::Enter)).1, Some(Action::SendMessage));
+    }
+    #[test]
+    fn composer_tab_and_backtab_reach_chips_editor_and_actions_without_submitting() {
+        let mut app = App::new(
+            "/fixture".into(),
+            I18n::new(LocalePreference::Explicit(Locale::En), Locale::En),
+        );
+        app.connection = ConnectionState::Connected {
+            root_id: "r".into(),
+            epoch: "e".into(),
+        };
+        app.apply(Action::Visit(Route::Session("chat".into())));
+        app.input(Event::Paste("draft".into()));
+        app.attachments.saved.insert(
+            "chat".into(),
+            vec![crate::pages::attachments::Saved {
+                id: "file".into(),
+                path: "/file".into(),
+                manifest: None,
+                attachment: None,
+            }],
+        );
+        app.directories.insert(
+            "chat".into(),
+            vec![maka_protocol::turn::DirectoryReference {
+                host_id: "r".into(),
+                path: "/workspace".into(),
+            }],
+        );
+        app.skills.saved.insert(
+            "chat".into(),
+            vec![crate::pages::skills::Picked {
+                id: "skill".into(),
+                name: "Skill".into(),
+            }],
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let render = |app: &mut App, terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| super::super::draw(frame, app))
+                .unwrap();
+        };
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        render(&mut app, &mut terminal);
+        for path in [
+            "composer/body/content/skills",
+            "composer/body/content/directories",
+            "composer/body/content/attachments",
+            "composer/body/leading/buttons/attach",
+        ] {
+            assert_eq!(app.input(key(KeyCode::BackTab)).1, None);
+            assert_eq!(app.focus, Focus::Page);
+            assert_eq!(app.chrome.composer.focused(), Some(path));
+            render(&mut app, &mut terminal);
+        }
+        assert_eq!(app.input(key(KeyCode::BackTab)).1, None);
+        assert_eq!(app.focus, Focus::Navigation);
+        assert_eq!(app.input(key(KeyCode::Tab)).1, None);
+        assert_eq!(
+            app.chrome.composer.focused(),
+            Some("composer/body/leading/buttons/attach")
+        );
+        for path in [
+            "composer/body/content/attachments",
+            "composer/body/content/directories",
+            "composer/body/content/skills",
+            composer::EDITOR,
+        ] {
+            assert_eq!(app.input(key(KeyCode::Tab)).1, None);
+            assert_eq!(app.chrome.composer.focused(), Some(path));
+            render(&mut app, &mut terminal);
+        }
+        assert_eq!(app.focus, Focus::Composer);
+        app.input(key(KeyCode::Char('x')));
+        assert_eq!(app.drafts["chat"].text(), "draftx");
+        assert!(app.sending.is_empty(), "focus traversal does not submit");
+        app.attachments.saved.remove("chat");
+        render(&mut app, &mut terminal);
+        assert_eq!(app.input(key(KeyCode::Tab)).1, None);
+        assert_eq!(app.focus, Focus::Page);
+        assert_eq!(app.chrome.composer.focused(), Some(composer::SEND));
+        assert_eq!(app.input(key(KeyCode::BackTab)).1, None);
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.input(key(KeyCode::Tab)).1, None);
+        assert_eq!(app.input(key(KeyCode::Enter)).1, Some(Action::SendMessage));
     }
 }

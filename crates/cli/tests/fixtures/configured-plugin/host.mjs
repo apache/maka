@@ -24,12 +24,10 @@ export default async function activate(ctx, config) {
   await ctx.tui.app(
     'greeting',
     {
-      async read() {
-        return {
-          title: 'Greeting',
-          revision: '1',
-          root: ctx.tui.text('greeting', config.greeting),
-        };
+      entry: 'configured-ui.mjs',
+      async backend(request) {
+        if (request.kind === 'read') return { greeting: config.greeting };
+        return { kind: 'rejected', message: 'Greeting is read-only' };
       },
     },
     { title: { fallback: 'Greeting', translations: {} }, context: 'application' },

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod terminal;
+
 use super::callbacks;
 use maka_js_runtime::plugin::Module;
 use maka_plugins::{contributions::Staged, prompt};
@@ -61,6 +63,8 @@ pub(super) enum Registration {
         access: maka_plugins::remote::Access,
         #[serde(default, rename = "terminalView")]
         terminal_view: Option<maka_plugins::terminal_ui::Descriptor>,
+        #[serde(default)]
+        observation: Option<terminal::Observation>,
     },
     RemoteStream {
         name: String,
@@ -69,6 +73,19 @@ pub(super) enum Registration {
         access: maka_plugins::remote::Access,
         #[serde(default, rename = "terminalView")]
         terminal_view: Option<maka_plugins::terminal_ui::Descriptor>,
+        #[serde(default)]
+        observation: Option<terminal::Observation>,
+    },
+    TerminalApp {
+        name: String,
+        callback: u32,
+        entry: String,
+        #[serde(default)]
+        resources: Vec<maka_plugins::terminal_ui::transcript::Resource>,
+        #[serde(default)]
+        access: maka_plugins::remote::Access,
+        #[serde(rename = "terminalView")]
+        terminal_view: maka_plugins::terminal_ui::Descriptor,
     },
     #[serde(rename_all = "camelCase")]
     Executor {
@@ -189,7 +206,7 @@ pub(super) fn stage(
     )
 }
 pub(super) fn stage_entries(
-    registrations: Vec<Registration>,
+    mut registrations: Vec<Registration>,
     module: &Module,
     outputs: &Arc<super::executor::Outputs>,
     model_calls: &Arc<super::model::Calls>,
@@ -201,8 +218,15 @@ pub(super) fn stage_entries(
         return Err("plugin contribution limit exceeded".into());
     }
     let mut staged = Staged::default();
+    terminal::stage(
+        &mut registrations,
+        module,
+        calls,
+        source,
+        lifecycle,
+        &mut staged,
+    )?;
     for registration in registrations {
-        let remote_stream = matches!(&registration, Registration::RemoteStream { .. });
         match registration {
             Registration::Background { name, callback } => {
                 validate_callback(callback)?;
@@ -257,44 +281,10 @@ pub(super) fn stage_entries(
                     )
                     .map_err(super::message)?;
             }
-            Registration::RemoteMethod {
-                name,
-                callback,
-                access,
-                terminal_view,
-            }
-            | Registration::RemoteStream {
-                name,
-                callback,
-                access,
-                terminal_view,
-            } => {
-                validate_callback(callback)?;
-                let handler = Arc::new(super::remote::Remote(Arc::new(callbacks::Callback {
-                    module: module.clone(),
-                    id: callback,
-                    calls: calls.clone(),
-                })));
-                let handler = if remote_stream {
-                    maka_plugins::remote::Handler::Stream(handler)
-                } else {
-                    maka_plugins::remote::Handler::Method(handler)
-                };
-                let mut endpoint =
-                    maka_plugins::remote::Endpoint::new(source.content_digest.clone(), handler);
-                endpoint.access = access;
-                if let Some(descriptor) = terminal_view {
-                    endpoint = endpoint
-                        .with_terminal_view(descriptor)
-                        .map_err(super::message)?;
-                }
-                staged
-                    .insert(
-                        maka_plugins::remote::key(&source.package_id, &name)
-                            .map_err(super::message)?,
-                        endpoint,
-                    )
-                    .map_err(super::message)?;
+            Registration::RemoteMethod { .. }
+            | Registration::RemoteStream { .. }
+            | Registration::TerminalApp { .. } => {
+                unreachable!("remote entries are staged together")
             }
             Registration::ModelProvider {
                 name,
@@ -467,6 +457,7 @@ pub(super) enum Kind {
     InputPreparation,
     RemoteMethod,
     RemoteStream,
+    TerminalApp,
     Executor,
     Tool,
     Section,
@@ -490,7 +481,7 @@ pub(super) fn withdraw(
         Kind::InputPreparation => {
             publisher.withdraw_many::<maka_plugins::input::InputPreparation>(names)
         }
-        Kind::RemoteMethod | Kind::RemoteStream => {
+        Kind::RemoteMethod | Kind::RemoteStream | Kind::TerminalApp => {
             let package = context.identity()?.package_id;
             publisher.withdraw_many::<maka_plugins::remote::Endpoint>(
                 &names

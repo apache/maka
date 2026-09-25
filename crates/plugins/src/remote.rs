@@ -116,6 +116,12 @@ pub enum Error {
 }
 
 pub trait Method: Send + Sync {
+    /// An isolated terminal presenter is created once per Remote document.
+    /// Opening must only reserve ownership and queue initialization, never
+    /// execute UI code or wait for it. Ordinary Rust methods need no factory.
+    fn page_factory(&self) -> Option<Arc<dyn crate::terminal_ui::presenter::Factory>> {
+        None
+    }
     fn call(&self, input: Value, caller: Caller) -> BoxFuture<'static, Result<Value, Error>>;
 }
 pub trait StreamProvider: Send + Sync {
@@ -140,6 +146,8 @@ pub enum Handler {
 
 pub struct Endpoint {
     pub access: Access,
+    /// Typed source metadata; it does not grant membership in any terminal app.
+    pub observation: Option<crate::terminal_ui::presenter::ObservationRole>,
     /// Present when a plugin frontend may bind this endpoint by package bytes.
     pub content_digest: Option<String>,
     pub handler: Handler,
@@ -159,6 +167,7 @@ impl Endpoint {
     pub fn new(content_digest: String, handler: Handler) -> Self {
         Self {
             access: Access::Granted,
+            observation: None,
             content_digest: Some(content_digest),
             handler,
             registration: Uuid::new_v4(),
@@ -169,6 +178,7 @@ impl Endpoint {
     pub fn standalone(handler: Handler) -> Self {
         Self {
             access: Access::Granted,
+            observation: None,
             content_digest: None,
             handler,
             registration: Uuid::new_v4(),

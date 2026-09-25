@@ -41,7 +41,7 @@ pub enum Message {
     Refresh,
     More,
     /// A plugin page, pinned above Settings.
-    App(crate::apps::Key),
+    App(Box<crate::apps::Key>),
     /// Every plugin view, when more pages exist than the sidebar pins.
     Apps,
     Settings,
@@ -332,8 +332,8 @@ fn apps(app: &App) -> Vec<Node<Message>> {
                 title.clone(),
                 Tone::Normal,
             )
-            .on(On::Activate(Message::App(key.clone())))
-            .current(current == Route::App(key))
+            .on(On::Activate(Message::App(Box::new(key.clone()))))
+            .current(matches!(&current, Route::App(active) if active.same_mount(&key)))
             .hint(title),
         );
     }
@@ -519,7 +519,7 @@ impl App {
                 self.catalog_mut().more();
                 None
             }
-            Message::App(key) => self.apply(Action::Apps(crate::apps::Message::Open(key))),
+            Message::App(key) => self.apply(Action::Apps(crate::apps::Message::Open(*key))),
             Message::Apps => self.apply(Action::Apps(crate::apps::Message::Directory)),
             Message::Settings => self.apply(Action::Visit(Route::Settings)),
             Message::Host => self.apply(Action::Host),

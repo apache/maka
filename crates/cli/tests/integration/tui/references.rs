@@ -103,7 +103,7 @@ fn host_directory_reference_survives_restart_and_sends_without_text_or_registrat
         .join(&client.identity.root_id)
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
-    assert_eq!(saved["version"], 20);
+    assert_eq!(saved["version"], 22);
     assert_eq!(
         saved["directories"]["refs"],
         json!([{"hostId":client.identity.root_id,"path":selected}])

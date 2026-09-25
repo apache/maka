@@ -42,6 +42,8 @@ mod catalog;
 mod fixture;
 mod import;
 mod javascript;
+mod mutation_fault;
+mod presenter;
 use fixture::{Example, State};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]

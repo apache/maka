@@ -25,6 +25,11 @@ const sdk = await readFile(
   new URL('../../../crates/js-runtime/src/plugin/sdk.js', import.meta.url),
   'utf8',
 );
+const builderSource = await readFile(
+  new URL('../../../crates/js-runtime/src/plugin/terminal-builders.js', import.meta.url),
+  'utf8',
+);
+export const mount = '00000000-0000-4000-8000-000000000001';
 export const size = (value) => Buffer.byteLength(JSON.stringify(value));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 export const block = (message, text = message, revision = '1') => ({
@@ -58,6 +63,7 @@ export async function fixture(initial = {}, activate) {
       },
     },
     'plugin',
+    vm.runInNewContext(builderSource),
   );
   const registrations = await runtime.activate({}, {});
   const caller = (documentId) => ({ documentId, clientInstanceId: 'client', sessionId: null });
@@ -77,11 +83,11 @@ export async function fixture(initial = {}, activate) {
     operations,
     runtime,
     invoke,
-    async open(document = 'doc') {
+    async open(document = 'doc', token = mount) {
       return value(
         await invoke(
           'activity.stream',
-          { resource: 'activity', route: null, locale: 'en' },
+          { resource: 'activity', route: null, locale: 'en', mount: token },
           document,
         ),
       );
@@ -92,7 +98,7 @@ export async function fixture(initial = {}, activate) {
     },
     async page(input, document = 'doc') {
       return plain(
-        value(await invoke('activity.read', { resource: 'activity', ...input }, document)),
+        value(await invoke('activity.read', { resource: 'activity', mount, ...input }, document)),
       );
     },
   };

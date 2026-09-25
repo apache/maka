@@ -136,6 +136,39 @@ pub(super) async fn execute(
 }
 
 impl App {
+    fn connection_provider_changes(&self, row: &super::super::connections::Row) -> Vec<Change> {
+        let Some(provider) = self.providers.find(&row.provider).filter(|_| row.enabled) else {
+            return vec![];
+        };
+        let mut changes = vec![];
+        if provider.descriptor.discovery {
+            changes.push(Change::FetchModels);
+        }
+        changes.push(Change::Test);
+        changes
+    }
+
+    pub(crate) fn resolved_provider_commands(
+        &self,
+        action: &Action,
+    ) -> Vec<(Action, &'static str)> {
+        let Action::Manage(Command::Open(target, _)) = action else {
+            return vec![];
+        };
+        let Entity::Connection(row) = &target.entity else {
+            return vec![];
+        };
+        self.connection_provider_changes(row)
+            .into_iter()
+            .map(|change| {
+                (
+                    Action::Manage(Command::Open(target.clone(), Kind::Connection(change))),
+                    change.label(),
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn connection_management_commands(
         &self,
         root: &str,
@@ -159,14 +192,11 @@ impl App {
         kinds.push(Kind::Rename);
         kinds.push(Kind::Connection(Change::EnabledModels));
         kinds.push(Kind::Connection(Change::ModelOverrides));
-        if row.enabled
-            && let Some(provider) = self.providers.find(&row.provider)
-        {
-            if provider.descriptor.discovery {
-                kinds.push(Kind::Connection(Change::FetchModels));
-            }
-            kinds.push(Kind::Connection(Change::Test));
-        }
+        kinds.extend(
+            self.connection_provider_changes(row)
+                .into_iter()
+                .map(Kind::Connection),
+        );
         kinds.push(Kind::Credential(super::credentials::Change::Clear));
         kinds.push(Kind::Connection(Change::Configuration));
         kinds.push(Kind::Connection(if row.enabled {
@@ -275,6 +305,71 @@ mod tests {
                 "provider":crate::providers::fixtures::entry("openai-compatible", false).identity,"configuration":{"baseUrl":"http://127.0.0.1/v1"},"enabled":true,"enabledModelIdCount":1},
             {"kind":"enabled_model_id","connectionIndex":0,"itemIndex":0,"modelId":"model"}
         ]})));
+    }
+
+    #[test]
+    fn late_provider_capabilities_extend_the_palette_without_changing_its_captured_targets() {
+        let mut app = App::new(
+            "/unused".into(),
+            I18n::new(LocalePreference::Explicit(Locale::En), Locale::En),
+        );
+        app.connection = ConnectionState::Connected {
+            root_id: "root".into(),
+            epoch: "epoch".into(),
+        };
+        app.apply(Action::Visit(Route::Connections));
+        load(&mut app);
+        let Action::Manage(Command::Open(target, _)) = app.rename_connection_action().unwrap()
+        else {
+            panic!("captured connection");
+        };
+        app.providers = Default::default();
+        app.apply(Action::Palette);
+        let frozen = app.commands();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::view::draw(frame, &mut app))
+            .unwrap();
+        app.input(Event::Paste("Fetch models".into()));
+        assert!(app.commands().is_empty());
+        let generation = app.providers.query().unwrap();
+        app.providers.complete(
+            generation,
+            Ok(maka_client::ProviderDirectory {
+                revision: 1,
+                entries: vec![crate::providers::fixtures::entry(
+                    "openai-compatible",
+                    false,
+                )],
+            }),
+        );
+        app.provider_commands_loaded();
+        let fetch = Action::Manage(Command::Open(
+            target.clone(),
+            Kind::Connection(Change::FetchModels),
+        ));
+        assert_eq!(
+            app.commands(),
+            vec![(fetch.clone(), Change::FetchModels.label().into())]
+        );
+        app.provider_commands_loaded();
+        assert_eq!(
+            app.commands().len(),
+            1,
+            "repeated notices do not duplicate a command"
+        );
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(&app.commands()[..frozen.len()], frozen.as_slice());
+        std::sync::Arc::make_mut(&mut app.connections.rows[0]).revision += 1;
+        app.provider_commands_loaded();
+        app.input(Event::Paste("Fetch models".into()));
+        assert_eq!(
+            app.commands(),
+            vec![(fetch.clone(), Change::FetchModels.label().into())]
+        );
     }
 
     #[test]

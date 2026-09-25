@@ -65,6 +65,7 @@ uuid.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+alacritty_terminal = { version = "0.26.0", default-features = false }
 maka-plugins.workspace = true
 unicode-width.workspace = true
 libc.workspace = true

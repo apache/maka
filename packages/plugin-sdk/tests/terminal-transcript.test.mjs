@@ -19,9 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { block, fixture, logicalPage, size } from './terminal-transcript-harness.mjs';
+import { presenter } from './terminal-presenter-harness.mjs';
+import { block, fixture, logicalPage, mount, size } from './terminal-transcript-harness.mjs';
 
-test('v5 builders and immutable document snapshots with contiguous semantic changes', async () => {
+test('v7 builders and immutable document snapshots with contiguous semantic changes', async () => {
   const original = block('first', '你好');
   const f = await fixture({ blocks: [original] });
   original.content.text = 'caller changed its input';
@@ -31,7 +32,7 @@ test('v5 builders and immutable document snapshots with contiguous semantic chan
       revision: '1',
       root: f.tui.transcript('body', f.store.resource),
     }).version,
-    5,
+    7,
   );
   const handle = await f.open();
   assert.deepEqual(await f.next(handle), { kind: 'ready', fence: 0 });
@@ -59,12 +60,13 @@ test('v5 builders and immutable document snapshots with contiguous semantic chan
   assert.equal((await logicalPage(f, 5, 'tail', null, 'other')).records[0].content.text, 'updated');
   const denied = await f.invoke(
     'activity.read',
-    { resource: 'activity', fence: 0, direction: 'tail' },
+    { resource: 'activity', mount, fence: 0, direction: 'tail' },
     'stranger',
   );
   assert.equal(denied.code, 'revoked');
   assert.equal(
-    (await f.invoke('activity.read', { resource: 'different', fence: 0, direction: 'tail' })).code,
+    (await f.invoke('activity.read', { resource: 'different', mount, fence: 0, direction: 'tail' }))
+      .code,
     'revoked',
   );
   await f.runtime.dispose();
@@ -85,7 +87,7 @@ test('bounded history windows, Unicode JSON fragments and document-bound replaya
   assert.ok(tail.older);
   const bad = await f.invoke(
     'activity.read',
-    { resource: 'activity', fence: 0, direction: 'older', cursor: tail.older },
+    { resource: 'activity', mount, fence: 0, direction: 'older', cursor: tail.older },
     'other',
   );
   assert.equal(bad.code, 'invalid');
@@ -147,7 +149,8 @@ test('cancel unblocks Next, retires cursors and closes exactly once', async () =
   await f.runtime.streamClose(handle);
   assert.equal(f.store.stats.closed, 1);
   assert.equal(
-    (await f.invoke('activity.read', { resource: 'activity', fence: 0, direction: 'tail' })).code,
+    (await f.invoke('activity.read', { resource: 'activity', mount, fence: 0, direction: 'tail' }))
+      .code,
     'revoked',
   );
   await f.store.close();
@@ -166,7 +169,8 @@ test('slow readers are invalidated on queue overflow, never silently skipped', a
   assert.equal(f.store.stats.invalidated, 1);
   assert.equal(f.store.stats.active, 0);
   assert.equal(
-    (await f.invoke('activity.read', { resource: 'activity', fence: 0, direction: 'tail' })).code,
+    (await f.invoke('activity.read', { resource: 'activity', mount, fence: 0, direction: 'tail' }))
+      .code,
     'revoked',
   );
   await f.runtime.dispose();
@@ -208,23 +212,31 @@ test('the external Board fixture exposes paged activity without token-driven Vie
   );
   const f = await fixture({}, activate);
   const descriptor = f.registrations.find((entry) => entry.name === 'board').terminalView;
-  assert.equal(descriptor.version, 5);
-  const view = await f.invoke('board', { kind: 'read', route: { activity: true }, locale: 'en' });
-  assert.equal(view.value.view.version, 5);
-  const resource = view.value.view.root.children.find(
-    (node) => node.kind === 'transcript',
-  ).resource;
+  assert.equal(descriptor.version, 7);
+  const { default: ui } = await import(
+    '../../../crates/cli/tests/fixtures/board-plugin/board-ui.mjs'
+  );
+  const p = presenter(ui, async (input) => {
+    const result = await f.invoke('board', input);
+    assert.equal(result.kind, 'value');
+    return result.value;
+  });
+  const view = await p.invoke({ kind: 'read', route: { activity: true }, locale: 'en' });
+  assert.equal(view.view.version, 7);
+  const resource = view.view.root.children.find((node) => node.kind === 'transcript').resource;
   assert.equal(resource.id, 'board-activity');
   const opened = await f.invoke(resource.stream, {
     resource: resource.id,
+    mount,
     route: null,
     locale: 'en',
   });
   assert.equal(opened.kind, 'value');
   const handle = opened.value;
   assert.deepEqual(await f.next(handle), { kind: 'ready', fence: 0 });
-  let page = (await f.invoke(resource.read, { resource: resource.id, fence: 0, direction: 'tail' }))
-    .value;
+  let page = (
+    await f.invoke(resource.read, { resource: resource.id, mount, fence: 0, direction: 'tail' })
+  ).value;
   let fragments = 0;
   const tools = [];
   for (;;) {
@@ -237,6 +249,7 @@ test('the external Board fixture exposes paged activity without token-driven Vie
     page = (
       await f.invoke(resource.read, {
         resource: resource.id,
+        mount,
         fence: 0,
         direction: 'continue',
         cursor: page.continuation,

@@ -110,7 +110,7 @@ fn other_package(id: &str, dependencies: Value) -> Package {
         (
             MANIFEST_FILE.into(),
             serde_json::to_vec(&json!({
-                "schemaVersion":1,"id":id,"runtime":{"entry":"index.mjs","sdkVersion":1},
+                "schemaVersion":1,"id":id,"runtime":{"entry":"index.mjs","sdkVersion":2},
                 "dependencies":dependencies
             }))
             .unwrap(),

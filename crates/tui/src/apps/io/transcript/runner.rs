@@ -59,8 +59,7 @@ impl Runner {
                     _stop: stop,
                 },
             );
-            // Never abort this task: it owns its document until close settles,
-            // including when OpenDocument or a stream Open completes late.
+            // Never abort this task: a stream Open may complete after removal.
             self.tasks.spawn(transport::follow(
                 client.clone(),
                 mount,
@@ -151,6 +150,7 @@ mod tests {
         let tail = peer.read().await;
         assert_eq!(tail["input"]["kind"], "call");
         assert_eq!(tail["input"]["input"]["direction"], "tail");
+        assert_eq!(tail["input"]["input"]["mount"], mount.token.to_string());
         peer.reply(
             &tail,
             RemoteResult::Value {
@@ -162,6 +162,10 @@ mod tests {
         assert_eq!(continuation["input"]["kind"], "call");
         assert_eq!(continuation["input"]["input"]["direction"], "continue");
         assert_eq!(continuation["input"]["input"]["fence"], 4);
+        assert_eq!(
+            continuation["input"]["input"]["mount"],
+            mount.token.to_string()
+        );
         peer.reply(
             &continuation,
             RemoteResult::Value {
@@ -193,6 +197,7 @@ mod tests {
         assert_eq!(history["input"]["kind"], "call");
         assert_eq!(history["input"]["input"]["direction"], "older");
         assert_eq!(history["input"]["input"]["fence"], 4);
+        assert_eq!(history["input"]["input"]["mount"], mount.token.to_string());
         // Finish the original Next while the page call is still pending.
         peer.reply(
             &live,
@@ -209,10 +214,10 @@ mod tests {
         let next = peer.read().await;
         assert_eq!(next["input"]["kind"], "next");
         assert_ne!(live["requestId"], next["requestId"]);
-        // Navigation cancels both in-flight operations through their document.
+        // Removing a reader closes its stream without closing the parent page.
         runner.stop();
         let close = peer.read().await;
-        assert_eq!(close["input"]["kind"], "close_document");
+        assert_eq!(close["input"]["kind"], "close");
         assert_eq!(close["input"]["document"], document.to_string());
         let mut shutdown = Box::pin(runner.shutdown());
         assert!(futures_util::poll!(&mut shutdown).is_pending());
@@ -222,49 +227,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn navigation_during_open_keeps_document_cleanup_owned() {
+    async fn removal_during_open_keeps_stream_cleanup_owned() {
         let (client, mut peer) = Peer::connect().await;
         let mount = mount();
         let (mut runner, _deliveries) = Runner::new();
         runner.reconcile(&client, vec![mount.clone()]).unwrap();
         let (document, opening) = peer.opening(&mount).await;
         runner.stop();
+        let stream = Uuid::new_v4();
+        // A late Open response is closed without starting Next.
+        peer.reply(&opening, RemoteResult::Opened { stream }).await;
         let close = peer.read().await;
-        assert_eq!(close["input"]["kind"], "close_document");
+        assert_eq!(close["input"]["kind"], "close");
         assert_eq!(close["input"]["document"], document.to_string());
+        assert_eq!(close["input"]["stream"], stream.to_string());
         let mut shutdown = Box::pin(runner.shutdown());
         assert!(futures_util::poll!(&mut shutdown).is_pending());
-        // A late Open response cannot start Next after its owner departed.
-        peer.reply(
-            &opening,
-            RemoteResult::Opened {
-                stream: Uuid::new_v4(),
-            },
-        )
-        .await;
         peer.reply(&close, RemoteResult::Closed).await;
         shutdown.await.unwrap();
         client.disconnect();
     }
 
     #[tokio::test]
-    async fn document_allocated_after_navigation_is_still_closed() {
+    async fn two_mounts_borrow_one_document_and_close_independently() {
         let (client, mut peer) = Peer::connect().await;
-        let mount = mount();
+        let first = mount();
+        let second = Mount {
+            token: Uuid::new_v4(),
+            ..first.clone()
+        };
         let (mut runner, _deliveries) = Runner::new();
-        runner.reconcile(&client, vec![mount.clone()]).unwrap();
-        let allocating = peer.allocating(&mount).await;
-        runner.stop();
-        let document = Uuid::new_v4();
-        peer.reply(&allocating, RemoteResult::Document { document })
-            .await;
+        runner.reconcile(&client, vec![first.clone()]).unwrap();
+        let (_, opening) = peer.opening(&first).await;
+        let first_stream = Uuid::new_v4();
+        peer.reply(
+            &opening,
+            RemoteResult::Opened {
+                stream: first_stream,
+            },
+        )
+        .await;
+        let first_next = peer.read().await;
+        assert_eq!(first_next["input"]["kind"], "next");
+        runner
+            .reconcile(&client, vec![first.clone(), second.clone()])
+            .unwrap();
+        let (_, opening) = peer.opening(&second).await;
+        let second_stream = Uuid::new_v4();
+        peer.reply(
+            &opening,
+            RemoteResult::Opened {
+                stream: second_stream,
+            },
+        )
+        .await;
+        let second_next = peer.read().await;
+        assert_eq!(second_next["input"]["stream"], second_stream.to_string());
+        runner.reconcile(&client, vec![second]).unwrap();
         let close = peer.read().await;
-        assert_eq!(close["input"]["kind"], "close_document");
-        assert_eq!(close["input"]["document"], document.to_string());
-        let mut shutdown = Box::pin(runner.shutdown());
-        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        assert_eq!(close["input"]["kind"], "close");
+        assert_eq!(close["input"]["stream"], first_stream.to_string());
+        assert_eq!(close["input"]["document"], first.document.to_string());
         peer.reply(&close, RemoteResult::Closed).await;
-        shutdown.await.unwrap();
+        runner.stop();
+        let close = peer.read().await;
+        assert_eq!(close["input"]["kind"], "close");
+        assert_eq!(close["input"]["stream"], second_stream.to_string());
+        peer.reply(&close, RemoteResult::Closed).await;
+        runner.shutdown().await.unwrap();
         client.disconnect();
     }
 }

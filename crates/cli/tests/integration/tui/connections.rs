@@ -90,8 +90,30 @@ fn connections_directory_pages_reopens_and_manages_fixed_targets_with_cas() {
     );
     tui.click_text("Updated elsewhere");
     tui.wait_for("› Updated elsewhere");
-    // Keyboard goes from List to Add, Default model, Rename, Previous.
-    tui.send(b"\t\t\t\t\r");
+    // Follow the visible keyboard hint through the shared header controls.
+    // Sidebar and Back are now real focus stops; ordinals are not identities.
+    for _ in 0..16 {
+        let screen = tui.screen.snapshot().unwrap().screen;
+        let hint = screen.lines().last().unwrap_or("").trim().to_owned();
+        if hint == "Previous page" {
+            break;
+        }
+        tui.send(b"\t");
+        tui.wait_until(|screen| screen.lines().last().unwrap_or("").trim() != hint);
+    }
+    assert_eq!(
+        tui.screen
+            .snapshot()
+            .unwrap()
+            .screen
+            .lines()
+            .last()
+            .unwrap_or("")
+            .trim(),
+        "Previous page",
+        "previous page is reachable by keyboard"
+    );
+    tui.send(b"\r");
     tui.wait_for("Directory 00");
     tui.send(b"\x1b"); // Back to Settings, not a fabricated connection/session route.
     tui.wait_until(|s| s.lines().next().is_some_and(|l| l.contains("Settings")));

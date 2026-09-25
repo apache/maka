@@ -22,6 +22,7 @@
 export default async function activate(ctx) {
   const { tui } = ctx;
   const contexts = new Map();
+  const reviewing = new Set();
   let reads = 0;
   let liveStreams = 0;
   // A public stream counts the actual observer owned by this
@@ -99,41 +100,30 @@ export default async function activate(ctx) {
     );
   });
   await ctx.remote.method('review', async ({ assignmentId }) => {
-    const record = await load(assignmentId);
-    record.value.reviewed = true;
-    await store(assignmentId, record);
+    reviewing.add(assignmentId);
+    notify();
+    try {
+      const record = await load(assignmentId);
+      record.value.reviewed = true;
+      await store(assignmentId, record);
+    } finally {
+      reviewing.delete(assignmentId);
+      notify();
+    }
     return null;
   });
   await tui.app(
     'notes-view',
     {
-      async read(route, cx) {
-        const id = task(route);
-        contexts.set(id, route);
-        reads++;
-        const record = await load(id);
-        const note = record.value.note ?? '';
-        return {
-          title: cx.t('Task notes', '任务备注', '任務備註'),
-          revision: String(record.revision ?? 0),
-          fields: [tui.line('note', note, 200)],
-          actions: [
-            tui.action('save', cx.t('Save note', '保存备注', '儲存備註'), { fields: ['note'] }),
-          ],
-          root: tui.stack('root', [
-            tui.text(
-              'review',
-              record.value.reviewed ? 'Reviewed independently' : 'Not reviewed',
-              'subtle',
-            ),
-            tui.text('saved', `Saved note: ${note}`, 'subtle'),
-            tui.input('note', 'note', cx.t('Note draft', '备注草稿', '備註草稿')),
-            tui.row('controls', [tui.button('save', 'save', 'primary')]),
-          ]),
-        };
-      },
-      async submit(submission) {
+      entry: 'notes-ui.mjs',
+      async backend(submission) {
         const id = task(submission.route);
+        if (submission.kind === 'read') {
+          contexts.set(id, submission.route);
+          reads++;
+          return { ...(await load(id)), busy: reviewing.has(id) };
+        }
+        if (submission.kind !== 'submit') return { kind: 'unrecorded' };
         const record = await load(id);
         if (submission.revision !== String(record.revision ?? 0)) return { kind: 'conflict' };
         record.value.note = submission.fields.note;

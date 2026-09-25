@@ -613,7 +613,7 @@ fn dirty_plugin_exit_takes_over_apps_consent_without_authorizing_or_replacing_it
     )));
     assert!(effect.is_none());
     let screen = crate::apps::tests::draw(&mut app, 100, 40);
-    assert!(screen.contains("Leave plugin drafts?"));
+    assert!(screen.contains("Leave unsaved drafts?"));
     assert!(app.apps.consent_visible());
     assert!(!app.apps_enabled(&approve));
     assert!(crate::apps::tests::next(&mut app).is_none());

@@ -63,7 +63,7 @@ enum Completed {
         pages::manage::sandbox::defaults::Request,
         Result<maka_protocol::configuration::policy::RuntimePolicySnapshot, String>,
     ),
-    Extension(apps::Request, Result<apps::Output, apps::io::Failure>),
+    Extension(Box<apps::Request>, Result<apps::Output, apps::io::Failure>),
     Skills(
         pages::skills::Request,
         Result<
@@ -95,7 +95,7 @@ enum Completed {
         Result<pages::manage::removal::Output, maka_client::RequestFailure>,
     ),
     Oauth(
-        pages::manage::oauth::Request,
+        Box<pages::manage::oauth::Request>,
         Result<pages::manage::oauth::Output, maka_client::RequestFailure>,
     ),
     Managed(
@@ -396,7 +396,7 @@ where
                     let client = client.clone();
                     jobs.spawn(async move {
                         let result = pages::manage::oauth::execute(&client, &request).await;
-                        Completed::Oauth(request, result)
+                        Completed::Oauth(Box::new(request), result)
                     });
                 }
             }
@@ -519,9 +519,10 @@ where
                     Completed::Session(request, result)
                 });
             }
+            watches.reconcile_documents(app.apps_executions());
             watches.reconcile(client, app.apps_watches());
             if transcript_runner
-                .reconcile(client, app.apps_transcript_mounts())
+                .reconcile(client, watches.transcripts(app.apps_transcript_mounts()))
                 .is_err()
             {
                 app.apps_transcript_failed();
@@ -558,10 +559,11 @@ where
                         );
                     }
                 } else {
+                    let document = watches.document(client, &request);
                     let client = client.clone();
                     jobs.spawn(async move {
-                        let result = apps::execute(&client, &request).await;
-                        Completed::Extension(request, result)
+                        let result = apps::execute(&client, &request, document).await;
+                        Completed::Extension(Box::new(request), result)
                     });
                 }
                 dirty = true;
@@ -1019,9 +1021,10 @@ where
                 for request in written.apps {
                     if app.apps_after_checkpoint(&request, &written.result)
                         && let Some(client) = client.clone() {
+                        let document = watches.document(&client, &request);
                         jobs.spawn(async move {
-                            let result = apps::execute(&client, &request).await;
-                            Completed::Extension(request, result)
+                            let result = apps::execute(&client, &request, document).await;
+                            Completed::Extension(Box::new(request), result)
                         });
                     }
                 }
@@ -1054,7 +1057,7 @@ where
                     && let Some(client) = client.clone() {
                     jobs.spawn(async move {
                         let result = pages::manage::oauth::execute(&client, &request).await;
-                        Completed::Oauth(request, result)
+                        Completed::Oauth(Box::new(request), result)
                     });
                 }
                 for request in written.requests {
@@ -1160,7 +1163,7 @@ where
                         if let Some(state) = &mut state { state.changed(); }
                     }
                     Some(Ok(Completed::Oauth(request, result))) => {
-                        if let Some(service) = app.oauth_completed(request, result) {
+                        if let Some(service) = app.oauth_completed(*request, result) {
                             oauth_service = Some(service);
                         }
                         if let Some(state) = &mut state { state.changed(); }
@@ -1186,7 +1189,7 @@ where
                         if let Some(state) = &mut state { state.changed(); }
                     },
                     Some(Ok(Completed::Directory(request, result))) => app.directory_completed(request, result),
-                    Some(Ok(Completed::Extension(request, result))) => app.apps_complete(request, result),
+                    Some(Ok(Completed::Extension(request, result))) => app.apps_complete(*request, result),
                     Some(Ok(Completed::Skills(request, result))) => app.skills_completed(request, result),
                     Some(Ok(Completed::ChooseProject(request, result))) => app.choose_project_completed(request, result),
                     Some(Ok(Completed::Locations(request,result))) => app.locations_completed(request,result),
@@ -1286,6 +1289,7 @@ where
                     Some(Ok(Completed::Connections(result))) => app.connections.complete(result),
                     Some(Ok(Completed::Providers(generation, result))) => {
                         app.providers.complete(generation, result);
+                        app.provider_commands_loaded();
                         app.oauth_catalog_loaded();
                         app.onboarding_catalog_loaded();
                         if app.providers.failed() {
@@ -1411,6 +1415,7 @@ where
                 match change {
                     Some(apps::io::Change::Stale(watch)) => app.apps_changed(&watch),
                     Some(apps::io::Change::Ended(watch)) => watches.ended(&watch),
+                    Some(apps::io::Change::Failed(watch)) => app.apps_observation_failed(watch.owner),
                     None => {}
                 }
                 dirty = true;
@@ -1426,6 +1431,7 @@ where
     app.apps.disconnect();
     watches.stop();
     let _ = transcript_runner.shutdown().await;
+    let _ = watches.shutdown().await;
     app.recap.disconnect();
     app.plugins.disconnect();
     app.resume.disconnect();

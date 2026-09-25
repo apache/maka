@@ -34,6 +34,7 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum Focus {
     Navigation,
+    Header,
     List,
     Composer,
     Transcript,
@@ -88,6 +89,7 @@ pub enum Action {
     NewerMessages,
     LatestMessages,
     ToggleMessage(crate::ui::transcript::MessageKey),
+    Compose,
     SendMessage,
     SteerMessage,
     Queue(crate::pages::queue::Command),
@@ -134,11 +136,11 @@ pub struct Hit {
 
 pub struct App {
     known_root: Option<String>,
-    pub(crate) page_states: std::collections::VecDeque<(Route, crate::navigation::state::State)>,
+    pub(crate) page_states:
+        std::collections::VecDeque<(crate::navigation::Location, crate::navigation::state::State)>,
     pub navigation: Navigation,
     pub tabs: crate::navigation::tabs::Tabs,
     pub focus: Focus,
-    pub selected_control: usize,
     pub i18n: I18n,
     pub chrome: crate::chrome::Chrome,
     pub sessions: crate::pages::sessions::Sessions,
@@ -198,7 +200,6 @@ impl App {
             navigation: Navigation::default(),
             tabs: Default::default(),
             focus: Focus::Navigation,
-            selected_control: 0,
             i18n,
             chrome: Default::default(),
             sessions: Default::default(),
@@ -360,7 +361,7 @@ impl App {
             if self.inspector_available() {
                 commands.push((
                     Action::ToggleInspector,
-                    if self.chrome.inspector {
+                    if self.navigation.location().inspector {
                         "command-inspector-hide"
                     } else {
                         "command-inspector-show"
@@ -425,7 +426,15 @@ impl App {
         self.known_root = Some(root.into());
         true
     }
-    pub fn page_actions(&self) -> Vec<Action> {
+    pub(crate) fn checkpoint_root(&self) -> &str {
+        self.known_root
+            .as_deref()
+            .unwrap_or_else(|| match &self.connection {
+                ConnectionState::Connected { root_id, .. } => root_id,
+                _ => "",
+            })
+    }
+    pub fn header_actions(&self) -> Vec<Action> {
         let mut actions = match self.navigation.current() {
             // App and directory controls live in their kernel surfaces.
             Route::Extensions | Route::App(_) => vec![],
@@ -434,18 +443,9 @@ impl App {
             // Home controls live in its kernel surface.
             Route::Workspace => vec![],
             Route::Session(_) => {
-                let mut actions = vec![
-                    self.send_action(),
-                    Action::Attachment(crate::pages::attachments::Command::Open),
-                    Action::ToggleDetails,
-                    Action::ToggleFullscreen,
-                ];
+                let mut actions = vec![Action::ToggleDetails, Action::ToggleFullscreen];
                 if self.inspector_available() {
                     actions.push(Action::ToggleInspector);
-                }
-                if self.stop_target().is_some() && self.enabled(&Action::SendMessage) {
-                    actions.insert(1, Action::SendMessage);
-                    actions.insert(2, Action::SteerMessage);
                 }
                 if self.chat.can_older() {
                     actions.insert(0, Action::OlderMessages);
@@ -528,6 +528,9 @@ impl App {
                 .is_some_and(|start| start.elapsed() >= Duration::from_millis(450))
     }
     fn has_tooltip(&self) -> bool {
+        if crate::view::widget_hover(self).is_some() {
+            return true;
+        }
         self.hover.as_ref().is_some_and(|action| {
             !matches!(
                 action,
@@ -551,8 +554,9 @@ impl App {
             Route::Workspace => Some(Action::RefreshSessions),
             Route::Session(_) => Some(Action::RefreshSession),
             Route::Settings
-                if self.settings.category == crate::pages::settings::Category::Host
-                    && self.settings.pane.is_none() =>
+                if self.navigation.location().settings_category()
+                    == crate::pages::settings::Category::Host
+                    && self.navigation.location().settings_pane().is_none() =>
             {
                 Some(Action::Refresh)
             }
@@ -583,9 +587,11 @@ impl App {
             }
             Action::CloseHelp => self.help = false,
             Action::Host => {
-                let effect = self.apply(Action::Visit(Route::Settings));
-                self.settings.category = crate::pages::settings::Category::Host;
-                self.settings.pane = None;
+                self.navigate(crate::navigation::Intent::Settings(
+                    crate::navigation::SettingsPlace::Builtin(
+                        crate::pages::settings::Category::Host,
+                    ),
+                ));
                 self.settings.host_details |= self.state_error.is_some()
                     || matches!(self.notice, Some(Notice::Diagnostic(_)))
                     || matches!(
@@ -596,7 +602,7 @@ impl App {
                     .surface
                     .focus_within("settings/pane/frame/rows/host/");
                 self.focus = Focus::Page;
-                return effect;
+                return None;
             }
             Action::NextTab | Action::PreviousTab => {
                 let route = self.navigation.current();
@@ -609,21 +615,7 @@ impl App {
                     return self.apply(Action::Visit(Route::Session(id)));
                 }
             }
-            Action::CloseTab(id) => {
-                self.leave_page();
-                let current = self.navigation.current();
-                let fallback = self
-                    .tabs
-                    .close(&id)
-                    .map_or(Route::Workspace, Route::Session);
-                self.navigation.close_session(&id, fallback);
-                if current != self.navigation.current() {
-                    self.sync_route();
-                    self.enter_page();
-                }
-                self.hits.clear();
-                self.hover = None;
-            }
+            Action::CloseTab(id) => self.navigate(crate::navigation::Intent::CloseSession(id)),
             Action::Manage(command) => return self.management_action(command),
             Action::Attachment(command) => return self.attachment_action(command),
             Action::References => self.open_references(),
@@ -644,49 +636,9 @@ impl App {
             Action::Copy(_) | Action::CopyFile(_) => return Some(action),
             Action::OpenInteraction => self.open_interaction(),
             Action::Interaction(_) => return Some(action),
-            Action::Visit(route) => {
-                if !self.prepare_route(&route) {
-                    return None;
-                }
-                if route == self.navigation.current() {
-                    return None;
-                }
-                if matches!(self.navigation.current(), Route::Workspace)
-                    && let Route::Session(id) = &route
-                    && self.catalog().items.iter().any(|item| item.id == *id)
-                {
-                    self.catalog_mut().selected = Some(id.clone());
-                }
-                self.leave_page();
-                self.invalidate_editor_geometry();
-                self.hover = None;
-                if let Route::Session(id) = &route {
-                    self.sessions.open(id);
-                }
-                self.navigation.visit(route);
-                self.enter_page();
-                self.open_draft();
-            }
-            Action::Back => {
-                if !self.prepare_route(&self.navigation.destination(false)) {
-                    return None;
-                }
-                self.leave_page();
-                self.hover = None;
-                self.navigation.back();
-                self.sync_route();
-                self.enter_page();
-            }
-            Action::Forward => {
-                if !self.prepare_route(&self.navigation.destination(true)) {
-                    return None;
-                }
-                self.leave_page();
-                self.hover = None;
-                self.navigation.forward();
-                self.sync_route();
-                self.enter_page();
-            }
+            Action::Visit(route) => self.navigate(crate::navigation::Intent::Visit(route)),
+            Action::Back => self.navigate(crate::navigation::Intent::Back),
+            Action::Forward => self.navigate(crate::navigation::Intent::Forward),
             Action::ClosePalette => self.palette = None,
             Action::Palette => {
                 // A new palette session: nothing of the last one carries over.
@@ -738,12 +690,19 @@ impl App {
                 }
             }
             Action::ToggleInspector => {
-                self.chrome.inspector = !self.chrome.inspector;
-                if !self.chrome.inspector && self.focus == Focus::Inspector {
+                self.navigate(crate::navigation::Intent::Inspector(
+                    !self.navigation.location().inspector,
+                ));
+                if !self.navigation.location().inspector && self.focus == Focus::Inspector {
                     self.focus = Focus::Composer;
                 }
                 self.apps.inspector.invalidate();
                 self.invalidate_editor_geometry();
+            }
+            Action::Compose => {
+                self.chat
+                    .search_command(crate::ui::transcript::search::Command::Close);
+                self.focus = Focus::Composer;
             }
             Action::BrowseTranscript => {
                 self.chat
@@ -816,7 +775,9 @@ impl App {
                 self.refreshing = true;
                 return Some(action);
             }
-            Action::Quit | Action::Detach if self.plugins.has_unsaved() => {
+            Action::Quit | Action::Detach
+                if self.plugins.has_unsaved() || self.apps.has_memory_drafts() =>
+            {
                 self.invalidate_editor_geometry();
                 self.plugins.review_exit(action == Action::Detach);
                 self.layer.close();
@@ -998,6 +959,7 @@ impl App {
             | Action::ToggleDetails
             | Action::ToggleTrace
             | Action::BrowseTranscript
+            | Action::Compose
             | Action::Search(_) => {
                 matches!(self.navigation.current(), Route::Session(_))
             }
@@ -1031,6 +993,97 @@ impl App {
         };
         self.chat.stop_target(root_id, epoch)
     }
+    pub(crate) fn navigate(&mut self, intent: crate::navigation::Intent) {
+        use crate::navigation::{Intent, Location};
+        if let Intent::CloseSession(id) = &intent {
+            self.leave_page();
+            let previous = self.navigation.location().clone();
+            let fallback = self.tabs.close(id).map_or(Route::Workspace, Route::Session);
+            self.navigation.close_session(id, fallback);
+            self.page_states
+                .retain(|(location, _)| !location.references_session(id));
+            if &previous != self.navigation.location() {
+                self.sync_route();
+                self.enter_page();
+                self.mount_app_views();
+            }
+            self.hits.clear();
+            self.hover = None;
+            return;
+        }
+        let target = match &intent {
+            Intent::Visit(route) => self.navigation.resolve(route.clone()),
+            Intent::Settings(place) => {
+                let mut location = self.navigation.resolve(Route::Settings);
+                location.choose_settings(place.clone());
+                location
+            }
+            Intent::ChangeView { source, route, .. } => {
+                let mut location = self.navigation.location().clone();
+                if !location.change_view(source, route.clone()) {
+                    return;
+                }
+                location
+            }
+            Intent::Inspector(shown) => {
+                let mut location = self.navigation.location().clone();
+                if !matches!(location.route, Route::Session(_)) {
+                    return;
+                }
+                location.inspector = *shown;
+                location
+            }
+            Intent::Recovery(key) => {
+                let mut location = Location::from(Route::App(key.clone()));
+                location.recovery = true;
+                location
+            }
+            Intent::Result(key) => {
+                let Some(location) = Location::result(key.clone()) else {
+                    return;
+                };
+                location
+            }
+            Intent::Back => self.navigation.destination(false),
+            Intent::Forward => self.navigation.destination(true),
+            Intent::CloseSession(_) => unreachable!(),
+        };
+        if &target == self.navigation.location() || !target.valid(|_| true) {
+            return;
+        }
+        let mut navigation = self.navigation.clone();
+        match &intent {
+            Intent::Back => navigation.back(),
+            Intent::Forward => navigation.forward(),
+            Intent::ChangeView { replace: true, .. } => {
+                navigation.replace(target.clone());
+            }
+            _ => navigation.visit(target.clone()),
+        }
+        let view_focus = matches!(intent, Intent::ChangeView { .. }).then_some(self.focus);
+        if !self.admit_state(Some((&navigation, true, view_focus)), 0)
+            || !self.prepare_route(&target.route)
+        {
+            return;
+        }
+        if self.navigation.current() == Route::Workspace
+            && let Route::Session(id) = &target.route
+            && self.catalog().items.iter().any(|item| item.id == *id)
+        {
+            self.catalog_mut().selected = Some(id.clone());
+        }
+        self.leave_page();
+        self.hover = None;
+        self.navigation = navigation;
+        self.sync_route();
+        self.enter_page_focused(view_focus);
+        // Applied refreshes the destination before discovering its children.
+        if !matches!(intent, Intent::ChangeView { replace: true, .. }) {
+            self.mount_app_views();
+        }
+        self.hits.clear();
+    }
+
     fn sync_route(&mut self) {
         self.invalidate_editor_geometry();
         let route = self.navigation.current();
@@ -1038,7 +1091,10 @@ impl App {
             self.sessions.open(id);
         }
         if let Route::App(key) = &route {
-            self.apps.open(key);
+            self.apps.enter(key);
+        }
+        if let Some(key) = self.navigation.location().settings_pane().cloned() {
+            self.apps.enter(&key);
         }
         if matches!(self.focus, Focus::List | Focus::Composer | Focus::Queue) {
             self.focus = Focus::Page;
@@ -1118,6 +1174,10 @@ impl App {
     }
 
     pub fn invalidate_editor_geometry(&mut self) {
+        self.chrome.header.invalidate();
+        self.chrome.footer.invalidate();
+        self.chrome.feedback.invalidate();
+        self.chrome.composer.invalidate();
         self.plugins.invalidate_geometry();
         self.layer.invalidate();
         self.apps.invalidate_geometry();
@@ -1139,12 +1199,12 @@ impl App {
             reader.invalidate_scrollbar();
         }
         if let Some(search) = &mut self.chat.view.search {
-            search.editor.invalidate_geometry();
+            search.invalidate_geometry();
             if let Some(history) = &mut self.chat.history {
                 history.invalidate_geometry();
             }
         }
-        self.queue.area = None;
+        self.queue_surface_invalidate();
         if let Some(edit) = &mut self.queue.edit {
             edit.editor.invalidate_geometry();
         }
@@ -1202,7 +1262,39 @@ impl App {
         if keyboard && let Some(reader) = self.chat.reader_mut() {
             reader.text_selection.end_drag();
         }
-        let outcome = self.dispatch_input(event);
+        let queue_hover = self
+            .queue
+            .surface
+            .hovered()
+            .map(|hover| hover.key.to_owned());
+        let widget_before = mouse
+            .then(|| {
+                crate::view::widget_hover(self).map(|hover| (hover.key.to_owned(), hover.area))
+            })
+            .flatten();
+        let mut outcome = self.dispatch_input(event);
+        outcome.0 |= mouse
+            && queue_hover
+                != self
+                    .queue
+                    .surface
+                    .hovered()
+                    .map(|hover| hover.key.to_owned());
+        if mouse {
+            let widget_after =
+                crate::view::widget_hover(self).map(|hover| (hover.key.to_owned(), hover.area));
+            if widget_after.is_some() {
+                self.hover = None;
+                self.hover_area = None;
+                if widget_before != widget_after || self.hover_since.is_none() {
+                    self.hover_since = Some(Instant::now());
+                    outcome.0 = true;
+                }
+            } else if widget_before.is_some() && self.hover.is_none() {
+                self.hover_since = None;
+                outcome.0 = true;
+            }
+        }
         if mouse
             && outcome.0
             && self.focus == Focus::Transcript
@@ -1223,6 +1315,36 @@ impl App {
     /// Kernel surfaces take their input first: the sidebar, then a page
     /// presented by the kernel. Unconsumed events continue to the shell.
     fn surface_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {
+        if matches!(event, Event::Mouse(_))
+            && (self.chat.reader().is_some_and(|reader| {
+                reader.text_selection.dragging() || reader.scrollbar_dragging()
+            }) || matches!(self.navigation.current(), Route::Session(ref id) if self.drafts.get(id).is_some_and(|editor| editor.dragging())))
+        {
+            // A captured native drag owns motion and release across every
+            // shell/page region until its original widget releases it.
+            return None;
+        }
+        if let Some(outcome) = self.captured_surface_input(event) {
+            return Some(outcome);
+        }
+        if !self.chrome.details
+            && matches!(self.navigation.current(), Route::Session(_))
+            && self.chat.view.search.as_ref().is_some_and(|search| {
+                matches!(event, Event::Key(_) | Event::Paste(_))
+                    || matches!(event, Event::Mouse(_)) && search.editor.dragging()
+            })
+        {
+            // Native find owns its Editor while open, even when the shell's
+            // remembered outer focus is Header. Preserve the existing reader
+            // selection/copy precedence before dispatch reaches find below.
+            return None;
+        }
+        if let Some(outcome) = self.shell_surface_input(event) {
+            return Some(outcome);
+        }
+        if let Some(outcome) = self.queue_surface_input(event) {
+            return Some(outcome);
+        }
         let (mouse, key) = (
             matches!(event, Event::Mouse(_)),
             matches!(event, Event::Key(_)),
@@ -1288,6 +1410,57 @@ impl App {
         outcome
             .consumed
             .then(|| self.surface_outcome(event, Focus::Page, outcome))
+    }
+
+    /// A local chooser is modal across shell regions, even though it is
+    /// owned by its existing Surface rather than the shell overlay stack.
+    fn captured_surface_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {
+        if !matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_)) {
+            return None;
+        }
+        if self.sidebar.surface.captures() {
+            let outcome = self.sidebar.surface.input(event).map(Action::Sidebar);
+            return outcome
+                .consumed
+                .then(|| self.surface_outcome(event, Focus::Navigation, outcome));
+        }
+        let (outcome, focus) = match self.navigation.current() {
+            Route::Settings if self.settings.surface.captures() => (
+                self.settings.surface.input(event).map(Action::Settings),
+                Focus::Page,
+            ),
+            Route::Plugins(_) if self.plugins.surface.captures() => (
+                self.plugins.surface.input(event).map(Action::Plugins),
+                Focus::Page,
+            ),
+            Route::Workspace if self.home.surface.captures() => (
+                self.home.surface.input(event).map(Action::Home),
+                Focus::Page,
+            ),
+            Route::Connections if self.connections.surface.captures() => {
+                (self.connections.surface.input(event), Focus::List)
+            }
+            Route::Projects if self.projects.surface.captures() => {
+                (self.projects.surface.input(event), Focus::List)
+            }
+            Route::Extensions | Route::App(_) => {
+                let surface = self.apps_surface()?;
+                if !surface.captures() {
+                    return None;
+                }
+                (surface.input(event).map(Action::Apps), Focus::Page)
+            }
+            Route::Session(_) if self.apps.inspector.captures() => {
+                return self.inspector_input(event);
+            }
+            Route::Session(_) if self.apps.status.captures() => {
+                (self.apps.status.input(event).map(Action::Apps), self.focus)
+            }
+            _ => return None,
+        };
+        outcome
+            .consumed
+            .then(|| self.surface_outcome(event, focus, outcome))
     }
 
     fn surface_outcome(
@@ -1581,127 +1754,15 @@ impl App {
                         KeyCode::F(5) => self.refresh_action(),
                         KeyCode::F(11) => Some(Action::ToggleFullscreen),
                         KeyCode::Tab | KeyCode::BackTab => {
-                            let count = self.page_actions().len().max(1);
-                            let backwards = key.code == KeyCode::BackTab
-                                || key.modifiers.contains(KeyModifiers::SHIFT);
-                            match self.focus {
-                                Focus::Queue => self.focus = Focus::Composer,
-                                Focus::Navigation => {
-                                    self.focus = if !backwards
-                                        && matches!(
-                                            self.navigation.current(),
-                                            Route::Projects | Route::Connections
-                                        ) {
-                                        Focus::List
-                                    } else if !backwards
-                                        && matches!(self.navigation.current(), Route::Session(_))
-                                    {
-                                        Focus::Composer
-                                    } else {
-                                        Focus::Page
-                                    };
-                                    self.selected_control = if backwards { count - 1 } else { 0 };
-                                }
-                                Focus::List | Focus::Composer => {
-                                    self.focus = if backwards {
-                                        Focus::Navigation
-                                    } else if self.focus == Focus::Composer && !self.chrome.details
-                                    {
-                                        self.chat.view.enter();
-                                        Focus::Transcript
-                                    } else {
-                                        Focus::Page
-                                    };
-                                    self.selected_control = 0;
-                                }
-                                Focus::Transcript => {
-                                    self.focus = if backwards {
-                                        Focus::Composer
-                                    } else if self.inspector_shown() {
-                                        Focus::Inspector
-                                    } else {
-                                        Focus::Page
-                                    };
-                                    self.selected_control = 0;
-                                }
-                                // Panels read after the conversation they belong to.
-                                Focus::Inspector => {
-                                    self.focus = if !backwards {
-                                        Focus::Page
-                                    } else if self.chrome.details {
-                                        Focus::Composer
-                                    } else {
-                                        self.chat.view.enter();
-                                        Focus::Transcript
-                                    };
-                                    self.selected_control = 0;
-                                }
-                                Focus::Page if backwards && self.selected_control > 0 => {
-                                    self.selected_control -= 1
-                                }
-                                Focus::Page if !backwards && self.selected_control + 1 < count => {
-                                    self.selected_control += 1
-                                }
-                                Focus::Page => {
-                                    self.focus = if backwards
-                                        && matches!(
-                                            self.navigation.current(),
-                                            Route::Projects | Route::Connections
-                                        ) {
-                                        Focus::List
-                                    } else if backwards && self.inspector_shown() {
-                                        Focus::Inspector
-                                    } else if backwards
-                                        && matches!(self.navigation.current(), Route::Session(_))
-                                    {
-                                        if self.chrome.details {
-                                            Focus::Composer
-                                        } else {
-                                            self.chat.view.enter();
-                                            Focus::Transcript
-                                        }
-                                    } else {
-                                        Focus::Navigation
-                                    }
-                                }
-                            }
-                            if self.fullscreen() && self.focus == Focus::Navigation {
-                                self.focus = if backwards {
-                                    Focus::Page
-                                } else {
-                                    Focus::Composer
-                                };
-                                self.selected_control = count - 1;
-                            }
-                            match (self.focus, self.navigation.current()) {
-                                (Focus::Navigation, _) => self.sidebar.surface.enter(backwards),
-                                (Focus::List, Route::Connections) => {
-                                    self.connections.surface.enter(backwards)
-                                }
-                                (Focus::List, Route::Projects) => {
-                                    self.projects.surface.enter(backwards)
-                                }
-                                (Focus::Inspector, _) => self.apps.inspector.enter(backwards),
-                                (Focus::Page, Route::Plugins(_)) => {
-                                    self.plugins.surface.enter(backwards)
-                                }
-                                (Focus::Page, Route::Settings) => {
-                                    self.settings.surface.enter(backwards)
-                                }
-                                (Focus::Page, Route::Workspace) => {
-                                    self.home.surface.enter(backwards)
-                                }
-                                (Focus::Page, Route::Extensions | Route::App(_)) => {
-                                    if let Some(surface) = self.apps_surface() {
-                                        surface.enter(backwards);
-                                    }
-                                }
-                                _ => {}
-                            }
+                            self.shell_advance_focus(
+                                key.code == KeyCode::BackTab
+                                    || key.modifiers.contains(KeyModifiers::SHIFT),
+                            );
                             None
                         }
                         KeyCode::Esc if self.focus == Focus::Composer => {
                             self.focus = Focus::Page;
+                            self.chrome.composer.enter(false);
                             None
                         }
                         KeyCode::Esc if self.focus == Focus::Inspector => {
@@ -1710,6 +1771,7 @@ impl App {
                         }
                         KeyCode::Esc if self.focus == Focus::Transcript => {
                             self.focus = Focus::Page;
+                            self.chrome.composer.enter(false);
                             None
                         }
                         KeyCode::Home if self.focus == Focus::Transcript => {
@@ -1731,15 +1793,6 @@ impl App {
                         _ if self.focus == Focus::Composer => {
                             return (self.editor().is_some_and(|editor| editor.key(key)), None);
                         }
-                        KeyCode::Up if self.focus == Focus::Page => {
-                            self.selected_control = self.selected_control.saturating_sub(1);
-                            None
-                        }
-                        KeyCode::Down if self.focus == Focus::Page => {
-                            self.selected_control = (self.selected_control + 1)
-                                .min(self.page_actions().len().saturating_sub(1));
-                            None
-                        }
                         // Unpresented list geometry cannot activate another control.
                         KeyCode::Up
                         | KeyCode::Down
@@ -1753,7 +1806,7 @@ impl App {
                         {
                             None
                         }
-                        KeyCode::Enter => self.page_actions().get(self.selected_control).cloned(),
+                        KeyCode::Enter => None,
                         KeyCode::Esc => Some(Action::Back),
                         _ => return (false, None),
                     }
@@ -1783,19 +1836,6 @@ impl App {
                     .rev()
                     .find(|hit| hit.area.contains(Position::new(mouse.column, mouse.row)))
                     .cloned();
-                if self.palette.is_none()
-                    && self
-                        .queue
-                        .area
-                        .is_some_and(|area| area.contains(Position::new(mouse.column, mouse.row)))
-                    && matches!(
-                        mouse.kind,
-                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                    )
-                {
-                    self.queue_move(mouse.kind == MouseEventKind::ScrollDown);
-                    return (true, None);
-                }
                 if self.palette.is_none()
                     && self
                         .chat
@@ -1843,15 +1883,6 @@ impl App {
                         }) {
                             self.chat
                                 .search_command(crate::ui::transcript::search::Command::Close);
-                        }
-                        if self.palette.is_none()
-                            && let Some(index) = self
-                                .page_actions()
-                                .iter()
-                                .position(|action| Some(action) == target.as_ref())
-                        {
-                            self.focus = Focus::Page;
-                            self.selected_control = index;
                         }
                         if target.is_some() {
                             self.palette = None;

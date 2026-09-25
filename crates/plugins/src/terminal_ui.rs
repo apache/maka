@@ -23,6 +23,7 @@
 
 pub mod app;
 pub mod page;
+pub mod presenter;
 pub mod transcript;
 pub mod view;
 
@@ -30,7 +31,7 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 7;
 
 /// Presentation text is distinct from the stable identity used for navigation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

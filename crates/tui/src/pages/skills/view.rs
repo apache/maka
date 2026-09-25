@@ -23,7 +23,6 @@ use crate::{
     view::safe,
 };
 use crossterm::event::{Event, KeyCode, KeyEventKind};
-use ratatui::{Frame, layout::Rect};
 
 const ROWS: &str = "list/rows";
 
@@ -171,7 +170,7 @@ impl App {
     }
 }
 
-pub fn chips(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &str) {
+pub fn chips(app: &App, session: &str) -> Node<Action> {
     let names = app
         .skills
         .saved
@@ -181,22 +180,19 @@ pub fn chips(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &str) {
         .map(|s| s.name.as_str())
         .collect::<Vec<_>>()
         .join(" · ");
-    let label = if app.stop_target().is_some() {
-        format!(
-            "{} {} · {}",
-            app.chrome.symbol("✧", "*"),
-            safe(&names),
-            app.i18n.text("skills-idle")
-        )
+    let status = if app.stop_target().is_some() {
+        format!(" · {}", app.i18n.text("skills-idle"))
     } else {
-        format!("{} {}", app.chrome.symbol("✧", "*"), safe(&names))
+        String::new()
     };
-    crate::view::list_item(
-        frame,
-        app,
-        area,
-        &label,
-        Action::Skills(Command::Open),
-        false,
-    );
+    let action = Action::Skills(Command::Open);
+    crate::view::shell::controls::summary(
+        "skills",
+        format!("{} ", app.chrome.symbol("✧", "*")),
+        safe(&names),
+        status,
+        action.clone(),
+        app.enabled(&action),
+        crate::view::action_label(app, &action),
+    )
 }

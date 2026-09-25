@@ -32,48 +32,68 @@ impl App {
                 || instance.entry.as_ref().is_some_and(|entry| {
                     entry.descriptor.placement == maka_plugins::terminal_ui::Placement::Status
                 })
-                || instance.live.is_none()
-                || instance.blocked
-                || instance.review.is_some()
             {
                 continue;
             }
-            let (Some(view), Some(entry), Some(target)) =
-                (&instance.view, &instance.entry, &instance.live)
-            else {
+            let (Some(view), Some(entry)) = (&instance.view, &instance.entry) else {
                 continue;
             };
+            let observing = instance.live.as_ref() == Some(&entry.target)
+                && !instance.blocked
+                && instance.review.is_none()
+                && !instance.execution.is_nil();
             let mut resources = vec![];
             resources_in(&view.root, "", &mut resources);
             for (path, resource) in resources {
                 wanted.push((
                     (key.clone(), path),
-                    instance.route.clone(),
+                    key.route.clone(),
                     transport::Mount {
                         token: Uuid::nil(),
+                        owner: instance.execution,
+                        document: Uuid::nil(),
                         package: entry.package_id.clone(),
                         session: key.session.clone(),
-                        parent: target.clone(),
+                        parent: entry.target.clone(),
                         resource,
                         locale: self.apps.locale.clone(),
                     },
+                    observing,
                 ));
             }
         }
         // Resource allocation is bounded across every placement, including slots.
         wanted.truncate(4);
         self.apps.readers.mounts.retain(|identity, mount| {
-            wanted.iter().any(|(key, route, binding)| {
-                key == identity
-                    && route == &mount.route
-                    && mount.root == root
-                    && mount.epoch == epoch
-                    && mount.binding.parent == binding.parent
-                    && mount.binding.resource == binding.resource
-                    && mount.binding.locale == binding.locale
-            })
+            let Some((_, _, _, observing)) =
+                wanted.iter().find(|(key, route, binding, observing)| {
+                    key == identity
+                        && route == &mount.route
+                        && mount.root == root
+                        && mount.epoch == epoch
+                        && mount.binding.parent == binding.parent
+                        && (!observing || mount.binding.owner == binding.owner)
+                        && mount.binding.resource == binding.resource
+                        && mount.binding.locale == binding.locale
+                })
+            else {
+                return false;
+            };
+            if !observing {
+                // Keep only the local cache. The runtime receives no mount,
+                // closes its observation, and rejects every late delivery.
+                mount.failed = true;
+                mount.failure = Some(transport::Failure::Stopped);
+                mount.pending = None;
+                mount.paging = false;
+                mount.cadence.flush();
+            }
+            true
         });
-        for (identity, route, mut binding) in wanted {
+        for (identity, route, mut binding, observing) in wanted {
+            if !observing {
+                continue;
+            }
             self.apps.readers.mounts.entry(identity).or_insert_with(|| {
                 binding.token = Uuid::new_v4();
                 Mounted {
@@ -145,6 +165,10 @@ impl App {
             transport::Output::Failure(error) => {
                 mount.failed = true;
                 mount.failure = Some(error);
+                if error == transport::Failure::Cleanup {
+                    let owner = mount.binding.owner;
+                    self.apps_observation_failed(owner);
+                }
                 return true;
             }
         };
@@ -157,6 +181,10 @@ impl App {
     }
     pub fn apps_transcript_pages(&mut self, runner: &transport::Runner) {
         for mount in self.apps.readers.mounts.values_mut() {
+            if mount.failed {
+                mount.pending = None;
+                continue;
+            }
             if let Some((direction, cursor)) = mount.pending.take() {
                 match runner.page(mount.binding.token, direction, cursor.clone()) {
                     Ok(()) => mount.paging = true,

@@ -20,15 +20,17 @@
 //! Component kernel. A presenter describes a keyed tree of semantic nodes each
 //! frame; the kernel owns layout, hit testing, hover, keyboard focus, scroll
 //! and popovers, so pages neither draw cells nor route raw input themselves.
+mod boundary;
 mod layout;
 mod node;
 mod sheet;
 mod surface;
 pub mod transcript;
 
+pub use boundary::{Activity, Emphasis};
 /// A node's width at its natural size, before any sharing.
 pub(crate) use layout::width as natural_width;
 pub use node::{Align, Choice, Node, On, Role, Size, Tone};
 pub use sheet::{Layer, Sheet, content_width};
 pub use surface::reader::ReaderEffect;
-pub use surface::{Context, Outcome, Surface};
+pub use surface::{Context, Hover, Outcome, Surface};

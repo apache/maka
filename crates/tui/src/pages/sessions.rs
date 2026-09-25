@@ -510,7 +510,7 @@ pub(crate) mod tests {
         app.apply(Action::ToggleFullscreen);
         app.inbox.complete(page(&["A", "B"]));
         assert_eq!(app.focus, Focus::Composer);
-        assert!(app.page_actions().contains(&Action::Inbox));
+        assert!(app.header_actions().contains(&Action::Inbox));
         assert!(!app.interactions.visible);
         app.apply(Action::Inbox);
         assert_eq!(app.focus, Focus::Composer);

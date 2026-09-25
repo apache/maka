@@ -75,7 +75,7 @@ fn package() -> Package {
         (
             MANIFEST_FILE.into(),
             serde_json::to_vec(&json!({
-                "schemaVersion":1, "id":"example", "runtime":{"entry":"index.mjs","sdkVersion":1},
+                "schemaVersion":1, "id":"example", "runtime":{"entry":"index.mjs","sdkVersion":2},
                 "composition":{"patch":"maka.composition.yml"}
             }))
             .unwrap(),

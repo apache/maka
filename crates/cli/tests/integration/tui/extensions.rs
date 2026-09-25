@@ -160,13 +160,13 @@ fn plugin_form_saves_in_place_and_preserves_a_stale_draft_without_model_executio
     tui.wait_for("━●");
     tui.filter_command("Discard draft and reopen");
     tui.click_text("Discard draft and reopen");
-    // Discarding reopens the app where it starts, not the directory.
-    tui.wait_until(|screen| screen.contains("Plugin fixture 000") && !screen.contains("Draft"));
+    // Discard only resets this address; it must not navigate to the first route.
+    tui.wait_until(|screen| screen.contains("Plugin fixture 008") && !screen.contains("Draft"));
     tui.close_terminal();
     tui.finish();
     // The app is a place of its own: a restart returns to it and reads it fresh.
     let mut reopened = Pty::spawn(&["--root", host.root.to_str().unwrap()]);
-    reopened.wait_for("Plugin fixture 000");
+    reopened.wait_for("Plugin fixture 008");
     assert!(
         !reopened
             .screen
@@ -175,7 +175,13 @@ fn plugin_form_saves_in_place_and_preserves_a_stale_draft_without_model_executio
             .screen
             .contains("Disconnected")
     );
-    reopened.wait_for("Next");
+    reopened.wait_for("Enabled");
+    reopened.wait_for("Pinned");
+    assert_eq!(
+        runtime.block_on(catalog(&client))["revision"],
+        merged["revision"],
+        "restoring the exact 008 form must not write preferences"
+    );
     reopened.close_terminal();
     reopened.finish();
     runtime.block_on(async {

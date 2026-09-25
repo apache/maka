@@ -34,7 +34,7 @@ async fn client_bundles_follow_publication_not_disk_or_intent_and_fence_reload_a
         std::fs::write(path.join("host.mjs"), "throw new Error('desktop-ui must not execute Host entrypoint')").unwrap();
         std::fs::write(path.join("maka.extension.json"), serde_json::to_vec(&json!({
             "schemaVersion":1,"id":"example.client",
-            "runtime":{"entry":"host.mjs","sdkVersion":2},
+            "runtime":{"entry":"host.mjs","sdkVersion":1},
             "client":{"entry":"client.mjs","sdkVersion":1}
         })).unwrap()).unwrap();
         let mut previous = None;

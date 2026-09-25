@@ -44,6 +44,21 @@ pub(super) async fn preflight(client: &maka_client::Client) {
 }
 
 async fn bootstrap(client: &maka_client::Client, document: Uuid) -> Result<(), String> {
+    let mount = Uuid::new_v4();
+    let (app, target) = bind(client, "board", RemoteKind::Method).await?;
+    let initialized = exchange(
+        client,
+        RemoteRequest::Call {
+            binding: app,
+            target,
+            document,
+            input: serde_json::json!({"kind":"read", "route":null, "locale":"en"}),
+        },
+    )
+    .await?;
+    if !matches!(initialized, RemoteResult::Value { .. }) {
+        return Err(format!("app initialization returned {initialized:?}"));
+    }
     let (read, read_target) = bind(client, "board-activity.read", RemoteKind::Method).await?;
     let (stream, stream_target) = bind(client, "board-activity.stream", RemoteKind::Stream).await?;
     if (
@@ -62,6 +77,7 @@ async fn bootstrap(client: &maka_client::Client, document: Uuid) -> Result<(), S
             target: stream_target,
             document,
             input: serde_json::to_value(wire::Open {
+                mount,
                 resource: "board-activity".into(),
                 route: Value::Null,
                 locale: "en".into(),
@@ -89,6 +105,7 @@ async fn bootstrap(client: &maka_client::Client, document: Uuid) -> Result<(), S
         return Err(format!("initial event is not Ready: {event:?}"));
     };
     let mut request = wire::Read {
+        mount,
         resource: "board-activity".into(),
         fence,
         direction: wire::Direction::Tail,

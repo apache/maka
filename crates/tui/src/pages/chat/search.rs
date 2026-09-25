@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use crossterm::event::{Event, KeyCode, KeyEventKind, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use render::{Effect, Hit, search::Command};
 
 impl Chat {
@@ -63,6 +63,13 @@ impl Chat {
         }
     }
     pub fn search_input(&mut self, event: &Event) -> Option<bool> {
+        if self.view.search.is_some()
+            && matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release
+                && key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::ALT))
+        {
+            self.search_command(Command::Scope);
+            return Some(true);
+        }
         self.sync_history();
         if let Some(history) = &mut self.history {
             match event {
@@ -97,6 +104,23 @@ impl Chat {
                     }
                 }
                 _ => {}
+            }
+        }
+        if matches!(event, Event::Mouse(_))
+            && !self
+                .view
+                .search
+                .as_ref()
+                .is_some_and(|search| search.editor.dragging())
+            && let Some(history) = &mut self.history
+        {
+            let outcome = history.reader_surface.input(event);
+            if outcome.consumed {
+                if let Some(command) = outcome.message {
+                    self.view.search_command(command);
+                    self.apply_search_commands();
+                }
+                return Some(outcome.redraw);
             }
         }
         let outcome = self.view.search_input(event);

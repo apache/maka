@@ -31,8 +31,13 @@ pub(super) async fn install(client: &maka_client::Client, directory: &Path) {
     )
     .unwrap();
     std::fs::write(
+        package.join("notes-ui.mjs"),
+        include_str!("../../../fixtures/workhub-notes-plugin/notes-ui.mjs"),
+    )
+    .unwrap();
+    std::fs::write(
         package.join("maka.extension.json"),
-        json!({"schemaVersion":1,"id":PACKAGE,"runtime":{"entry":"host.mjs","sdkVersion":1}})
+        json!({"schemaVersion":1,"id":PACKAGE,"runtime":{"entry":"host.mjs","sdkVersion":2}})
             .to_string(),
     )
     .unwrap();

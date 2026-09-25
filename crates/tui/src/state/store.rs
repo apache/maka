@@ -30,6 +30,18 @@ use std::{
 
 const MAX_BYTES: u64 = 40 * 1024 * 1024;
 
+pub(super) fn fits(bytes: usize) -> bool {
+    bytes as u64 <= MAX_BYTES
+}
+
+pub(super) fn encode(value: &impl serde::Serialize) -> io::Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(value)?;
+    if !fits(bytes.len()) {
+        return Err(io::Error::other("TUI checkpoint exceeds local capacity"));
+    }
+    Ok(bytes)
+}
+
 pub struct Store {
     pub root: String,
     path: PathBuf,
@@ -79,10 +91,7 @@ impl Store {
     }
     pub fn save(&mut self, snapshot: Snapshot) -> io::Result<()> {
         snapshot.validate(&self.root).map_err(io::Error::other)?;
-        let bytes = serde_json::to_vec(&snapshot)?;
-        if bytes.len() as u64 > MAX_BYTES {
-            return Err(io::Error::other("TUI checkpoint exceeds local capacity"));
-        }
+        let bytes = encode(&snapshot)?;
         self.lease.validate()?;
         // Check the target before replacing it; never follow a link or a device.
         let current = read(&self.path)?;
@@ -246,6 +255,29 @@ mod tests {
         }
         assert!(Store::open(directory.path(), ROOT, "default").is_err());
         assert_eq!(fs::read(&path).unwrap(), b"{broken");
+        for (pointer, value) in [
+            ("/version", serde_json::json!(20)),
+            ("/version", serde_json::json!(u32::MAX)),
+            (
+                "/navigation/entries/0",
+                serde_json::json!({"page":"workspace"}),
+            ),
+            (
+                "/navigation/entries/0/settings",
+                serde_json::json!({"kind":"builtin","value":"host"}),
+            ),
+        ] {
+            let mut invalid: serde_json::Value = serde_json::from_slice(&before).unwrap();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            let bytes = serde_json::to_vec_pretty(&invalid).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let failure = match Store::open(directory.path(), ROOT, "default") {
+                Ok(_) => panic!("invalid checkpoint opened a writer: {pointer}"),
+                Err(error) => error,
+            };
+            assert!(!failure.to_string().is_empty());
+            assert_eq!(fs::read(&path).unwrap(), bytes, "{pointer}");
+        }
         fs::write(&path, before).unwrap();
         assert!(Store::open(directory.path(), ROOT, "default").is_ok());
         assert!(Store::open(directory.path(), ROOT, "../escape").is_err());

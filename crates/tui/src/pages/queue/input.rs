@@ -17,19 +17,70 @@
  * under the License.
  */
 use super::{Command, Kind};
-use crate::app::{Action, App, Focus};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::{
+    app::{Action, App, Focus},
+    navigation::Route,
+};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 
 impl App {
+    pub(crate) fn queue_surface_invalidate(&mut self) {
+        self.queue.area = None;
+        self.queue.surface.invalidate();
+    }
+
+    pub(crate) fn queue_surface_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {
+        let Event::Mouse(mouse) = event else {
+            return None;
+        };
+        let Route::Session(session) = self.navigation.current() else {
+            return None;
+        };
+        self.queue.area?;
+        if self.overlay().is_some()
+            || self
+                .chat
+                .reader()
+                .is_some_and(|reader| reader.text_selection.dragging())
+            || self
+                .drafts
+                .get(&session)
+                .is_some_and(|editor| editor.dragging())
+        {
+            return None;
+        }
+        let outcome = self.queue.surface.input(event);
+        if !outcome.consumed {
+            return None;
+        }
+        let shell_hover = self.hover.take().is_some();
+        let redraw = outcome.redraw || shell_hover;
+        self.hover_area = None;
+        if outcome.message.is_some() && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.chat
+                .search_command(crate::ui::transcript::search::Command::Close);
+        }
+        let action = outcome
+            .message
+            .and_then(|command| self.apply(Action::Queue(command)));
+        Some((redraw || action.is_some(), action))
+    }
+
     pub fn queue_key(&mut self, key: KeyEvent) -> (bool, Option<Action>) {
-        let target = self.queue_selected().map(|row| row.target);
+        self.queue.surface.input(&Event::FocusLost);
+        let Some(target) = self.queue_selected().map(|row| row.target) else {
+            // The projection may consume an entry before the next frame.
+            self.queue.selected = None;
+            self.focus = Focus::Composer;
+            return (true, None);
+        };
         let command = match key.code {
             KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = Focus::Composer;
                 return (true, None);
             }
             KeyCode::Up | KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
-                target.map(|target| Command::Reorder(target, key.code == KeyCode::Down))
+                Some(Command::Reorder(target, key.code == KeyCode::Down))
             }
             KeyCode::Up | KeyCode::Down => {
                 self.queue_move(key.code == KeyCode::Down);
@@ -37,17 +88,21 @@ impl App {
             }
             KeyCode::Home | KeyCode::End => {
                 let rows = self.queue_rows();
-                self.queue.selected = if key.code == KeyCode::Home {
+                if let Some(row) = if key.code == KeyCode::Home {
                     rows.first()
                 } else {
                     rows.last()
+                } {
+                    self.queue.selected = Some(row.target.entry.clone());
+                    self.queue
+                        .surface
+                        .focus_within(row.target.control_key("preview"));
                 }
-                .map(|row| row.target.entry.clone());
                 return (true, None);
             }
-            KeyCode::Char('e') | KeyCode::Enter => target.map(Command::Edit),
-            KeyCode::Char('x') | KeyCode::Delete => target.map(Command::Retract),
-            KeyCode::Char('s') if key.modifiers.is_empty() => target.map(Command::Promote),
+            KeyCode::Char('e') | KeyCode::Enter => Some(Command::Edit(target)),
+            KeyCode::Char('x') | KeyCode::Delete => Some(Command::Retract(target)),
+            KeyCode::Char('s') if key.modifiers.is_empty() => Some(Command::Promote(target)),
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return (true, self.apply(Action::Palette));
             }

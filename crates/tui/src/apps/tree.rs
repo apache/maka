@@ -167,7 +167,8 @@ pub(crate) fn blank(view: &View) -> bool {
             wire::Node::Column { .. }
             | wire::Node::Row { .. }
             | wire::Node::Scroll { .. }
-            | wire::Node::Split { .. } => node.children().into_iter().all(empty),
+            | wire::Node::Split { .. }
+            | wire::Node::Boundary { .. } => node.children().into_iter().all(empty),
             _ => false,
         }
     }
@@ -282,6 +283,45 @@ impl<M> Builder<'_, M> {
                 let node = if expands { node.size(Size::Fill) } else { node };
                 if list { node.focus_group() } else { node }
             }
+            wire::Node::Boundary {
+                body,
+                bottom,
+                padding,
+                emphasis,
+                activity,
+                ..
+            } => {
+                let expands = has_transcript(node);
+                let child = self.node(
+                    body,
+                    format!("{path}/{}", body.key()),
+                    width.saturating_sub(2 + 2 * u16::from(padding.horizontal)),
+                    Axis::Column,
+                );
+                let mut boundary = Node::boundary(key, child)
+                    .padding(padding.horizontal.into(), padding.vertical.into())
+                    .emphasis(match emphasis {
+                        wire::Emphasis::Normal => ui::Emphasis::Normal,
+                        wire::Emphasis::Accent => ui::Emphasis::Accent,
+                    })
+                    .activity(match activity {
+                        wire::Activity::Idle => ui::Activity::Idle,
+                        wire::Activity::Busy => ui::Activity::Busy,
+                    });
+                if let Some(bottom) = bottom {
+                    boundary = boundary.bottom(self.node(
+                        bottom,
+                        format!("{path}/{}", bottom.key()),
+                        width.saturating_sub(4),
+                        Axis::Row,
+                    ));
+                }
+                if expands {
+                    boundary.size(Size::Fill)
+                } else {
+                    boundary
+                }
+            }
             wire::Node::Row { gap, children, .. } => self.row(key, path, *gap, children, width),
             wire::Node::Text { spans, clip, .. } => text(key, spans, *clip),
             wire::Node::Rule { .. } => Node::rule(key),
@@ -386,11 +426,10 @@ impl<M> Builder<'_, M> {
             wire::Node::Markdown { text, .. } => Node::column(key, markdown(text, self.env.ascii)),
             wire::Node::Code { text, .. } => Node::column(key, code(text, self.env.ascii)),
             wire::Node::Transcript { .. } => {
-                if !self.env.resources_live {
-                    return Node::column(key, vec![]);
-                }
                 if let Some(token) = self.env.readers.token(self.env.key, &self.wire.join("/")) {
                     Node::transcript(key, token)
+                } else if !self.env.resources_live {
+                    Node::column(key, vec![])
                 } else {
                     Node::text(
                         key,

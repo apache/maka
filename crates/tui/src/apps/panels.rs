@@ -55,14 +55,6 @@ impl super::Apps {
         });
         views
     }
-    /// The open instances of a session's views of one placement.
-    fn session_keys(&self, session: &str, placement: &Placement) -> Vec<Key> {
-        self.session_views(placement)
-            .into_iter()
-            .filter_map(|entry| Key::of(entry, Some(session)))
-            .filter(|key| self.instances.contains_key(key))
-            .collect()
-    }
 }
 
 impl App {
@@ -76,7 +68,7 @@ impl App {
     /// Whether the session on screen wants its inspector: panels exist and
     /// the reader has not put them away.
     pub(crate) fn inspector_wanted(&self) -> bool {
-        self.chrome.inspector && !self.chrome.details && self.inspector_available()
+        self.navigation.location().inspector && !self.chrome.details && self.inspector_available()
     }
     /// Whether the inspector is beside the conversation now; the last frame
     /// decided whether both fit.
@@ -91,34 +83,11 @@ impl App {
     pub(crate) fn inspector_available(&self) -> bool {
         self.session_on_screen().is_some() && !self.apps.session_views(&Placement::Panel).is_empty()
     }
-    /// Opens the views the session on screen shows: its status lines, and
-    /// its panels while the inspector is shown.
-    pub(super) fn open_session_views(&mut self) {
-        let Some(session) = self.session_on_screen() else {
-            return;
-        };
-        let mut placements = vec![Placement::Status];
-        if self.inspector_wanted() {
-            placements.push(Placement::Panel);
-        }
-        for placement in placements {
-            let keys: Vec<_> = self
-                .apps
-                .session_views(&placement)
-                .into_iter()
-                .filter_map(|entry| Key::of(entry, Some(&session)))
-                .collect();
-            for key in keys {
-                self.apps.open(&key);
-            }
-        }
-    }
     /// Rows the status lines take above the composer: one, when any has
     /// something to say.
     pub(crate) fn status_rows(&self, session: &str) -> u16 {
         u16::from(
-            self.apps
-                .session_keys(session, &Placement::Status)
+            self.session_keys(session, &Placement::Status)
                 .iter()
                 .any(|key| {
                     self.apps.instances[key]
@@ -150,7 +119,6 @@ pub fn draw_inspector(frame: &mut Frame<'_>, app: &mut App, area: Rect, session:
     let width = area.width.saturating_sub(1);
     // A panel with nothing to say for this session takes no room.
     let keys: Vec<_> = app
-        .apps
         .session_keys(session, &Placement::Panel)
         .into_iter()
         .filter(|key| {
@@ -176,7 +144,7 @@ pub fn draw_inspector(frame: &mut Frame<'_>, app: &mut App, area: Rect, session:
     let tree = Node::column("inspector", vec![tree]);
     let context = context(app, app.focus == Focus::Inspector);
     let mut surface = std::mem::take(&mut app.apps.inspector);
-    surface.render(frame, area, tree, context);
+    surface.render_motion(frame, area, tree, context, &mut app.chrome.animation);
     let focused = context
         .focused
         .then(|| surface.focused().map(str::to_owned))
@@ -213,7 +181,7 @@ fn panel(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
     let locale = app.i18n.locale().id();
     let message = |command: Command| Message::Instance(key.clone(), command);
     let mut head = vec![];
-    if !instance.history.is_empty() {
+    if app.navigation.can_back() {
         let back = message(Command::Back);
         let enabled = app.apps_offered(&back);
         head.push(
@@ -260,7 +228,6 @@ pub fn draw_status(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &s
         return;
     }
     let keys: Vec<_> = app
-        .apps
         .session_keys(session, &Placement::Status)
         .into_iter()
         .filter(|key| {
@@ -283,7 +250,9 @@ pub fn draw_status(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &s
     }
     let tree = Node::row("status", items).gap(1);
     let context = context(app, false);
-    app.apps.status.render(frame, area, tree, context);
+    app.apps
+        .status
+        .render_motion(frame, area, tree, context, &mut app.chrome.animation);
 }
 
 fn status(app: &App, key: &Key, width: u16) -> Node<Message> {
@@ -346,14 +315,7 @@ impl App {
         }
         let mut surface = std::mem::take(&mut self.apps.inspector);
         let wells = std::mem::take(&mut self.apps.inspector_wells);
-        let owned = region::input(
-            &mut self.apps,
-            &mut surface,
-            &wells,
-            event,
-            keyboard,
-            self.chrome.ascii,
-        );
+        let owned = region::input(self, &mut surface, &wells, event, keyboard);
         let outcome = owned.is_none().then(|| surface.input(event));
         self.apps.inspector = surface;
         self.apps.inspector_wells = wells;
@@ -395,9 +357,17 @@ impl App {
             .find(|entry| entry.package_id == key.package)
             .and_then(|entry| Key::of(entry, Some(session)));
         if let Some(panel) = panel {
-            self.chrome.inspector = true;
+            if self.navigation.current() != Route::Session(session.into()) {
+                self.apply(Action::Visit(Route::Session(session.into())));
+            }
+            self.navigate(crate::navigation::Intent::Inspector(true));
+            if self.navigation.current() != Route::Session(session.into())
+                || !self.navigation.location().inspector
+            {
+                return None;
+            }
+            let panel = self.navigation.location().selected(&panel).cloned()?;
             self.focus = Focus::Inspector;
-            self.apps.open(&panel);
             self.apps
                 .inspector
                 .focus_within(format!("{BODY}/{}", panel.node()));

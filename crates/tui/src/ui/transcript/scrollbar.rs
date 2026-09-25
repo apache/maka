@@ -174,6 +174,67 @@ mod tests {
         terminal.resize(Rect::new(0, 0, 30, 8)).unwrap();
         draw(&mut view, &mut terminal);
         assert!(!view.scrollbar_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 29, 7)));
+        // The App must keep a native drag captured while it crosses shell
+        // regions; release there must still reach the original scrollbar.
+        let mut app = crate::app::App::new(
+            "/fixture".into(),
+            I18n::new(LocalePreference::Explicit(Locale::En), Locale::En),
+        );
+        app.apply(crate::app::Action::Visit(
+            crate::navigation::Route::Session("chat".into()),
+        ));
+        app.chat
+            .select(&crate::navigation::Route::Session("chat".into()));
+        app.chat.snapshot = Some(maka_protocol::subscription::decode_session_observation_snapshot(&json!({
+            "schemaVersion":5,"session":{"sessionId":"chat","metadataRevision":1,"status":"active","createdAt":0,"isArchived":false},
+            "projectionRevision":1,"rootTurn":null,"goal":null,
+            "queue":{"hostEpoch":"epoch","queueRevision":0,"steering":[],"followup":[]},"interactions":{"pending":[]}
+        })).unwrap());
+        app.chat.fixture_rows(rows);
+        let mut shell = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        for destination in ["header/left/sidebar", "composer/body/actions/buttons/send"] {
+            shell
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            let (track, _) = app.chat.view.scrollbar_geometry().unwrap();
+            assert_eq!(
+                app.input(crossterm::event::Event::Mouse(mouse(
+                    MouseEventKind::Down(MouseButton::Left),
+                    track.x,
+                    track.y
+                )))
+                .1,
+                None
+            );
+            assert!(app.chat.view.scrollbar_dragging());
+            let target = app
+                .chrome
+                .header
+                .rect(destination)
+                .or_else(|| app.chrome.composer.rect(destination))
+                .unwrap();
+            assert_eq!(
+                app.input(crossterm::event::Event::Mouse(mouse(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    target.x,
+                    target.y
+                )))
+                .1,
+                None
+            );
+            assert!(app.chat.view.scrollbar_dragging());
+            assert_eq!(
+                app.input(crossterm::event::Event::Mouse(mouse(
+                    MouseEventKind::Up(MouseButton::Left),
+                    target.x,
+                    target.y
+                )))
+                .1,
+                None
+            );
+            assert!(!app.chat.view.scrollbar_dragging());
+            assert_eq!(app.focus, crate::app::Focus::Transcript);
+        }
         view.invalidate_scrollbar();
         assert!(view.scrollbar_geometry().is_none());
         view.sync(&BTreeMap::new(), &[], 1, &i18n, false);

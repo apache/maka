@@ -17,9 +17,17 @@
  * under the License.
  */
 
+mod binding;
+mod page;
+pub(super) use page::receipt;
+
 use super::{failure, worker};
-use maka_plugins::remote::Error;
-use maka_protocol::OperationError;
+use maka_plugins::remote::{Error, Target};
+use maka_protocol::{
+    OperationError,
+    plugin::{RemoteBinding, RemoteKind},
+};
+use serde_json::Value;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -54,10 +62,14 @@ pub(super) struct Document {
 struct DocumentState {
     closed: bool,
     cleanup_failed: bool,
+    ordinary: bool,
     streams: HashMap<Uuid, Arc<worker::Handle>>,
+    presenter: Option<binding::Binding>,
+    reservations: HashMap<Uuid, binding::Identity>,
 }
 pub(super) struct Reservation {
     pub document: Arc<Document>,
+    id: Uuid,
     _permits: Vec<OwnedSemaphorePermit>,
     _task: TaskTrackerToken,
 }
@@ -100,7 +112,10 @@ impl Registry {
                 state: Mutex::new(DocumentState {
                     closed: false,
                     cleanup_failed: false,
+                    ordinary: false,
                     streams: HashMap::new(),
+                    presenter: None,
+                    reservations: HashMap::new(),
                 }),
                 capacity: [
                     Arc::new(Semaphore::new(32)),
@@ -167,10 +182,19 @@ impl Drop for Connection {
     }
 }
 impl Document {
-    pub fn reserve(self: &Arc<Self>) -> Result<Reservation, OperationError> {
-        let state = self.state.lock().unwrap();
+    pub fn reserve(
+        self: &Arc<Self>,
+        binding: &RemoteBinding,
+        target: &Target,
+        kind: RemoteKind,
+        input: &Value,
+    ) -> Result<Reservation, OperationError> {
+        let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(failure(Error::Cancelled));
+        }
+        if let Some(presenter) = &state.presenter {
+            presenter.check(binding, target, kind, input)?;
         }
         let permits = self
             .capacity
@@ -178,8 +202,13 @@ impl Document {
             .map(|capacity| capacity.clone().try_acquire_owned())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| failure(Error::Invalid("Remote capacity exhausted".into())))?;
+        let id = Uuid::new_v4();
+        state
+            .reservations
+            .insert(id, binding::Identity::new(binding, target, kind));
         Ok(Reservation {
             document: self.clone(),
+            id,
             _permits: permits,
             _task: self.tasks.token(),
         })
@@ -188,6 +217,9 @@ impl Document {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(failure(Error::Cancelled));
+        }
+        if state.presenter.is_none() {
+            state.ordinary = true;
         }
         state.streams.insert(id, stream);
         Ok(())
@@ -216,13 +248,30 @@ impl Document {
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap();
         state.closed = true;
+        let presenter = state.presenter.clone();
         self.cancellation.cancel();
         self.tasks.close();
+        drop(state);
+        if let Some(presenter) = presenter {
+            presenter.cancel();
+        }
     }
     pub async fn drained(&self) -> Result<(), OperationError> {
-        tokio::time::timeout(std::time::Duration::from_secs(6), self.tasks.wait())
+        // A cancelled page settles for at most six seconds; its independent
+        // invocation resources then retain their existing five-second budget.
+        tokio::time::timeout(std::time::Duration::from_secs(12), self.tasks.wait())
             .await
             .map_err(|_| failure(Error::CleanupUnconfirmed))?;
         self.check_cleanup()
+    }
+}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.document
+            .state
+            .lock()
+            .unwrap()
+            .reservations
+            .remove(&self.id);
     }
 }

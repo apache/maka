@@ -250,7 +250,7 @@ mod tests {
         key(&mut app, KeyCode::Char(' '));
         assert!(app.chat.view.folded(&group));
         key(&mut app, KeyCode::Tab);
-        assert_eq!(app.focus, Focus::Page);
+        assert_eq!(app.focus, Focus::Header);
         key(&mut app, KeyCode::BackTab);
         assert_eq!(app.focus, Focus::Transcript);
         key(&mut app, KeyCode::BackTab);

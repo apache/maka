@@ -18,6 +18,7 @@
  */
 
 use super::*;
+mod admission;
 use crate::ui::{Node, On, Size, Tone};
 use maka_plugins::terminal_ui::view::View;
 
@@ -98,7 +99,7 @@ impl Instance {
         all_drafts.validate().map_err(|_| ())?;
         Ok(review)
     }
-    pub fn reload_draft(&mut self, entry: TerminalViewProjection, view: View) {
+    pub fn reload_draft(&mut self, entry: TerminalViewProjection, view: View, root: &str) {
         self.blocked = true;
         let Ok(review) = self.merge(entry, view) else {
             self.message = Some(Notice::Local("extensions-draft-shape-changed"));
@@ -110,14 +111,18 @@ impl Instance {
             .is_some_and(|old| context_changed(old, &review.view));
         self.review = Some(review);
         if !changed && self.review.as_ref().unwrap().conflicts.is_empty() {
-            self.accept_draft();
+            self.accept_draft(root);
         } else {
             self.message = None;
         }
     }
-    pub fn accept_draft(&mut self) {
+    pub fn accept_draft(&mut self, root: &str) -> bool {
+        if self.review.is_some() && !self.draft_fits(root) {
+            self.message = Some(Notice::Local("extensions-capacity"));
+            return false;
+        }
         let Some(mut review) = self.review.take() else {
-            return;
+            return false;
         };
         for conflict in &review.conflicts {
             if conflict.mine == Some(true) {
@@ -149,6 +154,7 @@ impl Instance {
             }
         }
         self.message = Some(Notice::Local("extensions-draft-ready"));
+        true
     }
 }
 

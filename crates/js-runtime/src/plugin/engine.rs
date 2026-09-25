@@ -16,14 +16,18 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use super::{Health, Limits, Result, failed};
+use super::{Bootstrap, Health, Limits, Result, failed};
 use deno_core::{JsRuntime, RuntimeOptions, v8};
 use futures_util::future::LocalBoxFuture;
 use serde_json::Value;
 use std::sync::Arc;
 
 pub(super) struct Module(pub v8::Global<v8::Object>);
-struct Sdk(v8::Global<v8::Function>);
+struct Sdk {
+    plugin: v8::Global<v8::Function>,
+    presenter: v8::Global<v8::Function>,
+    terminal: v8::Global<v8::Object>,
+}
 pub(super) type Call = LocalBoxFuture<'static, Result<v8::Global<v8::Value>>>;
 
 pub(super) fn runtime(health: &Arc<Health>, limits: &Limits) -> Result<JsRuntime> {
@@ -70,16 +74,41 @@ pub(super) fn runtime(health: &Arc<Health>, limits: &Limits) -> Result<JsRuntime
             }"#,
         )
         .map_err(failed)?;
+    let terminal = runtime
+        .execute_script(
+            "maka-terminal-builders",
+            include_str!("terminal-builders.js"),
+        )
+        .map_err(failed)?;
+    let terminal = {
+        deno_core::scope!(scope, runtime);
+        let terminal =
+            v8::Local::<v8::Object>::try_from(v8::Local::new(scope, terminal)).map_err(failed)?;
+        v8::Global::new(scope, terminal)
+    };
     let sdk = runtime
         .execute_script("maka-plugin-sdk", include_str!("sdk.js"))
         .map_err(failed)?;
-    let sdk = {
+    let plugin = {
         deno_core::scope!(scope, runtime);
         let sdk =
             v8::Local::<v8::Function>::try_from(v8::Local::new(scope, sdk)).map_err(failed)?;
-        Sdk(v8::Global::new(scope, sdk))
+        v8::Global::new(scope, sdk)
     };
-    runtime.op_state().borrow_mut().put(sdk);
+    let presenter = runtime
+        .execute_script("maka-terminal-presenter", include_str!("presenter.js"))
+        .map_err(failed)?;
+    let presenter = {
+        deno_core::scope!(scope, runtime);
+        let presenter = v8::Local::<v8::Function>::try_from(v8::Local::new(scope, presenter))
+            .map_err(failed)?;
+        v8::Global::new(scope, presenter)
+    };
+    runtime.op_state().borrow_mut().put(Sdk {
+        plugin,
+        presenter,
+        terminal,
+    });
     Ok(runtime)
 }
 
@@ -87,9 +116,19 @@ pub(super) fn load(
     runtime: &mut JsRuntime,
     name: &str,
     source: &str,
-    plugin: Option<u64>,
+    bootstrap: Bootstrap,
+    id: u64,
 ) -> Result<Module> {
-    let sdk = runtime.op_state().borrow().borrow::<Sdk>().0.clone();
+    let sdk = {
+        let state = runtime.op_state();
+        let state = state.borrow();
+        let sdk = state.borrow::<Sdk>();
+        match bootstrap {
+            Bootstrap::Plain => None,
+            Bootstrap::Plugin => Some((sdk.plugin.clone(), sdk.terminal.clone())),
+            Bootstrap::Presenter => Some((sdk.presenter.clone(), sdk.terminal.clone())),
+        }
+    };
     deno_core::scope!(scope, runtime);
     v8::tc_scope!(scope, scope);
     let resource =
@@ -151,13 +190,18 @@ pub(super) fn load(
     }
     let mut namespace =
         v8::Local::<v8::Object>::try_from(module.get_module_namespace()).map_err(failed)?;
-    if let Some(id) = plugin {
+    if let Some((sdk, terminal)) = sdk {
         let sdk = v8::Local::new(scope, sdk);
+        let terminal = v8::Local::new(scope, terminal);
         let key = v8::String::new(scope, &id.to_string())
             .ok_or_else(|| failed("SDK identity allocation failed"))?;
         let undefined = v8::undefined(scope).into();
         let value = sdk
-            .call(scope, undefined, &[namespace.into(), key.into()])
+            .call(
+                scope,
+                undefined,
+                &[namespace.into(), key.into(), terminal.into()],
+            )
             .ok_or_else(|| {
                 failed(
                     scope

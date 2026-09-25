@@ -154,14 +154,14 @@ fn node_scope_isolates_identical_message_keys_and_retires_old_resource_deliverie
             .text(),
         "distinct"
     );
-    let route = instance_mut(&mut app).route.clone();
+    let route = instance_mut(&mut app).address.route.clone();
     app.app_page_input(
         &key(),
         &Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
     );
     assert!(app.apps.readers.mounts[&second].view.search.is_none());
     assert_eq!(
-        instance_mut(&mut app).route,
+        instance_mut(&mut app).address.route,
         route,
         "Esc closes local find before leaving the route"
     );
@@ -447,3 +447,5 @@ fn a_page_received_during_selection_stays_static_and_pauses_after_projection() {
         "the applied older page keeps its reading anchor"
     );
 }
+
+mod retained;

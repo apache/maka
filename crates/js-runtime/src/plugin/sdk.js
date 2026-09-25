@@ -17,7 +17,7 @@
  * under the License.
  */
 
-(namespace, key) => {
+(namespace, key, { builders, pick }) => {
   const activate = namespace.default;
   if (typeof activate !== 'function') {
     throw new TypeError('A Host plugin must export a default activation function');
@@ -267,6 +267,12 @@
   };
   const register = async (kind, definition, fn) => {
     if (
+      (kind === 'remote_method' || kind === 'remote_stream') &&
+      Object.hasOwn(definition, 'terminalView')
+    ) {
+      throw new TypeError('Remote registrations cannot declare terminalView; use tui.app()');
+    }
+    if (
       !['loading', 'prepared', 'active'].includes(phase) ||
       (phase === 'loading' && registrations.length >= 128)
     ) {
@@ -366,7 +372,7 @@
     }
   };
 
-  // The store owns source data; each Remote document owns one immutable snapshot.
+  // The business store owns data; each document mount owns an immutable snapshot.
   // No page call can allocate a snapshot or borrow another document's fence.
   const transcriptResource = async (remote, name, initial = {}, options) => {
     const encoder = new TextEncoder();
@@ -546,11 +552,21 @@
       timings.set(value.turn, value);
       if (timings.size > 4096) fail('Transcript timing capacity exceeded');
     }
-    const owner = (caller) => {
+    const owner = (caller, token) => {
       if (!caller?.documentId || !caller?.clientInstanceId)
         fail('Missing Remote document identity');
       caller.signal.throwIfAborted();
-      return JSON.stringify([caller.clientInstanceId, caller.documentId, caller.sessionId]);
+      if (
+        typeof token !== 'string' ||
+        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(token)
+      )
+        fail('Invalid transcript mount UUID');
+      return JSON.stringify([
+        caller.clientInstanceId,
+        caller.documentId,
+        caller.sessionId,
+        token.toLowerCase(),
+      ]);
     };
     const recordAt = (entry, offset) => {
       if (offset === 0 && entry.encoded.length < 48 * 1024)
@@ -606,14 +622,14 @@
       return true;
     };
     const page = (input, caller) => {
-      const mount = mounts.get(owner(caller));
+      const mount = mounts.get(owner(caller, input?.mount));
       if (closed || !mount || input?.resource !== name || input.fence !== mount.fence)
         fail('Transcript snapshot is no longer available', 'revoked');
       counters.pageReads++;
       return mount.page(input);
     };
     const open = (input, caller) => {
-      const document = owner(caller);
+      const document = owner(caller, input?.mount);
       if (closed) fail('Transcript resource is closed', 'revoked');
       if (
         input?.resource !== name ||
@@ -623,7 +639,7 @@
         bytes(input.locale) > 32
       )
         fail('Invalid transcript open');
-      if (mounts.has(document) || mounts.size >= 4) fail('Transcript document capacity exceeded');
+      if (mounts.has(document) || mounts.size >= 4) fail('Transcript mount capacity exceeded');
       const fence = revision;
       let snapshot = [...sources.values()];
       let snapshotTimings = new Map(timings);
@@ -783,10 +799,16 @@
         close: () => mount.cancel(),
       };
     };
-    const reader = await remote.method(resource.read, page, options);
+    const reader = await remote.method(resource.read, page, {
+      ...options,
+      observation: { role: 'transcript_read', resource },
+    });
     let streamer;
     try {
-      streamer = await remote.stream(resource.stream, open, options);
+      streamer = await remote.stream(resource.stream, open, {
+        ...options,
+        observation: { role: 'transcript_stream', resource },
+      });
     } catch (error) {
       await reader.close();
       throw error;
@@ -861,70 +883,36 @@
     });
   };
 
-  /** Terminal apps: a Remote method that answers terminal view requests,
-   * with builders for the view tree the terminal renders. */
+  /** Business registrations plus the shared, capability-free view builders. */
   const terminal = (remote) => {
-    const pick = (locale, en, zhCN, zhTW) => {
-      const language = String(locale ?? '').toLowerCase();
-      if (language === 'zh-tw' || language === 'zh-hant') return zhTW ?? zhCN ?? en;
-      if (language.startsWith('zh')) return zhCN ?? en;
-      return en;
-    };
-    const view = ({ title, revision, fields = [], actions = [], root }) => ({
-      version: 5,
-      title,
-      revision: String(revision),
-      fields,
-      actions,
-      root,
-    });
-    const item = (key, title, target, extra = {}) => ({
-      kind: 'item',
-      key,
-      title,
-      target,
-      ...extra,
-    });
-    const text = (key, value, tone = 'normal') => ({
-      kind: 'text',
-      key,
-      spans: [{ text: String(value), tone }],
-    });
     return Object.freeze({
-      /** Serves `handlers` as the terminal view `descriptor` describes. */
-      app: (name, handlers, descriptor, options = {}) =>
-        remote.method(
-          name,
-          async (input, caller) => {
-            const locale = input?.locale ?? 'en';
-            const cx = Object.freeze({
-              locale,
-              caller,
-              t: (en, zhCN, zhTW) => pick(locale, en, zhCN, zhTW),
-            });
-            switch (input?.kind) {
-              case 'read': {
-                const result = await handlers.read(input.route ?? null, cx);
-                return { kind: 'view', view: result?.version ? result : view(result) };
-              }
-              case 'submit': {
-                const { route = null, revision, action, fields = {}, grant = null } = input;
-                return await handlers.submit({ route, revision, action, fields, grant }, cx);
-              }
-              case 'recover': {
-                if (typeof handlers.recover !== 'function') {
-                  throw Object.assign(new Error('This view declares no recovery'), {
-                    code: 'invalid',
-                  });
-                }
-                return await handlers.recover(input.route ?? null, cx);
-              }
-              default:
-                throw Object.assign(new Error('Unknown terminal request'), { code: 'invalid' });
-            }
-          },
-          { ...options, terminalView: { version: 5, ...descriptor } },
-        ),
+      ...builders,
+      /** Captures a private backend and immutable, document-owned UI entry. */
+      app: async (name, definition, descriptor, options = {}) => {
+        const { entry, backend, resources = [] } = definition ?? {};
+        if (typeof entry !== 'string' || !entry || typeof backend !== 'function') {
+          throw new TypeError(
+            'Terminal apps require an entry and private backend; inline handlers are unsupported',
+          );
+        }
+        if (!Array.isArray(resources)) throw new TypeError('Invalid terminal app resources');
+        return register(
+          'terminal_app',
+          { ...options, name, entry, resources, terminalView: { ...descriptor, version: 7 } },
+          (input, caller) =>
+            remoteResult(() => {
+              const locale = input?.locale ?? 'en';
+              return backend(
+                input,
+                Object.freeze({
+                  locale,
+                  caller,
+                  t: (en, zhCN, zhTW) => pick(locale, en, zhCN, zhTW),
+                }),
+              );
+            }),
+        );
+      },
       /** A changes stream for a descriptor's `changes`; calling the
        * returned function tells every open view it is stale. */
       changes: async (name) => {
@@ -968,61 +956,6 @@
       },
       transcriptResource: (name, initial, options) =>
         transcriptResource(remote, name, initial, options),
-      transcript: (key, resource) => ({ kind: 'transcript', key, resource }),
-      view,
-      column: (key, children, gap = 1) => ({ kind: 'column', key, gap, children }),
-      stack: (key, children) => ({ kind: 'column', key, gap: 0, children }),
-      row: (key, children, gap = 2) => ({ kind: 'row', key, gap, children }),
-      text,
-      spans: (key, spans) => ({
-        kind: 'text',
-        key,
-        spans: spans.map(([value, tone = 'normal']) => ({ text: String(value), tone })),
-      }),
-      heading: (key, value) => text(key, value, 'strong'),
-      rule: (key) => ({ kind: 'rule', key }),
-      scroll: (key, rows, child) => ({ kind: 'scroll', key, rows, child }),
-      split: (key, ratio, left, right) => ({ kind: 'split', key, ratio, left, right }),
-      tabs: (key, current, tabs) => ({ kind: 'tabs', key, current, tabs }),
-      link: (key, title, route, extra) => item(key, title, { kind: 'route', route }, extra),
-      act: (key, title, action, extra) => item(key, title, { kind: 'action', action }, extra),
-      open: (key, title, session, extra) => item(key, title, { kind: 'session', session }, extra),
-      button: (key, action, role = 'normal', label) => ({
-        kind: 'button',
-        key,
-        action,
-        role,
-        ...(label === undefined ? {} : { label }),
-      }),
-      input: (key, field, label = '') => ({ kind: 'input', key, field, label }),
-      progress: (key, value, max, label = '') => ({ kind: 'progress', key, value, max, label }),
-      markdown: (key, value) => ({ kind: 'markdown', key, text: String(value) }),
-      code: (key, value) => ({ kind: 'code', key, text: String(value) }),
-      slot: (key, name, context = null) => ({ kind: 'slot', key, name, context }),
-      action: (id, label, extra = {}) => ({ id, label, ...extra }),
-      toggle: (id, value) => ({ id, control: { kind: 'toggle', value: Boolean(value) } }),
-      line: (id, value = '', maxBytes = 256, extra = {}) => ({
-        id,
-        control: { kind: 'text', value: String(value), max_bytes: maxBytes, ...extra },
-      }),
-      area: (id, value = '', maxBytes = 8192, extra = {}) => ({
-        id,
-        control: {
-          kind: 'text',
-          value: String(value),
-          max_bytes: maxBytes,
-          multiline: true,
-          ...extra,
-        },
-      }),
-      choice: (id, value, options) => ({
-        id,
-        control: {
-          kind: 'choice',
-          value,
-          options: options.map(([option, label]) => ({ value: option, label })),
-        },
-      }),
     });
   };
   return Object.freeze({

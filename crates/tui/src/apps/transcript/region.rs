@@ -64,7 +64,9 @@ pub(in crate::apps) fn paint<M: Clone>(
         if mount.failed
             || mount.source.phase() != source::Phase::Ready && mount.source.blocks().is_empty()
         {
-            let label = if mount.failed {
+            let label = if mount.failure == Some(transport::Failure::Stopped) {
+                i18n.text("transcript-failed")
+            } else if mount.failed {
                 format!(
                     "{} · Ctrl+R {}",
                     i18n.text(

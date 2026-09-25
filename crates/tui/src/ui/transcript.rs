@@ -37,6 +37,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 mod groups;
 mod navigation;
+#[cfg(test)]
+mod performance;
 mod prompt;
 pub mod reading;
 mod reveal;
@@ -242,6 +244,8 @@ pub struct Transcript {
     test_presentation: crate::pages::chat::presentation::Presentation,
     #[cfg(test)]
     builds: usize,
+    #[cfg(test)]
+    measurement: Option<performance::DrawStats>,
 }
 impl Transcript {
     /// Call before reconciliation and drawing, using the shell's motion policy.
@@ -743,11 +747,21 @@ impl Transcript {
         };
         self.update_timings(ascii, chrono::Utc::now().timestamp_millis());
         // Short viewports spend rows on content rather than band padding.
+        #[cfg(test)]
+        let layout_started = self.measurement.map(|_| std::time::Instant::now());
         self.layout(
             area.width,
             ascii,
             !self.colors.terminal && area.height >= 12,
         )?;
+        #[cfg(test)]
+        let after_layout = layout_started.map(|start| {
+            let now = std::time::Instant::now();
+            let stats = self.measurement.as_mut().unwrap();
+            stats.layout_ns = now.duration_since(start).as_nanos();
+            stats.visited_blocks = self.starts.len();
+            now
+        });
         self.validate_text_selection();
         self.text_selection.begin_frame();
         self.height = usize::from(area.height);
@@ -937,8 +951,16 @@ impl Transcript {
                 break;
             }
         }
+        #[cfg(test)]
+        if let Some(stats) = &mut self.measurement {
+            stats.painted_rows = lines.len();
+        }
         frame.render_widget(Paragraph::new(lines), area);
         self.draw_scrollbar(frame, outer, ascii);
+        #[cfg(test)]
+        if let Some(start) = after_layout {
+            self.measurement.as_mut().unwrap().after_layout_ns = start.elapsed().as_nanos();
+        }
         Ok(hits)
     }
     /// Role styling of one laid-out row, before search, selection and gutter.
@@ -1104,16 +1126,24 @@ mod tests {
     use crate::i18n::{Locale, LocalePreference};
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
-    fn locale() -> I18n {
+    pub(super) fn locale() -> I18n {
         I18n::new(LocalePreference::Explicit(Locale::En), Locale::En)
+    }
+    pub(super) fn render(
+        view: &mut Transcript,
+        terminal: &mut Terminal<TestBackend>,
+    ) -> Result<(), String> {
+        let mut result = Ok(());
+        terminal
+            .draw(|frame| {
+                result = view.draw(frame, frame.area(), false).map(|_| ());
+            })
+            .map_err(|error| error.to_string())?;
+        result.map_err(str::to_owned)
     }
     fn draw(view: &mut Transcript, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| {
-                view.draw(frame, frame.area(), false).unwrap();
-            })
-            .unwrap();
+        render(view, &mut terminal).unwrap();
         terminal
             .backend()
             .buffer()

@@ -18,6 +18,10 @@
  */
 
 use super::{Request, Work};
+mod document;
+mod watches;
+pub use document::Document;
+pub use watches::{Change, Watch, Watches};
 pub mod transcript;
 use maka_client::{Client, ClientError, RequestFailure};
 use maka_plugins::terminal_ui::view::{Reply, Request as Input};
@@ -46,7 +50,11 @@ fn failure(error: RequestFailure, writing: bool) -> Failure {
         unknown: writing && unknown,
     }
 }
-pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failure> {
+pub async fn execute(
+    client: &Client,
+    request: &Request,
+    document: Option<Document>,
+) -> Result<Output, Failure> {
     match &request.work {
         Work::Rebind { entry, input } => {
             if !matches!(input, Input::Read { .. } | Input::Recover { .. }) {
@@ -70,8 +78,14 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
             }
             let mut entry = entry.clone();
             entry.target = target;
-            let Output::Reply(reply) =
-                call(client, &entry, input, session(&entry, request)).await?
+            let Output::Reply(reply) = call(
+                client,
+                &entry,
+                input,
+                session(&entry, request),
+                document.as_ref(),
+            )
+            .await?
             else {
                 return Err(Failure { unknown: false });
             };
@@ -92,7 +106,16 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
                 _ => Err(Failure { unknown: false }),
             }
         }
-        Work::Call { entry, input } => call(client, entry, input, session(entry, request)).await,
+        Work::Call { entry, input } => {
+            call(
+                client,
+                entry,
+                input,
+                session(entry, request),
+                document.as_ref(),
+            )
+            .await
+        }
         Work::Authorize {
             entry,
             input,
@@ -120,7 +143,14 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
                 return Err(Failure { unknown: false });
             };
             *receipt = Some(grant.id);
-            call(client, entry, &input, session(entry, request)).await
+            call(
+                client,
+                entry,
+                &input,
+                session(entry, request),
+                document.as_ref(),
+            )
+            .await
         }
     }
 }
@@ -145,15 +175,31 @@ async fn call(
     entry: &TerminalViewProjection,
     input: &Input,
     session: Option<String>,
+    owner: Option<&Document>,
 ) -> Result<Output, Failure> {
     input.validate().map_err(|_| Failure { unknown: false })?;
-    let RemoteResult::Document { document } = client
-        .plugin_remote(RemoteRequest::OpenDocument)
-        .await
-        .map_err(|error| failure(error, false))?
-    else {
+    let owner = owner.ok_or(Failure { unknown: false })?;
+    let _call = owner.lock().await;
+    let document = owner.id().await?;
+    if !owner.accepts(&entry.target) {
         return Err(Failure { unknown: false });
-    };
+    }
+    let result = call_document(client, entry, input, session, document).await;
+    if result.is_ok() {
+        owner.initialized();
+    } else {
+        owner.retire();
+    }
+    result
+}
+
+async fn call_document(
+    client: &Client,
+    entry: &TerminalViewProjection,
+    input: &Input,
+    session: Option<String>,
+    document: uuid::Uuid,
+) -> Result<Output, Failure> {
     let result = client
         .plugin_remote(RemoteRequest::Call {
             binding: binding(entry, session),
@@ -161,11 +207,6 @@ async fn call(
             document,
             input: serde_json::to_value(input).expect("terminal request"),
         })
-        .await;
-    // The finite call always owns cleanup, even after navigation. Do not
-    // replace a known write receipt with a CloseDocument failure.
-    let closed = client
-        .plugin_remote(RemoteRequest::CloseDocument { document })
         .await;
     let writing = matches!(input, Input::Submit { .. });
     let RemoteResult::Value { value } = result.map_err(|error| failure(error, writing))? else {
@@ -191,165 +232,7 @@ async fn call(
     )) {
         return Err(Failure { unknown: writing });
     }
-    if !writing {
-        closed.map_err(|error| failure(error, false))?;
-    }
     Ok(Output::Reply(reply))
-}
-
-/// A changes stream a view declared: the package's stream method, for one
-/// session or for the application.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Watch {
-    pub package: String,
-    pub method: String,
-    pub session: Option<String>,
-    /// Replacing a plugin restarts its stream even when its method name stays.
-    pub activation: String,
-}
-
-pub enum Change {
-    /// The stream said its views are stale.
-    Stale(Watch),
-    /// The stream ended or failed; it may start again when still wanted.
-    Ended(Watch),
-}
-
-/// Changes streams kept open while a view that declared one is on screen.
-/// Each runs in its own task; dropping its sender cancels it, and it closes
-/// its stream and document on the way out.
-pub struct Watches {
-    running: std::collections::HashMap<Watch, tokio::sync::oneshot::Sender<()>>,
-    changes: tokio::sync::mpsc::UnboundedSender<Change>,
-}
-
-/// A stream that ends or fails waits this long before it may start again.
-const RESTART: std::time::Duration = std::time::Duration::from_secs(10);
-
-impl Watches {
-    pub fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Change>) {
-        let (changes, receiver) = tokio::sync::mpsc::unbounded_channel();
-        (
-            Self {
-                running: Default::default(),
-                changes,
-            },
-            receiver,
-        )
-    }
-    /// Starts what is wanted and not running; stops what no longer is.
-    pub fn reconcile(&mut self, client: &Client, wanted: std::collections::BTreeSet<Watch>) {
-        self.running.retain(|watch, _| wanted.contains(watch));
-        for watch in wanted {
-            if self.running.contains_key(&watch) {
-                continue;
-            }
-            let (stop, stopped) = tokio::sync::oneshot::channel();
-            self.running.insert(watch.clone(), stop);
-            tokio::spawn(follow(client.clone(), watch, self.changes.clone(), stopped));
-        }
-    }
-    pub fn ended(&mut self, watch: &Watch) {
-        self.running.remove(watch);
-    }
-    pub fn stop(&mut self) {
-        self.running.clear();
-    }
-}
-
-async fn follow(
-    client: Client,
-    watch: Watch,
-    changes: tokio::sync::mpsc::UnboundedSender<Change>,
-    mut stopped: tokio::sync::oneshot::Receiver<()>,
-) {
-    let binding = RemoteBinding::Package {
-        package_id: watch.package.clone(),
-        method: watch.method.clone(),
-        session_id: watch.session.clone(),
-    };
-    let bound = async {
-        let RemoteResult::Bound {
-            target,
-            handler: RemoteKind::Stream,
-        } = client
-            .plugin_remote(RemoteRequest::Bind {
-                binding: binding.clone(),
-            })
-            .await
-            .ok()?
-        else {
-            return None;
-        };
-        (target.activation == watch.activation).then_some(target)
-    };
-    let target = tokio::select! {
-        _ = &mut stopped => return,
-        target = bound => target,
-    };
-    // Once a document is allocated, retain its identity through cancellation
-    // so a pending Open/Next cannot strand Host resources.
-    let document = if target.is_some() {
-        match client.plugin_remote(RemoteRequest::OpenDocument).await {
-            Ok(RemoteResult::Document { document }) => Some(document),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let stopped_early = if let (Some(target), Some(document)) = (target, document) {
-        let observe = async {
-            let Ok(RemoteResult::Opened { stream }) = client
-                .plugin_remote(RemoteRequest::Open {
-                    binding,
-                    target,
-                    document,
-                    input: serde_json::Value::Null,
-                })
-                .await
-            else {
-                return false;
-            };
-            // Subscribe before the authoritative reread: a write between the
-            // first rendered view and this Open must not be missed forever.
-            if changes.send(Change::Stale(watch.clone())).is_err() {
-                return true;
-            }
-            loop {
-                match client
-                    .plugin_remote(RemoteRequest::Next { document, stream })
-                    .await
-                {
-                    Ok(RemoteResult::Item { .. }) => {
-                        if changes.send(Change::Stale(watch.clone())).is_err() {
-                            break true;
-                        }
-                    }
-                    Ok(RemoteResult::Pending) => {}
-                    _ => break false,
-                }
-            }
-        };
-        let stopped_early = tokio::select! {
-            _ = &mut stopped => true,
-            ended = observe => ended,
-        };
-        let _ = client
-            .plugin_remote(RemoteRequest::CloseDocument { document })
-            .await;
-        stopped_early
-    } else {
-        false
-    };
-    if stopped_early {
-        return;
-    }
-    tokio::select! {
-        _ = &mut stopped => {}
-        _ = tokio::time::sleep(RESTART) => {
-            let _ = changes.send(Change::Ended(watch));
-        }
-    }
 }
 
 #[cfg(test)]

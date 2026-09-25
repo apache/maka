@@ -69,7 +69,10 @@ fn restart_keeps_forward_history_and_keyboard_control_without_replaying_actions(
     reopened.send(b"\x1b[1;3D");
     reopened.wait_for("ASCII v");
     reopened.send(b"\x1b[1;3D");
-    reopened.wait_for("No sessions yet");
+    reopened.wait_for("Maka dark v"); // Category selection is a shell history entry.
+    reopened.send(b"\x1b[1;3D");
+    reopened
+        .wait_until(|screen| screen.contains("No sessions yet") && !screen.contains("Maka dark v"));
     reopened.host_details();
     reopened.wait_for("Host epoch:");
     reopened.send(b"\x1b[1;3C"); // New destination replaces the previous forward branch.

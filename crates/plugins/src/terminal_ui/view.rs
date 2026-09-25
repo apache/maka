@@ -38,9 +38,44 @@ pub const MAX_FIELDS: usize = 32;
 pub const MAX_ACTIONS: usize = 32;
 pub const MAX_TEXT: usize = 16 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Emphasis {
+    #[default]
+    Normal,
+    Accent,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Activity {
+    #[default]
+    Idle,
+    Busy,
+}
+
+/// Interior space on each axis, bounded to four cells by View validation.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct Padding {
+    #[serde(default)]
+    #[schemars(range(max = 4))]
+    pub horizontal: u8,
+    #[serde(default)]
+    #[schemars(range(max = 4))]
+    pub vertical: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct View {
+    #[schemars(range(min = VERSION, max = VERSION))]
     pub version: u32,
     pub title: String,
     /// Opaque business revision, echoed with every submission for CAS.
@@ -52,7 +87,7 @@ pub struct View {
     pub root: Node,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
     pub id: String,
@@ -65,7 +100,7 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Control {
     Toggle {
@@ -89,14 +124,14 @@ pub enum Control {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Choice {
     pub value: String,
     pub label: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Action {
     pub id: String,
@@ -115,7 +150,7 @@ pub struct Action {
     pub confirm: Option<Confirm>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Confirm {
     pub title: String,
@@ -125,7 +160,9 @@ pub struct Confirm {
 }
 
 /// What a text span means; the theme decides how it looks.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Tone {
     #[default]
@@ -139,7 +176,9 @@ pub enum Tone {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     #[default]
@@ -148,7 +187,7 @@ pub enum Role {
     Destructive,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Span {
     pub text: String,
@@ -157,7 +196,7 @@ pub struct Span {
 }
 
 /// What activating an item or button does.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Target {
     /// Read another route of this view; Back returns.
@@ -168,7 +207,7 @@ pub enum Target {
     Session { session: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Tab {
     pub id: String,
@@ -176,7 +215,7 @@ pub struct Tab {
     pub route: Value,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Node {
     Column {
@@ -190,6 +229,19 @@ pub enum Node {
         #[serde(default)]
         gap: u8,
         children: Vec<Node>,
+    },
+    /// A framed body and an optional single row in its lower border.
+    Boundary {
+        key: String,
+        body: Box<Node>,
+        #[serde(default)]
+        bottom: Option<Box<Node>>,
+        #[serde(default)]
+        padding: Padding,
+        #[serde(default)]
+        emphasis: Emphasis,
+        #[serde(default)]
+        activity: Activity,
     },
     /// Wrapped prose, or one clipped line.
     Text {
@@ -291,6 +343,7 @@ impl Node {
         match self {
             Self::Column { key, .. }
             | Self::Row { key, .. }
+            | Self::Boundary { key, .. }
             | Self::Text { key, .. }
             | Self::Rule { key }
             | Self::Scroll { key, .. }
@@ -311,6 +364,11 @@ impl Node {
         match self {
             Self::Column { children, .. } | Self::Row { children, .. } => children.iter().collect(),
             Self::Scroll { child, .. } => vec![child],
+            Self::Boundary { body, bottom, .. } => {
+                let mut children = vec![body.as_ref()];
+                children.extend(bottom.as_deref());
+                children
+            }
             Self::Split { left, right, .. } => vec![left, right],
             _ => vec![],
         }
@@ -527,7 +585,7 @@ impl View {
             }
         }
         let mut walk = Walk::default();
-        self.node(&self.root, 0, &fields, &actions, &mut walk)?;
+        self.node(&self.root, 0, false, &fields, &actions, &mut walk)?;
         bounded(self, MAX_BYTES - 64)
     }
 
@@ -535,6 +593,7 @@ impl View {
         &self,
         node: &'a Node,
         depth: usize,
+        inline: bool,
         fields: &BTreeSet<&str>,
         actions: &BTreeSet<&str>,
         walk: &mut Walk<'a>,
@@ -544,7 +603,33 @@ impl View {
             return Err(invalid());
         }
         key(node.key())?;
+        if inline
+            && !matches!(
+                node,
+                Node::Row { .. } | Node::Text { .. } | Node::Button { .. }
+            )
+        {
+            return Err(invalid());
+        }
         match node {
+            Node::Boundary {
+                body,
+                bottom,
+                padding,
+                ..
+            } => {
+                if padding.horizontal > 4
+                    || padding.vertical > 4
+                    || bottom.as_ref().is_some_and(|node| node.key() == body.key())
+                {
+                    return Err(invalid());
+                }
+                self.node(body, depth + 1, false, fields, actions, walk)?;
+                if let Some(bottom) = bottom {
+                    self.node(bottom, depth + 1, true, fields, actions, walk)?;
+                }
+                return Ok(());
+            }
             Node::Column { gap, children, .. } | Node::Row { gap, children, .. } => {
                 // Children count against the view's node budget, not a
                 // container's: a checklist may hold its whole list.
@@ -564,7 +649,7 @@ impl View {
                 }
                 // Long prose is bounded by the view's own budget.
                 for span in spans {
-                    prose(&span.text, MAX_BYTES, true)?;
+                    prose(&span.text, MAX_BYTES, !inline)?;
                 }
             }
             Node::Rule { .. } => {}
@@ -658,7 +743,7 @@ impl View {
             }
         }
         for child in node.children() {
-            self.node(child, depth + 1, fields, actions, walk)?;
+            self.node(child, depth + 1, inline, fields, actions, walk)?;
         }
         Ok(())
     }
@@ -790,6 +875,52 @@ impl Reply {
 /// a view reads as the tree it is.
 pub mod build {
     use super::*;
+
+    pub fn boundary(key: impl Into<String>, body: Node) -> Boundary {
+        Boundary(Node::Boundary {
+            key: key.into(),
+            body: Box::new(body),
+            bottom: None,
+            padding: Padding::default(),
+            emphasis: Emphasis::Normal,
+            activity: Activity::Idle,
+        })
+    }
+    pub struct Boundary(Node);
+    impl Boundary {
+        pub fn bottom(mut self, node: Node) -> Self {
+            if let Node::Boundary { bottom, .. } = &mut self.0 {
+                *bottom = Some(Box::new(node));
+            }
+            self
+        }
+        pub fn padding(mut self, horizontal: u8, vertical: u8) -> Self {
+            if let Node::Boundary { padding, .. } = &mut self.0 {
+                *padding = Padding {
+                    horizontal,
+                    vertical,
+                };
+            }
+            self
+        }
+        pub fn emphasis(mut self, value: Emphasis) -> Self {
+            if let Node::Boundary { emphasis, .. } = &mut self.0 {
+                *emphasis = value;
+            }
+            self
+        }
+        pub fn activity(mut self, value: Activity) -> Self {
+            if let Node::Boundary { activity, .. } = &mut self.0 {
+                *activity = value;
+            }
+            self
+        }
+    }
+    impl From<Boundary> for Node {
+        fn from(boundary: Boundary) -> Self {
+            boundary.0
+        }
+    }
 
     pub fn column(key: impl Into<String>, children: Vec<Node>) -> Node {
         Node::Column {
@@ -1076,6 +1207,9 @@ pub mod build {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod boundary;
 
 #[cfg(test)]
 mod tests {

@@ -17,11 +17,13 @@
  * under the License.
  */
 
+mod admission;
+
 use crate::{
     app::{Action, App},
     editor::{Editor, saved::Saved},
     i18n::LocalePreference,
-    navigation::{Route, tabs::LIMIT},
+    navigation::{Location, Route, tabs::LIMIT},
     pages::sending::{Delivery, Sending, Submission},
 };
 use serde::{Deserialize, Serialize};
@@ -45,11 +47,9 @@ pub struct Snapshot {
     sidebar: Option<bool>,
     pending_only: bool,
     fullscreen: bool,
-    #[serde(default)]
-    inspector: bool,
     readings: Vec<(String, crate::pages::chat::reading::Checkpoint)>,
     navigation: crate::navigation::Navigation,
-    pages: Vec<(Route, crate::navigation::state::Saved)>,
+    pages: Vec<(Location, crate::navigation::state::Saved)>,
     oauth: Option<crate::pages::manage::oauth::saved::Checkpoint>,
     branch: Option<crate::pages::branch::Checkpoint>,
     recap: Option<crate::pages::recap::Checkpoint>,
@@ -70,7 +70,7 @@ impl Snapshot {
             .collect();
         unresolved.sort_by(|left, right| left.session.cmp(&right.session));
         Self {
-            version: 20,
+            version: 22,
             attachments: app.attachments.saved.clone(),
             directories: app.directories.clone(),
             skills: app.skills.saved.clone(),
@@ -89,7 +89,6 @@ impl Snapshot {
             sidebar: app.chrome.sidebar_expanded,
             pending_only: app.sidebar.pending_only,
             fullscreen: app.chrome.session_fullscreen,
-            inspector: app.chrome.inspector,
             readings: app.chat.checkpoints(),
             navigation: app.navigation.clone(),
             pages: app.saved_pages(),
@@ -107,7 +106,7 @@ impl Snapshot {
         let id = |id: &str| {
             !id.is_empty() && id.encode_utf16().count() <= 256 && !id.chars().any(char::is_control)
         };
-        if self.version != 20
+        if self.version != 22
             || self.root != root
             || self.tabs.len() > LIMIT
             || self.drafts.len() > LIMIT
@@ -128,16 +127,17 @@ impl Snapshot {
             return Err("Invalid TUI checkpoint destinations".into());
         }
         let destination = |route: &Route| match route {
-            Route::Session(key) => tabs.contains(key),
+            Route::Session(key) => id(key) && tabs.contains(key),
             Route::Plugins(place) => place.valid(),
+            Route::App(key) => key.valid(),
             _ => true,
         };
         let mut pages = Vec::new();
         if !self.navigation.valid(destination)
-            || self.pages.iter().any(|(route, saved)| {
-                let duplicate = pages.contains(&route);
-                pages.push(route);
-                duplicate || !destination(route) || !saved.valid(route, destination)
+            || self.pages.iter().any(|(location, saved)| {
+                let duplicate = pages.contains(&location);
+                pages.push(location);
+                duplicate || !location.valid(destination) || !saved.valid(location, destination)
             })
         {
             return Err("Invalid saved navigation".into());
@@ -211,8 +211,12 @@ impl Snapshot {
             return Err("Too many plugin checkpoints".into());
         }
         self.plugins.validate(root)?;
+        let mut addresses = std::collections::BTreeSet::new();
         for checkpoint in &self.apps {
             checkpoint.validate(root)?;
+            if !addresses.insert(checkpoint.address()) {
+                return Err("Duplicate retained view address".into());
+            }
         }
         if let Some(revision) = &self.revision {
             revision.validate(root)?;
@@ -279,7 +283,6 @@ impl Snapshot {
         app.chrome.sidebar_expanded = self.sidebar;
         app.sidebar.pending_only = self.pending_only;
         app.chrome.session_fullscreen = self.fullscreen;
-        app.chrome.inspector = self.inspector;
         if !keep_locale {
             app.i18n.preference = self.locale;
         }
@@ -291,6 +294,7 @@ impl Snapshot {
             .map(|(route, saved)| (route, saved.restore()))
             .collect();
         app.enter_page();
+        app.mount_app_views();
         Ok(())
     }
 }
@@ -462,7 +466,7 @@ mod tests {
         request.input().validate().unwrap();
         original.sending.get_mut("a").unwrap().request = request.clone();
         let saved = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
-        assert_eq!(saved["version"], 20);
+        assert_eq!(saved["version"], 22);
         let mut restored = app();
         serde_json::from_value::<Snapshot>(saved.clone())
             .unwrap()
@@ -535,7 +539,9 @@ mod tests {
         let mut original = app();
         original.apply(Action::Visit(Route::Session("a".into())));
         original.focus = Focus::Transcript;
-        original.apply(Action::Visit(Route::Settings));
+        original.apply(Action::Settings(crate::pages::settings::Message::Category(
+            crate::pages::settings::Category::Interface,
+        )));
         original.settings.focus_setting(&Action::ToggleSymbols);
         original.apply(Action::Visit(Route::Extensions));
         original.apply(Action::Back);
@@ -553,7 +559,7 @@ mod tests {
             "the focused setting survives a restart"
         );
         assert_eq!(
-            restored.settings.category,
+            restored.navigation.location().settings_category(),
             crate::pages::settings::Category::Interface
         );
         restored.apply(Action::Back);
@@ -619,7 +625,7 @@ mod tests {
             ("/navigation/cursor", serde_json::json!(128)),
             (
                 "/navigation/entries/0",
-                serde_json::json!({"page":"session","id":"closed"}),
+                serde_json::json!({"route":{"page":"session","id":"closed"},"settings":null,"embedded":[],"inspector":false,"recovery":false}),
             ),
             ("/pages/0/1/focus", serde_json::json!("queue")),
         ] {
@@ -634,6 +640,56 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn settings_pane_history_and_drafts_roundtrip_without_replaying_actions() {
+        use crate::{
+            apps,
+            pages::settings::{Category, Message},
+        };
+        use maka_plugins::terminal_ui::{Context, Placement, view::Reply};
+        let mut original = apps::tests::app();
+        let mut entry = original.apps.directory[0].clone();
+        entry.method = "settings".into();
+        entry.descriptor.context = Context::Application;
+        entry.descriptor.placement = Placement::Settings;
+        let key = apps::Key::of(&entry, None).unwrap();
+        original.apps.directory.push(entry);
+        original.apply(Action::Settings(Message::Pane(key.clone())));
+        let read = original.apps_requests().pop().unwrap();
+        original.apps_complete(
+            read,
+            Ok(apps::Output::Reply(Reply::View {
+                view: apps::tests::form(),
+            })),
+        );
+        original.apply(Action::Apps(apps::Message::Instance(
+            key.clone(),
+            apps::Command::View(apps::Intent::Toggle("enabled".into())),
+        )));
+        original.apply(Action::Settings(Message::Category(Category::Interface)));
+        let location = original.navigation.location().clone();
+        let encoded = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
+        assert_eq!(encoded["apps"][0]["drafts"]["enabled"], false);
+        let mut reopened = app();
+        serde_json::from_value::<Snapshot>(encoded)
+            .unwrap()
+            .restore(&mut reopened, false)
+            .unwrap();
+        assert_eq!(reopened.navigation.location(), &location);
+        reopened.apply(Action::Back);
+        assert_eq!(reopened.navigation.location().settings_pane(), Some(&key));
+        let restored = serde_json::to_value(Snapshot::capture(&reopened, "root")).unwrap();
+        assert_eq!(restored["apps"][0]["drafts"]["enabled"], false);
+        assert!(
+            reopened
+                .apps_requests()
+                .iter()
+                .all(|request| !request.needs_checkpoint())
+        );
+        reopened.apply(Action::Forward);
+        assert_eq!(reopened.navigation.location(), &location);
+    }
+
     #[test]
     fn bounded_plugin_subroutes_leave_room_for_the_current_checkpoint_page() {
         let mut original = app();

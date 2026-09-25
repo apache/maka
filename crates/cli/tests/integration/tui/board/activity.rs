@@ -133,7 +133,7 @@ pub(super) fn exercise(tui: &mut Pty, runtime: &Runtime, client: &maka_client::C
     let closed = wait_stats(runtime, client, |stats| stats["active"] == 0);
     assert_eq!(closed["closed"], closed["opened"]);
     runtime.block_on(remote(client, "activity-append", json!(AWAY)));
-    tui.click_text("Board");
+    tui.send(b"\x1b[1;3D"); // Global Back restores the complete activity address.
     tui.wait_for("While away — 未显示。");
     let reopened = wait_stats(runtime, client, |stats| stats["active"] == 1);
     assert_eq!(

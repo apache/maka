@@ -69,7 +69,7 @@ pub(super) fn package(
         path.join("maka.extension.json"),
         serde_json::to_vec(&json!({
             "schemaVersion":1, "id":id, "dependencies":dependencies,
-            "runtime":{"entry":"index.mjs","sdkVersion":1,"vm":mode},
+            "runtime":{"entry":"index.mjs","sdkVersion":2,"vm":mode},
             "composition":{"patch":"maka.composition.yml"}
         }))
         .unwrap(),

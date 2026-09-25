@@ -108,29 +108,18 @@ impl<M: Clone> Surface<M> {
             && let Some(search) = &mut reader.search
         {
             let count = search.count();
-            let tail = (count.width() as u16).min(area.width / 3);
-            frame.render_widget(
-                Paragraph::new(if context.ascii { "/ " } else { "⌕ " })
-                    .style(context.colors.base().fg(context.colors.subtle)),
-                Rect::new(area.x, area.y, area.width.min(2), 1),
-            );
-            search.editor.draw(
+            search.draw_bar(
                 frame,
-                Rect::new(
-                    area.x.saturating_add(2),
-                    area.y,
-                    area.width.saturating_sub(tail + 3),
-                    1,
-                ),
-                focused,
-                context.colors,
-            );
-            frame.render_widget(
-                Paragraph::new(count).style(context.colors.base().fg(context.colors.subtle)),
-                Rect::new(area.right().saturating_sub(tail), area.y, tail, 1),
+                Rect::new(area.x, area.y, area.width, 1),
+                Context { focused, ..context },
+                &count,
+                None,
+                [""; 3],
             );
             area.y += 1;
             area.height -= 1;
+        } else if let Some(search) = &mut reader.search {
+            search.invalidate_geometry();
         }
         if area.is_empty() {
             reader.text_selection.invalidate_geometry();
@@ -169,6 +158,9 @@ impl<M: Clone> Surface<M> {
         if matches!(event, Event::Resize(..) | Event::FocusLost) {
             reader.text_selection.invalidate_geometry();
             reader.invalidate_scrollbar();
+            if let Some(search) = &mut reader.search {
+                search.invalidate_geometry();
+            }
             return Outcome::ignored();
         }
         if self.captures() {
@@ -202,7 +194,14 @@ impl<M: Clone> Surface<M> {
                 return Outcome::emit(ReaderEffect::Latest);
             }
             let inside = placed.area.contains((mouse.column, mouse.row).into());
-            if !inside && !reader.text_selection.dragging() && !reader.scrollbar_dragging() {
+            if !inside
+                && !reader.text_selection.dragging()
+                && !reader.scrollbar_dragging()
+                && !reader
+                    .search
+                    .as_ref()
+                    .is_some_and(|search| search.editor.dragging())
+            {
                 return Outcome::ignored();
             }
             let path = placed.path.clone();

@@ -24,11 +24,18 @@ use maka_protocol::{
 };
 use serde_json::json;
 
-fn package(directory: &std::path::Path, id: &str, title: &str, source: &str) -> std::path::PathBuf {
+fn package(
+    directory: &std::path::Path,
+    id: &str,
+    title: &str,
+    source: &str,
+    ui: (&str, &str),
+) -> std::path::PathBuf {
     let path = directory.join(id);
     std::fs::create_dir(&path).unwrap();
     std::fs::write(path.join("host.mjs"), source).unwrap();
-    std::fs::write(path.join("maka.extension.json"),json!({"schemaVersion":1,"id":id,"displayName":title,"runtime":{"entry":"host.mjs","sdkVersion":1}}).to_string()).unwrap();
+    std::fs::write(path.join(ui.0), ui.1).unwrap();
+    std::fs::write(path.join("maka.extension.json"),json!({"schemaVersion":1,"id":id,"displayName":title,"runtime":{"entry":"host.mjs","sdkVersion":2}}).to_string()).unwrap();
     path
 }
 fn host(directory: &std::path::Path) -> super::super::candidate::CandidateFixture {
@@ -191,6 +198,10 @@ fn local_plugin_management_installs_board_and_owns_instance_lifecycle_through_th
         "example.board",
         "Managed Board",
         include_str!("../../fixtures/board-plugin/host.mjs"),
+        (
+            "board-ui.mjs",
+            include_str!("../../fixtures/board-plugin/board-ui.mjs"),
+        ),
     );
     let host = host(directory.path());
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -277,6 +288,10 @@ fn plugin_config_draft_survives_conflict_and_changes_real_plugin_behavior_after_
         "example.configured",
         "Configured greeting",
         include_str!("../../fixtures/configured-plugin/host.mjs"),
+        (
+            "configured-ui.mjs",
+            include_str!("../../fixtures/configured-plugin/configured-ui.mjs"),
+        ),
     );
     let host = host(directory.path());
     let runtime = tokio::runtime::Runtime::new().unwrap();

@@ -115,12 +115,7 @@ impl App {
     }
 }
 
-pub fn chips(
-    frame: &mut ratatui::Frame<'_>,
-    app: &mut App,
-    area: ratatui::layout::Rect,
-    session: &str,
-) {
+pub fn chips(app: &App, session: &str) -> crate::ui::Node<Action> {
     let names = app
         .directories
         .get(session)
@@ -136,18 +131,15 @@ pub fn chips(
         })
         .collect::<Vec<_>>()
         .join(" · ");
-    crate::view::list_item(
-        frame,
-        app,
-        area,
-        &format!(
-            "{} {}",
-            app.chrome.symbol("▱", "/"),
-            crate::view::safe(&names)
-        ),
+    crate::view::shell::controls::summary(
+        "directories",
+        format!("{} ", app.chrome.symbol("▱", "/")),
+        crate::view::safe(&names),
+        String::new(),
         Action::References,
-        false,
-    );
+        app.enabled(&Action::References),
+        crate::view::action_label(app, &Action::References),
+    )
 }
 
 #[cfg(test)]
@@ -242,7 +234,12 @@ pub(crate) mod tests {
             assert_eq!(app.directories["b"][0].host_id, "root");
             for (width, height) in [(80, 26), (52, 22)] {
                 frame(&mut app, width, height);
-                assert!(app.hits.iter().any(|h| h.action == Action::References));
+                assert!(
+                    app.chrome
+                        .composer
+                        .rect("composer/body/content/directories")
+                        .is_some_and(|area| !area.is_empty())
+                );
                 app.apply(Action::References);
                 let query = app.directory_request().unwrap();
                 app.directory_completed(query, Ok(QueryResult::DirectoryRoots { roots: vec![] }));

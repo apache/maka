@@ -105,7 +105,7 @@ fn skills_candidates_page_without_execution_and_restore_exact_selection_before_s
         .join(&client.identity.root_id)
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-    assert_eq!(saved["version"], 20);
+    assert_eq!(saved["version"], 22);
     let picked = saved["skills"]["skills"].as_array().unwrap();
     assert_eq!(picked.len(), 1);
     assert_eq!(picked[0]["name"], "Candidate 128");

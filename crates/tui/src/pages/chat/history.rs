@@ -68,7 +68,7 @@ pub struct History {
     pub scanning: bool,
     preview_wanted: bool,
     pub preview: Option<Transcript>,
-    pub reader_surface: crate::ui::Surface<()>,
+    pub reader_surface: crate::ui::Surface<crate::ui::transcript::search::Command>,
     preview_rows: BTreeMap<u64, Value>,
     preview_dirty: bool,
     pub preview_loading: bool,

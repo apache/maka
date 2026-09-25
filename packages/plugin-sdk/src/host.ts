@@ -43,7 +43,7 @@ export type * from './usage.js';
 export type * from './pricing.js';
 
 /** Independent API version, used by runtime.sdkVersion in maka.extension.json. */
-export const HOST_SDK_VERSION = 1;
+export const HOST_SDK_VERSION = 2;
 export type Json =
   | null
   | boolean
@@ -102,10 +102,6 @@ export interface SessionView {
 export interface RemoteOptions {
   /** Host rejects the endpoint for callers without path access. */
   access?: 'granted' | 'host_paths';
-}
-export interface RemoteMethodOptions extends RemoteOptions {
-  /** Navigation is bound to this exact Remote registration. */
-  terminalView?: import('./terminal-view.js').TerminalView;
 }
 /** Throw an Error carrying this code to preserve its meaning across Remote.
  * Unclassified exceptions become unavailable. An unknown outcome requires
@@ -341,7 +337,7 @@ export interface HostContext {
     method<I extends Json, O extends Json>(
       name: string,
       invoke: (input: I, caller: RemoteCaller) => Awaitable<O>,
-      options?: RemoteMethodOptions,
+      options?: RemoteOptions,
     ): Promise<Registration>;
     stream<I extends Json, O extends Json>(
       name: string,

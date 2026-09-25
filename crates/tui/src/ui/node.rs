@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use super::boundary::{Activity, Emphasis, Padding};
 use std::borrow::Cow;
 
 /// Main-axis size of a child inside its parent Row or Column.
@@ -99,6 +100,14 @@ pub enum Kind<M> {
         children: Vec<Node<M>>,
         gap: u16,
     },
+    /// A framed body with an optional one-line inset in the bottom border.
+    Boundary {
+        body: Box<Node<M>>,
+        bottom: Option<Box<Node<M>>>,
+        padding: Padding,
+        emphasis: Emphasis,
+        activity: Activity,
+    },
     /// `clip` keeps one row and ends an overflow with an ellipsis.
     Text {
         spans: Vec<(String, Tone)>,
@@ -167,6 +176,44 @@ impl<M> Node<M> {
     }
     pub fn row(key: impl Into<Cow<'static, str>>, children: Vec<Node<M>>) -> Self {
         Self::new(key, Kind::Row { children, gap: 0 })
+    }
+    pub fn boundary(key: impl Into<Cow<'static, str>>, body: Node<M>) -> Self {
+        Self::new(
+            key,
+            Kind::Boundary {
+                body: Box::new(body),
+                bottom: None,
+                padding: Padding::default(),
+                emphasis: Emphasis::Normal,
+                activity: Activity::Idle,
+            },
+        )
+    }
+    /// The lower border hosts one clipped row, with a cell on either side.
+    pub fn bottom(mut self, node: Node<M>) -> Self {
+        if let Kind::Boundary { bottom, .. } = &mut self.kind {
+            *bottom = Some(Box::new(node));
+        }
+        self
+    }
+    /// Space inside the border; each axis is capped at four cells.
+    pub fn padding(mut self, horizontal: u16, vertical: u16) -> Self {
+        if let Kind::Boundary { padding, .. } = &mut self.kind {
+            *padding = Padding::new(horizontal, vertical);
+        }
+        self
+    }
+    pub fn emphasis(mut self, value: Emphasis) -> Self {
+        if let Kind::Boundary { emphasis, .. } = &mut self.kind {
+            *emphasis = value;
+        }
+        self
+    }
+    pub fn activity(mut self, value: Activity) -> Self {
+        if let Kind::Boundary { activity, .. } = &mut self.kind {
+            *activity = value;
+        }
+        self
     }
     pub fn text(key: impl Into<Cow<'static, str>>, spans: Vec<(String, Tone)>) -> Self {
         Self::new(
@@ -273,6 +320,19 @@ impl<M> Node<M> {
             Kind::Row { children, gap } => Kind::Row {
                 children: children.into_iter().map(|child| child.map(f)).collect(),
                 gap,
+            },
+            Kind::Boundary {
+                body,
+                bottom,
+                padding,
+                emphasis,
+                activity,
+            } => Kind::Boundary {
+                body: Box::new(body.map(f)),
+                bottom: bottom.map(|node| Box::new(node.map(f))),
+                padding,
+                emphasis,
+                activity,
             },
             Kind::Text { spans, align, clip } => Kind::Text { spans, align, clip },
             Kind::Rule => Kind::Rule,

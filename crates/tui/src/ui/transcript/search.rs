@@ -18,7 +18,9 @@
  */
 
 use super::*;
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+
+mod bar;
 
 const MAX_MATCHES: usize = 4096;
 #[cfg(test)]
@@ -49,6 +51,7 @@ pub struct Search {
     matches: Vec<Match>,
     active: Option<Match>,
     pub limited: bool,
+    pub(crate) bar: crate::ui::Surface<Command>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -88,6 +91,7 @@ impl Default for Search {
             matches: vec![],
             active: None,
             limited: false,
+            bar: Default::default(),
         }
     }
 }
@@ -103,8 +107,12 @@ impl Search {
         }
     }
     pub(super) fn suspend(&mut self) {
-        self.editor.invalidate_geometry();
+        self.invalidate_geometry();
         self.matches = Vec::new();
+    }
+    pub fn invalidate_geometry(&mut self) {
+        self.editor.invalidate_geometry();
+        self.bar.invalidate();
     }
     pub(super) fn retained_bytes(&self) -> usize {
         self.editor.retained_bytes()
@@ -278,9 +286,6 @@ impl Transcript {
                     return None;
                 }
                 match key.code {
-                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        self.search_command(Command::Scope)
-                    }
                     KeyCode::Char('r')
                         if key.modifiers.contains(KeyModifiers::CONTROL) && search.history =>
                     {
@@ -325,9 +330,12 @@ impl Transcript {
                 if search.editor.contains(point) || search.editor.dragging() {
                     return Some(search.editor.mouse(*mouse));
                 }
-                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                    // The caller handles buttons and route changes using current hit geometry.
-                    return None;
+                let outcome = search.bar.input(event);
+                if outcome.consumed {
+                    if let Some(command) = outcome.message {
+                        self.search_command(command);
+                    }
+                    return Some(outcome.redraw);
                 }
                 None
             }
@@ -438,7 +446,7 @@ mod tests {
         i18n::{I18n, Locale, LocalePreference},
         navigation::Route,
     };
-    use crossterm::event::{KeyEvent, MouseEvent};
+    use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
 
@@ -673,6 +681,15 @@ mod tests {
                 &app.i18n,
                 false,
             );
+            // Opening find after a header action retains the outer focus.
+            // Its Enter must still navigate matches, never activate Header Back.
+            Terminal::new(TestBackend::new(80, 24))
+                .unwrap()
+                .draw(|frame| crate::view::draw(frame, &mut app))
+                .unwrap();
+            app.focus = crate::app::Focus::Header;
+            app.chrome.header.focus("header/left/back".into());
+            let location = app.navigation.location().clone();
             app.input(key(KeyCode::Char('f'), KeyModifiers::CONTROL));
             app.input(Event::Paste("中文".into()));
             assert_eq!(app.chat.view.search.as_ref().unwrap().count(), "1/2");
@@ -682,23 +699,42 @@ mod tests {
                     .is_none()
             );
             assert_eq!(app.chat.view.search.as_ref().unwrap().count(), "2/2");
+            assert_eq!(app.navigation.location(), &location);
             assert_eq!(app.drafts["chat"].text(), "keep draft");
             for width in [30, 80, 120] {
+                app.input(Event::Resize(width, 20));
                 let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
                 terminal
                     .draw(|frame| crate::view::draw(frame, &mut app))
                     .unwrap();
-                let hit = app
-                    .hits
-                    .iter()
-                    .find(|hit| hit.action == Action::Search(Command::Previous))
+                let area = app
+                    .chat
+                    .view
+                    .search
+                    .as_ref()
                     .unwrap()
-                    .clone();
-                assert!(hit.area.right() <= width);
+                    .bar
+                    .rect("find/previous")
+                    .unwrap();
+                assert!(area.right() <= width);
+                app.input(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Moved,
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }));
+                assert!(app.hover.is_none(), "find controls keep one hit registry");
+                assert!(
+                    app.tooltip_wait().is_some(),
+                    "fresh hover after resize {width}"
+                );
+                app.hover_since =
+                    Some(std::time::Instant::now() - std::time::Duration::from_millis(500));
+                assert!(app.tooltip_visible());
                 app.input(Event::Mouse(MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
-                    column: hit.area.x,
-                    row: hit.area.y,
+                    column: area.x,
+                    row: area.y,
                     modifiers: KeyModifiers::NONE,
                 }));
                 assert_eq!(app.drafts["chat"].text(), "keep draft");
@@ -729,16 +765,14 @@ mod tests {
                         "compact result list leaves space for the message"
                     );
                 }
-                let hit = app
-                    .hits
-                    .iter()
-                    .find(|hit| hit.action == Action::Search(Command::Pick(20)))
-                    .unwrap()
-                    .clone();
+                let area = history
+                    .reader_surface
+                    .rect("history/matches/rows/20")
+                    .unwrap();
                 app.input(Event::Mouse(MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
-                    column: hit.area.x,
-                    row: hit.area.y,
+                    column: area.x,
+                    row: area.y,
                     modifiers: KeyModifiers::NONE,
                 }));
                 assert_eq!(app.chat.history.as_ref().unwrap().selected, 1);

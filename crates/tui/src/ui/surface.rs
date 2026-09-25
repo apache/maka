@@ -43,6 +43,14 @@ pub struct Context {
     pub focused: bool,
 }
 
+/// A visible pointer target in the committed frame, without action authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hover<'a> {
+    pub key: &'a str,
+    pub area: Rect,
+    pub hint: Option<&'a str>,
+}
+
 /// Result of one input event. Unconsumed events belong to the shell (global
 /// keys, navigation); a consumed event never falls through to another layer.
 pub struct Outcome<M> {
@@ -144,6 +152,30 @@ impl<M> Default for Surface<M> {
 
 impl<M: Clone> Surface<M> {
     pub fn render(&mut self, frame: &mut Frame<'_>, area: Rect, tree: Node<M>, context: Context) {
+        self.render_inner(frame, area, tree, context, None);
+    }
+
+    /// Visible activity shares the shell's demand-driven clock. The caller
+    /// disables that clock for reduced motion, lost terminal focus or overlays.
+    pub fn render_motion(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        tree: Node<M>,
+        context: Context,
+        motion: &mut crate::motion::Motion,
+    ) {
+        self.render_inner(frame, area, tree, context, Some(motion));
+    }
+
+    fn render_inner(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        tree: Node<M>,
+        context: Context,
+        mut motion: Option<&mut crate::motion::Motion>,
+    ) {
         let reveal = context.focused
             && (self
                 .last_layout
@@ -158,6 +190,14 @@ impl<M: Clone> Surface<M> {
             context.ascii,
             &self.offsets,
         );
+        // A local chooser is an overlay too; decorative activity beneath it
+        // settles even when the shell's other visible regions still animate.
+        pass.motion = if self.popover.is_none() {
+            motion.as_deref_mut()
+        } else {
+            None
+        };
+        pass.focused = context.focused;
         pass.run(tree, area);
         let (items, scrollers, canvases, transcripts) =
             (pass.items, pass.scrollers, pass.canvases, pass.transcripts);
@@ -215,14 +255,14 @@ impl<M: Clone> Surface<M> {
         {
             frame.render_widget(Clear, area);
             frame.render_widget(Block::default().style(context.colors.base()), area);
-            self.render(frame, area, tree, context);
+            self.render_inner(frame, area, tree, context, motion);
             return;
         }
-        if self
-            .hover
-            .as_ref()
-            .is_some_and(|hover| !stops.iter().any(|item| item.id == *hover))
-        {
+        if self.hover.as_ref().is_some_and(|hover| {
+            !items
+                .iter()
+                .any(|item| item.id == *hover && !item.rect.is_empty())
+        }) {
             self.hover = None;
         }
         let colors = context.colors;
@@ -396,6 +436,24 @@ impl<M: Clone> Surface<M> {
         self.focus.as_deref()
     }
 
+    pub fn hovered(&self) -> Option<Hover<'_>> {
+        if self.popover.is_some() {
+            return None;
+        }
+        let key = self.hover.as_deref()?;
+        let item = self
+            .committed
+            .as_ref()?
+            .items
+            .iter()
+            .find(|item| item.id == key && !item.rect.is_empty())?;
+        Some(Hover {
+            key: &item.id,
+            area: item.rect,
+            hint: item.hint.as_deref(),
+        })
+    }
+
     /// Where a node was drawn in the committed frame; empty when scrolled out.
     pub fn rect(&self, id: &str) -> Option<Rect> {
         let committed = self.committed.as_ref()?;
@@ -411,6 +469,16 @@ impl<M: Clone> Surface<M> {
                     .find(|(canvas, _)| canvas == id)
                     .map(|(_, rect)| *rect)
             })
+    }
+
+    /// The visible viewport of a committed scroll container.
+    pub fn viewport(&self, id: &str) -> Option<Rect> {
+        self.committed
+            .as_ref()?
+            .scrollers
+            .iter()
+            .find(|scroller| scroller.id == id)
+            .map(|scroller| scroller.viewport)
     }
 
     /// Focus a node by id; resolved against the next drawn frame.
@@ -609,7 +677,14 @@ impl<M: Clone> Surface<M> {
             .find(|item| item.enabled && item.rect.contains(point));
         match mouse.kind {
             MouseEventKind::Moved => {
-                let hover = target.map(|item| item.id.clone());
+                // Disabled controls can still explain themselves or keep a
+                // row's tools visible; activation remains enabled-only.
+                let hover = committed
+                    .items
+                    .iter()
+                    .rev()
+                    .find(|item| item.rect.contains(point))
+                    .map(|item| item.id.clone());
                 let redraw = hover != self.hover;
                 self.hover = hover;
                 Outcome {
@@ -1112,6 +1187,7 @@ fn reveal_offsets(
 #[cfg(test)]
 mod tests {
     use super::super::node::{Choice, Node, Size, Tone};
+    use super::super::{Activity, Emphasis};
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1396,6 +1472,37 @@ mod tests {
             colors.surface,
             "hovered row is only lifted"
         );
+        let hovered = surface.hovered().unwrap();
+        assert_eq!(hovered.key, "root/pane/rows/gamma");
+        assert_eq!(hovered.hint, Some("hint gamma"));
+        assert!(hovered.area.contains(Position::new(30, y)));
+        let area = hovered.area;
+        surface.occlude(area);
+        assert!(
+            surface.hovered().is_none(),
+            "occluded geometry cannot offer a tooltip"
+        );
+        draw(
+            &mut surface,
+            50,
+            12,
+            tree(&[0], 0, &[("alpha", true), ("gamma", false)]),
+        );
+        surface.input(&mouse(MouseEventKind::Moved, 30, y));
+        assert_eq!(surface.hovered().unwrap().key, "root/pane/rows/gamma");
+        assert_eq!(surface.hovered().unwrap().hint, Some("hint gamma"));
+        assert!(surface.input(&click(30, y)).message.is_none());
+        assert!(!surface.captures(), "a disabled chooser never opens");
+        draw(&mut surface, 50, 12, tree(&[0], 0, &rows));
+        surface.input(&mouse(MouseEventKind::Moved, 30, y));
+        assert!(surface.hovered().is_some());
+        surface.input(&click(30, y));
+        assert!(
+            surface.hovered().is_none(),
+            "a chooser covers its underlying target"
+        );
+        surface.invalidate();
+        assert!(surface.hovered().is_none());
     }
 
     #[test]
@@ -1541,5 +1648,285 @@ mod tests {
             !surface.input(&key(KeyCode::Char('x'))).consumed,
             "unbound keys belong to the shell"
         );
+    }
+
+    #[test]
+    fn boundary_metadata_uses_committed_geometry_without_taking_body_rows() {
+        let tree = |bottom| {
+            let mut boundary = Node::boundary(
+                "box",
+                Node::slot("editor", 3).on(On::Activate(Message::Choose("edit"))),
+            )
+            .padding(1, 1);
+            if bottom {
+                boundary = boundary.bottom(
+                    Node::row(
+                        "meta",
+                        vec![
+                            Node::text("label", vec![("中文 🦀".into(), Tone::Muted)]).clip(),
+                            Node::button("save", "Save".into(), Role::Primary)
+                                .on(On::Activate(Message::Choose("save"))),
+                        ],
+                    )
+                    .gap(1),
+                );
+            }
+            Node::column(
+                "root",
+                vec![
+                    boundary,
+                    Node::text("after", vec![("After".into(), Tone::Normal)])
+                        .on(On::Activate(Message::Choose("after"))),
+                ],
+            )
+            .map(&|message| message)
+        };
+        let mut surface = Surface::default();
+        draw(&mut surface, 30, 12, tree(false));
+        let editor = surface.rect("root/box/editor").unwrap();
+        let after = surface.rect("root/after").unwrap();
+        assert_eq!(editor, Rect::new(2, 2, 26, 3));
+        assert_eq!(after.y, 7);
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                surface.render(
+                    frame,
+                    frame.area(),
+                    tree(true),
+                    Context {
+                        colors: Palette::default(),
+                        ascii: false,
+                        focused: true,
+                    },
+                );
+            })
+            .unwrap();
+        assert_eq!(surface.rect("root/box/editor"), Some(editor));
+        assert_eq!(surface.rect("root/after"), Some(after));
+        // Inspect display columns: concatenating every buffer cell inserts
+        // the hidden continuation cells between double-width graphemes.
+        let buffer = terminal.backend().buffer();
+        for (column, glyph) in [(12, "中"), (14, "文"), (17, "🦀")] {
+            assert_eq!(buffer[(column, 6)].symbol(), glyph);
+        }
+        let label: String = (22..26)
+            .map(|column| buffer[(column, 6)].symbol())
+            .collect();
+        assert_eq!(label, "Save");
+        let save = surface.rect("root/box/meta/save").unwrap();
+        assert_eq!(save, Rect::new(20, 6, 8, 1));
+        assert_eq!(
+            surface.input(&click(save.x, save.y)).message,
+            Some(Message::Choose("save"))
+        );
+        assert_eq!(
+            surface.input(&click(editor.x, editor.y)).message,
+            None,
+            "editor slots take focus"
+        );
+        assert_eq!(surface.focused(), Some("root/box/editor"));
+        surface.occlude(save);
+        assert!(surface.input(&click(save.x, save.y)).message.is_none());
+        surface.invalidate();
+        assert!(!surface.input(&click(save.x, save.y)).consumed);
+    }
+
+    #[test]
+    fn boundary_nested_bottom_rows_keep_both_buttons_and_clip_at_the_border() {
+        let tree = || {
+            Node::boundary("box", Node::slot("body", 2)).bottom(Node::row(
+                "meta",
+                vec![Node::row(
+                    "actions",
+                    vec![
+                        Node::button("save", "Save".into(), Role::Normal)
+                            .on(On::Activate(Message::Choose("save"))),
+                        Node::button("done", "Done".into(), Role::Normal)
+                            .on(On::Activate(Message::Choose("done"))),
+                    ],
+                )],
+            ))
+        };
+        let mut surface = Surface::default();
+        let wide = draw(&mut surface, 24, 5, tree());
+        assert!(
+            wide.lines().nth(4).unwrap().contains("Save    Done"),
+            "{wide}"
+        );
+        for (key, x) in [("save", 6), ("done", 14)] {
+            let rect = surface.rect(&format!("box/meta/actions/{key}")).unwrap();
+            assert_eq!(rect, Rect::new(x, 4, 8, 1));
+            assert_eq!(
+                surface.input(&click(rect.x, rect.y)).message,
+                Some(Message::Choose(key))
+            );
+        }
+        let narrow = draw(&mut surface, 14, 5, tree());
+        let line = narrow.lines().nth(4).unwrap();
+        assert!(line.contains("Save") && line.contains('…'), "{narrow}");
+        assert!(line.starts_with('╰') && line.ends_with('╯'));
+        let done = surface.rect("box/meta/actions/done").unwrap();
+        assert_eq!(done, Rect::new(10, 4, 2, 1));
+        assert_eq!(
+            surface.input(&click(done.x, done.y)).message,
+            Some(Message::Choose("done"))
+        );
+        draw(&mut surface, 10, 5, tree());
+        assert!(surface.rect("box/meta/actions/done").unwrap().is_empty());
+        assert!(
+            surface.input(&click(9, 4)).message.is_none(),
+            "the corner is never an action"
+        );
+    }
+
+    #[test]
+    fn boundary_clips_wide_metadata_and_hits_inside_even_tiny_frames() {
+        for ascii in [false, true] {
+            for width in [1, 4, 5, 8, 12] {
+                for height in [1, 2, 3, 5] {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    let mut surface = Surface::default();
+                    terminal
+                        .draw(|frame| {
+                            surface.render(
+                                frame,
+                                frame.area(),
+                                Node::boundary(
+                                    "box",
+                                    Node::slot("body", 2).on(On::Activate(Message::Choose("body"))),
+                                )
+                                .padding(1, 0)
+                                .bottom(
+                                    Node::button("save", "保存🦀".into(), Role::Normal)
+                                        .on(On::Activate(Message::Choose("save"))),
+                                ),
+                                Context {
+                                    colors: Palette::default(),
+                                    ascii,
+                                    focused: false,
+                                },
+                            );
+                        })
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    assert_eq!(buffer[(0, 0)].symbol(), if ascii { "+" } else { "╭" });
+                    if width > 1 {
+                        assert_eq!(
+                            buffer[(width - 1, 0)].symbol(),
+                            if ascii { "+" } else { "╮" }
+                        );
+                    }
+                    if height > 1 {
+                        assert_eq!(
+                            buffer[(0, height - 1)].symbol(),
+                            if ascii { "+" } else { "╰" }
+                        );
+                        if width > 1 {
+                            assert_eq!(
+                                buffer[(width - 1, height - 1)].symbol(),
+                                if ascii { "+" } else { "╯" }
+                            );
+                        }
+                    }
+                    assert!(surface.input(&click(0, 0)).message.is_none());
+                    assert!(
+                        surface
+                            .input(&click(width - 1, height - 1))
+                            .message
+                            .is_none()
+                    );
+                    if let Some(rect) = surface.rect("box/save") {
+                        assert!(rect.x >= 2 && rect.right() <= width - 2 && rect.height == 1);
+                        assert_eq!(
+                            surface.input(&click(rect.x, rect.y)).message,
+                            Some(Message::Choose("save"))
+                        );
+                    } else {
+                        assert!(width <= 4 || height < 2);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn boundary_motion_only_wakes_for_a_visible_busy_accent_border() {
+        use crate::motion::Motion;
+        use std::time::{Duration, Instant};
+        let mut motion = Motion::default();
+        let start = Instant::now();
+        let mut terminal = Terminal::new(TestBackend::new(24, 5)).unwrap();
+        let mut surface = Surface::<Message>::default();
+        let mut render = |motion: &mut Motion, activity, emphasis, offscreen, terminal_colors| {
+            let boundary = Node::boundary("box", Node::slot("body", 2))
+                .emphasis(emphasis)
+                .activity(activity);
+            let tree = if offscreen {
+                Node::scroll(
+                    "scroll",
+                    Node::column(
+                        "rows",
+                        vec![Node::text("space", vec![]).size(Size::Fixed(20)), boundary],
+                    ),
+                )
+            } else {
+                boundary
+            };
+            let colors = Palette {
+                terminal: terminal_colors,
+                ..Palette::default()
+            };
+            terminal
+                .draw(|frame| {
+                    surface.render_motion(
+                        frame,
+                        frame.area(),
+                        tree,
+                        Context {
+                            colors,
+                            ascii: false,
+                            focused: false,
+                        },
+                        motion,
+                    )
+                })
+                .unwrap();
+            terminal.backend().buffer()[(0, 0)].fg
+        };
+        motion.begin(start, true);
+        let first = render(&mut motion, Activity::Busy, Emphasis::Accent, false, false);
+        assert!(
+            motion
+                .wait(start)
+                .is_some_and(|wait| wait <= Duration::from_millis(80))
+        );
+        let later = start + Duration::from_millis(1400);
+        motion.begin(later, true);
+        assert_ne!(
+            first,
+            render(&mut motion, Activity::Busy, Emphasis::Accent, false, false)
+        );
+        for (activity, emphasis, offscreen, terminal_colors) in [
+            (Activity::Idle, Emphasis::Accent, false, false),
+            (Activity::Busy, Emphasis::Normal, false, false),
+            (Activity::Busy, Emphasis::Accent, true, false),
+            (Activity::Busy, Emphasis::Accent, false, true),
+        ] {
+            motion.begin(start, true);
+            render(&mut motion, activity, emphasis, offscreen, terminal_colors);
+            assert!(motion.wait(start).is_none());
+        }
+        // The shell uses this same disabled clock for reduced motion, lost
+        // terminal focus and overlays. None should leave an activity timer.
+        motion.begin(start, false);
+        let still = render(&mut motion, Activity::Busy, Emphasis::Accent, false, false);
+        assert!(motion.wait(start).is_none());
+        motion.begin(later, false);
+        assert_eq!(
+            still,
+            render(&mut motion, Activity::Busy, Emphasis::Accent, false, false)
+        );
+        assert!(motion.wait(later).is_none());
     }
 }

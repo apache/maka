@@ -21,6 +21,7 @@
 //! editing and display geometry; implemented here against Ratatui 0.30.
 //! No Host state or submission authority belongs in this widget.
 mod layout;
+mod preview;
 pub mod saved;
 
 use std::{collections::VecDeque, ops::Range};

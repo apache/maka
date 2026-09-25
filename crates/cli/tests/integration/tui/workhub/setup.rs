@@ -47,6 +47,7 @@ pub(super) fn connection(
         .unwrap()
         .descriptor
         .label;
+    tui.wait_until(|screen| !screen.contains("Loading providers…") && screen.contains(" ▾"));
     tui.click_text(" ▾");
     let choices = ["○", "●"].map(|marker| format!("{marker} {label}"));
     tui.wait_until(|s| choices.iter().any(|choice| s.contains(choice)));
@@ -188,7 +189,7 @@ pub(super) fn open_task(tui: &mut Pty, title: &str) {
         &tui.screen.snapshot().unwrap().screen,
         "Coordinator conversation",
     ) {
-        tui.click_last_text("‹ WorkHub");
+        tui.click_last_text("‹ Back");
         wait_page_text(tui, "Coordinator conversation");
     }
     select_task(tui, title);
@@ -232,7 +233,11 @@ pub(super) fn ascii(tui: &mut Pty) {
     tui.wait_for("○ ASCII");
     tui.send(b"\x1b[B\r");
     tui.wait_for("ASCII v");
-    open(tui);
+    tui.send(b"\x1b[1;3D");
+    tui.wait_for("Model connections");
+    // Both Settings categories are real locations. The second Back restores
+    // the selected task and its nested view without reopening its default list.
+    tui.send(b"\x1b[1;3D");
 }
 
 pub(super) fn localized(root: &Path, locale: &str, coordinator: &str, setup: &str) {

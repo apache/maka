@@ -98,7 +98,7 @@ async fn scenario() {
         package.join("maka.extension.json"),
         serde_json::to_vec(&json!({
             "schemaVersion":1,"id":"example.background",
-            "runtime":{"entry":"host.mjs","sdkVersion":1,"vm":"shared"},
+            "runtime":{"entry":"host.mjs","sdkVersion":2,"vm":"shared"},
             "client":{"entry":"client.js","sdkVersion":1}
         }))
         .unwrap(),

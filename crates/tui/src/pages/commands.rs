@@ -157,6 +157,27 @@ pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 impl App {
+    /// Resolve late provider capabilities against the palette's captured targets.
+    /// Appending never replaces a command with a newer connection or revision.
+    pub(crate) fn provider_commands_loaded(&mut self) {
+        if self.palette.is_none() {
+            return;
+        }
+        let mut additions = Vec::new();
+        for (action, _) in &self.command_palette.items {
+            for (action, label) in self.resolved_provider_commands(action) {
+                let item = (action, Label::Key(label));
+                if !self.command_palette.items.contains(&item) && !additions.contains(&item) {
+                    additions.push(item);
+                }
+            }
+        }
+        if !additions.is_empty() {
+            self.command_palette.items.extend(additions);
+            self.layer.retire();
+        }
+    }
+
     /// Typing, the highlight and Enter, taken before the sheet: the list
     /// keeps its pointer and wheel, and a click there runs its command.
     pub(crate) fn palette_sheet_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {

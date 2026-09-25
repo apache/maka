@@ -33,6 +33,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod startup;
+
 #[test]
 fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle() {
     let directory = tempfile::tempdir().unwrap();

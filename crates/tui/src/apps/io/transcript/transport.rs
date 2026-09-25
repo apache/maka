@@ -40,51 +40,58 @@ pub(super) async fn follow(
         _ = deliveries.closed() => return Ok(()),
         result = bind(&client, &mount) => result,
     };
-    let mut cleanup = Ok(());
-    let result = match endpoints {
-        Ok((read, stream)) => {
-            // Do not cancel allocation before its identity is known. Even a
-            // document allocated after navigation must reach CloseDocument.
-            match client.plugin_remote(RemoteRequest::OpenDocument).await {
-                Ok(RemoteResult::Document { document }) => {
-                    let result = tokio::select! {
-                        biased;
-                        _ = &mut stopped => None,
-                        _ = deliveries.closed() => None,
-                        result = observe(&client, &mount, document, &read, &stream,
-                            &deliveries, commands, busy) => Some(result),
-                    };
-                    // Closing the document also cancels pending Call/Next and
-                    // owns Host cleanup for an Open that returns a late stream.
-                    cleanup = client
-                        .plugin_remote(RemoteRequest::CloseDocument { document })
-                        .await
-                        .map(|_| ())
-                        .map_err(|_| Failure::Cleanup);
-                    match result {
-                        None => return cleanup,
-                        Some(result) => cleanup.and(result),
-                    }
-                }
-                Ok(_) => Err(Failure::Invalid),
-                // A timed-out allocation may have reached the Host without
-                // returning its document ID. Never report confirmed cleanup
-                // or replay it; final Client disconnect releases that scope.
-                Err(maka_client::RequestFailure::Unknown(_)) => {
-                    cleanup = Err(Failure::Cleanup);
-                    cleanup
-                }
-                Err(_) => Err(Failure::Remote),
-            }
+    let (read, stream) = match endpoints {
+        Ok(endpoints) => endpoints,
+        Err(error) => {
+            let _ = deliver(&deliveries, mount.token, Output::Failure(error)).await;
+            return Ok(());
         }
-        Err(error) => Err(error),
     };
-    if let Err(error) = result {
-        tokio::select! {
-            biased;
-            _ = &mut stopped => {},
-            _ = deliver(&deliveries, mount.token, Output::Failure(error)) => {},
+    let document = mount.document;
+    // Retain Open until its stream identity is known, even after removal.
+    let opened = client
+        .plugin_remote(RemoteRequest::Open {
+            binding: stream.binding,
+            target: stream.target,
+            document,
+            input: serde_json::to_value(mount.open()).map_err(|_| Failure::Invalid)?,
+        })
+        .await;
+    let stream = match opened {
+        Ok(RemoteResult::Opened { stream }) => stream,
+        result => {
+            let unknown = matches!(result, Err(maka_client::RequestFailure::Unknown(_)));
+            let error = if unknown {
+                Failure::Cleanup
+            } else {
+                Failure::Remote
+            };
+            let _ = deliver(&deliveries, mount.token, Output::Failure(error)).await;
+            return if unknown {
+                Err(Failure::Cleanup)
+            } else {
+                Ok(())
+            };
         }
+    };
+    let result = tokio::select! {
+        biased;
+        _ = &mut stopped => None,
+        _ = deliveries.closed() => None,
+        result = observe(&client, &mount, document, &read, stream,
+            &deliveries, commands, busy) => Some(result),
+    };
+    // A reader owns only its stream; sibling mounts retain the parent Page.
+    let cleanup = match client
+        .plugin_remote(RemoteRequest::Close { document, stream })
+        .await
+    {
+        Ok(RemoteResult::Closed) => Ok(()),
+        _ => Err(Failure::Cleanup),
+    };
+    if let Some(Err(error)) = result {
+        let error = cleanup.as_ref().err().copied().unwrap_or(error);
+        tokio::select! { biased; _ = &mut stopped => {}, _ = deliver(&deliveries, mount.token, Output::Failure(error)) => {} }
     }
     cleanup
 }
@@ -137,23 +144,11 @@ async fn observe(
     mount: &Mount,
     document: Uuid,
     read: &Endpoint,
-    stream: &Endpoint,
+    stream: Uuid,
     deliveries: &mpsc::Sender<Delivery>,
     mut commands: mpsc::Receiver<Command>,
     busy: Arc<AtomicBool>,
 ) -> Result<(), Failure> {
-    let RemoteResult::Opened { stream } = client
-        .plugin_remote(RemoteRequest::Open {
-            binding: stream.binding.clone(),
-            target: stream.target.clone(),
-            document,
-            input: serde_json::to_value(mount.open()).map_err(|_| Failure::Invalid)?,
-        })
-        .await
-        .map_err(|_| Failure::Remote)?
-    else {
-        return Err(Failure::Invalid);
-    };
     let Event::Ready { fence } = next(client, document, stream).await? else {
         return Err(Failure::Invalid);
     };

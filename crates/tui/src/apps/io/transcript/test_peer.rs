@@ -22,7 +22,7 @@ use maka_protocol::plugin::{RemoteKind, RemoteResult};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
 
-pub(super) struct Peer {
+pub(in crate::apps::io) struct Peer {
     reader: BufReader<ReadHalf<DuplexStream>>,
     writer: WriteHalf<DuplexStream>,
     // Client disconnects when its notification consumer disappears.
@@ -32,6 +32,8 @@ pub(super) struct Peer {
 pub(super) fn mount() -> Mount {
     Mount {
         token: Uuid::new_v4(),
+        owner: Uuid::new_v4(),
+        document: Uuid::new_v4(),
         package: "package".into(),
         session: None,
         parent: Target {
@@ -98,7 +100,11 @@ impl Peer {
         self.write(json!({"requestId":frame["requestId"],"operation":frame["operation"],"ok":true,"result":result})).await;
     }
 
-    pub async fn allocating(&mut self, mount: &Mount) -> Value {
+    pub async fn reject(&mut self, frame: &Value, error: maka_protocol::OperationError) {
+        self.write(json!({"requestId":frame["requestId"],"operation":frame["operation"],"ok":false,"error":error})).await;
+    }
+
+    pub async fn opening(&mut self, mount: &Mount) -> (Uuid, Value) {
         for _ in 0..2 {
             let request = self.read().await;
             assert_eq!(request["input"]["kind"], "bind");
@@ -116,19 +122,11 @@ impl Peer {
             self.reply(&request, RemoteResult::Bound { target, handler })
                 .await;
         }
-        let request = self.read().await;
-        assert_eq!(request["input"]["kind"], "open_document");
-        request
-    }
-
-    pub async fn opening(&mut self, mount: &Mount) -> (Uuid, Value) {
-        let request = self.allocating(mount).await;
-        let document = Uuid::new_v4();
-        self.reply(&request, RemoteResult::Document { document })
-            .await;
+        let document = mount.document;
         let open = self.read().await;
         assert_eq!(open["input"]["kind"], "open");
         assert_eq!(open["input"]["document"], document.to_string());
+        assert_eq!(open["input"]["input"]["mount"], mount.token.to_string());
         (document, open)
     }
 }

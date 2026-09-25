@@ -223,12 +223,19 @@ fn identity(app: &App, state: &State) -> Node<Action> {
         .enabled(app.oauth_enabled(Command::Identity)),
     ];
     if expanded {
+        let field_width = ui::content_width(app.frame_size.map_or(80, |(width, _)| width))
+            .saturating_sub(label_width(app));
         children.push(Node::column(
             "rows",
             state
                 .fields()
                 .map(|index| {
-                    Node::slot(index.to_string(), 1)
+                    let height = if index == 2 {
+                        state.identity.fields[index].rows(field_width).clamp(1, 4)
+                    } else {
+                        1
+                    };
+                    Node::slot(index.to_string(), height)
                         .on(On::Activate(action(Command::Field(index))))
                         .enabled(app.oauth_enabled(Command::Field(index)))
                 })

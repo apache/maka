@@ -246,14 +246,7 @@ impl App for Hub {
             let query: Query = this.call(Call::Query, Value::Null, &cx.caller).await?;
             let (page, feedback) = this.board(&cx.caller, place.after.clone()).await?;
             let filter = place.filter.unwrap_or_else(|| "active".into());
-            let mut view = board(
-                words,
-                &query,
-                &page,
-                &feedback,
-                &filter,
-                place.after.as_deref(),
-            );
+            let mut view = board(words, &query, &page, &feedback, &filter);
             setup::entries(&this, &mut view, &cx).await?;
             Ok(view)
         })
@@ -402,14 +395,7 @@ fn state(words: &Words, state: Option<&str>) -> (String, Tone, &'static str) {
     (words.t(en, zh_cn, zh_tw), tone, group)
 }
 
-fn board(
-    words: &Words,
-    query: &Query,
-    page: &Page,
-    feedback: &[Feedback],
-    filter: &str,
-    after: Option<&str>,
-) -> View {
+fn board(words: &Words, query: &Query, page: &Page, feedback: &[Feedback], filter: &str) -> View {
     let mut children = vec![];
     let mut actions = vec![];
     match &query.coordinator_session_id {
@@ -493,7 +479,7 @@ fn board(
             let mut row = link(
                 format!("work-{}", entry.operation_id).replace('/', ":"),
                 view::build::clean(&entry.title, false),
-                json!({"assignment": entry.operation_id, "filter": filter, "after": after}),
+                json!({"assignment": entry.operation_id}),
             )
             .meta(label)
             .tone(tone);
@@ -741,14 +727,31 @@ mod tests {
                 result_preview: Some("Which branch?".into()),
             },
         ];
-        let active = board(&words, &query, &page, &feedback, "active", None);
+        let active = board(&words, &query, &page, &feedback, "active");
         active.validate().unwrap();
         let text = serde_json::to_string(&active).unwrap();
         assert!(text.contains("Task a") && !text.contains("Task b"));
         assert!(text.contains("\"kind\":\"session\"") && text.contains("Could not reach"));
+        let task_target = |view: &View| {
+            let mut pending = vec![&view.root];
+            while let Some(node) = pending.pop() {
+                if let Node::Item { key, target, .. } = node
+                    && key == "work-a"
+                {
+                    return target.clone();
+                }
+                pending.extend(node.children());
+            }
+            panic!("task a has a destination")
+        };
+        let another_list = board(&words, &query, &page, &feedback, "all");
+        assert_eq!(
+            task_target(&active),
+            task_target(&another_list),
+            "the task and its nested drafts keep one address across list filters"
+        );
         let attention =
-            serde_json::to_string(&board(&words, &query, &page, &feedback, "attention", None))
-                .unwrap();
+            serde_json::to_string(&board(&words, &query, &page, &feedback, "attention")).unwrap();
         assert!(attention.contains("Task b") && attention.contains("Which branch?"));
         let detail = assignment(&words, "a", page.entries.first(), feedback.first());
         detail.validate().unwrap();

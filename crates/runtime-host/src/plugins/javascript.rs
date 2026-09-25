@@ -25,6 +25,7 @@ mod executor;
 mod input;
 mod invocation;
 mod model;
+mod presenter;
 mod provider;
 mod registration;
 mod remote;
@@ -46,12 +47,17 @@ use std::time::Duration;
 
 pub(crate) struct Loader {
     pool: Arc<Pool>,
+    presenters: Arc<presenter::Capacity>,
     executions: Weak<Executions>,
 }
 impl Loader {
     pub fn new(executions: &Arc<Executions>) -> Result<Self, maka_plugins::Error> {
         Ok(Self {
             pool: Arc::new(Pool::new(Limits::default(), 4).map_err(invalid)?),
+            presenters: Arc::new(presenter::Capacity::new(Limits {
+                synchronous_slice: Duration::from_millis(200),
+                ..Limits::default()
+            })),
             executions: Arc::downgrade(executions),
         })
     }
@@ -75,8 +81,14 @@ impl PackageLoader for Loader {
                     mode: entry.vm,
                     generation: format!("{}:{}", package.manifest().id, package.digest()),
                     remote: Arc::new(remote::Source {
-                        package_id: package.manifest().id.clone(),
-                        content_digest: package.digest().into(),
+                        package: package.clone(),
+                        presenters: self.presenters.clone(),
+                        catalog: self
+                            .executions
+                            .upgrade()
+                            .ok_or_else(|| invalid("Host closed"))?
+                            .plugin_catalog
+                            .clone(),
                     }),
                 }))
             })();

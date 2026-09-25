@@ -72,8 +72,9 @@ impl Candidate {
         };
         let cancel = CancellationToken::new();
         let _cancel_on_exit = cancel.clone().drop_guard();
+        let owner_lost = CancellationToken::new();
         if self.owner_stdin {
-            watch_owner(cancel.clone())?;
+            watch_owner(owner_lost.clone())?;
         }
         let signals = super::signals::watch(cancel.clone())?;
         let host = Host::open_with_options(
@@ -119,7 +120,18 @@ impl Candidate {
                 .await;
             idle_cancel.cancel();
         });
-        let result = super::serve::listen(endpoint, websocket, host, cancel).await;
+        let serving = super::serve::listen(endpoint, websocket, host.clone(), cancel);
+        tokio::pin!(serving);
+        let result = tokio::select! {
+            biased;
+            _ = owner_lost.cancelled() => {
+                // EOF abandons an unaccepted startup. Once a client was admitted,
+                // ordinary Host residency and idle expiry own this lifetime.
+                host.abandon_unaccepted_startup();
+                serving.await
+            }
+            result = &mut serving => result,
+        };
         expiry.abort();
         let _ = expiry.await;
         drop(signals);

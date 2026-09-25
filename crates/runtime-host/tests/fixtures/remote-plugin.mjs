@@ -197,31 +197,42 @@ export default async function activate(ctx) {
     { access: 'host_paths' },
   );
   const state = { generation: 0, opening: 0, active: 0, stopped: 0 };
-  /** @type {import('../../../../packages/plugin-sdk/src/host.js').TerminalView} */
-  const terminalView = {
-    version: 5,
-    context: 'application',
+  const descriptor = {
+    context: /** @type {const} */ ('application'),
     title: { fallback: 'Echo', translations: { 'zh-CN': '回显', 'zh-TW': '回顯' } },
   };
-  let echo = await ctx.remote.method(
-    'echo',
-    (input, caller) => ({
-      input,
-      client: caller.clientInstanceId,
-      session: caller.sessionId,
-      generation: state.generation,
-    }),
-    { terminalView },
-  );
-  await ctx.remote.method('terminal-extra', () => null, {
-    terminalView,
-  });
+  /** @param {string} name */
+  const registerView = (name) =>
+    ctx.tui.app(
+      name,
+      {
+        entry: 'echo-ui.mjs',
+        async backend(request, cx) {
+          if (request.kind !== 'read') return { kind: 'rejected', message: 'Echo is read-only' };
+          return {
+            input: request.route,
+            client: cx.caller.clientInstanceId,
+            session: cx.caller.sessionId,
+            generation: state.generation,
+          };
+        },
+      },
+      descriptor,
+    );
+  let echo = await ctx.remote.method('echo', (input, caller) => ({
+    input,
+    client: caller.clientInstanceId,
+    session: caller.sessionId,
+    generation: state.generation,
+  }));
+  let echoView = await registerView('echo-view');
+  await registerView('terminal-extra');
   await ctx.remote.method('replace', async () => {
     await echo.close();
+    await echoView.close();
     state.generation++;
-    echo = await ctx.remote.method('echo', (input) => ({ input, generation: state.generation }), {
-      terminalView,
-    });
+    echo = await ctx.remote.method('echo', (input) => ({ input, generation: state.generation }));
+    echoView = await registerView('echo-view');
     return true;
   });
   await ctx.remote.method('stats', () => ({ ...state }));

@@ -27,6 +27,8 @@
 
 import type { AuthorizationRequest } from './authorization.js';
 import type { Json } from './host.js';
+import type { TerminalAppRegistration, TerminalViewBody } from './terminal-app.js';
+export type * from './terminal-app.js';
 import type {
   TranscriptInitial,
   TranscriptResource,
@@ -54,7 +56,7 @@ export type TerminalPlacement =
   | { kind: 'slot'; name: string };
 
 export interface TerminalView {
-  version: 5;
+  version: 7;
   title: TerminalText;
   context: 'application' | 'session';
   placement?: TerminalPlacement;
@@ -81,6 +83,16 @@ export interface TerminalSpan {
   tone?: TerminalTone;
 }
 
+export interface TerminalBoundaryOptions {
+  /** One lower-border row: text, buttons, or nested rows of those nodes. */
+  bottom?: TerminalNode;
+  /** Interior cells on each axis, each in the range 0–4. */
+  padding?: { horizontal?: number; vertical?: number };
+  emphasis?: 'normal' | 'accent';
+  /** The kernel animates visible accent activity when motion is enabled. */
+  activity?: 'idle' | 'busy';
+}
+
 export type TerminalTarget =
   /** Read another route of this view; Back returns. */
   | { kind: 'route'; route: Json }
@@ -93,6 +105,7 @@ export type TerminalTarget =
 export type TerminalNode =
   | { kind: 'column'; key: string; gap?: number; children: TerminalNode[] }
   | { kind: 'row'; key: string; gap?: number; children: TerminalNode[] }
+  | ({ kind: 'boundary'; key: string; body: TerminalNode } & TerminalBoundaryOptions)
   | { kind: 'text'; key: string; spans: TerminalSpan[]; clip?: boolean }
   | { kind: 'rule'; key: string }
   | { kind: 'scroll'; key: string; rows: number; child: TerminalNode }
@@ -162,7 +175,7 @@ export interface TerminalAction {
 }
 
 export interface TerminalViewTree {
-  version: 5;
+  version: 7;
   title: string;
   /** Opaque; echoed with every submission so writes can compare and swap. */
   revision: string;
@@ -194,54 +207,35 @@ export type TerminalReply =
   /** An inert proposal; only the user's explicit approval in the shell grants it. */
   | { kind: 'consent'; request: AuthorizationRequest };
 
-/** Who is reading a terminal view, and in which language. */
-export interface TerminalContext {
-  readonly locale: string;
-  readonly caller: import('./host.js').RemoteCaller;
-  /** Picks the reader's text from English, Simplified and Traditional Chinese. */
-  t(en: string, zhCN?: string, zhTW?: string): string;
-}
-export interface TerminalSubmission {
-  readonly route: Json;
-  readonly revision: string;
-  readonly action: string;
-  readonly fields: Readonly<Record<string, boolean | string>>;
-  /** A consent grant, present after the shell asked the user to approve. */
-  readonly grant: string | null;
-}
-/** A view without its version; the SDK adds the one it speaks. */
-export type TerminalViewBody = Omit<TerminalViewTree, 'version'> & { version?: 5 };
-export interface TerminalAppHandlers {
-  read(route: Json, cx: TerminalContext): Awaitable<TerminalViewBody>;
-  submit(submission: TerminalSubmission, cx: TerminalContext): Awaitable<TerminalReply>;
-  /** Only needed when actions declare recovery routes. */
-  recover?(route: Json, cx: TerminalContext): Awaitable<TerminalReply>;
-}
-type Awaitable<T> = T | Promise<T>;
 type Extra<T> = Partial<Omit<T, 'kind' | 'key'>>;
 type ItemExtra = Extra<Extract<TerminalNode, { kind: 'item' }>>;
 
 /** `ctx.tui`: terminal apps and the builders of their views. */
-export interface TerminalApps {
+export interface TerminalApps extends TerminalBuilders {
   /** Serves a terminal app; the descriptor says where the shell shows it. */
-  app(
+  app<Model = Json>(
     name: string,
-    handlers: TerminalAppHandlers,
+    definition: TerminalAppRegistration<Model>,
     descriptor: Omit<TerminalView, 'version'>,
     options?: import('./host.js').RemoteOptions,
   ): Promise<import('./host.js').Registration>;
   /** Registers a changes stream; call the result to refresh open views. */
   changes(name: string): Promise<(() => void) & { close(): Promise<void> }>;
-  /** Registers a document-scoped page/stream pair backed by an immutable managed store. */
+  /** Registers a mount-scoped page/stream pair in the business activation. */
   transcriptResource(
     name: string,
     initial?: TranscriptInitial,
     options?: import('./host.js').RemoteOptions,
   ): Promise<TranscriptStore>;
+}
+
+/** Pure node and field builders; the only capability supplied to UI factories. */
+export interface TerminalBuilders {
   view(body: TerminalViewBody): TerminalViewTree;
   column(key: string, children: TerminalNode[], gap?: number): TerminalNode;
   stack(key: string, children: TerminalNode[]): TerminalNode;
   row(key: string, children: TerminalNode[], gap?: number): TerminalNode;
+  boundary(key: string, body: TerminalNode, options?: TerminalBoundaryOptions): TerminalNode;
   text(key: string, text: string, tone?: TerminalTone): TerminalNode;
   spans(key: string, spans: [string, TerminalTone?][]): TerminalNode;
   heading(key: string, text: string): TerminalNode;

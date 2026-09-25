@@ -17,10 +17,14 @@
  * under the License.
  */
 
+mod admission;
+
 use super::*;
 use crate::editor::saved::Cursor;
 use maka_plugins::terminal_ui::view::View;
 use serde::{Deserialize, Serialize};
+
+pub(crate) const MAX_BYTES: usize = 4 * maka_plugins::terminal_ui::view::MAX_BYTES;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,27 +44,22 @@ pub struct Checkpoint {
     root: String,
     key: Key,
     entry: TerminalViewProjection,
-    view: View,
-    route: Value,
+    view: Option<View>,
     drafts: BTreeMap<String, Value>,
     cursors: BTreeMap<String, Cursor>,
     pending: Option<Pending>,
+    result: Option<Key>,
 }
 impl Checkpoint {
+    pub(crate) fn address(&self) -> &Key {
+        &self.key
+    }
     pub fn validate(&self, root: &str) -> Result<(), String> {
         if self.root != root
-            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
-                > 4 * maka_plugins::terminal_ui::view::MAX_BYTES
+            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > MAX_BYTES
         {
             return Err("Invalid plugin checkpoint identity or size".into());
         }
-        self.view.validate().map_err(|e| e.to_string())?;
-        Input::Read {
-            route: self.route.clone(),
-            locale: "en".into(),
-        }
-        .validate()
-        .map_err(|e| e.to_string())?;
         maka_protocol::plugin::decode_output(
             maka_protocol::Operation::PluginPlatformQuery,
             &serde_json::json!({
@@ -68,14 +67,38 @@ impl Checkpoint {
             }),
         )
         .map_err(|e| e.to_string())?;
+        if let Some(result) = &self.result {
+            return if self.key.valid()
+                && result.valid()
+                && self.key.same_mount(result)
+                && self.key.serves(&self.entry)
+                && (self.entry.descriptor.context == Context::Session) == self.key.session.is_some()
+                && self.view.is_none()
+                && self.drafts.is_empty()
+                && self.cursors.is_empty()
+                && self.pending.is_none()
+            {
+                Ok(())
+            } else {
+                Err("Invalid completed plugin result".into())
+            };
+        }
+        let view = self.view.as_ref().ok_or("Missing plugin checkpoint view")?;
+        view.validate().map_err(|e| e.to_string())?;
+        Input::Read {
+            route: self.key.route.clone(),
+            locale: "en".into(),
+        }
+        .validate()
+        .map_err(|e| e.to_string())?;
         if !self.key.valid()
             || !self.key.serves(&self.entry)
             || (self.entry.descriptor.context == Context::Session) != self.key.session.is_some()
-            || self.drafts.len() != self.view.fields.len()
+            || self.drafts.len() != view.fields.len()
         {
             return Err("Invalid plugin checkpoint context or fields".into());
         }
-        let mut edited = self.view.clone();
+        let mut edited = view.clone();
         let mut text_fields = 0;
         for field in &mut edited.fields {
             match (&mut field.control, self.drafts.get(&field.id)) {
@@ -110,9 +133,13 @@ impl Checkpoint {
             else {
                 return Err("Invalid frozen plugin submission".into());
             };
-            let mut expected = self
-                .view
-                .submission(self.route.clone(), action, fields.clone(), locale.clone())
+            let mut expected = view
+                .submission(
+                    self.key.route.clone(),
+                    action,
+                    fields.clone(),
+                    locale.clone(),
+                )
                 .map_err(|e| e.to_string())?;
             if let Input::Submit {
                 grant: expected_grant,
@@ -121,13 +148,13 @@ impl Checkpoint {
             {
                 *expected_grant = *grant;
             }
-            if route != &self.route
-                || revision != &self.view.revision
+            if route != &self.key.route
+                || revision != &view.revision
                 || expected != pending.input
                 || fields
                     .iter()
                     .any(|(key, value)| self.drafts.get(key) != Some(value))
-                || self.view.action(action).map(|item| &item.recovery) != Some(&pending.recovery)
+                || view.action(action).map(|item| &item.recovery) != Some(&pending.recovery)
             {
                 return Err("Frozen plugin intent does not match its form".into());
             }
@@ -142,9 +169,23 @@ impl Checkpoint {
     }
 }
 impl Instance {
-    fn checkpoint(&self, root: &str, key: &Key) -> Option<Checkpoint> {
-        if !self.keeps() {
-            return None;
+    pub(super) fn checkpoint(
+        &self,
+        root: &str,
+        key: &Key,
+        frozen: Option<&Pending>,
+    ) -> Option<Checkpoint> {
+        if let Some(result) = &self.result {
+            return Some(Checkpoint {
+                root: root.into(),
+                key: key.clone(),
+                entry: self.entry.clone()?,
+                view: None,
+                drafts: BTreeMap::new(),
+                cursors: BTreeMap::new(),
+                pending: None,
+                result: Some(result.clone()),
+            });
         }
         let view = self.view.clone()?;
         // Keys and passwords never reach the disk: a secret field saves as
@@ -173,34 +214,42 @@ impl Instance {
             editor.insert(initial);
             cursors.insert((*id).into(), editor.cursor());
         }
-        let pending = self.unresolved.clone().map(|mut pending| {
-            if let Input::Submit { fields, .. } = &mut pending.input {
-                for (id, initial) in &secrets {
-                    if let Some(value) = fields.get_mut(*id)
-                        && value.as_str() != Some(initial)
-                    {
-                        *value = Value::String((*initial).into());
-                        pending.withheld = true;
+        let pending = frozen
+            .or(self.unresolved.as_ref())
+            .cloned()
+            .map(|mut pending| {
+                if let Input::Submit { fields, .. } = &mut pending.input {
+                    for (id, initial) in &secrets {
+                        if let Some(value) = fields.get_mut(*id)
+                            && value.as_str() != Some(initial)
+                        {
+                            *value = Value::String((*initial).into());
+                            pending.withheld = true;
+                        }
                     }
                 }
-            }
-            pending
-        });
+                pending
+            });
         Some(Checkpoint {
             root: root.into(),
             key: key.clone(),
             entry: self.entry.clone()?,
-            view,
-            route: self.route.clone(),
+            view: Some(view),
             drafts,
             cursors,
             pending,
+            result: None,
         })
     }
     fn restore(checkpoint: Checkpoint) -> Result<Self, String> {
-        let mut instance = Self::new(Some(checkpoint.entry), Value::Null);
-        instance.install(checkpoint.view);
-        instance.route = checkpoint.route;
+        let mut instance = Self::new(Some(checkpoint.entry), checkpoint.key);
+        if let Some(result) = checkpoint.result {
+            instance.result = Some(result);
+            instance.live = None;
+            instance.message = Some(Notice::Local("extensions-result-ready"));
+            return Ok(instance);
+        }
+        instance.install(checkpoint.view.ok_or("Missing plugin checkpoint view")?);
         instance.drafts = checkpoint.drafts;
         for (id, cursor) in checkpoint.cursors {
             let editor = instance
@@ -229,11 +278,15 @@ impl Apps {
     pub fn checkpoints(&self, root: &str) -> Vec<Checkpoint> {
         self.instances
             .iter()
-            .filter_map(|(key, instance)| instance.checkpoint(root, key))
+            .filter(|(_, instance)| instance.keeps())
+            .filter_map(|(key, instance)| instance.checkpoint(root, key, None))
             .collect()
     }
     pub fn restore(&mut self, checkpoints: Vec<Checkpoint>) -> Result<(), String> {
         for checkpoint in checkpoints {
+            if self.instances.contains_key(&checkpoint.key) {
+                return Err("Duplicate retained view address".into());
+            }
             checkpoint.validate(&checkpoint.root)?;
             let key = checkpoint.key.clone();
             self.instances

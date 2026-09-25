@@ -26,8 +26,9 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 pub(super) struct Source {
-    pub package_id: String,
-    pub content_digest: String,
+    pub package: maka_plugins::package::Package,
+    pub presenters: Arc<super::presenter::Capacity>,
+    pub catalog: maka_plugins::contributions::Catalog,
 }
 pub(super) struct Remote(pub Arc<Callback>);
 impl Method for Remote {

@@ -70,14 +70,14 @@ pub(super) async fn run(
                         Command::Load {
                             id,
                             bridge,
-                            plugin,
+                            bootstrap,
                             name,
                             source,
                             state,
                             slot,
                             bytes,
                         } => {
-                            match engine::load(&mut runtime, &name, &source, plugin.then_some(id)) {
+                            match engine::load(&mut runtime, &name, &source, bootstrap, id) {
                                 Ok(code) => {
                                     if let Some(bridge) = bridge {
                                         runtime

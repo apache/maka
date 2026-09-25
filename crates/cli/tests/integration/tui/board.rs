@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 mod activity;
 mod lifecycle;
+pub(super) mod performance;
 mod wire;
 
 /// A JavaScript plugin the binary has never heard of, installed while the
@@ -42,9 +43,14 @@ fn a_javascript_plugin_installed_at_runtime_brings_its_own_app_into_the_running_
     )
     .unwrap();
     std::fs::write(
+        package.join("board-ui.mjs"),
+        include_str!("../../fixtures/board-plugin/board-ui.mjs"),
+    )
+    .unwrap();
+    std::fs::write(
         package.join("maka.extension.json"),
         json!({"schemaVersion":1, "id":"example.board",
-            "runtime":{"entry":"host.mjs", "sdkVersion":1}})
+            "runtime":{"entry":"host.mjs", "sdkVersion":2}})
         .to_string(),
     )
     .unwrap();

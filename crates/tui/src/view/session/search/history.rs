@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use crate::pages::chat::history::History;
+use crate::{app::Hit, pages::chat::history::History};
 
 pub(super) fn draw(
     frame: &mut Frame<'_>,
@@ -29,81 +29,38 @@ pub(super) fn draw(
     colors: crate::theme::Palette,
     available: bool,
 ) -> Vec<Hit> {
-    history.invalidate_geometry();
+    history.list_area = None;
+    history.preview_area = None;
     history.prepare_preview(i18n, ascii);
     if area.is_empty() {
+        history.invalidate_geometry();
         return vec![];
     }
-    let columns = if area.width >= 100 {
-        Layout::horizontal([
-            Constraint::Percentage(34),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .split(area)
-    } else {
-        Layout::vertical([
-            Constraint::Length(
-                (area.height / 3)
-                    .clamp(1, 6)
-                    .min(history.matches.len().max(1) as u16),
-            ),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .split(area)
-    };
-    let list = columns[0];
-    let body = columns[2];
-    history.list_area = Some(list);
-    history.preview_area = Some(body);
-    let mut hits = Vec::new();
-    let offset = history
-        .selected
-        .saturating_sub(usize::from(list.height) / 2)
-        .min(
-            history
-                .matches
-                .len()
-                .saturating_sub(usize::from(list.height)),
-        );
-    for (index, item) in history
+    use crate::ui::{Context, Node, On, Size, Tone};
+    let items = history
         .matches
         .iter()
         .enumerate()
-        .skip(offset)
-        .take(usize::from(list.height))
-    {
-        let row = Rect::new(list.x, list.y + (index - offset) as u16, list.width, 1);
-        let selected = index == history.selected;
-        let marker = if selected {
-            if ascii { ">" } else { "›" }
-        } else {
-            " "
-        };
-        let text = fit(
-            &safe(&item.preview),
-            usize::from(list.width.saturating_sub(2)),
-        );
-        let line = Line::from(vec![
-            Span::styled(format!("{marker} "), Style::default().fg(colors.accent)),
-            Span::raw(text),
-        ]);
-        let style = if selected {
-            if colors.terminal {
-                Style::default().add_modifier(Modifier::REVERSED)
+        .map(|(index, item)| {
+            let selected = index == history.selected;
+            let marker = if selected {
+                if ascii { ">" } else { "›" }
             } else {
-                Style::default().bg(colors.surface)
-            }
-        } else {
-            Style::default()
-        };
-        frame.render_widget(Paragraph::new(line).style(style), row);
-        hits.push(Hit {
-            area: row,
-            action: Action::Search(Command::Pick(item.sequence)),
-        });
-    }
+                " "
+            };
+            Node::text(
+                item.sequence.to_string(),
+                vec![
+                    (format!("{marker} "), Tone::Accent),
+                    (safe(&item.preview), Tone::Normal),
+                ],
+            )
+            .clip()
+            .current(selected)
+            .on(On::Activate(Command::Pick(item.sequence)))
+        })
+        .collect();
+    let list = Node::scroll("matches", Node::column("rows", items));
     let message = if !available {
         Some("chat-search-connect")
     } else if history.error.is_some() {
@@ -120,26 +77,56 @@ pub(super) fn draw(
     } else {
         None
     };
-    if let Some(message) = message {
-        frame.render_widget(
-            Paragraph::new(i18n.text(message))
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(colors.subtle)),
-            body,
-        );
-    } else if let Some(preview) = &mut history.preview {
-        preview.colors = colors;
-        let context = crate::ui::Context {
-            colors,
-            ascii,
-            focused: preview.focused,
+    let body = if let Some(message) = message {
+        Node::text("notice", vec![(i18n.text(message), Tone::Subtle)]).size(Size::Fill)
+    } else if history.preview.is_some() {
+        Node::transcript("preview", uuid::Uuid::nil())
+    } else {
+        let text = if history.preview_loading {
+            i18n.text("chat-search-preview-loading")
+        } else {
+            String::new()
         };
-        history.reader_surface.render(
-            frame,
-            body,
-            crate::ui::Node::transcript("transcript", uuid::Uuid::nil()),
-            context,
-        );
+        Node::text("notice", vec![(text, Tone::Subtle)]).size(Size::Fill)
+    };
+    let tree = if area.width >= 100 {
+        Node::row(
+            "history",
+            vec![
+                list.size(Size::Fixed(area.width * 34 / 100)),
+                Node::rule("divider"),
+                body,
+            ],
+        )
+    } else {
+        let rows = (area.height / 3)
+            .clamp(1, 6)
+            .min(history.matches.len().max(1) as u16);
+        Node::column(
+            "history",
+            vec![list.size(Size::Fixed(rows)), Node::rule("divider"), body],
+        )
+    };
+    if let Some(selected) = history.matches.get(history.selected) {
+        let path = format!("history/matches/rows/{}", selected.sequence);
+        if history.reader_surface.focused() != Some(path.as_str()) {
+            history.reader_surface.focus(path.clone());
+            history.reader_surface.reveal_item(&path);
+        }
+    }
+    let context = Context {
+        colors,
+        ascii,
+        focused: false,
+    };
+    history.reader_surface.render(frame, area, tree, context);
+    history.list_area = history.reader_surface.viewport("history/matches");
+    history.preview_area = history.reader_surface.transcript_area(uuid::Uuid::nil());
+    let mut hits = Vec::new();
+    if message.is_none()
+        && let Some(preview) = &mut history.preview
+    {
+        preview.colors = colors;
         match history.reader_surface.paint_transcript(
             frame,
             uuid::Uuid::nil(),
@@ -162,12 +149,6 @@ pub(super) fn draw(
             })),
             Err(error) => history.fail(error.into()),
         }
-    } else if history.preview_loading {
-        frame.render_widget(
-            Paragraph::new(i18n.text("chat-search-preview-loading"))
-                .style(Style::default().fg(colors.subtle)),
-            body,
-        );
     }
     hits
 }

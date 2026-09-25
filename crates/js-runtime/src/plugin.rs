@@ -116,7 +116,7 @@ enum Command {
     Load {
         id: u64,
         bridge: Option<Arc<dyn Bridge>>,
-        plugin: bool,
+        bootstrap: Bootstrap,
         name: String,
         source: String,
         state: watch::Sender<State>,
@@ -141,6 +141,13 @@ enum Command {
         reply: oneshot::Sender<Statistics>,
         slot: OwnedSemaphorePermit,
     },
+}
+
+#[derive(Clone, Copy)]
+enum Bootstrap {
+    Plain,
+    Plugin,
+    Presenter,
 }
 
 struct Health {
@@ -237,7 +244,7 @@ impl Vm {
         source: String,
         bridge: Option<Arc<dyn Bridge>>,
     ) -> Result<Module> {
-        self.load_bound(name, source, bridge, false)
+        self.load_bound(name, source, bridge, Bootstrap::Plain)
     }
 
     pub fn load_plugin(
@@ -246,7 +253,18 @@ impl Vm {
         source: String,
         bridge: Arc<dyn Bridge>,
     ) -> Result<Module> {
-        self.load_bound(name, source, Some(bridge), true)
+        self.load_bound(name, source, Some(bridge), Bootstrap::Plugin)
+    }
+
+    /// A terminal page has its own factory and capability surface. It never
+    /// runs the business plugin activation bootstrap.
+    pub fn load_presenter(
+        &self,
+        name: String,
+        source: String,
+        bridge: Arc<dyn Bridge>,
+    ) -> Result<Module> {
+        self.load_bound(name, source, Some(bridge), Bootstrap::Presenter)
     }
 
     fn load_bound(
@@ -254,7 +272,7 @@ impl Vm {
         name: String,
         source: String,
         bridge: Option<Arc<dyn Bridge>>,
-        plugin: bool,
+        bootstrap: Bootstrap,
     ) -> Result<Module> {
         if name.len() > 1024
             || source.len() > 8 * 1024 * 1024
@@ -285,7 +303,7 @@ impl Vm {
             .send(Command::Load {
                 id,
                 bridge,
-                plugin,
+                bootstrap,
                 name,
                 source,
                 state,

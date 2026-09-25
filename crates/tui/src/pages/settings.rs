@@ -32,7 +32,8 @@ use ratatui::{
     layout::{Margin, Rect},
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Category {
     #[default]
     Appearance,
@@ -95,10 +96,7 @@ pub enum Message {
 
 #[derive(Default)]
 pub struct State {
-    pub category: Category,
     pub host_details: bool,
-    /// The plugin pane shown instead of a built-in category.
-    pub pane: Option<crate::apps::Key>,
     pub surface: ui::Surface<Message>,
     /// Whether the last frame listed every category in one column.
     pub(crate) single: bool,
@@ -106,13 +104,13 @@ pub struct State {
 
 /// Rows whose focus a checkpoint keeps, by the shell action each stands for.
 /// Actions are the persisted vocabulary; row ids are only this layout's.
-const PERSISTED: [(&str, Category); 6] = [
-    ("palette", Category::Appearance),
-    ("custom-theme", Category::Appearance),
-    ("language", Category::Interface),
-    ("symbols", Category::Interface),
-    ("motion", Category::Interface),
-    ("host", Category::Host),
+const PERSISTED: [&str; 6] = [
+    "palette",
+    "custom-theme",
+    "language",
+    "symbols",
+    "motion",
+    "host",
 ];
 fn persisted_action(key: &str) -> Option<Action> {
     Some(match key {
@@ -139,11 +137,10 @@ impl State {
         )
     }
     pub(crate) fn focus_setting(&mut self, action: &Action) {
-        if let Some((key, category)) = PERSISTED
+        if let Some(key) = PERSISTED
             .iter()
-            .find(|(key, _)| persisted_action(key).as_ref() == Some(action))
+            .find(|key| persisted_action(key).as_ref() == Some(action))
         {
-            self.category = *category;
             if *key == "host" {
                 self.surface.focus_within(format!("{ROW_PATH}host/"));
             } else {
@@ -155,20 +152,27 @@ impl State {
 
 /// Below this width categories become section headers of a single list.
 const TWO_PANES: u16 = 56;
-const CATEGORIES: u16 = 14;
+// Reserve room for contribution labels before the asynchronous directory arrives.
+const CATEGORIES: u16 = 22;
 /// Rows stop growing here, so values stay near their labels on wide screens.
 const ROWS: u16 = 64;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let area = area.inner(Margin::new(1, 0));
-    app.settings.single = area.width < TWO_PANES;
+    let single = area.width < TWO_PANES;
+    if app.settings.single != single {
+        app.settings.single = single;
+        app.mount_app_views();
+    }
     let (tree, wells) = tree(app, area.width);
     let context = ui::Context {
         colors: app.theme.colors(),
         ascii: app.chrome.ascii,
         focused: app.focus == Focus::Page && app.overlay().is_none(),
     };
-    app.settings.surface.render(frame, area, tree, context);
+    app.settings
+        .surface
+        .render_motion(frame, area, tree, context, &mut app.chrome.animation);
     let focused = context
         .focused
         .then(|| app.settings.surface.focused().map(str::to_owned))
@@ -187,12 +191,27 @@ fn pane(app: &App, key: &crate::apps::Key, wells: &mut Vec<crate::apps::Well>) -
 
 fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
     let two_panes = width >= TWO_PANES;
-    let panes = app.apps.settings_views();
+    let panes: Vec<_> = app
+        .apps
+        .settings_views()
+        .into_iter()
+        .map(|(key, title)| {
+            (
+                app.navigation
+                    .location()
+                    .selected(&key)
+                    .cloned()
+                    .unwrap_or(key),
+                title,
+            )
+        })
+        .collect();
+    let category_width = CATEGORIES.min(width / 3);
     let mut wells = vec![];
     let rows: Vec<Node<Message>> = if two_panes {
-        match &app.settings.pane {
+        match app.navigation.location().settings_pane() {
             Some(key) => vec![pane(app, key, &mut wells)],
-            None => section(app, app.settings.category),
+            None => section(app, app.navigation.location().settings_category()),
         }
     } else {
         let mut rows: Vec<_> = Category::ALL
@@ -233,7 +252,10 @@ fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
                     vec![(app.i18n.text(category.title()), Tone::Normal)],
                 )
                 .on(On::Activate(Message::Category(category)))
-                .current(app.settings.pane.is_none() && category == app.settings.category)
+                .current(
+                    app.navigation.location().settings_pane().is_none()
+                        && category == app.navigation.location().settings_category(),
+                )
                 .follow_focus()
             })
             .collect();
@@ -242,13 +264,13 @@ fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
             Node::text(key.node(), vec![(title.clone(), Tone::Normal)])
                 .clip()
                 .on(On::Activate(Message::Pane(key.clone())))
-                .current(app.settings.pane.as_ref() == Some(key))
+                .current(app.navigation.location().settings_pane() == Some(key))
                 .follow_focus()
         }));
         children.push(
             Node::column("categories", categories)
                 .focus_group()
-                .size(Size::Fixed(CATEGORIES))
+                .size(Size::Fixed(category_width))
                 .gap(1),
         );
         children.push(Node::rule("divider"));
@@ -647,14 +669,15 @@ fn note(key: &'static str, lines: Vec<(String, Tone)>) -> Option<Node<Message>> 
 impl App {
     pub(crate) fn settings_action(&mut self, message: Message) -> Option<Action> {
         match message {
-            Message::Category(category) => {
-                self.settings.category = category;
-                self.settings.pane = None;
+            Message::Category(Category::Plugins) => {
+                return self.apply(Action::Visit(Route::Plugins(Default::default())));
             }
-            Message::Pane(key) => {
-                self.apps.open(&key);
-                self.settings.pane = Some(key);
-            }
+            Message::Category(category) => self.navigate(crate::navigation::Intent::Settings(
+                crate::navigation::SettingsPlace::Builtin(category),
+            )),
+            Message::Pane(key) => self.navigate(crate::navigation::Intent::Settings(
+                crate::navigation::SettingsPlace::Contribution(Box::new(key)),
+            )),
             Message::App(message) => return self.apps_action(message),
             Message::Palette(choice) => self.theme.select(choice),
             Message::Locale(preference) => self.set_locale(preference),
@@ -764,7 +787,10 @@ mod tests {
             };
             app.apply(Action::Host);
             assert_eq!(app.navigation.current(), Route::Settings);
-            assert_eq!(app.settings.category, Category::Host);
+            assert_eq!(
+                app.navigation.location().settings_category(),
+                Category::Host
+            );
             let terminal = render(&mut app, 100, 32);
             assert!(!rows(&terminal).join("\n").contains("private-root"));
             let focused = app.settings.surface.focused().map(str::to_owned);
@@ -838,11 +864,27 @@ mod tests {
         );
         app.input(click(locate(&terminal, "Models")));
         let terminal = render(&mut app, 100, 30);
-        assert_eq!(app.settings.category, Category::Models);
+        assert_eq!(
+            app.navigation.location().settings_category(),
+            Category::Models
+        );
         assert!(
             rows(&terminal)
                 .iter()
                 .any(|row| row.contains("Model connections"))
+        );
+        app.apply(Action::Back);
+        let terminal = render(&mut app, 100, 30);
+        assert_eq!(
+            app.navigation.location().settings_category(),
+            Category::Appearance
+        );
+        assert!(rows(&terminal).iter().any(|row| row.contains("Maka dark")));
+        app.apply(Action::Forward);
+        let terminal = render(&mut app, 100, 30);
+        assert_eq!(
+            app.navigation.location().settings_category(),
+            Category::Models
         );
         app.input(click(locate(&terminal, "Appearance")));
         let terminal = render(&mut app, 100, 30);
@@ -855,12 +897,54 @@ mod tests {
         assert_eq!(app.navigation.current(), Route::Settings);
         assert!(!app.settings.surface.captures());
         assert_eq!(app.theme.choice, Choice::Maka, "dismissal chooses nothing");
+        let terminal = render(&mut app, 100, 30);
+        app.input(click(locate(&terminal, "Plugins")));
+        assert_eq!(app.navigation.current(), Route::Plugins(Default::default()));
+        app.apply(Action::Back);
+        assert_eq!(
+            app.navigation.location().settings_category(),
+            Category::Appearance
+        );
+    }
+
+    #[test]
+    fn arriving_contributions_do_not_move_or_steal_presented_settings_clicks() {
+        use maka_plugins::terminal_ui::{Context, Placement, Text};
+        let mut entry = crate::apps::tests::app().apps.directory[0].clone();
+        entry.descriptor.context = Context::Application;
+        entry.descriptor.placement = Placement::Settings;
+        entry.descriptor.title = Text::plain("Conversation import");
+        for (category, label) in [
+            (Category::Appearance, "Customize theme"),
+            (Category::Models, "Model connections"),
+            (Category::Host, "Connection details"),
+        ] {
+            let mut app = app(Locale::En);
+            app.connection = ConnectionState::Connected {
+                root_id: "root".into(),
+                epoch: "epoch".into(),
+            };
+            app.settings_action(Message::Category(category));
+            let terminal = render(&mut app, 120, 40);
+            let presented = locate(&terminal, label);
+            app.apps.directory.push(entry.clone());
+            let terminal = render(&mut app, 120, 40);
+            assert_eq!(locate(&terminal, label), presented, "{label}");
+            assert!(rows(&terminal).join("\n").contains("Conversation import"));
+            app.input(click(presented));
+            match category {
+                Category::Appearance => assert!(app.theme.editor.is_some()),
+                Category::Models => assert_eq!(app.navigation.current(), Route::Connections),
+                Category::Host => assert!(app.settings.host_details),
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[test]
     fn host_owned_defaults_are_disabled_without_a_connection_and_open_the_original_dialog() {
         let mut app = app(Locale::En);
-        app.settings.category = Category::Sessions;
+        app.settings_action(Message::Category(Category::Sessions));
         let terminal = render(&mut app, 100, 30);
         let row = locate(&terminal, "New session sandbox");
         assert_eq!(app.input(click(row)).1, None);
