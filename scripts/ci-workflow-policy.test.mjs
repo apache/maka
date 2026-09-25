@@ -1172,3 +1172,21 @@ function checkoutSteps(name) {
     []
   );
 }
+
+test('the minimum Node verifies Host and storage lifecycle fixtures after building', () => {
+  const workflow = readWorkflow('ci.yml');
+  const start = workflow.indexOf('      - name: Select minimum supported Node');
+  assert.ok(start > workflow.indexOf('      - name: Build\n'));
+  const steps = workflow.slice(start);
+  const gate =
+    "if: steps.plan.outputs.runtime_host == 'true' || contains(steps.plan.outputs.standard_workspaces, 'packages/storage')";
+  assert.equal(steps.split(gate).length - 1, 2, 'setup and tests share the affected-surface gate');
+  assert.match(steps, /node-version: '22\.19\.0'/u);
+  assert.match(steps, /node --test --test-concurrency=1/u);
+  assert.match(steps, /packages\/runtime-host\/dist\/__tests__\/resumable-peer-stream\.test\.js/u);
+  assert.match(
+    steps,
+    /packages\/storage\/dist\/__tests__\/managed-dependency-environment-crash\.test\.js/u,
+  );
+  assert.doesNotMatch(steps, /continue-on-error/u);
+});
