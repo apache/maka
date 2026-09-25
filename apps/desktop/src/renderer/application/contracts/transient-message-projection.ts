@@ -40,8 +40,9 @@ export function projectQueuedTransientMessages(
 }
 
 /**
- * A Host-named Turn outranks a later local update that still has none: the
- * IPC reply can land after the Host event that already bound this Message.
+ * A Host-named Turn, and the place it gave the Message, outrank a later local
+ * update that still has none: the IPC reply can land after the Host event
+ * that already bound this Message.
  */
 export function mergeTransientMessageProjection(
   current: TransientUserMessage,
@@ -56,7 +57,11 @@ export function mergeTransientMessageProjection(
     ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),
   };
   return current.hostTurnId !== undefined && update.hostTurnId === undefined
-    ? { ...update, hostTurnId: current.hostTurnId }
+    ? {
+        ...update,
+        hostTurnId: current.hostTurnId,
+        ...(current.transientPlacement === 'transcript' && { transientPlacement: 'transcript' }),
+      }
     : update;
 }
 

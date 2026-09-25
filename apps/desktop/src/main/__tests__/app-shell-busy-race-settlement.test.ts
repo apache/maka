@@ -41,20 +41,40 @@ import {
 } from './app-shell-chat-actions-fixture.js';
 
 describe('busy-raced send settlement', () => {
-  it('submits ordinary messages as next-turn intent without an execution witness', async () => {
+  it('starts a send behind a running Turn in the plate, where the Host queues it', async () => {
+    const transient = new Map<string, TransientUserMessageProjection>();
     const restoreWindow = installWindow({ sessions: {
-      submitMessage: async (_sessionId: string, placement: string) => {
-        assert.equal(placement, 'next_turn');
+      submitMessage: async (
+        _sessionId: string,
+        placement: string,
+        command: { localDisplayPlacement?: string },
+      ) => {
+        assert.equal(placement, 'next_turn', 'the Host, not observation, decides the Turn');
+        assert.equal(command.localDisplayPlacement, undefined);
+        assert.equal([...transient.values()][0]?.transientPlacement, 'follow_up');
         return { ok: true, disposition: 'followup', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
       },
     } });
     try {
       const actions = createAppShellChatActions({
         ...createActionsDeps(), activeIdRef: { current: 'session-a' },
-        getRunningTurnId: () => { throw new Error('Message intent must not depend on observation'); },
+        getRunningTurnId: () => 'running-turn',
+        addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
       });
       assert.equal(await actions.send('do this after the current answer'), true);
+      assert.equal([...transient.values()][0]?.transientPlacement, 'follow_up');
     } finally { restoreWindow(); }
+  });
+
+  it('keeps a Turn prompt the Host admitted before the send reply arrived', () => {
+    const admitted: TransientUserMessageProjection = {
+      id: 'message-b', text: 'b', ts: 1, transientPlacement: 'transcript', hostTurnId: 'turn-b',
+    };
+    const reply = mergeTransientMessageProjection(admitted, {
+      id: 'message-b', text: 'b', ts: 2, transientPlacement: 'follow_up',
+    });
+    assert.deepEqual([reply.transientPlacement, reply.hostTurnId], ['transcript', 'turn-b']);
   });
 
   it('keeps an existing idle Session send in the transcript during local delivery', async () => {

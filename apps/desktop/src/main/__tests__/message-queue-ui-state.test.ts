@@ -102,7 +102,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
     refreshSessions: async () => [],
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
-    setMessageQueueBySession: controller.setMessageQueueBySession,
+    messageQueueStore: controller,
     removeTransientMessage: (_sessionId, messageId) =>
       transientMessages.delete(messageId),
     showModelSetupToast() {},
@@ -213,7 +213,7 @@ test('steering delivery clears a promoted follow-up from the desktop queue', () 
     refreshSessions: async () => [],
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
-    setMessageQueueBySession: controller.setMessageQueueBySession,
+    messageQueueStore: controller,
     showModelSetupToast() {},
     toastApi: { error() {} },
   });
@@ -247,6 +247,55 @@ test('steering delivery clears a promoted follow-up from the desktop queue', () 
   });
 
   assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
+});
+
+test('an admitted follow-up leaves the plate as the prompt of the Turn it starts', () => {
+  const controller = createAppShellSessionUiStateController();
+  const transient = new Map<string, TransientUserMessageProjection>();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'en',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    messageQueueStore: controller,
+    addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+    removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+  });
+  const entry = (messageId: string, placement: 'current_turn' | 'next_turn') => ({
+    entryId: `entry-${messageId}`, messageId, content: { text: messageId }, placement, state: 'queued' as const,
+  });
+  handlers.handleEvent('session-1', {
+    type: 'queue_update', id: 'queue-1', turnId: 'turn-a', ts: 1, queueRevision: 1,
+    steering: ['steer'], followup: ['next', 'withdrawn'],
+    steeringEntries: [entry('steer', 'current_turn')],
+    followupEntries: [entry('next', 'next_turn'), entry('withdrawn', 'next_turn')],
+  });
+  const admit = (messageId: string, outcome: 'admitted' | 'retracted') => handlers.handleEvent('session-1', {
+    type: 'message_admission', id: `admission-${messageId}`, turnId: 'turn-b', ts: 2, messageId, outcome,
+  });
+  const queued = () => controller.getState().messageQueueBySession['session-1']?.entries.map((queuedEntry) => queuedEntry.messageId);
+
+  admit('next', 'admitted');
+  assert.deepEqual(
+    { placement: transient.get('next')?.transientPlacement, turnId: transient.get('next')?.hostTurnId, text: transient.get('next')?.text },
+    { placement: 'transcript', turnId: 'turn-b', text: 'next' },
+  );
+  assert.deepEqual(queued(), ['steer', 'withdrawn'], 'the plate and the Turn never show it together');
+  admit('steer', 'admitted');
+  admit('withdrawn', 'retracted');
+  assert.deepEqual([...transient.keys()], ['next'], 'steering waits for its own event; a retraction publishes nothing');
+  assert.deepEqual(queued(), ['steer', 'withdrawn']);
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update', id: 'queue-2', turnId: 'turn-b', ts: 3, queueRevision: 2,
+    steering: [], followup: [], steeringEntries: [], followupEntries: [],
+  });
+  assert.equal(transient.get('next')?.hostTurnId, 'turn-b', 'the queue update that drops it keeps its Turn prompt');
 });
 
 test('complete events deliver the durable context compaction outcome to Desktop', () => {
