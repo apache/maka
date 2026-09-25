@@ -957,7 +957,6 @@ sidebar-title = 会话
 sidebar-all = 全部
 sidebar-pending = 待处理
 
-transcript-capacity = 打开的阅读区过多。关闭另一视图后可在此阅读。
 transcript-failed = 此阅读区无法更新。
 transcript-buffer-full = 阅读区已达到本地容量上限。
 transcript-expired = 此阅读区的数据已过期。

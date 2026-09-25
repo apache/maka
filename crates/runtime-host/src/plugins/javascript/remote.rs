@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 
 pub(super) struct Source {
     pub package: maka_plugins::package::Package,
-    pub presenters: Arc<super::presenter::Capacity>,
+    pub presenter_limits: maka_js_runtime::plugin::Limits,
     pub catalog: maka_plugins::contributions::Catalog,
 }
 pub(super) struct Remote(pub Arc<Callback>);
@@ -76,7 +76,7 @@ impl Stream for JsStream {
             let value = self
                 .callback
                 .module
-                .call(vec!["streamNext".into()], vec![json!(self.handle)])
+                .stream_next(&self.handle)
                 .await
                 .map_err(|error| Error::Provider(error.to_string()))?;
             let value = result(value)?;
@@ -119,7 +119,7 @@ impl Stream for JsStream {
                 .map_err(|_| Error::CleanupUnconfirmed)?;
             self.callback
                 .module
-                .call(vec!["streamClose".into()], vec![json!(self.handle)])
+                .stream_close(&self.handle)
                 .await
                 .map_err(|_| Error::CleanupUnconfirmed)?;
             Ok(())
@@ -179,3 +179,6 @@ fn result(value: Value) -> Result<Value, Error> {
         }),
     }
 }
+
+#[cfg(test)]
+mod tests;

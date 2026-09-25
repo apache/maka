@@ -38,13 +38,13 @@ export const block = (message, text = message, revision = '1') => ({
   kind: 'assistant',
   content: { text },
 });
-export async function fixture(initial = {}, activate) {
+export async function fixture(initial = {}, activate, Decoder = TextDecoder) {
   let store;
   let tui;
   const operations = [];
   const runtime = vm.runInNewContext(sdk, {
     TextEncoder,
-    TextDecoder,
+    TextDecoder: Decoder,
     Deno: {
       core: {
         ops: {
@@ -103,8 +103,15 @@ export async function fixture(initial = {}, activate) {
     },
   };
 }
-export async function logicalPage(f, fence, direction = 'tail', cursor = null, document = 'doc') {
-  let page = await f.page({ fence, direction, cursor }, document);
+export async function logicalPage(
+  f,
+  fence,
+  direction = 'tail',
+  cursor = null,
+  document = 'doc',
+  token = mount,
+) {
+  let page = await f.page({ fence, direction, cursor, mount: token }, document);
   const records = [];
   const timings = [];
   let assembly;
@@ -134,7 +141,7 @@ export async function logicalPage(f, fence, direction = 'tail', cursor = null, d
     }
     timings.push(...page.timings);
     if (!page.continuation) break;
-    const input = { fence, direction: 'continue', cursor: page.continuation };
+    const input = { fence, direction: 'continue', cursor: page.continuation, mount: token };
     page = await f.page(input, document);
     assert.deepEqual(await f.page(input, document), page, 'cursor replay is immutable');
   }

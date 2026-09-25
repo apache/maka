@@ -28,41 +28,55 @@ pub(super) fn measure(
     log: &mut report::Report,
     phase: &'static str,
 ) {
-    let (client, pump) = runtime.block_on(proxy::connect(root));
+    // Exercise many real pages and idle subscriptions on one connection.
+    // These are sample sizes, not product admission limits.
+    let connections = [runtime.block_on(proxy::connect(root))];
+    const PAGES: usize = 64;
     let mut documents = Vec::new();
+    let mut waits = Vec::new();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let target = runtime.block_on(case::target(&client, "memory"));
-        for count in 1..=4 {
+        for count in 1..=PAGES {
+            let index = (count - 1) % connections.len();
+            let client = &connections[index].0;
+            let target = runtime.block_on(case::target(client, "memory"));
             sampler.mark(phase, count);
-            let document = runtime.block_on(case::document(&client));
-            documents.push(document);
-            let result = runtime.block_on(read(&client, &target, document)).unwrap();
+            let document = runtime.block_on(case::document(client));
+            documents.push((index, document));
+            let result = runtime.block_on(read(client, &target, document)).unwrap();
             assert!(matches!(result, RemoteResult::Value { ref value } if value["kind"] == "view"));
-            let records = runtime.block_on(resource(&client, document));
-            let stats = runtime.block_on(case::stats(&client));
+            let changed = runtime.block_on(changes(client, document));
+            let (records, reader) = runtime.block_on(resource(client, document));
+            for stream in [changed, reader] {
+                let client = client.clone();
+                waits.push(runtime.spawn(async move {
+                    client
+                        .plugin_remote(RemoteRequest::Next { document, stream })
+                        .await
+                }));
+            }
+            let stats = runtime.block_on(case::stats(client));
             assert_eq!(stats["active"], count);
             assert_eq!(stats["activations"], 1);
             sampler.mark(phase, count);
             log.emit(
                 json!({"kind":"page_capacity","phase":phase,"page_documents":count,
-                "document":document,"loaded_resource_records":records,"stats":stats,
+                "document":document,"connection_index":index,"streams_per_page":2,
+                "loaded_resource_records":records,"stats":stats,
                 "app_reply_payload_bytes":serde_json::to_vec(&result).unwrap().len()}),
             );
         }
-        let fifth = runtime.block_on(case::document(&client));
-        documents.push(fifth);
-        let denied = runtime.block_on(read(&client, &target, fifth));
+        let client = &connections[0].0;
+        let started = Instant::now();
+        let stats = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), case::stats(client))
+                .await
+                .expect("idle subscriptions starved an ordinary business call")
+        });
         log.emit(
-            json!({"kind":"page_capacity_rejection","phase":phase,"page_documents":4,
-            "attempted":5,"result":format!("{denied:?}")}),
+            json!({"kind":"page_capacity_business_call","phase":phase,"page_documents":PAGES,
+            "idle_waits_dispatched":waits.len(),"duration_ns":started.elapsed().as_nanos(),"stats":stats}),
         );
-        assert!(
-            matches!(denied,
-            Err(maka_client::RequestFailure::Rejected(maka_client::ClientError::Rejected(ref error)))
-                if error.code == maka_protocol::OperationErrorCode::OperationUnavailable
-                    && error.message.contains("capacity")),
-            "fifth page was not rejected for capacity: {denied:?}"
-        );
+        assert_eq!(stats["active"], PAGES);
     }));
     sampler.mark(
         if phase == "capacity_before" {
@@ -70,23 +84,33 @@ pub(super) fn measure(
         } else {
             "capacity_after_closing"
         },
-        4,
+        PAGES,
     );
     let mut cleanup_ok = true;
-    for document in documents {
+    for (index, document) in documents {
+        let client = &connections[index].0;
         let closed =
             runtime.block_on(client.plugin_remote(RemoteRequest::CloseDocument { document }));
         log.emit(json!({"kind":"page_capacity_close","phase":phase,"document":document,"result":format!("{closed:?}")}));
         cleanup_ok &= matches!(closed, Ok(RemoteResult::Closed));
     }
+    runtime.block_on(async {
+        for wait in waits {
+            let result = tokio::time::timeout(Duration::from_secs(5), wait)
+                .await
+                .expect("closed page left an observation wait alive")
+                .unwrap();
+            log.emit(json!({"kind":"page_capacity_wait_closed","phase":phase,"result":format!("{result:?}")}));
+        }
+    });
+    let client = &connections[0].0;
     let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         assert!(cleanup_ok, "one or more exact page documents did not close");
-        let stats = runtime.block_on(case::closed(&client));
+        let stats = runtime.block_on(case::closed(client));
         sampler.mark(phase, 0);
         log.emit(json!({"kind":"page_capacity_released","phase":phase,"stats":stats}));
     }));
-    // A new exact document must reuse a released page VM permit without a new
-    // backend activation. This is admission evidence, not an RSS threshold.
+    // A new document creates fresh UI state without a new business activation.
     let reuse = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if result.is_ok() && cleanup.is_ok() {
             sampler.mark(
@@ -97,21 +121,23 @@ pub(super) fn measure(
                 },
                 1,
             );
-            let target = runtime.block_on(case::target(&client, "memory"));
-            let document = runtime.block_on(case::document(&client));
-            let reopened = runtime.block_on(read(&client, &target, document));
+            let target = runtime.block_on(case::target(client, "memory"));
+            let document = runtime.block_on(case::document(client));
+            let reopened = runtime.block_on(read(client, &target, document));
             let close =
                 runtime.block_on(client.plugin_remote(RemoteRequest::CloseDocument { document }));
             log.emit(json!({"kind":"page_capacity_reusable","phase":phase,"read":format!("{reopened:?}"),"close":format!("{close:?}")}));
             assert!(reopened.is_ok() && matches!(close, Ok(RemoteResult::Closed)));
-            assert_eq!(runtime.block_on(case::stats(&client))["activations"], 1);
+            assert_eq!(runtime.block_on(case::stats(client))["activations"], 1);
         }
     }));
-    client.disconnect();
-    runtime.block_on(async {
-        client.closed().await;
-        pump.await.unwrap();
-    });
+    for (client, pump) in connections {
+        client.disconnect();
+        runtime.block_on(async {
+            client.closed().await;
+            pump.await.unwrap();
+        });
+    }
     if let Err(error) = result {
         std::panic::resume_unwind(error);
     }
@@ -121,6 +147,23 @@ pub(super) fn measure(
     if let Err(error) = reuse {
         std::panic::resume_unwind(error);
     }
+}
+
+async fn changes(client: &Client, document: Uuid) -> Uuid {
+    let target = case::target(client, "memory-changed").await;
+    let opened = client
+        .plugin_remote(RemoteRequest::Open {
+            binding: case::binding("memory-changed"),
+            target,
+            document,
+            input: json!({"kind":"watch","route":null,"locale":"en"}),
+        })
+        .await
+        .unwrap();
+    let RemoteResult::Opened { stream } = opened else {
+        panic!("expected changes stream: {opened:?}")
+    };
+    stream
 }
 
 async fn read(
@@ -137,7 +180,7 @@ async fn read(
         })
         .await
 }
-async fn resource(client: &Client, document: Uuid) -> usize {
+async fn resource(client: &Client, document: Uuid) -> (usize, Uuid) {
     tokio::time::timeout(Duration::from_secs(5), async {
         let mount = Uuid::new_v4();
         let target = case::target(client, "memory-lines.stream").await;
@@ -213,7 +256,7 @@ async fn resource(client: &Client, document: Uuid) -> usize {
             match page.continuation {
                 None => {
                     assert_eq!(records, 256);
-                    return records;
+                    return (records, stream);
                 }
                 Some(cursor) => {
                     assert!(seen.insert(cursor.clone()));

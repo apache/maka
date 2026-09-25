@@ -94,8 +94,7 @@ impl App {
         location.embedded.sort_by_key(Key::depth);
         if &location != self.navigation.location() {
             let mut navigation = self.navigation.clone();
-            if !navigation.replace(location)
-                || !self.admit_state(Some((&navigation, false, None)), 0)
+            if !navigation.replace(location) || !self.admit_state(Some((&navigation, false, None)))
             {
                 return;
             }

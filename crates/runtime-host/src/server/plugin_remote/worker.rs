@@ -84,7 +84,7 @@ impl Handle {
 }
 
 pub(super) fn start(
-    reservation: Reservation,
+    mut reservation: Reservation,
     bound: Bound,
     provider: Arc<dyn StreamProvider>,
     input: Value,
@@ -107,11 +107,18 @@ pub(super) fn start(
     reservation.document.insert(id, handle)?;
     tasks.spawn(async move {
         let _leases = leases;
-        let mut result =
-            std::panic::AssertUnwindSafe(run(&bound, provider, input, caller, receiver, ready))
-                .catch_unwind()
-                .await
-                .unwrap_or(Err(Error::CleanupUnconfirmed));
+        let mut result = std::panic::AssertUnwindSafe(run(
+            &mut reservation,
+            &bound,
+            provider,
+            input,
+            caller,
+            receiver,
+            ready,
+        ))
+        .catch_unwind()
+        .await
+        .unwrap_or(Err(Error::CleanupUnconfirmed));
         stop.cancel();
         if resources.finish().await.is_err() {
             result = Err(Error::CleanupUnconfirmed);
@@ -132,6 +139,7 @@ pub(super) fn start(
 }
 
 async fn run(
+    reservation: &mut Reservation,
     bound: &Bound,
     provider: Arc<dyn StreamProvider>,
     input: Value,
@@ -180,6 +188,7 @@ async fn run(
         }
     };
     drop(opening);
+    reservation.release_work();
     let visible = ready.send(Ok(())).is_ok();
     let mut terminal = None;
     // Keep the provider future across bounded polls: timing out a transport

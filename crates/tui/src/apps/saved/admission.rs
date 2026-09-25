@@ -23,6 +23,18 @@ use super::*;
 mod tests;
 
 impl Checkpoint {
+    pub(crate) fn capacity_bytes(&self) -> Option<usize> {
+        self.validate(&self.root).ok()?;
+        let mut bytes = serde_json::to_vec(self).ok()?.len();
+        for (id, cursor) in &self.cursors {
+            let text = self.drafts.get(id)?.as_str()?;
+            bytes = bytes
+                .checked_sub(serde_json::to_vec(cursor).ok()?.len())?
+                .checked_add(serde_json::to_vec(&Cursor::largest(text)).ok()?.len())?;
+        }
+        (bytes <= MAX_BYTES).then_some(bytes)
+    }
+
     pub(in crate::apps) fn admit_field(
         &mut self,
         id: &str,
@@ -67,6 +79,7 @@ impl Checkpoint {
         self.admit_cursors_ref()
     }
 
+    #[cfg(test)]
     pub(in crate::apps) fn admit_cursors(mut self) -> bool {
         self.admit_cursors_ref()
     }

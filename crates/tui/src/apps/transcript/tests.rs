@@ -449,3 +449,5 @@ fn a_page_received_during_selection_stays_static_and_pauses_after_projection() {
 }
 
 mod retained;
+
+mod capacity;

@@ -21,9 +21,15 @@ use super::*;
 
 impl Instance {
     pub(super) fn draft_fits(&self, root: &str) -> bool {
-        let Some(review) = &self.review else {
-            return false;
-        };
+        self.draft_checkpoint(root)
+            .is_some_and(|(checkpoint, _)| checkpoint.capacity_bytes().is_some())
+    }
+
+    pub(in crate::apps) fn draft_checkpoint(
+        &self,
+        root: &str,
+    ) -> Option<(saved::Checkpoint, bool)> {
+        let review = self.review.as_ref()?;
         let mut candidate = Instance::new(Some(review.entry.clone()), self.address.clone());
         candidate.install(review.view.clone());
         candidate.drafts = review.values.clone();
@@ -37,13 +43,12 @@ impl Instance {
         for (id, editor) in &mut candidate.editors {
             let initial = editor.text().to_owned();
             editor.clear_if_unchanged(&initial);
-            let Some(text) = candidate.drafts.get(id).and_then(Value::as_str) else {
-                return false;
-            };
+            let text = candidate.drafts.get(id).and_then(Value::as_str)?;
             editor.insert(text);
         }
+        let kept = candidate.keeps();
         candidate
             .checkpoint(root, &self.address, None)
-            .is_some_and(|checkpoint| checkpoint.admit_cursors())
+            .map(|checkpoint| (checkpoint, kept))
     }
 }

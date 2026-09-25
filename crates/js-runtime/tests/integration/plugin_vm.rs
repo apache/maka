@@ -21,6 +21,8 @@ use maka_js_runtime::plugin::{Bridge, Error, Limits, Module, Pool, Vm};
 use serde_json::{Value, json};
 use std::time::Duration;
 
+mod inventory;
+
 struct Relay(Module);
 impl Bridge for Relay {
     fn call(
@@ -36,7 +38,7 @@ impl Bridge for Relay {
 #[tokio::test]
 async fn cross_vm_host_calls_preserve_values_and_retirement_does_not_retarget_or_deadlock() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let pool = Pool::new(Limits::default(), 1).unwrap();
+        let pool = Pool::new(Limits::default());
         let shared = pool.shared().unwrap();
         let dedicated = pool.dedicated("service-generation").unwrap();
         let service = dedicated.load("service.mjs".into(), r#"
@@ -232,11 +234,11 @@ async fn runaway_terminates_its_vm_and_not_an_independent_vm() {
             synchronous_slice: Duration::from_millis(200),
             ..Limits::default()
         };
-        let pool = Pool::new(limits, 1).unwrap();
+        let pool = Pool::new(limits);
         let shared = pool.shared().unwrap();
         let dedicated = pool.dedicated("separate-generation").unwrap();
         let same_generation = pool.dedicated("separate-generation").unwrap();
-        assert!(pool.dedicated("another-generation").is_err());
+        let other = pool.dedicated("another-generation").unwrap();
         let innocent = shared
             .load(
                 "innocent.mjs".into(),
@@ -272,10 +274,12 @@ async fn runaway_terminates_its_vm_and_not_an_independent_vm() {
         innocent.close().await.unwrap();
         runaway.close().await.unwrap();
         assert_eq!(call(&separate, "ping").await, json!(2));
+        assert!(!other.is_terminated());
         separate.close().await.unwrap();
         shared.shutdown().await;
         dedicated.shutdown().await;
-        // Retaining dead handles must neither consume capacity nor revive a VM.
+        other.shutdown().await;
+        // Retaining dead handles must not revive or retarget a VM.
         let replacement = pool.dedicated("another-generation").unwrap();
         assert!(!replacement.is_terminated());
         replacement.shutdown().await;

@@ -143,7 +143,9 @@ export interface TranscriptStats {
  * Each open document mount captures its own immutable snapshot before subscribing.
  * Pages contain at most 256 records / 4 MiB, allowing one larger record; encoded
  * records are capped at 16 MiB. The source holds at most 4096 blocks / 32 MiB,
- * 4096 timings, and four concurrent mounts. Slow readers get Invalidated on queue overflow.
+ * and 4096 timings. Current records plus distinct historical record/timing versions
+ * share the 32 MiB encoded retention budget; pressure invalidates oldest snapshots.
+ * Reader count is not an admission limit; slow queues are invalidated independently.
  * Close the store during plugin cleanup. Local reading never changes the View.
  */
 export interface TranscriptStore extends Registration {

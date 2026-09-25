@@ -28,7 +28,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAX_BYTES: u64 = 40 * 1024 * 1024;
+pub(super) const MAX_BYTES: u64 = 40 * 1024 * 1024;
 
 pub(super) fn fits(bytes: usize) -> bool {
     bytes as u64 <= MAX_BYTES

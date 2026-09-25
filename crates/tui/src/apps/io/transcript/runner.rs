@@ -102,9 +102,6 @@ impl Runner {
     }
 
     pub(super) fn admit(&self, wanted: &[Mount]) -> Result<(), Failure> {
-        if wanted.len() > MAX_MOUNTS {
-            return Err(Failure::Overflow);
-        }
         let mut tokens = HashSet::new();
         for mount in wanted {
             if !tokens.insert(mount.token)

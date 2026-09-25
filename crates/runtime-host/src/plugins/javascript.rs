@@ -47,17 +47,17 @@ use std::time::Duration;
 
 pub(crate) struct Loader {
     pool: Arc<Pool>,
-    presenters: Arc<presenter::Capacity>,
+    presenter_limits: Limits,
     executions: Weak<Executions>,
 }
 impl Loader {
     pub fn new(executions: &Arc<Executions>) -> Result<Self, maka_plugins::Error> {
         Ok(Self {
-            pool: Arc::new(Pool::new(Limits::default(), 4).map_err(invalid)?),
-            presenters: Arc::new(presenter::Capacity::new(Limits {
+            pool: Arc::new(Pool::new(Limits::default())),
+            presenter_limits: Limits {
                 synchronous_slice: Duration::from_millis(200),
                 ..Limits::default()
-            })),
+            },
             executions: Arc::downgrade(executions),
         })
     }
@@ -82,7 +82,7 @@ impl PackageLoader for Loader {
                     generation: format!("{}:{}", package.manifest().id, package.digest()),
                     remote: Arc::new(remote::Source {
                         package: package.clone(),
-                        presenters: self.presenters.clone(),
+                        presenter_limits: self.presenter_limits.clone(),
                         catalog: self
                             .executions
                             .upgrade()
@@ -176,7 +176,7 @@ impl Plugin for JavaScript {
             context
                 .lifecycle
                 .spawn("JavaScript business tasks", async move {
-                    if let Err(error) = business.call(vec!["effective".into()], vec![]).await {
+                    if let Err(error) = business.start_tasks().await {
                         owner.retire();
                         return Err(error.to_string());
                     }

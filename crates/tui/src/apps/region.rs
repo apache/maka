@@ -92,6 +92,7 @@ pub(super) fn input<M: Clone>(
     if let Some(redraw) =
         super::transcript::input(&mut apps.readers, surface, event, keyboard, ascii)
     {
+        app.checkpoint_input(crate::state::Impact::Reading);
         return Some(redraw);
     }
     let enabled = |apps: &Apps, well: &Well| {
@@ -128,6 +129,7 @@ pub(super) fn input<M: Clone>(
         if press {
             surface.focus(well.path.clone());
         }
+        app.checkpoint_input(crate::state::Impact::Reading);
         return Some(changed || press);
     }
     if !keyboard {
@@ -177,6 +179,7 @@ pub(super) fn input<M: Clone>(
         _ => return None,
     };
     let edits_text = proposed.is_some();
+    app.checkpoint_input(crate::state::Impact::Reading);
     if let Some(text) = proposed
         && !app.admit_field(&well.key, &well.field, &Value::String(text))
     {

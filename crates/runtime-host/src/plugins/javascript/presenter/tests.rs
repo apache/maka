@@ -155,7 +155,7 @@ async fn page_vm_failure_preserves_sibling_factory_and_business_job() {
         let business = business_vm.load_plugin("business.mjs".into(), BUSINESS.into(), clock.clone()).unwrap();
         business.call(vec!["activate".into()], vec![json!({}), Value::Null]).await.unwrap();
         let running = business.clone();
-        let job = tokio::spawn(async move { running.call(vec!["effective".into()], vec![]).await });
+        let job = tokio::spawn(async move { running.start_tasks().await });
         clock.entered.acquire().await.unwrap().forget();
         let entered = Arc::new(Semaphore::new(0));
         let backend = Arc::new(Backend(std::sync::Mutex::default(), entered.clone()));
@@ -164,16 +164,19 @@ async fn page_vm_failure_preserves_sibling_factory_and_business_job() {
             ("host.mjs".into(), BUSINESS.as_bytes().to_vec()),
             ("page.mjs".into(), SOURCE.as_bytes().to_vec()),
         ])).unwrap();
-        let capacity = Arc::new(Capacity::new(limits));
-        let factory = Factory::new(&package, "page.mjs", capacity.clone(), backend.clone(), CancellationToken::new(), vec![]).unwrap();
-        assert!(Factory::new(&package, "../page.mjs", capacity.clone(), backend.clone(), CancellationToken::new(), vec![]).is_err());
+        let factory = Factory::new(&package, "page.mjs", limits.clone(), backend.clone(), CancellationToken::new(), vec![]).unwrap();
+        assert!(Factory::new(&package, "../page.mjs", limits, backend.clone(), CancellationToken::new(), vec![]).is_err());
         let page_a = factory.open(CancellationToken::new()).unwrap();
         let page_b = factory.open(CancellationToken::new()).unwrap();
-        let third = factory.open(CancellationToken::new()).unwrap();
-        let fourth = factory.open(CancellationToken::new()).unwrap();
-        assert!(factory.open(CancellationToken::new()).is_err());
-        third.close().await.unwrap();
-        fourth.close().await.unwrap();
+        // Keep 33 isolated page VMs alive together. Instance count is not an
+        // admission boundary, and each runs its own JavaScript factory.
+        let pages: Vec<_> = (0..31).map(|_| factory.open(CancellationToken::new()).unwrap()).collect();
+        for (index, page) in pages.iter().enumerate() {
+            let value = page.call(read(Value::Null), caller(uuid::Uuid::new_v4())).await
+                .unwrap_or_else(|error| panic!("page {} first Read failed: {error}", index + 3));
+            assert_eq!(value["view"]["revision"], "1");
+            assert_eq!(value["view"]["root"]["spans"][0]["text"], "1");
+        }
         let a = caller(uuid::Uuid::new_v4());
         let b = caller(uuid::Uuid::new_v4());
         assert_eq!(page_b.call(read(Value::Null), b.clone()).await.unwrap()["view"]["revision"], "1");
@@ -185,10 +188,16 @@ async fn page_vm_failure_preserves_sibling_factory_and_business_job() {
         assert_eq!(sibling["view"]["revision"], "1");
         assert_eq!(sibling["view"]["root"]["spans"][0]["text"], "2");
         assert!(!fault.is_finished(), "sibling must complete before A's watchdog failure");
-        assert!(matches!(fault.await.unwrap(), Err(Error::Provider(_) | Error::Retired | Error::Cancelled)));
+        assert!(matches!(fault.await.unwrap(), Err(Error::Provider(message))
+            if message.contains("synchronous execution budget exceeded")),
+            "the original VM fault must survive incidental Caller cancellation");
         page_a.close().await.unwrap();
         step(&clock).await;
         assert_eq!(stats(&business).await, json!({"activations":1,"ticks":2}));
+        for page in pages { page.close().await.unwrap(); }
+        step(&clock).await;
+        assert_eq!(stats(&business).await, json!({"activations":1,"ticks":3}));
+        // B stays usable after its many siblings have completed VM teardown.
         let submission = json!({"kind":"submit","route":null,"revision":"r1","action":"save","fields":{},"locale":"en"});
         assert_eq!(page_b.call(submission.clone(), b.clone()).await.unwrap()["kind"], "applied");
         assert!(backend.0.lock().unwrap().contains(&(submission, b.document_id)));
@@ -196,8 +205,60 @@ async fn page_vm_failure_preserves_sibling_factory_and_business_job() {
         assert!(page_b.call(read(json!("write")), b).await.is_err());
         assert_eq!(backend.0.lock().unwrap().len(), calls + 1);
         page_b.close().await.unwrap();
-        assert_eq!(capacity.slots.available_permits(), 4);
+        let reopened = factory.open(CancellationToken::new()).unwrap();
+        let fresh = reopened.call(read(Value::Null), caller(uuid::Uuid::new_v4())).await.unwrap();
+        assert_eq!(fresh["view"]["revision"], "1");
+        assert_eq!(fresh["view"]["root"]["spans"][0]["text"], "1");
+        reopened.close().await.unwrap();
         business_vm.shutdown().await;
         assert!(job.await.unwrap().is_err());
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn page_top_level_and_factory_loops_remain_watchdog_protected() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for (name, source) in [
+            (
+                "top-level-loop.mjs",
+                "while (true) {} export default function create() {}",
+            ),
+            (
+                "factory-loop.mjs",
+                "export default function create() { while (true) {} }",
+            ),
+        ] {
+            let backend = Arc::new(Backend(
+                std::sync::Mutex::default(),
+                Arc::new(Semaphore::new(0)),
+            ));
+            let factory = Factory {
+                source: source.into(),
+                name: name.into(),
+                limits: Limits {
+                    synchronous_slice: Duration::from_millis(200),
+                    ..Limits::default()
+                },
+                observations: vec![],
+                backend: backend.clone(),
+                retiring: CancellationToken::new(),
+            };
+            let page = factory.open(CancellationToken::new()).unwrap();
+            let error = page
+                .call(read(Value::Null), caller(uuid::Uuid::new_v4()))
+                .await
+                .unwrap_err();
+            page.close().await.unwrap();
+            assert!(
+                matches!(&error, Error::Provider(message)
+                    if message.contains("synchronous execution budget exceeded")
+                        && message.contains("poll began in script poll")
+                        && message.contains("phase: script poll")),
+                "{name} must fail inside the user-script watchdog: {error}"
+            );
+            assert!(backend.0.lock().unwrap().is_empty());
+        }
+    })
+    .await
+    .expect("user loops and their VM teardown must make bounded progress");
 }

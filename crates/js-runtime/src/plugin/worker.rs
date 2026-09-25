@@ -16,22 +16,26 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use super::{Command, Health, Limits, Result, State, Statistics, engine, failed};
+use super::{Command, Health, Limits, PollClock, Result, State, Statistics, engine, failed};
 use deno_core::v8;
 use futures_util::{StreamExt, future::LocalBoxFuture, stream::FuturesUnordered};
-use std::{collections::BTreeMap, future::poll_fn, sync::Arc, task::Poll};
+use std::{
+    collections::BTreeMap,
+    future::poll_fn,
+    sync::{Arc, atomic::Ordering},
+    task::Poll,
+};
 use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot, watch};
 
 struct Loaded {
     code: engine::Module,
     calls: usize,
     closing: bool,
-    _slot: OwnedSemaphorePermit,
 }
 struct Request {
     module: u64,
     reply: oneshot::Sender<Result<serde_json::Value>>,
-    _slot: OwnedSemaphorePermit,
+    _slot: Option<OwnedSemaphorePermit>,
     _bytes: OwnedSemaphorePermit,
 }
 type Pending = FuturesUnordered<LocalBoxFuture<'static, (u64, Result<v8::Global<v8::Value>>)>>;
@@ -43,9 +47,12 @@ pub(super) async fn run(
 ) -> Result<()> {
     let mut states: BTreeMap<u64, watch::Sender<State>> = BTreeMap::new();
     let mut requests = BTreeMap::<u64, Request>::new();
-    let result = {
+    let result = async {
+        // Trusted runtime setup precedes the user-script clock. Keep its errors
+        // in this result so queued loads still receive the common cleanup below.
+        let mut runtime = engine::runtime(&health, &limits)?;
+        health.initializing.store(false, Ordering::SeqCst);
         let serving = async {
-            let mut runtime = engine::runtime(&health, &limits)?;
             let mut modules = BTreeMap::<u64, Loaded>::new();
             let mut pending = Pending::new();
             let mut next_call = 0_u64;
@@ -74,7 +81,6 @@ pub(super) async fn run(
                             name,
                             source,
                             state,
-                            slot,
                             bytes,
                         } => {
                             match engine::load(&mut runtime, &name, &source, bootstrap, id) {
@@ -92,7 +98,6 @@ pub(super) async fn run(
                                             code,
                                             calls: 0,
                                             closing: false,
-                                            _slot: slot,
                                         },
                                     );
                                     state.send_replace(State::Ready);
@@ -196,15 +201,17 @@ pub(super) async fn run(
         };
         let mut serving = std::pin::pin!(serving);
         poll_fn(|cx| {
-            health
-                .polling
-                .send_replace(Some(tokio::time::Instant::now()));
+            health.polling.send_replace(Some(PollClock {
+                started: tokio::time::Instant::now(),
+                initializing: health.initializing.load(Ordering::SeqCst),
+            }));
             let result = serving.as_mut().poll(cx);
             health.polling.send_replace(None);
             result
         })
         .await
-    };
+    }
+    .await;
     // Runtime, module globals and pending promises have left scope before cleanup
     // acknowledgements. Host resource leases are managed by the Fiber above us.
     if let Err(error) = &result {

@@ -26,6 +26,7 @@ use crate::{
 };
 use maka_client::Error;
 use snapshot::Snapshot;
+pub(crate) use snapshot::admission::{Budget, Impact};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -119,7 +120,10 @@ impl State {
         })
         .await?
     }
-    pub fn changed(&mut self) {
+    /// Keep admission's derived sizes fresh at the same boundary that schedules
+    /// persistence. Field deltas and cursor-only input already account for themselves.
+    pub(crate) fn changed(&mut self, app: &mut App, impact: Impact) {
+        app.checkpoint_changed(impact);
         self.deadline
             .get_or_insert_with(|| Instant::now() + Duration::from_millis(500));
     }
@@ -130,15 +134,16 @@ impl State {
         self.deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
-    pub fn force(&mut self) {
+    pub fn force(&mut self, app: &mut App) {
+        app.checkpoint_changed(Impact::Other);
         self.deadline = Some(Instant::now());
     }
-    pub fn submit(&mut self, request: Submission) {
+    pub fn submit(&mut self, request: Submission, app: &mut App) {
         // App permits at most one unresolved request per bounded draft slot.
         self.requests
             .retain(|pending| pending.session != request.session);
         self.requests.push(request);
-        self.force();
+        self.force(app);
     }
     pub fn cancel_requests(&mut self) -> Vec<Submission> {
         self.oauth = None;
@@ -158,47 +163,49 @@ impl State {
         self.generation += 1;
         requests
     }
-    pub fn submit_oauth(&mut self, request: oauth::Request) {
+    pub fn submit_oauth(&mut self, request: oauth::Request, app: &mut App) {
         self.oauth = Some(request);
-        self.force();
+        self.force(app);
     }
-    pub fn submit_plugins(&mut self, request: crate::pages::plugins::Request) {
+    pub fn submit_plugins(&mut self, request: crate::pages::plugins::Request, app: &mut App) {
         self.plugins = Some(request);
-        self.force();
+        self.force(app);
     }
-    pub fn submit_recap(&mut self, request: recap::Request) {
+    pub fn submit_recap(&mut self, request: recap::Request, app: &mut App) {
         self.recap = Some(request);
-        self.force();
+        self.force(app);
     }
-    pub fn submit_resume(&mut self, request: resume::Request) {
+    pub fn submit_resume(&mut self, request: resume::Request, app: &mut App) {
         self.resume = Some(request);
-        self.force();
+        self.force(app);
     }
-    pub fn submit_branch(&mut self, request: branch::Request) {
+    pub fn submit_branch(&mut self, request: branch::Request, app: &mut App) {
         self.branch = Some(request);
-        self.force();
+        self.force(app);
     }
-    pub fn submit_attachment(&mut self, request: crate::pages::attachments::Ticket) {
+    pub fn submit_attachment(&mut self, request: crate::pages::attachments::Ticket, app: &mut App) {
         self.attachment = Some(request);
-        self.force();
+        self.force(app);
     }
-    pub fn submit_revision(&mut self, request: revision::Request) {
+    pub fn submit_revision(&mut self, request: revision::Request, app: &mut App) {
         self.revision = Some(request);
-        self.force();
+        self.force(app);
     }
-    pub fn submit_app(&mut self, request: crate::apps::Request) {
+    pub fn submit_app(&mut self, request: crate::apps::Request, app: &mut App) {
         self.apps.push(request);
-        self.force();
+        app.checkpoint_changed(Impact::LocalField);
+        self.deadline = Some(Instant::now());
     }
     pub fn idle(&self) -> bool {
         self.job.is_none() && self.deadline.is_none()
     }
-    pub fn start(&mut self, app: &App) {
+    pub fn start(&mut self, app: &mut App) {
         if self.wait() != Some(Duration::ZERO) {
             return;
         }
         self.deadline = None;
-        let snapshot = Snapshot::capture(app, &self.root);
+        let mut snapshot = Snapshot::capture(app, &self.root);
+        app.calibrate_checkpoint(&mut snapshot);
         let store = self.store.clone();
         let requests = std::mem::take(&mut self.requests);
         let generation = self.generation;
@@ -280,12 +287,12 @@ impl State {
         }
     }
     /// Terminal EOF/signals have no interactive loop to keep responsive.
-    pub async fn finish(&mut self, app: &App) -> Result<(), String> {
+    pub async fn finish(&mut self, app: &mut App) -> Result<(), String> {
         self.cancel_requests();
         if self.job.is_some() {
             self.completed().await;
         }
-        self.force();
+        self.force(app);
         self.start(app);
         self.completed().await.result
     }
@@ -362,8 +369,8 @@ mod tests {
             )
             .unwrap();
         let (release, blocked) = gate(&state).await;
-        state.submit_attachment(ticket.clone());
-        state.start(&app);
+        state.submit_attachment(ticket.clone(), &mut app);
+        state.start(&mut app);
         assert!(
             tokio::time::timeout(Duration::from_millis(30), state.completed())
                 .await
@@ -458,8 +465,8 @@ mod tests {
         app.apps_action(save());
         let submission = next(&mut app).unwrap();
         let (release, blocked) = gate(&state).await;
-        state.submit_app(submission.clone());
-        state.start(&app);
+        state.submit_app(submission.clone(), &mut app);
+        state.start(&mut app);
         assert!(
             tokio::time::timeout(Duration::from_millis(30), state.completed())
                 .await
@@ -517,9 +524,9 @@ mod tests {
         let mut app = crate::apps::tests::app();
         app.apps_action(save());
         let submission = next(&mut app).unwrap();
-        state.submit_app(submission);
+        state.submit_app(submission, &mut app);
         let (release, blocked) = gate(&state).await;
-        state.start(&app);
+        state.start(&mut app);
         state.cancel_requests();
         app.apps.disconnect();
         release.send(()).unwrap();
@@ -549,8 +556,8 @@ mod tests {
         app.apply(Action::Revision(Command::Send));
         let request = app.revision_request().unwrap();
         let (release, blocked) = gate(&state).await;
-        state.submit_revision(request.clone());
-        state.start(&app);
+        state.submit_revision(request.clone(), &mut app);
+        state.start(&mut app);
         assert!(
             tokio::time::timeout(Duration::from_millis(30), state.completed())
                 .await
@@ -583,9 +590,9 @@ mod tests {
         assert!(reopened.revision_request().is_none());
         assert!(app.revision_after_checkpoint(&request, &written.result));
         assert!(!app.revision_after_checkpoint(&request, &written.result));
-        state.submit_revision(request);
+        state.submit_revision(request, &mut app);
         let (release, blocked) = gate(&state).await;
-        state.start(&app);
+        state.start(&mut app);
         state.cancel_requests();
         app.revision.disconnect();
         release.send(()).unwrap();
@@ -616,8 +623,8 @@ mod tests {
         app.apply(Action::Branch(Command::Confirm));
         let request = app.branch_request().unwrap();
         let (release, blocked) = gate(&state).await;
-        state.submit_branch(request.clone());
-        state.start(&app);
+        state.submit_branch(request.clone(), &mut app);
+        state.start(&mut app);
         assert!(
             tokio::time::timeout(Duration::from_millis(20), state.completed())
                 .await
@@ -625,7 +632,7 @@ mod tests {
         );
         app.apply(Action::Branch(Command::Close));
         app.apply(Action::Visit(Route::Settings));
-        state.changed();
+        state.changed(&mut app, Impact::Other);
         release.send(()).unwrap();
         blocked.await.unwrap();
         let written = written(&mut state).await;
@@ -660,9 +667,9 @@ mod tests {
                 .validate(ROOT)
                 .is_err()
         );
-        state.submit_branch(request);
-        state.force();
-        state.start(&app);
+        state.submit_branch(request, &mut app);
+        state.force(&mut app);
+        state.start(&mut app);
         state.cancel_requests();
         app.branch.disconnect();
         assert!(
@@ -677,8 +684,8 @@ mod tests {
         app.input(Event::Paste("original 中文🦀".into()));
         let request = app.submission().unwrap();
         let (release, blocked) = gate(&state).await;
-        state.submit(request.clone());
-        state.start(&app);
+        state.submit(request.clone(), &mut app);
+        state.start(&mut app);
         assert!(
             tokio::time::timeout(Duration::from_millis(20), state.completed())
                 .await
@@ -686,15 +693,15 @@ mod tests {
         );
         for _ in 0..100 {
             assert!(app.input(Event::Paste("x".into())).0);
-            state.changed();
-            state.start(&app);
+            state.changed(&mut app, Impact::Other);
+            state.start(&mut app);
         }
         assert!(state.requests.is_empty());
         app.apply(Action::Visit(Route::Session("b".into())));
         app.input(Event::Paste("second session".into()));
         let second = app.submission().unwrap();
-        state.submit(second.clone());
-        state.start(&app);
+        state.submit(second.clone(), &mut app);
+        state.start(&mut app);
         assert_eq!(
             state.requests.len(),
             1,
@@ -706,7 +713,7 @@ mod tests {
         );
         assert!(!state.idle());
         app.apply(Action::Visit(Route::Settings));
-        state.changed();
+        state.changed(&mut app, Impact::Other);
         let mut screen =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         screen
@@ -720,8 +727,8 @@ mod tests {
         assert_eq!(first.requests, vec![request.clone()]);
         assert!(app.after_checkpoint(&request, &first.result));
         assert_eq!(read(&directory)["drafts"]["a"]["text"], "original 中文🦀");
-        state.force();
-        state.start(&app);
+        state.force(&mut app);
+        state.start(&mut app);
         let latest = written(&mut state).await;
         assert!(latest.result.is_ok());
         assert_eq!(latest.requests, vec![second.clone()]);
@@ -747,19 +754,19 @@ mod tests {
         app.input(Event::Paste("original".into()));
         let request = app.submission().unwrap();
         let (release, blocked) = gate(&state).await;
-        state.submit(request.clone());
-        state.start(&app);
+        state.submit(request.clone(), &mut app);
+        state.start(&mut app);
         // Same Root and epoch after reconnect: the exact same submission may be retried.
         state.cancel_requests();
         app.abandon_pending_submissions();
-        state.submit(app.retry_submission().unwrap());
+        state.submit(app.retry_submission().unwrap(), &mut app);
         release.send(()).unwrap();
         blocked.await.unwrap();
         assert!(
             written(&mut state).await.requests.is_empty(),
             "old acknowledgement cannot dispatch the new attempt"
         );
-        state.start(&app);
+        state.start(&mut app);
         let retried = written(&mut state).await;
         assert_eq!(retried.requests, vec![request.clone()]);
         assert!(app.after_checkpoint(&request, &retried.result));
@@ -768,8 +775,8 @@ mod tests {
         let path = directory.path().join(ROOT).join("default/state.json");
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
-        state.submit(request.clone());
-        state.start(&app);
+        state.submit(request.clone(), &mut app);
+        state.start(&mut app);
         let failed = written(&mut state).await;
         assert!(failed.result.is_err());
         assert!(!app.after_checkpoint(&request, &failed.result));
@@ -790,7 +797,7 @@ mod tests {
             "a successful disk write cannot rebind the Host epoch"
         );
         std::fs::remove_dir(&path).unwrap();
-        state.finish(&app).await.unwrap();
+        state.finish(&mut app).await.unwrap();
         assert_eq!(read(&directory)["unresolved"][0]["id"], request.id);
         assert!(state.idle());
     }
@@ -811,8 +818,8 @@ mod tests {
         app.apply(Action::Recap(Command::Generate));
         let request = app.recap_request().unwrap();
         let checkpoint = app.recap.checkpoint().unwrap();
-        state.submit_recap(request.clone());
-        state.start(&app);
+        state.submit_recap(request.clone(), &mut app);
+        state.start(&mut app);
         let written = state.completed().await;
         assert!(written.result.is_ok());
         assert_eq!(written.recap, Some(request.clone()));
@@ -850,8 +857,8 @@ mod tests {
         app.apply(Action::Resume(Command::Start));
         let request = app.resume_request().unwrap();
         let checkpoint = app.resume.checkpoint().unwrap();
-        state.submit_resume(request.clone());
-        state.start(&app);
+        state.submit_resume(request.clone(), &mut app);
+        state.start(&mut app);
         let written = state.completed().await;
         assert!(written.result.is_ok());
         assert_eq!(written.resume, Some(request.clone()));

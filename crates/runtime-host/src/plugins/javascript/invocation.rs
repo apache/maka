@@ -81,11 +81,6 @@ impl Calls {
         view: maka_plugins::filesystem::ReadDirectory,
     ) -> Result<ReadGuard, maka_plugins::Error> {
         let mut reads = self.reads.lock().unwrap();
-        if reads.len() >= 128 {
-            return Err(maka_plugins::Error::Invalid(
-                "read-view capacity exceeded".into(),
-            ));
-        }
         let id = uuid::Uuid::new_v4().to_string();
         reads.insert(id.clone(), ReadEntry { view, remote: None });
         Ok(ReadGuard {
@@ -117,11 +112,6 @@ impl Calls {
             return Err(maka_plugins::Error::Retired);
         }
         let mut reads = self.reads.lock().unwrap();
-        if reads.len() >= 128 {
-            return Err(maka_plugins::Error::Invalid(
-                "read-view capacity exceeded".into(),
-            ));
-        }
         let id = uuid::Uuid::new_v4().to_string();
         reads.insert(
             id.clone(),
@@ -141,11 +131,8 @@ impl Calls {
             return Err(maka_plugins::remote::Error::Cancelled);
         }
         let mut calls = self.remotes.lock().unwrap();
-        if calls.len() >= 128 {
-            return Err(maka_plugins::remote::Error::Invalid(
-                "Remote call capacity exceeded".into(),
-            ));
-        }
+        // Stream callers retain authority until close. These owned identities
+        // are not executing work; the VM separately bounds ordinary calls.
         let id = uuid::Uuid::new_v4().to_string();
         caller.cancellation = caller.cancellation.child_token();
         let cancellation = caller.cancellation.clone();
@@ -207,3 +194,6 @@ impl Drop for Guard {
         self.calls.invocations.lock().unwrap().remove(&self.id);
     }
 }
+
+#[cfg(test)]
+mod tests;

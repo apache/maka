@@ -68,7 +68,6 @@ pub struct Vm(Arc<Inner>);
 struct Inner {
     commands: mpsc::UnboundedSender<Command>,
     health: Arc<Health>,
-    modules: Arc<Semaphore>,
     calls: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
     sequence: AtomicU64,
@@ -86,6 +85,7 @@ impl WeakModule {
 struct ModuleOwner {
     vm: Vm,
     id: u64,
+    bootstrap: Bootstrap,
     closing: AtomicBool,
     state: watch::Receiver<State>,
     control_calls: Arc<Semaphore>,
@@ -120,7 +120,6 @@ enum Command {
         name: String,
         source: String,
         state: watch::Sender<State>,
-        slot: OwnedSemaphorePermit,
         bytes: OwnedSemaphorePermit,
     },
     Call {
@@ -128,7 +127,7 @@ enum Command {
         path: Vec<String>,
         args: Vec<Value>,
         reply: oneshot::Sender<Result<Value>>,
-        slot: OwnedSemaphorePermit,
+        slot: Option<OwnedSemaphorePermit>,
         bytes: OwnedSemaphorePermit,
     },
     Close(u64),
@@ -143,11 +142,18 @@ enum Command {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Bootstrap {
     Plain,
     Plugin,
     Presenter,
+}
+
+#[derive(Clone, Copy)]
+enum CallLane {
+    Work,
+    Control,
+    OwnedWait,
 }
 
 struct Health {
@@ -155,11 +161,24 @@ struct Health {
     failure: Mutex<Option<Error>>,
     stopped: CancellationToken,
     closed: CancellationToken,
-    polling: watch::Sender<Option<tokio::time::Instant>>,
+    initializing: AtomicBool,
+    polling: watch::Sender<Option<PollClock>>,
+}
+#[derive(Clone, Copy)]
+struct PollClock {
+    started: tokio::time::Instant,
+    initializing: bool,
 }
 impl Health {
     fn fail(&self, error: Error) {
-        self.failure.lock().unwrap().get_or_insert(error);
+        self.failure.lock().unwrap().get_or_insert_with(|| {
+            let phase = if self.initializing.load(Ordering::SeqCst) {
+                "runtime initialization"
+            } else {
+                "script poll"
+            };
+            failed(format!("{} (phase: {phase})", error.0))
+        });
         self.stopped.cancel();
         if let Some(isolate) = self.isolate.get() {
             isolate.terminate_execution();
@@ -176,10 +195,6 @@ impl Health {
 
 impl Vm {
     pub fn new(limits: Limits) -> Result<Self> {
-        Self::start(limits, None)
-    }
-
-    fn start(limits: Limits, reservation: Option<OwnedSemaphorePermit>) -> Result<Self> {
         if limits.heap_bytes < 16 * 1024 * 1024 || limits.synchronous_slice.is_zero() {
             return Err(failed("invalid VM limits"));
         }
@@ -191,6 +206,7 @@ impl Vm {
             failure: Mutex::default(),
             stopped: CancellationToken::new(),
             closed: CancellationToken::new(),
+            initializing: AtomicBool::new(true),
             polling: watch::channel(None).0,
         });
         let observer = health.clone();
@@ -214,7 +230,6 @@ impl Vm {
                     Ok(Err(error)) => owner.fail(error),
                     Err(_) => owner.fail(failed("worker panicked")),
                 }
-                drop(reservation);
                 owner.closed.cancel();
             })
         {
@@ -225,7 +240,6 @@ impl Vm {
         Ok(Self(Arc::new(Inner {
             commands,
             health,
-            modules: Arc::new(Semaphore::new(64)),
             calls: Arc::new(Semaphore::new(128)),
             bytes: Arc::new(Semaphore::new(32 * 1024 * 1024)),
             sequence: AtomicU64::new(1),
@@ -280,12 +294,6 @@ impl Vm {
         {
             return Err(failed("module is too large or VM is stopped"));
         }
-        let slot = self
-            .0
-            .modules
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| failed("module capacity exhausted"))?;
         let bytes = self
             .0
             .bytes
@@ -307,13 +315,13 @@ impl Vm {
                 name,
                 source,
                 state,
-                slot,
                 bytes,
             })
             .map_err(|_| self.0.health.error())?;
         Ok(Module(Arc::new(ModuleOwner {
             vm: self.clone(),
             id,
+            bootstrap,
             closing: AtomicBool::new(false),
             state: receiver,
             control_calls: Arc::new(Semaphore::new(2)),
@@ -368,13 +376,22 @@ impl Module {
     pub fn vm_failed(&self) -> bool {
         self.0.vm.is_terminated()
     }
+    /// First recorded VM stop reason. Cleanup owners inspect this before their
+    /// own intentional shutdown, which may record a normal stop when none exists.
+    pub fn vm_failure(&self) -> Option<Error> {
+        self.0.vm.0.health.failure.lock().unwrap().clone()
+    }
     pub async fn cancel_call(&self, id: String) -> Result<()> {
         if id.len() > 128 {
             return Err(failed("invalid invocation identity"));
         }
-        self.call_inner(vec!["cancel".into()], vec![Value::String(id)], true)
-            .await
-            .map(|_| ())
+        self.call_inner(
+            vec!["cancel".into()],
+            vec![Value::String(id)],
+            CallLane::Control,
+        )
+        .await
+        .map(|_| ())
     }
     /// Routing identity inside this VM, not authorization or a durable identity.
     pub fn host_key(&self) -> String {
@@ -399,7 +416,52 @@ impl Module {
 
     /// Function paths are relative to the module namespace, not globalThis.
     pub async fn call(&self, path: Vec<String>, args: Vec<Value>) -> Result<Value> {
-        self.call_inner(path, args, false).await
+        self.call_inner(path, args, CallLane::Work).await
+    }
+
+    /// Wait only on an SDK-owned stream handle. Idle observations retain their
+    /// argument bytes and module lifetime without occupying ordinary work slots.
+    pub async fn stream_next(&self, handle: &str) -> Result<Value> {
+        self.validate_stream_handle(handle)?;
+        self.call_inner(
+            vec!["streamNext".into()],
+            vec![Value::String(handle.into())],
+            CallLane::OwnedWait,
+        )
+        .await
+    }
+
+    /// Stream cleanup uses reserved control capacity even when work is saturated.
+    pub async fn stream_close(&self, handle: &str) -> Result<()> {
+        self.validate_stream_handle(handle)?;
+        self.call_inner(
+            vec!["streamClose".into()],
+            vec![Value::String(handle.into())],
+            CallLane::Control,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    fn validate_stream_handle(&self, handle: &str) -> Result<()> {
+        if self.0.bootstrap != Bootstrap::Plugin || handle.is_empty() || handle.len() > 128 {
+            return Err(failed(
+                "stream observation requires an SDK plugin stream handle",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Start the SDK's prepared business jobs and await their owned lifetime.
+    /// The SDK admits this transition once; waiting jobs consume neither work
+    /// slots nor the control capacity needed to retire them.
+    pub async fn start_tasks(&self) -> Result<()> {
+        if self.0.bootstrap != Bootstrap::Plugin {
+            return Err(failed("business tasks require an SDK plugin module"));
+        }
+        self.call_inner(vec!["effective".into()], vec![], CallLane::OwnedWait)
+            .await
+            .map(|_| ())
     }
 
     /// Reserved control capacity lets retirement signal calls that fill the
@@ -409,7 +471,7 @@ impl Module {
             Lifecycle::Retire => "retire",
             Lifecycle::Dispose => "dispose",
         };
-        self.call_inner(vec![name.into()], vec![], true)
+        self.call_inner(vec![name.into()], vec![], CallLane::Control)
             .await
             .map(|_| ())
     }
@@ -423,7 +485,7 @@ impl Module {
         &self,
         path: Vec<String>,
         args: Vec<Value>,
-        control: bool,
+        lane: CallLane,
     ) -> Result<Value> {
         self.ready().await?;
         if path.is_empty()
@@ -436,30 +498,30 @@ impl Module {
         if size > 32 * 1024 * 1024 {
             return Err(failed("call arguments exceed 32 MiB"));
         }
-        let calls = if control {
-            &self.0.control_calls
-        } else {
-            &self.0.vm.0.calls
-        };
-        let budget = if control {
+        let budget = if matches!(lane, CallLane::Control) {
             &self.0.control_bytes
         } else {
             &self.0.vm.0.bytes
         };
-        let slot = if control {
+        let slot = match lane {
             // Retirement and several stream cancellations may arrive together.
             // Wait in the reserved lane instead of rejecting cleanup while its
             // other signals are making progress; ordinary calls stay fail-fast.
-            tokio::select! {
+            CallLane::Control => Some(tokio::select! {
                 biased;
                 _ = self.0.vm.0.health.stopped.cancelled() => return Err(self.0.vm.0.health.error()),
-                slot = calls.clone().acquire_owned() => slot.map_err(|_| self.0.vm.0.health.error())?,
-            }
-        } else {
-            calls
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| failed("VM call capacity exhausted"))?
+                slot = self.0.control_calls.clone().acquire_owned() => slot.map_err(|_| self.0.vm.0.health.error())?,
+            }),
+            CallLane::Work => Some(
+                self.0
+                    .vm
+                    .0
+                    .calls
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| failed("VM call capacity exhausted"))?,
+            ),
+            CallLane::OwnedWait => None,
         };
         let bytes = budget
             .clone()
@@ -504,15 +566,22 @@ impl Module {
 async fn monitor(health: Arc<Health>, slice: Duration) {
     let mut polling = health.polling.subscribe();
     loop {
-        let deadline = polling.borrow_and_update().map(|started| started + slice);
+        let deadline = polling
+            .borrow_and_update()
+            .map(|clock| clock.started + slice);
         tokio::select! {
             _ = health.closed.cancelled() => return,
             _ = polling.changed() => {},
             _ = async { if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await } else { std::future::pending().await } } => {
                 // Recheck under the watch read lock; the VM may already be idle.
                 let clock = polling.borrow();
-                if clock.is_some_and(|started| started + slice <= tokio::time::Instant::now()) {
-                    health.fail(failed("synchronous execution budget exceeded"));
+                if let Some(clock) = *clock
+                    && clock.started + slice <= tokio::time::Instant::now() {
+                    let phase = if clock.initializing { "runtime initialization" } else { "script poll" };
+                    health.fail(failed(format!(
+                        "synchronous execution budget exceeded (poll began in {phase}, wall elapsed {} ms)",
+                        clock.started.elapsed().as_millis(),
+                    )));
                     return;
                 }
             }

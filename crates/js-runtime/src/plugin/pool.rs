@@ -22,13 +22,10 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, Weak},
 };
-use tokio::sync::Semaphore;
 
 /// Lazy execution placement. Weak references never keep an unused VM alive.
-/// Dedicated capacity is held through worker teardown, not just handle release.
 pub struct Pool {
     limits: Limits,
-    dedicated: Arc<Semaphore>,
     state: Mutex<State>,
 }
 #[derive(Default)]
@@ -37,15 +34,11 @@ struct State {
     dedicated: BTreeMap<String, Weak<Inner>>,
 }
 impl Pool {
-    pub fn new(limits: Limits, dedicated_limit: usize) -> Result<Self> {
-        if dedicated_limit > 64 {
-            return Err(failed("dedicated VM limit exceeds 64"));
-        }
-        Ok(Self {
+    pub fn new(limits: Limits) -> Self {
+        Self {
             limits,
-            dedicated: Arc::new(Semaphore::new(dedicated_limit)),
             state: Mutex::new(State::default()),
-        })
+        }
     }
 
     pub fn shared(&self) -> Result<Vm> {
@@ -68,12 +61,7 @@ impl Pool {
             return Ok(vm);
         }
         state.dedicated.retain(|_, vm| vm.strong_count() != 0);
-        let reservation = self
-            .dedicated
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| failed("dedicated VM capacity exhausted"))?;
-        let vm = Vm::start(self.limits.clone(), Some(reservation))?;
+        let vm = Vm::new(self.limits.clone())?;
         state
             .dedicated
             .insert(generation.into(), Arc::downgrade(&vm.0));
@@ -82,4 +70,56 @@ impl Pool {
 }
 fn alive(inner: &Weak<Inner>) -> Option<Vm> {
     inner.upgrade().map(Vm).filter(|vm| !vm.is_terminated())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn dedicated_generations_are_lazy_weak_and_not_limited_by_inventory_count() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let pool = Pool::new(Limits::default());
+            assert!(pool.state.lock().unwrap().dedicated.is_empty());
+            let mut generations = Vec::new();
+            for index in 0..6 {
+                let generation = format!("package-{index}:digest");
+                let vm = pool.dedicated(&generation).unwrap();
+                let module = vm.load(format!("package-{index}.mjs"), format!(
+                    "globalThis.loaded = (globalThis.loaded ?? 0) + 1; export function value() {{ return [{index}, globalThis.loaded]; }}"
+                )).unwrap();
+                assert_eq!(module.call(vec!["value".into()], vec![]).await.unwrap(), json!([index, 1]));
+                let repeated = pool.dedicated(&generation).unwrap();
+                assert!(Arc::ptr_eq(&vm.0, &repeated.0));
+                assert_eq!(repeated.statistics(false).await.unwrap().modules, 1);
+                generations.push((generation, vm, module));
+            }
+            assert_eq!(pool.state.lock().unwrap().dedicated.len(), 6);
+            let mut released = Vec::new();
+            for (generation, vm, module) in generations {
+                let weak_module = module.downgrade();
+                module.close().await.unwrap();
+                assert_eq!(vm.statistics(false).await.unwrap().modules, 0);
+                drop(module);
+                assert!(weak_module.upgrade().is_none());
+                let health = vm.0.health.clone();
+                let weak_vm = Arc::downgrade(&vm.0);
+                drop(vm);
+                assert!(weak_vm.upgrade().is_none(), "pool must not own its VMs");
+                health.closed.cancelled().await;
+                released.push((generation, health));
+            }
+            for (generation, old_health) in released {
+                let replacement = pool.dedicated(&generation).unwrap();
+                assert!(!Arc::ptr_eq(&replacement.0.health, &old_health));
+                assert!(!replacement.is_terminated());
+                let module = replacement.load("fresh.mjs".into(), "export function fresh() { return globalThis.loaded === undefined; }".into()).unwrap();
+                assert_eq!(module.call(vec!["fresh".into()], vec![]).await.unwrap(), json!(true));
+                module.close().await.unwrap();
+                replacement.shutdown().await;
+            }
+        }).await.expect("module close and worker teardown acknowledge without sleeps");
+    }
 }

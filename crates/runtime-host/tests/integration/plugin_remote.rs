@@ -43,6 +43,7 @@ mod fixture;
 mod import;
 mod javascript;
 mod mutation_fault;
+mod observations;
 mod presenter;
 use fixture::{Example, State};
 

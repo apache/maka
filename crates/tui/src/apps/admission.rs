@@ -20,11 +20,17 @@
 use super::*;
 
 impl Apps {
+    #[cfg(test)]
     pub(crate) fn kept_count(&self) -> usize {
         self.instances
             .values()
             .filter(|instance| instance.keeps())
             .count()
+    }
+    pub(crate) fn reserves_checkpoint(&self, key: &Key) -> bool {
+        self.instances.get(key).is_some_and(|instance| {
+            instance.unresolved.is_some() || instance.writing || instance.saving
+        })
     }
 }
 
@@ -58,6 +64,26 @@ impl Instance {
 }
 
 impl App {
+    pub(super) fn accept_app_draft(&mut self, key: &Key) -> bool {
+        let candidate = self
+            .apps
+            .instances
+            .get(key)
+            .and_then(|instance| instance.draft_checkpoint(self.checkpoint_root()));
+        let accepted = candidate.as_ref().is_some_and(|(checkpoint, kept)| {
+            self.admit_checkpoint(key, kept.then_some(checkpoint), false)
+        });
+        let root = self.checkpoint_root().to_owned();
+        let Some(instance) = self.apps.instances.get_mut(key) else {
+            return false;
+        };
+        if !accepted {
+            instance.message = Some(Notice::Local("extensions-capacity"));
+            return false;
+        }
+        instance.accept_draft(&root)
+    }
+
     pub(super) fn admit_field(&mut self, key: &Key, field: &str, value: &Value) -> bool {
         let Some(instance) = self.apps.instances.get(key) else {
             return false;
@@ -65,11 +91,32 @@ impl App {
         if instance.drafts.get(field) == Some(value) {
             return true;
         }
-        let first = !instance.keeps();
-        let accepted = instance
+        let kept = instance.blocked
+            || instance.unresolved.is_some()
+            || instance.writing
+            || instance.result.is_some()
+            || instance.view.as_ref().is_some_and(|view| {
+                view.fields.iter().any(|item| {
+                    let proposed = if item.id == field {
+                        Some(value)
+                    } else {
+                        instance.drafts.get(&item.id)
+                    };
+                    proposed != Some(&drafts::value(&item.control))
+                })
+            });
+        let reserved = self.apps.reserves_checkpoint(key);
+        let checkpoint = instance
             .checkpoint(self.checkpoint_root(), key, None)
-            .is_some_and(|mut checkpoint| checkpoint.admit_field(field, value, &instance.drafts));
-        if !accepted || first && !self.admit_state(None, 1) {
+            .and_then(|mut checkpoint| {
+                checkpoint
+                    .admit_field(field, value, &instance.drafts)
+                    .then_some(checkpoint)
+            });
+        let accepted = checkpoint.as_ref().is_some_and(|checkpoint| {
+            self.admit_checkpoint(key, kept.then_some(checkpoint), reserved)
+        });
+        if !accepted {
             self.apps.instances.get_mut(key).unwrap().message =
                 Some(Notice::Local("extensions-capacity"));
             return false;
@@ -82,7 +129,7 @@ impl App {
     }
 
     /// Validate every newly frozen write before changing generation, saving or
-    /// unresolved identity. Earlier accepted candidates reserve their slot too.
+    /// unresolved identity. Earlier accepted writes reserve their result bytes too.
     pub(super) fn admit_pending_writes(&mut self) {
         let candidates: Vec<_> = self
             .apps
@@ -100,17 +147,17 @@ impl App {
                     return None;
                 }
                 let pending = instance.frozen_pending(instance.pending.as_ref()?)?;
-                Some((key.clone(), pending, !instance.keeps()))
+                Some((key.clone(), pending))
             })
             .collect();
-        let mut additions = 0;
-        for (key, pending, first) in candidates {
-            let local = self.apps.instances[&key]
+        for (key, pending) in candidates {
+            let checkpoint = self.apps.instances[&key]
                 .checkpoint(self.checkpoint_root(), &key, Some(&pending))
-                .is_some_and(|checkpoint| checkpoint.admit_cursors());
-            if local && self.admit_state(None, additions + usize::from(first)) {
-                additions += usize::from(first);
-            } else {
+                .filter(|checkpoint| checkpoint.capacity_bytes().is_some());
+            if !checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| self.admit_checkpoint(&key, Some(checkpoint), true))
+            {
                 let instance = self.apps.instances.get_mut(&key).unwrap();
                 instance.pending = None;
                 instance.message = Some(Notice::Local("extensions-capacity"));

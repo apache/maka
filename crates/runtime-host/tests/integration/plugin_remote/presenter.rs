@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod capacity;
 mod fixture;
 mod installed;
 mod observations;

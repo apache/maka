@@ -96,6 +96,9 @@ impl Transcript {
             }
             start = end;
         }
+        if self.groups != old_groups {
+            self.reading_changes = self.reading_changes.wrapping_add(1);
+        }
         // If a group dissolves, keep reading its surviving real tool, not an
         // unrelated message that happens to occupy the old screen coordinate.
         if let Some(anchor) = &mut self.anchor
@@ -222,7 +225,11 @@ impl Transcript {
             }
             self.order.push(key.clone());
         }
-        self.selected = self.selected.as_ref().and_then(|key| self.visible_key(key));
+        let selected = self.selected.as_ref().and_then(|key| self.visible_key(key));
+        if self.selected != selected {
+            self.reading_changes = self.reading_changes.wrapping_add(1);
+            self.selected = selected;
+        }
         if let Some(anchor) = &mut self.anchor
             && !self.order.contains(&anchor.key)
         {
@@ -232,10 +239,12 @@ impl Transcript {
                     .get(&anchor.key)
                     .and_then(|members| members.first())
                 {
+                    self.reading_changes = self.reading_changes.wrapping_add(1);
                     anchor.key = member.clone();
                     anchor.source = 0;
                 }
             } else if let Some(group) = self.membership.get(&anchor.key) {
+                self.reading_changes = self.reading_changes.wrapping_add(1);
                 anchor.key = group.clone();
                 anchor.source = 0;
             }

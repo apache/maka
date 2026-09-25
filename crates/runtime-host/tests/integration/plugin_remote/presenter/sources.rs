@@ -40,6 +40,9 @@ pub(super) struct Sources {
     pub closed: AtomicUsize,
     pub reads: AtomicUsize,
     pub completed: Semaphore,
+    pub next_entered: Semaphore,
+    pub calls_waiting: Arc<Semaphore>,
+    delivered: Arc<Semaphore>,
 }
 impl Default for Sources {
     fn default() -> Self {
@@ -48,6 +51,9 @@ impl Default for Sources {
             closed: AtomicUsize::new(0),
             reads: AtomicUsize::new(0),
             completed: Semaphore::new(0),
+            next_entered: Semaphore::new(0),
+            calls_waiting: Arc::new(Semaphore::new(0)),
+            delivered: Arc::new(Semaphore::new(0)),
         }
     }
 }
@@ -97,7 +103,18 @@ impl Sources {
 impl Method for Sources {
     fn call(&self, input: Value, caller: Caller) -> BoxFuture<'static, Result<Value, Error>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move { Ok(json!({"input":input,"document":caller.document_id})) })
+        let waiting = self.calls_waiting.clone();
+        let delivered = self.delivered.clone();
+        Box::pin(async move {
+            if input.get("waitForSource").and_then(Value::as_bool) == Some(true) {
+                waiting.add_permits(1);
+                tokio::select! {
+                    _ = caller.cancellation.cancelled() => return Err(Error::Cancelled),
+                    permit = delivered.acquire() => permit.unwrap().forget(),
+                }
+            }
+            Ok(json!({"input":input,"document":caller.document_id}))
+        })
     }
 }
 struct Provider(Arc<Sources>);
@@ -125,7 +142,17 @@ struct Instance {
 }
 impl Stream for Instance {
     fn next(&self) -> BoxFuture<'_, Result<Option<Value>, Error>> {
-        Box::pin(async { Ok(Some(self.input.clone())) })
+        Box::pin(async {
+            if self.input == "release-dependent-calls" {
+                self.state.delivered.add_permits(32);
+            }
+            if self.input.get("route").and_then(Value::as_str) == Some("pending") {
+                self.state.next_entered.add_permits(1);
+                self.source.cancelled().await;
+                return Err(Error::Cancelled);
+            }
+            Ok(Some(self.input.clone()))
+        })
     }
     fn cancel(&self) {
         self.source.cancel();

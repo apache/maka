@@ -194,7 +194,7 @@ struct Block {
     activity: Option<Activity>,
     indent: u16,
 }
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Anchor {
     key: MessageKey,
@@ -205,6 +205,9 @@ struct Anchor {
 /// Cache by message identity, and retain a logical reading position across reflow.
 #[derive(Default)]
 pub struct Transcript {
+    /// Deferred source reconciliation and painting can change saved bookmarks
+    /// after the input/notification that requested the frame has completed.
+    reading_changes: u64,
     scrollbar: scrollbar::Scrollbar,
     timings: HashMap<String, timing::Timing>,
     #[cfg(test)]
@@ -248,6 +251,12 @@ pub struct Transcript {
     measurement: Option<performance::DrawStats>,
 }
 impl Transcript {
+    /// Changes to persisted reading metadata made by reconciliation or paint.
+    /// Direct reading input remains the owning surface's ordinary state event.
+    pub(crate) fn reading_changes(&self) -> u64 {
+        self.reading_changes
+    }
+
     /// Call before reconciliation and drawing, using the shell's motion policy.
     pub fn motion(&mut self, now: Option<std::time::Instant>) {
         self.motion = now;
@@ -440,6 +449,9 @@ impl Transcript {
     ) {
         match self.blocks.get_mut(&key) {
             Some(block) if block.revision != revision || block.kind != kind => {
+                if block.kind.foldable() != kind.foldable() {
+                    self.reading_changes = self.reading_changes.wrapping_add(1);
+                }
                 let live = self.live_update
                     || matches!(revision, Revision::Live(_))
                     || matches!(block.revision, Revision::Live(_));
@@ -472,6 +484,13 @@ impl Transcript {
                 block.kind = kind;
             }
             None => {
+                let restored = self
+                    .restore_folds
+                    .as_ref()
+                    .is_some_and(|folds| folds.contains_key(&key));
+                if kind.foldable() != restored {
+                    self.reading_changes = self.reading_changes.wrapping_add(1);
+                }
                 let Content {
                     text,
                     changes,
@@ -552,7 +571,15 @@ impl Transcript {
         self.source_order = std::mem::take(&mut self.order);
         self.reconcile_groups(i18n);
         let retained: HashSet<_> = self.source_order.iter().chain(self.groups.keys()).collect();
-        self.blocks.retain(|key, _| retained.contains(key));
+        let mut removed_fold = false;
+        self.blocks.retain(|key, block| {
+            let keep = retained.contains(key);
+            removed_fold |= !keep && block.kind.foldable();
+            keep
+        });
+        if removed_fold {
+            self.reading_changes = self.reading_changes.wrapping_add(1);
+        }
         if let Some(folds) = &mut self.restore_folds {
             folds.retain(|key, folded| {
                 if let Some(block) = self.blocks.get_mut(key) {
@@ -571,11 +598,15 @@ impl Transcript {
         self.refresh_search(false);
         if self.relocate {
             self.relocate = false;
-            self.anchor = self.order.first().cloned().map(|key| Anchor {
+            let anchor = self.order.first().cloned().map(|key| Anchor {
                 key,
                 source: 0,
                 screen_row: 0,
             });
+            if self.anchor != anchor {
+                self.reading_changes = self.reading_changes.wrapping_add(1);
+                self.anchor = anchor;
+            }
             self.top = 0;
         }
     }
@@ -814,7 +845,11 @@ impl Transcript {
             .min(bottom);
             if top != self.top {
                 self.top = top;
-                self.anchor = self.position(top);
+                let anchor = self.position(top);
+                if self.anchor != anchor {
+                    self.reading_changes = self.reading_changes.wrapping_add(1);
+                    self.anchor = anchor;
+                }
             }
         }
         self.selection_geometry(area);

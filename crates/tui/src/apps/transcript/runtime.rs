@@ -62,8 +62,6 @@ impl App {
                 ));
             }
         }
-        // Resource allocation is bounded across every placement, including slots.
-        wanted.truncate(4);
         self.apps.readers.mounts.retain(|identity, mount| {
             let Some((_, _, _, observing)) =
                 wanted.iter().find(|(key, route, binding, observing)| {

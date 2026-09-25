@@ -433,7 +433,7 @@ impl<M> Builder<'_, M> {
                 } else {
                     Node::text(
                         key,
-                        vec![(self.env.i18n.text("transcript-capacity"), Tone::Subtle)],
+                        vec![(self.env.i18n.text("transcript-failed"), Tone::Subtle)],
                     )
                 }
             }

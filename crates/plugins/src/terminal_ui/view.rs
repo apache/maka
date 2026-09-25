@@ -505,7 +505,6 @@ pub(crate) fn route(value: &Value) -> Result<(), Error> {
 #[derive(Default)]
 struct Walk<'a> {
     nodes: usize,
-    transcripts: usize,
     inputs: BTreeSet<&'a str>,
     actions: BTreeSet<&'a str>,
 }
@@ -735,10 +734,6 @@ impl View {
                 route(context)?;
             }
             Node::Transcript { resource, .. } => {
-                walk.transcripts += 1;
-                if walk.transcripts > 4 {
-                    return Err(invalid());
-                }
                 resource.validate()?;
             }
         }

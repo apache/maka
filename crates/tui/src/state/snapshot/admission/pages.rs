@@ -32,8 +32,12 @@ fn saved(navigation: Option<Route>) -> crate::navigation::state::State {
     .restore()
 }
 
-fn compare(app: &App, expected: Snapshot) {
-    let actual = Snapshot::capture(app, app.checkpoint_root());
+fn compare(app: &App, mut expected: Snapshot) {
+    let mut actual = Snapshot::capture(app, app.checkpoint_root());
+    // This compares navigation metadata before/after its commit. An Applied
+    // reply independently replaces the pending owner with its result.
+    expected.apps.clear();
+    actual.apps.clear();
     let expected_bytes = super::super::super::store::encode(&expected).unwrap();
     let actual_bytes = super::super::super::store::encode(&actual).unwrap();
     assert_eq!(

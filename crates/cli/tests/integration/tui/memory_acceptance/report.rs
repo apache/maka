@@ -64,6 +64,7 @@ impl Report {
             "initial_source":{"blocks":1000,"logical_lines_per_block":10,"logical_lines":10000},
             "cycles_per_viewport":if smoke {2} else {100},"appends_per_cycle":3,
             "reopen_rounds_per_viewport":if smoke {2} else {10},
+            "page_capacity":{"sample_pages":64,"connections":1,"streams_per_page":2},
             "sampler_period_ms":10,"clock":"Instant ns from each case origin; actual sample timestamps retained",
             "rss_scope":"Host process includes business source and page VMs; TUI process includes kernel/cache; observer excluded",
             "wire_scope":"zero-delay proxy observes TUI and capacity probe clients; independent append/stats control client is excluded",

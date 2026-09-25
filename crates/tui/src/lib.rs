@@ -291,9 +291,9 @@ where
             && !(app.closing && flushed)
         {
             if app.closing && state.wait().is_some() {
-                state.force();
+                state.force(&mut app);
             }
-            state.start(&app);
+            state.start(&mut app);
         }
         if let Some(client) = &client
             && !app.closing
@@ -310,7 +310,7 @@ where
             if let Some(request) = app.revision_request() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
-                        state.submit_revision(request);
+                        state.submit_revision(request, &mut app);
                     } else {
                         app.revision_after_checkpoint(
                             &request,
@@ -329,7 +329,7 @@ where
             if let Some(request) = app.recap_request() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
-                        state.submit_recap(request);
+                        state.submit_recap(request, &mut app);
                     } else {
                         app.recap_after_checkpoint(
                             &request,
@@ -348,7 +348,7 @@ where
             if let Some(request) = app.resume_request() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
-                        state.submit_resume(request);
+                        state.submit_resume(request, &mut app);
                     } else {
                         app.resume_after_checkpoint(
                             &request,
@@ -372,7 +372,7 @@ where
                         Completed::Branched(request, result)
                     });
                 } else if let Some(state) = &mut state {
-                    state.submit_branch(request);
+                    state.submit_branch(request, &mut app);
                 } else {
                     app.branch_after_checkpoint(
                         &request,
@@ -384,7 +384,7 @@ where
             if let Some(request) = app.oauth_request() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
-                        state.submit_oauth(request);
+                        state.submit_oauth(request, &mut app);
                     } else {
                         app.oauth_after_checkpoint(
                             &request,
@@ -532,7 +532,7 @@ where
             if let Some(request) = app.plugins_request() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
-                        state.submit_plugins(request);
+                        state.submit_plugins(request, &mut app);
                     } else {
                         app.plugins_after_checkpoint(
                             &request,
@@ -551,7 +551,7 @@ where
             for request in app.apps_requests() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
-                        state.submit_app(request);
+                        state.submit_app(request, &mut app);
                     } else {
                         app.apps_after_checkpoint(
                             &request,
@@ -791,7 +791,7 @@ where
                         for request in state.cancel_requests() {
                             app.abandon_checkpoint(&request);
                         }
-                        state.force();
+                        state.force(&mut app);
                         app.closing = true;
                         dirty = true;
                         continue;
@@ -872,7 +872,7 @@ where
                         }
                     {
                         if let Some(state) = &mut state {
-                            state.submit(request);
+                            state.submit(request, &mut app);
                         } else {
                             let error = app.i18n.text("state-unavailable");
                             app.after_checkpoint(&request, &Err(error.clone()));
@@ -952,6 +952,10 @@ where
         }
         let state_wait = state.as_ref().and_then(state::State::wait);
         let oauth_wait = app.oauth_wait();
+        // Notifications and completions can change persisted owners even when
+        // they do not schedule a disk write. Only classified local input and
+        // transient reader/paint events retain the derived admission cache.
+        let mut checkpoint_impact = state::Impact::Other;
         tokio::select! {
             result = async {
                 match &mut shutdown_job {
@@ -974,7 +978,7 @@ where
                     Some(wait) => tokio::time::sleep(wait).await,
                     None => std::future::pending().await,
                 }
-            } => {}
+            } => { checkpoint_impact = state::Impact::Reading; }
             request = async {
                 match oauth_service.as_mut() {
                     Some(service) => service.recv().await,
@@ -997,6 +1001,15 @@ where
                     None => std::future::pending().await,
                 }
             } => {
+                // Completing an autosave changes no owner. Keep the sizes from
+                // its capture plus any field deltas typed while it was writing.
+                if written.requests.is_empty() && written.apps.is_empty()
+                    && written.oauth.is_none() && written.branch.is_none()
+                    && written.recap.is_none() && written.plugins.is_none()
+                    && written.resume.is_none() && written.revision.is_none()
+                    && written.attachment.is_none() {
+                    checkpoint_impact = state::Impact::Reading;
+                }
                 if let Some(request) = written.plugins
                     && app.plugins_after_checkpoint(&request, &written.result)
                     && let Some(client) = client.clone() {
@@ -1083,14 +1096,14 @@ where
                 }
             } => {
                 dirty = app.selection_scroll(std::time::Instant::now());
-                if dirty && let Some(state) = &mut state { state.changed(); }
+                if dirty && let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
             }
             _ = async {
                 match &app.notice {
                     Some(Notice::Clipboard { until, .. }) => tokio::time::sleep(until.saturating_duration_since(std::time::Instant::now())).await,
                     _ => std::future::pending().await,
                 }
-            } => { app.notice = None; dirty = true; }
+            } => { checkpoint_impact = state::Impact::Reading; app.notice = None; dirty = true; }
             _ = async {
                 let wait = app.chat.history.as_ref()
                     .and_then(|history| history.wait())
@@ -1108,32 +1121,34 @@ where
                     Some(wait) => tokio::time::sleep(wait).await,
                     None => std::future::pending::<()>().await,
                 }
-            } => { dirty = true; }
+            } => { checkpoint_impact = state::Impact::Reading; dirty = true; }
             _ = async {
                 let now=std::time::Instant::now();
                 let wait=if app.chrome.animating() { Some(Duration::from_millis(16)) }
                     else { app.chrome.animation.wait(now) };
                 match wait { Some(wait)=>tokio::time::sleep(wait).await, None=>std::future::pending().await }
             } => {
+                checkpoint_impact = state::Impact::Reading;
                 dirty = true;
             }
             event = input.next() => {
                 match event {
                     Some(Ok(event)) => {
                         (dirty, effect) = app.input(event);
-                        if dirty && let Some(state) = &mut state { state.changed(); }
+                        checkpoint_impact = app.checkpoint_input_impact();
+                        if dirty && let Some(state) = &mut state { state.changed(&mut app, checkpoint_impact); }
                     }
                     Some(Err(error)) => return Err(error.into()),
                     None => break,
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(100)), if app.attachments.uploading() && app.chrome.window_focused => { dirty = true; }
+            _ = tokio::time::sleep(Duration::from_millis(100)), if app.attachments.uploading() && app.chrome.window_focused => { checkpoint_impact = state::Impact::Reading; dirty = true; }
             completed = attachment_jobs.join_next(), if !attachment_jobs.is_empty() => {
                 match completed {
                     Some(Ok(pages::attachments::Completed::Browsed(request, result))) => app.attachment_browsed(request, result),
                     Some(Ok(pages::attachments::Completed::Prepared(ticket, result))) => {
                         if let Some(ticket) = app.attachment_prepared(ticket, result) {
-                            if let Some(state) = &mut state { state.submit_attachment(ticket); }
+                            if let Some(state) = &mut state { state.submit_attachment(ticket, &mut app); }
                             else { app.attachment_after_checkpoint(&ticket, &Err("TUI checkpoint unavailable".into())); }
                         }
                     }
@@ -1141,14 +1156,14 @@ where
                     Some(Err(error)) => return Err(error.into()),
                     None => {}
                 }
-                if let Some(state) = &mut state { state.changed(); }
+                if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                 dirty = true;
             }
             completed = theme_jobs.join_next(), if !theme_jobs.is_empty() => {
                 if let Some(completed) = completed {
                     let (request, result) = completed?;
                     app.theme.complete(request, result);
-                    if let Some(state) = &mut state { state.changed(); }
+                    if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     dirty = true;
                 }
             }
@@ -1156,37 +1171,37 @@ where
                 match completed {
                     Some(Ok(Completed::Revised(request, result))) => {
                         app.revision_completed(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::Branched(request, result))) => {
                         app.branch_completed(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::Oauth(request, result))) => {
                         if let Some(service) = app.oauth_completed(*request, result) {
                             oauth_service = Some(service);
                         }
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::Plugins(request, result))) => {
                         app.plugins_completed(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::Recap(request,result))) => {
                         app.recap_completed(request,result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::Resumed(request, result))) => {
                         app.resume_completed(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::Managed(ticket, result))) => {
                         app.management_completed(*ticket, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     },
                     Some(Ok(Completed::Removal(request, result))) => {
                         app.removal_read(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     },
                     Some(Ok(Completed::Directory(request, result))) => app.directory_completed(request, result),
                     Some(Ok(Completed::Extension(request, result))) => app.apps_complete(*request, result),
@@ -1211,7 +1226,7 @@ where
                     }
                     Some(Ok(Completed::Reconciled(request, result))) => {
                         app.reconciled(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::Created(origin, result))) => {
                         app.creating = false;
@@ -1221,14 +1236,14 @@ where
                                 if app.navigation.current() == origin {
                                     app.apply(Action::Visit(navigation::Route::Session(session.id)));
                                 }
-                                if let Some(state) = &mut state { state.changed(); }
+                                if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                             }
                             Err(error) => app.notice = Some(Notice::Diagnostic(error)),
                         }
                     }
                     Some(Ok(Completed::Submitted(request, result))) => {
                         app.submitted(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::ChatOpened(request, result))) => {
                         if let Some(id) = app.chat.opened(request, result.map(|opened| *opened)) {
@@ -1241,11 +1256,11 @@ where
                                 Completed::ChatReady(id, result)
                             });
                         }
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::ChatPage(request, result))) => {
                         app.chat.page(request, result);
-                        if let Some(state) = &mut state { state.changed(); }
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::ChatReady(id, Err(error)))) if app.chat.subscription.as_ref() == Some(&id) => app.chat.error = Some(error),
                     Some(Ok(Completed::Connected(Ok((connected, receiver))))) => {
@@ -1407,6 +1422,7 @@ where
                 dirty = true;
             }
             delivery = transcript_deliveries.recv() => {
+                checkpoint_impact = state::Impact::Reading;
                 if let Some(delivery) = delivery {
                     dirty |= app.apps_transcript_delivery(delivery);
                 }
@@ -1425,6 +1441,7 @@ where
                 &mut terminate
             ) => break,
         }
+        app.checkpoint_changed(checkpoint_impact);
     }
     app.attachments.disconnect();
     app.skills.disconnect();
@@ -1448,7 +1465,7 @@ where
         client.disconnect();
     }
     if !flushed && let Some(state) = &mut state {
-        state.finish(&app).await?;
+        state.finish(&mut app).await?;
     }
     Ok(())
 }

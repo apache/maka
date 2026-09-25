@@ -149,12 +149,7 @@ impl Client {
         &self,
         input: RemoteRequest,
     ) -> Result<RemoteResult, RequestFailure> {
-        let value = self
-            .request(
-                Operation::PluginRemote,
-                serde_json::to_value(&input).expect("wire input"),
-            )
-            .await?;
+        let value = self.request_remote(&input).await?;
         let result: RemoteResult = serde_json::from_value(value)
             .map_err(|error| self.invalid_plugin_result(error.to_string()))?;
         let valid = matches!(

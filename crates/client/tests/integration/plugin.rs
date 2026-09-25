@@ -341,3 +341,52 @@ async fn management_requests_cross_the_client_registry_with_review_preconditions
     );
     client.disconnect();
 }
+
+#[tokio::test]
+async fn idle_remote_waits_leave_finite_calls_and_control_close_admissible() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, _notices, mut reader, mut writer) = pair_with(maka_client::Operations).await;
+        let document = uuid::Uuid::new_v4();
+        let mut waiting = Vec::new();
+        let mut frames = Vec::new();
+        for _ in 0..96 {
+            let client = client.clone();
+            waiting.push(tokio::spawn(async move {
+                client.plugin_remote(RemoteRequest::Next { document, stream: uuid::Uuid::new_v4() }).await
+            }));
+        }
+        for _ in 0..96 {
+            let frame = reader.read().await.unwrap().unwrap();
+            assert_eq!(frame["input"]["kind"], "next");
+            frames.push(frame);
+        }
+        // Saturate only the unchanged ordinary budget. Close still owns a
+        // reserved control permit, regardless of the idle observation count.
+        let mut calls = Vec::new();
+        for _ in 0..60 {
+            let client = client.clone();
+            calls.push(tokio::spawn(async move {
+                client.request(maka_protocol::Operation::HostWake, json!({})).await
+            }));
+        }
+        let mut call_frames = Vec::new();
+        for _ in 0..60 { call_frames.push(reader.read().await.unwrap().unwrap()); }
+        let close = tokio::spawn({
+            let client = client.clone();
+            async move { client.plugin_remote(RemoteRequest::CloseDocument { document }).await }
+        });
+        let frame = reader.read().await.unwrap().unwrap();
+        assert_eq!(frame["input"]["kind"], "close_document");
+        writer.write(&json!({"requestId":frame["requestId"],"operation":"plugin.remote","ok":true,"result":{"kind":"closed"}})).await.unwrap();
+        assert!(close.await.unwrap().is_ok());
+        for frame in call_frames {
+            writer.write(&json!({"requestId":frame["requestId"],"operation":frame["operation"],"ok":true,"result":{}})).await.unwrap();
+        }
+        for call in calls { assert!(call.await.unwrap().is_ok()); }
+        for frame in frames {
+            writer.write(&json!({"requestId":frame["requestId"],"operation":"plugin.remote","ok":true,"result":{"kind":"end"}})).await.unwrap();
+        }
+        for wait in waiting { assert!(wait.await.unwrap().is_ok()); }
+        client.disconnect();
+    }).await.expect("idle observations blocked finite/control requests");
+}

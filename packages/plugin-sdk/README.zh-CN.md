@@ -162,7 +162,7 @@ Host 插件通过 `ctx.tui.app(name, { entry, backend, resources? }, descriptor,
 
 UI entry 默认导出 `({ tui }) => ({ read, submit, recover? })` factory，每个稳定 document 在独立 VM 中仅初始化一次。factory 只收到纯节点与字段 builders；数据源创建、storage、services 与 jobs 留在原业务激活中。`read(route, cx)` 返回用 `tui` 构造的 View v7 内容，包括列、行、分栏、标签、文本、Markdown、控件和字段，SDK 自动添加版本。稳定的同级 key 保留焦点与编辑状态；`cx.t(en, zhCN, zhTW)` 选择当前语言。外壳负责布局、本地输入、滚动、确认与草稿恢复；插件使用语义颜色，不输出终端转义序列。
 
-Host 最多同时准入四个页面 VM，每个 VM 的 JavaScript 堆上限为 128 MiB，同步执行片段上限为 200 ms。这是执行预算，不是进程总内存限制或恶意代码沙箱。隐藏草稿不占 VM；已准入写入保留原执行 owner 直到结算。页面失效后停止观察，保留最后有效视图及已加载的 transcript 供本地阅读；重新绑定需要显式操作，不重放结果未知的写入。页面故障不会重启插件的业务激活或其他页面 VM。
+Host 按需创建页面 VM，不按页面数量设置准入上限。每个 VM 的 JavaScript 堆上限为 128 MiB，同步执行片段上限为 200 ms。这是执行预算，不是进程总内存限制或恶意代码沙箱。隐藏草稿不占 VM；已准入写入保留原执行 owner 直到结算。页面失效后停止观察，保留最后有效视图及已加载的 transcript 供本地阅读；重新绑定需要显式操作，不重放结果未知的写入。页面故障不会重启插件的业务激活或其他页面 VM。
 
 `tui.boundary(key, body, { bottom?, padding?, emphasis?, activity? })` 为任意正文添加边框，正文可使用普通输入字段。可选 bottom 仅包含文本、按钮及其嵌套行，在下边线上右对齐并裁剪为一行，不占正文空间；body 与 bottom 的 key 必须不同。padding 的 `horizontal`、`vertical` 各为 0–4 格。默认无 bottom、零 padding、`emphasis: 'normal'`、`activity: 'idle'`。可见的 `'accent'` / `'busy'` 边框使用内核共享的柔和呼吸，遵循减少动态效果、焦点与浮层设置；终端自有配色保持静态。所有节点仍共享 View 的深度、节点和字节预算，并使用已声明的字段与动作。Rust 对应写法为 `terminal_ui::view::build::boundary(key, body).bottom(node).padding(1, 0).emphasis(Emphasis::Accent).activity(Activity::Busy).into()`。
 
@@ -189,7 +189,7 @@ log.append(key, 'Finished\n', '1');
 
 `replace`、`append`、`remove`、`timing` 发布连续的资源更新，不需重新读取 View。记录 key 与 revision 是稳定的展示身份，不授予原生会话、文件或写入权限；周围的动作仍使用原有授权、CAS 与恢复契约。Ctrl+F 搜索已加载页，End 或新内容标记回到最新位置；选择文本会暂停跟随。
 
-SDK 按 caller、document 与 reader mount 分别管理快照、游标与取消。Open 和 Read 都必须携带同一个 mount UUID，同一 document 的多个节点可独立读取同一来源；数据源最多允许四个并发 mount。移除 reader 只关闭它的流，页面退休才关闭整个 document 及其 readers。数据源最多保留 4,096 条／32 MiB；一页最多 256 条／4 MiB，单条较大记录可放宽至 16 MiB。大记录用有序 UTF-8 JSON 分片传输，每条消息仍受 Remote 上限约束。更新队列超限会明确使阅读区失效。Rust 插件可通过普通 Remote method/stream 实现同一[公共记录与资源协议](../../crates/plugins/src/terminal_ui/transcript.rs)，应用的 `resources` 声明捕获同次激活中的精确来源端点，页面不能调用未声明的同包端点。Slot context 应携带稳定实体身份，节点 key 应区分可独立编辑的实体。
+SDK 按 caller、document 与 reader mount 分别管理快照、游标与取消。Open 和 Read 都必须携带同一个 mount UUID，同一 document 的多个节点可独立读取同一来源。移除 reader 只关闭它的流，页面退休才关闭整个 document 及其 readers。数据源最多保留 4,096 条／32 MiB；一页最多 256 条／4 MiB，单条较大记录可放宽至 16 MiB。大记录用有序 UTF-8 JSON 分片传输，每条消息仍受 Remote 上限约束。广播更新在 reader 之间共享不可变事件及分片。当前记录与去重后的历史快照记录共享 32 MiB 编码保留预算；压力过大时使最旧快照失效，保留当前数据。更新队列超限只使对应 reader 失效。空闲流等待保留精确的资源归属，不占普通执行槽；这些编码预算不代表完整 JavaScript 堆或进程 RSS。Rust 插件可通过普通 Remote method/stream 实现同一[公共记录与资源协议](../../crates/plugins/src/terminal_ui/transcript.rs)，应用的 `resources` 声明捕获同次激活中的精确来源端点，页面不能调用未声明的同包端点。Slot context 应携带稳定实体身份，节点 key 应区分可独立编辑的实体。
 
 [Board 示例](../../crates/cli/tests/fixtures/board-plugin/host.mjs) 展示三列看板、卡片详情编辑、存储 CAS 与实时刷新。[PTY 测试](../../crates/cli/tests/integration/tui/board.rs) 在 TUI 运行期间安装它、执行交互并读回持久领域数据。
 

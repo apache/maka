@@ -174,6 +174,15 @@ impl Presentation {
             .map(|registration| registration.sender.clone())
     }
 
+    /// A control frame not yet handed to the writer belongs only to the
+    /// still-live invocation that produced it. Cancellation never retargets it.
+    pub fn current_control(&self, frame: &Value) -> bool {
+        self.invocation.as_ref().is_some_and(|invocation| {
+            frame.get("invocationId").and_then(Value::as_str) == Some(invocation.id.as_str())
+                && !invocation.cancelled.is_cancelled()
+        })
+    }
+
     pub async fn completion(&mut self) -> Value {
         let Some(Invocation {
             id,
@@ -321,4 +330,33 @@ fn trusted_url(value: &str) -> Option<String> {
         && url.username().is_empty()
         && url.password().is_none())
     .then(|| url.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_and_release_retire_only_their_staged_invocation_controls() {
+        for retirement in [
+            json!({"kind":"client.capability.cancel","invocationId":"original"}),
+            json!({"kind":"client.capability.release","invocationId":"original"}),
+            json!({"kind":"client.capability.registration_release","registrationId":"registration"}),
+        ] {
+            let mut presentation = Presentation::default();
+            let (sender, _receiver) = mpsc::channel(1);
+            presentation.prepare(&json!({"registrationId":"registration","offers":[],"services":[{
+                "serviceId":oauth::PRESENTATION_SERVICE_ID,"version":oauth::PRESENTATION_SERVICE_VERSION
+            }]}), sender).unwrap();
+            let accepted = presentation.frame(&json!({"kind":"client.capability.service_call",
+                "registrationId":"registration","invocationId":"original",
+                "serviceId":oauth::PRESENTATION_SERVICE_ID,"version":oauth::PRESENTATION_SERVICE_VERSION,
+                "method":"open_external","input":{"url":"https://login.example/device"}
+            })).unwrap().unwrap();
+            assert!(presentation.current_control(&accepted));
+            assert!(!presentation.current_control(&json!({"invocationId":"another"})));
+            assert!(presentation.frame(&retirement).unwrap().is_none());
+            assert!(!presentation.current_control(&accepted));
+        }
+    }
 }

@@ -58,6 +58,8 @@ export default async function activate(ctx) {
   const initialSourceBytes = encoder.encode(JSON.stringify(blocks)).length;
   const source = await ctx.tui.transcriptResource('memory-lines', { blocks });
   ctx.effect(() => source.close());
+  const changed = await ctx.tui.changes('memory-changed');
+  ctx.effect(() => changed.close());
   let viewReads = 0;
   let appends = 0;
   let appendedBytes = 0;
@@ -106,6 +108,7 @@ export default async function activate(ctx) {
         translations: { 'zh-CN': '内存测量', 'zh-TW': '記憶體測量' },
       },
       context: 'application',
+      changes: 'memory-changed',
       icon: { glyph: '▤', ascii: 'M' },
     },
   );

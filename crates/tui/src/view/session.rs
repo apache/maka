@@ -109,8 +109,12 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
                 .saturating_sub(search_height + u16::from(parts[0].height > 4)),
         );
         if !search::body(frame, app, body) {
+            let reading = app.chat.view.reading_changes();
             app.hits
                 .extend(app.chat.draw(frame, body, &app.i18n, app.chrome.ascii));
+            if app.chat.view.reading_changes() != reading {
+                app.checkpoint_changed(crate::state::Impact::Other);
+            }
         }
         search::draw(
             frame,

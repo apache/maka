@@ -957,7 +957,6 @@ sidebar-title = 對話
 sidebar-all = 全部
 sidebar-pending = 待處理
 
-transcript-capacity = 開啟的閱讀區過多。關閉另一檢視後可在此閱讀。
 transcript-failed = 此閱讀區無法更新。
 transcript-buffer-full = 閱讀區已達本機容量上限。
 transcript-expired = 此閱讀區的資料已過期。

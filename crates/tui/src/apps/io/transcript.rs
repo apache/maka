@@ -39,7 +39,6 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-pub const MAX_MOUNTS: usize = 4;
 const DELIVERY_CAPACITY: usize = 32;
 
 /// The token is allocated locally for the full source/route/node binding.
@@ -192,7 +191,7 @@ mod tests {
     use super::test_peer::mount;
 
     #[test]
-    fn mount_admission_rejects_duplicate_rebound_and_excess_tokens() {
+    fn mount_admission_accepts_many_readers_but_rejects_duplicate_or_rebound_tokens() {
         let (mut runner, _deliveries) = Runner::new();
         let mount = mount();
         assert_eq!(runner.admit(std::slice::from_ref(&mount)), Ok(()));
@@ -200,10 +199,15 @@ mod tests {
             runner.admit(&[mount.clone(), mount.clone()]),
             Err(Failure::Invalid)
         );
-        assert_eq!(
-            runner.admit(&vec![mount.clone(); MAX_MOUNTS + 1]),
-            Err(Failure::Overflow)
-        );
+        let readers: Vec<_> = (0..64)
+            .map(|_| Mount {
+                token: Uuid::new_v4(),
+                ..mount.clone()
+            })
+            .collect();
+        for count in [5, 32, 33, 64] {
+            assert_eq!(runner.admit(&readers[..count]), Ok(()));
+        }
         let (commands, _receiver) = mpsc::channel(1);
         let (stop, _stopped) = oneshot::channel();
         runner.running.insert(

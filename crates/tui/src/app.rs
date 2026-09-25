@@ -183,6 +183,7 @@ pub struct App {
     pub status: Option<Value>,
     pub notice: Option<Notice>,
     pub state_error: Option<String>,
+    pub(crate) checkpoint_budget: crate::state::Budget,
     pub closing: bool,
     pub shutdown: crate::shutdown::State,
     pub theme: crate::theme::Theme,
@@ -239,6 +240,7 @@ impl App {
             status: None,
             notice: None,
             state_error: None,
+            checkpoint_budget: Default::default(),
             closing: false,
             shutdown: Default::default(),
             theme: crate::theme::Theme::default(),
@@ -424,6 +426,7 @@ impl App {
             return known == root;
         }
         self.known_root = Some(root.into());
+        self.checkpoint_changed(crate::state::Impact::Other);
         true
     }
     pub(crate) fn checkpoint_root(&self) -> &str {
@@ -566,6 +569,9 @@ impl App {
     pub fn apply(&mut self, action: Action) -> Option<Action> {
         if !self.enabled(&action) {
             return None;
+        }
+        if !matches!(action, Action::Apps(_)) {
+            self.checkpoint_changed(crate::state::Impact::Other);
         }
         match action {
             Action::Inbox => {
@@ -1061,7 +1067,7 @@ impl App {
             _ => navigation.visit(target.clone()),
         }
         let view_focus = matches!(intent, Intent::ChangeView { .. }).then_some(self.focus);
-        if !self.admit_state(Some((&navigation, true, view_focus)), 0)
+        if !self.admit_state(Some((&navigation, true, view_focus)))
             || !self.prepare_route(&target.route)
         {
             return;
@@ -1224,6 +1230,8 @@ impl App {
     /// Only the displayed frame contributes hit regions. Overlay rendering
     /// replaces that list, so a mouse event cannot reach a covered page.
     pub fn input(&mut self, event: Event) -> (bool, Option<Action>) {
+        self.checkpoint_input(crate::state::Impact::Other);
+        let checkpoint_focus = self.focus;
         if self.shutdown.stopping
             && !matches!(
                 event,
@@ -1309,6 +1317,10 @@ impl App {
             self.hover_area = None;
             self.hover_since = None;
         }
+        if self.focus != checkpoint_focus {
+            self.checkpoint_input(crate::state::Impact::Other);
+        }
+        self.checkpoint_changed(self.checkpoint_input_impact());
         outcome
     }
 

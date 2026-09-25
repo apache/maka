@@ -99,22 +99,19 @@ impl Instance {
         all_drafts.validate().map_err(|_| ())?;
         Ok(review)
     }
-    pub fn reload_draft(&mut self, entry: TerminalViewProjection, view: View, root: &str) {
+    pub fn reload_draft(&mut self, entry: TerminalViewProjection, view: View) -> bool {
         self.blocked = true;
         let Ok(review) = self.merge(entry, view) else {
             self.message = Some(Notice::Local("extensions-draft-shape-changed"));
-            return;
+            return false;
         };
         let changed = self
             .view
             .as_ref()
             .is_some_and(|old| context_changed(old, &review.view));
         self.review = Some(review);
-        if !changed && self.review.as_ref().unwrap().conflicts.is_empty() {
-            self.accept_draft(root);
-        } else {
-            self.message = None;
-        }
+        self.message = None;
+        !changed && self.review.as_ref().unwrap().conflicts.is_empty()
     }
     pub fn accept_draft(&mut self, root: &str) -> bool {
         if self.review.is_some() && !self.draft_fits(root) {

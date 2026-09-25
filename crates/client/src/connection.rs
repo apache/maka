@@ -68,10 +68,28 @@ pub enum RequestFailure {
     Rejected(ClientError),
 }
 
+enum Admission {
+    Ordinary,
+    Control,
+    Observation,
+}
+impl Admission {
+    fn operation(operation: Operation) -> Self {
+        if matches!(
+            operation,
+            Operation::SubscriptionReady | Operation::SubscriptionClose
+        ) {
+            Self::Control
+        } else {
+            Self::Ordinary
+        }
+    }
+}
+
 struct Command {
     request: Request,
     reply: oneshot::Sender<Result<Value, ClientError>>,
-    permit: OwnedSemaphorePermit,
+    permit: Option<OwnedSemaphorePermit>,
     presentation: Option<mpsc::Sender<OAuthPresentation>>,
 }
 
@@ -96,7 +114,7 @@ struct Pending {
     operation: Operation,
     observation: PendingObservation,
     reply: oneshot::Sender<Result<Value, ClientError>>,
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
     presentation: Option<String>,
 }
 
@@ -216,6 +234,8 @@ impl Client {
             let mut pending = HashMap::<String, Pending>::new();
             let mut subscriptions = Subscriptions::default();
             let mut presentation = Presentation::default();
+            let mut queued_command: Option<Command> = None;
+            let mut control_frame: Option<Value> = None;
             let failure = loop {
                 let presentation_consumer = presentation.consumer();
                 tokio::select! {
@@ -227,10 +247,8 @@ impl Client {
                             None => std::future::pending().await,
                         }
                     } => break closed("OAuth presentation consumer dropped"),
-                    frame = presentation.completion() => {
-                        if outbound.try_send(frame).is_err() {
-                            break closed("Host writer unavailable");
-                        }
+                    frame = presentation.completion(), if control_frame.is_none() => {
+                        control_frame = Some(frame);
                     },
                     result = &mut writer_task => break match result {
                         Ok(Err(error)) => error,
@@ -246,14 +264,16 @@ impl Client {
                         if value.get("kind").and_then(Value::as_str)
                             .is_some_and(maka_protocol::capability::is_host_frame_kind)
                         {
-                            match presentation.frame(&value) {
-                                Ok(Some(frame)) => {
-                                    if outbound.try_send(frame).is_err() {
-                                        break closed("Host writer unavailable");
-                                    }
-                                }
-                                Ok(None) => {}
+                            let produced = match presentation.frame(&value) {
+                                Ok(produced) => produced,
                                 Err(error) => break error,
+                            };
+                            if control_frame.as_ref().is_some_and(|frame| !presentation.current_control(frame)) {
+                                control_frame = None;
+                            }
+                            if let Some(frame) = produced
+                                && control_frame.replace(frame).is_some() {
+                                break protocol("Host presentation exceeded pending control flow");
                             }
                             continue;
                         }
@@ -310,8 +330,20 @@ impl Client {
                             }
                         }
                     }
-                    command = commands_rx.recv() => {
+                    command = commands_rx.recv(), if queued_command.is_none() => {
                         let Some(command) = command else { break closed("client disconnected"); };
+                        queued_command = Some(command);
+                    }
+                    ready = outbound.reserve(), if control_frame.is_some() || queued_command.is_some() => {
+                        let permit = match ready {
+                            Ok(permit) => permit,
+                            Err(_) => break closed("Host writer unavailable"),
+                        };
+                        if let Some(frame) = control_frame.take() {
+                            permit.send(frame);
+                            continue;
+                        }
+                        let command = queued_command.take().expect("pending outbound command");
                         if command.reply.is_closed() {
                             continue;
                         }
@@ -340,17 +372,18 @@ impl Client {
                             _permit: command.permit,
                             presentation: registration,
                         });
-                        // Admission is smaller than this queue, so overflow
-                        // indicates a broken invariant, not ordinary backpressure.
-                        if outbound.try_send(serde_json::to_value(command.request).expect("wire request")).is_err() {
-                            break closed("Host writer unavailable");
-                        }
+                        // Only a writer reservation admits this frame. While
+                        // waiting, the same select continues draining replies.
+                        permit.send(serde_json::to_value(command.request).expect("wire request"));
                     }
                 }
             };
             cancel.cancel();
             writer_task.abort();
             commands_rx.close();
+            if let Some(command) = queued_command {
+                let _ = command.reply.send(Err(failure.clone()));
+            }
             for (_, waiter) in pending {
                 let _ = waiter.reply.send(Err(failure.clone()));
             }
@@ -377,7 +410,14 @@ impl Client {
         input: Value,
         timeout: Duration,
     ) -> Result<Value, RequestFailure> {
-        self.request_inner(operation, input, timeout, None).await
+        self.request_inner(
+            operation,
+            input,
+            timeout,
+            None,
+            Admission::operation(operation),
+        )
+        .await
     }
 
     pub(crate) async fn request_presentation(
@@ -390,6 +430,29 @@ impl Client {
             input,
             REQUEST_TIMEOUT,
             Some(sender),
+            Admission::Ordinary,
+        )
+        .await
+    }
+
+    /// Typed stream waits consume owned observation lifetimes, not finite RPC
+    /// slots. Raw requests cannot select this admission path.
+    pub(crate) async fn request_remote(
+        &self,
+        input: &maka_protocol::plugin::RemoteRequest,
+    ) -> Result<Value, RequestFailure> {
+        use maka_protocol::plugin::RemoteRequest;
+        let admission = match input {
+            RemoteRequest::Next { .. } => Admission::Observation,
+            RemoteRequest::Close { .. } | RemoteRequest::CloseDocument { .. } => Admission::Control,
+            _ => Admission::Ordinary,
+        };
+        self.request_inner(
+            Operation::PluginRemote,
+            serde_json::to_value(input).expect("wire input"),
+            REQUEST_TIMEOUT,
+            None,
+            admission,
         )
         .await
     }
@@ -400,10 +463,11 @@ impl Client {
         input: Value,
         timeout: Duration,
         presentation: Option<mpsc::Sender<OAuthPresentation>>,
+        admission: Admission,
     ) -> Result<Value, RequestFailure> {
         let deadline = tokio::time::Instant::now() + timeout;
         let pending = self
-            .enqueue(operation, input, deadline, presentation)
+            .enqueue(operation, input, deadline, presentation, admission)
             .await?;
         tokio::time::timeout_at(deadline, pending.settle())
             .await
@@ -420,6 +484,7 @@ impl Client {
             input,
             tokio::time::Instant::now() + REQUEST_TIMEOUT,
             None,
+            Admission::operation(operation),
         )
         .await
     }
@@ -430,6 +495,7 @@ impl Client {
         input: Value,
         deadline: tokio::time::Instant,
         presentation: Option<mpsc::Sender<OAuthPresentation>>,
+        admission: Admission,
     ) -> Result<PendingRequest, RequestFailure> {
         if operation == Operation::ClientCapabilityReplace && presentation.is_none() {
             return Err(RequestFailure::NotDispatched(protocol(
@@ -442,15 +508,15 @@ impl Client {
             .map_err(|error| RequestFailure::NotDispatched(protocol(error)))?;
         // Waiting for both admission and queue space is cancellable and bounded.
         let admitted = tokio::time::timeout_at(deadline, async {
-            let capacity = if matches!(
-                operation,
-                Operation::SubscriptionReady | Operation::SubscriptionClose
-            ) {
-                &self.control_capacity
-            } else {
-                &self.capacity
+            let capacity = match admission {
+                Admission::Ordinary => Some(&self.capacity),
+                Admission::Control => Some(&self.control_capacity),
+                Admission::Observation => None,
             };
-            let permit = capacity.clone().acquire_owned().await.map_err(closed)?;
+            let permit = match capacity {
+                Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(closed)?),
+                None => None,
+            };
             let queue = self.commands.reserve().await.map_err(closed)?;
             Ok::<_, ClientError>((permit, queue))
         })
@@ -538,5 +604,147 @@ mod receipt_tests {
             pending.settle().await,
             Err(RequestFailure::Unknown(ClientError::Closed(_)))
         ));
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use std::{
+        pin::Pin,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Poll, Waker},
+    };
+    use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+
+    const ROOT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[derive(Default)]
+    struct Gate {
+        blocked: AtomicBool,
+        entered: tokio::sync::Notify,
+        writer: Mutex<Option<Waker>>,
+    }
+    struct HeldWriter {
+        stream: DuplexStream,
+        gate: Arc<Gate>,
+    }
+    impl AsyncRead for HeldWriter {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_read(cx, buf)
+        }
+    }
+    impl AsyncWrite for HeldWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.gate.blocked.load(Ordering::Acquire) {
+                *self.gate.writer.lock().unwrap() = Some(cx.waker().clone());
+                self.gate.entered.notify_one();
+                if self.gate.blocked.load(Ordering::Acquire) {
+                    return Poll::Pending;
+                }
+            }
+            Pin::new(&mut self.stream).poll_write(cx, bytes)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_observation_writer_keeps_reading_replies_and_notifications() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            use serde_json::json;
+            let (local, remote) = tokio::io::duplex(4096);
+            let gate = Arc::new(Gate::default());
+            let (mut reader, mut writer) = maka_transport::ndjson::split(remote, CancellationToken::new());
+            let server = tokio::spawn(async move {
+                reader.read().await.unwrap().unwrap();
+                writer.write(&json!({"kind":"accepted","rootId":ROOT,"hostEpoch":"epoch","connectionId":"test", "selectedProtocol":PROTOCOL_VERSION,"compatibilityEpoch":COMPATIBILITY_EPOCH,"compositionId":COMPOSITION_ID,"compositionRevision":"test","state":"ready"})).await.unwrap();
+                (reader, writer)
+            });
+            let (client, mut notices) = Client::connect(HeldWriter { stream: local, gate: gate.clone() }, ROOT, "epoch", crate::Operations).await.unwrap();
+            let (mut reader, mut writer) = server.await.unwrap();
+            let publishing = tokio::spawn({
+                let client = client.clone();
+                async move { client.publish_oauth_presentation().await }
+            });
+            let registration = reader.read().await.unwrap().unwrap();
+            writer.write(&json!({"requestId":registration["requestId"],"operation":registration["operation"],"ok":true,
+                "result":{"registrationId":registration["input"]["registrationId"],"revision":1}})).await.unwrap();
+            let mut service = publishing.await.unwrap().unwrap();
+            let registration_id = service.registration_id.clone();
+            let call = |id: &str| json!({"kind":"client.capability.service_call","registrationId":registration_id,
+                "invocationId":id,"serviceId":"oauth_presentation","version":"1","method":"open_external",
+                "input":{"url":"https://login.example/device","stateHint":id}});
+            let finite = client.request_pending(Operation::HostWake, json!({})).await.unwrap();
+            let original = reader.read().await.unwrap().unwrap();
+            gate.blocked.store(true, Ordering::Release);
+            let mut waiting = Vec::new();
+            // One active write, the bounded outbound channel, one staged
+            // command and the bounded producer channel are now all occupied.
+            let count = 1 + MAX_IN_FLIGHT_DOMAIN_REQUESTS + 2 + 1 + QUEUE_CAPACITY;
+            for _ in 0..count {
+                waiting.push(client.enqueue(Operation::PluginRemote,
+                    json!({"kind":"next","document":uuid::Uuid::new_v4(),"stream":uuid::Uuid::new_v4()}),
+                    tokio::time::Instant::now() + REQUEST_TIMEOUT, None, Admission::Observation).await.unwrap());
+            }
+            gate.entered.notified().await;
+            assert_eq!(client.commands.capacity(), 0);
+            writer.write(&json!({"requestId":original["requestId"],"operation":"host.wake","ok":true,"result":{}})).await.unwrap();
+            writer.write(&json!({"kind":"configuration.changed","revision":7})).await.unwrap();
+            assert_eq!(finite.settle().await.unwrap(), json!({}));
+            assert!(matches!(notices.recv().await, Some(Notification::Catalog(notice)) if notice.revision == 7));
+            assert_eq!(client.capacity.available_permits(), MAX_IN_FLIGHT_DOMAIN_REQUESTS - 4);
+            writer.write(&call("original")).await.unwrap();
+            writer.write(&json!({"kind":"configuration.changed","revision":8})).await.unwrap();
+            assert!(matches!(notices.recv().await, Some(Notification::Catalog(notice)) if notice.revision == 8));
+            // A's accepted frame is now staged behind the full writer. A
+            // cancellation/release allows B without making A's frame B's own.
+            writer.write(&json!({"kind":"client.capability.cancel","invocationId":"original"})).await.unwrap();
+            writer.write(&json!({"kind":"client.capability.release","invocationId":"original"})).await.unwrap();
+            writer.write(&call("replacement")).await.unwrap();
+            writer.write(&json!({"kind":"configuration.changed","revision":9})).await.unwrap();
+            assert!(matches!(notices.recv().await, Some(Notification::Catalog(notice)) if notice.revision == 9));
+            gate.blocked.store(false, Ordering::Release);
+            if let Some(waker) = gate.writer.lock().unwrap().take() { waker.wake(); }
+            let mut accepted = 0;
+            for _ in 0..count + 1 {
+                let frame = reader.read().await.unwrap().unwrap();
+                if frame.get("kind").is_some() {
+                    assert_eq!(frame["kind"], "client.capability.accepted");
+                    assert_eq!(frame["invocationId"], "replacement", "cancelled A must never leave staging");
+                    accepted += 1;
+                } else {
+                    writer.write(&json!({"requestId":frame["requestId"],"operation":"plugin.remote","ok":true,"result":{"kind":"end"}})).await.unwrap();
+                }
+            }
+            assert_eq!(accepted, 1);
+            for pending in waiting { assert_eq!(pending.settle().await.unwrap(), json!({"kind":"end"})); }
+            writer.write(&json!({"kind":"client.capability.admitted","invocationId":"replacement"})).await.unwrap();
+            let shown = service.recv().await.unwrap();
+            assert_eq!(shown.state_hint.as_deref(), Some("replacement"));
+            assert!(shown.acknowledge_presented());
+            let result = reader.read().await.unwrap().unwrap();
+            assert_eq!(result["kind"], "client.capability.result");
+            assert_eq!(result["invocationId"], "replacement");
+            client.disconnect();
+        }).await.expect("writer backpressure blocked the independent reader");
     }
 }

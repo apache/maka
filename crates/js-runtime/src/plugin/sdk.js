@@ -383,8 +383,10 @@
     const sources = new Map();
     const timings = new Map();
     const mounts = new Map();
+    const retained = new Map();
     const counters = { opened: 0, closed: 0, invalidated: 0, pageReads: 0, updates: 0 };
     let sourceBytes = 0;
+    let historicalBytes = 0;
     let revision = 0;
     let mountSequence = 0;
     let closed = false;
@@ -393,6 +395,34 @@
     };
     const bytes = (value) => encoder.encode(value).length;
     const encodedSize = (value) => bytes(JSON.stringify(value));
+    const retainCurrent = (value, bytes) => {
+      retained.set(value, { bytes, current: true, snapshots: 0 });
+    };
+    const releaseCurrent = (value) => {
+      const owner = retained.get(value);
+      owner.current = false;
+      if (owner.snapshots) historicalBytes += owner.bytes;
+      else retained.delete(value);
+    };
+    const acquireSnapshot = (value) => {
+      retained.get(value).snapshots++;
+    };
+    const releaseSnapshot = (value) => {
+      const owner = retained.get(value);
+      owner.snapshots--;
+      if (!owner.current && owner.snapshots === 0) {
+        historicalBytes -= owner.bytes;
+        retained.delete(value);
+      }
+    };
+    const boundHistory = () => {
+      // Current records are already validated. Only stale snapshots are evicted;
+      // identity accounting avoids scanning every reader on each streamed token.
+      for (const mount of mounts.values()) {
+        if (sourceBytes + historicalBytes <= SOURCE_BYTES) break;
+        mount.invalidate();
+      }
+    };
     const safe = (value, multiline = false) =>
       typeof value === 'string' &&
       !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value) &&
@@ -542,6 +572,7 @@
       const entry = copyBlock(block);
       if (sources.has(entry.key)) fail('Duplicate transcript key');
       sources.set(entry.key, entry);
+      retainCurrent(entry, entry.encoded.length);
       sourceBytes += entry.encoded.length;
       if (sources.size > 4096 || sourceBytes > SOURCE_BYTES)
         fail('Transcript source capacity exceeded');
@@ -550,6 +581,7 @@
       const value = copyTiming(timing);
       if (timings.has(value.turn)) fail('Duplicate transcript timing');
       timings.set(value.turn, value);
+      retainCurrent(value, encodedSize(value));
       if (timings.size > 4096) fail('Transcript timing capacity exceeded');
     }
     const owner = (caller, token) => {
@@ -596,7 +628,14 @@
       }
       const base = revision++;
       counters.updates++;
-      for (const mount of [...mounts.values()]) mount.enqueue(makeEvents(base, revision));
+      const readers = [...mounts.values()];
+      if (!readers.length) return;
+      // Immutable payloads are shared; each reader keeps its own bounded queue.
+      for (const event of makeEvents(base, revision)) {
+        Object.freeze(event);
+        const size = encodedSize(event);
+        for (const mount of readers) mount.enqueue(event, size);
+      }
     };
     const replaceEvents = function* (entry, append, base, revision) {
       let offset = 0;
@@ -618,7 +657,10 @@
         fail('Transcript source capacity exceeded');
       }
       sources.set(entry.key, entry);
+      retainCurrent(entry, entry.encoded.length);
+      if (previous) releaseCurrent(previous);
       sourceBytes = size;
+      boundHistory();
       return true;
     };
     const page = (input, caller) => {
@@ -639,10 +681,12 @@
         bytes(input.locale) > 32
       )
         fail('Invalid transcript open');
-      if (mounts.has(document) || mounts.size >= 4) fail('Transcript mount capacity exceeded');
+      if (mounts.has(document)) fail('Transcript mount is already open');
       const fence = revision;
       let snapshot = [...sources.values()];
       let snapshotTimings = new Map(timings);
+      for (const entry of snapshot) acquireSnapshot(entry);
+      for (const value of snapshotTimings.values()) acquireSnapshot(value);
       const cursors = new Map();
       const cursorValues = new Map();
       const prefix = `m${++mountSequence}`;
@@ -655,6 +699,8 @@
           live = false;
           mounts.delete(document);
           counters.closed++;
+          for (const entry of snapshot) releaseSnapshot(entry);
+          for (const value of snapshotTimings.values()) releaseSnapshot(value);
           snapshot = [];
           snapshotTimings.clear();
           cursors.clear();
@@ -690,16 +736,14 @@
           queueBytes = 0;
           release();
         },
-        enqueue(events) {
-          for (const event of events) {
-            const size = encodedSize(event);
-            if (size > WIRE_BYTES || queue.length >= 8192 || queueBytes + size > SOURCE_BYTES) {
-              mount.invalidate();
-              return;
-            }
-            queue.push(event);
-            queueBytes += size;
+        enqueue(event, size) {
+          if (!live) return;
+          if (size > WIRE_BYTES || queue.length >= 8192 || queueBytes + size > SOURCE_BYTES) {
+            mount.invalidate();
+            return;
           }
+          queue.push(event);
+          queueBytes += size;
           wake?.();
         },
         page(input) {
@@ -856,7 +900,9 @@
         const previous = sources.get(identity);
         if (!previous) return;
         sources.delete(identity);
+        releaseCurrent(previous);
         sourceBytes -= previous.encoded.length;
+        boundHistory();
         publish((base, revision) => [{ kind: 'remove', base, revision, key: previous.block.key }]);
       },
       timing(input) {
@@ -866,17 +912,26 @@
           invalidate();
           fail('Transcript timing capacity exceeded');
         }
-        if (JSON.stringify(timings.get(value.turn)) === JSON.stringify(value)) return;
+        const previous = timings.get(value.turn);
+        if (JSON.stringify(previous) === JSON.stringify(value)) return;
         timings.set(value.turn, value);
+        retainCurrent(value, encodedSize(value));
+        if (previous) releaseCurrent(previous);
+        boundHistory();
         publish((base, revision) => [{ kind: 'timing', base, revision, timing: value }]);
       },
       close() {
         closing ??= (async () => {
           closed = true;
           for (const mount of [...mounts.values()]) mount.cancel();
+          for (const entry of sources.values()) releaseCurrent(entry);
+          for (const value of timings.values()) releaseCurrent(value);
           sources.clear();
+          sourceBytes = 0;
           timings.clear();
           await Promise.all([reader.close(), streamer.close()]);
+          if (retained.size || historicalBytes !== 0)
+            fail('Transcript retention was not fully released');
         })();
         return closing;
       },
@@ -970,7 +1025,6 @@
         stream: (name, open, options) =>
           register('remote_stream', { ...options, name }, (input, call) =>
             remoteResult(async () => {
-              if (streams.size >= 32) throw new Error('Client stream capacity exceeded');
               const handle = 'stream-' + ++streamSequence;
               let stopped = false;
               let stop;

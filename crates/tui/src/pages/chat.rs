@@ -757,6 +757,14 @@ impl Chat {
         self.rows = rows;
         self.dirty = true;
     }
+    pub(crate) fn fixture_cadence(&mut self, rendered: Option<std::time::Instant>) {
+        if let Some(rendered) = rendered {
+            self.cadence.rendered(rendered);
+            self.cadence.arrived();
+        } else {
+            self.cadence.flush();
+        }
+    }
 }
 
 #[cfg(test)]

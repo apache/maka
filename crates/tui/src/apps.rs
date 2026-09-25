@@ -580,6 +580,7 @@ impl App {
         requests
     }
     pub fn apps_complete(&mut self, request: Request, result: Result<Output, io::Failure>) {
+        self.checkpoint_changed(crate::state::Impact::Other);
         if !matches!(&self.connection,
             ConnectionState::Connected { root_id, epoch } if *root_id == request.root && *epoch == request.epoch)
         {
@@ -620,12 +621,16 @@ impl App {
                 reply: Reply::View { view },
             }) if reloading => {
                 instance.live = Some(entry.target.clone());
-                if instance.keeps() {
-                    instance.reload_draft(*entry, view, &request.root);
+                let automatic = if instance.keeps() {
+                    instance.reload_draft(*entry, view)
                 } else {
                     instance.entry = Some(*entry);
                     instance.install(view);
                     instance.message = None;
+                    false
+                };
+                if automatic {
+                    self.accept_app_draft(&key);
                 }
                 self.mount_app_views();
                 return;
@@ -1062,8 +1067,13 @@ impl App {
         if !self.apps_enabled(&message) {
             return None;
         }
+        if !matches!(
+            &message,
+            Message::Instance(_, Command::View(Intent::Toggle(_) | Intent::Pick(_, _)))
+        ) {
+            self.checkpoint_changed(crate::state::Impact::Other);
+        }
         let locale = self.apps.locale.clone();
-        let root = self.checkpoint_root().to_owned();
         let (key, command) = match message {
             Message::Directory => {
                 if self.apps.loaded && !self.apps.listing {
@@ -1128,6 +1138,12 @@ impl App {
         {
             return None;
         }
+        if matches!(command, Command::ApplyDraft) {
+            if self.accept_app_draft(&key) {
+                self.mount_app_views();
+            }
+            return None;
+        }
         let apps = &mut self.apps;
         let replacement = matches!(command, Command::Discard | Command::ConfirmDiscard)
             .then(|| apps.entry(&key).cloned())
@@ -1150,11 +1166,7 @@ impl App {
                     },
                 });
             }
-            Command::ApplyDraft => {
-                if instance.accept_draft(&root) {
-                    self.mount_app_views();
-                }
-            }
+            Command::ApplyDraft => unreachable!("draft admission handled before mutation"),
             Command::CancelDraft => {
                 instance.review = None;
                 instance.message = Some(Notice::Local("extensions-restored"));

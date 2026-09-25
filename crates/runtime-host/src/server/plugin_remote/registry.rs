@@ -70,7 +70,7 @@ struct DocumentState {
 pub(super) struct Reservation {
     pub document: Arc<Document>,
     id: Uuid,
-    _permits: Vec<OwnedSemaphorePermit>,
+    permits: Vec<OwnedSemaphorePermit>,
     _task: TaskTrackerToken,
 }
 impl Default for Registry {
@@ -100,11 +100,6 @@ impl Registry {
         let state = connections
             .get_mut(&connection)
             .ok_or_else(|| failure(Error::Cancelled))?;
-        if state.documents.len() >= 32 {
-            return Err(failure(Error::Invalid(
-                "Remote document limit exceeded".into(),
-            )));
-        }
         let id = Uuid::new_v4();
         state.documents.insert(
             id,
@@ -141,6 +136,19 @@ impl Registry {
             .and_then(|state| state.documents.get(&document))
             .cloned()
             .ok_or_else(|| failure(Error::Cancelled))
+    }
+    /// Transport scheduling may recognize existing ownership, never create it.
+    pub fn owns_stream(&self, connection: Uuid, document: Uuid, stream: Uuid) -> bool {
+        self.0
+            .connections
+            .lock()
+            .unwrap()
+            .get(&connection)
+            .and_then(|state| state.documents.get(&document))
+            .is_some_and(|document| {
+                let state = document.state.lock().unwrap();
+                !state.closed && state.streams.contains_key(&stream)
+            })
     }
     pub(super) fn close_document(
         &self,
@@ -209,7 +217,7 @@ impl Document {
         Ok(Reservation {
             document: self.clone(),
             id,
-            _permits: permits,
+            permits,
             _task: self.tasks.token(),
         })
     }
@@ -263,6 +271,12 @@ impl Document {
             .await
             .map_err(|_| failure(Error::CleanupUnconfirmed))?;
         self.check_cleanup()
+    }
+}
+impl Reservation {
+    /// An opened subscription remains owned, but no longer executes Open work.
+    pub fn release_work(&mut self) {
+        self.permits.clear();
     }
 }
 impl Drop for Reservation {

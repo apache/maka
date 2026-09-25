@@ -17,7 +17,7 @@
  * under the License.
  */
 
-mod admission;
+pub(super) mod admission;
 
 use crate::{
     app::{Action, App},
@@ -207,9 +207,6 @@ impl Snapshot {
         if let Some(oauth) = &self.oauth {
             oauth.validate()?;
         }
-        if self.apps.len() > crate::navigation::tabs::LIMIT {
-            return Err("Too many plugin checkpoints".into());
-        }
         self.plugins.validate(root)?;
         let mut addresses = std::collections::BTreeSet::new();
         for checkpoint in &self.apps {
@@ -295,6 +292,7 @@ impl Snapshot {
             .collect();
         app.enter_page();
         app.mount_app_views();
+        app.checkpoint_changed(crate::state::Impact::Other);
         Ok(())
     }
 }
@@ -316,6 +314,32 @@ mod tests {
             epoch: "old-epoch".into(),
         };
         app
+    }
+    #[test]
+    fn many_small_plugin_drafts_restore_by_bytes_without_a_tab_count_gate() {
+        let mut original = crate::apps::tests::app();
+        original.apps_action(crate::apps::tests::command(crate::apps::Command::View(
+            crate::apps::Intent::Toggle("enabled".into()),
+        )));
+        let mut encoded = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
+        let checkpoint = encoded["apps"][0].clone();
+        encoded["apps"] = serde_json::Value::Array(
+            (0..64)
+                .map(|index| {
+                    let mut checkpoint = checkpoint.clone();
+                    checkpoint["key"]["route"] = serde_json::json!({"draft": index});
+                    checkpoint
+                })
+                .collect(),
+        );
+        let saved: Snapshot = serde_json::from_value(encoded).unwrap();
+        saved.validate("root").unwrap();
+        assert!(super::super::store::encode(&saved).unwrap().len() < 1024 * 1024);
+        let mut reopened = app();
+        saved.restore(&mut reopened, false).unwrap();
+        let restored = Snapshot::capture(&reopened, "root");
+        assert_eq!(restored.apps.len(), 64);
+        restored.validate("root").unwrap();
     }
     #[test]
     fn checkpoint_restores_drafts_preferences_and_original_unknown_identity_without_dispatching() {

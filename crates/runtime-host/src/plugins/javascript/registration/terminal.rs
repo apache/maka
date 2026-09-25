@@ -219,7 +219,7 @@ pub(super) fn stage(
             presenter::Factory::new(
                 &source.package,
                 &entry,
-                source.presenters.clone(),
+                source.presenter_limits.clone(),
                 backend,
                 lifecycle.stopping().map_err(super::super::message)?,
                 members,

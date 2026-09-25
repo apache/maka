@@ -957,7 +957,6 @@ sidebar-title = Sessions
 sidebar-all = All
 sidebar-pending = Needs you
 
-transcript-capacity = Too many readers are open. Close another view to read this one.
 transcript-failed = This reader could not be updated.
 transcript-buffer-full = The reader reached its local capacity.
 transcript-expired = This reader has expired.

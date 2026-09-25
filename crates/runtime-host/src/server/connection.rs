@@ -45,6 +45,11 @@ pub(super) struct RequestResidency {
     _command: Option<tokio_util::task::task_tracker::TaskTrackerToken>,
 }
 
+struct InFlight {
+    operation: Operation,
+    observation: Option<(Uuid, Uuid)>,
+}
+
 enum CompletedRequest {
     Reply(PendingReply),
     Subscription { active: bool },
@@ -114,7 +119,7 @@ impl Host {
                 .transpose()?;
             let mut requests: FuturesUnordered<BoxFuture<'_, Result<CompletedRequest, HostError>>> =
                 FuturesUnordered::new();
-            let mut in_flight = HashMap::new();
+            let mut in_flight = HashMap::<String, InFlight>::new();
             let mut input_open = true;
             let result = async {
         loop {
@@ -258,18 +263,24 @@ impl Host {
             while let Some(id) = outbound.try_flushed() {
                 in_flight.remove(&id);
             }
-            // Epoch 141: 64 requests, plus one liveness slot when status occupies
-            // either side of that boundary. Reject overload; never stop reading
-            // solely because a pending operation is waiting for native input.
-            let reserve = in_flight.len() == 64
-                && (request.operation == Operation::HostStatus
-                    || in_flight
-                        .values()
-                        .any(|operation| *operation == Operation::HostStatus));
             if in_flight.contains_key(&request.request_id) {
                 return Err("Client reused an active request id".into());
             }
-            if in_flight.len() >= 64 && !reserve {
+            let authorized = authority.authorizes(&request);
+            let observation = if authorized && request.operation == Operation::PluginRemote {
+                match serde_json::from_value::<maka_protocol::plugin::RemoteRequest>(request.input.clone()) {
+                    Ok(maka_protocol::plugin::RemoteRequest::Next { document, stream })
+                        if self.plugin_remotes.owns_stream(connection_id, document, stream)
+                            && !in_flight.values().any(|active| active.observation == Some((document, stream))) => Some((document, stream)),
+                    _ => None,
+                }
+            } else { None };
+            // Owned, unique stream waits do not occupy the finite request lane.
+            // Invalid/duplicate Next requests retain ordinary overload behavior.
+            let finite = in_flight.values().filter(|active| active.observation.is_none()).count();
+            let reserve = finite == maka_protocol::MAX_IN_FLIGHT_DOMAIN_REQUESTS && (request.operation == Operation::HostStatus
+                || in_flight.values().any(|active| active.operation == Operation::HostStatus));
+            if observation.is_none() && finite >= maka_protocol::MAX_IN_FLIGHT_DOMAIN_REQUESTS && !reserve {
                 return Err("Client exceeded the in-flight request limit".into());
             }
             // Register before checking admission, with no await between them:
@@ -277,22 +288,18 @@ impl Host {
             // A Remote next only awaits delivery from an already owned stream.
             // Keep its flush resident, but let retirement cancel idle observers.
             let is_observation = request.operation.mode() == maka_protocol::operation::OperationMode::Query
-                || (request.operation == Operation::PluginRemote
-                    && matches!(
-                        serde_json::from_value::<maka_protocol::plugin::RemoteRequest>(request.input.clone()),
-                        Ok(maka_protocol::plugin::RemoteRequest::Next { .. })
-                    ));
+                || observation.is_some();
             let mut residency = Some(RequestResidency {
                 _request: self.requests.token(),
                 _command: (!is_observation).then(|| self.commands.token()),
             });
-            in_flight.insert(request.request_id.clone(), request.operation);
+            in_flight.insert(request.request_id.clone(), InFlight { operation: request.operation, observation });
             let phase = *self.retirement.lock().unwrap_or_else(|e| e.into_inner());
             let draining = phase == super::retirement::Phase::Retiring || self.draining.is_cancelled();
             if draining {
                 residency.take();
             }
-            let outcome = if !authority.authorizes(&request) {
+            let outcome = if !authorized {
                 Outcome::failure(OperationError {
                     code: OperationErrorCode::Unauthorized,
                     message: "Runtime Host operation is not authorized".into(),

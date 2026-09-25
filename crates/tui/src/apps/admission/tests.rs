@@ -24,7 +24,7 @@ use serde_json::json;
 
 fn fill(app: &mut App) {
     let entry = instance(app).entry.clone().unwrap();
-    for index in 0..32 {
+    for index in 0..64 {
         let key = key().at(json!({"kept": index}));
         let mut retained = Instance::new(Some(entry.clone()), key.clone());
         retained.install(form());
@@ -58,11 +58,11 @@ fn fill(app: &mut App) {
         }
         app.apps.instances.insert(key, retained);
     }
-    assert_eq!(app.apps.kept_count(), 32);
+    assert_eq!(app.apps.kept_count(), 64);
 }
 
 #[test]
-fn thirty_third_owner_refuses_typing_toggle_and_freeze_without_changing_the_original() {
+fn many_small_retained_owners_admit_typing_toggle_and_freeze_without_changing_others() {
     let mut app = app();
     fill(&mut app);
     let retained = serde_json::to_vec(&app.apps.checkpoints("root")).unwrap();
@@ -73,29 +73,32 @@ fn thirty_third_owner_refuses_typing_toggle_and_freeze_without_changing_the_orig
         KeyCode::Char('a'),
         KeyModifiers::CONTROL,
     )));
-    let cursor = instance(&app).editors["name"].cursor();
-    let history = instance(&app).editors["name"].retained_bytes();
-    app.input(Event::Paste("refused draft".into()));
-    assert_eq!(instance(&app).editors["name"].text(), "My notes");
-    assert_eq!(instance(&app).editors["name"].cursor(), cursor);
-    assert_eq!(instance(&app).editors["name"].retained_bytes(), history);
+    app.input(Event::Paste("accepted draft".into()));
+    assert_eq!(instance(&app).editors["name"].text(), "accepted draft");
     app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
-    assert_eq!(instance(&app).drafts["enabled"], json!(true));
+    assert_eq!(instance(&app).drafts["enabled"], json!(false));
     let generation = instance(&app).generation;
     app.apps_action(save());
-    assert!(next(&mut app).is_none());
-    assert_eq!(instance(&app).generation, generation);
-    assert!(instance(&app).unresolved.is_none());
-    assert!(!instance(&app).saving);
+    assert!(next(&mut app).unwrap().needs_checkpoint());
+    assert!(instance(&app).generation > generation);
+    assert!(instance(&app).unresolved.is_some());
+    assert!(instance(&app).saving);
     assert_eq!(serde_json::to_vec(&app.navigation).unwrap(), navigation);
     assert_eq!(
-        serde_json::to_vec(&app.apps.checkpoints("root")).unwrap(),
+        serde_json::to_vec(
+            &app.apps
+                .checkpoints("root")
+                .into_iter()
+                .filter(|checkpoint| checkpoint.address() != &key())
+                .collect::<Vec<_>>()
+        )
+        .unwrap(),
         retained
     );
 }
 
 #[test]
-fn authorization_also_reserves_before_freezing_a_clean_owner() {
+fn authorization_reserves_result_bytes_after_more_than_thirty_two_retained_owners() {
     use maka_plugins::authorization::{Capability, Request as Proposal, Target};
     let mut app = app();
     app.apps_action(save());
@@ -116,10 +119,10 @@ fn authorization_also_reserves_before_freezing_a_clean_owner() {
     assert!(app.apps_enabled(&command(Command::ApproveConsent)));
     let generation = instance(&app).generation;
     app.apps_action(command(Command::ApproveConsent));
-    assert!(next(&mut app).is_none());
-    assert_eq!(instance(&app).generation, generation);
-    assert!(instance(&app).unresolved.is_none());
-    assert!(!instance(&app).busy);
+    assert!(next(&mut app).unwrap().needs_checkpoint());
+    assert!(instance(&app).generation > generation);
+    assert!(instance(&app).unresolved.is_some());
+    assert!(instance(&app).busy);
 }
 
 #[test]
@@ -142,4 +145,31 @@ fn local_growth_counts_json_escapes_and_keeps_the_existing_draft() {
         .insert("name".into(), json!("first"));
     assert!(!app.admit_field(&key(), "name", &json!("\\\"".repeat(1800))));
     assert_eq!(instance(&app).drafts["name"], json!("first"));
+}
+
+#[test]
+fn consecutive_field_edits_and_selection_only_recalculate_the_owner() {
+    let mut app = app();
+    fill(&mut app);
+    draw(&mut app, 90, 28);
+    instance_mut(&mut app).surface.focus(NAME.into());
+    app.input(Event::Paste(" warm".into()));
+    let before = App::admission_checks();
+    for _ in 0..8 {
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )));
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::SHIFT,
+        )));
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.apps_requests().is_empty());
+    }
+    assert_eq!(App::admission_checks(), before);
+    assert!(instance(&app).editors["name"].text().contains("warm"));
 }

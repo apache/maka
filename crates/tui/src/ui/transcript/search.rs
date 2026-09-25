@@ -243,7 +243,11 @@ impl Transcript {
                 .as_ref()
                 .is_some_and(|active| search.matches.contains(active))
         {
-            search.active = search.matches.first().cloned();
+            let active = search.matches.first().cloned();
+            if search.active != active {
+                self.reading_changes = self.reading_changes.wrapping_add(1);
+                search.active = active;
+            }
         }
         // Appends/prepends update the count, but never move the user's viewport.
         if reveal {

@@ -28,27 +28,13 @@ use maka_plugins::{
 };
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// One Host-wide admission budget, independent of business Dedicated VMs.
-/// Four bounds simultaneous page heaps; hidden drafts do not reserve a slot.
-pub(super) struct Capacity {
-    slots: Arc<Semaphore>,
-    limits: Limits,
-}
-impl Capacity {
-    pub fn new(limits: Limits) -> Self {
-        Self {
-            slots: Arc::new(Semaphore::new(4)),
-            limits,
-        }
-    }
-}
 pub(super) struct Factory {
     source: String,
     name: String,
-    capacity: Arc<Capacity>,
+    limits: Limits,
     observations: Vec<api::Observation>,
     backend: Arc<dyn Method>,
     retiring: CancellationToken,
@@ -57,7 +43,7 @@ impl Factory {
     pub fn new(
         package: &Package,
         entry: &str,
-        capacity: Arc<Capacity>,
+        limits: Limits,
         backend: Arc<dyn Method>,
         retiring: CancellationToken,
         observations: Vec<api::Observation>,
@@ -70,7 +56,7 @@ impl Factory {
         Ok(Self {
             source,
             name: format!("{}:{entry}", package.digest()),
-            capacity,
+            limits,
             observations,
             backend,
             retiring,
@@ -85,13 +71,7 @@ impl api::Factory for Factory {
         if cancellation.is_cancelled() || self.retiring.is_cancelled() {
             return Err(Error::Retired);
         }
-        let reservation = self
-            .capacity
-            .slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Provider("terminal page VM capacity exhausted".into()))?;
-        let vm = Vm::new(self.capacity.limits.clone()).map_err(provider)?;
+        let vm = Vm::new(self.limits.clone()).map_err(provider)?;
         let bridge = Arc::new(bridge::PageBridge::new(self.backend.clone()));
         let module = match vm.load_presenter(self.name.clone(), self.source.clone(), bridge.clone())
         {
@@ -99,7 +79,6 @@ impl api::Factory for Factory {
             Err(error) => {
                 tokio::spawn(async move {
                     vm.shutdown().await;
-                    drop(reservation);
                 });
                 return Err(provider(error));
             }
@@ -120,6 +99,13 @@ impl api::Factory for Factory {
                 _ = retiring.cancelled() => {},
                 _ = vm.failed() => {},
             }
+            // Read the original health cause before our own shutdown records a
+            // normal stop. This is diagnostic data, not Host cleanup authority.
+            let vm_fault = cancelling.vm_failure();
+            #[cfg(test)]
+            if let Some(fault) = &vm_fault {
+                eprintln!("terminal page VM failure: {fault}");
+            }
             stop.cancel();
             let ids = bridge.cancel();
             // Cooperative signals are best effort; worker teardown remains the
@@ -130,22 +116,26 @@ impl api::Factory for Factory {
                 }
             })
             .await;
-            // A permit remains held until actual worker teardown, even if a
-            // caller stops waiting. VM death is not unknown Host cleanup.
+            // Worker teardown remains owned even if a caller stops waiting.
+            // VM death is not unknown Host cleanup.
             vm.shutdown().await;
-            let result = bridge.drained().await;
-            drop(reservation);
-            done.send_replace(Some(result));
+            let cleanup = bridge.drained().await;
+            done.send_replace(Some(Closed { cleanup, vm_fault }));
         });
         Ok(page)
     }
 }
 struct Page(Arc<Inner>);
+#[derive(Clone)]
+struct Closed {
+    cleanup: Result<(), Error>,
+    vm_fault: Option<maka_js_runtime::plugin::Error>,
+}
 struct Inner {
     module: Module,
     bridge: Arc<bridge::PageBridge>,
     stop: CancellationToken,
-    closed: watch::Receiver<Option<Result<(), Error>>>,
+    closed: watch::Receiver<Option<Closed>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -153,12 +143,12 @@ impl Drop for Inner {
     }
 }
 impl Inner {
-    async fn closed(&self) -> Result<(), Error> {
+    async fn closed(&self) -> Result<Closed, Error> {
         let mut closed = self.closed.clone();
         let wait = async {
             loop {
                 if let Some(result) = closed.borrow_and_update().clone() {
-                    return result;
+                    return Ok(result);
                 }
                 closed
                     .changed()
@@ -176,7 +166,12 @@ impl api::Page for Page {
         let page = self.0.clone();
         Box::pin(async move {
             if page.stop.is_cancelled() {
-                return Err(Error::Retired);
+                let fault = page
+                    .closed
+                    .borrow()
+                    .as_ref()
+                    .and_then(|closed| closed.vm_fault.clone());
+                return Err(fault.map(provider).unwrap_or(Error::Retired));
             }
             let cancellation = caller.cancellation.clone();
             let guard = page.bridge.enter(&input, caller)?;
@@ -201,7 +196,11 @@ impl api::Page for Page {
                 if let Some(outcome) = guard.outcome() {
                     return Ok(outcome);
                 }
-                closed?;
+                let closed = closed?;
+                closed.cleanup?;
+                if let Some(fault) = closed.vm_fault {
+                    return Err(provider(fault));
+                }
             }
             result
         })
@@ -215,7 +214,7 @@ impl api::Page for Page {
     }
     fn close(&self) -> BoxFuture<'_, Result<(), Error>> {
         self.cancel();
-        Box::pin(self.0.closed())
+        Box::pin(async move { self.0.closed().await?.cleanup })
     }
 }
 /// Only the document dispatcher can invoke this registration's private backend.

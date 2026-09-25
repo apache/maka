@@ -36,9 +36,11 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct State {
     pub(super) views: Mutex<Option<Arc<dyn maka_plugins::remote::Views>>>,
     pub(super) calls: AtomicUsize,
+    pub(super) calls_changed: tokio::sync::Notify,
     pub(super) opening: AtomicUsize,
     pub(super) live: AtomicUsize,
     pub(super) reads: AtomicUsize,
+    pub(super) reads_changed: tokio::sync::Notify,
 }
 struct Adapter(Arc<State>);
 pub(super) struct Example {
@@ -174,6 +176,13 @@ impl Method for Adapter {
             });
         }
         self.0.calls.fetch_add(1, Ordering::SeqCst);
+        self.0.calls_changed.notify_one();
+        if input == "blocked" {
+            return Box::pin(async move {
+                caller.cancellation.cancelled().await;
+                Err(Error::Cancelled)
+            });
+        }
         *self.0.views.lock().unwrap() = Some(caller.views.clone());
         Box::pin(async move {
             let response = json!({"input":input,"client":caller.client_instance_id,"session":caller.session_id});
@@ -230,6 +239,7 @@ impl Stream for Events {
                 _ => {}
             }
             self.state.reads.fetch_add(1, Ordering::SeqCst);
+            self.state.reads_changed.notify_one();
             self.stop.cancelled().await;
             Err(Error::Cancelled)
         })
