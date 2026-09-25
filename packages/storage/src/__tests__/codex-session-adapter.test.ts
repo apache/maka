@@ -1437,6 +1437,57 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('refuses a row-named hand-off rollout that never names its thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      // The opening file's metadata is valid, so a family-wide check passes
+      // while the file the state row actually points at proves nothing.
+      const sessionId = 'codex-handoff-unnamed';
+      await seedHandoffRollout(codexHome, { day: '08', sessionId, text: 'opening turn' });
+      const newest = await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId,
+        childId: 'codex-handoff-unnamed-child',
+        text: 'unproven',
+      });
+      const withoutMeta = (await readFile(newest, 'utf8'))
+        .split('\n')
+        .filter((line) => !line.includes('session_meta'))
+        .join('\n');
+      await writeFile(newest, withoutMeta);
+      await seedStateDatabase(codexHome, [handoffStateRow(sessionId, newest)]);
+
+      // The row names this file as the thread's newest rollout while the file
+      // says nothing, so the store contradicts itself: refused rather than
+      // imported under the opening file's identity, and rather than quietly
+      // yielding a thread that stops at the opening turn.
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
+  test('refuses a hand-off rollout whose records precede its Session metadata', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-handoff-late-meta';
+      await seedHandoffRollout(codexHome, { day: '08', sessionId, text: 'opening turn' });
+      const newest = await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId,
+        childId: 'codex-handoff-late-meta-child',
+        text: 'after the fact',
+      });
+      const [meta, ...rest] = (await readFile(newest, 'utf8')).split('\n');
+      await writeFile(newest, [...rest.filter((line) => line !== ''), meta, ''].join('\n'));
+      await seedStateDatabase(codexHome, [handoffStateRow(sessionId, newest)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /records precede its Session metadata/,
+      );
+    });
+  });
+
   test('is registered by the internal default registry', async () => {
     await withCodexHome(async (codexHome) => {
       const registry = createExternalSessionAdapterRegistry({ codex: { codexHome } });

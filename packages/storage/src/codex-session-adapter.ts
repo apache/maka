@@ -194,7 +194,18 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     // `archived_sessions` mid-archive must not be read twice.
     const family = new Map<string, string>();
     const own = await this.resolveRolloutPath(rowPath, sessionId);
-    if (own) family.set(basename(own), own);
+    // The state row names a path but cannot prove what is inside it, so the
+    // row-named file earns its place the same way a walked one does. Inserting
+    // it unchecked also hid it from the walk below, which skips names already
+    // in the family. A walked candidate that fails this is simply not part of
+    // the family; the row-named one failing means the store contradicts itself,
+    // so it fails the import rather than quietly importing a shorter thread.
+    if (own) {
+      if (!(await this.rolloutDeclaresThread(own, sessionId))) {
+        throw new Error(`Codex rollout Session id mismatch: expected ${sessionId}`);
+      }
+      family.set(basename(own), own);
+    }
     // No candidate cap here: the catalog cap guards a listing that would
     // otherwise grow without bound, whereas this walk keeps only the handful
     // of files that name `sessionId`, and a store too large to list must not
@@ -208,14 +219,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
         if (family.has(name) || !rolloutFilenameMatchesId(name, sessionId)) continue;
         const resolved = await this.resolveRolloutPath(candidate.path, sessionId);
         if (!resolved) continue;
-        // A name alone cannot tell thread `a` with hand-off `b` from a thread
-        // whose own id is `a_b`; the file's `session_meta` can.
-        const head = await readUtf8Prefix(resolved, CODEX_ROLLOUT_HEAD_BYTES).catch(
-          () => undefined,
-        );
-        if (head !== undefined && catalogEntryFromRolloutHead(head, candidate)?.id === sessionId) {
-          family.set(name, resolved);
-        }
+        if (await this.rolloutDeclaresThread(resolved, sessionId)) family.set(name, resolved);
       }
     }
     return [...family.keys()].sort().map((name) => family.get(name)!);
@@ -368,6 +372,25 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     return undefined;
   }
 
+  /**
+   * A name alone cannot tell thread `a` with hand-off `b` from a thread whose
+   * own id is `a_b`; the file's `session_meta` can. Reading only the head is
+   * enough because Codex writes that record first, and a rollout that buries
+   * it behind other records is refused while converting rather than trusted
+   * here.
+   */
+  private async rolloutDeclaresThread(rolloutPath: string, sessionId: string): Promise<boolean> {
+    const head = await readUtf8Prefix(rolloutPath, CODEX_ROLLOUT_HEAD_BYTES).catch(() => undefined);
+    if (head === undefined) return false;
+    const candidate: RolloutCandidate = {
+      path: rolloutPath,
+      catalogIdentity: sessionId,
+      mtimeMs: 0,
+      archived: false,
+    };
+    return catalogEntryFromRolloutHead(head, candidate)?.id === sessionId;
+  }
+
   private async resolveRolloutPath(
     candidatePath: string,
     expectedId: string,
@@ -475,6 +498,14 @@ class CodexRolloutConverter {
       const timestamp = normalizeEpochMs(envelope.timestamp);
       if (timestamp !== undefined) this.lastTimestamp = Math.max(this.lastTimestamp, timestamp);
       return;
+    }
+
+    // `hasSessionMeta` is family-wide, so the opening file's metadata would
+    // otherwise vouch for every later file. Each rollout proves its own.
+    if (this.awaitingRolloutMeta) {
+      throw new Error(
+        `Codex rollout records precede its Session metadata: expected ${this.expectedSessionId}`,
+      );
     }
 
     const payload = asRecord(envelope.payload);
