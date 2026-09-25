@@ -21,29 +21,30 @@
  * Local preview capability preflight — what this client can actually show,
  * asked before anything is attempted.
  *
- * Showing generated HTML locally depends on four independent things, and each
- * one fails differently: the client may have no GUI surface at all, the
- * embedded browser refuses `file://` by policy, the process that writes the
- * file may not share a filesystem with the surface that would render it, and
- * the conversation's own view may not be the one on screen. Attempting the
- * preview and reading the first error conflates all four. A refused loopback
- * connection is the worst of them: "nothing listening yet", "server still
- * starting", and "separate network namespace" are indistinguishable at the
- * socket, yet the refusal reads like proof of the last one.
+ * Showing a page locally depends on independent things that each fail
+ * differently: the client may have no GUI surface at all, the embedded browser
+ * refuses `file://` by policy, and the conversation's own view may not be the
+ * one on screen. Attempting the preview and reading the first error conflates
+ * them. A refused loopback connection is the worst case: "nothing listening
+ * yet", "server still starting", and "separate network namespace" are
+ * indistinguishable at the socket, yet the refusal reads like proof of the
+ * last one.
  *
  * So every capability below answers with one of three statuses and names the
  * observation behind it. `verified` requires a positive observation.
  * `unsupported` is a settled product boundary this code can state without
  * probing. Everything else is `unknown` — explicitly NOT a claim that a
- * sandbox, an isolated localhost, or a missing capability caused it. A caller
- * may describe a preview as ready only on `verified`, which is why `ready`
- * below is derived from positive evidence alone and never from the absence of
- * an error.
+ * sandbox, an isolated localhost, or a missing capability caused it.
+ *
+ * No result here claims that a page is ready. The loopback probe observes the
+ * origin, not the page, and whether a page loads is #5235's question; a
+ * readiness flag built from a listener's answer would claim more than the
+ * evidence holds.
  *
  * Pure by construction: every observation arrives through
  * PreviewPreflightAuthority, so each status — including the ones that need a
- * refused socket or an unreadable directory — is reachable from a plain unit
- * test. The probes that touch the OS live in preview-preflight-probes.ts.
+ * refused socket — is reachable from a plain unit test. The probes that touch
+ * the OS live in preview-preflight-probes.ts.
  */
 
 import type { MakaTool } from '@maka/runtime/tool-runtime';
@@ -52,12 +53,7 @@ import { parseNavigable } from './browser/logic.js';
 
 export type PreviewCapabilityStatus = 'verified' | 'unsupported' | 'unknown';
 
-export type PreviewCapabilityId =
-  | 'gui_surface'
-  | 'url_schemes'
-  | 'filesystem_visibility'
-  | 'browser_reachability'
-  | 'loopback_endpoint';
+export type PreviewCapabilityId = 'gui_surface' | 'url_schemes' | 'browser_view' | 'loopback_endpoint';
 
 export interface PreviewCapability {
   readonly id: PreviewCapabilityId;
@@ -78,18 +74,14 @@ export interface PreviewPreflightResult {
    * particular endpoint: a GUI surface plus a view that accepts actions.
    */
   readonly surface: PreviewCapabilityStatus;
-  /** The health of the named endpoint, kept separate from the surface above. */
-  readonly endpoint: PreviewEndpointStatus;
   /**
-   * True only when a page can be shown on positive evidence right now: a
-   * verified surface AND an endpoint that answered. An absent error is never
-   * enough. Read `surface` and `endpoint` to see which half is missing — a
-   * false `ready` with no endpoint named is not a capability finding.
+   * Whether something listens at the named origin. `verified` proves a
+   * listener, not that any page exists there or that it loads.
    */
-  readonly ready: boolean;
+  readonly endpoint: PreviewEndpointStatus;
   readonly capabilities: readonly PreviewCapability[];
   readonly summary: string;
-  /** The supported handoff to use instead. Always present when `ready` is false. */
+  /** Present unless the caller already has a verified surface and listener. */
   readonly alternative?: string;
 }
 
@@ -97,11 +89,6 @@ export interface PreviewPreflightResult {
 export type Observed<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly cause: string };
-
-export type StagingRootProbe =
-  | { readonly kind: 'round_tripped'; readonly root: string }
-  | { readonly kind: 'unavailable'; readonly root: string; readonly cause: string }
-  | { readonly kind: 'not_configured' };
 
 export type LoopbackProbe =
   // Any HTTP status answers the question: a 404 still proves something listened.
@@ -116,9 +103,7 @@ export interface PreviewPreflightAuthority {
     readonly sessionId: string;
     readonly signal: AbortSignal;
   }): boolean | Promise<boolean>;
-  /** Round-trip a probe file under the Artifact staging root. */
-  probeStagingRoot(input: { readonly signal: AbortSignal }): StagingRootProbe | Promise<StagingRootProbe>;
-  /** Bounded loopback request. A connection outcome is a result, never a throw. */
+  /** Bounded `HEAD /` against an origin. A connection outcome is a result, never a throw. */
   probeLoopback(input: {
     readonly origin: string;
     readonly signal: AbortSignal;
@@ -126,13 +111,12 @@ export interface PreviewPreflightAuthority {
 }
 
 /**
- * The supported handoff: it needs neither `file://` navigation in the embedded
- * browser nor an ad-hoc localhost server, so it stays available even when every
- * capability below is unknown. Its own honesty caveat is repeated here, because
- * a caller reading this line is exactly the one about to overclaim.
+ * Names the supported route and defers to it for what that route promises.
+ * Restating ArtifactPreview's guarantees here would give two answers to the
+ * same question, and the copy would drift from the tool it describes.
  */
 export const ARTIFACT_PREVIEW_HANDOFF =
-  'Use the ArtifactPreview tool: it turns an HTML Artifact in this session into a Desktop-managed, temporary HTTP URL the browser can open, with no shell server and no file:// navigation. Its `reachable` flag reports a Desktop-side HTTP check and not a browser load, so confirm rendering by navigating and observing the page. If it fails, fall back to Generated Files → Save As or Show in Folder rather than reporting that the preview opened.';
+  'To show an HTML Artifact without a shell server or file:// navigation, use the ArtifactPreview tool in this same offer. Its description states what the URL it returns does and does not guarantee; read that before reporting that a preview opened.';
 
 /** Addresses the embedded browser is asked about, one per scheme worth reporting. */
 const SCHEME_PROBES = [
@@ -143,13 +127,18 @@ const SCHEME_PROBES = [
 ] as const;
 
 /**
- * `localhost` is deliberately not accepted: it resolves through the host's
- * name resolution and can point somewhere other than the loopback interface,
- * which would turn a capability check into an arbitrary outbound request.
+ * Stricter than `isLoopbackHost` in @maka/core/mcp on purpose, so do not widen
+ * it to match. That predicate decides whether traffic may be trusted as local;
+ * this one names the exact address a probe dials, because the evidence it
+ * returns says which address answered or refused. `localhost` can resolve to
+ * either 127.0.0.1 or [::1] depending on the resolver's order, so a refusal
+ * there would not say which address was tried — a server bound to one family
+ * reads as down. The rest of 127/8 is excluded for the same precision.
  */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]']);
 
 export interface SchemeProbeResult {
+  readonly sample: string;
   readonly scheme: string;
   readonly navigable: boolean;
 }
@@ -160,6 +149,7 @@ export interface SchemeProbeResult {
  */
 export function probeNavigableSchemes(): readonly SchemeProbeResult[] {
   return SCHEME_PROBES.map((sample) => ({
+    sample,
     scheme: sample.slice(0, sample.indexOf(':') + 1),
     navigable: parseNavigable(sample) !== null,
   }));
@@ -206,83 +196,41 @@ export function classifyUrlSchemes(probes: readonly SchemeProbeResult[]): Previe
   };
 }
 
-export function classifyFilesystemVisibility(observed: Observed<StagingRootProbe>): PreviewCapability {
-  if (!observed.ok) {
+/**
+ * Reached only when a view host exists, so this answers `verified` or
+ * `unknown` and never `unsupported`: a refused observe is a visibility
+ * condition of the moment, not a boundary.
+ */
+export function classifyBrowserView(drivable: Observed<boolean>): PreviewCapability {
+  if (!drivable.ok) {
     return {
-      id: 'filesystem_visibility',
+      id: 'browser_view',
       status: 'unknown',
-      evidence: `Could not probe the Artifact staging root: ${observed.cause}.`,
-      boundary: 'The probe did not complete, so nothing was learned about the path.',
+      evidence: `Could not determine whether this conversation's view accepts actions: ${drivable.cause}.`,
     };
   }
-  const probe = observed.value;
-  if (probe.kind === 'not_configured') {
+  if (drivable.value) {
     return {
-      id: 'filesystem_visibility',
-      status: 'unsupported',
-      evidence: 'This client has no Artifact staging root configured.',
-      boundary: 'Without a staging root there is no local path for a preview to be materialized into.',
-    };
-  }
-  if (probe.kind === 'round_tripped') {
-    return {
-      id: 'filesystem_visibility',
-      status: 'verified',
-      evidence: `Created, read back, and removed a probe file under ${probe.root}.`,
-      boundary:
-        'This proves only that the Desktop main process reaches that directory. It does not prove that the shell or sandboxed runtime which generates a file writes into the same filesystem.',
-    };
-  }
-  return {
-    id: 'filesystem_visibility',
-    status: 'unknown',
-    evidence: `A probe file under ${probe.root} could not be round-tripped: ${probe.cause}.`,
-    boundary:
-      'A failed access does not distinguish a missing directory, a permission denial, and a sandbox that hides the path. Read the reported cause rather than assuming isolation.',
-  };
-}
-
-export function classifyBrowserReachability(input: {
-  readonly guiSurface: PreviewCapability;
-  /** Omitted when the view was never asked, which only a settled `unsupported` justifies. */
-  readonly drivable?: Observed<boolean>;
-}): PreviewCapability {
-  if (input.guiSurface.status === 'unsupported') {
-    return {
-      id: 'browser_reachability',
-      status: 'unsupported',
-      evidence: 'There is no registered browser view host, so this client has no embedded view to reach.',
-    };
-  }
-  if (!input.drivable) {
-    return {
-      id: 'browser_reachability',
-      status: 'unknown',
-      evidence: "This conversation's view was not asked whether it accepts actions.",
-    };
-  }
-  if (!input.drivable.ok) {
-    return {
-      id: 'browser_reachability',
-      status: 'unknown',
-      evidence: `Could not determine whether this conversation's view accepts actions: ${input.drivable.cause}.`,
-    };
-  }
-  if (input.drivable.value) {
-    return {
-      id: 'browser_reachability',
+      id: 'browser_view',
       status: 'verified',
       evidence: "This conversation's embedded view accepts an observe action, so a page can be driven into it now.",
     };
   }
   return {
-    id: 'browser_reachability',
+    id: 'browser_view',
     status: 'unknown',
     evidence: "This conversation's embedded view refused an observe action right now.",
     boundary:
       'Every browser action must run in the conversation the user is looking at. A refusal usually means this conversation is not the one on screen, which is transient and visibility-scoped — it does not prove the browser is unreachable or that a sandbox separates it.',
   };
 }
+
+/** The view half when there is demonstrably no view host to ask. */
+export const BROWSER_VIEW_WITHOUT_HOST: PreviewCapability = {
+  id: 'browser_view',
+  status: 'unsupported',
+  evidence: 'There is no registered browser view host, so this client has no embedded view to drive.',
+};
 
 export function classifyLoopbackEndpoint(input: {
   readonly origin: string;
@@ -300,9 +248,9 @@ export function classifyLoopbackEndpoint(input: {
     return {
       id: 'loopback_endpoint',
       status: 'verified',
-      evidence: `${input.origin} answered with HTTP ${probe.status} to the Desktop main process.`,
+      evidence: `HEAD / at ${input.origin} answered with HTTP ${probe.status} to the Desktop main process.`,
       boundary:
-        'The answer proves something is listening for this process. It does not prove the embedded browser shares that loopback namespace.',
+        'An answer proves a listener at this origin and nothing more: not that any particular page exists there, not that it loads, and not that the embedded browser shares this loopback namespace.',
     };
   }
   // The rule this whole tool exists for: a connection outcome can produce
@@ -311,19 +259,22 @@ export function classifyLoopbackEndpoint(input: {
   return {
     id: 'loopback_endpoint',
     status: 'unknown',
-    evidence: `Nothing answered at ${input.origin}: ${probe.cause}.`,
+    // "No usable response", not "nothing answered": a TLS handshake failure,
+    // garbage bytes, or a reset after accept all mean something did listen.
+    evidence: `No usable HTTP response from ${input.origin}: ${probe.cause}.`,
     boundary:
-      'A refused or timed-out connection does not prove sandbox isolation, a separate localhost namespace, or that the endpoint is unusable. It shows only that nothing answered this process at that address at this moment. Retry once the server reports that it is listening, or read the server\'s own startup output.',
+      'This does not prove sandbox isolation, a separate localhost namespace, or that the endpoint is unusable. It shows only that no usable HTTP response reached this process from that address at this moment. Retry once the server reports that it is listening, or read the server\'s own startup output.',
   };
 }
 
 /**
  * Reject anything that would turn a capability check into an arbitrary
- * outbound request, and say what is accepted instead. Mirrors the bounded
- * loopback contract the background-task health check uses (#5237).
+ * outbound request, and say what is accepted instead. Returns the origin only:
+ * the probe never requests the caller's path, so a dev-server route with side
+ * effects on GET cannot be tripped by a capability check.
  */
 export function assertLoopbackOrigin(raw: string): string {
-  const guidance = 'Pass a loopback URL such as http://127.0.0.1:8765/preview.html.';
+  const guidance = 'Pass a loopback origin such as http://127.0.0.1:8765.';
   let url: URL;
   try {
     url = new URL(raw);
@@ -341,10 +292,10 @@ export function assertLoopbackOrigin(raw: string): string {
   }
   if (!LOOPBACK_HOSTS.has(url.hostname)) {
     throw new Error(
-      `Only the loopback interface can be probed, not ${JSON.stringify(url.hostname)}. "localhost" is excluded because it resolves through the host and can point elsewhere. ${guidance}`,
+      `Only 127.0.0.1 and [::1] can be probed, not ${JSON.stringify(url.hostname)}. "localhost" is excluded because it can resolve to either address, so a refusal would not say which one was tried. ${guidance}`,
     );
   }
-  return url.toString();
+  return url.origin;
 }
 
 /**
@@ -354,9 +305,9 @@ export function assertLoopbackOrigin(raw: string): string {
  */
 export function derivePreviewSurface(input: {
   readonly guiSurface: PreviewCapability;
-  readonly browserReachability: PreviewCapability;
+  readonly browserView: PreviewCapability;
 }): PreviewCapabilityStatus {
-  const statuses = [input.guiSurface.status, input.browserReachability.status];
+  const statuses = [input.guiSurface.status, input.browserView.status];
   if (statuses.includes('unsupported')) return 'unsupported';
   return statuses.every((status) => status === 'verified') ? 'verified' : 'unknown';
 }
@@ -365,13 +316,12 @@ export function summarizePreviewPreflight(input: {
   readonly capabilities: readonly PreviewCapability[];
   readonly surface: PreviewCapabilityStatus;
   readonly endpoint: PreviewEndpointStatus;
-  readonly ready: boolean;
 }): string {
-  if (input.ready) {
-    return 'A page can be shown now: this client has a usable preview surface and the endpoint answered.';
-  }
   if (input.surface === 'unsupported') {
     return 'This client cannot display a page locally. The unsupported entries below say why, and that will not change at runtime — take the alternative rather than retrying.';
+  }
+  if (input.surface === 'verified' && input.endpoint === 'verified') {
+    return 'This client can display a page, and something is listening at the named origin. That does not prove the page you want exists there or loads — navigate to it and observe the result before reporting it shown.';
   }
   if (input.endpoint === 'not_checked') {
     return input.surface === 'verified'
@@ -381,7 +331,7 @@ export function summarizePreviewPreflight(input: {
   const counts = { verified: 0, unsupported: 0, unknown: 0 };
   for (const capability of input.capabilities) counts[capability.status] += 1;
   return (
-    `No verified way to show a page right now — ${counts.verified} verified, ${counts.unsupported} unsupported, ${counts.unknown} unknown. ` +
+    `Some of what a preview needs is unproven — ${counts.verified} verified, ${counts.unsupported} unsupported, ${counts.unknown} unknown. ` +
     'Only the unsupported entries are settled boundaries; an unknown entry reports what was observed and not a cause.'
   );
 }
@@ -403,7 +353,7 @@ async function observe<T>(signal: AbortSignal, run: () => T | Promise<T>): Promi
   }
 }
 
-/** The local-preview capability preflight, published as its own capability offer. */
+/** The local-preview capability preflight, published beside ArtifactPreview. */
 export function buildPreviewPreflightTools(
   authority: PreviewPreflightAuthority,
 ): readonly MakaTool[] {
@@ -411,9 +361,11 @@ export function buildPreviewPreflightTools(
     name: 'preview_preflight',
     displayName: 'Check local preview capabilities',
     description:
-      'Report what this Maka client can actually preview locally BEFORE attempting it: GUI availability, which URL schemes the embedded browser accepts, whether the Artifact staging path round-trips, and whether this conversation\'s view accepts actions. ' +
-      'Pass `origin` to also check a loopback endpoint you started. Each capability answers verified, unsupported, or unknown, with the observation behind it — an unknown reports what was seen and never asserts a sandbox or isolation cause. ' +
-      '`surface` says whether this client can display a page at all and is reported separately from `endpoint`, which is `not_checked` when no origin was passed; `ready` needs both. ' +
+      'Report what this Maka client can actually preview locally BEFORE attempting it: GUI availability, which URL schemes the embedded browser accepts, and whether this conversation\'s view accepts actions. ' +
+      'file:// is never navigable in the embedded browser; that is a settled boundary, not a failure to retry. ' +
+      'Pass `origin` to also check whether something listens at a loopback origin you started; only `HEAD /` is sent, so the path you pass is not requested. ' +
+      'Each capability answers verified, unsupported, or unknown, with the observation behind it — an unknown reports what was seen and never asserts a sandbox or isolation cause. ' +
+      '`surface` says whether this client can display a page at all; `endpoint` is reported separately and is `not_checked` when no origin was passed. Neither claims that a page loads. ' +
       'Call this instead of inferring a boundary from a failed navigation or a refused connection.',
     parameters: z
       .object({
@@ -423,7 +375,7 @@ export function buildPreviewPreflightTools(
           .max(2000)
           .optional()
           .describe(
-            'Optional loopback URL to probe, such as http://127.0.0.1:8765/preview.html. Only 127.0.0.1 and [::1] are accepted; no credentials, query, or fragment.',
+            'Optional loopback origin to probe, such as http://127.0.0.1:8765. Only 127.0.0.1 and [::1] are accepted; no credentials, query, or fragment. Any path is ignored: the probe sends HEAD / to the origin.',
           ),
       })
       .strict(),
@@ -439,22 +391,17 @@ export function buildPreviewPreflightTools(
         await observe(abortSignal, () => authority.guiSurfaceAvailable()),
       );
       const urlSchemes = classifyUrlSchemes(probeNavigableSchemes());
-      const filesystemVisibility = classifyFilesystemVisibility(
-        await observe(abortSignal, () => authority.probeStagingRoot({ signal: abortSignal })),
-      );
       // Skip the drive check when there is demonstrably no view host: asking
       // would throw, and an exception dressed as `unknown` would hide the
       // settled `unsupported` answer the caller needs.
-      const browserReachability = classifyBrowserReachability({
-        guiSurface,
-        ...(guiSurface.status === 'unsupported'
-          ? {}
-          : {
-              drivable: await observe(abortSignal, () =>
+      const browserView =
+        guiSurface.status === 'unsupported'
+          ? BROWSER_VIEW_WITHOUT_HOST
+          : classifyBrowserView(
+              await observe(abortSignal, () =>
                 authority.browserDrivable({ sessionId, signal: abortSignal }),
               ),
-            }),
-      });
+            );
       const loopbackEndpoint =
         origin === undefined
           ? undefined
@@ -468,21 +415,19 @@ export function buildPreviewPreflightTools(
       const capabilities = [
         guiSurface,
         urlSchemes,
-        filesystemVisibility,
-        browserReachability,
+        browserView,
         ...(loopbackEndpoint ? [loopbackEndpoint] : []),
       ];
-      const surface = derivePreviewSurface({ guiSurface, browserReachability });
+      const surface = derivePreviewSurface({ guiSurface, browserView });
       const endpoint: PreviewEndpointStatus = loopbackEndpoint?.status ?? 'not_checked';
-      const ready = surface === 'verified' && endpoint === 'verified';
+      const covered = surface === 'verified' && endpoint === 'verified';
       return {
         kind: 'preview_preflight',
         surface,
         endpoint,
-        ready,
         capabilities,
-        summary: summarizePreviewPreflight({ capabilities, surface, endpoint, ready }),
-        ...(ready ? {} : { alternative: ARTIFACT_PREVIEW_HANDOFF }),
+        summary: summarizePreviewPreflight({ capabilities, surface, endpoint }),
+        ...(covered ? {} : { alternative: ARTIFACT_PREVIEW_HANDOFF }),
       };
     },
   };
