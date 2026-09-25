@@ -63,6 +63,15 @@
   gap: var(--space-2);
 }
 
+/* Turns over while open, as the Selector chevrons do. */
+.maka-workspace-picker-chevron {
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.maka-workspace-picker[aria-expanded="true"] .maka-workspace-picker-chevron {
+  transform: rotate(180deg);
+}
+
 /* A loading Button hides its content by making it transparent text; the
    badge and chevron paint their own colors, so they have to be hidden with it. */
 .maka-workspace-picker[aria-busy="true"] .maka-workspace-picker-end {

@@ -100,7 +100,7 @@ export function WorkspacePicker({ workspacePicker: picker }: {
                 <span>{picker.hostBadge}</span>
               </span>
             ) : null}
-            <Icon icon="chevronDown" size="sm" color="secondary" />
+            <Icon icon="chevronDown" size="sm" color="secondary" className="maka-workspace-picker-chevron" />
           </span>
         ),
         'aria-label': copy.chooseAriaLabel(

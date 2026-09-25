@@ -1355,7 +1355,7 @@ export const NewChatComposer: Story = {
     const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
     const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
     await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
-    await expect(projectPicker.querySelector('.maka-workspace-picker-end > :last-child svg')).not.toBeNull();
+    await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
   },
 };
 
