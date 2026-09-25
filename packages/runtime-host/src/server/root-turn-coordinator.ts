@@ -667,6 +667,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     return this.#admissions.reserve(sessionId);
   }
 
+  hasActiveOrPendingTurn(sessionId: string): boolean {
+    return (
+      this.#admissions.has(sessionId) ||
+      this.#executions.has(sessionId) ||
+      this.#recoveryPlansBySession.get(sessionId)?.rootReplayAdmission !== undefined
+    );
+  }
+
   private parkContinuationAdmission(admission: RootTurnAdmission): void {
     this.#admissions.park(admission);
   }

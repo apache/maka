@@ -735,9 +735,11 @@ describe('buildProviderOptions: thinking level', () => {
       [...thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking')],
       ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
     );
-    assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'high'), {
-      vercel: { reasoningEffort: 'high' },
-    });
+    for (const level of ['minimal', 'low', 'medium', 'high', 'xhigh'] as const) {
+      assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', level), {
+        vercel: { reasoningEffort: level },
+      });
+    }
     assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'off'), {
       vercel: { reasoningEffort: 'none' },
     });

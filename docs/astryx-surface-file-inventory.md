@@ -106,6 +106,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/session-navigation/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-settings/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/session-settings/ui/session-settings-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -273,7 +274,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, SegmentedControl, SegmentedControlItem, Skeleton, StackItem, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `packages/ui/src/directory-reference-chip.tsx` | ui-composition | Token, Tooltip | aligned — uses Astryx (Token, Tooltip) | aligned |
 | `packages/ui/src/executor-model-picker.tsx` | ui-composition | Button, Popover | aligned — uses Astryx (Button, Popover) | aligned |
-| `packages/ui/src/form-interaction-history.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/form-interaction-prompt.tsx` | ui-composition | Button, CheckboxInput, RadioList, RadioListItem, Selector, Text, TextInput | aligned — uses Astryx (Button, CheckboxInput, RadioList, RadioListItem, Selector, Text, TextInput) | aligned |
 | `packages/ui/src/icons.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/inline-reference.tsx` | ui-composition | ChatTokenizedText | aligned — uses Astryx (ChatTokenizedText) | aligned |
@@ -325,7 +325,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/transcript-scroll-authority.tsx` | ui-composition | ChatLayoutScrollButton | aligned — uses Astryx (ChatLayoutScrollButton) | aligned |
 | `packages/ui/src/ui.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/user-question-prompt.tsx` | ui-composition | Button, ChatComposer, ChatComposerInput | aligned — uses Astryx (Button, ChatComposer, ChatComposerInput) | aligned |
-| `packages/ui/src/workspace-picker.tsx` | ui-composition | DropdownMenu, DropdownMenuItem | aligned — uses Astryx (DropdownMenu, DropdownMenuItem) | aligned |
+| `packages/ui/src/workspace-picker.tsx` | ui-composition | DropdownMenu, DropdownMenuItem, Icon | aligned — uses Astryx (DropdownMenu, DropdownMenuItem, Icon) | aligned |
 
 ## Severity legend
 

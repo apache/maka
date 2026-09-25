@@ -49,6 +49,7 @@ interface QuietPreviewStrings {
   bytes: (n: number) => string;
   /** Suffix for a question list previewed by its first entry, e.g. `等 2 问` / `+1 more`. */
   moreQuestions: (total: number) => string;
+  unanswered: string;
 }
 
 const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
@@ -61,6 +62,7 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     written: '已写入',
     bytes: (n) => `共 ${n} 字节`,
     moreQuestions: (total) => (total > 1 ? ` 等 ${total} 问` : ''),
+    unanswered: '未回答',
   },
   'zh-TW': {
     backgroundTerminal: '後臺終端互動',
@@ -71,6 +73,7 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     written: '已寫入',
     bytes: (n) => `共 ${n} 位元組`,
     moreQuestions: (total) => (total > 1 ? ` 等 ${total} 問` : ''),
+    unanswered: '未回答',
   },
   en: {
     backgroundTerminal: 'Background terminal interaction',
@@ -81,6 +84,7 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     written: 'written',
     bytes: (n) => `${n} bytes`,
     moreQuestions: (total) => (total > 1 ? ` +${total - 1} more` : ''),
+    unanswered: 'Not answered',
   },
 };
 
@@ -501,6 +505,35 @@ export function projectToolArgsPreview(
 export interface QuietPreview {
   headline?: string;
   body: string;
+}
+
+/**
+ * An AskUserQuestion result listed against its offered options. Live args
+ * previews carry question text only, so options may be absent.
+ */
+export function formatUserQuestionResult(
+  args: unknown,
+  value: unknown,
+  locale: UiLocale,
+): string | undefined {
+  const answers = asRecord(value)?.answers;
+  if (!Array.isArray(answers) || answers.length === 0) return undefined;
+  const questions = asRecord(args)?.questions;
+  const blocks: string[] = [];
+  for (const [index, entry] of answers.entries()) {
+    const question = stringField(asRecord(entry), 'question');
+    const answer = asRecord(entry)?.answer;
+    if (question === undefined || (answer !== null && typeof answer !== 'string')) return undefined;
+    const options = Array.isArray(questions) ? asRecord(questions[index])?.options : undefined;
+    const labels = Array.isArray(options)
+      ? options.flatMap((option) => stringField(asRecord(option), 'label') ?? [])
+      : [];
+    const lines = [question, ...labels.map((label) => `${label === answer ? '✓' : ' '} ${label}`)];
+    if (answer === null) lines.push(`  ${strings(locale).unanswered}`);
+    else if (!labels.includes(answer)) lines.push(`✓ ${answer}`);
+    blocks.push(lines.join('\n'));
+  }
+  return redactSecrets(blocks.join('\n\n'));
 }
 
 /**

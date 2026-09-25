@@ -25,7 +25,7 @@ import { installTranscriptDom } from './transcript-test-dom.js';
 
 // ResizeObserver may deliver more than one batch before the browser reports the
 // scroll offset written by the previous batch. Exercise the installed vendor
-// entry points so dropping the dependency patch restores the regression.
+// entry points to retain coverage of the upstream fix introduced after 0.50.6.
 for (const entry of ['esm', 'cjs'] as const) {
   for (const secondHeight of [60, 50]) {
     test(`virtua ${entry} retains consecutive resize corrections (second height ${secondHeight})`, async () => {

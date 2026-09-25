@@ -27,6 +27,7 @@ test('maps session setting services to the existing compound Desktop bridge', as
   const sessions = new Proxy({}, {
     get: (_target, property) => (...args: unknown[]) => {
       calls.push({ name: String(property), args });
+      if (property === 'getPlanState') return Promise.resolve({ sessionId: args[0], proposals: [] });
       if (property === 'abandonPlanProposal') return Promise.resolve({ ok: true, value: {} });
       return Promise.resolve({ ok: true, session: {} });
     },
@@ -41,6 +42,7 @@ test('maps session setting services to the existing compound Desktop bridge', as
     model: 'gpt-5',
     thinkingLevel: 'high',
   });
+  assert.deepEqual(await services.getPlanState('session-1'), { sessionId: 'session-1', proposals: [] });
   await services.setPermissionMode('session-1', 'bypass');
   await services.setOrchestrationMode('session-1', 'swarm');
   await services.abandonPlanProposal('session-1', 'proposal-1');
@@ -55,6 +57,7 @@ test('maps session setting services to the existing compound Desktop bridge', as
         thinkingLevel: 'high',
       }],
     },
+    { name: 'getPlanState', args: ['session-1'] },
     { name: 'setPermissionMode', args: ['session-1', 'bypass'] },
     { name: 'setOrchestrationMode', args: ['session-1', 'swarm'] },
     { name: 'abandonPlanProposal', args: ['session-1', 'proposal-1'] },
