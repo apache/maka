@@ -19,6 +19,7 @@
 
 mod behavior;
 mod remote;
+mod terminal;
 mod tools;
 
 use super::owner::Owner;
@@ -85,7 +86,8 @@ impl Plugin for Builtin {
                 )
                 .map_err(message)?;
             tools::publish(owner.clone(), &mut staged)?;
-            remote::publish(owner, &identity.package_id, &mut staged)?;
+            remote::publish(owner.clone(), &identity.package_id, &mut staged)?;
+            terminal::publish(owner, &mut staged)?;
             Ok(staged)
         })
     }

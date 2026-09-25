@@ -43,6 +43,7 @@ pub(super) struct Owner {
     gate: Mutex<()>,
     pending: AtomicBool,
     wake: Notify,
+    pub(super) revisions: tokio::sync::watch::Sender<()>,
 }
 
 impl BackgroundWork for Owner {
@@ -64,6 +65,7 @@ impl Owner {
             gate: Mutex::new(()),
             pending: AtomicBool::new(true),
             wake: Notify::new(),
+            revisions: tokio::sync::watch::channel(()).0,
         })
     }
 
@@ -74,6 +76,7 @@ impl Owner {
     pub fn changed(&self) {
         self.pending.store(true, Ordering::Release);
         self.wake.notify_one();
+        self.revisions.send_replace(());
     }
 
     pub async fn grant(&self, grant: Id, session: &str) -> Result<(), Error> {

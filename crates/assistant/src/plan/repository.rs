@@ -84,25 +84,38 @@ impl Repository {
     /// Returns the original outcome, not a newer Session state. This is safe
     /// after a lost reply; changed inputs under the same operation are rejected.
     pub async fn receipt(&self, request: &Request) -> Result<Option<Snapshot>, Error> {
-        identifier(&request.operation_id)?;
-        let record = self
-            .storage
-            .read(self.operation_key(&request.operation_id)?)
-            .await?;
+        let Some(decision) = self.operation(&request.operation_id).await? else {
+            return Ok(None);
+        };
+        if decision.fingerprint != digest(request)? {
+            return Err(Error::Conflict);
+        }
+        Ok(Some(decision.snapshot))
+    }
+
+    /// Observe a pinned decision after a lost reply, without reconstructing
+    /// its authorization or retrying it. Absence is not proof of rejection.
+    pub async fn outcome(&self, operation_id: &str) -> Result<Option<Snapshot>, Error> {
+        Ok(self
+            .operation(operation_id)
+            .await?
+            .map(|decision| decision.snapshot))
+    }
+
+    async fn operation(&self, operation_id: &str) -> Result<Option<Decision>, Error> {
+        identifier(operation_id)?;
+        let record = self.storage.read(self.operation_key(operation_id)?).await?;
         let Some(record) = record else {
             return Ok(None);
         };
         let revision: u64 = decode(record)?;
         let decision = self.decision(revision).await?;
-        if decision.operation_id != request.operation_id {
+        if decision.operation_id != operation_id {
             return Err(Error::Corrupt(
                 "Plan operation index disagrees with its decision".into(),
             ));
         }
-        if decision.fingerprint != digest(request)? {
-            return Err(Error::Conflict);
-        }
-        Ok(Some(decision.snapshot))
+        Ok(Some(decision))
     }
 
     pub async fn apply(&self, request: &Request, now: u64) -> Result<Snapshot, Error> {

@@ -77,6 +77,21 @@ Reads and old receipts still require current Session access. A new approval or
 renewal validates current consent; an old accepted decision does not require its
 former background grant to remain live.
 
+## Terminal views
+
+Plan contributes a session page, inspector panel and a status line through the
+public Terminal View contract. Proposal and execution tabs show the reviewed
+artifact and recorded progress; history, full overview/risks and step details
+read immutable revisions. Large artifacts stay available through bounded detail
+views, and settled work leaves the composer status line empty.
+
+Approve, request changes, abandon, resume, renew permission and stop use the same
+Host control path as other clients. Execution authority requires explicit consent.
+Confirmation keeps the reviewed version fixed while live updates wait. Each
+submitted decision has a stable operation identity; recovery observes its durable
+receipt even after later decisions, without renewing the old grant or replaying
+work. A missing receipt remains unrecorded, not a declaration of failure.
+
 ## Recovery and bounds
 
 Dispatch intent precedes Host submission. Restart queries the original operation;

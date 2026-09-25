@@ -213,87 +213,16 @@ impl Method for Service {
                     expected_revision,
                     action,
                 } => {
-                    let owned = caller
-                        .views
-                        .authorize(Authorization {
-                            operation_id: uuid::Uuid::new_v4(),
-                            title: "Control Session Plan".into(),
-                            target: Target::Session {
-                                session_id: session.into(),
-                            },
-                            capabilities: [Capability::Executions].into(),
-                        })
-                        .await?;
-                    let result = async {
-                        let commands = owner.executions.acquire(owned.scope()).await?;
-                        commands.session(session.into()).await?;
-                        let command = match action {
-                            Control::Approve {
-                                proposal_id,
-                                proposal_revision,
-                                grant,
-                            } => Command::Approve {
-                                proposal_id,
-                                proposal_revision,
-                                behavior: super::EXECUTION
-                                    .to_owned()
-                                    .try_into()
-                                    .map_err(super::super::invalid)?,
-                                grant,
-                            },
-                            Control::Revise { proposal_id } => Command::Revise { proposal_id },
-                            Control::Abandon { proposal_id } => Command::Abandon { proposal_id },
-                            Control::Resume {
-                                execution_id,
-                                grant,
-                            } => Command::Resume {
-                                execution_id,
-                                grant,
-                            },
-                            Control::Reconcile {
-                                execution_id,
-                                grant,
-                            } => Command::Reconcile {
-                                execution_id,
-                                grant,
-                            },
-                            Control::Cancel {
-                                execution_id,
-                                reason,
-                                grant,
-                            } => Command::Cancel {
-                                execution_id,
-                                reason,
-                                grant,
-                            },
-                        };
-                        let request = Request {
-                            operation_id,
-                            expected_revision,
-                            command,
-                        };
-                        // Reading an accepted decision requires current Session
-                        // access, not renewal of its former background grant.
-                        if let Some(receipt) = repo.receipt(&request).await? {
-                            return Ok(receipt);
-                        }
-                        match &request.command {
-                            Command::Approve { grant, .. }
-                            | Command::Resume { grant, .. }
-                            | Command::Reconcile { grant, .. }
-                            | Command::Cancel {
-                                grant: Some(grant), ..
-                            } => owner.grant(*grant, session).await?,
-                            _ => {}
-                        }
-                        owner.apply(session, &request).await
-                    }
-                    .await;
-                    owned
-                        .finish()
-                        .await
-                        .map_err(|_| Error::CleanupUnconfirmed)?;
-                    json!(View::from(result.map_err(failed)?))
+                    let request = Request {
+                        operation_id,
+                        expected_revision,
+                        command: command(action).map_err(failed)?,
+                    };
+                    json!(View::from(
+                        control(&owner, &caller, session, &request)
+                            .await
+                            .map_err(ControlError::into_remote)?
+                    ))
                 }
             };
             maka_plugins::remote::validate_payload(&value)?;
@@ -301,6 +230,109 @@ impl Method for Service {
         })
     }
 }
+// Both clients use the same scope admission, durable receipt and grant checks.
+#[derive(Debug)]
+pub(super) enum ControlError {
+    Domain(PlanError),
+    Remote(Error),
+}
+impl ControlError {
+    pub(super) fn into_remote(self) -> Error {
+        match self {
+            Self::Domain(error) => failed(error),
+            Self::Remote(error) => error,
+        }
+    }
+}
+
+pub(super) async fn control(
+    owner: &Owner,
+    caller: &Caller,
+    session: &str,
+    request: &Request,
+) -> Result<Snapshot, ControlError> {
+    let owned = caller
+        .views
+        .authorize(Authorization {
+            operation_id: uuid::Uuid::new_v4(),
+            title: "Control Session Plan".into(),
+            target: Target::Session {
+                session_id: session.into(),
+            },
+            capabilities: [Capability::Executions].into(),
+        })
+        .await
+        .map_err(ControlError::Remote)?;
+    let result: Result<_, PlanError> = async {
+        let commands = owner.executions.acquire(owned.scope()).await?;
+        commands.session(session.into()).await?;
+        let repo = owner.repository(session)?;
+        // A committed decision remains observable after its old grant is revoked.
+        if let Some(receipt) = repo.receipt(request).await? {
+            return Ok(receipt);
+        }
+        match &request.command {
+            Command::Approve { grant, .. }
+            | Command::Resume { grant, .. }
+            | Command::Reconcile { grant, .. }
+            | Command::Cancel {
+                grant: Some(grant), ..
+            } => owner.grant(*grant, session).await?,
+            _ => {}
+        }
+        owner.apply(session, request).await
+    }
+    .await;
+    owned
+        .finish()
+        .await
+        .map_err(|_| ControlError::Remote(Error::CleanupUnconfirmed))?;
+    result.map_err(ControlError::Domain)
+}
+
+fn command(action: Control) -> Result<Command, PlanError> {
+    Ok(match action {
+        Control::Approve {
+            proposal_id,
+            proposal_revision,
+            grant,
+        } => Command::Approve {
+            proposal_id,
+            proposal_revision,
+            behavior: super::EXECUTION
+                .to_owned()
+                .try_into()
+                .map_err(super::super::invalid)?,
+            grant,
+        },
+        Control::Revise { proposal_id } => Command::Revise { proposal_id },
+        Control::Abandon { proposal_id } => Command::Abandon { proposal_id },
+        Control::Resume {
+            execution_id,
+            grant,
+        } => Command::Resume {
+            execution_id,
+            grant,
+        },
+        Control::Reconcile {
+            execution_id,
+            grant,
+        } => Command::Reconcile {
+            execution_id,
+            grant,
+        },
+        Control::Cancel {
+            execution_id,
+            reason,
+            grant,
+        } => Command::Cancel {
+            execution_id,
+            reason,
+            grant,
+        },
+    })
+}
+
 fn failed(error: PlanError) -> Error {
     match error {
         PlanError::Storage(maka_plugins::storage::StoreError::OutcomeUnknown(message))

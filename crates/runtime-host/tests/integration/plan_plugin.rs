@@ -30,7 +30,10 @@ use tokio_util::sync::CancellationToken;
 const SESSION: &str = "plan-session";
 
 async fn open(peer: &mut Peer) -> Value {
-    let binding = json!({"packageId":"maka.plan","method":"manage","sessionId":SESSION});
+    open_method(peer, "manage").await
+}
+async fn open_method(peer: &mut Peer, method: &str) -> Value {
+    let binding = json!({"packageId":"maka.plan","method":method,"sessionId":SESSION});
     let bound = peer
         .rpc("plugin.remote", json!({"kind":"bind","binding":binding}))
         .await;
@@ -56,17 +59,21 @@ async fn wait_state(
     envelope: &Value,
     predicate: impl Fn(&Value) -> bool,
 ) -> Value {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    let mut last = Value::Null;
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let current = read(peer, envelope).await;
             if predicate(&current) {
                 return current;
             }
+            last = current;
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .expect("Plan did not reach the expected durable state")
+    .await;
+    result.unwrap_or_else(|error| {
+        panic!("Plan did not reach the expected durable state: {error}; last: {last}")
+    })
 }
 async fn turn_finished(peer: &mut Peer, turn: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -246,6 +253,22 @@ async fn lifecycle() {
                 requests.try_recv().is_err(),
                 "SubmitPlan must finish without another model request"
             );
+            let terminal = open_method(&mut peer, "terminal").await;
+            let view = terminal_read(&mut peer, &terminal, Value::Null).await;
+            assert_eq!(view.title, "计划");
+            let ask = call(&mut peer, &terminal, terminal_submit(&view, "approve")).await;
+            assert_eq!(ask["result"]["value"]["kind"], "consent", "{ask}");
+            assert_eq!(
+                ask["result"]["value"]["request"]["target"]["sessionId"],
+                SESSION
+            );
+            assert_eq!(
+                read(&mut peer, &envelope).await["revision"],
+                proposed["revision"],
+                "an inert consent proposal must not start execution or record approval"
+            );
+            assert!(requests.try_recv().is_err());
+            close(&mut peer, &terminal).await;
             original_approval = approval(&proposed, &original_grant, "approve-original");
             original_reply = call(&mut peer, &envelope, original_approval.clone()).await;
             assert_eq!(original_reply["ok"], true, "{original_reply}");
@@ -311,11 +334,22 @@ async fn lifecycle() {
             let pending = read(&mut peer, &envelope).await;
             assert_eq!(pending["execution"]["phase"]["kind"], "active");
             let renewed = grant(&mut peer, &envelope).await;
-            let reconcile = call(&mut peer, &envelope, json!({
-                "kind":"control","operationId":"renew-settlement","expectedRevision":pending["revision"],
-                "action":{"kind":"reconcile","executionId":pending["execution"]["id"],"grant":renewed}
-            })).await;
-            assert_eq!(reconcile["ok"], true, "{reconcile}");
+            let terminal = open_method(&mut peer, "terminal").await;
+            let reviewed = terminal_read(&mut peer, &terminal, Value::Null).await;
+            let mut renew = terminal_submit(&reviewed, "reconcile");
+            let consent = call(&mut peer, &terminal, renew.clone()).await;
+            assert_eq!(consent["result"]["value"]["kind"], "consent", "{consent}");
+            assert_eq!(
+                read(&mut peer, &envelope).await["revision"],
+                pending["revision"]
+            );
+            renew["grant"] = renewed.clone();
+            let reconcile = call(&mut peer, &terminal, renew).await;
+            assert_eq!(
+                reconcile["result"]["value"]["kind"], "applied",
+                "{reconcile}"
+            );
+            close(&mut peer, &terminal).await;
             let completed = wait_state(&mut peer, &envelope, |state| {
                 state["execution"]["phase"]["kind"] == "completed"
             })
@@ -380,43 +414,45 @@ async fn lifecycle() {
                 proposed["revision"]
             );
             let renewed = grant(&mut peer, &envelope).await;
-            let approved = call(
-                &mut peer,
-                &envelope,
-                approval(&proposed, &renewed, "approve-cancel"),
-            )
-            .await;
-            assert_eq!(approved["ok"], true, "{approved}");
+            let terminal = open_method(&mut peer, "terminal").await;
+            let reviewed = terminal_read(&mut peer, &terminal, Value::Null).await;
+            let mut approve = terminal_submit(&reviewed, "approve");
+            approve["grant"] = renewed.clone();
+            let approved = call(&mut peer, &terminal, approve.clone()).await;
+            assert_eq!(approved["result"]["value"]["kind"], "applied", "{approved}");
+            assert_eq!(call(&mut peer, &terminal, approve).await, approved);
             next(&mut requests)
                 .await
                 .reply
                 .send(answer("Stopped without completing the steps"))
                 .unwrap();
-            let interrupted = wait_state(&mut peer, &envelope, |state| {
+            wait_state(&mut peer, &envelope, |state| {
                 state["execution"]["phase"]["kind"] == "interrupted"
             })
             .await;
-            let resume = json!({
-                "kind":"control","operationId":"resume-interrupted","expectedRevision":interrupted["revision"],
-                "action":{"kind":"resume","executionId":interrupted["execution"]["id"],"grant":renewed}
-            });
-            let resumed = call(&mut peer, &envelope, resume.clone()).await;
-            assert_eq!(resumed["ok"], true, "{resumed}");
-            assert_eq!(call(&mut peer, &envelope, resume).await, resumed);
+            let reviewed = terminal_read(&mut peer, &terminal, Value::Null).await;
+            let mut resume = terminal_submit(&reviewed, "resume");
+            resume["grant"] = renewed.clone();
+            let resumed = call(&mut peer, &terminal, resume.clone()).await;
+            assert_eq!(resumed["result"]["value"]["kind"], "applied", "{resumed}");
+            assert_eq!(call(&mut peer, &terminal, resume).await, resumed);
             let executing = next(&mut requests).await;
             assert!(
                 executing.body["messages"]
                     .to_string()
                     .contains("Current Plan state for this model step")
             );
-            let active = wait_state(&mut peer, &envelope, |state| {
+            wait_state(&mut peer, &envelope, |state| {
                 state["execution"]["phase"]["kind"] == "active"
             })
             .await;
-            let cancellation = json!({"kind":"control","operationId":"cancel-owned","expectedRevision":active["revision"],
-                "action":{"kind":"cancel","executionId":active["execution"]["id"],"reason":"User abandoned this Plan"}});
-            let cancelled = call(&mut peer, &envelope, cancellation.clone()).await;
-            assert_eq!(cancelled["ok"], true, "{cancelled}");
+            let reviewed = terminal_read(&mut peer, &terminal, Value::Null).await;
+            let cancellation = terminal_submit(&reviewed, "cancel");
+            let cancelled = call(&mut peer, &terminal, cancellation.clone()).await;
+            assert_eq!(
+                cancelled["result"]["value"]["kind"], "applied",
+                "{cancelled}"
+            );
             let _ = executing.reply.send(answer("No further work"));
             wait_state(&mut peer, &envelope, |state| {
                 state["execution"]["phase"]["kind"] == "cancelled"
@@ -425,7 +461,7 @@ async fn lifecycle() {
             start(&mut peer, "unrelated").await;
             let unrelated = next(&mut requests).await;
             assert_eq!(
-                call(&mut peer, &envelope, cancellation).await,
+                call(&mut peer, &terminal, cancellation).await,
                 cancelled,
                 "An exact retry must return its original decision"
             );
@@ -438,6 +474,8 @@ async fn lifecycle() {
                 "completed",
                 "Cancelling an old Plan must never stop the Session's newer Turn"
             );
+            close(&mut peer, &terminal).await;
+            terminal_controls(&mut peer, &envelope, &mut requests).await;
             envelope =
                 uncertain_cancellation(&mut peer, &host, &envelope, &renewed, &mut requests).await;
         }
@@ -563,4 +601,119 @@ async fn uncertain_cancellation(
         "User stopped the pending dispatch"
     );
     recovered
+}
+
+async fn terminal_read(
+    peer: &mut Peer,
+    terminal: &Value,
+    route: Value,
+) -> maka_plugins::terminal_ui::view::View {
+    let response = call(
+        peer,
+        terminal,
+        json!({"kind":"read","route":route,"locale":"zh-CN"}),
+    )
+    .await;
+    assert_eq!(response["ok"], true, "{response}");
+    let view: maka_plugins::terminal_ui::view::View =
+        serde_json::from_value(response["result"]["value"]["view"].clone()).unwrap();
+    view.validate().unwrap();
+    view
+}
+fn terminal_submit(view: &maka_plugins::terminal_ui::view::View, action: &str) -> Value {
+    json!({"kind":"submit","route":null,"revision":view.revision,"action":action,"fields":{},"grant":null,"locale":"zh-CN"})
+}
+async fn terminal_controls(
+    peer: &mut Peer,
+    manage: &Value,
+    requests: &mut tokio::sync::mpsc::Receiver<ModelRequest>,
+) {
+    use maka_plugins::terminal_ui::view::Node;
+    start(peer, "terminal-review").await;
+    next(requests)
+        .await
+        .reply
+        .send(tool("SubmitPlan", artifact()))
+        .unwrap();
+    let proposal = wait_state(peer, manage, |state| {
+        state["proposal"]["status"] == "pending_approval"
+    })
+    .await;
+    assert_eq!(
+        turn_finished(peer, "terminal-review").await["status"],
+        "completed"
+    );
+    let terminal = open_method(peer, "terminal").await;
+    let view = terminal_read(peer, &terminal, Value::Null).await;
+    let recovery = view.action("revise").unwrap().recovery.clone().unwrap();
+    let revised = call(peer, &terminal, terminal_submit(&view, "revise")).await;
+    assert_eq!(revised["result"]["value"]["kind"], "applied", "{revised}");
+    // The old reviewed version cannot approve the replacement decision.
+    let conflict = call(peer, &terminal, terminal_submit(&view, "approve")).await;
+    assert_eq!(
+        conflict["result"]["value"]["kind"], "conflict",
+        "{conflict}"
+    );
+    let later = terminal_read(peer, &terminal, Value::Null).await;
+    let abandoned = call(peer, &terminal, terminal_submit(&later, "abandon")).await;
+    assert_eq!(
+        abandoned["result"]["value"]["kind"], "applied",
+        "{abandoned}"
+    );
+    assert_eq!(read(peer, manage).await["proposal"]["status"], "abandoned");
+    // Recover the exact earlier decision, even after a different one replaced it.
+    let recovered = call(
+        peer,
+        &terminal,
+        json!({"kind":"recover","route":recovery,"locale":"zh-CN"}),
+    )
+    .await;
+    assert_eq!(
+        recovered["result"]["value"]["kind"], "applied",
+        "{recovered}"
+    );
+    let missing = call(peer, &terminal, json!({"kind":"recover","route":{"operation":"never_recorded","route":null},"locale":"zh-CN"})).await;
+    assert_eq!(
+        missing["result"]["value"]["kind"], "unrecorded",
+        "{missing}"
+    );
+    let revision = proposal["revision"].as_u64().unwrap();
+    let historical = terminal_read(
+        peer,
+        &terminal,
+        json!({"kind":"revision","revision":revision,"source":"proposal"}),
+    )
+    .await;
+    assert!(historical.actions.is_empty());
+    fn detail(node: &Node) -> Option<Value> {
+        if let Node::Item {
+            target: maka_plugins::terminal_ui::view::Target::Route { route },
+            ..
+        } = node
+            && route["kind"] == "step"
+        {
+            return Some(route.clone());
+        }
+        node.children().into_iter().find_map(detail)
+    }
+    let step = terminal_read(peer, &terminal, detail(&historical.root).unwrap()).await;
+    assert!(
+        serde_json::to_value(step)
+            .unwrap()
+            .to_string()
+            .contains("Make the approved change")
+    );
+    let watermark = read(peer, manage).await["revision"].as_u64().unwrap();
+    let history = terminal_read(
+        peer,
+        &terminal,
+        json!({"kind":"history","through":watermark,"before":watermark}),
+    )
+    .await;
+    assert!(history.actions.is_empty());
+    assert!(
+        requests.try_recv().is_err(),
+        "reviewing and changing the proposal never starts a model turn"
+    );
+    close(peer, &terminal).await;
 }
