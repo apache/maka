@@ -43,6 +43,8 @@ export interface DesktopLocalMessage {
   readonly inlineReferences: readonly InlineReference[];
   readonly turnId?: string;
   readonly error?: string;
+  /** Main is delivering it now. */
+  readonly delivering?: true;
 }
 
 export interface DesktopCachedTranscript {

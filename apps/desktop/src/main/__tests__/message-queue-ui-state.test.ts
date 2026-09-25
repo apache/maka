@@ -70,7 +70,10 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
   messages = messages.map((message) => ({ ...message, state: 'saved', canCancel: true }));
   await act(async () => changed('session-1'));
-  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'the wait before dispatch shows nothing');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send', 'nothing is delivering it');
+  messages = messages.map((message) => ({ ...message, delivering: true }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a delivery in progress shows nothing');
   assert.deepEqual(transient.get('root')?.deliveryActions, []);
   messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
   await act(async () => changed('session-1'));

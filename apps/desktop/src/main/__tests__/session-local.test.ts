@@ -351,17 +351,26 @@ test('offline intents are dispatched only after connectivity returns', async (t)
   service.wake();
   await nextTurn();
   assert.equal(store.get('authority', 'message-1')?.state, 'saved');
+  assert.equal(service.listMessages(target, 'session-1')[0]!.delivering, undefined);
   assert.equal(calls.length, 0);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
   target = {
     ...target,
     client: client('epoch-1'),
     submit: async (input) => {
       calls.push(input);
+      await released;
       return accepted;
     },
   };
   service.wake();
+  await waitFor(() => calls.length === 1);
+  assert.equal(service.listMessages(target, 'session-1')[0]!.delivering, true);
+  release();
   await waitFor(() => store.get('authority', 'message-1')?.state === 'accepted');
+  await nextTurn();
+  assert.equal(service.listMessages(target, 'session-1')[0]!.delivering, undefined);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.originHostEpoch, 'epoch-1');
   assert.equal(calls[0]!.content.attachments?.length, 1);

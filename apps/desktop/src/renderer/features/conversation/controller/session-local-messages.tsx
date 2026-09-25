@@ -52,9 +52,9 @@ export function SessionLocalMessages(props: {
             const action = (operation: () => Promise<void>) => () => {
               void operation().catch(() => reportError(copy.updateError));
             };
-            // `saved` without an error is the ordinary wait before dispatch.
+            // A `saved` copy Main is delivering without error is on its way.
             const status = message.state === 'accepted' || message.state === 'sending'
-              || (message.state === 'saved' && !message.error)
+              || (message.state === 'saved' && message.delivering && !message.error)
               ? undefined : copy[message.state];
             publish(sessionId, {
               id: message.messageId,

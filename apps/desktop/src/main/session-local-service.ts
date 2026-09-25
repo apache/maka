@@ -95,7 +95,8 @@ export function desktopSessionLocalPartition(input: {
 }
 
 export class DesktopSessionLocalService {
-  readonly #running = new Set<string>();
+  /** Partition → the message it is delivering. */
+  readonly #running = new Map<string, string>();
   readonly #probed = new Map<string, DesktopSessionLocalTarget['client']>();
   readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #snapshots = new Map<
@@ -187,7 +188,7 @@ export class DesktopSessionLocalService {
         });
         if (!record) continue;
         this.#targetCursor = (targets.indexOf(target) + 1) % targets.length;
-        this.#running.add(target.partition);
+        this.#running.set(target.partition, record.messageId);
         void this.#deliver(target, record)
           .catch(this.deps.onError)
           .finally(() => {
@@ -216,6 +217,7 @@ export class DesktopSessionLocalService {
       inlineReferences: record.intent.command.content.inlineReferences ?? [],
       ...(record.result?.disposition === 'turn_started' ? { turnId: record.result.turnId } : {}),
       ...(record.error ? { error: record.error } : {}),
+      ...(this.#running.get(target.partition) === record.messageId ? { delivering: true as const } : {}),
     }));
   }
 
