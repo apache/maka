@@ -1723,11 +1723,9 @@ function AppShellContent({
         setPetCompletionNonce((current) => current + 1);
       // The live reply text is usually handed to the transcript before
       // `complete` arrives; the Host commits the row's reply preview first.
-      // Best-effort: swallow any failure so a missed banner never surfaces
-      // as an unhandled promise rejection.
-      refreshChangedSession(sessionId)
-        .then((session) => window.maka.notifications.runEnded({ kind, title: session?.name, body: body ?? session?.lastMessagePreview }))
-        .catch(() => undefined);
+      // Main resolves the banner authority from the session id (#4981), and
+      // the bridge absorbs main-side failures, so no call-site catch is used.
+      void refreshChangedSession(sessionId).then((session) => window.maka.notifications.runEnded({ kind, sessionId, title: session?.name, body: body ?? session?.lastMessagePreview }));
     },
   });
 

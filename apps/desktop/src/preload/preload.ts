@@ -3628,8 +3628,12 @@ const makaBridge = {
       kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;
+      sessionId?: string;
     }): Promise<void> {
-      return invokeWhenReady('notifications:runEnded', payload);
+      // Best-effort by contract: a banner is never worth an unhandled
+      // rejection in the renderer, so the bridge absorbs main-side
+      // failures here instead of asking every call site to repeat it.
+      return invokeWhenReady('notifications:runEnded', payload).catch(() => {});
     },
   },
   inspector: {

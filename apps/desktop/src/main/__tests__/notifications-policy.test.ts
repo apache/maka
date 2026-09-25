@@ -20,11 +20,16 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  createHostPrivacyAuthority,
   isRunNotificationKind,
   resolveNotificationContent,
+  resolveNotificationHostId,
+  resolveNotificationIncognito,
   runNotificationCopy,
   shouldRaiseRunNotification,
 } from '../notifications-policy.js';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
+import type { RuntimeHostDesktopTargetState } from '../runtime-host-desktop-manager.js';
 
 it('gates native notifications through every required condition', () => {
   const base = { enabled: true, supported: true, windowFocused: false, incognito: false, e2e: false };
@@ -87,4 +92,178 @@ it('sanitizes renderer content, caps it, and falls back per field', () => {
     resolveNotificationContent({ kind: 'errored', title: '出错的会话', body: '' }, 'zh-CN'),
     { title: '出错的会话', body: erroredFallback.body },
   );
+});
+
+it('reads incognito from the Runtime Host authority, failing closed', async () => {
+  // The authority verdict wins: the local copy never receives privacy
+  // updates, so no stale local value may decide content-bearing banners.
+  assert.equal(
+    await resolveNotificationIncognito({ isIncognitoActive: async () => true }, 'local'),
+    true,
+  );
+  assert.equal(
+    await resolveNotificationIncognito({ isIncognitoActive: async () => false }, 'local'),
+    false,
+  );
+  // The source host travels with the query so the gate can associate the
+  // banner with its legitimate authority.
+  const seen: Array<string | undefined> = [];
+  await resolveNotificationIncognito(
+    {
+      isIncognitoActive: async (sourceHostId) => {
+        seen.push(sourceHostId);
+        return false;
+      },
+    },
+    'local',
+  );
+  assert.deepEqual(seen, ['local']);
+  // An unreachable authority suppresses rather than risking exposure of
+  // the session title + reply preview outside the app.
+  assert.equal(
+    await resolveNotificationIncognito(
+      {
+        isIncognitoActive: async () => {
+          throw new Error('host unreachable');
+        },
+      },
+      'local',
+    ),
+    true,
+  );
+});
+
+it('scopes the host authority to the notification source host', async () => {
+  const queried: string[] = [];
+  const ready = (hostId: string, incognitoActive: boolean) =>
+    ({
+      epoch: `epoch-${hostId}`,
+      target: { profile: { id: hostId } },
+      readiness: 'ready',
+      candidate: {
+        client: {
+          hostId,
+          queryRuntimePolicy: async () => {
+            queried.push(hostId);
+            return { policy: { privacy: { incognitoActive } } };
+          },
+        },
+      },
+    }) as unknown as RuntimeHostDesktopTargetState;
+  const reconnecting = (hostId: string) =>
+    ({
+      epoch: `epoch-${hostId}`,
+      target: { profile: { id: hostId } },
+      readiness: 'reconnecting',
+      hostId,
+    }) as unknown as RuntimeHostDesktopTargetState;
+  const guest = (hostId: string) =>
+    ({
+      epoch: `epoch-${hostId}`,
+      target: { profile: { id: hostId } },
+      readiness: 'ready',
+      candidate: {
+        client: {
+          hostId,
+          queryRuntimePolicy: async () => {
+            queried.push(hostId);
+            throw new Error('forbidden: runtime.policy.query');
+          },
+        },
+      },
+    }) as unknown as RuntimeHostDesktopTargetState;
+
+  // A reconnecting source keeps its unknown verdict (suppressed) even
+  // while another ready host holds no incognito: dropping it would leak.
+  assert.equal(
+    await resolveNotificationIncognito(
+      createHostPrivacyAuthority(() => [ready('local', false), reconnecting('private')]),
+      'private',
+    ),
+    true,
+  );
+  // A mounted session guest never decides a local notification: only the
+  // notification's own host is queried, so the local banner is preserved.
+  assert.equal(
+    await resolveNotificationIncognito(
+      createHostPrivacyAuthority(() => [ready('local', false), guest('shared')]),
+      'local',
+    ),
+    false,
+  );
+  assert.deepEqual(queried, ['local']);
+  // No matching host (or no source at all) stays unknown and suppresses.
+  assert.equal(
+    await resolveNotificationIncognito(
+      createHostPrivacyAuthority(() => [ready('local', false)]),
+      'gone',
+    ),
+    true,
+  );
+  assert.equal(
+    await resolveNotificationIncognito(
+      createHostPrivacyAuthority(() => [ready('local', false)]),
+      undefined,
+    ),
+    true,
+  );
+});
+
+it('attributes a notification to the host that owns its session', async () => {
+  // The renderer reports the session, not a host, so main derives the owner
+  // from the real session-key format rather than trusting a renderer-side
+  // assertion about which host was involved.
+  assert.equal(
+    resolveNotificationHostId(desktopSessionKey({ hostId: 'local', sessionId: 'turn-1' })),
+    'local',
+  );
+  // A legacy id carries no host, which must stay unresolvable instead of
+  // falling back to whichever host happens to be ready.
+  assert.equal(resolveNotificationHostId('c0ffee12-legacy'), undefined);
+  assert.equal(resolveNotificationHostId(undefined), undefined);
+  assert.equal(resolveNotificationHostId(''), undefined);
+  assert.equal(resolveNotificationHostId(JSON.stringify(['local'])), undefined);
+  assert.equal(resolveNotificationHostId(JSON.stringify(['', 'turn-1'])), undefined);
+
+  // Derived id feeds the same fail-closed authority as before.
+  const queried: string[] = [];
+  const entries: RuntimeHostDesktopTargetState[] = [
+    {
+      epoch: 'epoch-private',
+      target: { profile: { id: 'private' } },
+      readiness: 'reconnecting',
+      hostId: 'private',
+    } as unknown as RuntimeHostDesktopTargetState,
+    {
+      epoch: 'epoch-local',
+      target: { profile: { id: 'local' } },
+      readiness: 'ready',
+      candidate: {
+        client: {
+          hostId: 'local',
+          queryRuntimePolicy: async () => {
+            queried.push('local');
+            return { policy: { privacy: { incognitoActive: false } } };
+          },
+        },
+      },
+    } as unknown as RuntimeHostDesktopTargetState,
+  ];
+  const authority = createHostPrivacyAuthority(() => entries);
+  assert.equal(
+    await resolveNotificationIncognito(
+      authority,
+      resolveNotificationHostId(desktopSessionKey({ hostId: 'private', sessionId: 'turn-2' })),
+    ),
+    true,
+  );
+  assert.deepEqual(queried, []);
+  assert.equal(
+    await resolveNotificationIncognito(
+      authority,
+      resolveNotificationHostId(desktopSessionKey({ hostId: 'local', sessionId: 'turn-3' })),
+    ),
+    false,
+  );
+  assert.deepEqual(queried, ['local']);
 });

@@ -1644,11 +1644,14 @@ export interface MakaBridge {
      * state or is waiting on the user. `title` is the session name,
      * `body` the start of the reply, error message, or question; main
      * sanitizes + falls back to generic copy. Main gates on the product
-     * toggle + window focus before raising a native OS notification. */
+     * toggle + window focus before raising a native OS notification, and
+     * swallows its own failures so the renderer never sees a rejection. */
     runEnded(payload: {
       kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;
+      /** Session whose Runtime Host authorizes the banner content (#4981). */
+      sessionId?: string;
     }): Promise<void>;
   };
   onboarding: {
