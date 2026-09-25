@@ -52,6 +52,10 @@ export function SessionLocalMessages(props: {
             const action = (operation: () => Promise<void>) => () => {
               void operation().catch(() => reportError(copy.updateError));
             };
+            // `saved` without an error is the ordinary wait before dispatch.
+            const status = message.state === 'accepted' || message.state === 'sending'
+              || (message.state === 'saved' && !message.error)
+              ? undefined : copy[message.state];
             publish(sessionId, {
               id: message.messageId,
               text: message.text,
@@ -64,10 +68,11 @@ export function SessionLocalMessages(props: {
               quotes: message.quotes,
               inlineReferences: message.inlineReferences,
               hostTurnId: message.turnId,
-              deliveryStatus: message.state === 'accepted' || message.state === 'sending'
-                ? undefined : copy[message.state],
+              deliveryStatus: status,
               deliveryDetail: message.error,
-              deliveryActions: message.canCancel
+              deliveryActions: status === undefined
+                ? []
+                : message.canCancel
                 ? [
                     {
                       label: copy.remove,

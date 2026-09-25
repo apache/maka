@@ -68,6 +68,14 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   assert.equal(transient.get('root')?.deliveryStatus, 'Host outcome unknown');
   const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
   assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
+  messages = messages.map((message) => ({ ...message, state: 'saved', canCancel: true }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'the wait before dispatch shows nothing');
+  assert.deepEqual(transient.get('root')?.deliveryActions, []);
+  messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send');
+  assert.equal(transient.get('root')?.deliveryActions?.length, 1, 'a Host outage keeps the copy removable');
   messages = messages.map((message) => ({ ...message, state: 'failed' }));
   await act(async () => changed('session-1'));
   assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' }, 'failed delivery moves nothing');
