@@ -20,6 +20,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ATTACHMENT_MIME_SNIFF_BYTES,
+  AttachmentIngestBlockedError,
+  MAX_ATTACHMENT_DROP_COUNT,
   attachmentKindFromMimeType,
   guessMimeFromName,
   resolveAttachmentMimeType,
@@ -67,6 +69,8 @@ export interface ComposerAttachmentService {
    * in Finder arrives as a File that can never be read, so it is refused here
    * rather than staged as an attachment that only fails on send. Surfaces that
    * cannot tell leave this out; the send path still names an unreadable item.
+   * Never asked about more than MAX_ATTACHMENT_DROP_COUNT files: a larger drop
+   * is refused whole before it gets here.
    */
   detectDirectories?(files: readonly File[]): Promise<readonly boolean[]>;
 }
@@ -416,9 +420,22 @@ export function useComposerAttachments(options: {
   /** Drops directories from one drop or paste and says why, once per batch. */
   async function withoutDirectories(files: File[]): Promise<File[]> {
     const owner = liveOptionsRef.current.directoryOwner;
+    if (!owner.service.detectDirectories) return files;
+    if (files.length > MAX_ATTACHMENT_DROP_COUNT) {
+      // Too many to check, and none may stage unchecked. A drop this large
+      // could never be sent, so it is refused in the send limit's own words.
+      if (lifecycle.mounted) {
+        const copy = liveOptionsRef.current.copy;
+        owner.toastApi.error(
+          copy.attachmentFailedTitle,
+          owner.formatError(new AttachmentIngestBlockedError('count_limit'), copy.tryAgain),
+        );
+      }
+      return [];
+    }
     let directories: readonly boolean[] = [];
     try {
-      directories = (await owner.service.detectDirectories?.(files)) ?? [];
+      directories = await owner.service.detectDirectories(files);
     } catch {
       // Best effort: an item that cannot be classified stages as before, and
       // the send path reports it if it turns out to be unreadable.

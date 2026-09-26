@@ -22,6 +22,7 @@ import test from 'node:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
+import { AttachmentIngestBlockedError, MAX_ATTACHMENT_DROP_COUNT } from '@maka/core/attachments';
 import {
   useComposerAttachments,
   type ComposerAttachmentService,
@@ -72,7 +73,8 @@ async function withAttachments(
   function Harness() {
     latest = useComposerAttachments({
       copy,
-      formatError: (_error, fallback) => fallback,
+      formatError: (error, fallback) =>
+        error instanceof AttachmentIngestBlockedError ? `blocked:${error.code}` : fallback,
       draftKey: 'draft-1',
       ...(options.directoryHostId ? { directoryHostId: options.directoryHostId } : {}),
       toastApi: {
@@ -133,6 +135,48 @@ test('without a local folder picker the refusal does not point at Reference fold
     assert.deepEqual(hook().pendingAttachments, []);
     assert.deepEqual(toasts, [[copy.attachmentFailedTitle, copy.folderNotAttachable]]);
   });
+});
+
+test('the largest drop a composer takes is still checked in full (#5279)', async () => {
+  const asked: number[] = [];
+  await withAttachments(
+    {
+      directoryHostId: 'local-host',
+      service: service(async (files) => {
+        asked.push(files.length);
+        return files.map(() => true);
+      }),
+    },
+    async (hook, toasts) => {
+      await act(async () => {
+        await hook().attachFilePaths(Array.from({ length: MAX_ATTACHMENT_DROP_COUNT }, folder));
+      });
+      assert.deepEqual(asked, [MAX_ATTACHMENT_DROP_COUNT]);
+      assert.deepEqual(hook().pendingAttachments, []);
+      assert.deepEqual(toasts, [[copy.attachmentFailedTitle, copy.folderNotAttachableUseReference]]);
+    },
+  );
+});
+
+test('a larger drop is refused whole, unchecked, in the send limit\'s words (#5279)', async () => {
+  let asked = 0;
+  await withAttachments(
+    {
+      directoryHostId: 'local-host',
+      service: service(async (files) => {
+        asked += 1;
+        return files.map(() => false);
+      }),
+    },
+    async (hook, toasts) => {
+      await act(async () => {
+        await hook().attachFilePaths(Array.from({ length: MAX_ATTACHMENT_DROP_COUNT + 1 }, notes));
+      });
+      assert.equal(asked, 0);
+      assert.deepEqual(hook().pendingAttachments, []);
+      assert.deepEqual(toasts, [[copy.attachmentFailedTitle, 'blocked:count_limit']]);
+    },
+  );
 });
 
 test('files stage unchanged when a surface cannot detect directories, or detection fails (#5279)', async () => {
