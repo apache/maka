@@ -225,9 +225,9 @@
   gap: 6px;
   min-width: 0;
   padding-block: var(--space-0-5);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   color: var(--muted-foreground);
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
   font-variant-numeric: tabular-nums;
 }
 .maka-turn-statusbar[data-turn-status='failed'] {
@@ -238,9 +238,10 @@
   flex: 1;
   padding-block: 0 var(--space-1-5);
 }
-.maka-turn-statusbar-text { font-weight: var(--font-weight-medium); }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+/* Holds the answer's place, unseen and unannounced, until the Host names the Turn. */
+.maka-pending-turn[data-awaiting-host] .maka-assistant-answer { visibility: hidden; }
 .maka-subagent-session-label,
 .maka-subagent-session-end {
   display: flex;
@@ -253,10 +254,9 @@
 .maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
 .maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-turn-processing {
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
  display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); }
 .maka-turn-indicator-text { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
@@ -287,7 +287,7 @@
   padding-block: var(--space-0-5);
   border-radius: var(--radius-control);
   color: var(--muted-foreground);
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
   list-style: none;
 }
 .maka-processing-summary::-webkit-details-marker { display: none; }
@@ -301,14 +301,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 8px;
-  /* Astryx tool rows overhang their text by 4px on each inline edge so hover
-     surfaces reach the card edge (their padding/negative-margin pair); this
-     padding is where that overhang lands. It sits on the body rather than the
-     sequence so the statusbar summary stays flush with the answer text and
-     the turn footer it reads against. */
-  padding-inline: var(--space-1);
-  /* Block-axis clip for the disclosure wipe only; the rows' inline overhang
-     must reach this padding edge, so it cannot be clipped here. */
+  /* Block-axis clip for the disclosure wipe only. */
   overflow-y: clip;
 }
 /* Astryx ChatReasoning and ChatToolCalls bring their own top margin, which

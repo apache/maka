@@ -114,7 +114,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     return visible(window.contentView);
   });
   const actions = page.getByRole('button', { name: /Sidebar task.*任务操作$/ });
-  await page.getByRole('button', { name: 'Sidebar task', exact: true }).hover();
+  await page.getByRole('button').filter({ has: page.getByText('Sidebar task', { exact: true }) }).hover();
   await actions.click();
   await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
@@ -124,7 +124,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await page.keyboard.press('Escape');
   await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeHidden();
   await expect(actions).toBeFocused();
-  const actionTooltip = page.getByRole('tooltip', { name: 'Sidebar task 任务操作', exact: true });
+  const actionTooltip = page.getByRole('tooltip', { name: /^Sidebar task.*任务操作$/ });
   await expect(actionTooltip).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
   const workHubNavigation = page.getByRole('button', { name: 'WorkHub', exact: true });

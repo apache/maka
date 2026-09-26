@@ -23,6 +23,7 @@ import { act, createElement } from 'react';
 import { LocaleProvider, type TransientUserMessageProjection } from '@maka/ui';
 import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
+import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
@@ -37,6 +38,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
     text: messageId, attachments: [], inlineReferences: [],
     placement: messageId === 'steering' ? 'current_turn' : 'next_turn',
+    ...(messageId === 'root' ? { localDisplayPlacement: 'current_turn' as const } : {}),
   }));
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ConversationServicesProvider, { services: {
@@ -54,16 +56,37 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       mcp: { subscribeChanges: () => () => {} },
     }, children: createElement(SessionLocalMessages, {
       sessionId: 'session-1',
-      publish: (_id, message) => { transient.set(message.id, message); },
+      publish: (_id, message) => {
+        const current = transient.get(message.id);
+        transient.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
+      },
       retire: (_id, messageId) => { transient.delete(messageId); },
       reportError: (message) => { throw new Error(message); },
     }) }),
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Host outcome unknown');
+  const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
+  assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
+  messages = messages.map((message) => ({ ...message, state: 'saved', canCancel: true }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send', 'Main cannot reach the Host');
+  messages = messages.map((message) => ({ ...message, delivering: true }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a message Main will deliver shows nothing');
+  assert.deepEqual(transient.get('root')?.deliveryActions, []);
+  messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send');
+  assert.equal(transient.get('root')?.deliveryActions?.length, 1, 'a Host outage keeps the copy removable');
+  messages = messages.map((message) => ({ ...message, state: 'failed' }));
+  await act(async () => changed('session-1'));
+  assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' }, 'failed delivery moves nothing');
   messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);
-  assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
+  assert.equal(transient.get('root')?.transientPlacement, 'transcript');
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'an accepted send shows only its time');
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
 });

@@ -86,7 +86,7 @@ test('retains tool and compaction evidence without activity after observation lo
 
 test('shows one waiting indicator before a named live Turn reaches the transcript', async () => {
   const liveTurn: LiveTurnProjection = { turnId: 'pending-turn', steps: [], unconfirmed: true };
-  const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: 1000, transientPlacement: 'current_turn' as const };
+  const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: 1000, transientPlacement: 'transcript' as const };
   for (const messages of [[], [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }]]) {
     const markup = await renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
     assert.equal((markup.match(/class="maka-turn-processing"/g) ?? []).length, 1);
@@ -108,7 +108,7 @@ test('a new Host Turn owns its waiting footer while the previous answer remains 
     steps: [{ stepId: 'old-answer', text: { text: 'Previous answer', complete: true, truncated: false }, tools: [] }],
   };
   const messages = [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }];
-  const transientMessages = [{ id: 'new-user', hostTurnId: 'new-turn', text: 'New request', ts: 2, transientPlacement: 'current_turn' as const }];
+  const transientMessages = [{ id: 'new-user', hostTurnId: 'new-turn', text: 'New request', ts: 2, transientPlacement: 'transcript' as const }];
   for (const content of [oldTurn, undefined]) {
     const markup = await renderChat(content, { messages, transientMessages, activeTurn: { turnId: 'new-turn' } });
     const { document } = parseHTML(markup);
@@ -152,7 +152,7 @@ test('the pending Turn waits without a clock until the Turn start time reaches t
   const root = createRoot(container);
   t.after(async () => { await act(() => root.unmount()); Object.assign(globalThis, original); });
   const liveTurn: LiveTurnProjection = { turnId: 'pending-turn', steps: [], unconfirmed: true };
-  const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: now, transientPlacement: 'current_turn' as const };
+  const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: now, transientPlacement: 'transcript' as const };
   const render = async (overrides: Partial<ComponentProps<typeof ChatView>>) => {
     await act(() => root.render(
       <LocaleProvider locale="en">
@@ -211,7 +211,7 @@ test('turn identity stays on its exact durable anchor and is absent from ordinar
 
 test('an initial optimistic prompt uses the same status projection as a durable prompt', async () => {
   const { document } = parseHTML(await renderChat(undefined, {
-    messages: [], transientMessages: [{ id: 'pending', hostTurnId: 'choosing', text: 'Choose work', ts: 1, transientPlacement: 'current_turn' }],
+    messages: [], transientMessages: [{ id: 'pending', hostTurnId: 'choosing', text: 'Choose work', ts: 1, transientPlacement: 'transcript' }],
     turnDecorations: new Map([['choosing', { header: <></>, promptStatus: <span data-test-status>Waiting for user</span> }]]),
   }));
   assert.equal(document.querySelectorAll('[data-test-status]').length, 1);

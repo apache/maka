@@ -151,7 +151,7 @@ export function createAppShellChatActions(deps: {
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   messageRetryPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
-  activateSessionForFirstSend: (sessionId: string) => Promise<void>;
+  activateSessionForFirstSend: (session: DesktopSessionSummary) => Promise<void>;
   retireSession: (sessionId: string) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   addTransientMessage: (
@@ -249,14 +249,13 @@ export function createAppShellChatActions(deps: {
     >;
     displayText?: string;
     quotes?: readonly QuoteRef[];
-    pendingSteering?: boolean;
+    steering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
     const directoryReferences = input.command.directoryReferences;
-    const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
       messageId,
@@ -283,17 +282,17 @@ export function createAppShellChatActions(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: placement,
-      pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
+      transientPlacement: result.disposition === 'turn_started' ? 'transcript'
+        : placement === 'next_turn' ? 'follow_up' : input.steering ? 'steering' : 'transcript',
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
-      ...copiedArray('quotes', quotes),
+      ...copiedArray('quotes', input.quotes ?? []),
       inlineReferences: [...(result.inlineReferences ?? [])],
     }, true);
     return {
       kind: 'projected',
       skillInvocation: result.skillInvocation,
-      ...(result.turnId ? { turnId: result.turnId } : {}),
+      ...(result.turnId ? { turnId: result.turnId } : {})
     };
   }
 
@@ -342,6 +341,7 @@ export function createAppShellChatActions(deps: {
       async function submitIntoSession(sessionId: string, messageId: string) {
         const sendCommand = {
           text,
+          localDisplayPlacement: 'current_turn' as const,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray(
             'attachmentItems',
@@ -365,7 +365,6 @@ export function createAppShellChatActions(deps: {
           },
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
-          pendingSteering: false,
           waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
@@ -390,14 +389,13 @@ export function createAppShellChatActions(deps: {
         // the new-chat surface, so the empty-session Maka hero cannot paint
         // between observation settling and the submitted content appearing.
         publishTransientUserMessage(session.id, {
-          id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+          id: messageId, text: options.displayText ?? text, transientPlacement: 'transcript',
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
-          inlineReferences: [],
         });
         // Main owns observation-before-dispatch. This only selects the local
         // surface; saving a draft never waits for the Host's event stream.
-        await activateSessionForFirstSend(session.id);
+        await activateSessionForFirstSend(session);
         if (activeIdRef.current !== session.id) {
           removeTransientMessage(session.id, messageId);
           await discardUnsentSession();
@@ -423,10 +421,9 @@ export function createAppShellChatActions(deps: {
       if (!options.targetSessionId && !onFollowLatest(initialSessionId)) return false;
       optimisticSessionId = initialSessionId;
       publishTransientUserMessage(initialSessionId, {
-        id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+        id: messageId, text: options.displayText ?? text, transientPlacement: 'transcript',
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
-        inlineReferences: [],
       });
       const submitted = await submitIntoSession(initialSessionId, messageId);
       // An existing-Session send never reports a resolved Session.
@@ -499,9 +496,8 @@ export function createAppShellChatActions(deps: {
     const quotes = options.quotes ?? [];
     publishTransientUserMessage(sessionId, {
       id: messageId, text, attachments: Conversation.retainedAttachmentRefs(pending ?? []),
-      pendingSteering: placement === 'current_turn',
       ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
-      transientPlacement: placement,
+      transientPlacement: placement === 'current_turn' ? 'steering' : 'follow_up',
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
       inlineReferences: [],
@@ -513,7 +509,7 @@ export function createAppShellChatActions(deps: {
         sessionId,
         messageId,
         placement,
-        pendingSteering: placement === 'current_turn',
+        steering: placement === 'current_turn',
         command: {
           text,
           ...copiedArray('attachmentItems', attachmentItems),

@@ -90,7 +90,7 @@ import { getMcpCopy, type McpCopy } from '../../../locales/mcp-copy.js';
 import { getSettingsSharedCopy } from '../../../locales/settings-shared-copy.js';
 import { formatCommandLine } from '../model/mcp-command-line.js';
 import { defaultRuntimeHostDiagnosticTarget } from '../controller/default-runtime-host.js';
-import { useMcpController } from '../controller/use-mcp-controller.js';
+import { isChromeServer, useMcpController } from '../controller/use-mcp-controller.js';
 import {
   validateMcpEditorDraft,
   type McpEditorErrors,
@@ -109,11 +109,13 @@ type EditorState = {
 type McpEditConflict = 'changed' | 'removed' | null;
 
 type McpMarkSource = { image: string } | { mask: string } | 'feishu';
-type McpSuggestion = { id: 'notion' | 'linear' | 'feishu' | 'mcp-docs'; url: string; mark: McpMarkSource };
+// The Chrome suggestion has no URL: its command comes from main.
+type McpSuggestion = { id: keyof McpCopy['page']['suggestions']; url?: string; mark: McpMarkSource };
 
-// Notion's mark paints its own white page, so it stays an image; the
+// Chrome's and Notion's marks paint their own colours, so they stay images; the
 // single-colour Linear and MCP marks are masks that take the plate's ink.
 const MCP_SUGGESTIONS: readonly McpSuggestion[] = [
+  { id: 'chrome', mark: { image: new URL('../../../assets/provider-brands/chrome.svg', import.meta.url).href } },
   { id: 'notion', url: 'https://mcp.notion.com/mcp', mark: { image: new URL('../../../assets/provider-brands/notion.svg', import.meta.url).href } },
   { id: 'linear', url: 'https://mcp.linear.app/mcp', mark: { mask: new URL('../../../assets/provider-brands/linear.svg', import.meta.url).href } },
   { id: 'feishu', url: 'https://mcp.feishu.cn/mcp', mark: 'feishu' },
@@ -126,7 +128,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const locale = useUiLocale();
   const copy = getMcpCopy(locale);
   const controller = useMcpController();
-  const { config, statuses, busy, reload, error } = controller;
+  const { config, statuses, chrome, busy, reload, error } = controller;
   const [editor, setEditor] = useState<EditorState>(null);
   const [editorErrors, setEditorErrors] = useState<McpEditorErrors>({});
   const [editorOpen, setEditorOpen] = useState(false);
@@ -159,7 +161,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
   const configuredHosts = new Set(entries.map(([, server]) => hostOf(server)).filter(Boolean));
-  const suggestions = busy === 'load' ? [] : MCP_SUGGESTIONS.filter((suggestion) => !configuredHosts.has(hostOf(suggestion)));
+  const suggestions = busy === 'load' ? [] : MCP_SUGGESTIONS.filter((suggestion) => suggestion.url
+    ? !configuredHosts.has(hostOf(suggestion))
+    : chrome !== null && !entries.some(([, server]) => isChromeServer(server, chrome)));
 
   // Derived, not stored: deleting or filtering out a row closes its detail.
   const selectedServer = connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null;
@@ -221,7 +225,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function addSuggestion(suggestion: McpSuggestion) {
-    const server: McpServerConfig = { enabled: true, url: suggestion.url, transport: 'auto', protocol: 'auto' };
+    const server: McpServerConfig = suggestion.url
+      ? { enabled: true, url: suggestion.url, transport: 'auto', protocol: 'auto' }
+      : { enabled: true, command: chrome!.command };
     const result = await controller.add(suggestion.id, server);
     if (!result || !mounted.current) return;
     if (result.status === 'exists') {
@@ -231,6 +237,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     }
     setSelectedServerId(suggestion.id);
     toast.success(copy.toast.saved, copy.toast.savedDetail);
+    if (!suggestion.url && !chrome?.connected) await controller.connectChrome();
   }
 
   async function saveDraft(event: React.FormEvent) {
@@ -288,8 +295,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     toast.success(copy.toast.removed);
   }
 
+  const awaitsChrome = (server: McpServerConfig) => isChromeServer(server, chrome) && !chrome?.connected;
   const attentionCount = entries.filter(([serverId, server]) => {
-    const { status } = presentStatus(statusById.get(serverId), server.enabled !== false, copy);
+    const { status } = presentStatus(statusById.get(serverId), server.enabled !== false, awaitsChrome(server), copy);
     return status === 'attention' || status === 'error';
   }).length;
   const searchVisible = entries.length >= SEARCH_MIN_CONNECTIONS || normalizedQuery !== '';
@@ -335,7 +343,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           header={<Heading level={2} className="maka-mcp-section-heading">{copy.page.connections}</Heading>}
         >
           {connectionEntries.map(([serverId, server]) => {
-            const state = presentStatus(statusById.get(serverId), server.enabled !== false, copy);
+            const state = presentStatus(statusById.get(serverId), server.enabled !== false, awaitsChrome(server), copy);
             const endpoint = endpointFor(server);
             return (
               <ListItem
@@ -346,7 +354,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                     <code title={endpoint}>{endpoint}</code>
                   </span>
                 )}
-                startContent={<McpMark server={server} />}
+                startContent={<McpMark server={server} isChrome={isChromeServer(server, chrome)} />}
                 endContent={<McpStatusLabel state={state} />}
                 isSelected={selectedServerId === serverId}
                 onClick={() => setSelectedServerId(serverId)}
@@ -373,8 +381,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           serverId: selectedServer[0],
           server: selectedServer[1],
           status: statusById.get(selectedServer[0]),
+          isChrome: isChromeServer(selectedServer[1], chrome),
+          awaitingChrome: awaitsChrome(selectedServer[1]),
           busy,
           copy,
+          onConnectChrome: () => void controller.connectChrome(),
           onToggle: (enabled) => void controller.setEnabled(selectedServer[0], enabled),
           onEdit: () => openEdit(selectedServer[0], selectedServer[1]),
           onTest: () => void testServer(selectedServer[0]),
@@ -500,13 +511,13 @@ function mcpImportFailureMessage(
   }
 }
 
-function McpMark(props: { server: McpServerConfig } | { suggestion: McpSuggestion }) {
-  const suggestion = 'suggestion' in props
-    ? props.suggestion
-    : MCP_SUGGESTIONS.find((candidate) => hostOf(candidate) === hostOf(props.server));
+function McpMark(props: { server: McpServerConfig; isChrome: boolean } | { suggestion: McpSuggestion }) {
+  const suggestion = 'suggestion' in props ? props.suggestion
+    : props.isChrome ? MCP_SUGGESTIONS.find((candidate) => candidate.id === 'chrome')
+    : MCP_SUGGESTIONS.find((candidate) => candidate.url && hostOf(candidate) === hostOf(props.server));
   const mark = suggestion?.mark;
   // Feishu's mark is already an app-icon tile, so it takes the plate's place.
-  if (mark === 'feishu') return <BotBrandLogo provider="feishu" width={ICON_SIZE.plate} height={ICON_SIZE.plate} className="maka-mcp-mark" aria-hidden="true" />;
+  if (mark === 'feishu') return <BotBrandLogo provider="feishu" className="maka-mcp-mark" aria-hidden="true" />;
   return (
     <span className="maka-module-market-icon maka-mcp-mark" aria-hidden="true">
       {mark && 'image' in mark ? <img src={mark.image} alt="" />
@@ -539,8 +550,11 @@ function mcpServerDetail(props: {
   serverId: string;
   server: McpServerConfig;
   status?: McpServerStatus;
+  isChrome: boolean;
+  awaitingChrome: boolean;
   busy: string | null;
   copy: McpCopy;
+  onConnectChrome(): void;
   onToggle(enabled: boolean): void;
   onEdit(): void;
   onTest(): void;
@@ -550,14 +564,15 @@ function mcpServerDetail(props: {
   onLogout(): void;
 }): ModulePageDetail {
   const { serverId, server, status, copy } = props;
-  const state = presentStatus(status, server.enabled !== false, copy);
+  const state = presentStatus(status, server.enabled !== false, props.awaitingChrome, copy);
   const loginActive = status?.authorizationPending || props.busy === `login:${serverId}`;
   const disabled = props.busy !== null || loginActive;
-  const note = loginActive ? copy.row.loginPending : status?.error;
+  const awaitingChrome = props.awaitingChrome && server.enabled !== false;
+  const note = loginActive ? copy.row.loginPending : status?.error ?? (awaitingChrome ? copy.detail.chromeDisconnected : undefined);
   return {
     title: serverId,
     subtitle: state.label,
-    startContent: <McpMark server={server} />,
+    startContent: <McpMark server={server} isChrome={props.isChrome} />,
     content: (
       <VStack gap={4}>
         {note ? <Text type="body" color="secondary">{note}</Text> : null}
@@ -587,6 +602,9 @@ function mcpServerDetail(props: {
               />
               {status?.state === 'needs-auth' ? (
                 <Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />
+              ) : null}
+              {awaitingChrome ? (
+                <Button size="sm" variant="primary" isDisabled={disabled} isLoading={props.busy === 'chrome'} onClick={props.onConnectChrome} label={copy.detail.connectChrome} />
               ) : null}
             </>
           )}
@@ -806,18 +824,20 @@ function endpointFor(server: McpServerConfig): string {
 }
 
 function hostOf(server: McpServerConfig | McpSuggestion): string | null {
-  if ('command' in server) return null;
+  if ('command' in server || !server.url) return null;
   try { return new URL(server.url).host; } catch { return null; }
 }
 
 type McpStatusPresentation = { label: string; status: StatusSemantic };
 
-function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): McpStatusPresentation {
+function presentStatus(status: McpServerStatus | undefined, enabled: boolean, awaitingChrome: boolean, copy: McpCopy): McpStatusPresentation {
   if (status?.authorizationPending) return { label: copy.row.authorizing, status: 'active' };
   if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, status: 'neutral' };
   if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, status: 'neutral' };
   if (status.state === 'connecting') return { label: copy.row.connecting, status: 'active' };
   if (status.state === 'needs-auth') return { label: copy.row.needsAuth, status: 'attention' };
+  // The server starts without the extension, but it cannot browse yet.
+  if (status.state === 'connected' && awaitingChrome) return { label: copy.row.awaitingChrome, status: 'attention' };
   if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), status: 'success' };
   return { label: copy.row.failed, status: 'error' };
 }

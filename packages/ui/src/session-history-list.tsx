@@ -59,7 +59,7 @@ import {
 } from '@astryxdesign/core/SideNav';
 import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
-import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
+import { describeBlockedReason, presentSessionName, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { RunningIndicator } from './running-indicator.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
@@ -866,6 +866,12 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   const hoverDescriptionId = useId();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
+  const activityAt = sessionActivityAt(props.session);
+  const name = presentSessionName(props.session.name, locale);
+  const session = useMemo(
+    () => (name === props.session.name ? props.session : { ...props.session, name }),
+    [props.session, name],
+  );
   const signals = sessionRowSignals(
     props.session,
     { streaming: props.streaming, stale: props.stale, active: props.active },
@@ -897,8 +903,8 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     props.worktree ? copy.worktreeAriaLabel : undefined,
     props.meta,
     props.session.executorId,
-    props.session.lastMessageAt
-      ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
+    activityAt !== undefined
+      ? formatAbsoluteTimestamp(activityAt, locale)
       : undefined,
   ]
     .filter((entry): entry is string => Boolean(entry))
@@ -952,7 +958,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-actionable={props.actions ? 'true' : undefined}
     >
       <SideNavItem
-        label={props.session.name}
+        label={name}
         aria-describedby={hoverDescriptionId}
         size="md"
         isSelected={props.active}
@@ -969,7 +975,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
               {
                 kind: 'session',
                 id: props.session.id,
-                name: props.session.name,
+                name,
               },
               // The row's own button: a double-click starts the rename from
               // the row itself, not from the actions menu.
@@ -1016,9 +1022,9 @@ const SessionNavRow = memo(function SessionNavRow(props: {
                   label={signal.label}
                   data-session-status={props.session.status}
                 />
-              ) : props.session.lastMessageAt ? (
+              ) : activityAt !== undefined ? (
                 <RelativeTime
-                  ts={props.session.lastMessageAt}
+                  ts={activityAt}
                   variant="sidebar"
                   className="maka-session-row-time-label"
                   suppressTitle
@@ -1033,21 +1039,21 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       />
       <SessionHoverCardDescription
         id={hoverDescriptionId}
-        session={props.session}
+        session={session}
         status={previewStatus}
         projectName={props.projectName}
         locale={locale}
       />
       <SessionHoverCardLayer
         containerRef={containerRef}
-        session={props.session}
+        session={session}
         status={previewStatus}
         projectName={props.projectName}
         locale={locale}
       />
       {props.actions && (
         <SessionItemActions
-          session={props.session}
+          session={session}
           actions={props.actions}
           canMoveToProject={props.canMoveToProject}
           moveTargets={props.moveTargets}
@@ -1099,6 +1105,7 @@ function SessionHoverCardDescription(props: {
   const conversationCopy = getConversationCopy(props.locale);
   const copy = getSessionHoverCardCopy(props.locale);
   const session = props.session;
+  const activityAt = sessionActivityAt(session);
   const permission = conversationCopy.permissions.mode[session.permissionMode].label;
   const description = [
     props.status,
@@ -1107,8 +1114,8 @@ function SessionHoverCardDescription(props: {
     session.executorId,
     permission,
     props.projectName,
-    session.lastMessageAt
-      ? `${copy.updated} ${formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}`
+    activityAt !== undefined
+      ? `${copy.updated} ${formatAbsoluteTimestamp(activityAt, props.locale)}`
       : undefined,
   ]
     .filter((value): value is string => Boolean(value))
@@ -1126,6 +1133,7 @@ function SessionHoverCardContent(props: {
   const conversationCopy = getConversationCopy(props.locale);
   const copy = getSessionHoverCardCopy(props.locale);
   const session = props.session;
+  const activityAt = sessionActivityAt(session);
   const permission = conversationCopy.permissions.mode[session.permissionMode].label;
 
   return (
@@ -1155,12 +1163,12 @@ function SessionHoverCardContent(props: {
           {props.projectName}
         </span>
       ) : null}
-      {session.lastMessageAt ? (
+      {activityAt !== undefined ? (
         <span className="maka-sidebar-hover-card-updated">
           {copy.updated}{' '}
-          <RelativeTime ts={session.lastMessageAt} />
+          <RelativeTime ts={activityAt} />
           <span className="maka-visually-hidden">
-            {formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}
+            {formatAbsoluteTimestamp(activityAt, props.locale)}
           </span>
         </span>
       ) : null}
@@ -1276,7 +1284,7 @@ function createProjectHoverCardSummary(
     available: project?.available,
     locationCount: project?.locations.length ?? 0,
     latestActivity: sessions.reduce<number | undefined>(
-      (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
+      (latest, session) => Math.max(latest ?? 0, sessionActivityAt(session) ?? 0) || undefined,
       undefined,
     ),
   };
@@ -1427,10 +1435,11 @@ function SessionItemActions(props: {
   const trailingRef = useRef<HTMLSpanElement>(null);
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
+  const activityAt = sessionActivityAt(props.session);
   const actionContext = [
     props.session.name,
-    props.session.lastMessageAt
-      ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
+    activityAt !== undefined
+      ? formatAbsoluteTimestamp(activityAt, locale)
       : undefined,
   ]
     .filter((value): value is string => Boolean(value))
@@ -1706,13 +1715,19 @@ interface SessionGroup {
   sessions: SessionSummary[];
 }
 
+function sessionActivityAt(session: SessionSummary): number | undefined {
+  // Catalog recency includes a new branch before it has its own messages.
+  // Non-catalog summaries may only carry the last message timestamp.
+  return session.activityAt ?? session.lastMessageAt;
+}
+
 function groupSessionsForHistory(
   sessions: readonly SessionSummary[],
   locale: UiLocale,
 ): SessionGroup[] {
   const copy = getConversationCopy(locale).sessions;
   const ordered = [...sessions].sort((a, b) => {
-    const timestampDelta = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
+    const timestampDelta = (sessionActivityAt(b) ?? 0) - (sessionActivityAt(a) ?? 0);
     return timestampDelta || a.id.localeCompare(b.id);
   });
   const pinned = ordered.filter((session) => session.isFlagged);

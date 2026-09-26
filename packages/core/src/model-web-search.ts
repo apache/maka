@@ -58,9 +58,9 @@ export function resolveHostedWebSearchCapability(
   const stored = models?.find((model) => model.id === id);
   if (stored?.capabilities?.webSearch === false) return null;
 
-  const adapter = providerHostedWebSearchAdapter(providerType);
-  if (!adapter) return null;
   const wire = effectiveWire ?? stored?.apiProtocol;
+  const adapter = providerHostedWebSearchAdapter(providerType, wire);
+  if (!adapter) return null;
   if (
     wire !== undefined &&
     ((adapter.adapter === 'openai-responses' && wire !== 'openai-responses') ||
@@ -76,15 +76,19 @@ export function resolveHostedWebSearchCapability(
 
 function providerHostedWebSearchAdapter(
   providerType: ProviderType,
+  wire: string | undefined,
 ): HostedWebSearchCapability | null {
   switch (providerType) {
+    case 'custom':
+      return wire === 'openai-responses' || wire === 'anthropic-messages'
+        ? { adapter: wire, implemented: true }
+        : null;
     case 'deepseek':
       // @ai-sdk/open-responses currently serializes function tools only.
       // Mark native search unavailable so routing never hands it a provider
       // tool that would be silently filtered from the request.
       return { adapter: 'openai-responses', implemented: false };
     case 'openai':
-    case 'openai-responses-compatible':
     case 'xai':
     case 'xai-oauth':
       return { adapter: 'openai-responses', implemented: true };
@@ -95,7 +99,6 @@ function providerHostedWebSearchAdapter(
     case 'MiniMax':
     case 'MiniMax-cn':
     case 'minimax-coding-plan':
-    case 'anthropic-compatible':
       return { adapter: 'anthropic-messages', implemented: true };
     case 'google':
       return { adapter: 'google-grounding', implemented: false };
@@ -135,10 +138,6 @@ function providerDefaultHostedWebSearchCapability(
     case 'MiniMax-cn':
     case 'minimax-coding-plan':
       return /^MiniMax-M(?:2\.7|3)(?:[.-]|$)/i.test(modelId) ? capability : null;
-    case 'anthropic-compatible':
-      return modelId === 'deepseek-v4-flash' ? capability : null;
-    case 'openai-responses-compatible':
-      return null;
     case 'google':
       return /^gemini-(?:2\.0|2\.5|3|3\.1|3\.5)(?:[.-]|$)/i.test(modelId) ? capability : null;
     case 'zai':

@@ -67,8 +67,9 @@ async function harness() {
     async invoke(channel: string, scope?: { hostId?: string }, sessionId?: string) {
       calls.push({ channel, hostId: scope?.hostId });
       switch (channel) {
-        case 'runtime-host:activeIdentity': return owners[0];
-        case 'runtime-host:identities': return [...owners, guest];
+        case 'runtime-host:identities': return [...owners, guest].map((identity) => ({
+          ...identity, epoch: identity.targetEpoch, isDefault: identity === owners[0],
+        }));
         case 'runtime-host:awaitReady': return { ready: true };
         case 'onboarding:getSnapshot':
           if (scope?.hostId === 'remote-host' && failRemote) throw new Error('remote offline');

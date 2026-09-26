@@ -43,7 +43,6 @@
     "src/renderer/custom-pet-companion-model.ts",
     "src/renderer/custom-pet-companion.tsx",
     "src/renderer/daily-review-actions.ts",
-    "src/renderer/default-runtime-host-operation.ts",
     "src/renderer/derive-turn-lineage-badges.ts",
     "src/renderer/desktop-execution-boundary-surface.ts",
     "src/renderer/desktop-slash-command.ts",
@@ -99,7 +98,6 @@
     "src/renderer/project-path-display.ts",
     "src/renderer/remote-project-directory-dialog.tsx",
     "src/renderer/scroll-motion-policy.ts",
-    "src/renderer/session-collaboration-dialog.tsx",
     "src/renderer/session-copy-attempt.ts",
     "src/renderer/session-error-presentation.ts",
     "src/renderer/session-read-state.ts",
@@ -268,6 +266,20 @@
       "count": 1
     },
     {
+      "implementation": "src/renderer/features/session-collaboration/controller/use-session-collaboration-dialog.ts",
+      "symbol": "useSessionCollaborationDialog",
+      "owner": "src/renderer/features/session-collaboration/ui/session-collaboration-dialog-root.tsx",
+      "ownerSymbol": "SessionCollaborationDialogRoot",
+      "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/session-settings/controller/use-session-settings-controller.ts",
+      "symbol": "useSessionSettingsController",
+      "owner": "src/renderer/features/session-settings/ui/session-settings-provider.tsx",
+      "ownerSymbol": "SessionSettingsProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/task-entry/controller/use-task-entry-controller.ts",
       "symbol": "useTaskEntryController",
       "owner": "src/renderer/features/task-entry/ui/task-entry-provider.tsx",
@@ -312,7 +324,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3575
+        "nonTriviaTokens": 3565
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 1,
@@ -356,10 +368,10 @@
           "./app-shell-copy.js": 1,
           "./command-palette-commands.js": 1,
           "./conversation-markdown.js": 1,
-          "./default-runtime-host-operation.js": 1,
           "./locales/settings-memory-copy.js": 1,
           "./locales/settings-test-result-copy.js": 1,
           "./locales/shell-copy.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         },
         "importSpecifiers": 8,
@@ -479,7 +491,7 @@
           "react": 1
         },
         "importSpecifiers": 14,
-        "nonTriviaTokens": 3512
+        "nonTriviaTokens": 3509
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -533,9 +545,9 @@
         ],
         "dependencyPaths": {
           "./app-shell-copy": 1,
-          "./default-runtime-host-operation.js": 1,
           "./locales/shell-copy.js": 1,
           "./open-path": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "./session-workspace-errors": 1
         },
         "importSpecifiers": 7,
@@ -665,7 +677,7 @@
         "nonTriviaTokens": 1243
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 59,
+        "importDeclarations": 58,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -675,7 +687,6 @@
           "window.maka.notifications.runEnded": 1,
           "window.maka.onboarding.setMilestone": 1,
           "window.maka.sessions.compact": 1,
-          "window.maka.sessions.getPlanState": 1,
           "window.maka.sessions.listActiveInteractions": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
           "window.maka.sessions.promoteQueueEntry": 1,
@@ -710,7 +721,6 @@
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
           "useRef": 14,
-          "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
@@ -753,7 +763,6 @@
           "./composer-mentions": 1,
           "./custom-pet-companion": 1,
           "./custom-pet-companion-model": 1,
-          "./default-runtime-host-operation.js": 1,
           "./desktop-execution-boundary-surface": 1,
           "./desktop-slash-command": 1,
           "./error-boundary": 1,
@@ -780,8 +789,8 @@
           "./pending-items": 1,
           "./pending-session-view": 1,
           "./plan-mode-panel": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
-          "./session-collaboration-dialog": 1,
           "./session-workspace-errors": 1,
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
@@ -811,8 +820,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 95,
-        "nonTriviaTokens": 12663
+        "importSpecifiers": 94,
+        "nonTriviaTokens": 12526
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -855,7 +864,7 @@
           "react": 1
         },
         "importSpecifiers": 6,
-        "nonTriviaTokens": 486
+        "nonTriviaTokens": 481
       },
       "src/renderer/use-app-shell-session-ui-reads.ts": {
         "importDeclarations": 0,
@@ -1193,17 +1202,6 @@
           "@maka/core/daily-review": 1,
           "@maka/core/redaction": 1
         }
-      },
-      "src/renderer/default-runtime-host-operation.ts": {
-        "bridgePaths": {
-          "window.maka.runtimeHostProfiles.getDefaultHost": 2
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/derive-turn-lineage-badges.ts": {
         "bridgePaths": {},
@@ -1820,41 +1818,6 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
-      "src/renderer/session-collaboration-dialog.tsx": {
-        "bridgePaths": {
-          "window.maka.localRuntimeHostRemoteAccess.getSnapshot": 2,
-          "window.maka.sessionCollaboration.decideTurnRequest": 1,
-          "window.maka.sessionCollaboration.getAccess": 1,
-          "window.maka.sessionCollaboration.getTurnRequests": 1,
-          "window.maka.sessionCollaboration.prepareInvitation": 1,
-          "window.maka.sessionCollaboration.revokeGrant": 1,
-          "window.maka.sessionCollaboration.revokePrincipal": 1
-        },
-        "environmentCapabilities": {
-          "navigator.clipboard.writeText": 1,
-          "window.clearTimeout": 1,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 1,
-          "useState": 6,
-          "useToast": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./application/contracts/operation-diagnostics.js": 1,
-          "./features/session-collaboration": 1,
-          "./locales/session-collaboration-copy.js": 1,
-          "@astryxdesign/core": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
-      },
       "src/renderer/session-copy-attempt.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {
@@ -1942,9 +1905,9 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../default-runtime-host-operation.js": 1,
           "../features/app-update/index.js": 1,
           "../locales/settings-preferences-copy.js": 1,
+          "../platform/desktop/default-runtime-host-operation.js": 1,
           "./about-update-status.js": 1,
           "./settings-error-copy.js": 1,
           "./settings-section.js": 1,
@@ -3725,7 +3688,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./app-shell-project-actions": 1,
-          "./default-runtime-host-operation.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "./use-stable-actions.js": 1,
           "react": 1
         }
@@ -3767,9 +3730,9 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../shared/runtime-host-identity.js": 1,
-          "./default-runtime-host-operation.js": 1,
           "./locales/shell-copy.js": 1,
           "./locales/shell-remaining-copy.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         }
       },
@@ -3798,8 +3761,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./default-runtime-host-operation.js": 1,
           "./locales/shell-copy.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         }
       },

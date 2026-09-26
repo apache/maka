@@ -22,13 +22,26 @@ import type { SessionCollaborationServices } from '../../features/session-collab
 
 export type DesktopSessionCollaborationBridge = Pick<
   MakaBridge,
-  'sessionCollaboration'
+  'sessionCollaboration' | 'localRuntimeHostRemoteAccess'
 >;
 
 export function createDesktopSessionCollaborationServices(
   bridge: DesktopSessionCollaborationBridge = window.maka,
+  clipboard: Pick<Clipboard, 'writeText'> = {
+    writeText: (text) => navigator.clipboard.writeText(text),
+  },
 ): SessionCollaborationServices {
   return {
+    isLocalRemoteAccessEnabled: async () =>
+      (await bridge.localRuntimeHostRemoteAccess.getSnapshot()).state === 'on',
+    getAccess: (sessionId) => bridge.sessionCollaboration.getAccess(sessionId),
+    prepareInvitation: (sessionId, preset, allowInsecure) =>
+      bridge.sessionCollaboration.prepareInvitation(sessionId, preset, allowInsecure),
+    revokeGrant: (sessionId, grantId) =>
+      bridge.sessionCollaboration.revokeGrant(sessionId, grantId),
+    revokePrincipal: (sessionId, principalId) =>
+      bridge.sessionCollaboration.revokePrincipal(sessionId, principalId),
+    writeInvitationClipboard: (text) => clipboard.writeText(text),
     importInvitation: (input, onProgress) =>
       bridge.sessionCollaboration.importInvitation(input, onProgress),
     cancelImport: (operationId) => bridge.sessionCollaboration.cancelImport(operationId),

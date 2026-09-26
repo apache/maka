@@ -398,13 +398,10 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'opencode-free':
       return <ProviderAssetMask src={opencodeBrandMark} />;
     case 'anthropic':
-    case 'anthropic-compatible':
     case 'claude-subscription':
       return <Claude />;
     case 'openai':
     case 'openai-codex':
-    case 'openai-compatible':
-    case 'openai-responses-compatible':
       return <OpenAI />;
     case 'github-copilot':
       // Primer Octicons does not license GitHub logos under its MIT terms.

@@ -30,6 +30,7 @@ import { describe, it } from 'node:test';
 
 import type { TransientUserMessageProjection } from '@maka/ui';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 
 import {
@@ -56,11 +57,34 @@ describe('busy-raced send settlement', () => {
     } finally { restoreWindow(); }
   });
 
+  it('keeps an existing idle Session send in the transcript during local delivery', async () => {
+    const transient = new Map<string, TransientUserMessageProjection>();
+    const restoreWindow = installWindow({ sessions: {
+      submitMessage: async (
+        _sessionId: string,
+        placement: string,
+        command: { messageId: string; localDisplayPlacement?: string },
+      ) => {
+        assert.equal(placement, 'next_turn');
+        assert.equal(command.localDisplayPlacement, 'current_turn');
+        return { ok: true, disposition: 'locally_saved', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
+      },
+    } });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(), activeIdRef: { current: 'session-a' },
+        addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+      });
+      assert.equal(await actions.send('hi'), true);
+      assert.equal([...transient.values()][0]?.transientPlacement, 'transcript');
+    } finally { restoreWindow(); }
+  });
+
   it('keeps steering pending while the Host admits it', async () => {
     const transient = new Map<string, TransientUserMessageProjection>();
     const restoreWindow = installWindow({ sessions: {
       submitMessage: async (_sessionId: string, _placement: string, _command: unknown) => {
-        assert.equal([...transient.values()][0]?.pendingSteering, true);
+        assert.equal([...transient.values()][0]?.transientPlacement, 'steering');
         return { ok: true, disposition: 'steering', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
       },
     } });
@@ -72,7 +96,7 @@ describe('busy-raced send settlement', () => {
         updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
       });
       assert.equal(await actions.enqueueMessage('session-a', 'steer', 'current_turn'), true);
-      assert.equal([...transient.values()][0]?.pendingSteering, true);
+      assert.equal([...transient.values()][0]?.transientPlacement, 'steering');
     } finally { restoreWindow(); }
   });
 
@@ -377,6 +401,7 @@ describe('busy-raced send settlement', () => {
 
       assert.ok(submittedMessageId);
       assert.equal(transient.get(submittedMessageId)?.text, 'also check the tests');
+      assert.equal(transient.get(submittedMessageId)?.transientPlacement, 'transcript');
 
       releaseAdmission();
       assert.equal(await sending, true);
@@ -388,20 +413,25 @@ describe('busy-raced send settlement', () => {
     }
   });
 
-  it('does not turn a Host-started admission into a renderer-owned LiveTurn', async () => {
+  it('places a directly admitted Host-started Turn in the transcript', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const transientState = createTransientState();
     const restoreWindow = installWindow({
       sessions: {
-        submitMessage: async (_sessionId: string, _placement: string, command: { messageId: string }) => ({
-          ok: true,
-          disposition: 'turn_started',
-          messageId: command.messageId,
-          turnId: 'host-turn',
-          attachments: [],
-          inlineReferences: [],
-          skillInvocation: EMPTY_SKILL_INVOCATION,
-        }),
+        submitMessage: async (
+          _sessionId: string,
+          placement: string,
+          command: { messageId: string },
+          options: { waitForHostAdmission?: boolean },
+        ) => {
+          assert.equal(placement, 'next_turn');
+          assert.equal(options.waitForHostAdmission, true);
+          return {
+            ok: true, disposition: 'turn_started', messageId: command.messageId,
+            turnId: 'host-turn', attachments: [], inlineReferences: [],
+            skillInvocation: EMPTY_SKILL_INVOCATION,
+          };
+        },
       },
     });
     try {
@@ -410,19 +440,54 @@ describe('busy-raced send settlement', () => {
         activeIdRef,
         ...transientState.deps,
       });
-      assert.equal(await actions.send('also check the tests'), true);
+      assert.equal(await actions.send('also check the tests', undefined, {
+        waitForHostAdmission: true,
+      }), true);
       assert.equal(transientState.rows.size, 1);
       assert.equal(transientState.rows.has('host-turn'), false);
       assert.equal([...transientState.rows.values()][0]?.hostTurnId, 'host-turn');
+      assert.equal([...transientState.rows.values()][0]?.transientPlacement, 'transcript');
     } finally {
       restoreWindow();
     }
   });
 
+  it('keeps a new Session first send in the transcript when local delivery fails', async () => {
+    const activeIdRef = { current: undefined as string | undefined };
+    const transient = new Map<string, TransientUserMessageProjection>();
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-new' }) },
+      sessions: {
+        submitMessage: async (_sessionId: string, placement: string, command: { messageId: string; localDisplayPlacement?: string }) => {
+          assert.equal(placement, 'next_turn');
+          assert.equal(command.localDisplayPlacement, 'current_turn');
+          const current = transient.get(command.messageId)!;
+          transient.set(command.messageId, mergeTransientMessageProjection(current, {
+            ...current, deliveryStatus: 'Failed',
+          }));
+          return { ok: true, disposition: 'locally_saved', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
+        },
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(), activeIdRef,
+        activateSessionForFirstSend: async (session) => { activeIdRef.current = session.id; },
+        addTransientMessage: (_sessionId, message) => {
+          const current = transient.get(message.id);
+          transient.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
+        },
+      });
+      assert.equal(await actions.send('hi'), true);
+      assert.equal([...transient.values()][0]?.deliveryStatus, 'Failed');
+      assert.equal([...transient.values()][0]?.transientPlacement, 'transcript');
+    } finally { restoreWindow(); }
+  });
+
   it('keeps the new-chat message through navigation when a raced Host queues it', async () => {
     const activeIdRef = { current: undefined as string | undefined };
     const transientState = createTransientState();
-    const activated: string[] = [];
+    const activated: unknown[] = [];
     const removed: string[] = [];
     const restoreWindow = installWindow({
       newTasks: {
@@ -432,23 +497,26 @@ describe('busy-raced send settlement', () => {
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
-        submitMessage: async (_sessionId: string, _placement: string, command: { messageId: string }) => ({
-          ok: true,
-          disposition: 'followup',
-          messageId: command.messageId,
-          attachments: [],
-          inlineReferences: [],
-          skillInvocation: EMPTY_SKILL_INVOCATION,
-        }),
+        submitMessage: async (_sessionId: string, _placement: string, command: { messageId: string }) => {
+          assert.equal(transientState.rows.get(command.messageId)?.transientPlacement, 'transcript');
+          return {
+            ok: true,
+            disposition: 'followup',
+            messageId: command.messageId,
+            attachments: [],
+            inlineReferences: [],
+            skillInvocation: EMPTY_SKILL_INVOCATION,
+          };
+        },
       },
     });
     try {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        activateSessionForFirstSend: async (sessionId) => {
-          activated.push(sessionId);
-          activeIdRef.current = sessionId;
+        activateSessionForFirstSend: async (session) => {
+          activated.push(session);
+          activeIdRef.current = session.id;
         },
         retireSession: (sessionId: string) => {
           if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
@@ -456,7 +524,7 @@ describe('busy-raced send settlement', () => {
         ...transientState.deps,
       });
       assert.equal(await actions.send('also check the tests'), true);
-      assert.deepEqual(activated, ['session-new']);
+      assert.deepEqual(activated, [{ id: 'session-new' }], 'the created summary is what the surface activates');
       assert.equal(transientState.rows.size, 1);
       assert.deepEqual(removed, []);
     } finally {
@@ -487,8 +555,8 @@ describe('busy-raced send settlement', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        activateSessionForFirstSend: async (sessionId) => {
-          activeIdRef.current = sessionId;
+        activateSessionForFirstSend: async (session) => {
+          activeIdRef.current = session.id;
         },
         retireSession: (sessionId: string) => {
           if (activeIdRef.current === sessionId) activeIdRef.current = undefined;

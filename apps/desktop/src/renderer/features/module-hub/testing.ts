@@ -155,6 +155,8 @@ export function createFakeModuleHubServices(
       login: async () => notConfigured("mcp.login"),
       logout: async () => notConfigured("mcp.logout"),
       cancelLogin: async () => false,
+      chromeStatus: async () => ({ command: "/opencli-mcp", connected: false }),
+      connectChrome: async () => notConfigured("mcp.connectChrome"),
       subscribeChanges: noopSubscription,
     },
 

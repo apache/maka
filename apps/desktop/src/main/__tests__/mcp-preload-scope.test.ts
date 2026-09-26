@@ -44,6 +44,8 @@ test('every MCP bridge method rides the scoped Runtime Host seam', () => {
     'mcp:login',
     'mcp:cancelLogin',
     'mcp:logout',
+    'mcp:chromeStatus',
+    'mcp:connectChrome',
   ]) {
     assert.match(preloadSource, new RegExp(`invokeSelectedRuntimeHost\\(host, '${channel}'`, 'u'));
   }
