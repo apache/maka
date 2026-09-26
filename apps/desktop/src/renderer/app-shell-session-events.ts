@@ -30,7 +30,8 @@ import {
 } from '@maka/ui';
 import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
-import { applyMessageQueueEvent, type MessageQueueStores } from './application/contracts/message-queue-projection.js';
+import { deriveMessageQueueProjection } from './application/contracts/message-queue-projection.js';
+import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { createConversationDisplayFrameScheduler } from './features/conversation/index.js';
@@ -70,7 +71,7 @@ export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch
   return { pendingEvents: new Map(), displayPendingSessions: new Set(), framePending: false };
 }
 
-export function createAppShellSessionEventHandlers(options: MessageQueueStores & {
+export function createAppShellSessionEventHandlers(options: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
   liveTurnBySessionRef: RefBox<Record<string, LiveTurnBuffer>>;
@@ -78,6 +79,8 @@ export function createAppShellSessionEventHandlers(options: MessageQueueStores &
   refreshSessions: () => Promise<unknown>;
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnBuffer>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
+  setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
+  removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
@@ -104,6 +107,8 @@ export function createAppShellSessionEventHandlers(options: MessageQueueStores &
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
+    removeTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     onContextCompactionOutcome,
@@ -293,9 +298,48 @@ export function createAppShellSessionEventHandlers(options: MessageQueueStores &
     setInteractionBySession((current) =>
       reduceInteractionQueues(current, sessionId, event),
     );
-    applyMessageQueueEvent(sessionId, event, options);
 
     switch (event.type) {
+      case 'queue_update': {
+        const queue = deriveMessageQueueProjection(event);
+        for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+          removeTransientMessage?.(sessionId, entry.messageId);
+        }
+        setMessageQueueBySession?.((current) => {
+          if (!event.steering.length && !event.followup.length) {
+            if (!current[sessionId]) return current;
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          }
+          return {
+            ...current,
+            [sessionId]: {
+              queueRevision: event.queueRevision,
+              entries: queue.entries,
+            },
+          };
+        });
+        break;
+      }
+      case 'message_admission':
+        if (event.outcome === 'retracted') removeTransientMessage?.(sessionId, event.messageId);
+        break;
+      case 'steering_message':
+        // The live Turn projection now renders this same messageId in place.
+        // Retire the local submission placeholder; a later nack is represented
+        // by the Host queue alone.
+        removeTransientMessage?.(sessionId, event.messageId);
+        setMessageQueueBySession?.((current) => {
+          const queue = current[sessionId];
+          if (!queue?.entries.some((entry) => entry.messageId === event.messageId)) return current;
+          const entries = queue.entries.filter((entry) => entry.messageId !== event.messageId);
+          if (entries.length > 0) return { ...current, [sessionId]: { ...queue, entries } };
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
+        break;
       case 'sandbox_boundary_request':
       case 'client_capability_request':
       case 'user_question_request':

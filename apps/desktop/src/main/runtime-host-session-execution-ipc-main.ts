@@ -240,7 +240,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
     | 'openTranscript'
     | 'readTranscriptTurn'
   >;
-  messageAdmissions: boolean;
+  resolveSideConversation(sessionId: string): Promise<boolean>;
 }
 
 /** Register the complete Desktop surface available to an observation-only Session. */
@@ -253,13 +253,15 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      deps.observations.trackRenderer(event.sender);
+      const current = deps.observations.trackRenderer(event.sender);
+      const sideConversation = await deps.resolveSideConversation(normalizedSessionId);
+      if (!current()) return { kind: 'cancelled' };
       return observationIpcResult(
         deps.observations.observe(
           normalizedSessionId,
           requiredId(observerId, 'Session observer'),
           event.sender as RuntimeHostSessionObserverTarget,
-          deps.messageAdmissions,
+          sideConversation,
         ),
       );
     },

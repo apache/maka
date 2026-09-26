@@ -24,6 +24,7 @@ import type * as DesktopBridge from '../preload/bridge-contract.js';
 import type { QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -229,7 +230,7 @@ export function createAppShellChatActions(deps: {
 
   /** Only an unreconciled submission keeps its row because Host admission may have succeeded. */
   type SubmittedMessage =
-    | { kind: 'projected' }
+    | { kind: 'projected'; skillInvocation: SkillInvocationResult; turnId?: string }
     | { kind: 'unreconciled' }
     | { kind: 'refused' };
 
@@ -271,7 +272,7 @@ export function createAppShellChatActions(deps: {
       return { kind: 'refused' };
     }
     if (result.disposition === 'locally_saved') {
-      return { kind: 'projected' };
+      return { kind: 'projected', skillInvocation: result.skillInvocation };
     }
     if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
     // The row is updated whether or not the surface is on screen: attachments,
@@ -288,7 +289,11 @@ export function createAppShellChatActions(deps: {
       ...copiedArray('quotes', input.quotes ?? []),
       inlineReferences: [...(result.inlineReferences ?? [])],
     }, true);
-    return { kind: 'projected' };
+    return {
+      kind: 'projected',
+      skillInvocation: result.skillInvocation,
+      ...(result.turnId ? { turnId: result.turnId } : {})
+    };
   }
 
   async function send(
@@ -311,9 +316,6 @@ export function createAppShellChatActions(deps: {
     }
     let optimisticSessionId: string | undefined;
     const messageId = crypto.randomUUID();
-    // The Host queues an ordinary send behind a running Turn, so it starts in the plate.
-    const queued = options.turnOrchestration === undefined && initialSessionId !== undefined
-      && deps.getRunningTurnId?.(initialSessionId) !== undefined;
     // #1433: the composer creates the session BEFORE it sends, so a first
     // send that never lands has to take the session with it. Set the moment
     // creation succeeds, cleared the moment the send does — while it holds a
@@ -336,10 +338,10 @@ export function createAppShellChatActions(deps: {
       }
     };
     try {
-      async function submitIntoSession(sessionId: string) {
+      async function submitIntoSession(sessionId: string, messageId: string) {
         const sendCommand = {
           text,
-          ...(!queued && { localDisplayPlacement: 'current_turn' as const }),
+          localDisplayPlacement: 'current_turn' as const,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray(
             'attachmentItems',
@@ -399,7 +401,7 @@ export function createAppShellChatActions(deps: {
           await discardUnsentSession();
           return false;
         }
-        const submitted = await submitIntoSession(session.id);
+        const submitted = await submitIntoSession(session.id, messageId);
         if (submitted.kind === 'refused') {
           await discardUnsentSession();
           return false;
@@ -419,11 +421,11 @@ export function createAppShellChatActions(deps: {
       if (!options.targetSessionId && !onFollowLatest(initialSessionId)) return false;
       optimisticSessionId = initialSessionId;
       publishTransientUserMessage(initialSessionId, {
-        id: messageId, text: options.displayText ?? text, transientPlacement: queued ? 'follow_up' : 'transcript',
+        id: messageId, text: options.displayText ?? text, transientPlacement: 'transcript',
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
       });
-      const submitted = await submitIntoSession(initialSessionId);
+      const submitted = await submitIntoSession(initialSessionId, messageId);
       // An existing-Session send never reports a resolved Session.
       return submitted.kind !== 'refused';
     } catch (error) {
