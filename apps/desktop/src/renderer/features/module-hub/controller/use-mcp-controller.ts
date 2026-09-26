@@ -28,6 +28,8 @@ import {
   type OpencliChromeStatus,
 } from '@maka/core/mcp';
 import { useMountedRef } from '@maka/ui';
+import type { McpIpcResult } from '../../../../shared/mcp-ipc.js';
+import { unwrapMcpIpcResult } from '../model/mcp-page-model.js';
 import { useModuleHubServices } from '../services-context.js';
 import type { ModuleHubRuntimeHostRef } from '../ports.js';
 import { isDefaultRuntimeHostCurrent, runOnDefaultRuntimeHost } from './default-runtime-host.js';
@@ -59,8 +61,10 @@ export function useMcpController() {
         !await isDefaultRuntimeHostCurrent(runtimeHosts, result.host) ||
         !mounted.current || request !== revision.current
       ) return;
-      setConfig(result.value[0]);
-      setStatuses(result.value[1]);
+      const nextConfig = unwrapMcpIpcResult(result.value[0]);
+      const nextStatuses = unwrapMcpIpcResult(result.value[1]);
+      setConfig(nextConfig);
+      setStatuses(nextStatuses);
       setChrome(result.value[2]);
     } catch (failure) {
       if (mounted.current && request === revision.current) setError(failure);
@@ -99,7 +103,7 @@ export function useMcpController() {
     return () => clearInterval(timer);
   }, [awaitingChrome, mcp, runtimeHosts, mounted]);
 
-  async function run<T>(key: string, action: (host: ModuleHubRuntimeHostRef) => Promise<T>): Promise<T | undefined> {
+  async function run<T>(key: string, action: (host: ModuleHubRuntimeHostRef) => Promise<McpIpcResult<T>>): Promise<T | undefined> {
     if (operation.current) return undefined;
     const current: { key: string; host?: ModuleHubRuntimeHostRef; cancelled?: boolean } = { key };
     operation.current = current;
@@ -110,7 +114,7 @@ export function useMcpController() {
         current.host = host;
         return action(host);
       });
-      if (mounted.current && await isDefaultRuntimeHostCurrent(runtimeHosts, result.host)) return result.value;
+      if (mounted.current && await isDefaultRuntimeHostCurrent(runtimeHosts, result.host)) return unwrapMcpIpcResult(result.value);
     } catch (failure) {
       if (mounted.current && !current.cancelled) setError(failure);
     } finally {
@@ -150,7 +154,7 @@ export function useMcpController() {
       if (current.key !== `login:${id}` || !current.host) return;
       current.cancelled = true;
       try {
-        await mcp.cancelLogin(id, current.host);
+        unwrapMcpIpcResult(await mcp.cancelLogin(id, current.host));
       } catch (failure) {
         current.cancelled = false;
         if (mounted.current) setError(failure);

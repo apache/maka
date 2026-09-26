@@ -330,7 +330,7 @@ describe('SettingsStore.get file recovery', () => {
     }
   });
 
-  it('creates defaults only when settings.json is missing', async () => {
+  it('creates defaults without a backup when settings.json is missing', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-defaults-'));
     try {
       const store = createSettingsStore(workspaceRoot);
@@ -340,21 +340,7 @@ describe('SettingsStore.get file recovery', () => {
 
       assert.equal(settings.schemaVersion, 1);
       assert.match(raw, /"schemaVersion": 1/);
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('rejects corrupt settings.json without overwriting user settings bytes', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-corrupt-'));
-    try {
-      const store = createSettingsStore(workspaceRoot);
-      const settingsPath = join(workspaceRoot, 'settings.json');
-      const corrupt = '{"appearance":{"theme":"dark"}';
-      await writeFile(settingsPath, corrupt, 'utf8');
-
-      await assert.rejects(() => store.get(), SyntaxError);
-      assert.equal(await readFile(settingsPath, 'utf8'), corrupt);
+      assert.deepEqual(await readdir(workspaceRoot), ['settings.json']);
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }

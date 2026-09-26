@@ -24,7 +24,7 @@ export type McpCopy = {
     load: string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
     importJson: string; importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
-    writeDurabilityUnknown: string; writeOutOfSync: string;
+    writeDurabilityUnknown: string; invalidConfigFile: (path: string) => string; writeOutOfSync: string;
   };
   toast: {
     saved: string; savedDetail: string;
@@ -68,6 +68,7 @@ const MCP_COPY = {
   'zh-CN': {
     errors: {
       load: '载入 MCP 失败', save: '保存 MCP 失败',
+      invalidConfigFile: (path) => `${path} 中的 JSON 无效，文件未被修改。请关闭应用，备份并修复此文件后重试。`,
       writeDurabilityUnknown: '写入已发布，但无法确认断电后是否保留。请检查刷新后的配置再决定是否重试。',
       writeOutOfSync: '写入的持久性尚未确认，MCP 运行状态也未能与配置同步。请检查配置并重新同步后再重试。',
       import: '导入 MCP 失败', update: '更新 MCP 失败', test: 'MCP 测试失败', remove: '删除 MCP 失败', unavailableStatus: 'Server 没有返回可用状态。',
@@ -130,6 +131,7 @@ const MCP_COPY = {
   'zh-TW': {
     errors: {
       load: '載入 MCP 失敗', save: '儲存 MCP 失敗',
+      invalidConfigFile: (path) => `${path} 中的 JSON 無效，檔案未被修改。請關閉應用程式，備份並修復此檔案後重試。`,
       writeDurabilityUnknown: '寫入已發布，但無法確認斷電後是否保留。請檢查重新整理後的設定再決定是否重試。',
       writeOutOfSync: '寫入的持久性尚未確認，MCP 執行狀態也未能與設定同步。請檢查設定並重新同步後再重試。',
       import: '匯入 MCP 失敗', update: '更新 MCP 失敗', test: 'MCP 測試失敗', remove: '刪除 MCP 失敗', unavailableStatus: 'Server 沒有返回可用狀態。',
@@ -192,6 +194,7 @@ const MCP_COPY = {
   en: {
     errors: {
       load: 'Failed to load MCP', save: 'Failed to save MCP',
+      invalidConfigFile: (path) => `Invalid JSON in ${path}. The file is unchanged. Close the app, back up and repair this file before retrying.`,
       writeDurabilityUnknown: 'The write was published, but survival after power loss could not be confirmed. Check the refreshed configuration before retrying.',
       writeOutOfSync: 'Write durability could not be confirmed, and MCP runtime state is out of sync with the configuration. Check the configuration and resynchronize before retrying.',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',

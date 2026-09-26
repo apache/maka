@@ -76,6 +76,7 @@ export class McpConfigSourceError extends Error {
     readonly reason: McpConfigSourceFailureReason,
     readonly version?: string,
     message: string = reason,
+    readonly path?: string,
   ) {
     super(message);
     this.name = 'McpConfigSourceError';
@@ -180,6 +181,12 @@ export function normalizeMcpConfig(value: unknown): McpConfigFile {
   return { version: MCP_CONFIG_VERSION, mcpServers: { ...mcpServers } };
 }
 
+// Accept an optional UTF-8 BOM at the document boundary only. Keep size checks
+// on the original input and leave all other JSON/schema validation unchanged.
+function parseMcpJson(source: string): unknown {
+  return JSON.parse(source.startsWith('\uFEFF') ? source.slice(1) : source);
+}
+
 /** Parse either a wrapped mcp.json document or a direct server map while
  * preserving the source wrapper version until schema validation completes.
  * Import presentation belongs to the caller; config interpretation lives here
@@ -190,7 +197,7 @@ export function normalizeMcpImport(source: string): McpConfigFile {
   }
   let value: unknown;
   try {
-    value = JSON.parse(source);
+    value = parseMcpJson(source);
   } catch {
     throw new McpConfigSourceError('invalid-json', undefined, 'MCP config must be valid JSON');
   }
@@ -275,7 +282,22 @@ class FileMcpConfigStore implements McpConfigStore {
     if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES) {
       throw new Error('MCP config exceeds 1 MiB');
     }
-    return normalizeMcpConfig(JSON.parse(text));
+    let persisted: unknown;
+    try {
+      persisted = parseMcpJson(text);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      // JSON.parse can quote credentials in its message. Report the location
+      // and recovery action without retaining those source bytes in an error.
+      throw new McpConfigSourceError(
+        'invalid-json',
+        undefined,
+        `MCP config at ${this.path} contains invalid JSON. The file was not modified. ` +
+          'Close the app, back up and repair this file before retrying.',
+        this.path,
+      );
+    }
+    return normalizeMcpConfig(persisted);
   }
 
   private async readOrCreate(): Promise<McpConfigFile> {

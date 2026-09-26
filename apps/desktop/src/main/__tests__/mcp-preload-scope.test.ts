@@ -19,6 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
+import { build } from 'esbuild';
+import type { MakaBridge } from '../../preload/bridge-contract.js';
+import { unwrapMcpIpcResult, mcpConfigFailureMessage } from '../../renderer/features/module-hub/testing.js';
+import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
@@ -49,4 +56,69 @@ test('every MCP bridge method rides the scoped Runtime Host seam', () => {
   ]) {
     assert.match(preloadSource, new RegExp(`invokeSelectedRuntimeHost\\(host, '${channel}'`, 'u'));
   }
+});
+
+
+test('every MCP bridge method carries typed config failures intact through the bundled preload', async () => {
+  const failure = { kind: 'invalid-mcp-config-file', path: '/profile/mcp.json' } as const;
+  const events = new EventEmitter();
+  const channels: string[] = [];
+  const owner = { hostId: 'owner', targetEpoch: 'epoch', profileId: 'local',
+    profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready' };
+  const ipcRenderer = {
+    on: events.on.bind(events), off: events.off.bind(events), send() {},
+    async invoke(channel: string, ...args: unknown[]) {
+      if (channel === 'app:bootstrapReady') return undefined;
+      if (channel === 'runtime-host:identities') {
+        return structuredClone([{ ...owner, epoch: owner.targetEpoch, isDefault: true }]);
+      }
+      if (channel === 'runtime-host:awaitReady') {
+        assert.deepEqual(JSON.parse(JSON.stringify(args[0])), { hostId: owner.hostId, targetEpoch: owner.targetEpoch });
+        return { ready: true };
+      }
+      assert.ok(channel.startsWith('mcp:'), channel);
+      assert.deepEqual(JSON.parse(JSON.stringify(args[0])), { hostId: owner.hostId, targetEpoch: owner.targetEpoch });
+      channels.push(channel);
+      return structuredClone(failure);
+    },
+  };
+  let bridge: MakaBridge | undefined;
+  const bundle = await build({
+    entryPoints: [fileURLToPath(new URL('../../../src/preload/preload.ts', import.meta.url))],
+    bundle: true, write: false, platform: 'node', format: 'cjs', external: ['electron'],
+  });
+  const require = createRequire(import.meta.url);
+  runInNewContext(bundle.outputFiles[0]!.text, {
+    require: (id: string) => id === 'electron' ? {
+      ipcRenderer,
+      contextBridge: { exposeInMainWorld(name: string, value: MakaBridge) {
+        if (name === 'maka') bridge = value;
+      } },
+    } : require(id),
+    process: { env: {} }, Buffer, console, setTimeout, clearTimeout, TextEncoder, TextDecoder,
+    crypto: globalThis.crypto,
+  });
+  assert.ok(bridge);
+  const mcp = bridge.mcp;
+  const host = { hostId: 'owner', profileId: 'local' };
+  const server = { command: 'unused' };
+  const calls = [
+    () => mcp.getConfig(host), () => mcp.listStatuses(host),
+    () => mcp.importConfig('{}', host), () => mcp.add('id', server, host),
+    () => mcp.update('id', server, server, host), () => mcp.setEnabled('id', true, host),
+    () => mcp.remove('id', host),
+    () => mcp.test('id', host), () => mcp.login('id', host),
+    () => mcp.cancelLogin('id', host), () => mcp.logout('id', host),
+  ];
+  for (const call of calls) {
+    // Plain fulfilled data survives the context bridge; rebuilding an Error
+    // in preload would introduce a second lossy error-serialization boundary.
+    const result: unknown = structuredClone(await call());
+    assert.deepEqual(result, failure);
+    assert.throws(() => unwrapMcpIpcResult(result), (error) => {
+      assert.equal(mcpConfigFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.invalidConfigFile(failure.path));
+      return true;
+    });
+  }
+  assert.equal(new Set(channels).size, calls.length);
 });

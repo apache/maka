@@ -41,7 +41,8 @@ export {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  mcpWriteFailureMessage,
+  mcpConfigFailureMessage,
+  unwrapMcpIpcResult,
 } from "./model/mcp-page-model.js";
 export {
   useModuleHubController,
