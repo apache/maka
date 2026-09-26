@@ -43,6 +43,7 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   modelOverride,
   resolveThinkingLevel,
+  THINKING_LEVELS,
   supportsCustomFastServiceTier,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
@@ -452,6 +453,36 @@ function claudeThinkingMode(
   return getAnthropicModelCapabilities(familyModelId).supportsAdaptiveThinking
     ? 'adaptive'
     : 'legacy';
+}
+
+/**
+ * The level that asks this model for the least reasoning it accepts, for
+ * callers that want none but cannot rely on `'off'` surviving
+ * `resolveThinkingLevel`.
+ *
+ * `'off'` is used when the model declares it. It is also used when the model
+ * declares no levels, or is a Claude model on Anthropic Messages, because on
+ * those paths an omitted parameter already means no extended thinking, while
+ * the lowest effort would switch adaptive thinking on. That holds for Claude,
+ * not for every Anthropic Messages route: Kimi's K3 and kimi-for-coding think
+ * by default when no level is sent.
+ *
+ * Everywhere else a dropped `'off'` omits the effort parameter, and the
+ * provider then runs its default reasoning (medium on GPT-5, GPT-6 and o3,
+ * dynamic on Gemini 3). So this returns the model's lowest declared level
+ * instead, which the wire builders send explicitly.
+ */
+export function leastReasoningThinkingLevel(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+  runtime = resolveModelRuntime(connection, modelId),
+): ThinkingLevel {
+  const variants = thinkingVariantsForConnection(connection, modelId);
+  if (variants.length === 0 || variants.includes('off')) return 'off';
+  if (runtime.wire === 'anthropic-messages' && claudeFamilyId(modelId).startsWith('claude-')) {
+    return 'off';
+  }
+  return THINKING_LEVELS.find((level) => variants.includes(level)) ?? 'off';
 }
 
 export function buildProviderOptions(
