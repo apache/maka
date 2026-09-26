@@ -34,6 +34,7 @@ import {
   type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
   connectRuntimeHostProfile,
+  LOCAL_RUNTIME_HOST_PROFILE,
   type RuntimeHostPeerClient,
   type RuntimeHostConnectionPhase,
   type RuntimeHostSshInteraction,
@@ -120,6 +121,8 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
+  /** Stable profile key used to coordinate process-wide client transports. */
+  readonly profileId?: string;
   readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
   readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
@@ -201,6 +204,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     target: DesktopRuntimeHostTargetPolicy,
     scope: DesktopTargetScope,
     isTargetActive: () => boolean,
+    profileId: string,
   ) => void | (() => void | Promise<void>);
 }
 
@@ -396,7 +400,7 @@ export async function startDesktopRuntimeHostCandidate(
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
         connection.connection,
-        { ...input, ipcMain },
+        { ...input, ipcMain, profileId: LOCAL_RUNTIME_HOST_PROFILE.id },
         observationRegistry,
         connection.registration.lifecycleMode === 'ephemeral'
           ? 'owned_ephemeral'
@@ -514,7 +518,7 @@ async function startProfileDesktopRuntimeHostCandidate(
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
         connection,
-        { ...input, ipcMain },
+        { ...input, ipcMain, profileId: profileTarget.profile.id },
         observationRegistry,
         'external',
         profileTarget.profile.kind,
@@ -863,6 +867,7 @@ export async function createDesktopRuntimeHostCandidate(
           target,
           scope,
           isTargetActive,
+          deps.profileId ?? LOCAL_RUNTIME_HOST_PROFILE.id,
         )
       : undefined;
     disposeClientIpc = target.access === 'session_guest'

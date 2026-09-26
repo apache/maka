@@ -20,7 +20,7 @@
 import { fetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici';
 import { matchesBypassList } from '../network/bypass-matcher.js';
 import { buildProxyDispatcher } from '../network/proxy-dispatcher.js';
-import { resolveActiveProxy } from '../network/active-proxy-state.js';
+import { isActiveProxyBlocked, resolveActiveProxy } from '../network/active-proxy-state.js';
 import { FETCH_PROXY_SNAPSHOT } from '../network/scoped-fetch-transport.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -37,6 +37,9 @@ export async function proxiedFetch(
   input: Parameters<typeof globalThis.fetch>[0],
   init: ProxiedFetchInit = {},
 ): Promise<Response> {
+  if (isActiveProxyBlocked()) {
+    throw new Error('Configured network proxy is unavailable');
+  }
   const url =
     typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
   const proxy = resolveActiveProxy();

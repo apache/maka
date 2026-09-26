@@ -22,6 +22,7 @@ import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import type { SocketModeClient } from '@slack/socket-mode';
 import type { WebClient } from '@slack/web-api';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
+import { proxiedFetch } from './proxied-fetch.js';
 import type { BotSendOptions, SendCapable } from './types.js';
 
 interface SlackMessageEvent {
@@ -92,7 +93,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
       const { WebClient } = require('@slack/web-api') as typeof import('@slack/web-api');
       const { SocketModeClient } =
         require('@slack/socket-mode') as typeof import('@slack/socket-mode');
-      this.web = new WebClient(botToken);
+      this.web = new WebClient(botToken, { fetch: proxiedFetch });
       const identity = await this.web.auth.test();
       if (!identity.ok) throw new Error(identity.error ?? 'Slack auth.test failed');
       this.identity = {
@@ -102,6 +103,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
       const socket = new SocketModeClient({
         appToken,
         autoReconnectEnabled: true,
+        clientOptions: { fetch: proxiedFetch },
       });
       socket.on('slack_event', (envelope: SlackEventEnvelope) => {
         void envelope.ack().catch(() => {});

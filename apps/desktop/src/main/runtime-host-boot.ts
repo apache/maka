@@ -245,6 +245,11 @@ import {
 } from './client-plugin-transport.js';
 import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
+import { setActiveProxyBlocked } from "@maka/runtime/network/active-proxy-state";
+import {
+  createClientNetworkProxyApplier,
+  type ClientNetworkProxyApplier,
+} from "./client-network-proxy.js";
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
@@ -338,6 +343,10 @@ const [runtimeHostClientInstanceId, runtimeHostStartup] = await Promise.all([
   }),
 ]);
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
+// BotRegistry is process-wide, so exactly one current Host target may own its
+// proxy state. Reconnecting candidates for the same profile replace the map
+// entry; the old applier is then fenced even before its cleanup runs.
+const clientNetworkProxyAppliers = new Map<string, ClientNetworkProxyApplier>();
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
   return current?.hostId
@@ -1234,6 +1243,12 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       );
     },
     onDefaultProfileChanged: (profileId) => {
+      void clientNetworkProxyAppliers
+        .get(profileId)
+        ?.refresh()
+        .catch((error) =>
+          console.error("[runtime-host] default Bot proxy refresh failed:", error),
+        );
       const state = runtimeHostManager?.entries().find(
         (candidate) => candidate.target.profile.id === profileId,
       );
@@ -1475,6 +1490,7 @@ function registerHostClientIpc(
   target: DesktopRuntimeHostTargetPolicy,
   scope: DesktopTargetScope,
   isTargetActive: () => boolean,
+  profileId: string,
 ): () => Promise<void> {
   const usesHostWorkspace = runtimeHostProfileUsesHostWorkspace(target.kind);
   const sendToRenderer = (channel: string, ...args: unknown[]): void => {
@@ -1637,11 +1653,30 @@ function registerHostClientIpc(
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
+  // Client-owned outbound traffic (the bot bridges) is proxied here, not in the
+  // Host: it runs in this process and the Host never sees it.
+  let clientNetworkProxy!: ClientNetworkProxyApplier;
+  const isAuthoritativeTarget = () =>
+    (runtimeHostManager?.defaultProfileId() ?? runtimeHostStartup.preferences.defaultProfileId) ===
+      profileId &&
+    clientNetworkProxyAppliers.get(profileId) === clientNetworkProxy;
+  clientNetworkProxy = createClientNetworkProxyApplier({
+    profileKind: target.kind,
+    resolve: () => client.resolveNetworkProxy(),
+    isAuthoritativeTarget,
+    onError: (error) =>
+      console.error("[runtime-host] Client network proxy resolution failed:", error),
+  });
+  clientNetworkProxyAppliers.set(profileId, clientNetworkProxy);
+  void clientNetworkProxy.refresh();
   const runtimeHostSettings = createRuntimeHostSettingsModule({
     client,
     settingsStore,
     applyClientSettings: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
+    },
+    onNetworkProxyChanged: () => {
+      void clientNetworkProxy.refresh();
     },
   });
   registerRuntimeHostSettingsIpc({
@@ -1840,6 +1875,13 @@ function registerHostClientIpc(
     stopMcpIpc();
     capabilityBinding.dispose();
     await capabilityBinding.aligned.catch(() => undefined);
+    if (clientNetworkProxyAppliers.get(profileId) === clientNetworkProxy) {
+      clientNetworkProxyAppliers.delete(profileId);
+      // No replacement target owns the process-wide transport anymore. Keep
+      // client-owned requests fail-closed until the default target returns.
+      setActiveProxyBlocked();
+    }
+    clientNetworkProxy.dispose();
   };
 }
 
