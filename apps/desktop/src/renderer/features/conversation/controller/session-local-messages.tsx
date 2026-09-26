@@ -46,7 +46,6 @@ export function SessionLocalMessages(props: {
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [snapshot, setSnapshot] = useState<{ sessionId: string; messages: readonly DesktopLocalMessage[] }>();
   const { sessionId, publish, update, retire, queue } = props;
-  const runningTurnIds = props.session?.localState ? undefined : props.session?.runningTurnIds;
   // Workspace transients survive selection changes, so their ownership must too.
   const publishedBySession = useRef(new Map<string, {
     states: Map<string, 'seen' | 'retired'>;
@@ -94,10 +93,12 @@ export function SessionLocalMessages(props: {
     for (const message of snapshot.messages) {
       const previous = states.get(message.messageId);
       if (previous !== 'retired') states.set(message.messageId, 'seen');
-      if (message.state !== 'failed' && queuedIds.has(message.messageId)) {
-        // The Host queue may arrive before the first local snapshot. Its exact
-        // identity already owns presentation, including a stale unknown receipt.
-        // Remember the handoff so a later queue removal cannot recreate the row.
+      if ((message.state === 'accepted' && !message.turnId)
+        || (message.state !== 'failed' && queuedIds.has(message.messageId))) {
+        // An accepted queue receipt belongs to the Host even when its queue
+        // snapshot is already gone. A present queue also owns stale unknown
+        // receipts. Keep a handoff, not a deletion tombstone: positive failure
+        // proof can still restore this message's recovery actions later.
         retire(sessionId, message.messageId);
         continue;
       }
@@ -121,12 +122,18 @@ export function SessionLocalMessages(props: {
           setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
         }
         const draft = await services.readFailedMessage(sessionId, message.messageId);
-        if (generation.current !== owner || latest.current.sessionId !== sessionId) return;
-        if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
-          setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
+        let restored = false;
+        try {
+          if (generation.current !== owner || latest.current.sessionId !== sessionId) return;
+          if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
+            setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
+          }
+          latest.current.restoreDraft(draft);
+          restored = true;
+          setFeedback((current) => ({ ...current, [key]: copy.draftReady }));
+        } finally {
+          if (!restored) await services.releaseRecoveryAttachments(draft.stagedAttachments.map((item) => item.approvalId));
         }
-        latest.current.restoreDraft(draft);
-        setFeedback((current) => ({ ...current, [key]: copy.draftReady }));
       }) });
       if (message.canCancel) actions.push({
         label: message.state === 'failed' ? copy.remove : copy.cancel, disabled: !!busy,
@@ -142,23 +149,27 @@ export function SessionLocalMessages(props: {
       if (message.state === 'unknown') actions.push({ label: copy.check, disabled: !!busy || message.checking,
         onClick: run(() => services.reconcileMessage(sessionId, message.messageId)),
       });
-      const presentation = localMessagePresentation(message, locale, queue, runningTurnIds);
+      const presentation = localMessagePresentation(message, locale);
       // A current durable failure owns its recovery actions even after a late
       // Host retraction. Upsert it by identity, unless durable deletion already
       // retired it. Ordinary refreshes still cannot recreate handed-off rows.
       const project = previous === undefined || (message.state === 'failed' && previous !== 'retired') ? publish : update;
       project(sessionId, {
         id: message.messageId, text: message.text, ts: message.createdAt,
-        transientPlacement: message.turnId ? 'current_turn' : (message.localDisplayPlacement ?? message.placement), attachments: message.attachments,
+        // Only an ordinary send records localDisplayPlacement as current_turn.
+        transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn' ? 'transcript'
+          : message.placement === 'current_turn' ? 'steering' : 'follow_up',
+        attachments: message.attachments,
         directoryReferences: message.directoryReferences, quotes: message.quotes,
         inlineReferences: message.inlineReferences, hostTurnId: message.turnId,
         deliveryStatus: presentation.status,
-        deliveryDetail: feedback[key] || presentation.detail,
+        deliveryDetail: presentation.status === undefined ? undefined : feedback[key] || presentation.detail,
         deliveryTone: presentation.tone,
-        deliveryDiagnostic: message.error, deliveryDiagnosticLabel: copy.diagnostics,
-        deliveryActions: actions,
+        deliveryDiagnostic: presentation.status === undefined ? undefined : message.error,
+        deliveryDiagnosticLabel: copy.diagnostics,
+        deliveryActions: presentation.status === undefined ? [] : actions,
       });
     }
-  }, [sessionId, snapshot, services, publish, update, retire, locale, queue, runningTurnIds, busy, feedback]);
+  }, [sessionId, snapshot, services, publish, update, retire, locale, queue, busy, feedback]);
   return null;
 }

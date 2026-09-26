@@ -35,7 +35,7 @@ export function handleSessionChangedEvent(
     refreshMessages: (sessionId: string) => Promise<boolean>;
     refreshProjects: () => Promise<unknown>;
     refreshSessions: () => Promise<SessionSummary[]>;
-    refreshChangedSession: (sessionId: string) => Promise<SessionSummary | null>;
+    refreshChangedSession: (sessionId: string) => Promise<void>;
     retireSession: (sessionId: string) => void;
     retiredSessionIds(sessions: readonly { id: string }[]): string[];
     /** A targeted row read committed this id's authoritative absence. */

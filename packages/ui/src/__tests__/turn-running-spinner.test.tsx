@@ -144,7 +144,7 @@ test('only the latest assistant segment owns live activity after a user instruct
   );
 });
 
-test('a live turn shows no footer even after a step lands', () => {
+test('a live turn keeps its footer empty even after a step lands', () => {
   // Without a recorded turn_state the projection infers `completed` and sets a
   // duration as soon as an assistant step lands; the live stream still owns it.
   const turn: TurnViewModel = {
@@ -157,7 +157,7 @@ test('a live turn shows no footer even after a step lands', () => {
       <TurnView turn={turn} liveStreaming={{ runningStatus: true }} />
     </LocaleProvider>,
   ));
-  assert.equal(document.querySelector('.maka-turn-footer'), null);
+  assert.equal(document.querySelector('.maka-turn-footer')?.textContent, '');
   assert.ok(document.querySelector('.maka-turn-processing'));
 });
 

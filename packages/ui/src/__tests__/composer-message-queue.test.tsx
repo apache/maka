@@ -174,11 +174,10 @@ test('queue actions stay disabled until the entry is Host-admitted', async () =>
 test('local delivery actions suppress activation while disabled and become usable again', async () => {
   const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
   const label = 'Edit and resend';
-  for (const placement of ['current_turn', 'next_turn'] as const) {
+  for (const transientPlacement of ['steering', 'follow_up'] as const) {
     let calls = 0;
     const pending = (disabled: boolean) => projectComposerMessageQueue([], [{
-      id: 'local', text: 'unsent message', ts: 1, transientPlacement: placement,
-      pendingSteering: placement === 'current_turn',
+      id: 'local', text: 'unsent message', ts: 1, transientPlacement,
       deliveryActions: [{ label, disabled, onClick() { calls++; } }],
     }]);
     const view = await mountQueue({ queuedMessages: pending(true) });
@@ -213,7 +212,7 @@ test('local delivery feedback stays visible in one stable polite status region',
     'Could not update the saved message. Try again.',
     'The message is ready in the composer. Review it before sending.',
   ];
-  const message = { id: 'local', text: 'unsent message', ts: 1, transientPlacement: 'next_turn' as const };
+  const message = { id: 'local', text: 'unsent message', ts: 1, transientPlacement: 'follow_up' as const };
   const view = await mountQueue({ queuedMessages: projectComposerMessageQueue([], [message]) });
   try {
     const statusSelector = '.maka-composer-queue-feedback[role="status"]';
@@ -257,7 +256,7 @@ test('Host-owned entries keep their ListItem semantics without a local feedback 
 test('local messages without delivery actions never inherit Host queue controls', async () => {
   const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
   for (const deliveryActions of [undefined, []]) {
-    const message = { id: 'local', text: 'saved follow-up', ts: 1, transientPlacement: 'next_turn' as const,
+    const message = { id: 'local', text: 'saved follow-up', ts: 1, transientPlacement: 'follow_up' as const,
       deliveryStatus: 'Waiting to send', deliveryActions };
     const view = await mountQueue({ queuedMessages: projectComposerMessageQueue([], [message]) });
     try {

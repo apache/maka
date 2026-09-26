@@ -284,6 +284,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       resolveExternalSessionImportWorkspace: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (_hostId, reason, sessionId) => changes.push({ reason, sessionId }),
       completeDesktopInteractionTurn() {},
+      notifyRun: async () => {},
       createSessionCopyCleanup: () => ({
         ownCreation: (_creation, operation) => operation(),
         rejectCreation: async () => undefined,

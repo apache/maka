@@ -45,6 +45,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 export interface AcpChildProcessHarnessOptions {
   readonly timeoutMs?: number;
   readonly startRuntimeHost?: boolean;
+  readonly memoryEnabled?: boolean;
   readonly safeBoundaryResume?: boolean;
   readonly beforeHostStart?: (input: {
     workspaceRoot: string;
@@ -88,6 +89,7 @@ export class AcpChildProcessHarness {
   #connection: ClientConnection | undefined;
   #clientOpened = false;
   #stdinClosed = false;
+  #hostStopped = false;
   #closePromise: Promise<void> | undefined;
 
   constructor(input: {
@@ -145,6 +147,12 @@ export class AcpChildProcessHarness {
       if (isErrorWithCode(error, 'ENOENT')) return false;
       throw error;
     }
+  }
+
+  async stopRuntimeHost(): Promise<void> {
+    if (!this.#host) throw new Error('ACP harness has no in-process Runtime Host');
+    await this.#host.close();
+    this.#hostStopped = true;
   }
 
   async withClient<T>(
@@ -236,7 +244,7 @@ export class AcpChildProcessHarness {
     for (const cleanup of [
       () => this.closeConnection(),
       () => this.stopChild(),
-      ...(this.#ownsResources ? [() => this.#host?.close()] : []),
+      ...(this.#ownsResources && !this.#hostStopped ? [() => this.#host?.close()] : []),
     ]) {
       try {
         await cleanup();
@@ -331,7 +339,7 @@ export async function startAcpChildProcessHarness(
   try {
     await mkdir(workspaceRoot, { recursive: true });
     const modelConnectionId = options.model
-      ? await seedModelConnection(workspaceRoot, options.model)
+      ? await seedModelConnection(workspaceRoot, options.model, options.memoryEnabled)
       : undefined;
     await options.beforeHostStart?.({ workspaceRoot, modelConnectionId });
     if (options.startRuntimeHost) {
@@ -396,12 +404,24 @@ export async function startAcpChildProcessHarness(
 async function seedModelConnection(
   rootPath: string,
   model: NonNullable<AcpChildProcessHarnessOptions['model']>,
+  memoryEnabled?: boolean,
 ): Promise<string> {
   const capability = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   if (!owner) throw new Error('Unable to acquire ACP model fixture root');
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    if (memoryEnabled !== undefined) {
+      const snapshot = await policy.runtimePolicy.getSnapshot();
+      const enabled = await policy.runtimePolicy.mutate({
+        expectedRevision: snapshot.revision,
+        operation: {
+          kind: 'set_memory',
+          value: { enabled: memoryEnabled, agentReadEnabled: memoryEnabled },
+        },
+      });
+      if (enabled.kind !== 'committed') throw new Error('ACP memory fixture did not commit');
+    }
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {

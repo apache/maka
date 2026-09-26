@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider, type ComposerHandle, type TransientUserMessageProjection } from '@maka/ui';
-import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
+import { useComposerAttachments } from '../../renderer/features/conversation/index.js';
 import {
   ComposerMentionsProvider,
   ConversationServicesProvider,
@@ -49,7 +49,7 @@ const draft: DesktopLocalMessageDraft = {
   quotes: [{ text: 'Original quote' }],
 };
 
-async function recoveryFixture() {
+async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
   catalog.commitSessions(['current', 'source'].map((id) => ({
@@ -62,6 +62,8 @@ async function recoveryFixture() {
   let text = '';
   let reads = 0;
   let contextRestores = 0;
+  let sessionId = 'current';
+  const released: string[][] = [];
   let releaseRead!: (value: DesktopLocalMessageDraft) => void;
   let mentions!: ComposerMentions;
   let quotes!: ReturnType<typeof useComposerQuotes>;
@@ -78,6 +80,7 @@ async function recoveryFixture() {
       reads++;
       return new Promise<DesktopLocalMessageDraft>((resolve) => { releaseRead = resolve; });
     },
+    releaseRecoveryAttachments: async (ids) => { released.push([...ids]); },
     cancelMessage: async () => {}, reconcileMessage: async () => {}, subscribeChanges: () => () => {},
     sessions: {
       readSnapshot: async () => { throw new Error('Recovery must not resolve newer Session references'); },
@@ -95,22 +98,22 @@ async function recoveryFixture() {
   function Probe() {
     mentions = useComposerMentionsContext()!;
     return createElement(SessionLocalMessages, {
-      sessionId: 'current', publish, update: publish, retire: () => {},
+      sessionId, publish, update: publish, retire: () => {},
       ...composerMessageRecovery({
-        sessionId: 'current', directoryHostId: 'host', composerRef, enabled: true,
+        sessionId, directoryHostId: 'host', composerRef, enabled: true,
         hasPendingContext: attachments.hasPendingContextNow, pendingQuotes: quotes.pendingQuotes,
-        restoreMessageContext: (...args) => { contextRestores++; attachments.restoreMessageContext(...args); },
+        restoreMessageContext: (...args) => {
+          if (options.restoreThrows) throw new Error('restore refused');
+          contextRestores++; attachments.restoreMessageContext(...args);
+        },
         restoreQuotes: (sessionId, recovered) => quotes.restoreQuotes(sessionId, recovered),
       }),
     });
   }
   function ComposerOwner() {
-    quotes = useComposerQuotes({ draftKey: 'current' });
+    quotes = useComposerQuotes({ draftKey: sessionId });
     attachments = useComposerAttachments({
-      draftKey: 'current', directoryHostId: 'host',
-      copy: { attachmentFailedTitle: 'Attachment failed', tryAgain: 'Try again',
-        imageAttachmentNotDirectTitle: '', imageAttachmentNotDirectDescription: '' },
-      formatError: (_error, fallback) => fallback,
+      draftKey: sessionId, directoryHostId: 'host',
       toastApi: { error: (title) => assert.fail(title) },
       service: {
         pickFiles: async () => ({ ok: true, files: [{ approvalId: 'new', name: 'new.txt', size: 1 }] }),
@@ -119,19 +122,25 @@ async function recoveryFixture() {
       },
     });
     return createElement(ComposerMentionsProvider, {
-      sessionId: 'current', skillCatalogRevision: 0,
+      sessionId, skillCatalogRevision: 0,
       onAddQuote: quotes.addQuote, pendingQuotes: quotes.pendingQuotes,
       children: createElement(Probe),
     });
   }
-  await act(async () => root.render(createElement(LocaleProvider, {
+  const render = () => act(async () => root.render(createElement(LocaleProvider, {
     locale: 'en', children: createElement(ConversationServicesProvider, {
       services, children: createElement(SessionCatalogContext.Provider, {
         value: catalog, children: createElement(ComposerOwner),
       }),
     }),
   })));
+  await render();
   return {
+    released,
+    switchSession: async () => { sessionId = 'source'; await render(); },
+    unmount: () => act(() => root.unmount()),
+    type: (value: string) => { text = value; },
+    removeRecovered: () => act(() => attachments.removeAttachment(0)),
     readCount: () => reads,
     pick: () => mentions.onPickSessionReference!({ id: 'source', name: 'source' }),
     edit: () => messages.get('failed')!.deliveryActions!.find((action) => action.label === copy.edit)!.onClick(),
@@ -194,6 +203,7 @@ test('a selected Session reference blocks failed-draft recovery before its pendi
     await pick;
   });
   assert.equal(fixture.readCount(), 0, 'do not even read a failed draft while a newer Session reference is staged');
+  assert.deepEqual(fixture.released, []);
   fixture.assertBlocked();
   await fixture.assertRecoveryAfterRemoval();
 });
@@ -208,6 +218,7 @@ test('a Session reference selected during the failed-draft read prevents recover
     await pick;
   });
   fixture.assertBlocked();
+  assert.deepEqual(fixture.released, [['local-recovery:old']], 'discarded late results release their own approvals');
   await fixture.assertRecoveryAfterRemoval();
 });
 
@@ -227,8 +238,30 @@ for (const kind of ['file', 'drop', 'directory'] as const) {
         } else fixture.edit();
       });
       assert.equal(fixture.readCount(), duringRead ? 1 : 0);
+      assert.deepEqual(fixture.released, duringRead ? [['local-recovery:old']] : []);
       fixture.assertContextBlocked(kind);
       await fixture.recoverAfterContextRemoval(kind);
     });
   }
 }
+
+for (const discard of ['typed', 'session', 'unmount', 'restore-error'] as const) {
+  test(`a recovered result discarded by ${discard} releases its approvals`, async () => {
+    const fixture = await recoveryFixture({ restoreThrows: discard === 'restore-error' });
+    await act(() => fixture.edit());
+    if (discard === 'typed') fixture.type('new typed draft');
+    if (discard === 'session') await fixture.switchSession();
+    if (discard === 'unmount') await fixture.unmount();
+    await act(async () => fixture.release());
+    assert.deepEqual(fixture.released, [['local-recovery:old']]);
+  });
+}
+
+test('successful recovery transfers approval ownership to the composer until the attachment is removed', async () => {
+  const fixture = await recoveryFixture();
+  await act(() => fixture.edit());
+  await act(async () => fixture.release());
+  assert.deepEqual(fixture.released, [], 'the read callback must not release a staged approval');
+  await fixture.removeRecovered();
+  assert.deepEqual(fixture.released, [['local-recovery:old']]);
+});

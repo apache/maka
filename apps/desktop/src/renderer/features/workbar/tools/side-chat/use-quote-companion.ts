@@ -480,13 +480,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const bindPendingMessageTurn = useCallback((messageId: string, turnId: string, startsTurn = false) => {
     const message = pendingUserMessagesRef.current.get(messageId);
     if (!message) return;
-    const movedToSuccessor = message.pendingSteering
+    const movedToSuccessor = message.transientPlacement === 'steering'
       && message.hostTurnId !== undefined && message.hostTurnId !== turnId;
     pendingUserMessagesRef.current.set(messageId, {
       ...message,
       hostTurnId: turnId,
-      ...((startsTurn || movedToSuccessor || message.transientPlacement === 'next_turn') && {
-        transientPlacement: 'current_turn', pendingSteering: false,
+      ...((startsTurn || movedToSuccessor || message.transientPlacement === 'follow_up') && {
+        transientPlacement: 'transcript',
       }),
     });
   }, []);
@@ -1201,7 +1201,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         id: turnId,
         text: trimmed,
         ts: Date.now(),
-        transientPlacement: 'current_turn',
+        transientPlacement: 'transcript',
         ...(quoteSnapshot.quotes.length > 0 ? { quotes: quoteSnapshot.quotes } : {}),
       };
       addPendingUserMessage(optimisticMessage);
@@ -1470,8 +1470,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       id: admissionId,
       text: trimmed,
       ts: Date.now(),
-      transientPlacement: placement,
-      ...(placement === 'current_turn' && { pendingSteering: true }),
+      transientPlacement: placement === 'current_turn' ? 'steering' : 'follow_up',
       ...(placement === 'current_turn' && activeTurnIdRef.current
         ? { hostTurnId: activeTurnIdRef.current }
         : {}),

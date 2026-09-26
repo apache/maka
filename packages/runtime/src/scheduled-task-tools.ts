@@ -23,6 +23,7 @@
  * Agent-facing access to the Runtime Host-owned ScheduledTask catalog.
  */
 
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import {
   SCHEDULED_TASK_CRON_MAX_CHARS,
@@ -150,6 +151,7 @@ export function buildScheduledTaskTool(deps: {
         const tasks = await deps.authority.list();
         if (tasks.length === 0) return `No scheduled tasks.\n${clockLine()}`;
         return [
+          `Scheduled task catalog (${tasks.length}):`,
           ...tasks.map(
             (task) =>
               `- ${task.id} | ${task.title} | ${task.status} | next=${fireLine(task.nextFireAt)} | effect=${task.effect.kind}`,
@@ -161,16 +163,39 @@ export function buildScheduledTaskTool(deps: {
         if (!input.title || !input.intentBody || !input.schedule) {
           return `create requires title, intentBody, and schedule\n${clockLine()}`;
         }
+        const effect = input.effect ?? 'session_resume';
+        const resolvedCwd = ctx.cwd?.trim() ? resolve(ctx.cwd) : '';
+        if (effect !== 'notify_local' && !resolvedCwd) {
+          return `create ${effect} requires a project working directory\n${clockLine()}`;
+        }
         const result = await deps.authority.create({
           title: input.title,
           intentBody: input.intentBody,
           schedule: input.schedule,
-          effect: input.effect ?? 'session_resume',
+          effect,
           sessionId,
           ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
         });
         if ('error' in result) return `${result.error}\n${clockLine()}`;
-        return `Scheduled task created: ${result.title} (${result.id})\nnextFireAt=${fireLine(result.nextFireAt)}\neffect=${result.effect.kind}\n${clockLine()}`;
+        let catalog: readonly ScheduledTask[];
+        try {
+          catalog = await deps.authority.list();
+        } catch {
+          return `Scheduled task may have been created, but catalog verification was unavailable for ${result.id}; query mode=list before retrying to avoid duplicates\n${clockLine()}`;
+        }
+        const persisted = catalog.find((task) => task.id === result.id);
+        if (!persisted) {
+          return `Scheduled task may have been created, but catalog verification could not find ${result.id}; query mode=list before retrying to avoid duplicates\n${clockLine()}`;
+        }
+        const taskCwd =
+          persisted.effect.kind === 'agent_run' ? persisted.effect.execution.cwd : resolvedCwd;
+        return [
+          `Scheduled task created and verified in Maka catalog: ${persisted.title} (${persisted.id})`,
+          `nextFireAt=${fireLine(persisted.nextFireAt)}`,
+          `effect=${persisted.effect.kind}`,
+          `cwd=${taskCwd}`,
+          clockLine(),
+        ].join('\n');
       }
       if (!input.id) return `${input.mode} requires id`;
       if (input.mode === 'pause') {

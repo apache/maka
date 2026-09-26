@@ -26,6 +26,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { InlineRenameInput } from './inline-rename-input.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
+import { presentSessionName } from './session-status-presentation.js';
 
 export interface TitlebarProject {
   name: string;
@@ -69,7 +70,9 @@ export function TitlebarSessionIdentity(props: {
   readOnly?: boolean;
   action?: { readonly label: string; onClick(): void };
 }) {
-  const copy = getConversationCopy(useUiLocale());
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale);
+  const sessionName = presentSessionName(props.sessionName, locale);
   const clipboard = useClipboardCopyFeedback(undefined, { redact: false });
   const [renaming, setRenaming] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -89,10 +92,10 @@ export function TitlebarSessionIdentity(props: {
   }, [renaming]);
 
   const path = props.project?.path;
-  const { measureRef, clipped } = useNameClipped(props.sessionName, renaming);
+  const { measureRef, clipped } = useNameClipped(sessionName, renaming);
   // Two kinds of hidden information: truncated → the full unseen text;
   // visible → the rename affordance the surface never advertises.
-  const nameTooltip = clipped ? props.sessionName : copy.sessions.renameAriaLabel;
+  const nameTooltip = clipped ? sessionName : copy.sessions.renameAriaLabel;
   const copyPhase = path ? clipboard.phaseFor(path) : null;
   const copyLabel = copyPhase === 'pending' ? copy.messages.copying
     : copyPhase === 'failed' ? copy.messages.copyFailed
@@ -146,36 +149,36 @@ export function TitlebarSessionIdentity(props: {
       {renaming ? (
         <InlineRenameInput
           className="maka-titlebar-identity__rename-input"
-          defaultValue={props.sessionName}
+          defaultValue={sessionName}
           ariaLabel={copy.sessions.renameAriaLabel}
           onCommit={(name, via) => {
             endRename(via === 'keyboard');
-            if (name && name !== props.sessionName) props.onRenameSession(name);
+            if (name && name !== sessionName) props.onRenameSession(name);
           }}
           onCancel={() => endRename(true)}
         />
       ) : props.readOnly ? (
-        <span ref={measureRef} className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={clipped ? props.sessionName : undefined}>
-          {props.sessionName}
+        <span ref={measureRef} className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={clipped ? sessionName : undefined}>
+          {sessionName}
         </span>
       ) : (
         <Button
           ref={nameRef}
           className="maka-titlebar-identity__name"
-          label={`${props.sessionName} — ${copy.sessions.renameAriaLabel}`}
+          label={`${sessionName} — ${copy.sessions.renameAriaLabel}`}
           tooltip={nameTooltip}
           variant="ghost"
           size="sm"
           onClick={() => setRenaming(true)}
         >
-          <span ref={measureRef} className="maka-titlebar-identity__segment--session">{props.sessionName}</span>
+          <span ref={measureRef} className="maka-titlebar-identity__segment--session">{sessionName}</span>
         </Button>
       )}
       {!props.readOnly || props.action || (props.parentSession && props.project) ? (
         <span className="maka-titlebar-identity__action">
           <DropdownMenu
             className="maka-titlebar-menu"
-            button={{ label: `${props.sessionName} — ${copy.chat.taskActions}`, tooltip: copy.chat.taskActions, icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
+            button={{ label: `${sessionName} — ${copy.chat.taskActions}`, tooltip: copy.chat.taskActions, icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
             hasChevron={false}
             alignment="end"
             isMenuOpen={actionsMenuOpen}

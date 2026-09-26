@@ -47,6 +47,8 @@ export interface DesktopLocalMessage {
   readonly retryScheduled?: boolean;
   readonly waitingForConnection?: boolean;
   readonly error?: string;
+  /** Main can reach the Host, so it delivers the message without the user. */
+  readonly delivering?: true;
 }
 
 /** Read on demand for editing a definite failure; reading never consumes the original. */
@@ -69,6 +71,8 @@ export interface DesktopCachedTranscript {
 export interface DesktopSessionLocalBridge {
   listMessages(sessionId: string): Promise<readonly DesktopLocalMessage[]>;
   readFailedMessage(sessionId: string, messageId: string): Promise<DesktopLocalMessageDraft>;
+  /** Release exact recovery approvals owned by this renderer, even after changing Host or Session. */
+  releaseRecoveryAttachments(approvalIds: readonly string[]): Promise<void>;
   /** Only an intent that has never been dispatched can be cancelled locally. */
   cancelMessage(sessionId: string, messageId: string): Promise<void>;
   /** Reconcile the same immutable command; never turn an unknown outcome into a new execution. */

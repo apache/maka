@@ -119,11 +119,15 @@ test('two prepared submissions cannot consume the same recovery approval twice',
   const [approval] = recovery.issue(owner, [attachment()]);
   const first = recovery.prepare(owner, [approval]);
   const concurrent = recovery.prepare(owner, [approval]);
+  recovery.release(owner.senderId, [approval.approvalId]);
+  assert.throws(() => recovery.prepare(owner, [approval]), blocked('source_expired'));
   let admissions = 0;
   first.commit(() => { admissions += 1; });
   assert.throws(() => concurrent.commit(() => { admissions += 1; }), blocked('source_expired'));
   assert.throws(() => first.commit(() => { admissions += 1; }), blocked('source_expired'));
   assert.equal(admissions, 1);
+  first.dispose();
+  concurrent.dispose();
 });
 
 test('a synchronous admission failure preserves every recovery approval for a retry', () => {
@@ -194,5 +198,112 @@ test('aggregate snapshot byte capacity rejects atomically and consumed bytes bec
     assert.equal(recovery.prepare(owner, [replacement]).commit(() => true), true);
   } finally {
     recovery.clear();
+  }
+});
+
+test('repeated restore and discard releases snapshot capacity immediately', () => {
+  const recovery = new SessionLocalAttachmentRecovery();
+  for (let count = 0; count < 1100; count += 1) {
+    const [approval] = recovery.issue(owner, [attachment()]);
+    recovery.release(owner.senderId, [approval.approvalId]);
+    assert.throws(() => recovery.prepare(owner, [approval]), blocked('source_expired'));
+  }
+  const large = { ...attachment(), content: new Uint8Array(MAX_LOCAL_MESSAGE_BYTES / 4) };
+  for (let count = 0; count < 3; count += 1) {
+    const approvals = recovery.issue(owner, Array.from({ length: 8 }, () => large));
+    assert.throws(() => recovery.issue(owner, [attachment()]), blocked('total_size_exceeded'));
+    recovery.release(owner.senderId, approvals.map((approval) => approval.approvalId));
+  }
+  assert.equal(recovery.issue(owner, [attachment()]).length, 1);
+  recovery.clear();
+});
+
+test('release is exact and sender-scoped, including abandoned Sessions and targets', () => {
+  const recovery = new SessionLocalAttachmentRecovery();
+  const [first, retained] = recovery.issue(owner, [attachment(), attachment()]);
+  const otherOwner = { ...owner, senderId: owner.senderId + 1 };
+  const [other] = recovery.issue(otherOwner, [attachment()]);
+  recovery.release(otherOwner.senderId, [first.approvalId, 'native-picker-approval']);
+  const pending = recovery.prepare(owner, [first]);
+  pending.dispose();
+  recovery.release(owner.senderId, [first.approvalId, other.approvalId, 'local-recovery:unknown']);
+  recovery.release(owner.senderId, [first.approvalId]);
+  assert.throws(() => recovery.prepare(owner, [first]), blocked('source_expired'));
+  assert.equal(recovery.prepare(owner, [retained]).commit(() => true), true);
+  assert.equal(recovery.prepare(otherOwner, [other]).commit(() => true), true);
+  const oldOwner = { ...owner, partition: 'old-authority', sessionId: 'old-session', scope: { hostId: 'old-host', targetEpoch: 'old-target' } };
+  const [old] = recovery.issue(oldOwner, [attachment()]);
+  recovery.release(owner.senderId, [old.approvalId]);
+  assert.throws(() => recovery.prepare(oldOwner, [old]), blocked('source_expired'));
+});
+
+test('release validates the whole batch before changing any approval', () => {
+  const recovery = new SessionLocalAttachmentRecovery();
+  const [approval] = recovery.issue(owner, [attachment()]);
+  for (const ids of [null, approval.approvalId, [approval.approvalId, null], [approval.approvalId, ''],
+    [approval.approvalId, 'x'.repeat(257)], new Array(2), Array.from({ length: 1001 }, () => approval.approvalId)]) {
+    assert.throws(() => recovery.release(owner.senderId, ids), blocked('items_invalid'));
+  }
+  assert.equal(recovery.prepare(owner, [approval]).commit(() => true), true);
+});
+
+test('release defers to an already prepared send but prevents new sends', () => {
+  const recovery = new SessionLocalAttachmentRecovery();
+  const [approval] = recovery.issue(owner, [attachment()]);
+  const pending = recovery.prepare(owner, [approval]);
+  recovery.release(owner.senderId, [approval.approvalId]);
+  assert.throws(() => recovery.prepare(owner, [approval]), blocked('source_expired'));
+  assert.equal(pending.commit(() => 'durable'), 'durable');
+  pending.dispose();
+  pending.dispose();
+  assert.throws(() => pending.commit(() => assert.fail('disposed send cannot admit')), blocked('source_expired'));
+});
+
+test('the last in-flight lease releases abandoned bytes even when admission fails', () => {
+  const recovery = new SessionLocalAttachmentRecovery();
+  const approvals = Array.from({ length: 1000 }, () => recovery.issue(owner, [attachment()])[0]);
+  const pending = recovery.prepare(owner, [approvals[0]]);
+  const concurrent = recovery.prepare(owner, [approvals[0]]);
+  recovery.release(owner.senderId, [approvals[0].approvalId]);
+  pending.dispose();
+  pending.dispose();
+  assert.throws(() => recovery.issue(owner, [attachment()]), blocked('total_size_exceeded'));
+  assert.throws(() => concurrent.commit(() => { throw new Error('admission failed'); }), /admission failed/);
+  concurrent.dispose();
+  assert.equal(recovery.issue(owner, [attachment()]).length, 1);
+  assert.throws(() => recovery.prepare(owner, [approvals[0]]), blocked('source_expired'));
+});
+
+test('disposing a failed send without a release preserves the source for retry', () => {
+  const recovery = new SessionLocalAttachmentRecovery();
+  const [approval] = recovery.issue(owner, [attachment()]);
+  const pending = recovery.prepare(owner, [approval]);
+  assert.throws(() => pending.commit(() => { throw new Error('admission failed'); }), /admission failed/);
+  pending.dispose();
+  assert.throws(() => pending.commit(() => true), blocked('source_expired'));
+  const retry = recovery.prepare(owner, [approval]);
+  assert.equal(retry.commit(() => true), true);
+  retry.dispose();
+});
+
+test('partial preparation failure does not pin any valid snapshot', () => {
+  const recovery = new SessionLocalAttachmentRecovery();
+  const approvals = Array.from({ length: 1000 }, () => recovery.issue(owner, [attachment()])[0]);
+  assert.throws(() => recovery.prepare(owner, [approvals[0], { approvalId: 'local-recovery:unknown' }]), blocked('source_expired'));
+  recovery.release(owner.senderId, [approvals[0].approvalId]);
+  assert.equal(recovery.issue(owner, [attachment()]).length, 1);
+});
+
+test('released in-flight leases still honor expiration, authority purge, and service shutdown', () => {
+  for (const invalidate of ['ttl', 'partition', 'all'] as const) {
+    let now = 1000;
+    const recovery = new SessionLocalAttachmentRecovery(() => now);
+    const [approval] = recovery.issue(owner, [attachment()]);
+    const pending = recovery.prepare(owner, [approval]);
+    recovery.release(owner.senderId, [approval.approvalId]);
+    if (invalidate === 'ttl') now += ATTACHMENT_APPROVAL_TTL_MS + 1;
+    else recovery.clear(invalidate === 'partition' ? owner.partition : undefined);
+    assert.throws(() => pending.commit(() => assert.fail('revoked send cannot admit')), blocked('source_expired'));
+    pending.dispose();
   }
 });

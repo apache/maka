@@ -301,6 +301,117 @@ test('zh-TW: expanded Peer Mesh members render localized route states', async ()
   }
 });
 
+test('custom connection creation updates and clears the request URL preview while typing', async () => {
+  const harness = installRenderer();
+  await harness.render('en', createElement(components.AddProviderForm, {
+    bridge: connectionDetailBridge({}),
+    providerType: 'custom', existingSlugs: [],
+    onCancel: unexpectedCall, onCreated: unexpectedCall,
+  }));
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input, 'missing service URL input');
+  for (const [draft, expected] of [
+    ['https://relay.example/proxy/chat/completions', 'https://relay.example/proxy/chat/completions'],
+    ['https://relay.example/team', 'https://relay.example/team/chat/completions'],
+    ['https://', null],
+    ['', null],
+  ] as const) {
+    await act(async () => {
+      input.value = draft;
+      const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+      assert.ok(key, 'missing React input props');
+      const props = (input as unknown as Record<string, unknown>)[key] as {
+        onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+      };
+      props.onChange({ target: input, defaultPrevented: false });
+    });
+    const preview = harness.document.querySelector('.providerRequestUrlPreview');
+    if (expected) {
+      assert.ok(preview);
+      assert.ok(preview.textContent.endsWith(expected));
+      assert.equal(input.getAttribute('aria-description'), preview.textContent);
+    } else {
+      assert.equal(preview, null);
+      assert.equal(input.getAttribute('aria-description'), null);
+    }
+  }
+});
+
+test('endpoint editing previews the default model protocol override', async () => {
+  const harness = installRenderer();
+  const base = relayConnection();
+  const connection: ProjectedLlmConnection = {
+    ...base,
+    defaultApiProtocol: 'openai-chat',
+    modelOverrides: { [base.defaultModel]: { apiProtocol: 'openai-responses' } },
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = [...harness.document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.getAttribute('aria-label') === 'Edit: Service URL',
+  );
+  assert.ok(edit, 'missing service URL edit action');
+  await act(async () => edit.click());
+  const preview = harness.document.querySelector('.providerRequestUrlPreview');
+  assert.ok(preview);
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  assert.equal(
+    harness.document.querySelector('.providerEndpointField input')?.getAttribute('aria-description'),
+    preview.textContent,
+  );
+});
+
+test('legacy credential endpoint editing shows one preview and retains its accessible description', async () => {
+  const harness = installRenderer();
+  const connection: ProjectedLlmConnection = {
+    ...relayConnection(),
+    baseUrl: 'https://relay.example/v1?token=legacy-secret',
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = harness.document.querySelector<HTMLButtonElement>('button[aria-label="Edit: Service URL"]');
+  assert.ok(edit);
+  await act(async () => edit.click());
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input);
+  assert.equal(input.type, 'password');
+  assert.equal(harness.document.querySelector('.providerRequestUrlPreview'), null);
+  await act(async () => {
+    input.value = 'https://relay.example/v1';
+    const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key);
+    const props = (input as unknown as Record<string, unknown>)[key] as {
+      onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+    };
+    props.onChange({ target: input, defaultPrevented: false });
+  });
+  const previews = harness.document.querySelectorAll('.providerRequestUrlPreview');
+  assert.equal(previews.length, 1);
+  const preview = previews[0]!;
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  const descriptions = describedElements(input);
+  assert.ok(descriptions.some((element) => element.textContent.includes(preview.textContent)));
+  assert.ok(descriptions.some((element) =>
+    element.querySelector('.maka-visually-hidden')?.textContent.trim() === preview.textContent,
+  ), 'the accessible copy of the URL must not render a second visible preview');
+});
+
 test('credential probing does not flash a page-level loading warning', async () => {
   const harness = installRenderer();
   const credential = deferred<boolean>();

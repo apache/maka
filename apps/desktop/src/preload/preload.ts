@@ -1485,6 +1485,15 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
   },
 }, browserDocumentId);
 
+async function releaseLocalRecoveryAttachments(approvalIds: readonly string[]): Promise<void> {
+  // Disposal must not wait for the currently selected Host: the owning draft
+  // may already have been abandoned during a target switch or disconnect.
+  const ids = [...new Set(approvalIds)];
+  for (let offset = 0; offset < ids.length; offset += 1000) {
+    await ipcRenderer.invoke('session-local:release-attachments', ids.slice(offset, offset + 1000));
+  }
+}
+
 const makaBridge = {
   clientPlugins: createClientPluginRouting({
     activeScope: activeRuntimeHostRef,
@@ -2202,8 +2211,16 @@ const makaBridge = {
     async readFailedMessage(sessionId, messageId) {
       const session = await runtimeHostSessionRef(sessionId);
       const draft = await ipcRenderer.invoke('session-local:edit', session.scope, session.sessionId, messageId) as import('../shared/session-local-contract.js').DesktopLocalMessageDraft;
-      return { ...projectLocalMessageDraft(draft), attachments: projectDesktopAttachmentRefs(session.scope, draft.attachments) };
+      try {
+        return { ...projectLocalMessageDraft(draft), attachments: projectDesktopAttachmentRefs(session.scope, draft.attachments) };
+      } catch (error) {
+        const ids = Array.isArray(draft?.stagedAttachments) ? draft.stagedAttachments.flatMap((item) =>
+          typeof item?.approvalId === 'string' ? [item.approvalId] : []) : [];
+        await releaseLocalRecoveryAttachments(ids).catch(() => undefined);
+        throw error;
+      }
     },
+    releaseRecoveryAttachments: releaseLocalRecoveryAttachments,
     async listMessages(sessionId) {
       const session = await runtimeHostSessionRef(sessionId);
       const records = await invokeWhenReady('session-local:messages', session.scope, session.sessionId) as import('../shared/session-local-contract.js').DesktopLocalMessage[];
@@ -3621,21 +3638,6 @@ const makaBridge = {
           return invokeWhenReady('settings:bots:onboarding:open', sessionId);
         },
       },
-    },
-  },
-  notifications: {
-    // Fire-and-forget signal that an agent turn reached a terminal
-    // state or is waiting on the user. `title` is the session name, `body`
-    // the start of the reply, the error message, or the question; main
-    // sanitizes both and falls back to generic copy when blank. Main gates
-    // on the product toggle + window focus before raising a native OS
-    // notification.
-    runEnded(payload: {
-      kind: 'completed' | 'errored' | 'waiting';
-      title?: string;
-      body?: string;
-    }): Promise<void> {
-      return invokeWhenReady('notifications:runEnded', payload);
     },
   },
   inspector: {

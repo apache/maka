@@ -226,6 +226,7 @@ export class DesktopSessionLocalService {
       retryScheduled: this.#retries.has(`${target.partition}:${record.messageId}`),
       waitingForConnection: !target.client || !target.submit,
       ...(record.error ? { error: record.error } : {}),
+      ...(target.client && target.submit ? { delivering: true as const } : {}),
     }));
   }
 
@@ -718,6 +719,9 @@ export function registerDesktopSessionLocalIpc(deps: {
   ipcMain.handle('session-local:edit', (event, scope: unknown, sessionId: string, messageId: string) =>
     service.readFailedMessage(service.target(scope), requiredId(sessionId), requiredId(messageId), event.sender.id),
   );
+  ipcMain.handle('session-local:release-attachments', (event, approvalIds: unknown) =>
+    service.attachmentRecovery.release(event.sender.id, approvalIds),
+  );
   ipcMain.handle('session-local:transcript', (_event, scope: unknown, sessionId: string) =>
     service.readTranscript(service.target(scope), requiredId(sessionId)),
   );
@@ -829,15 +833,13 @@ export function registerDesktopSessionLocalIpc(deps: {
         mimeType,
         base64: Buffer.from(content).toString('base64'),
       });
-      let prepared: Awaited<ReturnType<typeof prepareIngestItems>>;
-      let recovery: ReturnType<SessionLocalAttachmentRecovery['prepare']>;
-      let staged: Awaited<ReturnType<typeof resolveAttachmentRefs<Awaited<ReturnType<typeof snapshot>>>>>;
+      let recovery: ReturnType<SessionLocalAttachmentRecovery['prepare']> | undefined;
       try {
         recovery = service.attachmentRecovery.prepare(
           { senderId: event.sender.id, partition: target.partition, scope: target.scope, sessionId },
           command.attachmentItems ?? [],
         );
-        prepared = await prepareIngestItems({
+        const prepared = await prepareIngestItems({
           senderId: event.sender.id,
           items: recovery.items,
           approvals: deps.approvals,
@@ -845,27 +847,20 @@ export function registerDesktopSessionLocalIpc(deps: {
           maxAttachments: MAX_ATTACHMENT_COUNT - retained.length,
           maxTotalBytes: MAX_LOCAL_MESSAGE_BYTES,
         });
-        staged = await resolveAttachmentRefs({
+        const staged = await resolveAttachmentRefs({
           files: prepared.files,
           maxTotalBytes: MAX_LOCAL_MESSAGE_BYTES,
           resizeImage: deps.resizeImage,
           snapshot,
         });
-      } catch (error) {
-        if (error instanceof AttachmentIngestBlockedError) {
-          return { ok: false as const, reason: 'attachment_blocked' as const, code: error.code };
-        }
-        throw error;
-      }
-      // Revalidate authority after asynchronous file reads and native resizing.
-      if (service.target(scope).partition !== target.partition)
-        throw new Error('Host authority changed while saving the message');
-      const displayText = command.displayText ?? command.text;
-      const inlineReferences = mergeWorkspaceFileInlineReferences({
-        displayText,
-        workspaceFileReferences: command.workspaceFileReferences,
-      });
-      try {
+        // Revalidate authority after asynchronous file reads and native resizing.
+        if (service.target(scope).partition !== target.partition)
+          throw new Error('Host authority changed while saving the message');
+        const displayText = command.displayText ?? command.text;
+        const inlineReferences = mergeWorkspaceFileInlineReferences({
+          displayText,
+          workspaceFileReferences: command.workspaceFileReferences,
+        });
         // The approval can be consumed while the reads above were in flight, so
         // admission is part of the same conversion to the envelope.
         recovery.commit(() => prepared.commit(() =>
@@ -889,21 +884,23 @@ export function registerDesktopSessionLocalIpc(deps: {
             },
           }),
         ));
+        deps.changed(target.scope, sessionId);
+        service.wake();
+        return {
+          ok: true,
+          disposition: 'locally_saved',
+          attachments: retained,
+          inlineReferences,
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+        };
       } catch (error) {
         if (error instanceof AttachmentIngestBlockedError) {
           return { ok: false as const, reason: 'attachment_blocked' as const, code: error.code };
         }
         throw error;
+      } finally {
+        recovery?.dispose();
       }
-      deps.changed(target.scope, sessionId);
-      service.wake();
-      return {
-        ok: true,
-        disposition: 'locally_saved',
-        attachments: retained,
-        inlineReferences,
-        skillInvocation: { loaded: [], failed: [], receipts: [] },
-      };
     },
   );
 }

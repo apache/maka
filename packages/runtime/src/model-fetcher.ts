@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { openAiBaseUrl } from '@maka/core/openai-urls';
 import {
   PROVIDER_REGISTRY,
   providerFallbackModelIds,
@@ -226,7 +227,7 @@ async function fetchProviderModelsStrict(
     case 'openai-compatible': {
       const r = await fetchForConnectionEffect(
         fetchFn,
-        modelListUrl(baseUrl, discovery.path, discovery.query),
+        modelListUrl(openAiBaseUrl(baseUrl), discovery.path, discovery.query),
         {
           headers: {
             'content-type': 'application/json',

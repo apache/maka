@@ -19,23 +19,30 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { localMessagePresentation, composerFollowUp, composerMessageRecovery } from '../../renderer/features/conversation/testing.js';
+import { localMessagePresentation, composerSend, composerFollowUp, composerMessageRecovery } from '../../renderer/features/conversation/testing.js';
 import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
-import type { MessageQueueEntryProjection, QuoteRef } from '@maka/core/events';
+import type { QuoteRef } from '@maka/core/events';
 import type { ComposerHandle } from '@maka/ui';
+import type { PendingAttachment } from '@maka/ui/composer-attachments';
 
 const message: DesktopLocalMessage = {
   sessionId: 'session', messageId: 'message', text: 'hello', state: 'accepted', createdAt: 1,
   canCancel: false, placement: 'current_turn', attachments: [], inlineReferences: [],
 };
-test('receipt disposition does not claim current queue or processing progress', () => {
-  assert.equal(localMessagePresentation({ ...message, admission: 'followup' }, 'en').status, 'Delivered for a later reply · waiting for an update');
-  assert.equal(localMessagePresentation({ ...message, turnId: 'old-turn' }, 'en', [], ['new-turn']).status, 'Delivered · waiting for an update');
-  assert.equal(localMessagePresentation({ ...message, turnId: 'new-turn' }, 'en', [], ['new-turn']).status, 'Processing this message');
-  const queue: MessageQueueEntryProjection[] = [{ entryId: 'entry', messageId: 'message', content: { text: 'hello' }, placement: 'next_turn', state: 'queued' }];
-  assert.equal(localMessagePresentation(message, 'en', queue).status, 'Queued for the next reply');
-  queue[0] = { ...queue[0]!, placement: 'current_turn', state: 'in_flight' };
-  assert.equal(localMessagePresentation(message, 'en', queue).status, 'Added to the current reply');
+test('ordinary delivery stays silent and admission receipts never claim live progress', () => {
+  for (const admission of ['followup', 'steering', 'turn_started'] as const) {
+    assert.deepEqual(localMessagePresentation({ ...message, admission, turnId: 'old-turn' }, 'en'), { tone: 'neutral' });
+  }
+  assert.deepEqual(localMessagePresentation({ ...message, state: 'sending' }, 'en'), { tone: 'neutral' });
+  assert.deepEqual(localMessagePresentation({ ...message, state: 'saved', delivering: true }, 'en'), { tone: 'neutral' });
+});
+
+test('offline or failed delivery retains actionable feedback', () => {
+  const saved = { ...message, state: 'saved' as const };
+  assert.equal(localMessagePresentation(saved, 'en').status, 'Waiting to send');
+  assert.equal(localMessagePresentation({ ...saved, waitingForConnection: true }, 'en').status, 'Waiting for a connection');
+  assert.equal(localMessagePresentation({ ...saved, delivering: true, error: 'Host not ready' }, 'en').status, 'Waiting to send');
+  assert.equal(localMessagePresentation({ ...saved, state: 'failed', delivering: true }, 'en').status, 'Message not sent');
 });
 test('unknown outcome only promises checking when a check is active or scheduled', () => {
   const unknown = { ...message, state: 'unknown' as const };
@@ -52,9 +59,16 @@ test('follow-up recovery consumes context only after admission and preserves it 
   for (const outcome of [false, true, 'error'] as const) {
     let cleared = 0;
     let errors = 0;
+    let held = false;
+    let releases = 0;
     const submit = composerFollowUp({
       pending: undefined, quotes, directoryOptions: {},
+      retainAttachments() {
+        held = true;
+        return () => { held = false; releases++; };
+      },
       async enqueueMessage(sessionId, text, placement, pending, options) {
+        assert.equal(held, true, 'the Follow Up owns its attachments before the first await');
         assert.equal(sessionId, 'session');
         assert.equal(text, 'recovered');
         assert.equal(placement, 'next_turn');
@@ -63,12 +77,48 @@ test('follow-up recovery consumes context only after admission and preserves it 
         if (outcome === 'error') throw new Error('delivery failed');
         return outcome;
       },
-      clearSubmittedContext() { cleared++; }, clearQuotes() { cleared++; },
+      clearSubmittedContext() { assert.equal(held, true); cleared++; }, clearQuotes() { cleared++; },
       onError() { errors++; },
     });
     assert.equal(await submit('session', 'recovered', 'queue'), outcome === true);
     assert.equal(cleared, outcome === true ? 2 : 0);
     assert.equal(errors, outcome === 'error' ? 1 : 0);
+    assert.equal(held, false);
+    assert.equal(releases, 1);
+  }
+});
+
+test('ordinary sends retain the captured attachments across readiness and release on every outcome', async () => {
+  const pending: PendingAttachment[] = [{
+    stagingKey: 'recovered', displayName: 'a.txt', kind: 'code', size: 1,
+    source: { type: 'approval', approvalId: 'local-recovery:one', name: 'a.txt' },
+  }];
+  for (const outcome of [true, false, 'error'] as const) {
+    const events: string[] = [];
+    let settle!: () => void;
+    const ready = new Promise<void>((resolve) => { settle = resolve; });
+    const send = composerSend({
+      pending,
+      retainAttachments(captured) {
+        assert.equal(captured, pending);
+        events.push('hold');
+        return () => events.push('release');
+      },
+      setPending: (value) => { events.push(`pending:${value}`); },
+      async send(text) {
+        assert.equal(text, 'send restored content');
+        events.push('readiness');
+        await ready;
+        if (outcome === 'error') throw new Error('readiness failed');
+        return outcome;
+      },
+    });
+    const result = send('send restored content');
+    assert.deepEqual(events, ['hold', 'pending:true', 'readiness']);
+    settle();
+    if (outcome === 'error') await assert.rejects(result, /readiness failed/);
+    else assert.equal(await result, outcome);
+    assert.deepEqual(events, ['hold', 'pending:true', 'readiness', 'release', 'pending:false']);
   }
 });
 

@@ -151,6 +151,7 @@ const makaBridge = {
 const conversationServices: ConversationServices = {
   listMessages: async () => [],
   readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in slash menu stories'); },
+  releaseRecoveryAttachments: async () => undefined,
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,
   subscribeChanges: () => () => undefined,

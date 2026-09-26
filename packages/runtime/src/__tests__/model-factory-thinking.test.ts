@@ -24,7 +24,7 @@ import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 
-import { buildProviderOptions, getAIModel } from '../model-factory.js';
+import { buildProviderOptions, getAIModel, leastReasoningThinkingLevel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -731,13 +731,15 @@ describe('buildProviderOptions: thinking level', () => {
   });
 
   test('Vercel Gateway sends reasoning effort under its stable namespace and exact model id', () => {
-    assert.deepEqual(
-      [...thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking')],
-      ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-    );
-    for (const level of ['minimal', 'low', 'medium', 'high', 'xhigh'] as const) {
+    // Keep the known effort levels covered while allowing models.dev to add
+    // levels; every advertised level must retain its namespace and wire mapping.
+    const levels = thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking');
+    for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const) {
+      assert.ok(levels.includes(level), `Vercel must advertise ${level}`);
+    }
+    for (const level of levels) {
       assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', level), {
-        vercel: { reasoningEffort: level },
+        vercel: { reasoningEffort: level === 'off' ? 'none' : level },
       });
     }
     assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'off'), {
@@ -1279,5 +1281,94 @@ describe('buildProviderOptions: Command Code thinking level', () => {
   test('an unknown model exposes nothing and sends nothing', () => {
     assert.deepEqual([...thinkingVariantsForModel('commandcode', 'not-a-model')], []);
     assert.deepEqual(buildProviderOptions(conn('commandcode'), 'not-a-model', 'high'), {});
+  });
+});
+
+describe('leastReasoningThinkingLevel', () => {
+  test('asks for the lowest declared effort where a dropped off would leave provider-default reasoning', () => {
+    const cases: ReadonlyArray<
+      readonly [LlmConnection['providerType'], string, ThinkingLevel, Record<string, unknown>]
+    > = [
+      ['openai', 'gpt-5', 'minimal', { openai: { reasoningEffort: 'minimal' } }],
+      ['openai', 'o3', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai', 'gpt-6-sol', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai-codex', 'gpt-6-astra', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai', 'gpt-5.5', 'off', { openai: { reasoningEffort: 'none' } }],
+      [
+        'google',
+        'gemini-3.5-flash',
+        'minimal',
+        { google: { thinkingConfig: { thinkingLevel: 'minimal' } } },
+      ],
+      ['google', 'gemini-2.5-flash', 'off', { google: { thinkingConfig: { thinkingBudget: 0 } } }],
+    ];
+    for (const [providerType, modelId, level, wire] of cases) {
+      const connection = conn(providerType);
+      assert.equal(
+        leastReasoningThinkingLevel(connection, modelId),
+        level,
+        `${providerType}/${modelId}`,
+      );
+      const options = buildProviderOptions(connection, modelId, level) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      for (const [namespace, expected] of Object.entries(wire)) {
+        for (const [key, value] of Object.entries(expected as Record<string, unknown>)) {
+          assert.deepEqual(
+            key === 'thinkingConfig'
+              ? Object.fromEntries(
+                  Object.keys(value as object).map((field) => [
+                    field,
+                    (options[namespace]?.thinkingConfig as Record<string, unknown> | undefined)?.[
+                      field
+                    ],
+                  ]),
+                )
+              : options[namespace]?.[key],
+            value,
+            `${providerType}/${modelId} must send ${namespace}.${key} explicitly`,
+          );
+        }
+      }
+    }
+  });
+
+  test('keeps off where an omitted parameter already means no extended reasoning', () => {
+    // Claude on Anthropic Messages: omitting effort/thinking is non-thinking,
+    // while the lowest effort would switch adaptive thinking on. That holds on
+    // a gateway serving Claude over the same wire.
+    for (const providerType of ['anthropic', 'opencode'] as const) {
+      const connection = conn(providerType);
+      assert.equal(
+        leastReasoningThinkingLevel(connection, 'claude-opus-4-8'),
+        'off',
+        `${providerType}/claude-opus-4-8`,
+      );
+      const options = (buildProviderOptions(connection, 'claude-opus-4-8', 'off').anthropic ??
+        {}) as Record<string, unknown>;
+      assert.equal(options.effort, undefined);
+      assert.equal(options.thinking, undefined);
+    }
+    // Models with no declared levels keep the previous request unchanged.
+    assert.equal(leastReasoningThinkingLevel(conn('openai'), 'gpt-4o'), 'off');
+  });
+
+  test('asks Kimi Coding Plan for its lowest effort, since it thinks by default when none is sent', () => {
+    // K3 and kimi-for-coding speak Anthropic Messages but are not Claude: an
+    // omitted level leaves the route on its default, maximum thinking.
+    const kimi = conn('kimi-coding-plan', 'kimi-coding-plan');
+    for (const [modelId, thinking] of [
+      ['k3', { type: 'adaptive' }],
+      ['k3-256k', { type: 'adaptive' }],
+      ['kimi-for-coding', { type: 'enabled', budgetTokens: 1_024 }],
+    ] as const) {
+      const level = leastReasoningThinkingLevel(kimi, modelId);
+      assert.equal(level, 'low', modelId);
+      assert.deepEqual(buildProviderOptions(kimi, modelId, level).anthropic, {
+        thinking,
+        effort: 'low',
+      });
+    }
   });
 });

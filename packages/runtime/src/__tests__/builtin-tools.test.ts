@@ -2730,7 +2730,7 @@ function fakeExecutor(overrides: Partial<WorkspaceExecutor>): WorkspaceExecutor 
     resolveExistingPath: async ({ path }) => ({ path }),
     resolveWritablePath: async ({ path }) => ({ path }),
     writeLockKey: async ({ cwd, path }) => ({ key: `${cwd}:${path}` }),
-    globFiles: async () => ({ files: [] }),
+    globFiles: async () => ({ files: [], truncated: false }),
     grepFiles: async () => ({
       matches: [],
       matchedLines: 0,

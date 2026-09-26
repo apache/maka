@@ -327,6 +327,7 @@ function AppShellContent({
     setMessageLoadPending,
     sessionUiController,
     sessionCatalogController,
+    commitSession,
     activeCatalogSession,
     activeHostSession,
     requestedCatalogSession,
@@ -389,6 +390,7 @@ function AppShellContent({
     attachFilePaths,
     restoreAttachments,
     restoreMessageContext,
+    retainAttachments,
     removeAttachment,
     clearSubmittedContext,
     imageNoticeLifecycle,
@@ -1253,12 +1255,6 @@ function AppShellContent({
     [sessionCatalogController, localProjects],
   );
 
-  const activateSessionForFirstSend = useCallback((sessionId: string): Promise<void> => {
-    setNavSelection({ section: 'sessions' });
-    setActiveId(sessionId);
-    return Promise.resolve();
-  }, [setActiveId, setNavSelection]);
-
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
     refreshSessions,
@@ -1297,7 +1293,11 @@ function AppShellContent({
     isShellSurfaceOwnerActive,
     messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
-    activateSessionForFirstSend,
+    activateSessionForFirstSend: async (session) => {
+      commitSession(session);
+      setNavSelection({ section: 'sessions' });
+      setActiveId(session.id);
+    },
     retireSession: clearSessionRendererState,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     addTransientMessage,
@@ -1362,17 +1362,10 @@ function AppShellContent({
    * flag for the whole call gives the submission one owner, and
    * ChatComposerRegion defers its carry until it drops.
    */
-  async function sendOwningItsTarget(
-    text: string,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean | void> {
-    setNewTaskSendPending(true);
-    try {
-      return await sendWithAttachments(text, metadata);
-    } finally {
-      setNewTaskSendPending(false);
-    }
-  }
+  const sendOwningItsTarget = Conversation.composerSend({
+    pending: submittableAttachments, retainAttachments,
+    setPending: setNewTaskSendPending, send: sendWithAttachments,
+  });
 
   function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
     const createdSessionId = activeIdRef.current;
@@ -1382,7 +1375,7 @@ function AppShellContent({
 
   const enqueueFollowUp = Conversation.composerFollowUp({
     pending: submittableAttachments, quotes: pendingQuotes, directoryOptions,
-    enqueueMessage, clearSubmittedContext, clearQuotes,
+    enqueueMessage, retainAttachments, clearSubmittedContext, clearQuotes,
     onError: (sessionId, error) => {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
@@ -1707,16 +1700,9 @@ function AppShellContent({
       contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
     toastApi,
-    notifyRunEnded: ({ kind, sessionId, body }) => {
-      if (kind === 'completed' && activeIdRef.current === sessionId)
+    onTurnCompleted: (sessionId) => {
+      if (activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
-      // The live reply text is usually handed to the transcript before
-      // `complete` arrives; the Host commits the row's reply preview first.
-      // Best-effort: swallow any failure so a missed banner never surfaces
-      // as an unhandled promise rejection.
-      refreshChangedSession(sessionId)
-        .then((session) => window.maka.notifications.runEnded({ kind, title: session?.name, body: body ?? session?.lastMessagePreview }))
-        .catch(() => undefined);
     },
   });
 
@@ -1988,6 +1974,7 @@ function AppShellContent({
   const homeSurfaceActive =
     sessionsSelected &&
     messages.length === 0 &&
+    transientMessages.length === 0 &&
     !hasLiveTurnContent &&
     !activeMessageLoadError;
   const commandOptions: AppShellCommandListOptions = {
@@ -2357,6 +2344,7 @@ function AppShellContent({
                   streaming={turnActive}
                   processing={transientMessages.length > 0}
                   onSend={sendOwningItsTarget}
+                  retainSendContext={() => retainAttachments(submittableAttachments)}
                   onStop={stop}
                   pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}

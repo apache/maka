@@ -311,7 +311,7 @@ export function useWorkHubController(onSubmit?: () => void) {
     setStopPending(Boolean(pending?.stop));
     setMessagePresentation({ messageQueue: { entries: [] }, transientMessages: pending ? [{
       id: pending.input.turnId, hostTurnId: pending.input.turnId, text: pending.input.text,
-      attachments: pending.input.attachments, ts: Date.now(), transientPlacement: 'current_turn',
+      attachments: pending.input.attachments, ts: Date.now(), transientPlacement: 'transcript',
     }] : [] });
   }, [sessionId]);
 
@@ -408,7 +408,7 @@ export function useWorkHubController(onSubmit?: () => void) {
               } : local;
               const messages = previous.transientMessages.filter((message) => message.id !== event.messageId);
               if (content && !transcriptRef.current.messages.some((message) => message.type === 'user' && message.id === event.messageId)) {
-                messages.push({ ...content, hostTurnId: event.turnId, transientPlacement: 'current_turn', pendingSteering: false });
+                messages.push({ ...content, hostTurnId: event.turnId, transientPlacement: 'transcript' });
               }
               return {
                 messageQueue: { ...previous.messageQueue, entries: previous.messageQueue.entries.filter((entry) => entry.messageId !== event.messageId) },
@@ -526,7 +526,7 @@ export function useWorkHubController(onSubmit?: () => void) {
         pendingQueued.current = attempt;
         if (!attempt.observed) setMessagePresentation((previous) => ({ ...previous, transientMessages: [...previous.transientMessages.filter((message) => message.id !== attempt.messageId), {
           id: attempt.messageId, hostTurnId: queuedTurnId, text, attachments: [...attachments],
-          ts: Date.now(), transientPlacement: attempt.placement, pendingSteering: attempt.placement === 'current_turn',
+          ts: Date.now(), transientPlacement: attempt.placement === 'current_turn' ? 'steering' : 'follow_up',
         }] }));
         viewportNavigation.followLatest(target);
         const result = await services.enqueueMessage(target, attempt.messageId, text, attachments, attempt.placement);
@@ -551,7 +551,7 @@ export function useWorkHubController(onSubmit?: () => void) {
       setLiveTurns((previous) => retainLiveTurn(previous, armLiveTurn(attempt.input.turnId)));
       setMessagePresentation((previous) => ({ ...previous, transientMessages: [...previous.transientMessages.filter((message) => message.hostTurnId !== attempt.input.turnId && message.hostTurnId !== pendingRejectedTurnId), {
         id: attempt.input.turnId, hostTurnId: attempt.input.turnId, text, ts: Date.now(),
-        attachments: [...attachments], transientPlacement: 'current_turn',
+        attachments: [...attachments], transientPlacement: 'transcript',
       }] }));
       viewportNavigation.followLatest(target);
       const result = await services.answer(attempt.sessionId, attempt.input);

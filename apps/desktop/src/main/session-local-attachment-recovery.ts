@@ -31,8 +31,11 @@ interface RecoveryOwner {
 }
 interface RecoveryEntry {
   owner: string;
+  senderId: number;
   partition: string;
   issuedAt: number;
+  leases: number;
+  releaseRequested: boolean;
   attachment: { name: string; mimeType: string; content: Uint8Array };
 }
 
@@ -63,26 +66,44 @@ export class SessionLocalAttachmentRecovery {
     return attachments.map((attachment) => {
       const approvalId = `local-recovery:${randomUUID()}`;
       this.#entries.set(approvalId, {
-        owner: ownerKey(owner), partition: owner.partition, issuedAt: this.now(),
+        owner: ownerKey(owner), senderId: owner.senderId, partition: owner.partition, issuedAt: this.now(),
+        leases: 0, releaseRequested: false,
         attachment: { ...attachment, content: new Uint8Array(attachment.content) },
       });
       return { approvalId, name: attachment.name, mimeType: attachment.mimeType, size: attachment.content.byteLength };
     });
   }
 
+  /** Cleanup is sender-scoped, not target-scoped: an abandoned old target can still be released. */
+  release(senderId: number, ids: unknown): void {
+    if (!Array.isArray(ids) || ids.length > 1000 ||
+        [...ids].some((id) => typeof id !== 'string' || !id || id.length > 256)) {
+      throw new AttachmentIngestBlockedError('items_invalid');
+    }
+    this.#prune();
+    for (const id of ids) {
+      const entry = this.#entries.get(id);
+      if (!entry || entry.senderId !== senderId) continue;
+      entry.releaseRequested = true;
+      if (!entry.leases) this.#entries.delete(id);
+    }
+  }
+
   prepare(owner: RecoveryOwner, items: unknown): {
     items: unknown[];
     commit<T>(admit: () => T): T;
+    dispose(): void;
   } {
     this.#prune();
     if (!Array.isArray(items)) throw new AttachmentIngestBlockedError('items_invalid');
     if (items.length > MAX_ATTACHMENT_COUNT) throw new AttachmentIngestBlockedError('count_limit');
     const ids = new Set<string>();
     const key = ownerKey(owner);
-    const requireEntry = (id: string): RecoveryEntry => {
+    const requireEntry = (id: string, allowReleased = false): RecoveryEntry => {
       this.#prune();
       const entry = this.#entries.get(id);
-      if (!entry || entry.owner !== key) throw new AttachmentIngestBlockedError('source_expired');
+      if (!entry || entry.owner !== key || (entry.releaseRequested && !allowReleased))
+        throw new AttachmentIngestBlockedError('source_expired');
       return entry;
     };
     const expanded = items.map((item) => {
@@ -94,15 +115,32 @@ export class SessionLocalAttachmentRecovery {
       // Ignore renderer-supplied metadata; the stored snapshot owns both bytes and MIME.
       return { name: attachment.name, mimeType: attachment.mimeType, base64: Buffer.from(attachment.content).toString('base64') };
     });
+    // Acquire only after every item passes validation, so a partial preparation
+    // cannot retain a snapshot forever. Cleanup may not interrupt these sends.
+    const leasedEntries = [...ids].map((id) => requireEntry(id));
+    for (const entry of leasedEntries) entry.leases += 1;
+    let disposed = false;
     return {
       items: expanded,
       commit: (admit) => {
+        if (disposed) throw new AttachmentIngestBlockedError('source_expired');
         // Admission is synchronous (SQLite enqueue): no event-loop turn may
         // occur between revalidation, durable acceptance, and consumption.
-        for (const id of ids) requireEntry(id);
+        // A lease defers explicit cleanup, never expiration or authority revocation.
+        for (const id of ids) requireEntry(id, true);
         const result = admit();
         for (const id of ids) this.#entries.delete(id);
         return result;
+      },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        for (const id of ids) {
+          const entry = this.#entries.get(id);
+          if (!entry) continue;
+          entry.leases -= 1;
+          if (entry.releaseRequested && !entry.leases) this.#entries.delete(id);
+        }
       },
     };
   }

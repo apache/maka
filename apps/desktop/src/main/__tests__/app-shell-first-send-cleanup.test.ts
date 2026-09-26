@@ -473,9 +473,9 @@ describe('composer first-send cleanup', () => {
         addTransientMessage: () => {
           order.push('optimistic');
         },
-        activateSessionForFirstSend: async (sessionId) => {
+        activateSessionForFirstSend: async (session) => {
           order.push('observe');
-          activeIdRef.current = sessionId;
+          activeIdRef.current = session.id;
           await observation.promise;
           order.push('seeded');
         },
@@ -513,8 +513,8 @@ describe('composer first-send cleanup', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        activateSessionForFirstSend: async (sessionId) => {
-          activeIdRef.current = sessionId;
+        activateSessionForFirstSend: async (session) => {
+          activeIdRef.current = session.id;
           throw new Error('Timed out while preparing the new Session event stream');
         },
         retireSession: (sessionId) => {

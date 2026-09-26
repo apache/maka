@@ -29,10 +29,7 @@ import {
   type AttachmentRef,
   type DirectoryReference,
 } from '@maka/core/events';
-import {
-  pendingAttachmentSourceKey,
-  type PendingAttachment,
-} from './composer-attachments.js';
+import type { PendingAttachment } from './composer-attachments.js';
 import {
   appendPending,
   removePending,
@@ -73,11 +70,63 @@ type ComposerPendingState = {
   directories: Record<string, readonly DirectoryReference[]>;
 };
 
+function recoveryApprovalIds(attachments: readonly PendingAttachment[]): Set<string> {
+  return new Set(attachments.flatMap((item) =>
+    item.source.type === 'approval' && item.source.approvalId.startsWith('local-recovery:')
+      ? [item.source.approvalId]
+      : [],
+  ));
+}
+
 class ComposerAttachmentLifecycle {
   mounted = true;
   stagedKeys = new Set<string>();
   readonly previewUrls = new Map<string, string>();
   readonly #shownOwners = new Set<string>();
+  releaseRecoveryAttachments?: (approvalIds: readonly string[]) => Promise<void>;
+  #stagedRecoveryApprovals = new Set<string>();
+  readonly #ownedRecoveryApprovals = new Set<string>();
+  readonly #recoveryHolds = new Map<string, number>();
+
+  syncRecoveryApprovals(attachments: PendingByKey<PendingAttachment>): void {
+    this.#stagedRecoveryApprovals = recoveryApprovalIds(Object.values(attachments).flat());
+    for (const approvalId of this.#stagedRecoveryApprovals) this.#ownedRecoveryApprovals.add(approvalId);
+    this.#releaseUnusedRecoveryApprovals();
+  }
+
+  retainAttachments(attachments: readonly PendingAttachment[] | undefined): () => void {
+    const approvals = recoveryApprovalIds(attachments ?? []);
+    for (const approvalId of approvals) {
+      this.#ownedRecoveryApprovals.add(approvalId);
+      this.#recoveryHolds.set(approvalId, (this.#recoveryHolds.get(approvalId) ?? 0) + 1);
+    }
+    let retained = true;
+    return () => {
+      if (!retained) return;
+      retained = false;
+      for (const approvalId of approvals) {
+        const remaining = (this.#recoveryHolds.get(approvalId) ?? 1) - 1;
+        if (remaining > 0) this.#recoveryHolds.set(approvalId, remaining);
+        else this.#recoveryHolds.delete(approvalId);
+      }
+      this.#releaseUnusedRecoveryApprovals();
+    };
+  }
+
+  #releaseUnusedRecoveryApprovals(): void {
+    const unused = [...this.#ownedRecoveryApprovals].filter((approvalId) =>
+      !this.#stagedRecoveryApprovals.has(approvalId) && !this.#recoveryHolds.has(approvalId),
+    );
+    if (unused.length === 0) return;
+    for (const approvalId of unused) this.#ownedRecoveryApprovals.delete(approvalId);
+    try {
+      // Cleanup must not fail a successful send or produce an unhandled rejection.
+      // Main also expires unused approvals if its release endpoint is unavailable.
+      void this.releaseRecoveryAttachments?.(unused).catch(() => {});
+    } catch {
+      // A service can also throw before returning its promise.
+    }
+  }
 
   releasePreview(stagingKey: string): void {
     const url = this.previewUrls.get(stagingKey);
@@ -189,6 +238,7 @@ export function useComposerAttachments(options: {
   directoryHostId?: string;
   toastApi: ToastApi;
   service: ComposerAttachmentService;
+  releaseRecoveryAttachments?(approvalIds: readonly string[]): Promise<void>;
   imageNotice?:
     | {
         /** Undefined means there is no selected target yet. */
@@ -204,10 +254,14 @@ export function useComposerAttachments(options: {
   });
   const pendingStateRef = useRef(pendingState);
   function updatePendingState(update: (current: ComposerPendingState) => ComposerPendingState): void {
+    if (!lifecycle.mounted) return;
     // Publish to async guards before scheduling React's render. Never update
     // this ref inside a state updater: React may defer or replay that updater.
     const next = update(pendingStateRef.current);
     pendingStateRef.current = next;
+    // Use all draft buckets, synchronously: React batching must not delay
+    // ownership changes or release a token another draft/send still owns.
+    lifecycle.syncRecoveryApprovals(next.attachments);
     setPendingState(next);
   }
   const pendingByKey = pendingState.attachments;
@@ -220,6 +274,7 @@ export function useComposerAttachments(options: {
   // Live mirror of every staged item's key, for async preview arrivals to
   // check before writing: state snapshots inside a .then are stale by design.
   const [lifecycle] = useState(() => new ComposerAttachmentLifecycle());
+  lifecycle.releaseRecoveryAttachments = options.releaseRecoveryAttachments;
   useEffect(() => {
     lifecycle.mounted = true;
     return () => {
@@ -228,6 +283,7 @@ export function useComposerAttachments(options: {
       // but release even URLs still awaiting image.decode() on real unmount.
       queueMicrotask(() => {
         if (lifecycle.mounted) return;
+        lifecycle.syncRecoveryApprovals({});
         lifecycle.stagedKeys.clear();
         for (const key of lifecycle.previewUrls.keys()) lifecycle.releasePreview(key);
       });
@@ -480,7 +536,7 @@ export function useComposerAttachments(options: {
             current.attachments,
             options.draftKey,
             submitted,
-            pendingAttachmentSourceKey,
+            (item) => item.stagingKey,
           )
         : current.attachments;
       const previous = current.directories[directoryDraftKey] ?? [];
@@ -496,7 +552,7 @@ export function useComposerAttachments(options: {
 
   function clearSubmittedAttachments(submitted: readonly PendingAttachment[]): void {
     updateAttachments((current) =>
-      removePendingItems(current, options.draftKey, submitted, pendingAttachmentSourceKey),
+      removePendingItems(current, options.draftKey, submitted, (item) => item.stagingKey),
     );
   }
 
@@ -530,6 +586,10 @@ export function useComposerAttachments(options: {
     clearSubmittedContext,
     clearSubmittedAttachments,
     clearAllAttachments,
+    // Acquire before the send's first await; end in finally, after successful
+    // submission clears only its captured staging keys. Failed sends keep drafts.
+    retainAttachments: (attachments: readonly PendingAttachment[] | undefined) =>
+      lifecycle.retainAttachments(attachments),
     imageNoticeLifecycle: lifecycle,
   };
 }

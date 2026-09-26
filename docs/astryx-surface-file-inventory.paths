@@ -30,6 +30,7 @@ apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-capability-editor.tsx
+apps/desktop/src/renderer/features/connection-settings/provider-endpoint-field.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx
 apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx
@@ -90,6 +91,7 @@ apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-regi
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx
 apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-probe.tsx
+apps/desktop/src/renderer/features/workbar/tools/review/session-review-base-branch-picker.tsx
 apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx
@@ -240,6 +242,7 @@ packages/ui/src/client-plugin-runtime.tsx
 packages/ui/src/client-plugin-slots.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
+packages/ui/src/composer-model-label.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx

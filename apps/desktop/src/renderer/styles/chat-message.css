@@ -73,10 +73,10 @@
 
 /* These rows mount and unmount around the reader without being anything the
    reader is reading, so anchoring on one moves the transcript for no content:
-   a send that is not durable yet, the placeholder held until the live Turn
-   exists. */
+   a send that is not durable yet, the Turn held until the transcript carries
+   it. */
 [data-transient-message-id],
-.maka-turn[data-live-streaming='true']:not([data-turn-id]) {
+.maka-pending-turn {
   overflow-anchor: none;
 }
 

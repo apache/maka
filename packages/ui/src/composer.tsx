@@ -356,6 +356,8 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
+    /** Retain this render's send context before any asynchronous preparation. */
+    retainSendContext?(): () => void;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onPickDirectory?(): void | Promise<void>;
@@ -1456,7 +1458,11 @@ export const Composer = forwardRef<
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
+    let releaseSendContext: (() => void) | undefined;
     try {
+      // A picked Session can still be loading. Capture ownership before that
+      // wait so removing a chip cannot revoke this send's attachment snapshot.
+      releaseSendContext = props.retainSendContext?.();
       if (props.waitForSessionReference) {
         const referenceReady = await props.waitForSessionReference();
         if (!referenceReady) return;
@@ -1470,6 +1476,7 @@ export const Composer = forwardRef<
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);
+      releaseSendContext?.();
     }
     if (!composerMountedRef.current) return;
     if (sent === false) return;

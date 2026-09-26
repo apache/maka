@@ -788,12 +788,11 @@ async function startToolModel(routes: readonly ToolModelRoute[]) {
         const messages = Array.isArray(input.messages)
           ? (input.messages as Array<Record<string, unknown>>)
           : [];
-        const latestUserMessage = [...messages]
-          .reverse()
-          .find((message) => message.role === 'user');
         if (
-          latestUserMessage &&
-          JSON.stringify(latestUserMessage.content).includes(CAPACITY_FILLER)
+          messages.some(
+            (message) =>
+              message.role === 'user' && JSON.stringify(message.content).includes(CAPACITY_FILLER),
+          )
         ) {
           respondEvents(response, [
             modelChunk(

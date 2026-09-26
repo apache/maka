@@ -74,7 +74,7 @@ export { activeHostTurn, chatTurnActivity } from '../../application/contracts/se
 export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
-export { composerFollowUp } from './controller/composer-follow-up.js';
+export { composerSend, composerFollowUp } from './controller/composer-follow-up.js';
 export { composerMessageRecovery } from './controller/composer-message-recovery.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';

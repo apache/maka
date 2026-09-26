@@ -284,6 +284,15 @@ export interface SideChatSessionPort {
 export interface WorkbarServices {
   popupMenu(input: import('../../../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
   readonly review: WorkbarReviewService;
+  /**
+   * Explicit qualified refs persist per Session across panel/app restarts.
+   * `null` means unpinned: new Sessions follow their repository's current default.
+   * Unavailable persistence reads as null; writes are best-effort and never throw.
+   */
+  readonly reviewBaseBranchPreference: {
+    read(sessionId: string): string | null;
+    write(sessionId: string, branch: string | null): void;
+  };
   readonly terminal: WorkbarTerminalService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;

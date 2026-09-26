@@ -26,6 +26,7 @@ import { test, type TestContext } from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { IpcMainInvokeEvent } from 'electron';
 import { deferred } from '@maka/core/test-only/async-primitives';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
@@ -354,18 +355,30 @@ test('offline intents are dispatched only after connectivity returns', async (t)
   service.wake();
   await nextTurn();
   assert.equal(store.get('authority', 'message-1')?.state, 'saved');
+  assert.equal(service.listMessages(target, 'session-1')[0]!.delivering, undefined);
   assert.equal(calls.length, 0);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
   target = {
     ...target,
     client: client('epoch-1'),
     submit: async (input) => {
       calls.push(input);
+      await released;
       return accepted;
     },
   };
   service.wake();
-  await waitFor(() => store.get('authority', 'message-1')?.state === 'accepted');
-  assert.equal(calls.length, 1);
+  await waitFor(() => calls.length === 1);
+  store.enqueue('authority', intent('message-2'));
+  service.wake();
+  await nextTurn();
+  const queued = service.listMessages(target, 'session-1').find((message) => message.messageId === 'message-2');
+  assert.equal(queued?.state, 'saved', 'the second message waits behind the first');
+  assert.equal(queued?.delivering, true);
+  release();
+  await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
+  assert.equal(calls.length, 2);
   assert.equal(calls[0]!.originHostEpoch, 'epoch-1');
   assert.equal(calls[0]!.content.attachments?.length, 1);
 });
@@ -1054,6 +1067,91 @@ test('editing a preparation failure preserves bytes across restart and a new sen
   assert.equal(Buffer.from(db.store.stagedAttachments(target.partition, 'edited-message')[0]!.content).toString(), 'original bytes');
   assert.deepEqual(await send('replayed-message'), blocked);
 });
+
+for (const outcome of ['saved', 'resize-failed', 'store-full', 'authority-changed'] as const) {
+  test(`recovery release during async IPC preparation retains only the in-flight send (${outcome})`, async (t) => {
+    const db = await database(t);
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    };
+    let activeTarget = target;
+    const image = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const source = db.store.enqueue(target.partition, {
+      ...intent(), staged: [{ name: 'image.png', mimeType: 'image/png', base64: Buffer.from(image).toString('base64') }],
+    });
+    db.store.update({ ...source, state: 'failed' });
+    if (outcome === 'store-full') {
+      for (let index = 0; index < 255; index += 1)
+        db.store.enqueue(target.partition, { ...intent(`full-${index}`), staged: [] });
+    }
+    const service = new DesktopSessionLocalService(db.store, {
+      targets: () => [activeTarget], changed() {}, onError: assert.fail,
+    });
+    db.beforeClose.push(() => service.close());
+    const pickedPath = join(db.path, '..', 'picked.txt');
+    await writeFile(pickedPath, 'picked bytes');
+    const approvals = createAttachmentApprovalRegistry();
+    const [picked] = approvals.issueApprovals(7, [{ path: pickedPath, name: 'picked.txt', size: 12 }]);
+    const enteredResize = deferred<void>();
+    const finishResize = deferred<void>();
+    type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+    const handlers = new Map<string, Parameters<Ipc['handle']>[1]>();
+    registerDesktopSessionLocalIpc({
+      ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler); } },
+      service, approvals,
+      resizeImage: async (bytes) => { enteredResize.resolve(); await finishResize.promise; return bytes; },
+      resolveWorkspace: async () => { throw new Error('Unexpected workspace request'); }, changed() {},
+    });
+    const event = { sender: { id: 7 } } as IpcMainInvokeEvent;
+    const draft = projectLocalMessageDraft(await handlers.get('session-local:edit')!(
+      event, target.scope, 'session-1', source.messageId,
+    ));
+    const recoveryIds = draft.stagedAttachments.map((approval) => approval.approvalId);
+    const release = handlers.get('session-local:release-attachments')!;
+    // Neither another window nor a malformed batch can release this draft.
+    await release({ sender: { id: 8 } } as IpcMainInvokeEvent, recoveryIds);
+    assert.throws(() => release(event, [...recoveryIds, null]), AttachmentIngestBlockedError);
+    const fillerOwner = { senderId: 7, partition: target.partition, scope: target.scope, sessionId: 'session-1' };
+    const filler = { name: 'filler.txt', mimeType: 'text/plain', content: Uint8Array.of(1) };
+    for (let count = 0; count < 999; count += 1) service.attachmentRecovery.issue(fillerOwner, [filler]);
+    assert.deepEqual(await handlers.get('session-local:submit')!(event, target.scope, 'session-1', 'current_turn', {
+      messageId: 'invalid-source', text: 'invalid source',
+      attachmentItems: [...draft.stagedAttachments, { approvalId: 'missing-native-approval', name: 'missing.txt' }],
+    }), { ok: false, reason: 'attachment_blocked', code: 'source_expired' },
+    'ingest validation failure must dispose its recovery lease without consuming the draft');
+    const pending = handlers.get('session-local:submit')!(event, target.scope, 'session-1', 'current_turn', {
+      messageId: 'edited', text: 'edited', attachmentItems: [...draft.stagedAttachments, picked],
+    }) as Promise<{ disposition: string }>;
+    await enteredResize.promise;
+    await release(event, [...recoveryIds, picked.approvalId]);
+    assert.ok(approvals.peekApproval(7, picked.approvalId), 'recovery cleanup cannot release ordinary approvals');
+    assert.throws(() => service.attachmentRecovery.issue(fillerOwner, [filler]), AttachmentIngestBlockedError,
+      'the in-flight snapshot remains counted until the lease settles');
+    assert.deepEqual(await handlers.get('session-local:submit')!(event, target.scope, 'session-1', 'current_turn', {
+      messageId: 'replayed', text: 'replayed', attachmentItems: draft.stagedAttachments,
+    }), { ok: false, reason: 'attachment_blocked', code: 'source_expired' });
+    if (outcome === 'authority-changed') activeTarget = { ...target, partition: 'replacement-authority' };
+    if (outcome === 'resize-failed') {
+      const rejected = assert.rejects(pending, /resize failed/);
+      finishResize.reject(new Error('resize failed'));
+      await rejected;
+    } else {
+      finishResize.resolve();
+      if (outcome === 'saved') assert.equal((await pending).disposition, 'locally_saved');
+      else await assert.rejects(pending, outcome === 'store-full' ? /Local message storage is full/ : /Host authority changed/);
+    }
+    assert.equal(service.attachmentRecovery.issue(fillerOwner, [filler]).length, 1,
+      'success and every failure path release the abandoned snapshot lease');
+    await release(event, recoveryIds);
+    if (outcome === 'saved') {
+      assert.deepEqual(db.store.stagedAttachments(target.partition, 'edited')[0].content, image);
+      assert.equal(approvals.peekApproval(7, picked.approvalId), null);
+    } else {
+      assert.equal(db.store.get(target.partition, 'edited'), undefined);
+      assert.ok(approvals.peekApproval(7, picked.approvalId));
+    }
+  });
+}
 
 test('preload recovery projection rejects raw attachment bytes rather than forwarding them', () => {
   const draft: DesktopLocalMessageDraft = {

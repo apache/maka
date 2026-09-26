@@ -24,7 +24,7 @@ export {
 } from './controller/transcript-reading-position.js';
 export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
 export { localMessagePresentation } from './controller/local-message-presentation.js';
-export { composerFollowUp } from './controller/composer-follow-up.js';
+export { composerSend, composerFollowUp } from './controller/composer-follow-up.js';
 export { composerMessageRecovery } from './controller/composer-message-recovery.js';
 export {
   type ActiveExecutionBoundarySnapshot,
