@@ -45,7 +45,7 @@ import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
 import {
   WorkbarServicesProvider,
 } from '../src/renderer/features/workbar';
-import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import { WorkbarSurface, WorkbarTitlebarActionsView } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -321,8 +321,9 @@ function ShellFrame(props: {
           ...appShellFrameStyle({
             sessionListCollapsed: props.sidebarCollapsed ?? false,
             sessionListWidth: SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
-            workbarRightWidth: props.workbarWidth ?? SESSION_WORKBAR_DEFAULT_WIDTH,
           }),
+          // Production publishes this from WorkbarProvider, above the frame.
+          '--maka-session-workbar-width': `${props.workbarWidth ?? SESSION_WORKBAR_DEFAULT_WIDTH}px`,
         } as CSSProperties
       }
     >
@@ -422,7 +423,6 @@ function ComposedShell(props: {
         sidebarCollapsed={collapsed}
         onToggleSidebar={() => setCollapsed((current) => !current)}
         onOpenSearchModal={noop}
-        workbar={props.workbarToggle ? { togglePosition: 'titlebar', model: { activeId: active?.id, hidden: !active, rightCollapsed: props.workbarToggle.collapsed, onToggleRightPanel: props.workbarToggle.onToggle } } : undefined}
       >
         {/* Derived from the same session and project catalog the sidebar reads,
             not hand-passed: a story cannot show a project the session does not
@@ -440,6 +440,14 @@ function ComposedShell(props: {
               });
               return name ? { name, path: active.cwd, onOpenFolder: noop } : undefined;
             })()}
+          />
+        )}
+        {/* Production renders this through the titlebar's `workbar` prop, after
+            the children; the story supplies its own model to the view. */}
+        {props.workbarToggle && (
+          <WorkbarTitlebarActionsView
+            togglePosition="titlebar"
+            model={{ activeId: active?.id, hidden: !active, rightCollapsed: props.workbarToggle.collapsed, onToggleRightPanel: props.workbarToggle.onToggle }}
           />
         )}
       </AppShellTitlebar>
