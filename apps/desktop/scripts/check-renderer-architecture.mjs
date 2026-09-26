@@ -23,6 +23,7 @@ import { builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { parse } from '@babel/parser';
 
 const STATEFUL_HOOKS = new Set([
@@ -3566,9 +3567,7 @@ async function crossCheckUnderBaseChecker({
   }
 }
 
-async function loadBaseConfig(repoRoot, desktopRoot, base, { strictBase = false } = {}) {
-  if (!base) return { baseConfig: undefined, crossCheckViolations: [], introducedLedger: false };
-  const relativeConfig = normalizePath(relative(repoRoot, join(desktopRoot, 'renderer-architecture.json')));
+function assertBaseCommit(repoRoot, base) {
   try {
     execFileSync('git', ['rev-parse', '--verify', `${base}^{commit}`], {
       cwd: repoRoot,
@@ -3578,6 +3577,12 @@ async function loadBaseConfig(repoRoot, desktopRoot, base, { strictBase = false 
   } catch {
     throw new Error(`base ref does not resolve to a commit: ${base}`);
   }
+}
+
+async function loadBaseConfig(repoRoot, desktopRoot, base, { strictBase = false } = {}) {
+  if (!base) return { baseConfig: undefined, crossCheckViolations: [], introducedLedger: false };
+  const relativeConfig = normalizePath(relative(repoRoot, join(desktopRoot, 'renderer-architecture.json')));
+  assertBaseCommit(repoRoot, base);
 
   let source;
   try {
@@ -3684,23 +3689,33 @@ async function runCli() {
   let config;
   let loadedBase;
   let strictBase;
+  let violations;
   let write;
   try {
     ({ base, strictBase, write } = parseCliArguments(process.argv.slice(2)));
     config = JSON.parse(readFileSync(join(desktopRoot, 'renderer-architecture.json'), 'utf8'));
-    loadedBase = await loadBaseConfig(repoRoot, desktopRoot, base, { strictBase });
     if (write) {
       config = generateArchitectureConfig(desktopRoot, config);
       writeFileSync(join(desktopRoot, 'renderer-architecture.json'), `${JSON.stringify(config, null, 2)}\n`);
       console.log('Renderer architecture ledger updated.');
     }
+    // The base tree is parsed on a worker while this thread parses the current
+    // tree; each pass is single-threaded and they only meet at the ratchet.
+    if (base) assertBaseCommit(repoRoot, base);
+    const basePending = loadBaseConfigInWorker(repoRoot, desktopRoot, base, { strictBase });
+    violations = checkRendererArchitecture({ config, desktopRoot });
+    loadedBase = await basePending;
   } catch (error) {
     console.error(`Renderer architecture check could not start: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
     return;
   }
   const { baseConfig, crossCheckViolations, introducedLedger } = loadedBase;
-  const violations = [...checkRendererArchitecture({ baseConfig, config, desktopRoot }), ...crossCheckViolations];
+  if (baseConfig && validateArchitectureConfig(baseConfig, 'base', violations)) {
+    validateMonotonicDebt(config, baseConfig, desktopRoot, violations);
+  }
+  violations.push(...crossCheckViolations);
+  violations.sort();
   if (violations.length > 0) {
     console.error('Renderer architecture check failed:');
     for (const violation of violations) console.error(`- ${violation}`);
@@ -3714,4 +3729,31 @@ async function runCli() {
   console.log(`Renderer architecture check passed${baseConfig ? ` against ${base}` : ''}.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await runCli();
+function loadBaseConfigInWorker(repoRoot, desktopRoot, base, options) {
+  if (!base) return loadBaseConfig(repoRoot, desktopRoot, base, options);
+  return new Promise((resolvePromise, reject) => {
+    const worker = new Worker(new URL(import.meta.url), {
+      workerData: { base, desktopRoot, entry: import.meta.url, options, repoRoot },
+    });
+    worker.once('message', (message) => {
+      if (message.ok) resolvePromise(message.value);
+      else reject(new Error(message.error));
+    });
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`base tree worker exited with code ${code}`));
+    });
+  });
+}
+
+// The base checker is imported into this worker by the cross-check, so only
+// the module the worker was started with may answer.
+if (!isMainThread && workerData?.entry === import.meta.url) {
+  const { base, desktopRoot, options, repoRoot } = workerData;
+  loadBaseConfig(repoRoot, desktopRoot, base, options).then(
+    (value) => parentPort.postMessage({ ok: true, value }),
+    (error) => parentPort.postMessage({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+  );
+} else if (isMainThread && process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  await runCli();
+}

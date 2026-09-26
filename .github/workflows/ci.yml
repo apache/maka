@@ -260,7 +260,7 @@ jobs:
       # renderer root from absorbing new feature or Desktop ownership while
       # the existing AppShell is migrated behind stable boundaries.
       - name: Check renderer architecture
-        if: steps.plan.outputs.code == 'true'
+        if: steps.plan.outputs.renderer_architecture == 'true'
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base }}
         run: |
@@ -450,7 +450,10 @@ jobs:
 
       - name: Build Storybook
         if: steps.plan.outputs.storybook == 'true'
-        run: npm --workspace @maka/desktop run build-storybook
+        # The smoke and the geometry ablation open iframe.html only, so skip
+        # the manager bundle, docgen and sourcemaps. performance-frontend.yml
+        # keeps the production build its measurements are calibrated against.
+        run: npm --workspace @maka/desktop run build-storybook -- --test --preview-only
 
       - name: Storybook smoke
         if: steps.plan.outputs.storybook == 'true'
@@ -503,7 +506,7 @@ jobs:
 
       - name: Build CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
-        run: npm run release:cli:pack -- --allow-dirty
+        run: npm run release:cli:pack -- --allow-dirty --reuse-build
 
       - name: Report CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true'

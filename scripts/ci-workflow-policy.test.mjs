@@ -87,7 +87,7 @@ test('comparison precedes planning and every later gate uses plan outputs', () =
   assert.ok(planStep < workflow.indexOf('steps.plan.outputs'));
   assert.match(
     workflow,
-    /- name: Check renderer architecture\n\s+if: steps\.plan\.outputs\.code == 'true'/u,
+    /- name: Check renderer architecture\n\s+if: steps\.plan\.outputs\.renderer_architecture == 'true'/u,
   );
 });
 
