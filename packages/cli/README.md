@@ -57,6 +57,38 @@ The release gate validates the following installed-package matrix:
 Other combinations that satisfy the Node.js minimum may work, but are not part of the current
 release gate. Real Eval executor validation currently runs on Linux x64 with Node.js 24.
 
+## Optional OpenTelemetry traces
+
+Maka can export bounded model-call and tool-invocation traces to an OTLP/HTTP collector. The
+exporter is disabled unless an endpoint is configured in the Runtime Host environment:
+
+```sh
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
+export OTEL_EXPORTER_OTLP_HEADERS='authorization=Bearer%20token'
+export OTEL_SERVICE_NAME=maka
+maka
+```
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides the generic endpoint and is used as-is, including
+custom paths and trailing slashes. Only `OTEL_EXPORTER_OTLP_ENDPOINT` has `/v1/traces` appended.
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` overrides the generic header variable. Empty trace-specific
+endpoint, header and timeout variables behave as unset and fall back to the generic variables. `OTEL_RESOURCE_ATTRIBUTES` adds URL-encoded `key=value` resource attributes.
+`OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` overrides `OTEL_EXPORTER_OTLP_TIMEOUT`; both accept positive
+integer milliseconds and default to 10000 for missing or invalid values. On shutdown, export
+requests share a maximum 1000 ms grace period before cancellation, regardless of the request
+timeout. Connection failures and HTTP 429/502/503/504 responses retry with exponential backoff
+and jitter, honoring `Retry-After`, within the original batch timeout. Unsent spans are discarded
+after the timeout or shutdown grace period; permanent HTTP errors are not retried.
+
+Exported spans contain provider/model identifiers, model-call kind, tool name, duration, status,
+token counts, cost, byte counts, and a fixed allowlist of error classes; arbitrary error names
+are exported as `Other`. Prompts, message contents, tool arguments/results, credentials, and
+session paths are never exported. An authorization header on a non-HTTPS endpoint emits one
+warning per configured endpoint when the exporter is created. Each exported span is an independent
+usage event rather than a parent/child trace. Export failures are best-effort and do not fail a
+turn or change the local Usage ledger. Repeated collector failures emit only one error until
+an export succeeds; a later outage can emit a new error.
+
 ## Install
 
 Two dist-tags are live on npm, and they are not interchangeable:
