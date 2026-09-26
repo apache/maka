@@ -30,7 +30,7 @@ import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import type { UsageRange, UsageSettings, UsageStats } from '@maka/core/settings';
 import { estimatedUsageCost, hasUnavailableUsage } from '@maka/core/usage-ledger-merge';
-import { Button, TextInput, Selector, Switch, useToast, useUiLocale, useMountedRef, Banner } from '@maka/ui';
+import { Button, TextInput, Selector, Switch, useToast, useUiLocale, useMountedRef, Banner, formatCompactTokenCount } from '@maka/ui';
 import {
   ICON_SIZE,
   Activity,
@@ -63,6 +63,25 @@ const USAGE_SEARCH_DEBOUNCE_MS = 250;
 const EMPTY_USAGE_LOGS: UsageStats['logs'] = [];
 const normalizeUsageSearch = (search: string) => search.trim().toLowerCase();
 
+function UsageTokenValue(props: { value: string; exactValue: string }) {
+  if (props.value === props.exactValue) return props.value;
+  return (
+    <Tooltip content={props.exactValue} hasHoverIndication={false}>
+      {props.value}
+    </Tooltip>
+  );
+}
+
+function UsageTokenCount(props: { count: number }) {
+  const locale = useUiLocale();
+  return (
+    <UsageTokenValue
+      value={formatCompactTokenCount(props.count)}
+      exactValue={props.count.toLocaleString(uiLocaleToIntlLocale(locale))}
+    />
+  );
+}
+
 /**
  * The Usage settings surface (issue #4425). A disposable view: it unmounts when
  * the user leaves the Usage section. The loaded stats snapshot lives in the
@@ -80,6 +99,10 @@ export function UsageSettingsView(props: {
   const services = useUsageServices();
   const locale = useUiLocale();
   const copy = getUsageSettingsCopy(locale);
+  const exactTokenFormatter = useMemo(
+    () => new Intl.NumberFormat(uiLocaleToIntlLocale(locale)),
+    [locale],
+  );
   const toast = useToast();
   const persistedUsage = props.settings;
   // A retained complete result stays bound to its original query until replacement.
@@ -284,8 +307,40 @@ export function UsageSettingsView(props: {
         <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
           <MetricCard title={copy.totalRequests} value={stats ? String(stats.summary.totalRequests) : '—'} />
           <MetricCard title={copy.totalCost} value={totalCostDisplay} detail={copy.costHelp} />
-          <MetricCard title={copy.totalTokens} value={stats ? String(stats.summary.totalTokens) : '—'} detail={stats ? copy.tokenDetail(stats.summary.inputTokens, stats.summary.outputTokens) : undefined} />
-          <MetricCard title={copy.cacheTokens} value={stats ? String(stats.summary.cacheTokens) : '—'} detail={stats ? copy.cacheDetail(stats.summary.cacheMiss, stats.summary.cacheRead, stats.summary.cacheCreation) : undefined} />
+          <MetricCard
+            title={copy.totalTokens}
+            value={stats ? <UsageTokenCount count={stats.summary.totalTokens} /> : '—'}
+            detail={stats ? (
+              <UsageTokenValue
+                value={copy.tokenDetail(
+                  formatCompactTokenCount(stats.summary.inputTokens),
+                  formatCompactTokenCount(stats.summary.outputTokens),
+                )}
+                exactValue={copy.tokenDetail(
+                  exactTokenFormatter.format(stats.summary.inputTokens),
+                  exactTokenFormatter.format(stats.summary.outputTokens),
+                )}
+              />
+            ) : undefined}
+          />
+          <MetricCard
+            title={copy.cacheTokens}
+            value={stats ? <UsageTokenCount count={stats.summary.cacheTokens} /> : '—'}
+            detail={stats ? (
+              <UsageTokenValue
+                value={copy.cacheDetail(
+                  formatCompactTokenCount(stats.summary.cacheMiss),
+                  formatCompactTokenCount(stats.summary.cacheRead),
+                  formatCompactTokenCount(stats.summary.cacheCreation),
+                )}
+                exactValue={copy.cacheDetail(
+                  exactTokenFormatter.format(stats.summary.cacheMiss),
+                  exactTokenFormatter.format(stats.summary.cacheRead),
+                  exactTokenFormatter.format(stats.summary.cacheCreation),
+                )}
+              />
+            ) : undefined}
+          />
         </div>
       </div>
 
@@ -522,7 +577,7 @@ function UsageRequestsPanel(props: {
           usageRequestKindLabel(row.kind, props.copy),
           usageRequestTarget(row),
           usageRequestSessionCell(row, props.copy, props.onOpenSession),
-          row.inputTokens + row.outputTokens,
+          <UsageTokenCount key="tokens" count={row.inputTokens + row.outputTokens} />,
           row.kind === 'model' && row.costUsd !== undefined ? `$${row.costUsd.toFixed(2)}` : '-',
           row.latencyMs !== undefined ? `${row.latencyMs}ms` : '-',
           usageRequestStatusLabel(row.status, props.copy),
@@ -617,7 +672,7 @@ function UsageProvidersPanel(props: { stats: UsageStats | null; copy: UsageSetti
         { header: props.copy.tables.providerHeaders[2], numeric: true },
         { header: props.copy.tables.providerHeaders[3], numeric: true },
       ]}
-      rows={(props.stats?.byProvider ?? []).map((row) => [row.provider, row.requests, row.tokens, `$${row.costUsd.toFixed(2)}`])}
+      rows={(props.stats?.byProvider ?? []).map((row) => [row.provider, row.requests, <UsageTokenCount key="tokens" count={row.tokens} />, `$${row.costUsd.toFixed(2)}`])}
       empty={{ Icon: Database, title: props.copy.tables.providerEmptyTitle, body: props.copy.tables.providerEmptyBody }}
     />
   );
@@ -633,7 +688,7 @@ function UsageModelsPanel(props: { stats: UsageStats | null; copy: UsageSettings
         { header: props.copy.tables.modelHeaders[2], numeric: true },
         { header: props.copy.tables.modelHeaders[3], numeric: true },
       ]}
-      rows={(props.stats?.byModel ?? []).map((row) => [row.model, row.requests, row.tokens, `$${row.costUsd.toFixed(2)}`])}
+      rows={(props.stats?.byModel ?? []).map((row) => [row.model, row.requests, <UsageTokenCount key="tokens" count={row.tokens} />, `$${row.costUsd.toFixed(2)}`])}
       empty={{ Icon: Cpu, title: props.copy.tables.modelEmptyTitle, body: props.copy.tables.modelEmptyBody }}
     />
   );

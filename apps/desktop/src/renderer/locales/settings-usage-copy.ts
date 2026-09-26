@@ -23,7 +23,7 @@ export type UsageSettingsCopy = {
   staleTitle: string; staleBody: string; loadFailed: string; capacityBody: string; retainedBody: string;
   saveFailed: string; toolbarAria: string; rangeAria: string; ranges: readonly [string, string, string, string];
   refreshingAria: string; refreshAria: string; summaryAria: string; totalRequests: string; totalCost: string; costHelp: string;
-  totalTokens: string; tokenDetail(input: number, output: number): string; cacheTokens: string; cacheDetail(miss: number, read: number, creation: number): string;
+  totalTokens: string; tokenDetail(input: string, output: string): string; cacheTokens: string; cacheDetail(miss: string, read: string, creation: string): string;
   viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
   statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
   paginationAria: string; previousPage: string; nextPage: string; goToPage(page: number): string; pageProgress(loadedPage: number, targetPage: number): string;
