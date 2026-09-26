@@ -51,10 +51,10 @@ export type SettingsTasksCopy = {
   purgeUnverified: string;
   noMatchTitle: string;
   noMatchBody: string;
-  moreActions(name: string): string;
-  restore: string;
-  restoreTask(name: string): string;
+  unarchive: string;
+  unarchiveTask(name: string): string;
   delete: string;
+  deleteTask(name: string): string;
   emptyTitle: string;
   emptyBody: string;
 };
@@ -80,10 +80,10 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeUnverified: '任务已删除，但无法读取列表确认结果。请重新打开本页查看。',
     noMatchTitle: '没有匹配的任务',
     noMatchBody: '换个关键词试试。',
-    moreActions: (name: string) => `「${name}」的更多操作`,
-    restore: '恢复',
-    restoreTask: (name: string) => `恢复「${name}」`,
+    unarchive: '取消归档',
+    unarchiveTask: (name: string) => `取消归档「${name}」`,
     delete: '彻底删除',
+    deleteTask: (name: string) => `彻底删除「${name}」`,
     emptyTitle: '没有已归档的任务',
     emptyBody: '在侧栏里归档一个任务后，可以在这里恢复或彻底删除它。',
   },
@@ -107,10 +107,10 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeUnverified: '任務已刪除，但無法讀取列表確認結果。請重新開啟本頁檢視。',
     noMatchTitle: '沒有符合的任務',
     noMatchBody: '換個關鍵詞試試。',
-    moreActions: (name: string) => `「${name}」的更多操作`,
-    restore: '恢復',
-    restoreTask: (name: string) => `恢復「${name}」`,
+    unarchive: '取消歸檔',
+    unarchiveTask: (name: string) => `取消歸檔「${name}」`,
     delete: '徹底刪除',
+    deleteTask: (name: string) => `徹底刪除「${name}」`,
     emptyTitle: '沒有已歸檔的任務',
     emptyBody: '在側欄裡歸檔一個任務後，可以在這裡恢復或徹底刪除它。',
   },
@@ -142,10 +142,10 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeUnverified: 'The tasks were deleted, but the list could not be read back to confirm. Reopen this page to check.',
     noMatchTitle: 'No matching tasks',
     noMatchBody: 'Try a different search.',
-    moreActions: (name: string) => `More actions for ${name}`,
-    restore: 'Restore',
-    restoreTask: (name: string) => `Restore ${name}`,
+    unarchive: 'Unarchive',
+    unarchiveTask: (name: string) => `Unarchive ${name}`,
     delete: 'Delete',
+    deleteTask: (name: string) => `Delete ${name}`,
     emptyTitle: 'Nothing archived',
     emptyBody: 'Archive a task from the rail to restore or permanently delete it here.',
   },

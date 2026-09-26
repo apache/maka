@@ -38,7 +38,6 @@ import {
   ICON_SIZE,
   AlertTriangle,
   Archive,
-  ArchiveRestore,
   FolderOpen,
   Pencil,
   Pin,
@@ -46,6 +45,7 @@ import {
   Plug,
   Plus,
   SquarePen,
+  Unarchive,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -1356,7 +1356,7 @@ function ProjectItemActions(props: {
     ? [
         {
           label: copy.projectRestore,
-          icon: ArchiveRestore,
+          icon: Unarchive,
           onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
         },
       ]
@@ -1553,7 +1553,7 @@ function SessionItemActions(props: {
                 // that makes the intent deliberate.
                 {
                   label: props.session.isArchived ? copy.unarchive : copy.archive,
-                  icon: props.session.isArchived ? ArchiveRestore : Archive,
+                  icon: props.session.isArchived ? Unarchive : Archive,
                   onClick: () =>
                     runRowAction('archive', () =>
                       props.session.isArchived
