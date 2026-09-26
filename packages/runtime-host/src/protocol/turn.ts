@@ -36,6 +36,7 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
+import { decodeTurnOrigin, type CloudActivationOrigin } from '@maka/core/turn-origin';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
@@ -58,6 +59,8 @@ export interface TurnStartInput {
   skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
+  /** Client-originated Runtime Host turns may identify cloud activation only. */
+  origin?: CloudActivationOrigin;
 }
 
 export type TurnStartResult =
@@ -329,9 +332,14 @@ export function decodeTurnStartInput(value: unknown): TurnStartInput {
     value,
     'turn.start input',
     ['sessionId', 'turnId', 'content'],
-    ['skillIds', 'turnOrchestration', 'maxSteps'],
+    ['skillIds', 'turnOrchestration', 'maxSteps', 'origin'],
   );
   const skillIds = decodeSkillIds(record.skillIds);
+  const decodedOrigin = record.origin === undefined ? undefined : decodeTurnOrigin(record.origin);
+  const origin = decodedOrigin?.kind === 'cloud_activation' ? decodedOrigin : undefined;
+  if (record.origin !== undefined && origin === undefined) {
+    throw invalidProtocolFrame('Invalid turn.start origin');
+  }
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
@@ -343,6 +351,7 @@ export function decodeTurnStartInput(value: unknown): TurnStartInput {
     ...(record.maxSteps !== undefined
       ? { maxSteps: requirePositiveSafeInteger(record.maxSteps, 'maxSteps') }
       : {}),
+    ...(origin !== undefined ? { origin } : {}),
   };
 }
 

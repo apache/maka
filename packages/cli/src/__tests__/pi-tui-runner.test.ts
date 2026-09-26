@@ -9095,6 +9095,35 @@ Slug openai-work<cursor>
       await run;
     });
 
+    test('/resume starts the latest safe-boundary continuation for the selected session', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('resumed safely'));
+
+      assert.equal(driver.resumeCalls, 1);
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
     test('/resume with no interrupted run explains there is nothing to resume', async () => {
       const terminal = new FakeTerminal();
       const driver = new SlashCommandDriver();

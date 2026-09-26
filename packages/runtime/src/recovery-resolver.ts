@@ -19,7 +19,6 @@
 
 import {
   TOOL_BOUNDARY_PROTOCOL_V1,
-  isTerminalRuntimeEvent,
   type RuntimeEvent,
   type ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
@@ -29,9 +28,6 @@ import {
   type ToolLedgerScanOperation,
 } from '@maka/core/tool-ledger-scanner';
 import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
-import type { ToolOutcomeCommit } from './runtime-commit-sink.js';
-import type { ToolMode } from '@maka/core/tool-mode';
-import { compatibilityToolResultProjection } from './durable-tool-result-projection.js';
 
 export type ToolRecoveryDecisionStatus =
   | 'completed'
@@ -123,105 +119,6 @@ export function resolveRuntimeRecovery(events: readonly RuntimeEvent[]): Runtime
     requiresReconciliation:
       !hasCorruption && decisions.some((decision) => decision.status === 'indeterminate'),
   };
-}
-
-export function buildInterruptedToolOutcomeCommits(
-  events: readonly RuntimeEvent[],
-  now: number,
-  toolMode: ToolMode,
-): ToolOutcomeCommit[] {
-  const eventsById = new Map(events.map((event) => [event.id, event] as const));
-  const terminalInvocations = new Set(
-    events.filter(isTerminalRuntimeEvent).map((event) => event.invocationId),
-  );
-  const recovery = resolveRuntimeRecovery(events);
-  if (recovery.hasCorruption) return [];
-  return recovery.decisions.flatMap((decision) => {
-    if (
-      decision.status !== 'indeterminate' ||
-      decision.reason !== 'dispatch_without_response' ||
-      !decision.operationId ||
-      !decision.callRuntimeEventId
-    ) {
-      return [];
-    }
-    const callEvent = eventsById.get(decision.callRuntimeEventId);
-    const call = callEvent?.content;
-    if (!callEvent || call?.kind !== 'function_call') {
-      return [];
-    }
-    // A sealed invocation cannot accept new RuntimeEvents. Legacy sessions can
-    // still contain this gap; their projection is repaired from the terminal
-    // fact instead of appending a result after the immutable tail.
-    if (terminalInvocations.has(callEvent.invocationId)) return [];
-
-    const codeModeExec =
-      toolMode === 'code_mode' &&
-      call.name === 'exec' &&
-      callEvent.origin !== 'code_mode' &&
-      callEvent.modelVisibility !== 'hidden';
-    const interaction = call.name === 'AskUserQuestion';
-    const result = codeModeExec
-      ? {
-          kind: 'json' as const,
-          value: {
-            kind: 'code_mode' as const,
-            status: 'interrupted' as const,
-            message:
-              'Code Mode execution was interrupted by runtime recovery. Its side effects may or may not have occurred; do not retry it immediately. Inspect the current state first.',
-            uncertainOutcome: { code: 'outcome_unknown' as const, retrySafe: false as const },
-          },
-        }
-      : {
-          kind: 'text' as const,
-          text: interaction
-            ? 'This question was interrupted by runtime recovery before an answer was submitted.'
-            : `Tool ${call.name} was interrupted before its result was committed. Its side effects may or may not have occurred. Do not retry it immediately; inspect the current state first.`,
-          ...(!interaction
-            ? { uncertainOutcome: { code: 'outcome_unknown' as const, retrySafe: false as const } }
-            : {}),
-        };
-    const responseContent = {
-      kind: 'function_response' as const,
-      id: call.id,
-      name: call.name,
-      result,
-      isError: true as const,
-    };
-    const modelProjection = compatibilityToolResultProjection(responseContent, callEvent.sessionId);
-    const runtimeEvent: RuntimeEvent = {
-      id: `${decision.operationId}_response`,
-      invocationId: callEvent.invocationId,
-      runId: callEvent.runId,
-      sessionId: callEvent.sessionId,
-      turnId: callEvent.turnId,
-      ts: now,
-      partial: false,
-      role: 'tool',
-      author: 'tool',
-      origin: callEvent.origin ?? 'provider',
-      modelVisibility: callEvent.modelVisibility ?? 'visible',
-      content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
-      refs: {
-        operationId: decision.operationId,
-        toolCallId: call.id,
-        ...(callEvent.refs?.parentToolCallId
-          ? { parentToolCallId: callEvent.refs.parentToolCallId }
-          : {}),
-        ...(callEvent.refs?.parentOperationId
-          ? { parentOperationId: callEvent.refs.parentOperationId }
-          : {}),
-      },
-    };
-    return [
-      {
-        operationId: decision.operationId,
-        journalEventId: `${decision.operationId}_outcome`,
-        runtimeEvent,
-        committedAt: now,
-      },
-    ];
-  });
 }
 
 function decisionFromOperation(

@@ -511,7 +511,11 @@ export async function runMakaActivationCli(
       const stream = await activationStream(
         context.runtime,
         session.id,
-        { turnId: deps.newId(), text },
+        {
+          turnId: deps.newId(),
+          text,
+          origin: { kind: 'cloud_activation', activationId: request.activationId },
+        },
         existing !== undefined && deps.automatedResumeEnabled(),
       );
       const drain = (async () => {
