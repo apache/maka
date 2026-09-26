@@ -1054,6 +1054,7 @@ export const TUI_COPY_RESOURCES = {
         new: 'Start a new session',
         permissions: 'Set session permissions',
         recap: 'One-sentence recap of the session so far',
+        quotes: 'Show or discard restored quotes staged by a rewind',
         rename: 'Rename current session',
         resume: 'Resume latest interrupted run at a safe boundary',
         rewind: 'Rewind to an earlier turn',
@@ -1108,6 +1109,7 @@ export const TUI_COPY_RESOURCES = {
         new: '新建会话',
         permissions: '设置会话权限',
         recap: '用一句话总结当前会话',
+        quotes: '查看或丢弃回退暂存的恢复引用',
         rename: '重命名当前会话',
         resume: '从安全边界恢复最近一次中断的执行',
         rewind: '回退到较早的对话轮次',
@@ -1162,6 +1164,7 @@ export const TUI_COPY_RESOURCES = {
         new: '建立會話',
         permissions: '設定會話權限',
         recap: '用一句話總結目前會話',
+        quotes: '查看或捨棄回退暫存的恢復引用',
         rename: '重新命名目前會話',
         resume: '從安全邊界恢復最近一次中斷的執行',
         rewind: '回退到較早的對話輪次',
@@ -1203,8 +1206,14 @@ export const TUI_COPY_RESOURCES = {
         'Rewound to before this turn (branched into a new task; the original task is kept). The input box already had unsent content and was left untouched; the turn’s prompt was saved to input history — press ↑ to recall it.',
       noTargets: 'No turns to rewind to.',
       busy: 'Cannot rewind: another action is in progress — wait for it to finish, or interrupt (Esc) and retry.',
-      unsupportedQuotes:
-        'Cannot rewind to this turn: it carries quoted excerpts, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
+      quotesRestored:
+        'The rewound turn carried quoted context. It is restored and will be submitted with your next message — run /quotes clear to discard it.',
+      quotesRestoredUnknown:
+        'Submit outcome unknown; the staged quotes are restored and will ride your next message — run /quotes clear to discard.',
+      quotesCleared: 'Restored quotes discarded; the next message submits without them.',
+      quotesNone: 'No restored quotes are staged.',
+      quotesUsage: 'Usage: /quotes [clear]',
+      quotesListHeading: 'Staged quotes:',
       unsupportedAttachments:
         'Cannot rewind to this turn: it carries attachments, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
       unsupportedDirectoryReferences:
@@ -1221,8 +1230,14 @@ export const TUI_COPY_RESOURCES = {
         '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
       noTargets: '没有可回退的轮次。',
       busy: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
-      unsupportedQuotes:
-        '无法回退到这一轮：它携带引用摘录，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
+      quotesRestored:
+        '回退的这一轮带有引用内容：已恢复，并将随你的下一条消息一起提交——用 /quotes clear 丢弃。',
+      quotesRestoredUnknown:
+        '发送结果未知：暂存的引用已恢复，将随你的下一条消息一起提交——用 /quotes clear 丢弃。',
+      quotesCleared: '已丢弃恢复的引用；下一条消息不再携带。',
+      quotesNone: '当前没有暂存的恢复引用。',
+      quotesUsage: '用法：/quotes [clear]',
+      quotesListHeading: '暂存的引用：',
       unsupportedAttachments:
         '无法回退到这一轮：它携带附件，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
       unsupportedDirectoryReferences:
@@ -1238,8 +1253,14 @@ export const TUI_COPY_RESOURCES = {
         '已回退到該輪之前（分支為新任務，原任務保留）。輸入框已有未傳送內容，未覆蓋；該輪 prompt 已存入輸入歷史，可按 ↑ 找回。',
       noTargets: '沒有可回退的輪次。',
       busy: '無法回退：目前有正在進行的操作 — 請等待完成，或中斷（Esc）後重試。',
-      unsupportedQuotes:
-        '無法回退到這一輪：它攜帶引用摘錄，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
+      quotesRestored:
+        '回退的這一輪帶有引用內容：已恢復，並將隨你的下一則訊息一併送出——用 /quotes clear 捨棄。',
+      quotesRestoredUnknown:
+        '傳送結果未知：暫存的引用已恢復，將隨你的下一則訊息一併送出——用 /quotes clear 捨棄。',
+      quotesCleared: '已捨棄恢復的引用；下一則訊息不再攜帶。',
+      quotesNone: '目前沒有暫存的恢復引用。',
+      quotesUsage: '用法：/quotes [clear]',
+      quotesListHeading: '暫存的引用：',
       unsupportedAttachments:
         '無法回退到這一輪：它攜帶附件，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
       unsupportedDirectoryReferences:
