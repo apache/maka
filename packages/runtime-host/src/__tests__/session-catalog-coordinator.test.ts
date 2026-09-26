@@ -314,6 +314,7 @@ test('catalog queries project known-empty and running state from Runtime authori
   assert.deepEqual(emptyOutcome.result.session.liveRunState, {
     schemaVersion: 1,
     runningTurnIds: [],
+    runEpoch: 0,
   });
 
   runningTurnIds = ['turn-live'];
@@ -332,6 +333,7 @@ test('catalog queries project known-empty and running state from Runtime authori
   assert.deepEqual(session.liveRunState, {
     schemaVersion: 1,
     runningTurnIds: ['turn-live'],
+    runEpoch: 0,
   });
 });
 
@@ -379,6 +381,7 @@ test('catalog queries de-duplicate Runtime live turn ids in stable order', async
   assert.deepEqual(outcome.result.session.liveRunState, {
     schemaVersion: 1,
     runningTurnIds: ['turn-a', 'turn-b'],
+    runEpoch: 0,
   });
 });
 
@@ -2202,6 +2205,7 @@ function createFixture(
   const runtimePolicy = options.runtimePolicy ?? runtimePolicyFixture(options.connection ?? {});
   const manager: ConfigurationAuthority = {
     runningTurnIds: () => [],
+    sessionRunEpoch: () => 0,
     transitionSessionConfiguration: async (_sessionId, input) => {
       header = {
         ...header,
