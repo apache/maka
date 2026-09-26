@@ -266,6 +266,20 @@
       "count": 1
     },
     {
+      "implementation": "src/renderer/features/session-collaboration/controller/use-session-collaboration-dialog.ts",
+      "symbol": "useSessionCollaborationDialog",
+      "owner": "src/renderer/features/session-collaboration/ui/session-collaboration-dialog-root.tsx",
+      "ownerSymbol": "SessionCollaborationDialogRoot",
+      "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/session-settings/controller/use-session-settings-controller.ts",
+      "symbol": "useSessionSettingsController",
+      "owner": "src/renderer/features/session-settings/ui/session-settings-provider.tsx",
+      "ownerSymbol": "SessionSettingsProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/task-entry/controller/use-task-entry-controller.ts",
       "symbol": "useTaskEntryController",
       "owner": "src/renderer/features/task-entry/ui/task-entry-provider.tsx",
