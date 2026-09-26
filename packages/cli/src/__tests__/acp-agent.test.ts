@@ -366,5 +366,20 @@ function fakeSessionRegistry(
       observations.closes?.push(params);
       return {};
     },
+    artifactQuery: async () => {
+      throw new Error('Unexpected Artifact query');
+    },
+    artifactIngest: async () => {
+      throw new Error('Unexpected Artifact ingest');
+    },
+    artifactDelete: async () => {
+      throw new Error('Unexpected Artifact delete');
+    },
+    memoryQuery: async () => {
+      throw new Error('Unexpected Memory query');
+    },
+    memoryMutate: async () => {
+      throw new Error('Unexpected Memory mutation');
+    },
   };
 }

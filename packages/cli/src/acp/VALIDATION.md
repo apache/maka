@@ -19,6 +19,149 @@
 
 # ACP validation record
 
+## PR7 upload-tracking ablation (September 25, 2026)
+
+In an isolated worktree at `76fc0b3b2`, the per-upload `pendingBegins`
+counter and separate `trackedBegin` reference were removed. The existing
+`pendingRequests` counter now defers removal until every in-flight ingest for
+that identity settles. The registry and real Host Artifact/Memory suites passed
+162 tests with this simplification.
+
+Two removal controls established which surrounding coordination remains
+necessary. Without the same-ID cleanup wait, all four cleanup/reopen race cases
+failed because a new begin reached Host before the old abort settled. Without
+the connection availability listener, the Host-replacement regression failed
+with `upload_tracking_capacity` after old upload IDs occupied the bound.
+After restoring both controls, the full CLI suite passed 1278 tests, skipped
+3, and failed 0; repository lint and format checks passed.
+
+## PR7 final concurrency follow-up (September 25, 2026)
+
+Final review found that expiry cleanup could race a concurrent `begin` or
+`chunk` for the same upload identity, and that upload IDs from a replaced Host
+connection could still occupy the adapter's 64-ID bound. Cleanup now holds the
+identity until its Host abort settles; same-ID ingest requests wait for that
+cleanup. A listener starts on the first Artifact begin and clears connection-
+bound tracking on Host disconnect or replacement. A successful begin restores
+its tracking if the connection changed while the request was in flight.
+
+Focused regressions cover cleanup/reopen interleaving on one Host, after Host
+replacement, with a failed old abort, and with a lost new-begin response. They
+also cover 64 old IDs after replacement. The original two cases failed in an
+isolated worktree at the preceding head `efd5db120` and pass after repair. The
+complete CLI `test:dist` passed 1278, skipped 3, failed 0. CLI
+build, repository lint and format, and
+`git diff --check` passed.
+
+## PR7 ready-for-review follow-up (September 25, 2026)
+
+After removing Draft, a fresh review against main found two P2 cases. The
+adapter could retain every definitively rejected Artifact `begin`, and failed
+digest commits or Host expiry could leave stale identities in its cleanup set.
+It now distinguishes open or outcome-unknown uploads from definite failures,
+limits unresolved identities to 64, and asks Host to abort expired identities
+before admitting more. Concurrent begins with one identity retain any successful
+opening. `session/close` still waits for in-flight requests and aborts the
+remaining identities. The tool mapper no longer advertises a readable Artifact
+when an archived tool result is already marked `missing` or `corrupt`.
+
+New regressions cover 65 rejected begins, 65 digest-rejected commits, 64
+outcome-unknown begins and the bounded cleanup on close, overlapping begins,
+expired identity cleanup, and missing/corrupt archive cards. In an isolated
+worktree at the preceding PR head `a7e40a763`, all six selected new regression
+cases failed; they pass with this repair. CLI build and typecheck passed. The
+complete CLI `test:dist` passed 1273, skipped 3, failed 0. Repository lint,
+format, and `git diff --check` passed.
+
+## PR7 main refresh and review fixes (September 25, 2026)
+
+PR7 was merged locally with Apache main `9c96bb716` after PR6 landed. The
+combined ACP registry retains PR6 load/resume and Turn observation behavior.
+Review follow-ups keep an open upload tracked after a conflicting repeated
+`begin`, remove the adapter-only upload count limit that could outlive Host
+staging, and clear an obsolete Artifact reference when an authoritative tool
+result is corrected.
+
+The refreshed CLI dependency build, CLI build and CLI typecheck passed. The
+focused Artifact/Memory child-process, Session registry and event-mapper suites
+passed 179 tests. The full CLI `test:dist` passed 1267 tests, skipped 3 and
+failed 0. Repository lint and format checks passed. New registry regressions
+cover conflicting upload identity and repeated failed commits; a mapper
+regression covers corrected tool-result metadata.
+
+After commit `8ab023995`, an isolated ablation removed the duplicate-ID
+`Set` from Artifact reference projection. `ToolResultContent.kind` is exclusive,
+so one result can contribute at most one reference; the simplified projection
+passed 31 event-mapper and real ACP/Host child-process tests and was retained.
+Removing the per-Session in-flight Artifact wait from `session/close` stalled
+its close-race regression, so that wait remains in place. Reintroducing the
+64-ID adapter cap made the failed-commit regression fail with
+`upload_tracking_capacity`, confirming that the cap cannot remain without
+tracking Host release and expiry.
+
+## PR7 Artifact and Memory extensions (September 24, 2026)
+
+Based on Apache main `0a5b9dc9518089c44d183fc4a623a3681e5e8fc7`.
+The production adapter registers five concrete `_maka/` request routes and
+passes the Host protocol input decoders and typed results through the existing
+lazy ACP Runtime Host connection. No Host wire schema or compatibility epoch
+changed.
+
+The new `acp-artifact-memory-child-process.test.ts` uses the official ACP
+SDK against a real ACP stdio child and a real in-process execution Runtime Host:
+
+- Multipart upload of 102,401 binary bytes, repeated chunk/commit, conflicting
+  offset and checksum, multi-chunk export with byte-for-byte comparison, empty
+  Artifact, 129-item pagination, stale revision, missing-after-delete, and
+  invalid request handling.
+- A real model-driven `tool_search → Read` call on an uploaded image. The
+  terminal tool update includes its canonical Artifact reference; the same
+  ACP client reads back the exact image bytes through the query extension.
+- Memory `remember → state/entries/document query → subsequent prompt`.
+  The captured provider request for the owning Session contains the sentinel;
+  the other Session's request does not. The test also checks stale revision,
+  multipart replace and digest rejection, and closed-Session scope rejection.
+- Policy-disabled Memory and unknown/invalid private methods preserve their
+  explicit domain or JSON-RPC results. SDK requests with valid `_meta` are
+  accepted without leaking metadata into strict Host inputs; malformed `_meta`
+  is rejected.
+- The same ACP connection survives a real Host stop and replacement. Artifact
+  queries work after recovery; an incomplete upload from the old connection
+  returns Host `not_found` instead of continuing with stale bytes. Memory query
+  and Session close remain usable.
+
+The registry unit suite covers close racing an in-flight Artifact begin:
+close waits for its result, aborts staging and opens no subscription. It also
+checks that a dispatched, lost Memory mutation response reports
+`request_interrupted` with `dispatch: dispatched` and is not replayed.
+An Artifact begin whose dispatched response is lost is retained for close-time
+abort.
+
+Verification on this worktree:
+
+| Check | Result |
+| --- | --- |
+| CLI dependency build, CLI build and typecheck | Passed. |
+| Full CLI `test:dist` on the final implementation | 1169 passed, 3 skipped, 0 failed. |
+| Focused Runtime Host Artifact and Memory protocol/coordinator/two-client tests | 30 passed, 0 failed. |
+| Runtime Host execution-model-composition file | 37 passed, 0 failed on isolated rerun. |
+| `npm run lint`, `npm run format:check`, ASF header check | Passed after formatting the final edit. |
+| CLI third-party notices | Passed after applying the repository's dependency patches to the `npm ci --ignore-scripts` tree. |
+| Protocol epoch guard against `0a5b9dc` | Passed; no protocol change, epoch remains 183. |
+
+The first combined Host test run had one timed-out
+`production Host publishes and retires an implementation child patch` case.
+It passed alone and in the complete 37-test execution-model file on rerun.
+The initial notice check was blocked by the unpatched `run` package peer range
+in the local `--ignore-scripts` install; applying the checked-in patches made
+the check pass.
+
+The SDK/child-process tests exercise the production routes, not a mock ACP
+handler. The Runtime Host service runs in the test process, while the ACP
+server runs in a child process. A third-party editor's private-extension UI
+was not smoke-tested; the earlier PR5 Zed record below concerns standard
+tool and permission flow only.
+
 ## PR6 adjacent restore and teardown review fixes — September 24, 2026
 
 Starting from PR #5621 head `d05fbb25f`, formal registry regressions were added

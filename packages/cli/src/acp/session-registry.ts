@@ -61,6 +61,18 @@ import {
   SESSION_CATALOG_CURSOR_MAX_BYTES,
   SESSION_CATALOG_CWD_MAX_BYTES,
   HOST_OPERATION_SPECS,
+  type ArtifactQueryInput,
+  type ArtifactQueryResult,
+  type ArtifactIngestInput,
+  type ArtifactIngestResult,
+  type ArtifactDeleteInput,
+  type ArtifactDeleteResult,
+  type MemoryQueryInput,
+  type MemoryQueryResult,
+  type MemoryMutateInput,
+  type MemoryMutateResult,
+  type OperationInput,
+  type OperationOutput,
   type SessionCatalogProjection,
   type TurnSnapshot,
   type TurnResumePlan,
@@ -94,6 +106,10 @@ const ACP_SESSION_CURSOR_MAX_BYTES = 8 * 1024;
 const ADMISSION_QUERY_MAX_ATTEMPTS = 5;
 const ADMISSION_QUERY_TIMEOUT_MS = 1_000;
 const ADMISSION_QUERY_RETRY_MS = 25;
+const EXTENSION_REQUEST_TIMEOUT_MS = 30_000;
+const ARTIFACT_CLEANUP_TIMEOUT_MS = 5_000;
+const ARTIFACT_UPLOAD_TTL_MS = 5 * 60_000;
+const MAX_TRACKED_ARTIFACT_UPLOADS = 64;
 const TURN_STOP_TIMEOUT_MS = 30_000;
 const COPY_RECONCILIATION_TIMEOUT_MS = 30_000;
 const UNAVAILABLE_INTERACTION_CLIENT: AcpInteractionClient = {
@@ -106,12 +122,26 @@ const UNAVAILABLE_INTERACTION_CLIENT: AcpInteractionClient = {
   },
 };
 
+interface ArtifactUploadTracking {
+  touchedAt: number;
+  pendingRequests: number;
+  mayBeOpen: boolean;
+}
+
+function artifactUploadKey(sessionId: string, uploadId: string): string {
+  return JSON.stringify([sessionId, uploadId]);
+}
+
 type AcpSessionRegistryOperation =
   | 'connection.catalog.query'
   | 'session.create'
   | 'session.catalog.query'
   | 'session.configuration.update'
   | 'artifact.ingest'
+  | 'artifact.query'
+  | 'artifact.delete'
+  | 'memory.query'
+  | 'memory.mutate'
   | 'subscription.open'
   | 'turn.start'
   | 'turn.stop'
@@ -206,6 +236,12 @@ export class AcpSessionRegistry {
   readonly #externalObservationContexts = new Map<string, AcpLoadContext>();
   readonly #externalContextLeases = new Map<string, AcpExternalContextLease>();
   readonly #sessionCloseTasks = new Map<string, Promise<CloseSessionResponse>>();
+  readonly #artifactUploads = new Map<string, Map<string, ArtifactUploadTracking>>();
+  readonly #artifactOperations = new Map<string, Set<Promise<unknown>>>();
+  // Retain cleanup waits across Host replacement so a late abort cannot race a reused ID.
+  readonly #artifactCleanupTasks = new Map<string, Promise<void>>();
+  #artifactConnectionIdentity?: string;
+  #artifactConnectionDisposer?: () => void;
   readonly #sessionCloseGenerations = new Map<string, number>();
   readonly #sessionLoadTails = new Map<string, Promise<unknown>>();
   readonly #sessionLoadControllers = new Map<string, AbortController>();
@@ -413,6 +449,247 @@ export class AcpSessionRegistry {
     };
     void task.then(forget, forget);
     return task;
+  }
+
+  async artifactQuery(input: ArtifactQueryInput): Promise<ArtifactQueryResult> {
+    return this.#artifactRequest('artifact.query', input);
+  }
+
+  async artifactIngest(input: ArtifactIngestInput): Promise<ArtifactIngestResult> {
+    return this.#artifactRequest('artifact.ingest', input);
+  }
+
+  async artifactDelete(input: ArtifactDeleteInput): Promise<ArtifactDeleteResult> {
+    return this.#artifactRequest('artifact.delete', input);
+  }
+
+  async memoryQuery(input: MemoryQueryInput): Promise<MemoryQueryResult> {
+    return this.#hostRequest('memory.query', input);
+  }
+
+  async memoryMutate(input: MemoryMutateInput): Promise<MemoryMutateResult> {
+    const sessionId =
+      'scope' in input && input.scope.kind === 'session' ? input.scope.sessionId : undefined;
+    if (sessionId) this.#assertOwned(sessionId);
+    return this.#hostRequest(
+      'memory.mutate',
+      input,
+      sessionId ? () => this.#assertOwned(sessionId) : undefined,
+    );
+  }
+
+  #artifactRequest<Operation extends 'artifact.query' | 'artifact.ingest' | 'artifact.delete'>(
+    operation: Operation,
+    input: OperationInput<Operation> & { readonly sessionId: string },
+  ): Promise<OperationOutput<Operation>> {
+    this.#assertOpen(operation);
+    this.#assertOwned(input.sessionId);
+    const request = this.#hostRequest(operation, input, () => this.#assertOwned(input.sessionId));
+    let pending = this.#artifactOperations.get(input.sessionId);
+    if (!pending) {
+      pending = new Set();
+      this.#artifactOperations.set(input.sessionId, pending);
+    }
+    pending.add(request);
+    void request
+      .finally(() => {
+        pending.delete(request);
+        if (pending.size === 0) this.#artifactOperations.delete(input.sessionId);
+      })
+      .catch(() => undefined);
+    return request;
+  }
+
+  async #hostRequest<
+    Operation extends
+      | 'artifact.query'
+      | 'artifact.ingest'
+      | 'artifact.delete'
+      | 'memory.query'
+      | 'memory.mutate',
+  >(
+    operation: Operation,
+    input: OperationInput<Operation>,
+    beforeDispatch?: () => void,
+  ): Promise<OperationOutput<Operation>> {
+    this.#assertOpen(operation);
+    return this.#track(
+      (async () => {
+        let trackedIngest: ArtifactUploadTracking | undefined;
+        try {
+          const connection = await this.#getConnection(operation);
+          this.#assertOpen(operation);
+          beforeDispatch?.();
+          if (operation === 'artifact.ingest') {
+            const upload = input as ArtifactIngestInput;
+            let cleaning: Promise<void> | undefined;
+            while (
+              (cleaning = this.#artifactCleanupTasks.get(
+                artifactUploadKey(upload.sessionId, upload.uploadId),
+              ))
+            ) {
+              await cleaning;
+              this.#assertOpen(operation);
+              beforeDispatch?.();
+            }
+            if (upload.kind === 'begin') {
+              this.#watchArtifactConnection(connection);
+              let uploads = this.#artifactUploads.get(upload.sessionId);
+              if (!uploads) {
+                uploads = new Map();
+                this.#artifactUploads.set(upload.sessionId, uploads);
+              }
+              if (!uploads.has(upload.uploadId) && uploads.size >= MAX_TRACKED_ARTIFACT_UPLOADS) {
+                await this.#pruneExpiredArtifactUploads(connection, upload.sessionId, uploads);
+                this.#assertOpen(operation);
+                beforeDispatch?.();
+                if (this.#artifactUploads.get(upload.sessionId) !== uploads) {
+                  uploads = this.#artifactUploads.get(upload.sessionId) ?? new Map();
+                  this.#artifactUploads.set(upload.sessionId, uploads);
+                }
+              }
+              if (!uploads.has(upload.uploadId) && uploads.size >= MAX_TRACKED_ARTIFACT_UPLOADS) {
+                throw RequestError.internalError(
+                  { source: 'adapter', operation, code: 'upload_tracking_capacity' },
+                  'Too many unresolved Artifact uploads',
+                );
+              }
+              // Remember before dispatch: an interrupted response can hide an opened upload.
+              let state = uploads.get(upload.uploadId);
+              if (!state) {
+                state = {
+                  touchedAt: Date.now(),
+                  pendingRequests: 0,
+                  mayBeOpen: false,
+                };
+                uploads.set(upload.uploadId, state);
+              }
+            }
+            trackedIngest = this.#artifactUploads.get(upload.sessionId)?.get(upload.uploadId);
+            if (trackedIngest) trackedIngest.pendingRequests += 1;
+          }
+          const result = await connection.request(operation, input, EXTENSION_REQUEST_TIMEOUT_MS);
+          if (operation === 'artifact.ingest') {
+            const upload = input as ArtifactIngestInput;
+            const uploads = this.#artifactUploads.get(upload.sessionId);
+            if (
+              upload.kind === 'abort' ||
+              upload.kind === 'commit' ||
+              (upload.kind === 'begin' && (result as ArtifactIngestResult).kind === 'committed')
+            ) {
+              const state = uploads?.get(upload.uploadId);
+              if (state) {
+                state.mayBeOpen = false;
+              }
+            } else if (upload.kind === 'begin' && trackedIngest) {
+              trackedIngest.mayBeOpen = true;
+              trackedIngest.touchedAt = Date.now();
+              let currentUploads = this.#artifactUploads.get(upload.sessionId);
+              if (!currentUploads) {
+                currentUploads = new Map();
+                this.#artifactUploads.set(upload.sessionId, currentUploads);
+              }
+              if (!currentUploads.has(upload.uploadId)) {
+                currentUploads.set(upload.uploadId, trackedIngest);
+              }
+            } else if (upload.kind === 'chunk') {
+              const state = uploads?.get(upload.uploadId);
+              if (state) state.touchedAt = Date.now();
+            }
+          }
+          return result;
+        } catch (error) {
+          if (operation === 'artifact.ingest') {
+            const upload = input as ArtifactIngestInput;
+            const uploads = this.#artifactUploads.get(upload.sessionId);
+            if (upload.kind === 'begin' && trackedIngest) {
+              if (
+                error instanceof RuntimeHostRequestInterruptedError &&
+                error.dispatch === 'dispatched'
+              ) {
+                trackedIngest.mayBeOpen = true;
+              }
+            } else if (
+              upload.kind === 'commit' &&
+              error instanceof RuntimeHostOperationError &&
+              (error.code === 'not_found' ||
+                (error.code === 'operation_conflict' &&
+                  error.message === 'Attachment content digest does not match'))
+            ) {
+              const state = uploads?.get(upload.uploadId);
+              if (state) {
+                state.mayBeOpen = false;
+              }
+            }
+          }
+          if (error instanceof RequestError) throw error;
+          throw requestErrorFromRuntimeHost(error, operation);
+        } finally {
+          if (trackedIngest) {
+            trackedIngest.pendingRequests -= 1;
+            const upload = input as ArtifactIngestInput;
+            const uploads = this.#artifactUploads.get(upload.sessionId);
+            if (!trackedIngest.mayBeOpen && trackedIngest.pendingRequests === 0) {
+              if (uploads?.get(upload.uploadId) === trackedIngest) uploads.delete(upload.uploadId);
+            }
+          }
+        }
+      })(),
+    );
+  }
+
+  async #pruneExpiredArtifactUploads(
+    connection: AcpSessionRegistryConnection,
+    sessionId: string,
+    uploads: Map<string, ArtifactUploadTracking>,
+  ): Promise<void> {
+    const expired = [...uploads].filter(
+      ([uploadId, state]) =>
+        state.pendingRequests === 0 &&
+        !this.#artifactCleanupTasks.has(artifactUploadKey(sessionId, uploadId)) &&
+        Date.now() - state.touchedAt > ARTIFACT_UPLOAD_TTL_MS + EXTENSION_REQUEST_TIMEOUT_MS,
+    );
+    const cleanups = expired.map(([uploadId, state]) => {
+      const key = artifactUploadKey(sessionId, uploadId);
+      const cleanup = Promise.resolve()
+        .then(() =>
+          connection.request(
+            'artifact.ingest',
+            { kind: 'abort', sessionId, uploadId },
+            ARTIFACT_CLEANUP_TIMEOUT_MS,
+          ),
+        )
+        .then(
+          () => {
+            if (uploads.get(uploadId) === state) uploads.delete(uploadId);
+          },
+          () => undefined,
+        )
+        .finally(() => {
+          if (this.#artifactCleanupTasks.get(key) === cleanup) {
+            this.#artifactCleanupTasks.delete(key);
+          }
+        });
+      this.#artifactCleanupTasks.set(key, cleanup);
+      return cleanup;
+    });
+    await Promise.all(cleanups);
+  }
+
+  #watchArtifactConnection(connection: AcpSessionRegistryConnection): void {
+    if (this.#artifactConnectionDisposer) return;
+    this.#artifactConnectionDisposer = connection.subscribeConnectionAvailability(
+      (availability) => {
+        const identity =
+          availability.kind === 'connected'
+            ? JSON.stringify([availability.hostEpoch, availability.connectionId])
+            : undefined;
+        if (identity !== this.#artifactConnectionIdentity) {
+          this.#artifactConnectionIdentity = identity;
+          this.#artifactUploads.clear();
+        }
+      },
+    );
   }
 
   dispose(): Promise<void> {
@@ -1065,13 +1342,34 @@ export class AcpSessionRegistry {
     }
     const attachmentTask = this.#detachAttachment(sessionId);
     let closeError: unknown;
+    const artifactOperations = this.#artifactOperations.get(sessionId);
+    if (artifactOperations) await Promise.allSettled([...artifactOperations]);
+    const uploads = this.#artifactUploads.get(sessionId);
+    this.#artifactUploads.delete(sessionId);
+    if (uploads && this.#connection) {
+      const aborts = await Promise.allSettled(
+        [...uploads.keys()].map((uploadId) =>
+          this.#connection!.request(
+            'artifact.ingest',
+            { kind: 'abort', sessionId, uploadId },
+            ARTIFACT_CLEANUP_TIMEOUT_MS,
+          ),
+        ),
+      );
+      const failedAbort = aborts.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failedAbort) {
+        closeError = requestErrorFromRuntimeHost(failedAbort.reason, 'artifact.ingest');
+      }
+    }
     if (attachmentTask) {
       try {
         // A rejected open has no retained resource; close still releases ownership.
         const attachment = await attachmentTask.catch(() => undefined);
         await attachment?.close();
       } catch (error) {
-        closeError = error;
+        closeError ??= error;
       }
     }
     const mcp = this.#detachMcp(sessionId);
@@ -2079,11 +2377,16 @@ export class AcpSessionRegistry {
       ...this.#inFlightOperations,
       ...configurations.map(({ tail }) => tail),
     ]);
+    this.#artifactOperations.clear();
+    this.#artifactCleanupTasks.clear();
+    this.#artifactUploads.clear();
     this.#ownedSessionIds.clear();
     this.#historyReplayDelivery.clear();
   }
 
   #closeOwnedConnection(): Promise<void> {
+    this.#artifactConnectionDisposer?.();
+    this.#artifactConnectionDisposer = undefined;
     const connection = this.#connection;
     const connectTask = this.#connectTask;
     if (!connection && !connectTask) return Promise.resolve();

@@ -45,6 +45,11 @@ export interface MakaAcpAgentOptions {
     | 'prompt'
     | 'cancel'
     | 'close'
+    | 'artifactQuery'
+    | 'artifactIngest'
+    | 'artifactDelete'
+    | 'memoryQuery'
+    | 'memoryMutate'
   >;
 }
 
@@ -170,7 +175,61 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
     .onNotification(methods.agent.session.cancel, ({ params }) =>
       options.sessionRegistry.cancel(params),
     )
-    .onRequest(methods.agent.session.close, ({ params }) => options.sessionRegistry.close(params));
+    .onRequest(methods.agent.session.close, ({ params }) => options.sessionRegistry.close(params))
+    .onRequest(
+      '_maka/artifact/query',
+      extensionParams('artifact.query', HOST_OPERATION_SPECS['artifact.query'].decodeInput),
+      ({ params }) => options.sessionRegistry.artifactQuery(params),
+    )
+    .onRequest(
+      '_maka/artifact/ingest',
+      extensionParams('artifact.ingest', HOST_OPERATION_SPECS['artifact.ingest'].decodeInput),
+      ({ params }) => options.sessionRegistry.artifactIngest(params),
+    )
+    .onRequest(
+      '_maka/artifact/delete',
+      extensionParams('artifact.delete', HOST_OPERATION_SPECS['artifact.delete'].decodeInput),
+      ({ params }) => options.sessionRegistry.artifactDelete(params),
+    )
+    .onRequest(
+      '_maka/memory/query',
+      extensionParams('memory.query', HOST_OPERATION_SPECS['memory.query'].decodeInput),
+      ({ params }) => options.sessionRegistry.memoryQuery(params),
+    )
+    .onRequest(
+      '_maka/memory/mutate',
+      extensionParams('memory.mutate', HOST_OPERATION_SPECS['memory.mutate'].decodeInput),
+      ({ params }) => options.sessionRegistry.memoryMutate(params),
+    );
+}
+
+function extensionParams<Input>(
+  operation: string,
+  decode: (params: unknown) => Input,
+): (params: unknown) => Input {
+  return (params) => {
+    try {
+      if (params && typeof params === 'object' && !Array.isArray(params) && '_meta' in params) {
+        const record = params as Record<string, unknown>;
+        const meta = record._meta;
+        if (
+          meta !== undefined &&
+          meta !== null &&
+          (typeof meta !== 'object' || Array.isArray(meta))
+        ) {
+          throw new Error('Invalid ACP request metadata');
+        }
+        const { _meta: _ignored, ...domainParams } = record;
+        return decode(domainParams);
+      }
+      return decode(params);
+    } catch {
+      throw RequestError.invalidParams(
+        { source: 'adapter', operation, code: 'invalid_request' },
+        `Invalid ${operation} request`,
+      );
+    }
+  };
 }
 
 function sessionContext(
