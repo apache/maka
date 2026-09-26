@@ -421,6 +421,7 @@ describe('ACP Goal/Plan real Host routes', () => {
         },
         {
           startRuntimeHost: true,
+          timeoutMs: 30_000,
           model: {
             id: 'paging-fixture',
             thinkingLevels: [],
