@@ -203,6 +203,69 @@ test('queue_update events drive the independent desktop queue projection', () =>
   assert.equal(transientMessages.size, 0);
 });
 
+test('a rootless resubscription seed retires a stale queued card', () => {
+  // Switch away → the queue drains rootless → navigate back. The projector's
+  // rootless seed now carries the authoritative queue (apache/maka#5520
+  // review), so the card the client kept from before it left must go.
+  const controller = createAppShellSessionUiStateController();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'zh-CN',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
+    removeTransientMessage: () => {},
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+  });
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'queue-1',
+    turnId: 'turn-1',
+    ts: 1,
+    queueRevision: 3,
+    steering: ['adjust this run'],
+    followup: [],
+    steeringEntries: [
+      {
+        entryId: 'entry-steer',
+        messageId: 'message-steer',
+        content: { text: 'adjust this run' },
+        placement: 'current_turn' as const,
+        state: 'queued' as const,
+      },
+    ],
+    followupEntries: [],
+  });
+  assert.ok(
+    controller.getState().messageQueueBySession['session-1'],
+    'the card is visible before the client leaves',
+  );
+
+  // The resubscription seed's authoritative empty queue: the drain landed
+  // while the Session was inactive, and the root Turn is gone.
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'host-queue:host-1:4',
+    turnId: '',
+    ts: 2,
+    queueRevision: 4,
+    steering: [],
+    followup: [],
+    steeringEntries: [],
+    followupEntries: [],
+  });
+  assert.equal(
+    controller.getState().messageQueueBySession['session-1'],
+    undefined,
+    'the stale card does not survive the resubscription',
+  );
+});
+
 test('steering delivery clears a promoted follow-up from the desktop queue', () => {
   const controller = createAppShellSessionUiStateController();
   const handlers = createAppShellSessionEventHandlers({
