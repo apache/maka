@@ -3,10 +3,11 @@ doc_id: architecture.windows-sandbox-rfc-v1
 title: "Windows sandbox RFC v1"
 language: en
 source_language: en
+counterpart: ./windows-sandbox-rfc-v1.zh-CN.md
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-15
 owners:
   - maka-backend
 ---

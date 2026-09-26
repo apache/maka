@@ -3,10 +3,11 @@ doc_id: architecture.windows-sandbox-rfc-v1
 title: "Windows sandbox RFC v1"
 language: zh-CN
 source_language: en
+counterpart: ./windows-sandbox-rfc-v1.md
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-15
 owners:
   - maka-backend
 ---
@@ -33,7 +34,7 @@ owners:
 
 - 状态：实现基线已选定；首个预览切片（[#2961](https://github.com/apache/maka/pull/2961)）已于 2026-08-17 合并；产品接入继续做发布验证（预览范围见 §6.5）
 - 跟踪：[Issue #2142](https://github.com/apache/maka/issues/2142) Windows Phase 4
-- 更新日期：2026-08-18
+- 更新日期：2026-09-15
 - Owner：`@maka/runtime` sandbox boundary 与 Runtime Host execution composition
 - 英文版：[windows-sandbox-rfc-v1.md](./windows-sandbox-rfc-v1.md)
 
@@ -165,7 +166,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 
 ### 6.4 能力与失败
 
-- readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe； _(已实现:预览版的 `--readiness-probe` 会真正建立 AppContainer identity/token、kill-on-close Job 与按启动的 private desktop,并在该桌面上启动一个抛弃式受限子进程,宿主无法创建或强制边界时 fail closed,而非仅凭二进制存在即注册;完整的按 profile filesystem 策略与 offline network 策略尚未在 readiness 阶段演练 —— 见 §6.5。)_
+- readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe；仅凭 OS version check 不够。 _(已实现:预览版的 `--readiness-probe` 会真正建立 AppContainer identity/token、kill-on-close Job 与按启动的 private desktop,并在该桌面上启动一个抛弃式受限子进程,宿主无法创建或强制边界时 fail closed,而非仅凭二进制存在即注册;完整的按 profile filesystem 策略与 offline network 策略尚未在 readiness 阶段演练 —— 见 §6.5。)_
 - readiness probe 的抛弃式 profile 生命周期必须隔离且 fail closed； _(已实现:probe profile 位于专属 `maka.readiness.` 命名空间,与生产 `maka.sandbox.` 命名空间结构性不相交,其保留的 `requestId` 被 launch validation 拒绝,任何生产启动都无法解析到 probe 删除并重建的那个 profile;整个 delete→create→probe→settle→drop 生命周期由一个 DACL 加固的按用户命名互斥量跨进程串行——与 ACL ledger 复用同一原语——使并发 probe 不会互删对方的 active 注册;当 probe 无法证明其 Job 清空时按该周期 fail closed(报告不可用),固定的 readiness identity 并不被持久隔离——清理依赖 kill-on-close Job 的整树终止,且因该 probe 不授任何 filesystem root,一个假设存活的子进程也继承不到任何 ACE 权限;消费侧对负可用性结果只按有界 TTL 缓存,以限制一次瞬时失败毒化 module 缓存的时长:由**下一次 composition 构建**重探,而非运行中的宿主原地恢复——filesystem worker 在 composition 构建时一次性发布,故一个已判负的宿主只在新 composition 或 Runtime Host 重启时恢复,正结果则按进程生命周期缓存。未证清空 identity 的持久隔离,以及运行中宿主的主动 readiness 恢复,均为后续门禁——见 §6.5。)_
 - launcher signature/version/digest 必须与 package metadata 一致； _(后续门禁：每次启动的 request digest 目前已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 signature 与 version 随 Phase 3 签名一并暂缓 —— 见 §6.5。)_
 - setup 缺失、identity drift、ACL state 损坏、网络策略无效、文件系统不支持、helper 不匹配、probe 失败都返回
@@ -176,7 +177,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 
 ### 6.5 预览实现状态（2026-08-24）
 
-首个预览切片 [#2961](https://github.com/apache/maka/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付代码对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。标注 `(#3722)` 的条目（Runtime Host 父进程 wait handle、64 次 soak、恶意 child 矩阵）与标注 `(#3174)` 的条目（readiness probe 与 private desktop 放置）落在对应后续 PR，而非已合并的 #2961 切片；其余未标注条目由 #2961 当前强制。
+首个预览切片——打包的 Windows 11 x64 AppContainer 后端 [#2961](https://github.com/apache/maka/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付代码对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。标注 `(#3722)` 的条目（Runtime Host 父进程 wait handle、64 次 soak、恶意 child 矩阵）与标注 `(#3174)` 的条目（readiness probe 与 private desktop 放置）落在对应后续 PR，而非已合并的 #2961 切片；其余未标注条目由 #2961 当前强制。尚未强制的保证已设计但明确作为后续门禁暂缓，由 [#2142](https://github.com/apache/maka/issues/2142) 的 Phase 4 跟踪。
 
 **已强制（未标注者由 #2961 合并强制）：**
 
@@ -204,7 +205,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 完整 window station 分离与 clipboard 隔离（§6.3）:worker 已运行在私有 alternate desktop 上,但该桌面仍位于 launcher 的 window station 上。由于 clipboard 归 window station 所有,alternate desktop 并不隔离它;迁移到独立 window station(从而隔离 clipboard)为后续硬化门禁;
 - 防逃逸桌面 confinement:no-Win32k mitigation、token 边界与可用的 Low-IL 桌面权限（§6.3）:`STARTUPINFOW.lpDesktop` 只选择初始桌面,故在没有 no-Win32k process mitigation(或独立 window station/token 边界)时,进程内代码可 `OpenDesktopW("Default")` + `SetThreadDesktop` 重新挂回交互桌面;当前落地契约仅为初始桌面 placement 加 DACL 保护,而非结构性 confinement。另外,该桌面现已带显式 Low no-write-up mandatory label,使 AppContainer SID 的 create-window/write 授权能通过 MIC,但没有任何 probe 在 child 内实际创建窗口,故这些权限只是"标签可用"而非端到端证明。强制 no-Win32k mitigation 与 child 侧 window-creation 测试,均暂缓;
 - readiness 阶段的完整策略覆盖（§6.4):readiness probe 已建立生产 AppContainer identity/token、kill-on-close Job 与 private desktop 并在其上启动受限子进程,但尚未在 readiness 阶段编译并演练按 profile 的精确 filesystem 根与 offline network 策略 —— 这些目前按每次启动强制,而非在 readiness 阶段复证;
-- 随 Phase 3 签名一并落地的 launcher signature/version 校验（§6.4）。
+- readiness 时的 launcher signature/version 校验（§6.4）。每次启动的 request digest 已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 Authenticode signature 与 version，随 Phase 3 签名一并暂缓。
 - 结构化 unavailable reason 与 diagnostics（§6.4）:readiness probe 以单一 fail-closed 布尔(呈现为
   `backend_not_available`)收敛所有失败;stable typed unavailable reason 与 setup-version/failure-stage
   诊断已设计但尚未实现或传播。
@@ -221,7 +222,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - UDP channel 强制：W1 矩阵证明 outbound TCP 拒绝；UDP send/response 与 DNS/SMB 强制仍是 W2/W3
   网络加固门禁，不用 bind-only 结果冒充通过。
 
-暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。
+暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。由 W1（§9）与 Phase 4（#2142）跟踪的 cancel、parent-death、并发、process-drain 以及残留 ACL/state 释放的生命周期证据，仍是发布证据，不是假设。
 
 ## 7. 选定架构
 
