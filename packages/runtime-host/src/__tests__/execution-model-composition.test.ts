@@ -3267,6 +3267,138 @@ test('production Host executes and durably supervises an Agent Graph over a real
           JSON.stringify(request.body).includes('child_session_run'),
       ),
     );
+
+    // Reproduce edit-and-resend after the asynchronous Graph has finished.
+    // The real tools above persist agent_output as JSON, not agent_swarm.
+    const followUpTurnId = 'graph-follow-up';
+    const followUp = await composition.handlers['turn.start'](
+      {
+        sessionId: session.id,
+        turnId: followUpTurnId,
+        content: { text: 'Graph follow-up: explain the result' },
+      },
+      context,
+    );
+    assert.ok(followUp.ok && followUp.result.kind === 'started');
+    const followUpTerminal = await waitForTerminal(
+      composition,
+      session.id,
+      followUpTurnId,
+      followUp.result.turn,
+      context,
+    );
+    assert.equal(followUpTerminal.status, 'completed');
+    await waitFor(() => liveResidencies === 0, {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'follow-up turn did not release its residency',
+    });
+    const sourceRecord = await execution.sessionStore.readHeaderRecordSnapshot(session.id);
+    const revisionId = 'graph-follow-up-revision';
+    const revisionInput = {
+      sourceSessionId: session.id,
+      targetSessionId: revisionId,
+      sourceTurnId: followUpTurnId,
+      expectedSourceRevision: sourceRecord.revision,
+    };
+    let revision = await composition.handlers['session.revision.create'](revisionInput, context);
+    // Final turn projections may advance metadata after the terminal snapshot.
+    // Retry only the explicit optimistic conflict, as the Desktop client does.
+    for (
+      let attempt = 0;
+      attempt < 3 && revision.ok && revision.result.kind === 'source_revision_conflict';
+      attempt++
+    ) {
+      revisionInput.expectedSourceRevision = revision.result.actualRevision;
+      revision = await composition.handlers['session.revision.create'](revisionInput, context);
+    }
+    assert.ok(revision.ok, JSON.stringify(revision));
+    assert.equal(revision.result.kind, 'committed');
+    const revisedRuns = await execution.runtimeEventStore.listSessionInvocations(revisionId);
+    assert.ok(!revisedRuns.some((run) => run.turnId === followUpTurnId));
+    const copiedEvents = (
+      await Promise.all(
+        revisedRuns.map((run) =>
+          execution.runtimeEventStore.readRuntimeEvents(revisionId, run.runId),
+        ),
+      )
+    ).flat();
+    const sourceEvents = (
+      await Promise.all(
+        runs.map((run) => execution.runtimeEventStore.readRuntimeEvents(session.id, run.runId)),
+      )
+    ).flat();
+    const outputResults = (events: RuntimeEvent[]) =>
+      events.flatMap((event) =>
+        event.content?.kind === 'function_response' && event.content.name === 'agent_output'
+          ? [event.content.result]
+          : [],
+      );
+    assert.ok(outputResults(sourceEvents).length > 0);
+    assert.deepEqual(outputResults(copiedEvents), outputResults(sourceEvents));
+
+    const editedTurnId = 'edited-graph-follow-up';
+    const edited = await composition.handlers['turn.start'](
+      {
+        sessionId: revisionId,
+        turnId: editedTurnId,
+        content: { text: 'Graph follow-up: explain the result in more detail' },
+      },
+      context,
+    );
+    assert.ok(edited.ok && edited.result.kind === 'started');
+    assert.equal(
+      (await waitForTerminal(composition, revisionId, editedTurnId, edited.result.turn, context))
+        .status,
+      'completed',
+    );
+    assert.equal((await execution.runtimeEventStore.listSessionInvocations(child!.id)).length, 1);
+    assert.ok(
+      (await execution.runtimeEventStore.listSessionInvocations(session.id)).some(
+        (run) => run.turnId === followUpTurnId,
+      ),
+    );
+    // The shared copier must not grant an independent Side Conversation the
+    // original child's identities through its model-visible JSON projection.
+    const sideSource = await execution.sessionStore.readHeaderRecordSnapshot(session.id);
+    const sideId = 'graph-follow-up-side-conversation';
+    const side = await composition.handlers['session.branch.create'](
+      {
+        sourceSessionId: session.id,
+        targetSessionId: sideId,
+        sourceTurnId: followUpTurnId,
+        expectedSourceRevision: sideSource.revision,
+        intent: 'side_conversation',
+      },
+      context,
+    );
+    assert.ok(side.ok, JSON.stringify(side));
+    assert.equal(side.result.kind, 'committed');
+    const sideRuns = await execution.runtimeEventStore.listSessionInvocations(sideId);
+    const sideEvents = (
+      await Promise.all(
+        sideRuns.map((run) => execution.runtimeEventStore.readRuntimeEvents(sideId, run.runId)),
+      )
+    ).flat();
+    const sideOutputs = sideEvents.flatMap((event) =>
+      event.content?.kind === 'function_response' && event.content.name === 'agent_output'
+        ? [event.content]
+        : [],
+    );
+    assert.equal(sideOutputs.length, outputResults(sourceEvents).length);
+    assert.equal(sideOutputs.length, 2, 'Copy both the result and diagnostic views');
+    assert.ok(
+      sideOutputs.some((output) => JSON.stringify(output.result).includes(CHILD_AGENT_RESULT_TEXT)),
+    );
+    for (const output of sideOutputs) {
+      const decoded = decodeCanonicalToolResultContent(output.result);
+      assert.equal(decoded.kind, 'json');
+      for (const payload of [output.result, output.modelProjection]) {
+        assert.ok(payload, 'Side Conversation must retain a model projection');
+        assert.ok(!JSON.stringify(payload).includes(child!.id));
+        assert.ok(!JSON.stringify(payload).includes(childRuns[0]!.runId));
+      }
+    }
   } finally {
     graphStore?.close();
     try {
