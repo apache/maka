@@ -22,6 +22,20 @@ import { describe, test } from 'node:test';
 import { computeEditedSource } from '../edit-replace.js';
 
 describe('computeEditedSource — exact match', () => {
+  test('rejects overlapping occurrences instead of choosing the first position', () => {
+    for (const [source, oldString] of [
+      ['banana', 'ana'],
+      ['AAAA', 'AAA'],
+      ['retry();\nretry();\nretry();\n', 'retry();\nretry();'],
+    ]) {
+      assert.throws(
+        () => computeEditedSource(source!, oldString!, 'MARKER();', 'overlap.txt'),
+        /old_string is not unique/,
+        `${JSON.stringify(oldString)} has more than one possible location`,
+      );
+    }
+  });
+
   test('replaces the single occurrence and reports an exact match + line range', () => {
     assert.deepEqual(computeEditedSource('hello world', 'world', 'Maka', 'a.txt'), {
       content: 'hello Maka',
@@ -51,10 +65,10 @@ describe('computeEditedSource — exact match', () => {
     );
   });
 
-  test('throws with the match count when old_string is not unique', () => {
+  test('reports ambiguity without needing to count all matching positions', () => {
     assert.throws(
       () => computeEditedSource('a a a', 'a', 'b', 'b.txt'),
-      /old_string is not unique in b\.txt \(3 matches\)/,
+      /old_string is not unique in b\.txt \(at least 2 matches\)/,
     );
   });
 
