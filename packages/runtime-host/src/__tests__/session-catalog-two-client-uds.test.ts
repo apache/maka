@@ -69,6 +69,7 @@ const WIRE_OVERSIZED_MODEL_ID = '😀'.repeat(256);
 const KNOWN_EMPTY_LIVE_RUN_STATE = {
   schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   runningTurnIds: [],
+  runEpoch: 0,
 } as const;
 
 test('two Clients share stable Session creation, CAS configuration, and catalog continuity', {
