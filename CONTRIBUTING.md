@@ -45,7 +45,7 @@ Submit only work you have the right to contribute, and record third-party source
 
 ## Quick start
 
-Requires Node `>=22.19.0` and npm `11.19.0` (root `package.json`). Direct Peer or Peer Mesh Desktop development additionally needs Rust stable 1.98 or newer and Xcode Command Line Tools on macOS, or MSVC Build Tools on Windows.
+Requires Node `^22.19.0 || >=24.0.0` (Node 23 is not supported: its `node:sqlite` lacks `DatabaseSync.isTransaction`) and npm `11.19.0` (root `package.json`). Direct Peer or Peer Mesh Desktop development additionally needs Rust stable 1.98 or newer and Xcode Command Line Tools on macOS, or MSVC Build Tools on Windows.
 
 ```sh
 git clone https://github.com/apache/maka.git
