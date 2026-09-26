@@ -537,9 +537,9 @@ function sessionConnectionIdentityNotice(
 }
 
 const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
-// Candidate discovery is a user-facing recovery affordance, not an unbounded
-// history scan. Session catalog order is the Host's activity order, so this
-// keeps the newest bounded prefix responsive when the user explicitly opens All.
+// Candidate discovery is a recovery affordance, not an unbounded availability
+// scan. Current-workspace filtering happens while paging so other workspaces
+// cannot crowd those candidates out of the bounded result.
 const MAX_SESSION_RESUME_CANDIDATES = 200;
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
@@ -3002,7 +3002,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   let sessionListPromise:
-    | { readonly limit: number | undefined; readonly promise: Promise<SessionSummary[]> }
+    | {
+        readonly limit: number | undefined;
+        readonly cwd: string | undefined;
+        readonly promise: Promise<SessionSummary[]>;
+      }
     | undefined;
   let activeResumeAvailabilityChecks = 0;
   const queuedResumeAvailabilityChecks: Array<() => void> = [];
@@ -3020,19 +3024,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   const listSessions = (options: MakaSessionListOptions = {}): Promise<SessionSummary[]> => {
     if (sessionListPromise) {
-      if (sessionListPromise.limit === undefined || sessionListPromise.limit === options.limit) {
+      if (sessionListPromise.limit === options.limit && sessionListPromise.cwd === options.cwd) {
         return sessionListPromise.promise;
       }
-      if (options.limit === undefined) {
-        return sessionListPromise.promise.then(() => listSessions(options));
-      }
-      return sessionListPromise.promise;
+      return sessionListPromise.promise.then(() => listSessions(options));
     }
     {
       const promise = input.driver.listSessions(options).finally(() => {
         if (sessionListPromise?.promise === promise) sessionListPromise = undefined;
       });
-      sessionListPromise = { limit: options.limit, promise };
+      sessionListPromise = { limit: options.limit, cwd: options.cwd, promise };
     }
     return sessionListPromise.promise;
   };
@@ -3376,14 +3377,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
-    const sessions = await listSessions(
-      options.onlyResumable ? { limit: MAX_SESSION_RESUME_CANDIDATES } : {},
+    let sessions = await listSessions(
+      options.onlyResumable ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd } : {},
     );
-    const sessionTree = projectRevisionLinkedSessionTree(
+    let sessionTree = projectRevisionLinkedSessionTree(
       sessions,
       input.driver.getSessionId() ?? undefined,
     );
-    const projectedSessions = flattenLinkedSessionTree(
+    let projectedSessions = flattenLinkedSessionTree(
       sessionTree.roots,
       sessionTree.childrenByParentId,
     );
@@ -3548,7 +3549,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         onCancel: closeOverlay,
         onToggleScope: () => {
           const nextScope = pickerScope === 'current' ? 'all' : 'current';
-          void ensureAvailabilityForScope(nextScope)
+          void (async () => {
+            if (options.onlyResumable) {
+              sessions = await listSessions(
+                nextScope === 'current'
+                  ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd }
+                  : { limit: MAX_SESSION_RESUME_CANDIDATES },
+              );
+              sessionTree = projectRevisionLinkedSessionTree(
+                sessions,
+                input.driver.getSessionId() ?? undefined,
+              );
+              projectedSessions = flattenLinkedSessionTree(
+                sessionTree.roots,
+                sessionTree.childrenByParentId,
+              );
+            }
+            await ensureAvailabilityForScope(nextScope);
+          })()
             .then(() => {
               pickerScope = nextScope;
               sessionListScope = nextScope;
@@ -3567,10 +3585,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const sessionId = input.driver.getSessionId();
     try {
       if (!input.driver.getSessionResumeCandidateAvailability) return;
-      const sessions = await listSessions({ limit: MAX_SESSION_RESUME_CANDIDATES });
-      const session =
-        sessions.find((candidate) => candidate.id === sessionId) ??
-        sessions.find((candidate) => candidate.cwd === cwd);
+      const sessions = sessionId
+        ? undefined
+        : await listSessions({ limit: MAX_SESSION_RESUME_CANDIDATES, cwd });
+      const session = sessionId
+        ? ((await input.driver.getSessionSummary?.(sessionId)) ??
+          (await listSessions()).find((candidate) => candidate.id === sessionId))
+        : sessions?.find((candidate) => candidate.cwd === cwd);
       if (!session) return;
       const availability = await runResumeAvailabilityCheck(() =>
         input.driver.getSessionResumeCandidateAvailability!(session),

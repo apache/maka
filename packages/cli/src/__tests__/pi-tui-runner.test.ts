@@ -6020,6 +6020,92 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('/resume finds current-workspace sessions beyond the global catalog prefix', async () => {
+    const terminal = new FakeTerminal();
+    const target = fakeSessionSummary('current-after-prefix', '/repo', 'Current workspace');
+    const sessions = [
+      ...Array.from({ length: 200 }, (_, index) =>
+        fakeSessionSummary(`other-${index}`, `/other/${index}`),
+      ),
+      target,
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    driver.setAttachedSessionId(null);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Current workspace'));
+    assert.deepEqual(driver.listRequests[0], { limit: 200, cwd: '/repo' });
+    assert.match(plainTerminalOutput(terminal.output()), /Current workspace/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /No matching sessions/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes(target.id));
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('startup resume hint does not use a different session when the attached session is absent', async () => {
+    const terminal = new FakeTerminal();
+    const other = fakeSessionSummary('other-current-session', '/repo');
+    const driver = new BoundedResumeAvailabilityDriver([other]);
+    const attachedSessionId = 'missing-attached-session';
+    driver.setAttachedSessionId(attachedSessionId);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitFor(() => driver.completedSummaryLookups.includes(attachedSessionId));
+    await waitFor(() => driver.completedListRequests.length > 0);
+    assert.deepEqual(driver.availabilitySessionIds, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('startup resume hint looks up the attached session beyond the current workspace limit', async () => {
+    const terminal = new FakeTerminal();
+    const attached = fakeSessionSummary('attached-after-prefix', '/repo');
+    const sessions = [
+      ...Array.from({ length: 200 }, (_, index) =>
+        fakeSessionSummary(`newer-current-${index}`, '/repo'),
+      ),
+      attached,
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    driver.setAttachedSessionId(attached.id);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitFor(() => driver.availabilitySessionIds.includes(attached.id));
+    assert.deepEqual(driver.availabilitySessionIds, [attached.id]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('/resume fails closed when candidate discovery is unavailable', async () => {
     const terminal = new FakeTerminal();
     const session = fakeSessionSummary('attachable-only', '/repo', 'Attachable only');
@@ -12232,12 +12318,25 @@ class RejectingSwitchSessionDriver extends SlashCommandDriver {
 }
 
 class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
+  #sessionIdOverride: string | null | undefined;
+
   availabilityCalls = 0;
   readonly listLimits: Array<number | undefined> = [];
+  readonly listRequests: Array<MakaSessionListOptions> = [];
+  readonly completedListRequests: Array<MakaSessionListOptions> = [];
+  readonly completedSummaryLookups: string[] = [];
   readonly availabilitySessionIds: string[] = [];
   readonly unavailableSessionIds = new Set<string>();
   activeCalls = 0;
   maxActiveCalls = 0;
+
+  override getSessionId(): string | null {
+    return this.#sessionIdOverride === undefined ? super.getSessionId() : this.#sessionIdOverride;
+  }
+
+  setAttachedSessionId(sessionId: string | null): void {
+    this.#sessionIdOverride = sessionId;
+  }
 
   async getSessionResumeCandidateAvailability(
     session: SessionSummary,
@@ -12255,7 +12354,20 @@ class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
 
   override async listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]> {
     this.listLimits.push(options?.limit);
-    return super.listSessions(options);
+    this.listRequests.push(options ?? {});
+    const sessions = await super.listSessions();
+    const scoped = options?.cwd
+      ? sessions.filter((session) => session.cwd === options.cwd)
+      : sessions;
+    const result = options?.limit === undefined ? scoped : scoped.slice(0, options.limit);
+    this.completedListRequests.push(options ?? {});
+    return result;
+  }
+
+  async getSessionSummary(sessionId: string): Promise<SessionSummary | undefined> {
+    const session = (await super.listSessions()).find((candidate) => candidate.id === sessionId);
+    this.completedSummaryLookups.push(sessionId);
+    return session;
   }
 }
 
