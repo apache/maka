@@ -33,18 +33,23 @@ export function useNewTaskChoice<T>(
   const [choices, setChoices] = useState(() => new Map<string, T>());
   const { handoff, consume } = useNewTaskChoiceProjectHandoff();
   const projectHandoffIdentitiesRef = useRef(new Map<string, string | undefined>());
-  projectHandoffIdentitiesRef.current.set(targetKey, options.projectHandoffIdentity);
+  if (!choices.has(targetKey)) {
+    projectHandoffIdentitiesRef.current.set(targetKey, options.projectHandoffIdentity);
+  }
   const pendingTargetKey =
     targetKey !== UNRESOLVED_NEW_TASK_DRAFT_KEY && choices.has(UNRESOLVED_NEW_TASK_DRAFT_KEY)
       ? UNRESOLVED_NEW_TASK_DRAFT_KEY
       : targetKey;
   const setChoice = useCallback((value: T) => {
+    // Keep the identity under which an explicit choice was made, even if a
+    // catalog refresh later replaces the effective model before project add.
+    projectHandoffIdentitiesRef.current.set(targetKey, options.projectHandoffIdentity);
     setChoices((current) => {
       const next = new Map(current).set(targetKey, value);
       if (targetKey !== UNRESOLVED_NEW_TASK_DRAFT_KEY) next.delete(UNRESOLVED_NEW_TASK_DRAFT_KEY);
       return next;
     });
-  }, [targetKey]);
+  }, [options.projectHandoffIdentity, targetKey]);
   useEffect(() => {
     if (targetKey === UNRESOLVED_NEW_TASK_DRAFT_KEY) return;
     setChoices((current) => {
@@ -55,28 +60,27 @@ export function useNewTaskChoice<T>(
       return next;
     });
   }, [targetKey]);
+  const sourceIdentity = handoff
+    ? projectHandoffIdentitiesRef.current.get(handoff.fromKey)
+    : undefined;
+  const sourceChoice = handoff ? choices.get(handoff.fromKey) : undefined;
+  // Resolve the handoff during render so dependent choices (thinking after
+  // model selection) see the destination model before any consumer clears it.
+  const inheritedChoice = handoff?.toKey === targetKey &&
+    options.projectHandoffEnabled && !choices.has(pendingTargetKey) &&
+    sourceIdentity !== undefined && sourceIdentity === options.projectHandoffIdentity &&
+    sourceChoice !== undefined && options.acceptProjectHandoff?.(sourceChoice)
+    ? sourceChoice
+    : undefined;
   useEffect(() => {
-    if (!handoff || !options.projectHandoffEnabled) return;
-    if (handoff.toKey !== targetKey) {
-      if (handoff.fromKey === targetKey) return;
-      consume(handoff.token);
-      return;
+    if (!handoff || !options.projectHandoffEnabled || handoff.fromKey === targetKey) return;
+    if (inheritedChoice !== undefined) {
+      setChoices((current) => current.has(targetKey)
+        ? current
+        : new Map(current).set(targetKey, inheritedChoice));
     }
-    const sourceIdentity = projectHandoffIdentitiesRef.current.get(handoff.fromKey);
-    if (sourceIdentity === undefined || sourceIdentity !== options.projectHandoffIdentity) {
-      consume(handoff.token);
-      return;
-    }
-    setChoices((current) => {
-      if (current.has(handoff.toKey)) return current;
-      const value = current.get(handoff.fromKey);
-      if (value === undefined || !options.acceptProjectHandoff?.(value)) return current;
-      const next = new Map(current);
-      next.set(handoff.toKey, value);
-      return next;
-    });
     consume(handoff.token);
-  }, [consume, handoff, options.acceptProjectHandoff, options.projectHandoffEnabled, options.projectHandoffIdentity, targetKey]);
+  }, [consume, handoff, inheritedChoice, options.projectHandoffEnabled, targetKey]);
   const clearChoice = useCallback(() => {
     setChoices((current) => {
       if (!current.has(targetKey) && !current.has(UNRESOLVED_NEW_TASK_DRAFT_KEY)) return current;
@@ -86,5 +90,5 @@ export function useNewTaskChoice<T>(
       return next;
     });
   }, [targetKey]);
-  return [choices.get(pendingTargetKey), setChoice, clearChoice];
+  return [choices.has(pendingTargetKey) ? choices.get(pendingTargetKey) : inheritedChoice, setChoice, clearChoice];
 }

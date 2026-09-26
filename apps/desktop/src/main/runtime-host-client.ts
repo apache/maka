@@ -1842,6 +1842,10 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  generatePromptSuggestion(sessionId: string) {
+    return this.request('session.prompt-suggestion.generate', { sessionId }, 7000);
+  }
+
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,

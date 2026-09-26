@@ -6513,7 +6513,7 @@ async function createFailureFixture(options: {
   ): Promise<void>;
   prepareWorkHubRoutingDecision?(
     input: HostWorkHubRoutingDecisionPreparation,
-  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision>;
+  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision | undefined>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -7912,3 +7912,70 @@ async function waitForContinuityFrame(
     description,
   );
 }
+
+test('WorkHub action admission skips routing and undefined decisions preserve unbound admission', async () => {
+  for (const action of [true, false]) {
+    let calls = 0;
+    const fixture = await createFailureFixture({
+      withInteractions: true,
+      prepareWorkHubRoutingDecision: async () => {
+        calls++;
+        return action ? { kind: 'routing', disposition: 'clarify' } : undefined;
+      },
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    });
+    try {
+      const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+      await fixture.stores.sessionStore.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          cwd: ordinary.cwd,
+          llmConnectionId: ordinary.llmConnectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+          toolProfile: 'workhub-coordination-v1',
+          permissionMode: 'explore',
+        },
+      });
+      const turnId = 'routing-admission-test';
+      const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          turnId,
+          execution: {
+            kind: 'workhub_coordination',
+            inputDigest: `sha256:${'b'.repeat(64)}`,
+            ...(action ? { operation: 'action' as const } : {}),
+          },
+          ...(action
+            ? {
+                operation: async () => ({
+                  actionId: 'test-action',
+                  userText: 'Hello',
+                  result: { disposition: 'answer_here' as const, coordinationTurnId: turnId },
+                }),
+              }
+            : {}),
+          archivedMessage: 'Archived',
+          prepareFreshContent: async () => ({ kind: 'ready', content: { text: 'Hello' } }),
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+        WORKHUB_COORDINATION_SESSION_ID,
+        turnId,
+      );
+      assert.ok(admission);
+      assert.equal('routingDecision' in admission.execution, false);
+      assert.equal(calls, action ? 0 : 1);
+      assert.equal(fixture.drainRequested(), false);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.dispose();
+    }
+  }
+});

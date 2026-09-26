@@ -615,9 +615,6 @@ function memoryStore(): SessionStore {
   return {
     create: async () => header,
     createSubagent: async () => ({ header, created: false }),
-    setExecutionBoundaryKind: async () => {
-      throw new Error('not implemented');
-    },
     readExecutionBoundary: async () => {
       throw new Error('not implemented');
     },

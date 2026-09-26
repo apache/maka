@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { HostedFormSettlement } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { PluginExecutorBackend } from '../plugin-executor-backend.js';
 import { Context } from '../plugin-kernel.js';
@@ -55,6 +56,27 @@ test('executor backend converts plugin output and result to ordinary Session eve
   await root.fiber.dispose();
 });
 
+test('oversized executor completion fails without emitting a large text_complete event', async () => {
+  const { root, binding } = fixture(async (_request, context) => {
+    context.emit({ type: 'output_delta', text: 'streamed' });
+    return { status: 'completed', text: 'x'.repeat(256 * 1024 + 1) };
+  });
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding,
+  });
+
+  const events = await collect(backend.send({ turnId: 'turn-a', text: 'task' }));
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['text_delta', 'error', 'complete'],
+  );
+  assert.match(events[1]?.type === 'error' ? events[1].message : '', /completion text exceeds/u);
+  assert.equal(events[2]?.type === 'complete' ? events[2].stopReason : undefined, 'error');
+  await root.fiber.dispose();
+});
+
 test('executor backend turns stop into abort and terminal events', async () => {
   let started!: () => void;
   const ready = new Promise<void>((resolve) => {
@@ -63,7 +85,7 @@ test('executor backend turns stop into abort and terminal events', async () => {
   const { root, binding } = fixture(async (_request, context) => {
     started();
     await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve()));
-    return { status: 'cancelled' };
+    return { status: 'cancelled', providerStopReason: 'end_turn' };
   });
   const backend = new PluginExecutorBackend({
     sessionId: 'session-a',
@@ -80,6 +102,10 @@ test('executor backend turns stop into abort and terminal events', async () => {
     ['abort', 'complete'],
   );
   assert.equal(events[1]?.type === 'complete' ? events[1].stopReason : undefined, 'user_stop');
+  assert.equal(
+    events[1]?.type === 'complete' ? events[1].providerStopReason : undefined,
+    'end_turn',
+  );
   await root.fiber.dispose();
 });
 
@@ -94,8 +120,13 @@ test('executor backend projects optional thinking and external tool activity', a
         input: { query: 'maka' },
         activityKind: 'search',
       });
-      context.emit({ type: 'tool_progress', toolCallId: 'external-1', text: 'working' });
-      context.emit({ type: 'tool_result', toolCallId: 'external-1', text: 'found' });
+      context.emit({ type: 'tool_output_delta', toolCallId: 'external-1', text: 'working' });
+      context.emit({ type: 'tool_progress', toolCallId: 'external-1', text: 'steps:1/2' });
+      context.emit({
+        type: 'tool_result',
+        toolCallId: 'external-1',
+        content: { kind: 'file_diff', paths: ['README.md'], diff: '--- a/README.md' },
+      });
       return { status: 'completed', text: 'done' };
     },
     { thinking: true, toolActivity: true },
@@ -114,6 +145,7 @@ test('executor backend projects optional thinking and external tool activity', a
     [
       'thinking_delta',
       'tool_start',
+      'tool_output_delta',
       'tool_progress',
       'tool_result',
       'thinking_complete',
@@ -122,10 +154,37 @@ test('executor backend projects optional thinking and external tool activity', a
     ],
   );
   assert.equal(events[1]?.type === 'tool_start' ? events[1].providerExecuted : undefined, true);
+  assert.deepEqual(
+    events[2]?.type === 'tool_output_delta'
+      ? {
+          sessionId: events[2].sessionId,
+          toolCallId: events[2].toolCallId,
+          toolUseId: events[2].toolUseId,
+          seq: events[2].seq,
+          stream: events[2].stream,
+          chunk: events[2].chunk,
+          redacted: events[2].redacted,
+        }
+      : undefined,
+    {
+      sessionId: 'session-a',
+      toolCallId: events[1]?.type === 'tool_start' ? events[1].toolUseId : undefined,
+      toolUseId: events[1]?.type === 'tool_start' ? events[1].toolUseId : undefined,
+      seq: 1,
+      stream: 'stdout',
+      chunk: 'working',
+      redacted: false,
+    },
+  );
+  assert.deepEqual(events[4]?.type === 'tool_result' ? events[4].content : undefined, {
+    kind: 'file_diff',
+    paths: ['README.md'],
+    diff: '--- a/README.md',
+  });
   const stepId = events[0]?.type === 'thinking_delta' ? events[0].messageId : undefined;
   assert.equal(events[1]?.type === 'tool_start' ? events[1].stepId : undefined, stepId);
-  assert.equal(events[4]?.type === 'thinking_complete' ? events[4].messageId : undefined, stepId);
-  assert.equal(events[5]?.type === 'text_complete' ? events[5].messageId : undefined, stepId);
+  assert.equal(events[5]?.type === 'thinking_complete' ? events[5].messageId : undefined, stepId);
+  assert.equal(events[6]?.type === 'text_complete' ? events[6].messageId : undefined, stepId);
   await root.fiber.dispose();
 });
 
@@ -180,6 +239,110 @@ test('executor failure closes rich output before publishing its terminal error',
   );
   assert.equal(events[3]?.type === 'tool_result' ? events[3].isError : undefined, true);
   assert.equal(events[4]?.type === 'error' ? events[4].message : undefined, 'provider crashed');
+  await root.fiber.dispose();
+});
+
+test('executor permission requests use the hosted form authority', async () => {
+  const { root, binding } = fixture(async (_request, context) => {
+    const result = await context.requestPermission({
+      toolCallId: 'external-1',
+      title: 'Allow Antigravity to edit?',
+      options: [
+        { optionId: 'allow_once', name: 'Allow once' },
+        { optionId: 'reject_once', name: 'Reject once' },
+      ],
+    });
+    assert.deepEqual(result, { outcome: 'selected', optionId: 'allow_once' });
+    return { status: 'completed', text: 'approved' };
+  });
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding,
+    newId: ids(),
+    now: () => 42,
+  });
+  let settlement: HostedFormSettlement | undefined;
+  const events: SessionEvent[] = [];
+  for await (const event of backend.send({
+    turnId: 'turn-a',
+    text: 'task',
+    hostedInteraction: {
+      sessionId: 'session-a',
+      turnId: 'turn-a',
+      runId: 'run-a',
+      admitUserQuestionRequest: async () => undefined,
+      admitSandboxBoundaryRequest: async () => undefined,
+      admitFormRequest: async (input) => {
+        settlement = input.settlement;
+      },
+      withdrawFormRequest: async () => undefined,
+    },
+  })) {
+    events.push(event);
+    if (event.type === 'form_request') {
+      assert.equal(event.requester.name, 'remote');
+      assert.equal(event.fields[0]?.kind, 'single_select');
+      await settlement?.applyAnswer({ action: 'accept', values: { optionId: 'allow_once' } });
+    }
+  }
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['form_request', 'text_complete', 'complete'],
+  );
+  await root.fiber.dispose();
+});
+
+test('executor questions round-trip original choices through hosted forms', async () => {
+  const { root, binding } = fixture(async (_request, context) => {
+    const result = await context.requestPermission({
+      kind: 'question',
+      toolCallId: 'external-1',
+      title: 'Choose alpha or beta?',
+      options: [
+        { optionId: 'opaque:beta/2', name: 'Beta' },
+        { optionId: 'reject_once', name: 'Reject once' },
+      ],
+    });
+    assert.deepEqual(result, { outcome: 'selected', optionId: 'opaque:beta/2' });
+    return { status: 'completed', text: 'approved' };
+  });
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding,
+    newId: ids(),
+    now: () => 42,
+  });
+  let settlement: HostedFormSettlement | undefined;
+  const events: SessionEvent[] = [];
+  for await (const event of backend.send({
+    turnId: 'turn-a',
+    text: 'task',
+    hostedInteraction: {
+      sessionId: 'session-a',
+      turnId: 'turn-a',
+      runId: 'run-a',
+      admitUserQuestionRequest: async () => undefined,
+      admitSandboxBoundaryRequest: async () => undefined,
+      admitFormRequest: async (input) => {
+        settlement = input.settlement;
+      },
+      withdrawFormRequest: async () => undefined,
+    },
+  })) {
+    events.push(event);
+    if (event.type === 'form_request') {
+      assert.equal(event.requester.name, 'remote');
+      assert.equal(event.fields[0]?.kind, 'single_select');
+      assert.equal(event.fields[0]?.label, 'Question');
+      await settlement?.applyAnswer({ action: 'accept', values: { optionId: 'opaque:beta/2' } });
+    }
+  }
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['form_request', 'text_complete', 'complete'],
+  );
   await root.fiber.dispose();
 });
 

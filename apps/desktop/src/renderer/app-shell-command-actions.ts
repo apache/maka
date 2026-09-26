@@ -28,7 +28,7 @@ import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contr
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 import { buildCommandList } from "./command-palette-commands.js";
 import type { Command } from './features/overlays/index.js';
 import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';

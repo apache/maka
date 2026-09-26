@@ -95,7 +95,7 @@ export function createAppShellSessionEventHandlers(options: {
     diagnosticTarget?: { sessionId: string },
   ) => void;
   toastApi: ToastApi;
-  notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
+  notifyRunEnded?: (payload: { kind: 'completed' | 'errored' | 'waiting'; sessionId: string; body?: string }) => void;
   scheduleFrame?: (callback: () => void) => void;
   displayBatch?: AppShellSessionDisplayBatch;
 }): AppShellSessionEventHandlers {
@@ -345,6 +345,11 @@ export function createAppShellSessionEventHandlers(options: {
       case 'user_question_request':
       case 'form_request':
         onInteractionChanged?.(sessionId);
+        notifyRunEnded?.({
+          kind: 'waiting',
+          sessionId,
+          body: event.type === 'user_question_request' ? event.questions[0]?.question : undefined,
+        });
         break;
       // The runtime drops its owner on this ack, not on the tool result that
       // follows it, so this is where the request stops being answerable — the
@@ -395,10 +400,8 @@ export function createAppShellSessionEventHandlers(options: {
         onInteractionChanged?.(sessionId);
         if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
-        if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
-          const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
-          notifyRunEnded?.({ kind: 'completed', sessionId, body });
-        }
+        if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens')
+          notifyRunEnded?.({ kind: 'completed', sessionId });
         void refreshSessions();
         const terminalMessageId = terminalRefreshOptions(before)?.requiredAssistantMessageId;
         if (terminalMessageId) {

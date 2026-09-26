@@ -36,7 +36,14 @@ import {
   type TaskEntryShellProjection,
   type TaskEntryServices,
 } from '../../renderer/features/task-entry/testing.js';
-import { useShellChatModel } from '../../renderer/use-shell-chat-model.js';
+import { useShellChatModel } from '../../renderer/features/conversation/testing.js';
+import { ConversationServicesProvider, type ConversationServices } from '../../renderer/features/conversation/index.js';
+
+const thinkingServices = {
+  subscribeChanges: () => () => undefined,
+  newTasks: { subscribeChanges: () => () => undefined },
+  sessions: {},
+} as unknown as ConversationServices;
 
 let shellRenders = 0;
 let frameRenders = 0;
@@ -48,6 +55,7 @@ let latestProjectDialog: ReturnType<typeof useTaskEntryHostModel>['newProjectDia
 let latestWorkspaceGroupCount = 0;
 let latestChatModel: ReturnType<typeof useShellChatModel> | undefined;
 let thinkingActiveId: string | undefined;
+let thinkingChoices: ChatModelChoice[];
 const CONNECTION: ProjectedLlmConnection = { connectionId: 'c', slug: 'c', providerType: 'openai', name: 'C', enabled: true, defaultModel: 'm', enabledModelIds: ['m'], createdAt: 1, updatedAt: 1, catalogEntries: [] };
 const CHOICE: ChatModelChoice = { connectionId: 'c', connectionSlug: 'c', connectionName: 'C', providerType: 'openai', providerLabel: 'C', model: 'm', label: 'M', isDefault: true, thinkingLevels: ['high'] };
 let latestRecoveryPicker: WorkspacePickerModel | undefined;
@@ -168,13 +176,13 @@ function ShellProbe() {
   });
 }
 function ThinkingProbe({ taskEntry }: { taskEntry: TaskEntryShellProjection }) {
-  latestChatModel = useShellChatModel({ uiLocale: 'en', connections: [CONNECTION], chatModelChoices: [CHOICE], sessionSendOutcome: undefined, defaultConnection: 'c', newTaskKey: taskEntry.selectors.draftKey, activeId: thinkingActiveId, activeSession: undefined, sessionHealthSession: undefined, persistedComposerDefaults: null, usePersistedComposerDefaults: false, connectionSnapshotReady: true, modelPickerDisabled: false, openSettingsSection() {}, openModelPicker() {}, refreshModelChoices: async () => undefined });
+  latestChatModel = useShellChatModel({ uiLocale: 'en', connections: [CONNECTION], chatModelChoices: thinkingChoices ?? [CHOICE], sessionSendOutcome: undefined, defaultConnection: 'c', newTaskKey: taskEntry.selectors.draftKey, activeId: thinkingActiveId, activeSession: undefined, sessionHealthSession: undefined, persistedComposerDefaults: null, usePersistedComposerDefaults: false, connectionSnapshotReady: true, modelPickerDisabled: false, openSettingsSection() {}, openModelPicker() {}, refreshModelChoices: async () => undefined });
   return null;
 }
 function ThinkingShellProbe() {
   return createElement(TaskEntryRoot, { children: (taskEntry) => {
     latestTaskEntry = taskEntry;
-    return createElement(ThinkingProbe, { taskEntry });
+    return createElement(ConversationServicesProvider, { services: thinkingServices, children: createElement(ThinkingProbe, { taskEntry }) });
   } });
 }
 
@@ -228,6 +236,7 @@ afterEach(() => {
   latestWorkspaceGroupCount = 0;
   latestChatModel = undefined;
   thinkingActiveId = undefined;
+  thinkingChoices = [CHOICE];
   latestRecoveryPicker = undefined;
   recoverySelectedProject = undefined;
   recoveryPickerOpenStates = [];
@@ -253,6 +262,67 @@ describe('TaskEntryRoot render scope', () => {
     assert.match(latestTaskEntry?.selectors.draftKey ?? '', /project-b/);
     assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
   });
+
+  it('keeps a non-default native model and thinking when adding a project on a non-default Host', async () => {
+    const { root } = installReactRenderer();
+    thinkingChoices = [CHOICE, { ...CHOICE, model: 'other', label: 'Other', isDefault: false }];
+    const host = { ...remoteHost(), capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: false } };
+    let added = false;
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => ({ defaultProfileId: 'local', hosts: [localHost([project('local-project')]), { ...host, projects: added ? [project('project-a'), project('project-b')] : host.projects }] }),
+      addProject: async () => { added = true; return { ok: true, project: project('project-b') }; },
+    } });
+    await act(async () => renderProvider(root, services, createElement(ThinkingShellProbe)));
+    await act(async () => latestTaskEntry?.commands.selectProject(latestTaskEntry.selectors.projectScopes.find((scope) => scope.project.id === 'project-a')!.key));
+    await act(async () => latestChatModel?.setPendingNewChatModel({ llmConnectionId: 'c', llmConnectionSlug: 'c', model: 'other' }));
+    await act(async () => latestChatModel?.setPendingNewChatThinkingLevel('high'));
+    assert.equal(latestChatModel?.newChatModel?.model, 'other');
+    await act(async () => latestTaskEntry?.commands.addProject());
+    assert.match(latestTaskEntry?.selectors.draftKey ?? '', /project-b/);
+    assert.equal(latestChatModel?.newChatModel?.model, 'other');
+    assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
+    // Navigating back preserves the source; ordinary navigation to a third
+    // project must not reuse the consumed handoff.
+    await act(async () => latestTaskEntry?.commands.selectProject(latestTaskEntry.selectors.projectScopes.find((scope) => scope.project.id === 'project-a')!.key));
+    assert.equal(latestChatModel?.newChatModel?.model, 'other');
+    assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
+    await act(async () => latestTaskEntry?.commands.selectLocalProject('local-project'));
+    assert.equal(latestChatModel?.newChatModel?.model, 'm');
+    assert.equal(latestChatModel?.pendingNewChatThinkingLevel, undefined);
+  });
+
+  for (const destination of ['existing-choice', 'model-removed'] as const) {
+    it(`does not overwrite destination choices or restore an unavailable model: ${destination}`, async () => {
+      const { root } = installReactRenderer();
+      thinkingChoices = [CHOICE, { ...CHOICE, model: 'other', label: 'Other', isDefault: false }];
+      const host = { ...remoteHost(), projects: [project('project-a'), project('project-b')], capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: false } };
+      const services = createFakeTaskEntryServices({ catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => ({ defaultProfileId: 'remote', hosts: [host] }),
+        addProject: async () => {
+          if (destination === 'model-removed') thinkingChoices = [CHOICE];
+          return { ok: true, project: project('project-b') };
+        },
+      } });
+      await act(async () => renderProvider(root, services, createElement(ThinkingShellProbe)));
+      const select = async (id: string) => act(async () => {
+        latestTaskEntry?.commands.selectProject(latestTaskEntry.selectors.projectScopes.find((scope) => scope.project.id === id)!.key);
+      });
+      if (destination === 'existing-choice') {
+        await select('project-b');
+        await act(async () => latestChatModel?.setPendingNewChatModel(null));
+        await act(async () => latestChatModel?.setPendingNewChatThinkingLevel(null));
+        await select('project-a');
+      }
+      await act(async () => latestChatModel?.setPendingNewChatModel({ llmConnectionId: 'c', llmConnectionSlug: 'c', model: 'other' }));
+      await act(async () => latestChatModel?.setPendingNewChatThinkingLevel('high'));
+      await act(async () => latestTaskEntry?.commands.addProject());
+      assert.match(latestTaskEntry?.selectors.draftKey ?? '', /project-b/);
+      assert.equal(latestChatModel?.newChatModel?.model, 'm');
+      assert.equal(latestChatModel?.pendingNewChatThinkingLevel, destination === 'existing-choice' ? null : undefined);
+    });
+  }
 
   it('does not hand off thinking while an active session id has no loaded session', async () => {
     const { root } = installReactRenderer();

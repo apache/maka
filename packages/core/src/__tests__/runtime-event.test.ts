@@ -38,7 +38,7 @@ import {
   type RuntimeEvent,
   type RuntimeEventActions,
 } from '../runtime-event.js';
-import { decodeCanonicalMessage } from '../session.js';
+import { decodeCanonicalMessage, isRuntimeSystemNoteKind } from '../session.js';
 import { decodeTurnOrigin } from '../turn-origin.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
@@ -114,6 +114,36 @@ test('decodes released Automation origins as read-only legacy provenance', () =>
     kind: 'legacy_automation',
     automationId: 'automation-1',
   });
+});
+
+test('decodes a released provider dropping note that nothing writes any more', () => {
+  const data = { inputTokens: 99_398, priorInputTokens: 134_460 };
+  const event = decodeRuntimeEvent(
+    baseEvent({
+      role: 'system',
+      author: 'system',
+      modelVisibility: 'hidden',
+      content: { kind: 'system_note', note: 'context_provider_dropping', data },
+    }),
+  );
+  assert.equal(
+    event.content?.kind === 'system_note' ? event.content.note : undefined,
+    'context_provider_dropping',
+  );
+
+  const message = decodeCanonicalMessage({
+    type: 'system_note',
+    id: 'note-1',
+    turnId: 'turn-1',
+    ts: 1,
+    kind: 'context_provider_dropping',
+    data,
+  });
+  assert.equal(
+    message.type === 'system_note' ? message.kind : undefined,
+    'context_provider_dropping',
+  );
+  assert.equal(isRuntimeSystemNoteKind('context_provider_dropping'), false);
 });
 
 test('shares one decoder across all TurnOrigin variants', () => {

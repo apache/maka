@@ -2306,6 +2306,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     compactContext: unavailable,
     copySession: unavailable,
     getSession: unavailable,
+    generatePromptSuggestion: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
     listSessionTurns: unavailable,
@@ -2570,4 +2571,19 @@ test('late transcript acknowledgement after renderer teardown is a no-op', async
     consumerId: 'released-consumer', sessionId: 'session-1', hostEpoch: 'epoch-1', through: 4,
   });
   await registry.close();
+});
+
+
+test('prompt suggestion IPC forwards only a validated Session and does not reconnect/retry paid effects', async () => {
+  const ipc = ipcHarness();
+  const calls: string[] = [];
+  registerExecutionIpc({ client: executionClient({ generatePromptSuggestion: async (id) => {
+    calls.push(id); return { kind: 'generated', turnId: 'turn-1', terminalEventId: 'terminal-1', text: '补上测试' };
+  } }) }, ipc);
+  assert.deepEqual(await ipc.invoke('sessions:generatePromptSuggestion', 'session-1'), {
+    kind: 'generated', turnId: 'turn-1', terminalEventId: 'terminal-1', text: '补上测试',
+  });
+  await assert.rejects(ipc.invoke('sessions:generatePromptSuggestion', ''), /Invalid/);
+  assert.deepEqual(calls, ['session-1']);
+  assert.equal(ipc.reconnectableChannels.has('sessions:generatePromptSuggestion'), false);
 });

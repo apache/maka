@@ -389,6 +389,9 @@ dialog:modal {
 }
 
 .maka-titlebar-identity__segment--session {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

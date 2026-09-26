@@ -55,7 +55,15 @@ export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
+  readonly promptSuggestions?: {
+    generate(sessionId: string): Promise<string | undefined>;
+    readEnabled(): boolean;
+    subscribeEnabled?(handler: () => void): () => void;
+    writeEnabled(enabled: boolean): void;
+  };
   readonly sessions: {
+    getExecutorState?(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    setExecutorModelConfiguration?(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<import('../../../shared/desktop-session-projection.js').DesktopSessionUpdateResult<DesktopSessionSummary>>;
     readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
   };
@@ -72,6 +80,7 @@ export interface ConversationServices extends Pick<
     ): Promise<ConversationFileSearchResult>;
   };
   readonly newTasks: {
+    getExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     subscribeChanges(handler: () => void): () => void;
     listInvocableSkills(
       target: ConversationNewTaskTarget,

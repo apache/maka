@@ -537,6 +537,17 @@ export const DefaultLayout: Story = {
     expect(trailingInset).toBeGreaterThanOrEqual(0);
     expect(trailingInset).toBeLessThanOrEqual(16);
     expect(getComputedStyle(actions).columnGap).toBe('4px');
+    // Message metadata mirrors across senders: the prompt's time sits left of
+    // its actions, the answer's time right of its actions.
+    await waitFor(() => expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull());
+    const box = (selector: string) => {
+      const element = canvasElement.querySelector(selector);
+      if (!element) throw new Error(`${selector} did not render`);
+      return element.getBoundingClientRect();
+    };
+    expect(box('.maka-message-meta time').right).toBeLessThanOrEqual(box('.maka-message-meta [data-message-id]').left);
+    expect(box('.maka-turn-footer time').left).toBeGreaterThanOrEqual(box('.maka-turn-footer [data-action="copy"]').right);
+    await expect(canvasElement.querySelector('.maka-turn-footer')).not.toHaveTextContent('claude-sonnet-4-5');
   },
 };
 
@@ -693,13 +704,14 @@ export const PromptSentBeforeTurnLands: Story = {
       session={{ status: 'running', streaming: true, lastMessageAt: NOW - 3_000 }}
       chat={{
         activeTurn: { turnId: 'turn-sent' },
-        messages: [],
+        messages: conversation.slice(0, 2),
         transientMessages: [{
           id: 'msg-sent',
           text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
           ts: NOW,
           transientPlacement: 'current_turn',
           hostTurnId: 'turn-sent',
+          deliveryStatus: '已接收',
         }],
       }}
     />
@@ -708,6 +720,16 @@ export const PromptSentBeforeTurnLands: Story = {
     await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
     // No clock before the Turn's own start arrives.
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
+    // The pending prompt already sits a Turn's distance below the last Turn,
+    // so it does not move when its Turn lands.
+    const pending = canvasElement.querySelector<HTMLElement>('.maka-chat-session-swap + .maka-turn')!;
+    await waitFor(() => {
+      const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
+      expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
+    });
+    // Delivery is news, so its row stays up at rest.
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await expect(getComputedStyle(pending.querySelector('.maka-message-meta')!).opacity).toBe('1');
   },
 };
 
@@ -1340,6 +1362,11 @@ export const NewChatComposer: Story = {
     await waitFor(() => expect(editor.textContent).toBe(''));
     await expect(editor.getBoundingClientRect().height).toBe(initialEditorHeight);
     await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
+
+    const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
+    await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
   },
 };
 
@@ -1386,6 +1413,12 @@ export const NewChatComposerProjectPending: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    // The spinner replaces the whole trigger content, host badge included.
+    const end = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker .maka-workspace-picker-end')!;
+    await expect(end.querySelector('.maka-workspace-picker-host-badge')).not.toBeNull();
+    await expect(getComputedStyle(end).visibility).toBe('hidden');
+  },
 };
 
 const longConversation: StoredMessage[] = [
@@ -1538,8 +1571,8 @@ export const LongSystemNotes: Story = {
     scrollBehavior: 'auto',
     messages: [
       user('diagnostic-user', 'diagnostic-turn', 2, 'Please continue reviewing the conversation.'),
-      { type: 'system_note', id: 'dropping', turnId: 'diagnostic-turn', ts: NOW - 90_000,
-        kind: 'context_provider_dropping', data: { inputTokens: 98_247, priorInputTokens: 124_832 } },
+      { type: 'system_note', id: 'overflow', turnId: 'diagnostic-turn', ts: NOW - 90_000,
+        kind: 'context_overflow_after_compaction' },
       { type: 'system_note', id: 'overrun', turnId: 'diagnostic-turn', ts: NOW - 80_000,
         kind: 'context_window_overrun', data: { usedTokens: 129_127, declaredContextWindow: 128_000 } },
       { type: 'system_note', id: 'short', turnId: 'diagnostic-turn', ts: NOW - 70_000,
@@ -1582,10 +1615,10 @@ export const LongSystemNotes: Story = {
 
 // Real path: a long session that has accumulated reasoning, several native
 // Astryx tool calls and long prose, a ScheduledTask-triggered turn, with an image
-// staged in the composer and thinking set to medium. Each part is individually
-// reachable; they are stacked into one screen on purpose, as the canonical
-// visual-acceptance scaffold for the transcript. Open this first, then the
-// focused stories above.
+// staged in the composer and thinking set to medium, and the multi-step turn's
+// work log opened. Each part is individually reachable; they are stacked into
+// one screen on purpose, as the canonical visual-acceptance scaffold for the
+// transcript. Open this first, then the focused stories above.
 export const NativeConversation: Story = {
   render: () => (
     <ComposedShell
@@ -1607,6 +1640,39 @@ export const NativeConversation: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const process = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    process.querySelector('summary')!.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    const rowGap = Number.parseFloat(getComputedStyle(body).rowGap);
+    const rows = [...body.children].map((row) => ({
+      kind: row.className.split(' ')[0],
+      rect: row.getBoundingClientRect(),
+    }));
+    await expect(new Set(rows.map((row) => row.kind))).toEqual(
+      new Set(['astryx-chat-reasoning', 'astryx-chat-message-bubble', 'astryx-chat-tool-calls']),
+    );
+    const gaps = rows.slice(1).map((row, index) => ({
+      between: `${rows[index]!.kind} → ${row.kind}`,
+      gap: Math.round(row.rect.top - rows[index]!.rect.bottom),
+    }));
+    await expect(gaps).toEqual(gaps.map(({ between }) => ({ between, gap: rowGap })));
+
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    const metadataRows = [
+      ...canvasElement.querySelectorAll<HTMLElement>('.maka-user-message .maka-message-meta, .maka-turn-footer'),
+    ];
+    await expect(metadataRows.length).toBeGreaterThan(1);
+    await waitFor(() => expect(metadataRows.map((row) => getComputedStyle(row).opacity)).toEqual(metadataRows.map(() => '0')));
+    const footer = canvasElement.querySelector<HTMLElement>('.maka-turn-footer')!;
+    footer.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(footer).opacity).toBe('1'));
+  },
 };
 
 // The relatives that make the active session a branch AND revision 2 of 3.
@@ -1790,6 +1856,17 @@ export const TitlebarProjectFeedbackNarrow: Story = {
       expect(writeText).toHaveBeenLastCalledWith('/workspace/maka-agent');
       await userEvent.keyboard('{Escape}');
       expect(document.activeElement).toBe(page.getByRole('button', { name: '项目信息' }));
+      // Swap the chip for the rename input and back without renaming, then
+      // hover: the measurement must have rebound to the freshly rendered
+      // span, not the node observed before the swap.
+      await userEvent.click(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' }));
+      const renameInput = await page.findByRole('textbox', { name: '重命名任务' });
+      expect(renameInput).toHaveValue('检查项目菜单');
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(document.activeElement).toBe(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' })));
+      const renameChip = page.getByRole('button', { name: '检查项目菜单 — 重命名任务' });
+      await userEvent.hover(renameChip);
+      await waitFor(() => expect(page.getByRole('tooltip', { name: '重命名任务' })).toBeVisible());
     } finally {
       if (original) Object.defineProperty(navigator, 'clipboard', original);
       else Reflect.deleteProperty(navigator, 'clipboard');
@@ -1833,16 +1910,29 @@ export const TitlebarParentReturn: Story = {
 
 // Real path: a long auto-generated session name, sidebar collapsed so the
 // identity sits closest to the conversation column. It must truncate itself
-// rather than push the workbar toggle off the strip.
+// rather than push the workbar toggle off the strip. Tripled so the name stays
+// clipped at the smoke runner's default 1280px viewport, not just narrow ones.
 export const TitlebarIdentityTruncated: Story = {
   render: () => (
     <ComposedShell
       sidebarCollapsed
       session={{
-        name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
+        name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证'.repeat(3),
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const full = 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证'.repeat(3);
+    const page = within(canvasElement.ownerDocument.body);
+    const rename = canvasElement.querySelector<HTMLElement>('.maka-titlebar-identity__segment--session')!.closest('button')!;
+    expect(rename.getAttribute('aria-label')).toBe(`${full} — 重命名任务`);
+    await userEvent.hover(rename);
+    await waitFor(() => expect(page.getByRole('tooltip', { name: full })).toBeVisible());
+    const menuButton = canvasElement.querySelector<HTMLElement>('[aria-label$="任务操作"]')!;
+    expect(menuButton.getAttribute('aria-label')).toBe(`${full} — 任务操作`);
+    await userEvent.hover(menuButton);
+    await waitFor(() => expect(page.getByRole('tooltip', { name: '任务操作' })).toBeVisible());
+  },
 };
 
 // Real path: 开启 Plan Mode from the ＋ menu. The mode is session-scoped — it
@@ -2365,12 +2455,19 @@ async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Pro
   await painted(40);
   const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
   if (!input) throw new Error('The composer input is missing');
-  await userEvent.type(input, '请简短说明当前提交过程发生了什么。', { delay: null });
-  for (let line = 1; line < lines; line += 1) {
-    await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
-    await userEvent.type(input, '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。', { delay: null });
+  // Prepare the draft with native text insertion so a tall prompt does not
+  // spend the render budget dispatching thousands of synthetic keystrokes.
+  // Keep line breaks and submission on the real composer's keyboard path.
+  const promptLines = Array.from({ length: lines }, (_, index) => index === 0
+    ? '请简短说明当前提交过程发生了什么。'
+    : '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。');
+  await userEvent.click(input);
+  for (const [index, line] of promptLines.entries()) {
+    if (index > 0) await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
+    document.execCommand('insertText', false, line);
   }
   await painted(40);
+  await expect(input.innerText).toBe(promptLines.join('\n'));
   // Observe admission itself: the correct final bottom can hide a reverse
   // jump when an offscreen block first uses an estimate, then its real size.
   const tops: number[] = [];
@@ -2389,21 +2486,25 @@ async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Pro
   await expect(tailMetrics().distance).toBeLessThanOrEqual(4);
 }
 
+// Real path: submit a prompt in an existing conversation and follow its new turn.
 export const SubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement),
 };
 
+// Real path: compose a multiline prompt with Shift+Enter, then submit it.
 export const MultilineSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 8),
 };
 
+// Real path: submit an overflowing draft and follow its turn as the composer shrinks.
 export const TallSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 80),
 };
 
+// Real path: submit a prompt and keep following its turn when the reply settles.
 export const SubmittedPromptSettlesWithoutReversing: Story = {
   render: () => <StreamingTailHarness pendingUser />,
   play: async ({ canvasElement }) => {
@@ -4007,6 +4108,14 @@ export const CompletedProcessCollapsed: Story = {
     await expect(getComputedStyle(process!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2);
     await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom - 1);
+    // The status row reads against the same left edge as the answer text and
+    // the footer; the tool rows' 4px overhang padding belongs to the work-log
+    // body, not this summary (regression: the summary sat 4px right of both).
+    const footer = canvasElement.querySelector('.maka-turn-footer')!;
+    const answerLeft = answer.getBoundingClientRect().left;
+    await expect(process!.querySelector('.maka-turn-statusbar')!.getBoundingClientRect().left)
+      .toBeCloseTo(answerLeft, 1);
+    await expect(footer.getBoundingClientRect().left).toBeCloseTo(answerLeft, 1);
   },
 };
 
@@ -4050,6 +4159,18 @@ export const CompletedProcessExpanded: Story = {
       await expect(child.getBoundingClientRect().width, child.className.toString())
         .toBeLessThanOrEqual(processBox.width + 1);
     }
+    // Tool rows start on the answer's text edge.
+    const row = processBody.querySelector<HTMLElement>('.astryx-chat-tool-calls [role="button"]')!;
+    await expect(row.firstElementChild!.getBoundingClientRect().left).toBeCloseTo(processBox.left, 1);
+    // What a row expands to reads at the row's own size.
+    const rowSize = getComputedStyle(row.children[1]!).fontSize;
+    row.click();
+    await waitFor(() => expect(processBody.querySelector('.maka-chat-tool-detail')).not.toBeNull());
+    const detailText = [...processBody.querySelectorAll<HTMLElement>('.maka-chat-tool-detail *')]
+      .filter((element) => [...element.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent!.trim()));
+    await expect(detailText.length).toBeGreaterThan(0);
+    await expect(new Set(detailText.map((element) => getComputedStyle(element).fontSize))).toEqual(new Set([rowSize]));
+    row.click();
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');

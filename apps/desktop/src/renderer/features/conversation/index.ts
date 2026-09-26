@@ -74,3 +74,11 @@ export { activeHostTurn, chatTurnActivity } from '../../application/contracts/se
 export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
+
+export { useExecutorSelection } from './controller/use-executor-selection.js';
+export * from './model/shell-chat-model-selection.js';
+export * from './model/session-health-notice.js';
+export * from './controller/use-new-task-choice.js';
+export * from './controller/use-shell-chat-model.js';
+export * from './model/executor-submission.js';
+export * from './model/executor-composer.js';

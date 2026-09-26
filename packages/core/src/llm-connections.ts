@@ -37,12 +37,16 @@ import type {
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
+  isModelApiProtocol,
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
   providerFallbackModelIds,
   providerMenuLabel,
   type ApplyPatchProtocol,
+  type ModelApiProtocol,
   type OpenResponsesCompatibilityProfile,
   type ProviderCatalogGroup,
   type ProviderCategory,
@@ -55,6 +59,9 @@ import {
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
+  isModelApiProtocol,
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
@@ -63,6 +70,7 @@ export {
 };
 export type {
   ApplyPatchProtocol,
+  ModelApiProtocol,
   OpenResponsesCompatibilityProfile,
   ProviderCatalogGroup,
   ProviderCategory,
@@ -71,12 +79,6 @@ export type {
   ProviderResponsesContract,
   ProviderType,
 };
-
-export function isRelayProviderType(
-  providerType: ProviderType,
-): providerType is 'openai-compatible' | 'openai-responses-compatible' {
-  return providerType === 'openai-compatible' || providerType === 'openai-responses-compatible';
-}
 
 export type ConnectionAuth =
   | { kind: 'api_key'; apiKey: string }
@@ -104,7 +106,7 @@ export interface ModelInfo {
   /** Short upstream description, when the provider advertises one. */
   description?: string;
   /** Account-advertised request wire when one provider exposes multiple model protocols. */
-  apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+  apiProtocol?: ModelApiProtocol;
   contextWindow?: number;
   /** Maximum provider-visible input tokens, when narrower than contextWindow. */
   inputLimit?: number;
@@ -158,6 +160,8 @@ export interface RuntimeExecutionConnection {
   slug: string;
   providerType: ProviderType;
   baseUrl?: string;
+  /** Wire for models on a custom connection that do not declare their own; set only on `custom`. */
+  defaultApiProtocol?: ModelApiProtocol;
   defaultModel: string;
   models?: ModelInfo[];
   /** User model parameters, retained independently of the enabled selection. */
@@ -742,6 +746,7 @@ export interface CreateConnectionInput {
   name: string;
   providerType: ProviderType;
   baseUrl?: string;
+  defaultApiProtocol?: ModelApiProtocol;
   defaultModel?: string;
   /** When omitted, falls back to the default model alone. */
   enabledModelIds?: string[];

@@ -866,6 +866,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   const hoverDescriptionId = useId();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
+  const activityAt = sessionActivityAt(props.session);
   const signals = sessionRowSignals(
     props.session,
     { streaming: props.streaming, stale: props.stale, active: props.active },
@@ -878,15 +879,12 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       : props.session.status,
     locale,
   ).label;
-  // What the row communicates without text and the dot does NOT already say,
-  // inside the button so it lands in the accessible name. `signals[0]` is
-  // skipped because the dot slot carries it; the rest of the list, the worktree
-  // attribute, and the timestamp reached assistive tech nowhere else — the
-  // timestamp renders `aria-hidden` and swaps out for the ⋯ menu, and worktree
-  // is an attribute of the row rather than a signal, so it never competes for
-  // the dot.
+  // What the row communicates without text, inside the button so it lands in
+  // the accessible name. All of it, `signals[0]` included: the trailing slot
+  // that draws the dot or the timestamp is `aria-hidden`, and hidden outright
+  // while the ⋯ menu covers it.
   const rowDescription = [
-    ...signals.slice(1).map((entry) => entry.tooltip ?? entry.label),
+    ...signals.map((entry) => entry.tooltip ?? entry.label),
     // Being picked is a fact about the row that the ground alone carries. It is
     // NOT `aria-current`: that names the one current page, and a set of picked
     // rows is not a set of current pages.
@@ -899,8 +897,9 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     props.picked && (!props.active || props.bulkCount > 1) ? copy.pickedAriaLabel : undefined,
     props.worktree ? copy.worktreeAriaLabel : undefined,
     props.meta,
-    props.session.lastMessageAt
-      ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
+    props.session.executorId,
+    activityAt !== undefined
+      ? formatAbsoluteTimestamp(activityAt, locale)
       : undefined,
   ]
     .filter((entry): entry is string => Boolean(entry))
@@ -958,27 +957,6 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         aria-describedby={hoverDescriptionId}
         size="md"
         isSelected={props.active}
-        // Slot 1, the row's leading edge. A fixed gutter every row pays for,
-        // whether or not it has a dot, so state reads as one column down the
-        // rail instead of a mark that drifts with each title's length.
-        icon={
-          <span className="maka-session-row-signal">
-            {signal?.running ? (
-              <RunningIndicator
-                label={signal.label}
-                tooltip={signal.tooltip}
-                data-session-status={props.session.status}
-              />
-            ) : signal ? (
-              <StatusDot
-                variant={signal.variant}
-                label={signal.label}
-                tooltip={signal.tooltip}
-                data-session-status={props.session.status}
-              />
-            ) : null}
-          </span>
-        }
         onClick={(event) => {
           // Shift- and ⌘-clicks are answered by the list, which has already
           // moved the set by the time this runs. Opening the task as well
@@ -1003,10 +981,11 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           props.onSelectSession(props.session.id);
         }}
         endContent={
-          // Slot 2. The timestamp is what the row shows at rest; the ⋯ menu
-          // below is absolutely positioned over this box and sidebar.css swaps
-          // the two on hover or keyboard focus. The span is rendered even with
-          // no timestamp so the column exists on every row.
+          // The signal slot shows the row's state, or its timestamp when there
+          // is nothing to report; the ⋯ menu below is absolutely positioned
+          // over this box and sidebar.css swaps the two on hover or keyboard
+          // focus. The span is rendered even when empty so the column exists
+          // on every row.
           <span className="maka-session-row-end">
             {props.sessionBadge ? (
               <span className="maka-session-row-attention-badge">
@@ -1018,10 +997,29 @@ const SessionNavRow = memo(function SessionNavRow(props: {
                 <Badge variant="neutral" label={props.meta} />
               </span>
             ) : null}
-            <span className="maka-session-row-time">
-              {props.session.lastMessageAt ? (
+            {props.session.executorId ? (
+              <span
+                className="maka-session-row-executor-badge"
+                title={props.session.executorId}
+              >
+                <Badge variant="neutral" label={props.session.executorId} />
+              </span>
+            ) : null}
+            <span className="maka-session-row-signal" aria-hidden="true">
+              {signal?.running ? (
+                <RunningIndicator
+                  label={signal.label}
+                  data-session-status={props.session.status}
+                />
+              ) : signal ? (
+                <StatusDot
+                  variant={signal.variant}
+                  label={signal.label}
+                  data-session-status={props.session.status}
+                />
+              ) : activityAt !== undefined ? (
                 <RelativeTime
-                  ts={props.session.lastMessageAt}
+                  ts={activityAt}
                   variant="sidebar"
                   className="maka-session-row-time-label"
                   suppressTitle
@@ -1102,15 +1100,17 @@ function SessionHoverCardDescription(props: {
   const conversationCopy = getConversationCopy(props.locale);
   const copy = getSessionHoverCardCopy(props.locale);
   const session = props.session;
+  const activityAt = sessionActivityAt(session);
   const permission = conversationCopy.permissions.mode[session.permissionMode].label;
   const description = [
     props.status,
     session.lastMessagePreview || copy.noMessages,
     session.model,
+    session.executorId,
     permission,
     props.projectName,
-    session.lastMessageAt
-      ? `${copy.updated} ${formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}`
+    activityAt !== undefined
+      ? `${copy.updated} ${formatAbsoluteTimestamp(activityAt, props.locale)}`
       : undefined,
   ]
     .filter((value): value is string => Boolean(value))
@@ -1128,6 +1128,7 @@ function SessionHoverCardContent(props: {
   const conversationCopy = getConversationCopy(props.locale);
   const copy = getSessionHoverCardCopy(props.locale);
   const session = props.session;
+  const activityAt = sessionActivityAt(session);
   const permission = conversationCopy.permissions.mode[session.permissionMode].label;
 
   return (
@@ -1143,6 +1144,12 @@ function SessionHoverCardContent(props: {
         <span>{props.status}</span>
         <span aria-hidden="true">·</span>
         <span>{session.model}</span>
+        {session.executorId ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{session.executorId}</span>
+          </>
+        ) : null}
         <span aria-hidden="true">·</span>
         <span>{permission}</span>
       </span>
@@ -1151,12 +1158,12 @@ function SessionHoverCardContent(props: {
           {props.projectName}
         </span>
       ) : null}
-      {session.lastMessageAt ? (
+      {activityAt !== undefined ? (
         <span className="maka-sidebar-hover-card-updated">
           {copy.updated}{' '}
-          <RelativeTime ts={session.lastMessageAt} />
+          <RelativeTime ts={activityAt} />
           <span className="maka-visually-hidden">
-            {formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}
+            {formatAbsoluteTimestamp(activityAt, props.locale)}
           </span>
         </span>
       ) : null}
@@ -1272,7 +1279,7 @@ function createProjectHoverCardSummary(
     available: project?.available,
     locationCount: project?.locations.length ?? 0,
     latestActivity: sessions.reduce<number | undefined>(
-      (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
+      (latest, session) => Math.max(latest ?? 0, sessionActivityAt(session) ?? 0) || undefined,
       undefined,
     ),
   };
@@ -1423,10 +1430,11 @@ function SessionItemActions(props: {
   const trailingRef = useRef<HTMLSpanElement>(null);
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
+  const activityAt = sessionActivityAt(props.session);
   const actionContext = [
     props.session.name,
-    props.session.lastMessageAt
-      ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
+    activityAt !== undefined
+      ? formatAbsoluteTimestamp(activityAt, locale)
       : undefined,
   ]
     .filter((value): value is string => Boolean(value))
@@ -1583,7 +1591,7 @@ interface SessionRowSignal {
  * Everything true about the session that is worth saying, in priority order.
  *
  * The row draws ONE dot — `signals[0]` — but it says all of them. Keeping the
- * list is what lets the two visible slots stay two while the row still reaches
+ * list is what lets the row keep one visible slot while it still reaches
  * a screen reader with the same facts a sighted user gets from the dot's
  * colour, the row's dimming, and the tooltip. Collapsing to a single signal
  * inside this function is what previously made the trailing `Badge` the only
@@ -1702,13 +1710,19 @@ interface SessionGroup {
   sessions: SessionSummary[];
 }
 
+function sessionActivityAt(session: SessionSummary): number | undefined {
+  // Catalog recency includes a new branch before it has its own messages.
+  // Non-catalog summaries may only carry the last message timestamp.
+  return session.activityAt ?? session.lastMessageAt;
+}
+
 function groupSessionsForHistory(
   sessions: readonly SessionSummary[],
   locale: UiLocale,
 ): SessionGroup[] {
   const copy = getConversationCopy(locale).sessions;
   const ordered = [...sessions].sort((a, b) => {
-    const timestampDelta = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
+    const timestampDelta = (sessionActivityAt(b) ?? 0) - (sessionActivityAt(a) ?? 0);
     return timestampDelta || a.id.localeCompare(b.id);
   });
   const pinned = ordered.filter((session) => session.isFlagged);

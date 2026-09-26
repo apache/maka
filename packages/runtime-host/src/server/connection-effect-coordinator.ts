@@ -627,7 +627,10 @@ function operationFailure<
 }
 
 function transientConnection(
-  identity: Pick<ConnectionCatalogEntry, 'connectionId' | 'slug' | 'providerType'>,
+  identity: Pick<
+    ConnectionCatalogEntry,
+    'connectionId' | 'slug' | 'providerType' | 'defaultApiProtocol'
+  >,
   baseUrl: string | null = null,
 ): ConnectionCatalogEntry {
   const { providerType } = identity;
@@ -640,6 +643,9 @@ function transientConnection(
     name: definition.label,
     providerType,
     ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
+    ...(identity.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: identity.defaultApiProtocol }),
     enabled: true,
     enabledModelIds: models.map(({ id }) => id),
     models,
