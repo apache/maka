@@ -23,6 +23,7 @@ export * from './experiment-directory.js';
 export * from './experiment.js';
 export * from './external-subject.js';
 export * from './fleet.js';
+export * from './fleet-execution.js';
 export * from './fleet-store.js';
 export * from './fleet-worker.js';
 export * from './harness-executor.js';

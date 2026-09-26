@@ -54,8 +54,8 @@ The result kernel contains only score, normalized usage, attributable cost, dura
 
 The mock-backed multi-VM coordinator and deterministic fault simulator are documented in
 [Fleet scheduling](FLEET.md). They expose a separate library API; `maka eval run` retains its
-existing local scheduling and file format. Remote VM transport and real fleet execution adapters
-are not connected yet.
+existing local scheduling and file format. The fleet bridge shares local cell execution; remote VM transport and deployment-specific
+preflight/artifact collection are not connected yet.
 
 ## Experiment spec format
 
