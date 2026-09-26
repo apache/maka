@@ -122,6 +122,8 @@ import {
 const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_CATALOG_ATTEMPTS = 3;
+// Sparse cwd or visibility matches must not turn a bounded lookup into a full Host scan.
+const MAX_SESSION_CATALOG_SCAN_PAGES = 8;
 
 /**
  * The host declined to start a safe-boundary continuation and explained why.
@@ -325,18 +327,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   async listSessions(options: MakaSessionListOptions = {}): Promise<SessionSummary[]> {
-    const sessions = (
-      await (options.cwd !== undefined
-        ? this.#readBoundedSessionCatalog(options.limit, options.cwd)
-        : options.limit === undefined
-          ? readRuntimeHostSessions(this.#connection)
-          : this.#readBoundedSessionCatalog(options.limit))
-    )
-      .flatMap(representableSession)
-      .filter((session) => !isSideConversationSession(session.labels))
-      .map(projectSessionCatalogSummary);
-    if (this.#executionLocation.kind === 'host') return sessions;
-    return sessions
+    const sessions =
+      options.cwd !== undefined || options.limit !== undefined
+        ? await this.#readBoundedSessionCatalog(options.limit, options.cwd)
+        : (await readRuntimeHostSessions(this.#connection))
+            .flatMap(representableSession)
+            .filter((session) => !isSideConversationSession(session.labels));
+    const summaries = sessions.map(projectSessionCatalogSummary);
+    if (this.#executionLocation.kind === 'host') return summaries;
+    return summaries
       .map((session, index) => ({ session, index }))
       .sort((left, right) => {
         const cwdDelta =
@@ -357,30 +356,33 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async #readBoundedSessionCatalog(
     limit: number | undefined,
     cwd?: string,
-  ): Promise<SessionCatalogItem[]> {
+  ): Promise<SessionCatalogProjection[]> {
     if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
       throw new Error(`Session catalog limit must be a non-negative safe integer: ${limit}`);
     }
     if (limit === 0) return [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const sessions: SessionCatalogItem[] = [];
+        const sessions: SessionCatalogProjection[] = [];
         const cursors = new Set<string>();
         let cursor: RuntimeHostSessionCatalogPageCursor | undefined;
-        let hasMore = true;
-        while (hasMore) {
+        let pagesRead = 0;
+        while (pagesRead < MAX_SESSION_CATALOG_SCAN_PAGES) {
           const page = await readRuntimeHostSessionCatalogPage(this.#connection, cursor);
+          pagesRead += 1;
           for (const item of page.sessions) {
-            if (
-              cwd === undefined ||
-              representableSession(item).some((session) => session.workspace.hostCwd === cwd)
-            ) {
-              sessions.push(item);
-              if (limit !== undefined && sessions.length >= limit) break;
+            for (const session of representableSession(item)) {
+              if (
+                (cwd === undefined || session.workspace.hostCwd === cwd) &&
+                !isSideConversationSession(session.labels)
+              ) {
+                sessions.push(session);
+                if (limit !== undefined && sessions.length >= limit) break;
+              }
             }
+            if (limit !== undefined && sessions.length >= limit) break;
           }
           if (!page.nextCursor || (limit !== undefined && sessions.length >= limit)) {
-            hasMore = false;
             break;
           }
           cursor = page.nextCursor;
