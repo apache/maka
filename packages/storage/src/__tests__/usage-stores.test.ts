@@ -1107,6 +1107,198 @@ describe('revision-consistent Usage screen', () => {
     });
   });
 
+  test('matching continuations bound search work even when every timestamp is equal', async () => {
+    await withScreenStores(async (stores, root) => {
+      for (let i = 0; i < 512; i++)
+        await stores.telemetry.recordLlmCall(llmRecord({ id: `matching-${i}` }));
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      let lowerCalls = 0;
+      lease.database.function('usage_screen_lower', { deterministic: true }, (value) => {
+        lowerCalls++;
+        return String(value).toLowerCase();
+      });
+      try {
+        const screen = await initialScreen(stores, { ...screenQuery, search: 'gpt' });
+        assert.equal(screen.activityTotal, 512);
+        assert.ok(lowerCalls <= 672, `count plus first page performed ${lowerCalls} search folds`);
+        const ids = screen.logs.map((row) => row.id);
+        let cursor = screen.nextCursor;
+        while (cursor) {
+          lowerCalls = 0;
+          const result = await stores.readUsageScreen({ ...continuation(screen), cursor });
+          assert.ok(result.kind === 'activity');
+          assert.ok(result.page.logs.length <= 50);
+          assert.ok(lowerCalls > 0, 'observe search work on the actual reader connection');
+          assert.ok(lowerCalls <= 160, `one matching page performed ${lowerCalls} search folds`);
+          ids.push(...result.page.logs.map((row) => row.id));
+          cursor = result.page.nextCursor;
+        }
+        assert.equal(ids.length, 512);
+        assert.equal(new Set(ids).size, 512);
+      } finally {
+        lease.close();
+      }
+    });
+  });
+
+  test('an empty search result evaluates historical search fields only once', async () => {
+    await withScreenStores(async (stores, root) => {
+      for (let i = 0; i < 120; i++)
+        await stores.telemetry.recordToolInvocation(
+          toolRecord({ id: `search-${i}`, modelId: 'model', providerId: 'provider' }),
+        );
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      let lowerCalls = 0;
+      lease.database.function('usage_screen_lower', { deterministic: true }, (value) => {
+        lowerCalls++;
+        return String(value).toLowerCase();
+      });
+      try {
+        const screen = await initialScreen(stores, { ...screenQuery, search: 'absent' });
+        assert.equal(screen.activityTotal, 0);
+        assert.deepEqual(screen.logs, []);
+        assert.equal(screen.nextCursor, null);
+        assert.equal(screen.byTool[0]?.calls, 120);
+        assert.ok(lowerCalls > 0, 'observe search work on the actual reader connection');
+        assert.ok(lowerCalls <= 363, `empty result performed ${lowerCalls} search folds`);
+      } finally {
+        lease.close();
+      }
+    });
+  });
+
+  test('mixed-source pages and counts match the full filtered history at every range boundary', async () => {
+    await withScreenStores(async (stores, root) => {
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      const records: Array<{
+        ts: number;
+        source: number;
+        identity: string;
+        turnId: string;
+        model: string;
+        provider: string;
+        toolName: string;
+        status: string;
+      }> = [];
+      try {
+        const canonical = lease.database.prepare(`INSERT INTO usage_model_call_attempts
+          (attempt_id, completed_at, logical_call_id, session_id, turn_id, call_kind,
+           provider_id, model_id, latency_ms, status, usage_basis, cost_basis, cost_usd)
+          VALUES (?, ?, 'logical', 'session', ?, 'main', ?, ?, 1, ?, 'reported', ?, ?)`);
+        const legacy = lease.database.prepare(
+          'INSERT INTO usage_llm_calls(storage_key, id, ts, record_json) VALUES (?, ?, ?, ?)',
+        );
+        const tool = lease.database.prepare(
+          'INSERT INTO usage_tool_invocations(storage_key, id, ts, record_json) VALUES (?, ?, ?, ?)',
+        );
+        lease.transaction('write', () => {
+          for (let source = 0; source < 3; source++) {
+            for (let i = 0; i < 90; i++) {
+              const identity = `${['Z', 'é', '中'][i % 3]}-${String(i).padStart(3, '0')}`;
+              const record = {
+                ts: i % 11 === 0 ? 0 : i % 7 === 0 ? 50 : 100,
+                source,
+                identity,
+                turnId: `${source}-${i}`,
+                model: ['ÄModel', 'İModel', 'literal%_', 'other'][i % 4]!,
+                provider: source === 2 && i % 2 === 0 ? '' : 'Provider',
+                toolName: source === 2 ? (i % 5 === 0 ? '查找' : 'Read%_') : '',
+                status: ['success', 'error', 'aborted'][i % 3]!,
+              };
+              records.push(record);
+              if (source === 0) {
+                canonical.run(
+                  identity,
+                  record.ts,
+                  record.turnId,
+                  record.provider,
+                  record.model,
+                  ['completed', 'failed', 'aborted'][i % 3]!,
+                  i % 2 === 0 ? 'priced' : 'unpriced',
+                  i % 2 === 0 ? 0 : null,
+                );
+              } else {
+                (source === 1 ? legacy : tool).run(
+                  identity,
+                  'duplicate-display-id',
+                  record.ts,
+                  JSON.stringify({
+                    turnId: record.turnId,
+                    providerId: record.provider || undefined,
+                    modelId: record.model,
+                    toolName: record.toolName,
+                    status: record.status,
+                    durationMs: 1,
+                  }),
+                );
+              }
+            }
+          }
+          lease.database.exec(`INSERT INTO usage_model_call_attempts(attempt_id, completed_at)
+            VALUES ('unreadable', 100)`);
+        });
+        records.sort(
+          (left, right) =>
+            right.ts - left.ts ||
+            right.source - left.source ||
+            Buffer.compare(Buffer.from(right.identity), Buffer.from(left.identity)),
+        );
+        for (const range of [
+          { from: 0, to: 100 },
+          { from: 100, to: 100 },
+          { from: 0, to: 50 },
+          { from: 101, to: 200 },
+        ]) {
+          const unfiltered = await initialScreen(stores, { ...screenQuery, range });
+          for (const [search, status] of [
+            ['', 'all'],
+            ['', 'success'],
+            ['', 'error'],
+            ['', 'aborted'],
+            ['ämodel', 'all'],
+            ['i̇model', 'error'],
+            ['%_', 'all'],
+            ['查找', 'all'],
+            ['provider', 'all'],
+            ['absent', 'all'],
+          ] as const) {
+            const matching = records.filter(
+              (row) =>
+                row.ts >= range.from &&
+                row.ts <= range.to &&
+                (status === 'all' || row.status === status) &&
+                [row.model, row.provider, row.toolName].some((field) =>
+                  field.toLowerCase().includes(search),
+                ),
+            );
+            const screen = await initialScreen(stores, { range, search, status });
+            assert.equal(screen.activityTotal, matching.length);
+            assert.deepEqual(screen.summary, unfiltered.summary);
+            assert.deepEqual(screen.byProvider, unfiltered.byProvider);
+            assert.deepEqual(screen.byModel, unfiltered.byModel);
+            assert.deepEqual(screen.byTool, unfiltered.byTool);
+            const logs = [...screen.logs];
+            let cursor = screen.nextCursor;
+            while (cursor) {
+              assert.ok(logs.length < matching.length, 'continuation must make progress');
+              const result = await stores.readUsageScreen({ ...continuation(screen), cursor });
+              assert.ok(result.kind === 'activity');
+              assert.ok(result.page.logs.length > 0 && result.page.logs.length <= 50);
+              logs.push(...result.page.logs);
+              cursor = result.page.nextCursor;
+            }
+            assert.deepEqual(
+              logs.map((row) => row.turnId),
+              matching.map((row) => row.turnId),
+            );
+          }
+        }
+      } finally {
+        lease.close();
+      }
+    });
+  });
+
   test('each durable writer, correction, deletion, and rollback fences continuation', async () => {
     await withScreenStores(async (stores, root) => {
       await seedScreen(stores);
@@ -1255,10 +1447,12 @@ describe('Usage range statistics reuse', () => {
       const lease = acquireOperationalStateDatabase(await realpath(root));
       const prepare = lease.database.prepare;
       let aggregateQueries = 0;
+      let countQueries = 0;
       // Observe database work without replacing its results. Value assertions
       // below independently protect the range/filter contract.
       lease.database.prepare = function (sql) {
         if (/\bGROUP\s+BY\b|\bSUM\s*\(/i.test(sql)) aggregateQueries++;
+        if (/\bCOUNT\s*\(/i.test(sql)) countQueries++;
         return prepare.call(this, sql);
       };
       try {
@@ -1274,12 +1468,16 @@ describe('Usage range statistics reuse', () => {
           ['', 'all', 63],
         ] as const) {
           aggregateQueries = 0;
+          countQueries = 0;
           const filtered = await initialScreen(stores, { ...screenQuery, search, status });
           assert.equal(filtered.revision, first.revision);
           assert.deepEqual(rangeStatistics(filtered), rangeStatistics(first));
           assert.equal(filtered.activityTotal, total);
           assert.equal(filtered.logs.length, Math.min(50, total));
           assert.equal(aggregateQueries, 0, 'filter edits do not reaggregate unchanged history');
+          if (!search && status === 'all') {
+            assert.equal(countQueries, 0, 'unfiltered totals reuse the cached complete statistics');
+          }
         }
       } finally {
         lease.database.prepare = prepare;

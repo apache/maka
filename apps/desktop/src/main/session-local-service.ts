@@ -216,6 +216,7 @@ export class DesktopSessionLocalService {
       inlineReferences: record.intent.command.content.inlineReferences ?? [],
       ...(record.result?.disposition === 'turn_started' ? { turnId: record.result.turnId } : {}),
       ...(record.error ? { error: record.error } : {}),
+      ...(target.client && target.submit ? { delivering: true as const } : {}),
     }));
   }
 

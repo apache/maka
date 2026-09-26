@@ -21,8 +21,6 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 interface SessionLocalCopy {
   saved: string;
-  sending: string;
-  accepted: string;
   unknown: string;
   failed: string;
   remove: string;
@@ -33,8 +31,6 @@ interface SessionLocalCopy {
 const catalog = {
   en: {
     saved: 'Saved locally · waiting to send',
-    sending: 'Delivering to Host',
-    accepted: 'Host accepted',
     unknown: 'Host outcome unknown',
     failed: 'Not sent · local copy retained',
     remove: 'Remove local copy',
@@ -43,8 +39,6 @@ const catalog = {
   },
   'zh-CN': {
     saved: '已本地保存 · 等待发送',
-    sending: '正在投递到 Host',
-    accepted: 'Host 已接受',
     unknown: 'Host 接受结果未知',
     failed: '未发送 · 本地副本已保留',
     remove: '移除本地副本',
@@ -53,8 +47,6 @@ const catalog = {
   },
   'zh-TW': {
     saved: '已儲存於本機 · 等待傳送',
-    sending: '正在投遞至 Host',
-    accepted: 'Host 已接受',
     unknown: 'Host 接受結果未知',
     failed: '未傳送 · 本機副本已保留',
     remove: '移除本機副本',

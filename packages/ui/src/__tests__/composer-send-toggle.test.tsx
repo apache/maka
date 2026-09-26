@@ -365,7 +365,7 @@ test('keeps Host order visible until the reordered projection arrives', async ()
 
 
 test('deduplicates pending steering against Host queue entries and keeps the plate through an empty queue snapshot', () => {
-  const pending = { id: 'steer', text: 'new direction', ts: 1, pendingSteering: true, transientPlacement: 'current_turn' as const };
+  const pending = { id: 'steer', text: 'new direction', ts: 1, transientPlacement: 'steering' as const };
   const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
   for (const entries of [[queued], []]) {
     const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
@@ -380,7 +380,7 @@ test('deduplicates pending steering against Host queue entries and keeps the pla
 
 test('a locally saved follow-up keeps its delivery status and recovery actions in the pending list', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-    pendingMessages={[{ id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'next_turn',
+    pendingMessages={[{ id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'follow_up',
       deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
       deliveryActions: [{ label: 'Check delivery', onClick() {} }] }]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;

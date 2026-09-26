@@ -32,6 +32,7 @@ import {
 } from '@astryxdesign/core';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
+  declaredModelApiProtocol,
   supportsCustomFastServiceTier,
   modelLimitsConflict,
   type ModelOverride,
@@ -55,6 +56,7 @@ import {
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
+  ProviderEndpointField,
   getProviderSettingsCopy,
   parseContextWindowInput,
   providerPanelActionErrorMessage,
@@ -560,26 +562,38 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
             onSave={async () => { if (await save('endpoint')) setEditingRow(null); }}
           >
-            {endpointHasCredentials ? (
-              <PasswordInput
-                value={baseUrl}
-                onChange={setBaseUrl}
-                placeholder={defaults.baseUrl}
-                label={copy.endpoint}
-                isLabelHidden
-                description={copy.endpointCredentialsMasked}
-                isDisabled={allActionsBusy}
-              />
-            ) : (
-              <TextInput
-                label={copy.endpoint}
-                isLabelHidden
-                value={baseUrl}
-                onChange={setBaseUrl}
-                placeholder={defaults.baseUrl}
-                isDisabled={allActionsBusy}
-              />
-            )}
+            <ProviderEndpointField
+              providerType={connection.providerType}
+              baseUrl={baseUrl}
+              apiProtocol={declaredModelApiProtocol(connection, connection.defaultModel)}
+            >
+              {(requestDescription) => (
+                endpointHasCredentials ? (
+                  <PasswordInput
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    description={<>
+                      {copy.endpointCredentialsMasked}
+                      {requestDescription && <span className="maka-visually-hidden"> {requestDescription}</span>}
+                    </>}
+                    isDisabled={allActionsBusy}
+                  />
+                ) : (
+                  <TextInput
+                    aria-description={requestDescription}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    isDisabled={allActionsBusy}
+                  />
+                )
+              )}
+            </ProviderEndpointField>
           </SettingsExpandableRow>
         ) : (
           <SettingsRow label={copy.endpoint} description={endpointDisplay} align="start" />

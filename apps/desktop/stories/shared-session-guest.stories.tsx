@@ -25,6 +25,7 @@ import {
   SessionTurnRequestComposer,
   type SessionCollaborationServices,
 } from '../src/renderer/features/session-collaboration/index.js';
+import { createFakeSessionCollaborationServices } from '../src/renderer/features/session-collaboration/testing.js';
 
 const SESSION_ID = 'shared-session-story';
 const REQUESTS: readonly SessionTurnAccessRequest[] = [
@@ -70,6 +71,7 @@ function services(
   ) => Promise<{ readonly withdrawn: boolean }> = async () => ({ withdrawn: true }),
 ): SessionCollaborationServices {
   return {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async () => {
       throw new Error('unused');
     },

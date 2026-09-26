@@ -96,7 +96,13 @@ export function partialRuntimeStream(event: RuntimeEvent):
   ) {
     identity = `${content.kind}:provider:${event.refs.providerEventId}`;
     text = content.text;
-  } else if (!content && event.refs?.toolCallId && hasOnlyKeys(event.refs, ['toolCallId'])) {
+  } else if (
+    !content &&
+    event.refs?.toolCallId &&
+    hasOnlyKeys(event.refs, ['toolCallId', 'parentToolCallId', 'parentOperationId'])
+  ) {
+    // Code Mode heartbeats retain their enclosing call's identity, but remain
+    // presentation state replaced by the nested tool's durable result.
     identity = `tool:call:${event.refs.toolCallId}`;
   }
   if (!identity) return undefined;

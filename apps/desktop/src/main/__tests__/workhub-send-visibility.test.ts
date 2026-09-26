@@ -684,9 +684,9 @@ test('WorkHub defaults to follow-up and moves each message into its admitted suc
     h.emit({ type: 'text_delta', id: 'successor-output', turnId: 'successor', messageId: 'successor-answer', ts: 3, text: 'Responding to first follow-up' });
   });
   assert.equal(h.controller.liveTurn?.steps[0]?.text?.text, 'Responding to first follow-up');
-  assert.deepEqual(h.controller.transientMessages.map(({ id, text, attachments, hostTurnId, transientPlacement, pendingSteering }) =>
-    ({ id, text, attachments, hostTurnId, transientPlacement, pendingSteering })), [{
-    id: first, text: 'first follow-up', attachments, hostTurnId: 'successor', transientPlacement: 'current_turn', pendingSteering: false,
+  assert.deepEqual(h.controller.transientMessages.map(({ id, text, attachments, hostTurnId, transientPlacement }) =>
+    ({ id, text, attachments, hostTurnId, transientPlacement })), [{
+    id: first, text: 'first follow-up', attachments, hostTurnId: 'successor', transientPlacement: 'transcript',
   }], 'the admitted prompt must accompany its live answer before transcript publication');
   await act(() => h.emit({ type: 'queue_update', id: 'remaining', turnId: 'successor', ts: 3,
     steering: [], followup: ['second follow-up'], followupEntries: entries.slice(1) }));
@@ -755,7 +755,7 @@ test('follow-up admission before an uncertain response keeps its successor place
   h.setSteerResult('unknown');
   h.onSteer(([, messageId]) => h.emit({ type: 'message_admission', id: 'admitted', turnId: 'successor', messageId, ts: 2, outcome: 'admitted' }));
   await act(async () => { assert.equal(await h.controller.send('next request', []), true); });
-  assert.equal(h.controller.transientMessages[0]?.transientPlacement, 'current_turn');
+  assert.equal(h.controller.transientMessages[0]?.transientPlacement, 'transcript');
   assert.equal(h.controller.transientMessages[0]?.hostTurnId, 'successor');
   assert.equal(h.controller.error, undefined);
 });
