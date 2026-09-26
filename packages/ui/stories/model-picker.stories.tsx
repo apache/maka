@@ -604,46 +604,39 @@ export const LongModelNames: Story = {
       const trigger = within(panel).getByRole('button', {
         name: (label) => label.includes(SUFFIX_CHOICES[0]!.label),
       });
-      const expectVisibleEnds = async (suffix: string) => {
-        await expect(trigger).toHaveTextContent(suffix);
+      const expectEndEllipsis = async (fullName: string) => {
+        await expect(trigger).toHaveAccessibleName(new RegExp(fullName));
         await expect(trigger.querySelector('.modelPickerProviderMark')).toBeNull();
-        // Include the old label layouts so reverting the fix fails on clipped
-        // text geometry, not merely on the absence of the new label component.
-        const triggerText = document.createTreeWalker(trigger, NodeFilter.SHOW_TEXT).nextNode();
-        const label = trigger.querySelector<HTMLElement>('.maka-composer-model-label-text, .modelPickerOptionLabel')
-          ?? triggerText?.parentElement;
-        if (!label) throw new Error('Missing selected model label');
-        const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
-        const nodes: Node[] = [];
-        for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
-        const first = nodes[0];
-        const last = nodes[nodes.length - 1];
-        if (!first?.textContent || !last?.textContent) throw new Error('Missing model label text');
+        const label = trigger.querySelector<HTMLElement>('.maka-composer-model-label');
+        if (!label?.firstChild) throw new Error('Missing selected model label');
+        await expect(label).toHaveTextContent(fullName);
+        await expect(label).toHaveAttribute('title', fullName);
+        const style = getComputedStyle(label);
+        await expect(style.textOverflow).toBe('ellipsis');
+        await expect(style.overflow).toBe('hidden');
+        await expect(style.direction).toBe('ltr');
+        await expect(style.textAlign).toBe('left');
+        await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
         const clip = label.getBoundingClientRect();
-        const expectVisibleRange = async (node: Node, start: number, end: number) => {
-          const range = document.createRange();
-          range.setStart(node, start);
-          range.setEnd(node, end);
-          const bounds = range.getBoundingClientRect();
-          await expect(bounds.width).toBeGreaterThan(0);
-          await expect(bounds.left).toBeGreaterThanOrEqual(clip.left - 1);
-          await expect(bounds.right).toBeLessThanOrEqual(clip.right + 1);
-        };
-        // Both identifying ends must be painted inside the real clipped box.
-        await expectVisibleRange(first, 0, 'accounts/'.length);
-        await expectVisibleRange(last, last.textContent.length - suffix.length, last.textContent.length);
-        await expect(getComputedStyle(label).textAlign).toBe('left');
-        const overflowed = label.textContent?.includes('…') || [label, ...label.querySelectorAll<HTMLElement>('span')]
-          .some((element) => element.scrollWidth > element.clientWidth);
-        await expect(overflowed).toBe(true);
+        const range = document.createRange();
+        range.setStart(label.firstChild, 0);
+        range.setEnd(label.firstChild, 'accounts/'.length);
+        const prefix = range.getBoundingClientRect();
+        await expect(prefix.width).toBeGreaterThan(0);
+        await expect(prefix.left).toBeCloseTo(clip.left, 0);
+        await expect(prefix.right).toBeLessThanOrEqual(clip.right);
+        // The suffix is clipped at the right edge; hover and the accessible
+        // name still expose the complete model ID after each selection.
+        range.selectNodeContents(label);
+        await expect(range.getBoundingClientRect().right).toBeGreaterThan(clip.right);
       };
-      await expectVisibleEnds('-low');
+      await expectEndEllipsis(SUFFIX_CHOICES[0]!.label);
       await userEvent.click(trigger);
       await userEvent.click(await within(document.body).findByRole('option', { name: 'GPT-5' }));
       await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
-      await waitFor(() => expect(trigger.querySelector('.maka-composer-model-label-text')).toHaveTextContent(/^GPT-5$/));
+      await waitFor(() => expect(trigger.querySelector('.maka-composer-model-label')).toHaveTextContent(/^GPT-5$/));
       await expect(trigger).toHaveAccessibleName(/GPT-5/);
-      const shortLabel = trigger.querySelector<HTMLElement>('.maka-composer-model-label-text')!;
+      const shortLabel = trigger.querySelector<HTMLElement>('.maka-composer-model-label')!;
       const shortRange = document.createRange();
       shortRange.selectNodeContents(shortLabel);
       await expect(shortRange.getBoundingClientRect().left).toBeCloseTo(shortLabel.getBoundingClientRect().left, 0);
@@ -655,7 +648,7 @@ export const LongModelNames: Story = {
       await expect(option.querySelector('.modelPickerProviderMark')).not.toBeNull();
       await userEvent.click(option);
       await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
-      await expectVisibleEnds('-high');
+      await expectEndEllipsis(SUFFIX_CHOICES[1]!.label);
     }
   },
 };

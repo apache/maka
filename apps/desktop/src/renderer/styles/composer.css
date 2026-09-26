@@ -410,28 +410,14 @@
   justify-content: flex-start;
   text-align: left;
 }
-/* The invisible full name preserves intrinsic sizing while the measured,
-   visible label fits the available width with a single middle ellipsis. */
 .maka-composer-model-label {
   display: block;
-  position: relative;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   text-align: left;
-}
-.maka-composer-model-label-measure,
-.maka-composer-model-label-ellipsis {
-  visibility: hidden;
-}
-.maka-composer-model-label-ellipsis,
-.maka-composer-model-label-text {
-  position: absolute;
-  inset: 0 auto auto 0;
-}
-.maka-composer-model-label-text {
-  width: 100%;
 }
 /* External model names share this row with an executor selector. Size the
    trigger to its label and let the pair wrap instead of squeezing the model
