@@ -29,3 +29,5 @@ export {
   activeExecutionBoundaryUnreadable,
   startActiveExecutionBoundaryRead,
 } from './controller/use-active-execution-boundary.js';
+
+export { useShellChatModel } from './controller/use-shell-chat-model.js';

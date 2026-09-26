@@ -737,13 +737,12 @@ function AppShellContent({
     activationCandidate: modelSettingsOwnsComposerHost
       ? onboardingActivationCandidate
       : undefined,
+    activeId,
     activeSession: activeSessionForModelControls,
     sessionHealthSession: activeSession,
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
-    connectionSnapshotReady: activeId
-      ? sessionHostConnections.projection.status === 'ready'
-      : true,
+    connectionSnapshotReady: sessionHostConnections.projection.status === 'ready',
     modelPickerDisabled: !modelSwitchAvailability.available,
     openSettingsSection,
     openModelPicker: openComposerModelPicker,

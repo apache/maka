@@ -56,10 +56,12 @@ import type {
 import { useTaskEntryServices } from '../services-context.js';
 import type { TaskEntryHostModel } from '../ui/task-entry-host.js';
 import { runtimeHostProjectKey } from '../../../application/contracts/runtime-host-project-key.js';
+import type { NewTaskChoiceProjectHandoff } from '../../../application/contracts/new-task-choice-project-handoff.js';
 
 export interface UseTaskEntryControllerInput {
   reportError(error: TaskEntryError): void;
   manageProjects(profileId: string): void;
+  reportProjectAdded?(handoff: Omit<NewTaskChoiceProjectHandoff, 'token'>): void;
 }
 
 export interface TaskEntryControllerSelectors {
@@ -127,16 +129,19 @@ type DirectoryHandoff = TaskEntryHostRef & {
   readonly name: string;
   /** The name typed in the New project dialog, applied once a folder is picked. */
   readonly projectName?: string;
+  readonly sourceTarget?: TaskEntryTarget;
 };
 
 function directoryHandoffForHost(
   host: ReadyTaskEntryHost,
+  sourceTarget: TaskEntryTarget | undefined,
   projectName?: string,
 ): DirectoryHandoff {
   return {
     profileId: host.profile.id,
     hostId: host.hostId,
     name: host.profile.name,
+    ...(sourceTarget ? { sourceTarget } : {}),
     ...(projectName ? { projectName } : {}),
   };
 }
@@ -158,6 +163,18 @@ function reconcileDirectoryHandoff(
     : undefined;
 }
 
+function sameTaskEntryTarget(
+  left: TaskEntryTarget | undefined,
+  right: TaskEntryTarget | undefined,
+): boolean {
+  return left === right || Boolean(
+    left && right &&
+      left.profileId === right.profileId &&
+      left.hostId === right.hostId &&
+      left.projectId === right.projectId,
+  );
+}
+
 /** Owns Task Entry Host/Project state, catalog subscriptions, and workspace selection. */
 export function useTaskEntryController(
   input: UseTaskEntryControllerInput,
@@ -168,6 +185,7 @@ export function useTaskEntryController(
   const conversationCopy = getConversationCopy(locale).workspace;
   const reportError = input.reportError;
   const manageProjects = input.manageProjects;
+  const reportProjectAdded = input.reportProjectAdded;
   const { catalog: service, sessions: sessionService } = useTaskEntryServices();
   const [catalog, setCatalog] = useState<TaskEntryCatalog>(EMPTY_CATALOG);
   const [selectedProfileId, setSelectedProfileId] = useState<string>();
@@ -187,6 +205,7 @@ export function useTaskEntryController(
   const refreshLifecycleRef = useRef(0);
   const refreshRunRef = useRef<Promise<TaskEntryCatalog | undefined> | undefined>(undefined);
   const projectMutationPendingRef = useRef(false);
+  const selectedTargetRef = useRef<TaskEntryTarget | undefined>(undefined);
 
   const commitCatalog = useCallback((next: TaskEntryCatalog): void => {
     committedCatalogRef.current = next;
@@ -273,6 +292,7 @@ export function useTaskEntryController(
         projectId: selectedProjectId,
       }
     : undefined;
+  selectedTargetRef.current = target;
   const currentProject = selectedHost && typeof selectedProjectId === 'string'
     ? findProjectByIdentity(selectedHost.projects, selectedProjectId)
     : undefined;
@@ -298,9 +318,9 @@ export function useTaskEntryController(
     setProjectSelections((current) => new Map(current).set(host.profile.id, null));
   }, []);
 
-  const refreshAfterProjectMutation = useCallback(async (profileId: string): Promise<void> => {
+  const refreshAfterProjectMutation = useCallback(async (profileId: string): Promise<TaskEntryCatalog | undefined> => {
     try {
-      await refresh();
+      return await refresh();
     } catch (cause) {
       reportError({
         title: copy.projectUpdateFailedTitle,
@@ -389,10 +409,12 @@ export function useTaskEntryController(
 
   const addProjectForHost = useCallback(async (host: ReadyTaskEntryHost, name?: string): Promise<void> => {
     if (projectMutationPendingRef.current) return;
+    const sourceTarget = selectedTargetRef.current;
+    const sourceMatchesHost = sourceTarget?.profileId === host.profile.id && sourceTarget.hostId === host.hostId;
     if (host.capabilities.chooseHostDirectory) {
       directoryOpenerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setDirectoryHost(directoryHandoffForHost(host, name));
+      setDirectoryHost(directoryHandoffForHost(host, sourceMatchesHost ? sourceTarget : undefined, name));
       return;
     }
     if (!host.capabilities.chooseClientDirectory) return;
@@ -417,16 +439,29 @@ export function useTaskEntryController(
         return;
       }
       if (!result.ok) return;
+      if (sourceMatchesHost && !sameTaskEntryTarget(selectedTargetRef.current, sourceTarget)) return;
+      const refreshed = await refreshAfterProjectMutation(host.profile.id);
+      const refreshedHost = refreshed?.hosts.find((candidate) =>
+        isReadyTaskEntryHost(candidate) && candidate.profile.id === host.profile.id && candidate.hostId === host.hostId);
+      const refreshedProject = refreshedHost && isReadyTaskEntryHost(refreshedHost)
+        ? findProjectByIdentity(refreshedHost.projects, result.project.id) : undefined;
+      if (!refreshedProject?.available || refreshedProject.archivedAt !== undefined) return;
+      if (sourceMatchesHost && !sameTaskEntryTarget(selectedTargetRef.current, sourceTarget)) return;
       setSelectedProfileId(host.profile.id);
       setProjectSelections((current) =>
-        new Map(current).set(host.profile.id, result.project.id),
+        new Map(current).set(host.profile.id, refreshedProject.id),
       );
-      await refreshAfterProjectMutation(host.profile.id);
+      if (sourceMatchesHost && sourceTarget) {
+        reportProjectAdded?.({
+          fromKey: taskEntryDraftKey(sourceTarget),
+          toKey: taskEntryDraftKey({ ...sourceTarget, projectId: refreshedProject.id }),
+        });
+      }
     } finally {
       projectMutationPendingRef.current = false;
       setPending(false);
     }
-  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, service]);
+  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, reportProjectAdded, service]);
 
   const chooseProjectForProfile = useCallback(async (profileId: string): Promise<void> => {
     let next: TaskEntryCatalog | undefined;
@@ -454,7 +489,7 @@ export function useTaskEntryController(
     }
     setSelectedProfileId(profileId);
     if (host.capabilities.chooseHostDirectory) {
-      setDirectoryHost(directoryHandoffForHost(host));
+      setDirectoryHost(directoryHandoffForHost(host, undefined));
     }
   }, [copy.catalogUnavailable, locale, refresh, reportError]);
 
@@ -468,8 +503,8 @@ export function useTaskEntryController(
       host.profileId !== registeredHost.profileId ||
       host.hostId !== registeredHost.hostId
     ) return;
+    const registrationTarget = host.sourceTarget ?? selectedTargetRef.current;
     setDirectoryHost(undefined);
-    setSelectedProfileId(host.profileId);
     // Register names the project after the folder — the remote directory browser
     // has no name field of its own — so the name typed before the folder was
     // picked is applied here. A failed rename must not lose the project that was
@@ -479,9 +514,22 @@ export function useTaskEntryController(
         .renameProject(registeredHost, project.id, host.projectName)
         .catch(() => undefined);
     }
-    setProjectSelections((current) => new Map(current).set(host.profileId, project.id));
-    await refreshAfterProjectMutation(host.profileId);
-  }, [directoryHost, refreshAfterProjectMutation, service]);
+    const refreshed = await refreshAfterProjectMutation(host.profileId);
+    const refreshedHost = refreshed?.hosts.find((candidate) =>
+      isReadyTaskEntryHost(candidate) && candidate.profile.id === host.profileId && candidate.hostId === host.hostId);
+    const refreshedProject = refreshedHost && isReadyTaskEntryHost(refreshedHost)
+      ? findProjectByIdentity(refreshedHost.projects, project.id) : undefined;
+    if (!refreshedProject?.available || refreshedProject.archivedAt !== undefined) return;
+    if (!sameTaskEntryTarget(selectedTargetRef.current, registrationTarget)) return;
+    setSelectedProfileId(host.profileId);
+    setProjectSelections((current) => new Map(current).set(host.profileId, refreshedProject.id));
+    if (host.sourceTarget) {
+      reportProjectAdded?.({
+        fromKey: taskEntryDraftKey(host.sourceTarget),
+        toKey: taskEntryDraftKey({ ...host.sourceTarget, projectId: refreshedProject.id }),
+      });
+    }
+  }, [directoryHost, refreshAfterProjectMutation, reportProjectAdded, service]);
 
   const relinkProject = useCallback(async (
     host: ReadyTaskEntryHost,

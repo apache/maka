@@ -87,6 +87,7 @@ export function useShellChatModel(options: {
   executorTarget?: import('../ports.js').ConversationNewTaskTarget;
   executorCwd?: string;
   activationCandidate?: NewChatModelCandidate;
+  activeId?: string;
   activeSession: SessionSummary | undefined;
   sessionHealthSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
@@ -139,7 +140,20 @@ export function useShellChatModel(options: {
   const conversationCopy = getDesktopConversationCopy(uiLocale);
   const [pendingExecutionChoice, setPendingExecutionChoice] = useNewTaskChoice<
     NewChatModelCandidate | MakaClientExecutorTarget | null
-  >(options.newTaskKey);
+  >(options.newTaskKey, {
+    projectHandoffEnabled: true,
+    // Task Entry publishes only a same-Host/profile add, after catalog refresh.
+    // Carry native model picks only; executor choices retain their own scope.
+    projectHandoffIdentity: !options.activeId && !activeSession && options.connectionSnapshotReady
+      ? 'native-model'
+      : undefined,
+    acceptProjectHandoff: (choice) => choice === null || (
+      !('executorId' in choice) && options.chatModelChoices.some((offered) =>
+        offered.connectionId === choice.llmConnectionId &&
+        offered.connectionSlug === choice.llmConnectionSlug &&
+        offered.model === choice.model)
+    ),
+  });
   const pendingExecutorTarget =
     pendingExecutionChoice && 'executorId' in pendingExecutionChoice
       ? pendingExecutionChoice
@@ -178,14 +192,6 @@ export function useShellChatModel(options: {
   //
   // The pick carries its target key so a Host or Project switch cannot apply it
   // to a different execution authority, even for an identically named model.
-  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel, clearPendingNewChatThinkingLevel] =
-    useNewTaskChoice<ThinkingLevel | null>(
-      options.newTaskKey,
-    );
-  const setPendingNewChatModel = (next: NewChatModelCandidate | null) => {
-    setPendingExecutionChoice(next);
-    clearPendingNewChatThinkingLevel();
-  };
   const executorTarget = activeSession?.executorId
     ? {
         executorId: activeSession.executorId,
@@ -218,6 +224,21 @@ export function useShellChatModel(options: {
       choice.connectionSlug === newChatModel?.llmConnectionSlug &&
       choice.model === newChatModel?.model,
   );
+  const newChatThinkingLevels = newChatModelChoice?.thinkingLevels ?? [];
+  const canHandoffNewTaskThinking = !options.activeId && !activeSession && !pendingExecutorTarget;
+  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel, clearPendingNewChatThinkingLevel] =
+    useNewTaskChoice<ThinkingLevel | null>(options.newTaskKey, {
+      projectHandoffEnabled: true,
+      acceptProjectHandoff: (level: ThinkingLevel | null) =>
+        canHandoffNewTaskThinking && (level === null || newChatThinkingLevels.includes(level)),
+      projectHandoffIdentity: canHandoffNewTaskThinking && newChatModel
+        ? JSON.stringify([newChatModel.llmConnectionId, newChatModel.llmConnectionSlug, newChatModel.model])
+        : undefined,
+    });
+  const setPendingNewChatModel = (next: NewChatModelCandidate | null) => {
+    setPendingExecutionChoice(next);
+    clearPendingNewChatThinkingLevel();
+  };
   const requestedNewChatThinkingLevel = pendingNewChatThinkingLevel === undefined
     ? newChatModelChoice?.defaultThinkingLevel ?? null
     : pendingNewChatThinkingLevel;
@@ -263,13 +284,6 @@ export function useShellChatModel(options: {
     activeSession?.thinkingLevel && activeThinkingLevels.includes(activeSession.thinkingLevel)
       ? activeSession.thinkingLevel
       : undefined;
-  const newChatThinkingLevels = useMemo(
-    () => {
-      if (!newChatModel) return [];
-      return newChatModelChoice?.thinkingLevels ?? [];
-    },
-    [newChatModel, newChatModelChoice],
-  );
   // The membership check is what keeps a configured default honest: a level the
   // current model does not offer falls through to that model's own default
   // rather than being forced to the nearest rung.
@@ -304,7 +318,7 @@ export function useShellChatModel(options: {
       outcome: options.sessionSendOutcome,
       connections,
       hasModelChoices: chatModelChoices.length > 0,
-      modelChoicesSettled: options.connectionSnapshotReady,
+      modelChoicesSettled: options.activeId === undefined && !activeSession ? true : options.connectionSnapshotReady,
       modelPickerDisabled: options.modelPickerDisabled,
       lastTestStatus: sessionHealthConnection?.lastTestStatus,
     });
@@ -335,6 +349,8 @@ export function useShellChatModel(options: {
     options.sessionSendOutcome,
     connections,
     chatModelChoices.length,
+    options.activeId,
+    activeSession,
     options.connectionSnapshotReady,
     options.modelPickerDisabled,
     options.refreshModelChoices,
