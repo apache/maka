@@ -493,6 +493,36 @@ CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Startup
 recovery can reconstruct an already admitted continuation through that seam,
 but it does not automatically select an ordinary failed or cancelled Run.
 
+### A missing tool result is projected only for a fresh user turn
+
+An uncertain tool side effect is not a resumable boundary. If recovery finds a
+durable T1 dispatch without a committed T2 result, it seals the old invocation
+as `outcome_unknown`; it does not invent a durable tool response and does not
+retry the tool. The old Run remains stopped.
+
+When the user later sends a new explicit message, that message starts a new
+Turn. Only provider requests in that fresh Turn receive a temporary history
+projection: the old tool call is paired with an `outcome_unknown` response and
+a system notice, then the new user message follows. The temporary response and
+notice are not written to the RuntimeEvent ledger or transcript. For example, after
+`Bash("touch marker.txt")` was dispatched but its result was not committed, a
+new request such as “check whether `marker.txt` exists” lets the model inspect
+the current state before deciding what to do; Maka does not decide whether the
+write happened and does not retry it automatically.
+
+Automated triggers such as cloud activation, schedules, Goals, WorkHub results,
+and Agent Graph wakes are not explicit user messages. If such a fresh Turn sees
+an unresolved unknown tool outcome, Runtime rejects it before making a provider
+request; a user must inspect the current state and send a new message.
+
+This projection must not lose the T1 call. If an existing checkpoint or the
+current context budget would hide it, Runtime falls back to the full effective
+history for that request. This is a deliberate fail-closed trade-off: a very
+large unresolved history may exceed the provider's context limit, in which case
+the provider's real error is surfaced rather than dropping the uncertainty or
+claiming success. Compaction that preserves this uncertainty while reducing
+the rest of that history is not implemented here.
+
 ### Current parked-reason boundary
 
 Runtime Host projects Runtime planner rejection reasons into the closed
@@ -833,13 +863,18 @@ Start with production-shaped red tests, then land core contract, storage constra
 
 | Setting | Purpose | Rollback meaning |
 |---|---|---|
-| unset | Enable explicit Desktop and CLI/TUI resume; keep model-driven WorkHub resume disabled | Default product behavior |
-| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Also enable model-driven WorkHub resume | Preserves the previous full opt-in behavior |
+| unset | Enable explicit Desktop and CLI/TUI resume; keep automated WorkHub and `maka activate` resume disabled | Default product behavior |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Also enable automated WorkHub and `maka activate` resume | Preserves the previous full opt-in behavior |
 | `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` | Disable explicit and model-driven resume planning | May park reconstruction; does not delete durable facts |
 
 Unknown non-empty values fail closed like `0`. Every enabled entry point still
 uses the same authoritative planner; the policy only controls whether a new
 resume attempt may reach it.
+
+With automated `maka activate` resume enabled, a ready continuation is used
+instead of submitting that activation's new stimulus. If no continuation is
+ready, the stimulus is submitted normally. Callers that need every activation
+stimulus processed should not opt into this legacy resume behavior.
 
 RuntimeEvent migration is unconditional on the first write. Downgrading to a
 reader that does not understand the new schema requires explicit, verified

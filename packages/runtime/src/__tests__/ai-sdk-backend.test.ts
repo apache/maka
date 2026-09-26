@@ -64,6 +64,7 @@ import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-run
 import { TOOL_SEARCH_NAME } from '../tool-availability.js';
 import { buildNativeWebSearchTool } from '../native-web-search-tool.js';
 import { canonicalizeToolSet } from '../request-shape.js';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -103,7 +104,7 @@ import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primiti
 import { Context } from '../plugin-kernel.js';
 import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';
-import { testInvocationOpening } from './invocation-fixture.js';
+import { testInvocationOpening, testInvocationRecord } from './invocation-fixture.js';
 
 for (const terminal of ['gateway', 'eof', 'other'] as const) {
   test(`recovers ${terminal} SSE with one failed attempt and no repeated tool effects`, async () => {
@@ -15126,7 +15127,14 @@ describe('AiSdkBackend steering durability and identity', () => {
   const steeringBackend = (
     model: MockLanguageModelV4,
     options: Partial<
-      Pick<AiSdkBackendInput, 'supportsVision' | 'readAttachmentBytes' | 'loadTurnRuntimeEvents'>
+      Pick<
+        AiSdkBackendInput,
+        | 'supportsVision'
+        | 'readAttachmentBytes'
+        | 'loadTurnRuntimeEvents'
+        | 'loadHistoryCompactCheckpoint'
+        | 'contextBudget'
+      >
     > = {},
   ): AiSdkBackend =>
     createTestAiSdkBackend({
@@ -15378,6 +15386,272 @@ describe('AiSdkBackend steering durability and identity', () => {
       events.some((event) => event.type === 'complete' && event.stopReason === 'end_turn'),
       true,
     );
+  });
+
+  test('a fresh client message projects prior unknown tool outcomes only into the model request', async () => {
+    const args = { command: 'touch marker.txt' };
+    const priorIdentity = {
+      invocationId: 'prior-invocation',
+      runId: 'prior-run',
+      sessionId: 'session-1',
+      turnId: 'prior-turn',
+      ts: 1,
+      partial: false,
+    } as const;
+    const earlierIdentity = {
+      invocationId: 'earlier-invocation',
+      runId: 'earlier-run',
+      sessionId: 'session-1',
+      turnId: 'earlier-turn',
+      ts: 1,
+      partial: false,
+    } as const;
+    const priorEvents: RuntimeEvent[] = [
+      {
+        ...earlierIdentity,
+        id: 'earlier-protocol',
+        role: 'system',
+        author: 'system',
+        actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
+      },
+      {
+        ...earlierIdentity,
+        id: 'earlier-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'the first turn completed normally' },
+      },
+      {
+        ...priorIdentity,
+        id: 'prior-protocol',
+        role: 'system',
+        author: 'system',
+        actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
+      },
+      {
+        ...priorIdentity,
+        id: 'prior-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'make a marker file' },
+      },
+      {
+        ...priorIdentity,
+        id: 'prior-call',
+        role: 'model',
+        author: 'agent',
+        origin: 'provider',
+        modelVisibility: 'visible',
+        content: { kind: 'function_call', id: 'provider-call-1', name: 'Bash', args },
+        refs: { operationId: 'prior-operation', toolCallId: 'provider-call-1' },
+      },
+      {
+        ...priorIdentity,
+        id: 'prior-dispatch',
+        role: 'system',
+        author: 'system',
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'prior-operation',
+            providerToolCallId: 'provider-call-1',
+            toolName: 'Bash',
+            canonicalArgsHash: canonicalToolArgsHash('Bash', args),
+            recoveryMode: 'never_auto_retry',
+          },
+        },
+        refs: { operationId: 'prior-operation', toolCallId: 'provider-call-1' },
+      },
+      {
+        ...priorIdentity,
+        id: 'hidden-nested-call',
+        role: 'model',
+        author: 'agent',
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        content: {
+          kind: 'function_call',
+          id: 'hidden-nested-call-1',
+          name: 'SecretNestedTool',
+          args: { secret: 'hidden-operation-argument' },
+        },
+        refs: {
+          operationId: 'hidden-nested-operation',
+          toolCallId: 'hidden-nested-call-1',
+          parentOperationId: 'prior-operation',
+          parentToolCallId: 'provider-call-1',
+        },
+      },
+      {
+        ...priorIdentity,
+        id: 'hidden-nested-dispatch',
+        role: 'system',
+        author: 'system',
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'hidden-nested-operation',
+            providerToolCallId: 'hidden-nested-call-1',
+            toolName: 'SecretNestedTool',
+            canonicalArgsHash: canonicalToolArgsHash('SecretNestedTool', {
+              secret: 'hidden-operation-argument',
+            }),
+            recoveryMode: 'never_auto_retry',
+          },
+        },
+        refs: {
+          operationId: 'hidden-nested-operation',
+          toolCallId: 'hidden-nested-call-1',
+          parentOperationId: 'prior-operation',
+          parentToolCallId: 'provider-call-1',
+        },
+      },
+    ];
+    const earlierInvocation = testInvocationRecord({
+      sessionId: 'session-1',
+      invocationId: 'earlier-invocation',
+      runId: 'earlier-run',
+      turnId: 'earlier-turn',
+      outcome: 'completed',
+    });
+    const priorInvocation = testInvocationRecord({
+      sessionId: 'session-1',
+      invocationId: 'prior-invocation',
+      runId: 'prior-run',
+      turnId: 'prior-turn',
+      outcome: 'failed',
+      failureClass: 'outcome_unknown',
+    });
+    const model = textCompletionModel('I will inspect the current state first.');
+    const priorCheckpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [priorEvents[1]!],
+      summary: structuredSummary('older settled history was compacted'),
+    });
+    const durable = durableTurnHarness('turn-resume', 'check whether the marker exists', {
+      runId: 'fresh-run',
+    });
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      loadHistoryCompactCheckpoint: () => priorCheckpoint,
+      contextBudget: buildDefaultContextBudgetPolicy(),
+    });
+
+    await drainDurably(
+      backend.send(
+        durable.input({
+          runtimeContext: priorEvents,
+          runtimeContextInvocations: [earlierInvocation, priorInvocation],
+          allowPriorUnknownToolOutcomes: true,
+        }),
+      ),
+      durable,
+    );
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]);
+    assert.match(prompt, /provider-call-1/);
+    assert.match(prompt, /outcome_unknown/);
+    assert.match(prompt, /may or may not have happened/);
+    assert.match(prompt, /check whether the marker exists/);
+    assert.doesNotMatch(
+      prompt,
+      /SecretNestedTool|hidden-nested-operation|hidden-operation-argument/,
+    );
+    assert.match(prompt, /older settled history was compacted/);
+    assert.equal(
+      durable.ledger.some(
+        (event) =>
+          event.content?.kind === 'function_response' && event.content.id === 'provider-call-1',
+      ),
+      false,
+      'request-only unknown results must not be written into the new turn ledger',
+    );
+
+    const checkpointCoveringUnknownCall = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: priorEvents.slice(0, 6),
+      summary: structuredSummary('checkpoint omitted the unresolved provider call'),
+    });
+    const checkpointed = durableTurnHarness(
+      'turn-checkpointed-unknown',
+      'inspect the marker before deciding what to do',
+      { runId: 'checkpointed-run' },
+    );
+    const checkpointedModel = textCompletionModel('I will inspect the marker first.');
+    const checkpointedBackend = steeringBackend(checkpointedModel, {
+      loadTurnRuntimeEvents: checkpointed.loadTurnRuntimeEvents,
+      loadHistoryCompactCheckpoint: () => checkpointCoveringUnknownCall,
+      contextBudget: buildDefaultContextBudgetPolicy(),
+    });
+    await drainDurably(
+      checkpointedBackend.send(
+        checkpointed.input({
+          runtimeContext: priorEvents,
+          runtimeContextInvocations: [earlierInvocation, priorInvocation],
+          allowPriorUnknownToolOutcomes: true,
+        }),
+      ),
+      checkpointed,
+    );
+    const checkpointedPrompt = JSON.stringify(checkpointedModel.doStreamCalls[0]);
+    assert.match(checkpointedPrompt, /provider-call-1/);
+    assert.match(checkpointedPrompt, /outcome_unknown/);
+    assert.match(checkpointedPrompt, /may or may not have happened/);
+    assert.doesNotMatch(checkpointedPrompt, /checkpoint omitted the unresolved provider call/);
+
+    const inconsistentModel = textCompletionModel('must not be sent');
+    const inconsistent = durableTurnHarness('turn-inconsistent', 'new message', {
+      runId: 'inconsistent-run',
+    });
+    const inconsistentBackend = steeringBackend(inconsistentModel, {
+      loadTurnRuntimeEvents: inconsistent.loadTurnRuntimeEvents,
+    });
+    await assert.rejects(
+      drainDurably(
+        inconsistentBackend.send(
+          inconsistent.input({
+            runtimeContext: priorEvents,
+            runtimeContextInvocations: [
+              earlierInvocation,
+              {
+                ...priorInvocation,
+                terminalEvent: {
+                  ...priorInvocation.terminalEvent!,
+                  status: 'completed',
+                },
+              },
+            ],
+            allowPriorUnknownToolOutcomes: true,
+          }),
+        ),
+        inconsistent,
+      ),
+      /prior unknown tool outcome has no sealed invocation/,
+    );
+    assert.equal(inconsistentModel.doStreamCalls.length, 0);
+
+    const unprivilegedModel = textCompletionModel('This must not reach the provider.');
+    const unprivileged = durableTurnHarness('turn-unprivileged', 'ordinary message', {
+      runId: 'unprivileged-run',
+    });
+    const unprivilegedBackend = steeringBackend(unprivilegedModel, {
+      loadTurnRuntimeEvents: unprivileged.loadTurnRuntimeEvents,
+    });
+    await assert.rejects(
+      drainDurably(
+        unprivilegedBackend.send(
+          unprivileged.input({
+            runtimeContext: priorEvents,
+            runtimeContextInvocations: [earlierInvocation, priorInvocation],
+          }),
+        ),
+        unprivileged,
+      ),
+      /an explicit user message is required/u,
+    );
+    assert.equal(unprivilegedModel.doStreamCalls.length, 0);
   });
 
   test('persists canonical steering content and materializes attachments for the model', async () => {

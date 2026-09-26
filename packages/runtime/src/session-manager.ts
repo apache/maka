@@ -187,13 +187,12 @@ import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
 import type { RuntimeContinuationFailpoint } from './agent-run.js';
-import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
 import {
   attributeSandboxBoundaryRestartClosure,
   classifyAgentRunRecovery,
   type AgentRunRecoveryDecision,
 } from './agent-run-recovery.js';
-import { buildInterruptedToolOutcomeCommits, resolveRuntimeRecovery } from './recovery-resolver.js';
+import { resolveRuntimeRecovery } from './recovery-resolver.js';
 import {
   isRuntimeHostedRootAuthority,
   RuntimeMessageAuthorityInvariantError,
@@ -256,16 +255,6 @@ function runtimeContinuationAuthority(
     typeof candidate.commitContinuationStart === 'function' &&
     typeof candidate.commitContinuationRepairStart === 'function'
     ? (candidate as RuntimeContinuationAuthorityStore)
-    : undefined;
-}
-
-function runtimeCommitSinkFromEventStore(
-  store: RuntimeEventStore | undefined,
-): RuntimeCommitSink | undefined {
-  const candidate = store as Partial<RuntimeCommitSink> | undefined;
-  return typeof candidate?.commitToolPrepared === 'function' &&
-    typeof candidate.commitToolOutcome === 'function'
-    ? (candidate as RuntimeCommitSink)
     : undefined;
 }
 
@@ -814,7 +803,6 @@ interface SessionManagerBaseDeps {
   planStore?: PlanStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
-  runtimeCommitSink?: RuntimeCommitSink;
   /** Host capability; RuntimeKernel gates it by the selected backend. */
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   backends: BackendRegistry;
@@ -908,7 +896,6 @@ export class SessionManager {
   private readonly runtimeKernel: RuntimeKernelLike;
   private readonly runtimeLedgerRepair?: RuntimeLedgerRepair;
   private readonly preparedTranscriptLedgers = new Set<string>();
-  private readonly runtimeCommitSink?: RuntimeCommitSink;
   private readonly activeHostedLinkedChildSessions = new Set<string>();
   private readonly childSessionSpawns = new Map<
     string,
@@ -927,8 +914,6 @@ export class SessionManager {
     if (deps.publishChildWorkspacePatch && !deps.listArtifactsForTurn) {
       throw new Error('Child workspace patch publication requires Artifact turn listing');
     }
-    this.runtimeCommitSink =
-      deps.runtimeCommitSink ?? runtimeCommitSinkFromEventStore(deps.runtimeEventStore);
     if (deps.runStore && deps.runtimeEventStore) {
       this.runtimeLedgerRepair = new RuntimeLedgerRepair({
         runtimeEventStore: deps.runtimeEventStore,
@@ -4855,51 +4840,24 @@ export class SessionManager {
         // T1 states; generic app-restart repair must never write into them.
         continue;
       }
-      if (this.runtimeCommitSink) {
-        const interruptedOutcomes = buildInterruptedToolOutcomeCommits(
-          inspected.runtimeEvents,
-          this.deps.now(),
-          run.opening.configuration.toolMode,
-        );
-        let outcomeCommitFailed = false;
-        for (const outcome of interruptedOutcomes) {
-          const committed = await commitInterruptedOutcomeWithRetry(policy, () =>
-            this.runtimeCommitSink!.commitToolOutcome(outcome),
-          );
-          if (!committed) {
-            // Keep the run non-terminal so a later recovery pass can retry the
-            // missing outcome before any terminal repair seals the ledger.
-            outcomeCommitFailed = true;
-          } else {
-            recovered ||= committed.created;
-          }
-        }
-        if (outcomeCommitFailed) {
-          continue;
-        }
-        if (interruptedOutcomes.length > 0) {
-          inspected = await inspectAgentRunReadModel(
-            recoveryRunStore,
-            this.deps.runtimeEventStore,
-            {
-              sessionId,
-              runId: run.runId,
-              invocation: run,
-              includeModelReplay: false,
-              includeProjection: false,
-            },
-          );
-        }
-      }
+      let unknownDispatchedTools: { toolCallId: string; toolName?: string }[] = [];
       if (!inspected.runtimeEvents.some(isTerminalRuntimeEvent)) {
         const toolRecovery = resolveRuntimeRecovery(inspected.runtimeEvents);
+        const indeterminate = toolRecovery.decisions.filter(
+          (decision) => decision.status === 'indeterminate',
+        );
+        unknownDispatchedTools = indeterminate
+          .filter((decision) => decision.reason === 'dispatch_without_response')
+          .map(({ toolCallId, toolName }) => ({
+            toolCallId,
+            ...(toolName ? { toolName } : {}),
+          }));
         if (
           toolRecovery.hasCorruption ||
-          toolRecovery.decisions.some((decision) => decision.status === 'indeterminate')
+          (indeterminate.length > 0 && unknownDispatchedTools.length !== indeterminate.length)
         ) {
-          // Never seal an invocation while a dispatched operation still lacks
-          // a result or an explicit recovery decision. A later recovery pass
-          // may retry the durable settlement; corruption stays fail-closed.
+          // Only a structurally valid T1-without-T2 boundary can be sealed as
+          // unknown. Legacy gaps and corrupt recovery facts still fail closed.
           continue;
         }
       }
@@ -4915,10 +4873,25 @@ export class SessionManager {
       const runtimeDecision = this.classifyRuntimeEventRecovery(inspected);
       const classified = runtimeDecision ?? classifyAgentRunRecovery(run, inspected.events);
       if (!classified) continue;
-      const decision =
+      let decision =
         classified.status === 'failed'
           ? attributeSandboxBoundaryRestartClosure(classified, await readBoundaryClosures())
           : classified;
+      if (unknownDispatchedTools.length > 0) {
+        decision = {
+          ...decision,
+          status: 'failed',
+          failureClass: 'outcome_unknown',
+          diagnostic: {
+            ...decision.diagnostic,
+            recoveryReason: 'outcome_unknown',
+            unresolvedToolCalls: unknownDispatchedTools.map(({ toolCallId, toolName }) => ({
+              toolCallId,
+              ...(toolName ? { toolName } : {}),
+            })),
+          },
+        };
+      }
       if (await this.applyAgentRunRecovery(sessionId, decision, inspected, policy)) {
         recovered = true;
       }
@@ -5030,8 +5003,6 @@ function groupContinuationClaimsBySession(
   return grouped;
 }
 
-const MAX_BEST_EFFORT_OUTCOME_COMMIT_ATTEMPTS = 2;
-
 function listSessionsForRecovery(
   store: SessionStore,
   policy: RecoveryPolicy,
@@ -5050,21 +5021,6 @@ async function recoverOr<T>(
     if (policy.kind === 'strict') throw error;
     return fallback;
   }
-}
-
-async function commitInterruptedOutcomeWithRetry(
-  policy: RecoveryPolicy,
-  operation: () => Promise<RuntimeCommitResult>,
-): Promise<RuntimeCommitResult | undefined> {
-  const attempts = policy.kind === 'strict' ? 1 : MAX_BEST_EFFORT_OUTCOME_COMMIT_ATTEMPTS;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      if (policy.kind === 'strict') throw error;
-    }
-  }
-  return undefined;
 }
 
 function continuationRepairEventId(

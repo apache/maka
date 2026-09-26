@@ -41,6 +41,28 @@ import type { MakaRunContextInput, MakaRunOutcome } from '../run-command-core.js
 import type { MakaTranscriptReplacementReason } from '../session-driver.js';
 
 describe('Runtime Host maka run adapter', () => {
+  test('preserves a non-user trigger through the production run adapter', async () => {
+    const fixture = runFixture({});
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    await collect(
+      fixture.context.runtime.sendMessage(session.id, {
+        turnId: 'turn-activation',
+        text: 'Inspect the workspace',
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      }),
+    );
+
+    assert.deepEqual(fixture.preparedOrigins, [
+      { kind: 'cloud_activation', activationId: 'activation-1' },
+    ]);
+  });
+
   test('stops before context creation when CLI preflight finds a confirmed blocker', async () => {
     const stderr: string[] = [];
     let contextCreations = 0;
@@ -622,6 +644,56 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.failure?.class, 'aborted');
   });
 
+  test('observes a resumed Host Turn through the same outcome path as a fresh Turn', async () => {
+    const observed: MakaRunOutcome[] = [];
+    const fixture = runFixture({ observed, resumeReady: true });
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    assert.ok(fixture.context.runtime.resumeLatest);
+    const resumed = await fixture.context.runtime.resumeLatest(session.id);
+    assert.ok(resumed);
+    await collect(resumed);
+
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0]?.outcomeId, 'run-resumed');
+    assert.equal(observed[0]?.status, 'completed');
+    assert.equal(observed[0]?.finalOutput, 'Resumed answer');
+  });
+
+  test('stops a resumed Host Turn if cancellation races its start', async () => {
+    const resumeStarted = deferred<void>();
+    const resumeGate = deferred<void>();
+    const fixture = runFixture({
+      resumeReady: true,
+      resumeGate: resumeGate.promise,
+      onResumeStarted: () => resumeStarted.resolve(),
+    });
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+    assert.ok(fixture.context.runtime.resumeLatest);
+    const resumed = await fixture.context.runtime.resumeLatest(session.id);
+    assert.ok(resumed);
+    const draining = collect(resumed);
+    await resumeStarted.promise;
+
+    await fixture.context.runtime.stopSession(session.id);
+    resumeGate.resolve();
+    await draining;
+
+    assert.deepEqual(fixture.exactTurnStops, [
+      { sessionId: 'session-created', turnId: 'turn-resumed', runId: 'run-resumed' },
+    ]);
+  });
+
   test('classifies live and durable step-cap failures equally', async () => {
     const live = await observeFixtureOutcome({
       turnEvents: completionEvents('turn-1', 'step_limit'),
@@ -1012,6 +1084,9 @@ function runFixture(input: {
   prepareGate?: Promise<void>;
   onPrepareStarted?: () => void;
   turnEvents?: AsyncIterable<SessionEvent>;
+  resumeReady?: boolean;
+  resumeGate?: Promise<void>;
+  onResumeStarted?: () => void;
   pendingInteractions?: InteractionPendingSnapshot[];
   pendingAfterTurnStarts?: boolean;
   graphProjectionRace?: boolean;
@@ -1045,6 +1120,7 @@ function runFixture(input: {
   >();
   let messageReads = 0;
   const preparedMaxSteps: Array<number | undefined> = [];
+  const preparedOrigins: unknown[] = [];
   const driver = {
     createSession: async () => sessionSummary('session-created'),
     readMessages: async () => {
@@ -1111,9 +1187,10 @@ function runFixture(input: {
     },
     preparePrompt: async (
       _prompt: string,
-      options: { turnId?: string; maxSteps?: number } = {},
+      options: { turnId?: string; maxSteps?: number; origin?: unknown } = {},
     ) => {
       preparedMaxSteps.push(options.maxSteps);
+      preparedOrigins.push(options.origin);
       input.onPrepareStarted?.();
       await input.prepareGate;
       const events = input.turnEvents ?? eventsFor(options.turnId ?? 'turn-1', 'Host answer');
@@ -1128,6 +1205,16 @@ function runFixture(input: {
               input.pendingInteractions ?? [],
             )
           : events,
+      };
+    },
+    resumeLatestTurn: async () => {
+      input.onResumeStarted?.();
+      await input.resumeGate;
+      return {
+        sessionId: switches.at(-1) ?? 'session-created',
+        turnId: 'turn-resumed',
+        runId: 'run-resumed',
+        events: eventsFor('turn-resumed', 'Resumed answer'),
       };
     },
     respondToSandboxBoundary: async (response: { requestId: string; decision: 'deny' }) => {
@@ -1153,6 +1240,15 @@ function runFixture(input: {
   const connection = {
     hostEpoch: 'host-1',
     request: async (operation: string, requestInput: Record<string, unknown>) => {
+      if (operation === 'turn.resume.query' && input.resumeReady) {
+        return {
+          sessionId: requestInput.sessionId,
+          disposition: 'ready',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-source',
+          sourceRuntimeEventHighWater: 3,
+        };
+      }
       if (operation === 'session.execution_boundary.query') {
         return { kind: 'managed', access: 'writable', revision: 0 };
       }
@@ -1214,6 +1310,7 @@ function runFixture(input: {
     graphStops,
     exactTurnStops,
     preparedMaxSteps,
+    preparedOrigins,
     sandboxResponses,
     createContext,
     publishPendingInteraction(pending: InteractionPendingSnapshot) {
