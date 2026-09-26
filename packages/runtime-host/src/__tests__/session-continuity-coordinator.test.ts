@@ -2283,6 +2283,69 @@ function completionOrder(sink: { frames: SubscriptionFrame[] }): string[] {
   );
 }
 
+test('a failed transcript page records the underlying cause before the generic outcome', async () => {
+  const message = assistantMessage('界'.repeat(20_000));
+  const baseReader = transcriptReader([message]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    // The bootstrap request carries no position; a page always does. Throw only
+    // for the page so the subscription still opens.
+    readDurablePage: async (sessionId, request, project) => {
+      if (request.position !== undefined) throw new Error('injected oversized Turn');
+      return baseReader.readDurablePage(sessionId, request, project);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  attachTestConnection(coordinator, 'connection-page-failure', new RecordingSink());
+  const opened = await open(coordinator, 'connection-page-failure', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  const transcript = opened.transcript;
+  const cursor = transcript?.durable.nextCursor;
+  assert.ok(transcript);
+  assert.ok(cursor);
+  if (!transcript || !cursor) {
+    coordinator.close();
+    return;
+  }
+
+  // The generic outcome carries no cause, so the Host has to log one instead.
+  const logged: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => logged.push(values.map(String).join(' '));
+  try {
+    const outcome = await coordinator.handlers['session.transcript.page'](
+      {
+        subscriptionId: opened.subscriptionId,
+        direction: 'older',
+        throughSequence: transcript.durable.throughSequence,
+        cursor,
+        anchorSequence: null,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      },
+      connectionContext('connection-page-failure'),
+    );
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+    });
+  } finally {
+    console.error = originalConsoleError;
+    coordinator.close();
+  }
+
+  assert.equal(logged.length, 1);
+  assert.match(logged[0] ?? '', /session\.transcript\.page failed/);
+  assert.match(logged[0] ?? '', /injected oversized Turn/);
+});
+
 function textCompleteEvent(messageId: string, text: string) {
   return {
     type: 'text_complete' as const,
