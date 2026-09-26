@@ -403,6 +403,14 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /**
+   * Bumped by the runtime each time a turn of this session starts or ends.
+   * `revision` does not move for those transitions, so two same-revision
+   * summaries can disagree about `runningTurnIds` — the epoch orders them:
+   * the higher epoch is the newer observation (#5713). Present alongside
+   * `runningTurnIds` under the same population rules.
+   */
+  runEpoch?: number;
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagent?: SessionSubagentProjection;

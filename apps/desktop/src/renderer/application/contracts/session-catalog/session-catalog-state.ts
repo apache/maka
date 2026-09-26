@@ -188,9 +188,21 @@ export function waitForCatalogSession(
   });
 }
 
-/** A committed row at a newer revision is authoritative over an older snapshot of it. */
+/**
+ * A committed row at a newer revision is authoritative over an older snapshot
+ * of it. Equal revisions tie on the live run state's own order: a turn
+ * starting or ending does not move `revision`, so two same-revision reads can
+ * disagree about `runningTurnIds` — the run epoch says which observation is
+ * older, and the stale one must not overwrite the fresher (#5713).
+ */
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
-  return prior.revision > next.revision;
+  if (prior.revision !== next.revision) return prior.revision > next.revision;
+  const priorEpoch = prior.runEpoch;
+  const nextEpoch = next.runEpoch;
+  if (priorEpoch === undefined || nextEpoch === undefined || priorEpoch === nextEpoch) {
+    return false;
+  }
+  return priorEpoch > nextEpoch;
 }
 
 export const selectSessions = (state: SessionCatalogState): readonly DesktopSessionSummary[] =>

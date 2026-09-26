@@ -44,7 +44,12 @@ export function projectSessionCatalogSummary(
     ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
     ...(session.liveRunState === undefined
       ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
+      : {
+          runningTurnIds: [...session.liveRunState.runningTurnIds],
+          ...(session.liveRunState.runEpoch === undefined
+            ? {}
+            : { runEpoch: session.liveRunState.runEpoch }),
+        }),
     ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
     ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
     ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
