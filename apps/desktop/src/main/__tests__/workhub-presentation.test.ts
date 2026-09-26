@@ -64,7 +64,10 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   let releasedViews = 0;
   let pointerDisplay = { x: 0, y: 0, width: 1200, height: 900 };
   class Contents extends EventEmitter {
-    mainFrame = {};
+    mainFrame = {
+      isDestroyed: () => this.destroyed,
+      send: (channel: string, ...args: unknown[]) => { this.sent.push([channel, ...args]); },
+    };
     destroyed = false;
     sent: [string, ...unknown[]][] = [];
     session = { setPermissionCheckHandler() {}, setPermissionRequestHandler() {} };
@@ -516,16 +519,57 @@ test('application broadcasts reach registered auxiliaries once and stop after re
     onRendererProcessGone: () => undefined,
   });
   const messages: string[] = [];
-  const renderer = Object.assign(new EventEmitter(), {
+  const destroyedFrame = {
+    isDestroyed: () => true,
+    send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  const liveFrame = {
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  let mainFrame: Electron.WebFrameMain = destroyedFrame;
+  let mainFrameUnavailable = false;
+  let contentsDestroyed = false;
+  const renderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => contentsDestroyed,
   }) as unknown as Electron.WebContents;
+  Object.defineProperty(renderer, 'mainFrame', {
+    get: () => {
+      if (mainFrameUnavailable) throw new Error('Renderer frame is being replaced');
+      return mainFrame;
+    },
+  });
   const parent = {} as Electron.View;
   const release = controller.registerAuxiliaryRenderer(renderer, parent);
   assert.equal(controller.ownsRenderer(renderer), true);
   assert.equal(controller.browserParentForRenderer(renderer), parent);
-  controller.send('settings:changed');
+  const otherMessages: string[] = [];
+  const otherRenderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
+    mainFrame: {
+      isDestroyed: () => false,
+      send: (channel: string) => { otherMessages.push(channel); },
+    },
+  }) as unknown as Electron.WebContents;
+  const releaseOther = controller.registerAuxiliaryRenderer(otherRenderer);
+  assert.doesNotThrow(() => controller.send('settings:changed'));
+  assert.deepEqual(messages, []);
+  assert.deepEqual(otherMessages, ['settings:changed']);
+  mainFrameUnavailable = true;
+  assert.doesNotThrow(() => controller.send('settings:changed'));
+  assert.deepEqual(messages, []);
+  assert.deepEqual(otherMessages, ['settings:changed', 'settings:changed']);
+  mainFrameUnavailable = false;
+  mainFrame = liveFrame;
+  assert.doesNotThrow(() => controller.send('settings:changed'));
   assert.deepEqual(messages, ['settings:changed']);
+  assert.equal(otherMessages.length, 3);
+  contentsDestroyed = true;
+  assert.doesNotThrow(() => controller.send('settings:changed'));
+  assert.deepEqual(messages, ['settings:changed']);
+  assert.equal(otherMessages.length, 4);
+  contentsDestroyed = false;
+  releaseOther();
   release();
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
