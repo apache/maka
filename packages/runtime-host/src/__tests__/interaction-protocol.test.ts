@@ -29,6 +29,7 @@ import {
   HOST_OPERATION_SPECS,
   INTERACTION_MAX_PENDING_PER_SESSION,
   decodeRuntimeResourceHandoffInput,
+  decodeRuntimeResourceHandoffResult,
 } from '../protocol/index.js';
 import { decodeInteractionAnswer } from '@maka/core/interaction';
 import {
@@ -38,6 +39,34 @@ import {
 } from '../server/interaction-projection.js';
 
 describe('Runtime Host Interaction protocol', () => {
+  test('handoff outcomes distinguish rejected input and closure without private display', () => {
+    const rejected = {
+      status: 'rejected',
+      phase: 'human',
+      nextSequence: 1,
+      rejection: 'invalid_input',
+    };
+    assert.deepEqual(decodeRuntimeResourceHandoffResult(rejected), rejected);
+    const closed = { status: 'closed', phase: 'closed', nextSequence: 2, closure: 'exited' };
+    assert.deepEqual(decodeRuntimeResourceHandoffResult(closed), closed);
+    assert.throws(() =>
+      decodeRuntimeResourceHandoffResult({
+        ...closed,
+        display: { sequence: 1, text: 'private', inputOpen: false },
+      }),
+    );
+    assert.throws(() => decodeRuntimeResourceHandoffResult({ ...rejected, status: 'written' }));
+    assert.throws(() =>
+      decodeRuntimeResourceHandoffResult({ ...closed, closure: 'wrong_password' }),
+    );
+    const cleared = {
+      status: 'observed',
+      phase: 'resumed',
+      nextSequence: 2,
+      display: { sequence: 3, text: '', inputOpen: false },
+    };
+    assert.deepEqual(decodeRuntimeResourceHandoffResult(cleared), cleared);
+  });
   test('private terminal bytes use nonjournalled control and cannot be stored in an Interaction answer', () => {
     assert.equal(HOST_OPERATION_SPECS['runtime.resource.handoff'].mode, 'control');
     const input = {

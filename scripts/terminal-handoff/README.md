@@ -47,12 +47,18 @@ The test drives the actual password card through preload/main IPC, including
 refresh with an unsubmitted draft, a rejected password and successful retry, a
 second verification challenge, explicit Resume, a command
 in the original shell, selecting a reviewed observation, and the model reading
-that observation in the next turn. The server intentionally echoes both the
-password and verification code, including a delayed echo after Resume.
+that observation in the current or next turn. The server intentionally echoes both
+the password and verification code, including a delayed echo after Resume.
+
+The task prompt describes an SSH destination and the desired shell result without
+naming `WriteStdin`, `handoff`, discovery tools or invocation syntax. It verifies
+autonomous discovery as well as input validation, the retry hint, the explicit
+confirmation/unsent-draft Resume guard, and a closed card after process exit.
+The fixture allows ten minutes for model reasoning and human authentication.
 
 Assertions cover provider requests, ordinary Session events, process/renderer
 logs, live workspace files (including SQLite/WAL), and the closed Desktop profile.
-The fixture prints an artifact directory containing three unmodified screenshots
+The fixture prints an artifact directory containing five unmodified screenshots
 and `result.json`. It does not capture authentication screens containing secrets.
 Failures retain sanitized diagnostics. No profile or credential file belongs in
 a commit; remove temporary profiles after reviewing them.

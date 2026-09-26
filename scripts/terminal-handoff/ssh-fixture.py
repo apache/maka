@@ -20,6 +20,7 @@ import json
 import os
 import pty
 import select
+import signal
 import socket
 import subprocess
 import threading
@@ -29,6 +30,18 @@ import paramiko
 password = os.environ.pop("HANDOFF_FIXTURE_PASSWORD")
 factor = os.environ.pop("HANDOFF_FIXTURE_FACTOR")
 key = paramiko.RSAKey.generate(2048)
+stopping = threading.Event()
+transports = []
+
+
+def stop_server(_signal, _frame):
+    stopping.set()
+    for transport in tuple(transports):
+        transport.close()
+
+
+signal.signal(signal.SIGTERM, stop_server)
+signal.signal(signal.SIGINT, stop_server)
 
 
 class Server(paramiko.ServerInterface):
@@ -54,13 +67,17 @@ class Server(paramiko.ServerInterface):
 
 def serve(client):
     transport = paramiko.Transport(client)
+    transports.append(transport)
+    # Natural model discovery plus human entry can take minutes. This fixture
+    # must not close the server while the app is legitimately awaiting input.
+    transport.auth_timeout = 600
     server = Server()
     child = None
     master = None
     try:
         transport.add_server_key(key)
         transport.start_server(server=server)
-        channel = transport.accept(30)
+        channel = transport.accept(600)
         if channel is None or not server.ready.wait(30):
             return
         master, slave = pty.openpty()
@@ -98,12 +115,18 @@ def serve(client):
         if master is not None:
             os.close(master)
         transport.close()
+        transports.remove(transport)
 
 
 listener = socket.socket()
 listener.bind(("127.0.0.1", 0))
 listener.listen(2)
+listener.settimeout(0.5)
 print(json.dumps({"port": listener.getsockname()[1]}), flush=True)
-while True:
-    client, _ = listener.accept()
-    threading.Thread(target=serve, args=(client,), daemon=True).start()
+while not stopping.is_set():
+    try:
+        client, _ = listener.accept()
+    except socket.timeout:
+        continue
+    threading.Thread(target=serve, args=(client,)).start()
+listener.close()

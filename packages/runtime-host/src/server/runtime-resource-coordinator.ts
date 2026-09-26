@@ -21,6 +21,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import type { ShellRunSnapshotResult, ShellRunUpdate, ToolResultContent } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { isWellFormedTerminalInput } from '@maka/core/terminal-input';
 import { shellRunStateProjection } from '@maka/core/shell-run-result';
 import {
   type BackgroundTaskStopper,
@@ -144,6 +145,7 @@ interface TerminalHandoffState {
   readonly ref: string;
   readonly requestId: string;
   phase: RuntimeResourceHandoffResult['phase'];
+  closure?: RuntimeResourceHandoffResult['closure'];
   connectionId?: string;
   controllerId?: string;
   nextSequence: number;
@@ -392,6 +394,7 @@ export class HostRuntimeResourceCoordinator
                 () => false,
               );
               state.phase = live ? 'resumed' : 'closed';
+              if (!live) state.closure = 'unavailable';
               this.#inputEpochs.set(key, (this.#inputEpochs.get(key) ?? 0) + 1);
               if (!live) {
                 state.lifetime.abort();
@@ -404,6 +407,7 @@ export class HostRuntimeResourceCoordinator
               }
             } else {
               state.phase = 'closed';
+              state.closure = 'cancelled';
               state.lifetime.abort();
               await this.#manager.stopBackgroundTask(
                 ctx.sessionId,
@@ -426,11 +430,12 @@ export class HostRuntimeResourceCoordinator
         outputVisibility: 'private',
         instruction:
           state.phase === 'resumed'
-            ? 'The user explicitly pressed Resume. You control this same terminal again and may execute the next requested command under existing permissions. Do not wait for a second Resume. This does not prove authentication succeeded. Output stays private; ask the user to review and share a new observation before relying on it. After the user shares, use Read on this ref to retrieve the published observation.'
+            ? 'The user checked that this terminal is ready and explicitly pressed Resume. Continue the original task now: send the next requested command to this same ref under existing permissions. Do not ask for another confirmation, a post-login prompt, or shared output before sending that command. The user confirmation is not machine-verified authentication success: do not claim success or describe unseen output. After executing the command, ask the user to review and share its non-sensitive result, then use Read on this ref to retrieve the published observation.'
             : 'The handoff closed without returning control. Do not retry credentials or recreate the original terminal.',
       });
     } catch (error) {
       state.phase = 'closed';
+      state.closure = 'unavailable';
       state.lifetime.abort();
       // Failure after admission must not leave a secretly writable half-handoff.
       await this.#manager
@@ -455,7 +460,8 @@ export class HostRuntimeResourceCoordinator
         return {
           ok: true,
           result: {
-            status: handoff ? 'available' : 'unavailable',
+            status: handoff?.phase === 'closed' ? 'closed' : handoff ? 'available' : 'unavailable',
+            ...(handoff?.phase === 'closed' ? { closure: handoff.closure ?? 'exited' } : {}),
             phase: handoff?.phase ?? 'closed',
             nextSequence: handoff?.nextSequence ?? 1,
             ...(handoff
@@ -487,9 +493,19 @@ export class HostRuntimeResourceCoordinator
       const state = [...this.#handoffs.values()].find(
         (entry) => entry.sessionId === input.sessionId && entry.requestId === input.requestId,
       );
-      if (!state || !this.#humanControl || state.phase === 'closed')
+      if (!state || !this.#humanControl)
         throw new Error('Original terminal handoff is no longer live');
       return await this.#resourceQueue.run(resourceKey(state.sessionId, state.ref), async () => {
+        if (state.phase === 'closed')
+          return {
+            ok: true as const,
+            result: {
+              status: 'closed' as const,
+              phase: 'closed' as const,
+              nextSequence: state.nextSequence,
+              closure: state.closure ?? 'exited',
+            },
+          };
         const result = (
           status: RuntimeResourceHandoffResult['status'],
         ): RuntimeResourceHandoffResult => ({
@@ -513,7 +529,14 @@ export class HostRuntimeResourceCoordinator
           state.connectionId !== context.connectionId ||
           state.controllerId !== input.controllerId
         )
-          throw new Error('Terminal handoff controller expired');
+          return {
+            ok: true as const,
+            result: {
+              ...result('rejected'),
+              status: 'rejected' as const,
+              rejection: 'controller_expired' as const,
+            },
+          };
         if (input.action === 'release') {
           delete state.connectionId;
           delete state.controllerId;
@@ -534,6 +557,19 @@ export class HostRuntimeResourceCoordinator
         }
         if (input.action === 'share') {
           if (state.phase !== 'resumed') throw new Error('Resume before sharing a new observation');
+          const snapshot = await this.#humanControl!.readPrivatePtySnapshot(
+            state.sessionId,
+            state.ref,
+          );
+          if (
+            snapshot.sequence !== input.sequence ||
+            !input.text ||
+            !snapshot.text.includes(input.text)
+          )
+            return {
+              ok: true as const,
+              result: { ...result('rejected'), rejection: 'observation_expired' as const },
+            };
           await this.#humanControl!.sharePrivatePtyObservation(
             state.sessionId,
             state.ref,
@@ -550,8 +586,15 @@ export class HostRuntimeResourceCoordinator
           throw new Error('Resolve unknown input delivery by stopping this terminal');
         if (input.sequence !== state.nextSequence)
           throw new Error('Private input sequence expired');
-        if (!input.input || /[\x00-\x1f\x7f]/.test(input.input))
-          throw new Error('Enter one line without embedded control characters');
+        if (
+          !input.input ||
+          !isWellFormedTerminalInput(input.input) ||
+          /[\x00-\x1f\x7f]/.test(input.input)
+        )
+          return {
+            ok: true as const,
+            result: { ...result('rejected'), rejection: 'invalid_input' as const },
+          };
         state.nextSequence++;
         state.lastReceipt = { sequence: input.sequence, status: 'outcome_unknown' };
         try {
@@ -583,8 +626,10 @@ export class HostRuntimeResourceCoordinator
       const handoff = this.#handoffs.get(key);
       if (handoff) {
         handoff.phase = 'closed';
+        handoff.closure ??= 'exited';
         handoff.lifetime.abort();
-        this.#handoffs.delete(key);
+        // Retain identity/status only so an open or reconnected card can explain
+        // why it closed. Private output stays owned by the live PTY and is gone.
         void this.#interactionAuthority?.()
           .closeTerminalHandoff(handoff.sessionId, handoff.requestId)
           .catch(() => this.#requestDrain());

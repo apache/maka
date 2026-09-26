@@ -223,6 +223,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildManagedBashTool(options.shellRuns, {
           executionFacts,
           shell,
+          terminalHandoffAvailable: Boolean(options.terminalHandoff),
           declareSandboxBoundary: options.declareSandboxBoundary !== false,
           ...(options.sandboxManager
             ? {

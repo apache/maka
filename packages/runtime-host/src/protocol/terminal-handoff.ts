@@ -61,10 +61,15 @@ export interface RuntimeResourceHandoffResult {
     | 'ready'
     | 'written'
     | 'outcome_unknown'
+    | 'rejected'
+    | 'closed'
     | 'shared'
     | 'observed';
   readonly nextSequence: number;
   readonly phase: 'waiting' | 'human' | 'resumed' | 'closed';
+  /** Non-sensitive transport/lifecycle facts, never an authentication verdict. */
+  readonly rejection?: 'invalid_input' | 'controller_expired' | 'observation_expired';
+  readonly closure?: 'exited' | 'cancelled' | 'unavailable';
   /** Private live projection: never journal or attach to a model tool result. */
   readonly display?: {
     readonly sequence: number;
@@ -147,7 +152,7 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
     value,
     'Terminal handoff result',
     ['status', 'nextSequence', 'phase'],
-    ['display', 'request'],
+    ['display', 'request', 'rejection', 'closure'],
   );
   if (
     ![
@@ -156,12 +161,28 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
       'ready',
       'written',
       'outcome_unknown',
+      'rejected',
+      'closed',
       'shared',
       'observed',
     ].includes(record.status as string) ||
     !['waiting', 'human', 'resumed', 'closed'].includes(record.phase as string)
   ) {
     throw invalidProtocolFrame('Invalid terminal handoff state');
+  }
+  if (
+    (record.status === 'rejected') !== (record.rejection !== undefined) ||
+    (record.rejection !== undefined &&
+      !['invalid_input', 'controller_expired', 'observation_expired'].includes(
+        record.rejection as string,
+      )) ||
+    (record.status === 'closed') !== (record.closure !== undefined) ||
+    (record.closure !== undefined &&
+      (!['exited', 'cancelled', 'unavailable'].includes(record.closure as string) ||
+        record.phase !== 'closed' ||
+        record.display !== undefined))
+  ) {
+    throw invalidProtocolFrame('Invalid terminal handoff outcome');
   }
   let display: RuntimeResourceHandoffResult['display'];
   let request: RuntimeResourceHandoffResult['request'];
@@ -189,7 +210,7 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
       throw invalidProtocolFrame('Invalid terminal input state');
     display = {
       sequence: requireCount(screen.sequence, 'sequence'),
-      text: requireUtf8String(screen.text, 'private display', 48 * 1024),
+      text: screen.text === '' ? '' : requireUtf8String(screen.text, 'private display', 48 * 1024),
       inputOpen: screen.inputOpen,
     };
   }
@@ -197,6 +218,12 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
     status: record.status as RuntimeResourceHandoffResult['status'],
     phase: record.phase as RuntimeResourceHandoffResult['phase'],
     nextSequence: requireCount(record.nextSequence, 'nextSequence'),
+    ...(record.rejection
+      ? { rejection: record.rejection as RuntimeResourceHandoffResult['rejection'] }
+      : {}),
+    ...(record.closure
+      ? { closure: record.closure as RuntimeResourceHandoffResult['closure'] }
+      : {}),
     ...(display ? { display } : {}),
     ...(request ? { request } : {}),
   };

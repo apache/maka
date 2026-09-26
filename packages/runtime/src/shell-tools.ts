@@ -179,6 +179,8 @@ export function buildManagedBashTool(
     shell?: TurnShellPlan;
     /** Opening sentence of the description, before the shared foreground/background/PTY contract. */
     lead?: string;
+    /** Advertise discovery from the always-available shell entry point. */
+    terminalHandoffAvailable?: boolean;
     /**
      * Whether this host has a sandbox boundary the model can be asked to declare.
      * False drops `boundary_intent` and `required_boundary` from the schema
@@ -265,6 +267,9 @@ export function buildManagedBashTool(
       ` Foreground is the default (timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms).` +
       ` Set run_in_background=true only when the command should continue as a tracked runtime background task; background commands have no default timeout (maximum explicit timeout ${MAX_SHELL_RUN_TIMEOUT_MS}ms).` +
       ' Set pty=true together with run_in_background=true only for terminal semantics or later input; use the returned ref with Read or WriteStdin.' +
+      (options.terminalHandoffAvailable
+        ? ' Starting a PTY does not reveal a terminal or let the user type. When the user needs to enter a password or other terminal input, discover WriteStdin via tool_search and invoke its handoff action on this ref to open the private input card and wait. Do this before telling the user to type or ending the turn to wait for them; never collect credentials in chat.'
+        : '') +
       (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
     parameters: declareSandboxBoundary
       ? preprocessBashBoundaryDeclaration(
@@ -698,7 +703,7 @@ export function buildWriteStdinTool(
     activityKind: 'command',
     description:
       (handoff
-        ? 'For interactive login, passwords, or other human terminal input, use only {ref, handoff:{message}} to reveal this exact terminal and wait for explicit human Resume. Never put credentials in tool arguments. Resume is not proof of authentication. Output remains private unless the user explicitly reviews and shares a new observation. '
+        ? 'For interactive login, passwords, or other human terminal input, use only {ref, handoff:{message}} to reveal this exact terminal and wait for explicit human Resume. Never put credentials in tool arguments. A resumed outcome means the user has confirmed the terminal is ready for your next requested action: execute it on this same ref without asking for another confirmation or a prompt screenshot. Resume is not machine-verified authentication success. Output remains private; request a reviewed observation after executing the next action, before reporting its result. '
         : '') +
       'Send an ordered sequence of text, key, and mouse actions to a background PTY and/or resize it, then return the terminal state at the next parser cut. ' +
       `Named keys are ${TERMINAL_INPUT_NAMED_KEYS.join(', ')}. Use a printable ASCII key with ctrl or alt for chords such as Ctrl-B; use text for ordinary typing. ` +

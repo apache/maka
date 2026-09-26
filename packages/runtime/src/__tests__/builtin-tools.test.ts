@@ -1839,6 +1839,22 @@ describe('builtin Bash streaming output', () => {
     };
     const enabled = buildBuiltinTools(options).find((tool) => tool.name === 'WriteStdin')!;
     const disabled = buildBuiltinTools({ ptyControls }).find((tool) => tool.name === 'WriteStdin')!;
+    const shellRuns = {
+      runForegroundBash: async () => {
+        throw new Error('not used');
+      },
+      runBackgroundBash: async () => {
+        throw new Error('not used');
+      },
+    };
+    const shellWithSurface = buildBuiltinTools({ ...options, shellRuns }).find(
+      (tool) => tool.name === 'Bash',
+    )!;
+    const shellWithoutSurface = buildBuiltinTools({ shellRuns }).find(
+      (tool) => tool.name === 'Bash',
+    )!;
+    assert.match(shellWithSurface.description, /discover WriteStdin via tool_search/);
+    assert.doesNotMatch(shellWithoutSurface.description, /private input card/);
     type Parameters = {
       jsonSchema: PromiseLike<{ properties: Record<string, unknown> }>;
       validate(value: unknown): PromiseLike<{ success: boolean }>;

@@ -62,8 +62,10 @@ const proxy = createServer(async (request, response) => {
       requests.push({
         model: payload.model,
         path: request.url,
-        privateHandoffOffered: JSON.stringify(payload.tools).includes('handoff'),
+        privateHandoffOffered: JSON.stringify(payload.tools).includes('"handoff":'),
+        handoffDiscoveryHintSeen: body.includes('Starting a PTY does not reveal'),
         reviewedObservationSeen: body.includes('CONTINUITY:original-shell:/tmp'),
+        resumeInstructionSeen: body.includes('Continue the original task now'),
       });
     }
     const result = await fetch(`${upstream}${request.url.replace(/^\/v1/, '')}`, {
@@ -201,18 +203,18 @@ try {
   await page.keyboard.press('Control+Backquote');
   await expect(page.locator('.maka-session-terminal-xterm .xterm')).toBeVisible();
   await page.screenshot({ path: join(artifactDir, '01-normal.png') });
-  const command = `/usr/bin/ssh -tt -p ${sshPort} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o PreferredAuthentications=password fixture@127.0.0.1`;
-  const prompt = `This is an authorized isolated localhost SSH test. Run exactly this command in a background PTY with timeout_ms:600000: ${command}. Once the password prompt appears, use WriteStdin with only ref and handoff:{message:"Authenticate to the local SSH test server"}. Never request or inspect credentials via chat, files, environment, or other tools. The human will enter password and verification code in the private card. The handoff tool blocks until explicit Resume. When its result says resumed, immediately use WriteStdin on the SAME ref to run: printf 'CONTINUITY:%s:%s\\n' "$marker" "$PWD". Do not wait for another user message, do not exit that shell, and do not return a final response before writing this command. Output stays private, so then ask the user to share its observation; do not claim authentication succeeded without that observation. Do not use computer or browser tools.`;
+  const prompt = `Please log in to fixture@127.0.0.1 on SSH port ${sshPort}. This is my authorized, isolated local test server; it uses password authentication, and for this loopback test you may skip host-key verification without updating known_hosts. I will enter the password and any verification code myself in the app; do not ask me to put credentials in chat or look for them in files. After I finish, use that same remote shell to print CONTINUITY: followed by the shell-local variable marker and the current directory, separated by colons, then report the result promptly. Allow ten minutes for login and follow-up commands, but do not wait out that period before reporting; leave the connection open in the background. Use the terminal rather than a graphical SSH app.`;
   const editor = page.locator('.maka-composer-editor [contenteditable="true"]').first();
   await editor.fill(prompt);
   await expect(page.locator('.maka-composer button[type="submit"]').first()).toBeEnabled();
   await editor.press('Enter');
   const card = page.getByTestId('terminal-handoff');
+  const privateField = card.locator('input[type="password"]');
   await Promise.race([
     expect(card.locator('input[type="password"]')).toBeVisible({ timeout: 180_000 }),
     page
       .waitForFunction(
-        () => window.handoffAcceptance.events.some((event) => event.type === 'error'),
+        () => window.handoffAcceptance?.events.some((event) => event.type === 'error') ?? false,
         undefined,
         { timeout: 180_000 },
       )
@@ -223,7 +225,7 @@ try {
   await page.screenshot({ path: join(artifactDir, '02-waiting.png') });
   console.log(JSON.stringify({ phase: 'awaiting-private-input' }));
   const beforeReload = await page.evaluate(() => window.handoffAcceptance.events);
-  await card.locator('input').fill(password);
+  await privateField.fill(password);
   await page.reload();
   await page.waitForFunction(() => Boolean(window.maka?.sessions));
   await page.evaluate((id) => {
@@ -233,17 +235,39 @@ try {
     );
   }, sessionId);
   await expect(card.locator('input[type="password"]')).toBeVisible({ timeout: 30_000 });
-  await expect(card.locator('input')).toHaveValue('');
-  await card.locator('input').fill(factor);
+  await expect(privateField).toHaveValue('');
+  await expect(
+    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
+  ).toBeDisabled();
+  await privateField.fill('invalid\u0007line');
+  await card.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(card).toContainText('Not sent. Enter one line');
+  await expect(privateField).toBeEnabled();
+  await privateField.fill(factor);
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('Permission denied', { timeout: 30_000 });
-  await card.locator('input').fill(password);
+  await expect(card).toContainText('SSH rejected authentication');
+  await expect(
+    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
+  ).toBeDisabled();
+  await page.screenshot({ path: join(artifactDir, '04-retry.png') });
+  await privateField.fill(password);
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('Verification code:', { timeout: 30_000 });
-  await card.locator('input').fill(factor);
+  await privateField.fill(factor);
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('AUTHENTICATED', { timeout: 30_000 });
-  await expect(card.locator('input')).toHaveValue('');
+  await expect(privateField).toHaveValue('');
+  await expect(
+    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
+  ).toBeDisabled();
+  await card.getByRole('checkbox').check();
+  await privateField.fill('unsubmitted');
+  await expect(
+    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
+  ).toBeDisabled();
+  await privateField.fill('');
+  await card.getByRole('checkbox').check();
   const before = await page.evaluate(() => window.handoffAcceptance.events);
   assert.equal(JSON.stringify(before).includes(password), false);
   assert.equal(JSON.stringify(before).includes(factor), false);
@@ -253,6 +277,7 @@ try {
   await page.screenshot({ path: join(artifactDir, '03-resumed.png') });
   const safe = 'CONTINUITY:original-shell:/tmp';
   await expect(card.locator('pre')).toContainText(safe, { timeout: 180_000 });
+  console.log(JSON.stringify({ phase: 'same-shell-command-observed' }));
   await card.locator('pre').evaluate((element, text) => {
     const node = element.firstChild;
     const start = node.textContent.indexOf(text);
@@ -267,17 +292,35 @@ try {
     .getByRole('button', { name: 'Share selected text with the agent', exact: true })
     .click();
   await expect(card).toContainText('Selected observation shared with the agent.');
+  console.log(JSON.stringify({ phase: 'observation-shared' }));
   await page.waitForFunction(
-    () => window.handoffAcceptance.events.some((event) => event.type === 'complete'),
+    () =>
+      window.handoffAcceptance.events.some(
+        (event) =>
+          event.type === 'complete' ||
+          (event.type === 'text_complete' &&
+            event.text.includes('original-shell') &&
+            event.text.includes('/tmp')),
+      ),
     undefined,
     { timeout: 180_000 },
   );
-  await editor.fill(
-    `I reviewed and published the non-sensitive observation through the private terminal card. Use the Read tool on ${beforeReload.find((event) => event.type === 'terminal_handoff_request').ref} to retrieve that published observation and report the marker and working directory. Do not ask me to paste it, start a new shell, or print credentials.`,
-  );
-  await editor.press('Enter');
+  // A quick share may be read in the current turn. Otherwise the next ordinary
+  // user message requests the result, without telling the model which tool to use.
+  if (!requests.some((request) => request.reviewedObservationSeen)) {
+    await editor.fill(
+      'I reviewed and shared the non-sensitive terminal observation using the app. Please check that shared result and report the marker and working directory. Keep using the original connection.',
+    );
+    await editor.press('Enter');
+  }
   await page.waitForFunction(
-    () => window.handoffAcceptance.events.filter((event) => event.type === 'complete').length >= 2,
+    () =>
+      window.handoffAcceptance.events.some(
+        (event) =>
+          event.type === 'text_complete' &&
+          event.text.includes('original-shell') &&
+          event.text.includes('/tmp'),
+      ),
     undefined,
     { timeout: 180_000 },
   );
@@ -298,6 +341,13 @@ try {
   assert.ok(requests.some((request) => request.model === model && request.privateHandoffOffered));
   assert.equal(logs.join('').includes(password), false);
   assert.equal(logs.join('').includes(factor), false);
+  // End the remote process, not the UI's "close tab" command: an exited
+  // process should leave an explanatory card in the original open tab.
+  ssh.kill('SIGTERM');
+  await expect(card).toContainText('The original terminal process exited', { timeout: 30_000 });
+  await expect(card.locator('input')).toHaveCount(0);
+  await expect(card.locator('pre')).toHaveText('');
+  await page.screenshot({ path: join(artifactDir, '05-exited.png') });
   const liveFiles = await scanFiles(workspace);
   await closeElectronApplication(app);
   app = undefined;
@@ -313,6 +363,9 @@ try {
         scannedFiles: scanned,
         providerLeaks: 0,
         reloadClearedDraft: true,
+        autonomousHandoff: true,
+        inputValidationAndResumeGuard: true,
+        explicitProcessExit: true,
         sameShellObservation: safe,
       },
       null,

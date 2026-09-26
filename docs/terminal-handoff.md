@@ -26,6 +26,36 @@ execution-host identity and terminal ref, and uses the same `ChatComposer`,
 line and returning control are separate actions. Resume records the user's
 decision, not a claim that authentication succeeded.
 
+The agent decides when to request this capability through a structured tool
+call. Neither chat keywords nor a password prompt automatically opens the card.
+Supported sessions advertise discovery from the existing Bash description:
+starting a PTY alone does not reveal the private input surface. The discovered
+WriteStdin description teaches the action; the UI responds only to the
+validated `terminal_handoff_request` event.
+
+## Feedback and recovery
+
+The transport reports submission, definite rejection, uncertain delivery and
+process closure independently of authentication. Invalid single-line input is
+rejected before sending and can be corrected. A lost connection clears the
+private display/draft and disables Submit and Resume. Reconnect reclaims the
+original resource without replaying input; an uncertain receipt remains fenced.
+Process exit, cancellation and an unavailable original process have distinct
+closed-card messages and do not retain private output.
+
+Resume requires an explicit checkbox confirming that the user inspected the
+terminal. Editing or submitting input clears that confirmation, and unsent input
+blocks Resume. This is a user attestation, not automatic proof of login success.
+
+Renderer-only program adapters may translate known prompts into fixed friendly
+hints. The first adapter covers the standard English OpenSSH password prompt and
+`Permission denied, please try again.` followed by a new password prompt. It
+also blocks Resume while that prompt remains visible. It never classifies an
+arbitrary output as successful authentication, changes transport state, publishes
+output or sends input. Unsupported programs, compound commands, prompts and
+locales retain the original private response. Add another tested adapter to the
+small adapter list to extend this behavior; no SSH logic belongs in the Host.
+
 ## Owners and extension points
 
 - `ShellRunProcessManager` remains the sole process/PTY owner. The
@@ -104,9 +134,10 @@ occur during handoff or Resume.
 The opt-in [real-model harness](../scripts/terminal-handoff/README.md) was run on
 macOS with `gpt-5.6-terra`, a real local OpenAI-compatible endpoint, actual SSH
 password authentication (including rejection and retry) and a second terminal
-challenge. The original shell's
+challenge. The follow-up natural-language journey names no tools or handoff
+parameters: the model discovers the capability itself. The original shell's
 unexported marker and `/tmp` working directory survived. The model read the
-explicitly shared observation and reported both values. Eight provider requests,
+explicitly shared observation and reported both values. Ten provider requests,
 18 live workspace files and 68 closed-profile files contained neither generated
 secret. Reload cleared the unsubmitted password and recovered the same handoff.
 
@@ -117,6 +148,10 @@ show the same agent-owned SSH process:
 | Normal terminal | Waiting for private input | Explicitly resumed |
 | --- | --- | --- |
 | ![Normal](images/pr/terminal-handoff/01-normal.png) | ![Waiting](images/pr/terminal-handoff/02-waiting.png) | ![Resumed](images/pr/terminal-handoff/03-resumed.png) |
+
+| Authentication rejected; retry remains available | Original process exited |
+| --- | --- |
+| ![Retry](images/pr/terminal-handoff/04-retry.png) | ![Exited](images/pr/terminal-handoff/05-exited.png) |
 
 The normal terminal wrapper uses lifecycle/resync events instead of permanent
 lookup polling. Private text is polled only by the mounted active card, avoiding
@@ -130,3 +165,8 @@ the input-epoch check allowed a queued pre-handoff agent write through and faile
 the coordinator regression. Both protections were retained. The mutations were
 applied only through a test-process module loader, never to the running app or
 the committed implementation.
+
+The follow-up confirmation ablation removed the checkbox guard in a test-only
+module loader; the UI regression then detected an enabled Resume on an
+unconfirmed generic terminal. The guard remains. Adapters stay renderer-local
+functions rather than introducing a plugin registry or another lifecycle owner.
