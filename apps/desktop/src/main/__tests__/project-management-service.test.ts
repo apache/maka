@@ -135,6 +135,39 @@ test('adding a nested folder selects that folder instead of the parent project',
   }
 });
 
+test('re-adding an archived project reports the archived project instead of failing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-archived-add-'));
+  const projectPath = join(base, 'archived-project');
+  await mkdir(projectPath);
+  const selectedPaths: string[] = [];
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    now: () => 1_000,
+    createId: () => 'project-1',
+  });
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: managementCatalog(catalog),
+    chooseDirectory: async () => projectPath,
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: base }),
+      setSelection: (_projectId, path) => selectedPaths.push(path),
+    },
+  });
+
+  try {
+    const first = await service.add();
+    assert.equal(first.ok, true);
+    await service.archive('project-1');
+
+    const second = await service.add();
+    assert.deepEqual(second, { ok: false, reason: 'archived', projectId: 'project-1' });
+    assert.equal(selectedPaths.length, 1);
+  } finally {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('can register a draft Project without changing the Host selection', async () => {
   let selected = false;
   const service = createProjectManagementService({
