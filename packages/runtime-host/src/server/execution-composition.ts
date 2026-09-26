@@ -3147,6 +3147,7 @@ export async function createExecutionRuntimeHostComposition(
         const goalHold = goal?.holdForHandoff();
         const scheduleHold = scheduledTasks?.holdForHandoff();
         const dailyReviewHold = dailyReview?.holdForHandoff();
+        const workHubResultHold = workHubResults?.coordinator.holdForHandoff();
         let root: Awaited<ReturnType<RootTurnCoordinator['prepareHandoff']>>;
         let detached = false;
         const cancel = () => {
@@ -3155,11 +3156,12 @@ export async function createExecutionRuntimeHostComposition(
           goalHold?.release();
           scheduleHold?.release();
           dailyReviewHold?.release();
+          workHubResultHold?.release();
           signal.removeEventListener('abort', cancel);
         };
         signal.addEventListener('abort', cancel, { once: true });
         try {
-          if (!goalHold || !scheduleHold || !dailyReviewHold) {
+          if (!goalHold || !scheduleHold || !dailyReviewHold || !workHubResultHold) {
             cancel();
             return undefined;
           }
@@ -3168,6 +3170,7 @@ export async function createExecutionRuntimeHostComposition(
               goalHold.settled(),
               scheduleHold.settled(),
               dailyReviewHold.settled(),
+              workHubResultHold.settled(),
             ]).then(() => undefined),
             signal,
           );
