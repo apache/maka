@@ -24,7 +24,9 @@ import {
   MODEL_API_PROTOCOL_LABELS,
   MODEL_API_PROTOCOLS,
   type ModelApiProtocol,
+  type ProviderType,
 } from '@maka/core/llm-connections';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
@@ -42,8 +44,8 @@ export function CapabilityEditor(props: {
   /** Set only on a custom connection, which alone takes wire and thinking declarations. */
   customDefaultApiProtocol?: ModelApiProtocol;
   declared: ModelOverride | undefined;
-  /** False where the provider rejects any output-token limit; the field is then read-only. */
-  acceptsOutputTokenLimit?: boolean;
+  /** The connection's provider; one that rejects any output-token limit gets a read-only field. */
+  providerType: ProviderType;
   contextWindowInput: string;
   contextWindowInputInvalid: boolean;
   numericInputs?: Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>>;
@@ -184,7 +186,8 @@ export function CapabilityEditor(props: {
       {(['inputLimit', 'compactionThreshold', 'maxOutputTokens'] as const).map((field) => {
         const input = props.numericInputs?.[field] ?? String(declared?.[field] ?? '');
         const invalid = input.trim() !== '' && parseContextWindowInput(input) === null;
-        const unsupported = field === 'maxOutputTokens' && props.acceptsOutputTokenLimit === false;
+        const unsupported =
+          field === 'maxOutputTokens' && !providerAcceptsOutputTokenLimit(props.providerType);
         return (
           <TextInput
             size="sm"

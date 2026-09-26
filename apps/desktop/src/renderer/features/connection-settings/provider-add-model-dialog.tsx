@@ -20,7 +20,6 @@
 import { useId, useState, type ReactNode } from 'react';
 import type { ModelApiProtocol, ProviderType } from '@maka/core/llm-connections';
 import { supportsCustomFastServiceTier, modelLimitsConflict, type ModelOverride } from '@maka/core/model-thinking';
-import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import { CapabilityEditor } from './provider-capability-editor.js';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
@@ -119,7 +118,7 @@ export function AddModelDialog(props: {
         copy={copy}
         modelId={trimmedId}
         customDefaultApiProtocol={props.defaultApiProtocol}
-        acceptsOutputTokenLimit={providerAcceptsOutputTokenLimit(props.providerType)}
+        providerType={props.providerType}
         declared={profile}
         limitsConflict={limitsConflict}
         onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
