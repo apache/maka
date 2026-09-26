@@ -38,6 +38,7 @@ import { EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import {
   mergePromptAnchorRailTurns,
+  reusePromptAnchorRailTurns,
   PromptAnchorRail,
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
@@ -90,29 +91,10 @@ import {
  * left to push the reader. virtua's default is 200px and a wheel notch travels
  * 600, so a row went from unmounted to straddling within one notch and was
  * always measured too late: reading upwards through the 24-Turn geometry scene
- * jumped 13 times, by 5 to 194px.
- *
- * 2000px fixed the tall-Turn cases it was measured against but not the tallest
- * ones: a Turn whose real height exceeds the margin still reaches the reader
- * unmeasured, and the correction that lands then is the one virtua does not
- * absorb. On the 24-Turn geometry scene that row is ~3000px, so the cold sweep
- * slipped twice, displacing the reading anchor by 365px — and the gate caught it
- * in most runs, not rarely.
- *
- * The value is bounded on BOTH sides, which is why it is 4000 and not "as large
- * as possible". Under the tallest Turn, the gate fails as described. Far above
- * it — 6000 made the first upward reader step mount enough rows at once to move
- * the anchor by a full step (`per-step drift: -200` in
- * `upward-traversal-holds-turn-geometry`, a story that walks the transcript in
- * 200px reader steps). 4000 leaves the tall Turn measured before the reader
- * arrives while the first step still mounts a viewport's worth of rows, not a
- * page: the gate now slips at most once and displaces the anchor by ≤25px, and
- * the traversal story stays within its 1px budget.
- *
- * Mounting further ahead costs layout but not responsiveness: the gate's own
- * `layoutMs` reads 27–33ms here, no higher than at 2000px.
+ * jumped 13 times, by 5 to 194px. Mounting 2000px ahead leaves the measurement
+ * room to land before the row reaches the reader.
  */
-const MEASURE_AHEAD_MARGIN = 4000;
+const MEASURE_AHEAD_MARGIN = 2000;
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -290,7 +272,7 @@ export function ChatView(props: {
   /** Loads `messages` back to the start of an indexed Turn. */
   onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
   /** Optional identity decorations shared with a host's work navigation. */
-  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
+  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'accentBackground' | 'highlighted'>>;
   onPromptRailHighlight?(turnId: string | undefined): void;
   /**
    * PR109f: when the active session is a branched session
@@ -445,43 +427,28 @@ export function ChatView(props: {
     ),
     [props.messages],
   );
-  // One rail tick per turn that carries a user prompt. The rail's entries
-  // change only when a turn's persisted prompt/answer text does, but `turns`
-  // gets a new array on every delta. Handing the previous array back when
-  // nothing it reads moved keeps the memoized rail out of the streaming path.
-  // The per-entry comparison is O(1) per turn because an unaffected turn keeps
-  // its object identity, so its text is the same string reference.
-  const promptRailTurnsRef = useRef<ReadonlyArray<{ turnId: string; label: string; reply: string }>>([]);
-  const loadedPromptRailTurns = useMemo(() => {
-    const next = turns
-      .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
-      .map((turn) => ({
-        turnId: turn.turnId,
-        label: turn.user?.text ?? '',
-        reply: finalAssistantReplyText(turn),
-      }));
-    const previous = promptRailTurnsRef.current;
-    if (
-      previous.length === next.length
-      && next.every((entry, index) => {
-        const prior = previous[index]!;
-        return prior.turnId === entry.turnId && prior.label === entry.label && prior.reply === entry.reply;
-      })
-    ) {
-      return previous;
-    }
-    promptRailTurnsRef.current = next;
-    return next;
-  }, [turns]);
+  // One rail tick per turn that carries a user prompt. `turns` and the
+  // streaming turn's reply change on every delta; reusing unchanged entries
+  // keeps every other tick from re-rendering.
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
+  const promptRailTurnsRef = useRef<readonly PromptAnchorRailTurn[]>([]);
   const promptRailTurns = useMemo(
     () => {
-      const merged = mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex, turnIds);
-      return props.promptRailDecorations
+      const loaded = turns
+        .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
+        .map((turn) => ({
+          turnId: turn.turnId,
+          label: turn.user?.text ?? '',
+          reply: finalAssistantReplyText(turn),
+        }));
+      const merged = mergePromptAnchorRailTurns(loaded, props.transcriptTurnIndex, turnIds);
+      const decorated = props.promptRailDecorations
         ? merged.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
         : merged;
+      promptRailTurnsRef.current = reusePromptAnchorRailTurns(promptRailTurnsRef.current, decorated);
+      return promptRailTurnsRef.current;
     },
-    [loadedPromptRailTurns, props.transcriptTurnIndex, turnIds, props.promptRailDecorations],
+    [turns, props.transcriptTurnIndex, turnIds, props.promptRailDecorations],
   );
   // Turn identity and order only, so a streaming delta keeps the same array.
   const orderedTurnIdsRef = useRef<readonly string[]>([]);
@@ -561,7 +528,7 @@ export function ChatView(props: {
     turns,
   );
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
-  const { highlightedTurnId, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
+  const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
     measureStartMargin,
     virtualizerRef,
@@ -816,7 +783,7 @@ export function ChatView(props: {
                 ? emptyContent
                 : null}
               {loadEarlierHistoryControl}
-              <div key={props.activeSession.id} ref={listRef} className="maka-chat-session-swap">
+              <div ref={listRef} className="maka-chat-session-swap" data-placed={placed || undefined}>
                 <Virtualizer
                   key={measurement.generation}
                   ref={virtualizerRef}
@@ -838,7 +805,11 @@ export function ChatView(props: {
                         data-turn-accent={decoration?.accentColor ? 'true' : undefined}
                         style={{
                           // The list's row gap does not reach inside the virtualizer.
-                          paddingBlockEnd: index < turns.length - 1 ? 'var(--spacing-4)' : undefined,
+                          // A tail transient is the next Turn before it lands, outside
+                          // the virtualizer, where that gap supplies part of the space.
+                          paddingBlockEnd: index < turns.length - 1
+                            ? 'var(--space-10)'
+                            : tailTransientMessages.length > 0 ? 'calc(var(--space-10) - var(--spacing-4))' : undefined,
                           ...(decoration?.accentColor
                             ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
                         }}

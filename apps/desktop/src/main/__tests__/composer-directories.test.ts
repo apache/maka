@@ -126,6 +126,26 @@ test('caps concurrent picker results and clearing a submitted draft keeps newer 
   assert.equal(probe.state().pendingDirectories.length, 1, 'must not clear a reference added after send');
 });
 
+test('live directory context is Host-scoped and submitted cleanup preserves newer references', async () => {
+  const probe = await mount();
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
+  const submitted = probe.state();
+  assert.equal(submitted.hasPendingContextNow(), true);
+  await probe.render({ hostId: 'host-b' });
+  assert.equal(probe.state().hasPendingContextNow(), false);
+  await probe.render({ hostId: 'host-a', pick: async () => ({
+    ok: true, reference: { ...reference, path: '/workspace/new' },
+  }) });
+  await act(async () => {
+    await probe.state().directoryComposerProps.onPickDirectory!();
+    submitted.clearSubmittedContext();
+    assert.equal(probe.state().hasPendingContextNow(), true);
+    probe.state().directoryComposerProps.onRemoveDirectory(0);
+    assert.equal(probe.state().hasPendingContextNow(), false);
+  });
+  assert.deepEqual(probe.state().pendingDirectories, []);
+});
+
 test('IPC validates directory references without turning them into attachments or permissions', () => {
   const normalized = normalizeSessionSendCommand({
     type: 'send', text: 'inspect', directoryReferences: [reference],

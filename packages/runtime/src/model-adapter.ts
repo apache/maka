@@ -304,7 +304,14 @@ export class ModelAdapter {
     const runtimeToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_PROVIDER_NAME ? TOOL_SEARCH_NAME : name;
     const sdkTools = lowerModelTools(input.tools);
-    if (usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined) {
+    // Prose names the alias only when the provider can call it. In Code Mode
+    // tool_search is nested inside exec under its runtime name, so the
+    // catalog prompt must keep that name.
+    const providerExposesToolSearch =
+      usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined;
+    const providerTextToolName = (name: string): string =>
+      providerExposesToolSearch ? providerToolName(name) : name;
+    if (providerExposesToolSearch) {
       sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
       delete sdkTools[TOOL_SEARCH_NAME];
     }
@@ -320,9 +327,13 @@ export class ModelAdapter {
           this.openAiResponsesTransportState.semanticBaseline(responsesLane),
         )
       : { messages: fullMessages };
-    const providerMessages = remapModelMessageToolNames(continuation.messages, providerToolName);
+    const providerMessages = remapModelMessageToolNames(
+      continuation.messages,
+      providerToolName,
+      providerTextToolName,
+    );
     const providerSystem = input.system
-      ? remapProviderToolNamesInText(input.system, providerToolName)
+      ? remapProviderToolNamesInText(input.system, providerTextToolName)
       : undefined;
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
@@ -1273,6 +1284,7 @@ function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] 
 function remapModelMessageToolNames(
   messages: readonly ModelMessage[],
   providerToolName: (name: string) => string,
+  providerTextToolName: (name: string) => string,
 ): ModelMessage[] {
   const remapContent = <T extends { type: string }>(content: readonly T[]): T[] =>
     content.map((part) => {
@@ -1291,7 +1303,7 @@ function remapModelMessageToolNames(
           ) {
             remapped.output = {
               ...remapped.output,
-              value: remapProviderToolNamesInText(remapped.output.value, providerToolName),
+              value: remapProviderToolNamesInText(remapped.output.value, providerTextToolName),
             };
           }
         }

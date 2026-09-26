@@ -202,6 +202,14 @@ export function useComposerAttachments(options: {
     attachments: {},
     directories: {},
   });
+  const pendingStateRef = useRef(pendingState);
+  function updatePendingState(update: (current: ComposerPendingState) => ComposerPendingState): void {
+    // Publish to async guards before scheduling React's render. Never update
+    // this ref inside a state updater: React may defer or replay that updater.
+    const next = update(pendingStateRef.current);
+    pendingStateRef.current = next;
+    setPendingState(next);
+  }
   const pendingByKey = pendingState.attachments;
   const directoriesByKey = pendingState.directories;
   // Preview URLs by stagingKey, kept beside — not inside — the staged items
@@ -228,14 +236,14 @@ export function useComposerAttachments(options: {
   function updateAttachments(
     update: (current: PendingByKey<PendingAttachment>) => PendingByKey<PendingAttachment>,
   ): void {
-    setPendingState((current) => ({ ...current, attachments: update(current.attachments) }));
+    updatePendingState((current) => ({ ...current, attachments: update(current.attachments) }));
   }
   function updateDirectories(
     update: (
       current: Record<string, readonly DirectoryReference[]>,
     ) => Record<string, readonly DirectoryReference[]>,
   ): void {
-    setPendingState((current) => ({ ...current, directories: update(current.directories) }));
+    updatePendingState((current) => ({ ...current, directories: update(current.directories) }));
   }
   const liveOptionsRef = useRef({
     draftKey: options.draftKey,
@@ -445,7 +453,7 @@ export function useComposerAttachments(options: {
         };
       }),
     ];
-    setPendingState((current) => ({
+    updatePendingState((current) => ({
       attachments: appendPending(current.attachments, ownerKey, staged),
       directories: input.directoryReferences.length
         ? { ...current.directories, [`${ownerKey}:${hostId ?? 'unresolved'}`]: [...input.directoryReferences] }
@@ -472,7 +480,7 @@ export function useComposerAttachments(options: {
   }
 
   function clearSubmittedContext(submitted?: readonly PendingAttachment[]): void {
-    setPendingState((current) => {
+    updatePendingState((current) => {
       const attachments = submitted
         ? removePendingItems(
             current.attachments,
@@ -507,6 +515,9 @@ export function useComposerAttachments(options: {
     pendingDirectories,
     submittableAttachments: pendingAttachments.length ? pendingAttachments : undefined,
     hasPendingContext: pendingAttachments.length > 0 || pendingDirectories.length > 0,
+    hasPendingContextNow: () =>
+      selectPending(pendingStateRef.current.attachments, options.draftKey).length > 0
+      || (pendingStateRef.current.directories[directoryDraftKey]?.length ?? 0) > 0,
     directoryOptions: pendingDirectories.length > 0
       ? { directoryReferences: pendingDirectories }
       : {},

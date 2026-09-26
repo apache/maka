@@ -44,13 +44,18 @@ let root: Root | undefined;
 
 const sessionLocalServices: Pick<
   ConversationServices,
-  'listMessages' | 'readFailedMessage' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
+  'listMessages' | 'readFailedMessage' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
 > = {
   listMessages: async () => [],
   readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in reference tests'); },
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,
   subscribeChanges: () => () => undefined,
+  runtimeHosts: { subscribeChanges: () => () => undefined },
+};
+
+const readExecutionBoundary = async () => {
+  throw new Error('Execution boundary is not used in session reference tests');
 };
 
 afterEach(async () => {
@@ -103,6 +108,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     ...sessionLocalServices,
     sessions: {
       readSnapshot: async () => snapshot,
+      readExecutionBoundary,
     },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
@@ -253,6 +259,7 @@ test('send resolves the selected Session snapshot at the send boundary', async (
           truncated: false,
         }));
       }),
+      readExecutionBoundary,
     },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
@@ -349,6 +356,7 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
       readSnapshot: async () => new Promise<SessionSnapshot>((resolve) => {
         release = resolve;
       }),
+      readExecutionBoundary,
     },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },

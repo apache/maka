@@ -27,18 +27,18 @@ export function composerMessageRecovery(deps: {
   directoryHostId: string | undefined;
   composerRef: { readonly current: Pick<ComposerHandle, 'getText' | 'setText'> | null };
   enabled: boolean;
-  hasPendingContext: boolean;
+  hasPendingContext(): boolean;
   pendingQuotes: readonly QuoteRef[];
   restoreMessageContext(sessionId: string, hostId: string | undefined, draft: DesktopLocalMessageDraft): void;
   restoreQuotes(sessionId: string, quotes: readonly QuoteRef[]): void;
 }) {
   return {
     canRestoreDraft(): boolean {
-      // The ref and quote bucket can change while the failed draft is read.
+      // Text, staged context, and quotes can change while the failed draft is read.
       // Read them at invocation time, including the second pre-restore check.
       const composer = deps.composerRef.current;
       return Boolean(deps.sessionId && deps.enabled && composer && !composer.getText() &&
-        !deps.hasPendingContext && deps.pendingQuotes.length === 0);
+        !deps.hasPendingContext() && deps.pendingQuotes.length === 0);
     },
     restoreDraft(draft: DesktopLocalMessageDraft): void {
       const composer = deps.composerRef.current;

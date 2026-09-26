@@ -256,6 +256,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     acquireOperationalStateDatabase(base).close();
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
+      rootId: capability.rootId,
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,

@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { SessionEvent } from '@maka/core/events';
+import { applyLiveTurnBufferEvent, overlayLiveTurn, type LiveTurnBuffer } from '@maka/ui';
 import type { SessionObservationMessage } from '../../shared/session-execution-projection.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
@@ -2662,6 +2663,86 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
   await observer.close();
 });
 
+test('lands a reseeded completion whole on a live step a steering row followed', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const recoveredSessions: string[] = [];
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return runtimeHostSessionFixture({
+            snapshot: continuitySnapshot(),
+            events: firstEvents,
+            async close() {
+              firstEvents.end();
+            },
+          });
+        }
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot({ projectionRevision: 2, rootTurn: settledSnapshot().rootTurn }),
+          transcript: Promise.resolve([
+            { type: 'user' as const, id: 'user-1', turnId: 'turn-1', ts: 1, text: 'request' },
+            {
+              type: 'assistant' as const, id: 'message-1', turnId: 'turn-1', ts: 2,
+              modelId: 'test-model', text: '', thinking: { text: 'ABC' },
+            },
+            {
+              type: 'user' as const, id: 'steer-1', turnId: 'turn-1', ts: 3,
+              text: 'steer', steeringEventId: 'steer-event',
+            },
+            { type: 'turn_state' as const, id: 'state-1', turnId: 'turn-1', ts: 4, status: 'completed' as const },
+          ]),
+          events: secondEvents,
+          async close() {
+            secondEvents.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+    emitSubscriptionRecovered: (sessionId) => {
+      recoveredSessions.push(sessionId);
+    },
+    now: () => 50,
+  });
+  const target = eventTarget(16);
+  await observer.observe('session-1', 'observer-1', target);
+  const thinking = (sequence: number, startOffset: number, text: string): SubscriptionFrame => ({
+    kind: 'subscription.session_delta', hostEpoch: 'host-1', subscriptionId: 'subscription-1',
+    sequence, sessionId: 'session-1',
+    delta: { kind: 'thinking', turnId: 'turn-1', runId: 'run-1', messageId: 'message-1', startOffset, text },
+  });
+  firstEvents.push(thinking(1, 0, 'AAAA'));
+  firstEvents.push({
+    kind: 'subscription.session_event', hostEpoch: 'host-1', subscriptionId: 'subscription-1',
+    sequence: 2, sessionId: 'session-1', runId: 'run-1',
+    event: {
+      type: 'steering_message', id: 'steer-event', turnId: 'turn-1', ts: 3,
+      messageId: 'steer-1', content: { text: 'steer' },
+    },
+  });
+  firstEvents.push(thinking(3, 4, 'BBBB'));
+  await waitFor(() => target.events.some((event) => event.type === 'thinking_delta' && event.text === 'BBBB'));
+  firstEvents.push({
+    kind: 'subscription.closed', hostEpoch: 'host-1', subscriptionId: 'subscription-1',
+    sequence: 4, reason: 'slow_consumer',
+  });
+  await waitFor(() => recoveredSessions.length === 1);
+
+  let buffer: LiveTurnBuffer | undefined;
+  for (const event of target.events) buffer = applyLiveTurnBufferEvent(buffer, event, 'en');
+  const [turn] = overlayLiveTurn([], buffer![0]!, 'en');
+  assert.deepEqual(
+    turn!.timeline.map((item) =>
+      item.kind === 'user' ? `user:${item.message.text}` : item.kind === 'thinking' ? `thinking:${item.text}` : item.kind),
+    ['thinking:ABC', 'user:steer'],
+  );
+  await observer.close();
+});
+
 test('replays durable admission before a terminal successor on subscription recovery', async () => {
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
@@ -2959,7 +3040,7 @@ test("publishes form answer acknowledgements for renderer queue retirement", asy
   await observer.close();
 });
 
-test("projects Host queue revisions and newly delivered steering messages", async () => {
+test("projects Host queue revisions and places steering from the runtime event", async () => {
   const events = new AsyncFrameQueue();
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -3015,11 +3096,30 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
       },
     }),
   });
-  await waitFor(() => target.events.length === 3);
+  await waitFor(() => target.events.length === 2);
+  events.push({
+    kind: "subscription.session_event",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 3,
+    sessionId: "session-1",
+    runId: "run-1",
+    event: {
+      type: "steering_message",
+      id: "steering-event-1",
+      turnId: "turn-1",
+      ts: 80,
+      messageId: "message-steer",
+      content: { text: "Change direction" },
+    },
+  });
+  await waitFor(() => target.events.length === 4);
 
   assert.deepEqual(
-    target.events.map((event) => event.type),
-    ["queue_update", "steering_message", "queue_update"],
+    target.events.map((event) =>
+      event.type === "queue_update" ? event.steeringEntries?.map((entry) => entry.state) : event.type,
+    ),
+    [["queued"], ["in_flight"], [], "steering_message"],
   );
   assert.deepEqual(target.events[0], {
     type: "queue_update",
@@ -3032,12 +3132,12 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
     steeringEntries: [queued],
     followupEntries: [],
   });
-  assert.deepEqual(target.events[1], {
+  assert.deepEqual(target.events[3], {
     type: "steering_message",
-    id: "host-queue:host-1:2:entry-1",
+    id: "steering-event-1",
     turnId: "turn-1",
     messageId: "message-steer",
-    ts: 90,
+    ts: 80,
     content: { text: "Change direction" },
   });
   await observer.close();

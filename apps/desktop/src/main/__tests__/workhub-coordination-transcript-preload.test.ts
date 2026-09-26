@@ -64,8 +64,10 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
       ipcRenderer: {
         on() {}, off() {}, send() {},
         async invoke(channel: string, ...args: unknown[]) {
-          if (channel === 'runtime-host:activeIdentity') return owner;
-          if (channel === 'runtime-host:identities') return [owner];
+          if (channel === 'runtime-host:identities') {
+            return [{ ...owner, epoch: owner.targetEpoch, isDefault: true }];
+          }
+          if (channel === 'runtime-host:awaitReady') return { ready: true };
           assert.equal((args[0] as typeof owner).hostId, owner.hostId);
           if (channel === 'workhub:prepareAttachments') {
             assert.deepEqual(structuredClone(args[1]), [{ name: 'brief.txt', mimeType: 'text/plain', base64: 'aGVsbG8=' }]);
@@ -278,8 +280,10 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
     off(channel: string) { listeners.delete(channel); },
     send() {},
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
-      if (channel === 'runtime-host:activeIdentity') return owner;
-      if (channel === 'runtime-host:identities') return [owner];
+      if (channel === 'runtime-host:identities') {
+        return [{ ...owner, epoch: owner.targetEpoch, isDefault: true }];
+      }
+      if (channel === 'runtime-host:awaitReady') return { ready: true };
       if (channel === 'session-local:transcript') return null;
       if (channel === 'sessions:transcript:open') {
         consumerId = args[2] as string;

@@ -211,6 +211,7 @@ export class DesktopSessionLocalService {
         (!record.intent.originHostEpoch && record.state !== 'accepted') ||
         record.state === 'failed',
       placement: record.intent.command.placement,
+      localDisplayPlacement: record.intent.localDisplayPlacement,
       text: record.intent.command.content.displayText ?? record.intent.command.content.text,
       attachments: record.intent.command.content.attachments ?? [],
       directoryReferences: record.intent.command.content.directoryReferences,
@@ -766,8 +767,13 @@ export function registerDesktopSessionLocalIpc(deps: {
       requiredId(sessionId);
       if (placement !== 'current_turn' && placement !== 'next_turn')
         throw new Error('Invalid message placement');
+      const submitted = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+      const { localDisplayPlacement } = submitted;
+      if (localDisplayPlacement !== undefined && localDisplayPlacement !== 'current_turn'
+        && localDisplayPlacement !== 'next_turn')
+        throw new Error('Invalid local display placement');
       const command = normalizeSessionSendCommand({
-        ...(value && typeof value === 'object' ? value : {}),
+        ...submitted,
         type: 'send',
       });
       if (!command?.messageId) throw new Error('Invalid submitted message');
@@ -821,6 +827,7 @@ export function registerDesktopSessionLocalIpc(deps: {
         prepared.commit(() =>
           service.store.enqueue(target.partition, {
             staged,
+            ...(localDisplayPlacement ? { localDisplayPlacement } : {}),
             command: {
               sessionId,
               messageId,

@@ -17,10 +17,8 @@
  * under the License.
  */
 
-import {
-  RuntimeHostProcessTerminationRequiredError,
-  type RuntimeHostKernel,
-} from './host-kernel.js';
+import type { RuntimeHostKernel } from './host-kernel.js';
+import { RuntimeHostProcessTerminationRequiredError } from './process-termination-error.js';
 
 export interface RuntimeHostProcessLifecycleOptions {
   closeOnDisconnect?: boolean;

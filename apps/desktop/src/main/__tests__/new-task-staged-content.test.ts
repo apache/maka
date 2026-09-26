@@ -34,7 +34,7 @@ import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer
 import {
   composerModelSupportsVision,
   type NewChatModel,
-} from '../../renderer/shell-chat-model-selection.js';
+} from '../../renderer/features/conversation/index.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by
@@ -182,7 +182,7 @@ function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
   return {
     connectionId: 'connection-test',
     connectionSlug: 'test',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Test',
     model,
     label: model,
@@ -253,6 +253,48 @@ test('a completing send clears the attachments it submitted', async () => {
   await act(() => clearAfterSend(submitted));
 
   assert.equal(probe.latest().pendingAttachments.length, 0);
+});
+
+test('live context follows restore, send cleanup, removal and draft ownership before rendering', async () => {
+  const probe = await mountProbe((options) => useComposerAttachments({
+    ...options, toastApi: { error() {} }, service: idleAttachmentService,
+  }));
+  await probe.render('first');
+  const first = probe.latest();
+  const attachment = {
+    kind: 'other' as const, name: 'old.txt', mimeType: 'text/plain', bytes: 1,
+    ref: { kind: 'workspace_file' as const, relativePath: 'old.txt' },
+  };
+  await act(() => {
+    first.restoreAttachments('first', [attachment]);
+    assert.equal(first.hasPendingContextNow(), true);
+    first.removeAttachment(0);
+    assert.equal(first.hasPendingContextNow(), false);
+    first.restoreMessageContext('first', undefined, {
+      attachments: [attachment], stagedAttachments: [], directoryReferences: [],
+    });
+    assert.equal(first.hasPendingContextNow(), true);
+  });
+  const submitted = probe.latest().pendingAttachments;
+  await probe.render('second');
+  assert.equal(probe.latest().hasPendingContextNow(), false);
+  await act(() => {
+    probe.latest().restoreAttachments('second', [attachment]);
+    first.clearSubmittedContext(submitted);
+    assert.equal(first.hasPendingContextNow(), false);
+    assert.equal(probe.latest().hasPendingContextNow(), true, 'an old send cannot clear the current draft');
+  });
+  const second = probe.latest();
+  await act(() => {
+    second.restoreAttachments('second', [{
+      ...attachment, name: 'new.txt', ref: { kind: 'workspace_file', relativePath: 'new.txt' },
+    }]);
+    second.clearSubmittedAttachments(second.pendingAttachments);
+    assert.equal(second.hasPendingContextNow(), true, 'newer attachments survive submitted-item cleanup');
+    second.clearAllAttachments();
+    assert.equal(second.hasPendingContextNow(), false);
+  });
+  assert.deepEqual(probe.latest().pendingAttachments, []);
 });
 
 test('AppShell composition shows the localized non-vision image notice once per task', async () => {

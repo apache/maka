@@ -44,6 +44,61 @@ after(removeTrackedControlDirectories);
 const SESSION_ID = 'session-workflow';
 
 describe('SQLite workflow stores', () => {
+  test('lists only Sessions whose latest Plan lifecycle is active', async () => {
+    await withRoot(async (root) => {
+      const store = createSqlitePlanStore(root);
+      try {
+        const approve = async (sessionId: string, suffix: string) => {
+          const submitted = await store.submitProposal({
+            operationId: `submit-${suffix}`,
+            sessionId,
+            turnId: `turn-${suffix}`,
+            title: `Plan ${suffix}`,
+            steps: [{ id: 'one', title: 'Recover', description: 'Verify active lifecycle' }],
+          });
+          assert.equal(submitted.event.type, 'plan_submitted');
+          if (submitted.event.type !== 'plan_submitted') throw new Error('Expected proposal');
+          const approved = await store.approveProposal({
+            operationId: `approve-${suffix}`,
+            sessionId,
+            proposalId: submitted.event.proposal.proposalId,
+            expectedRevision: submitted.event.proposal.revision,
+            expectedStoreVersion: submitted.state.storeVersion,
+          });
+          assert.equal(approved.event.type, 'plan_approved');
+          if (approved.event.type !== 'plan_approved') throw new Error('Expected approval');
+          return approved.event.execution.executionId;
+        };
+
+        await approve('active-session', 'active');
+        await store.submitProposal({
+          operationId: 'submit-only',
+          sessionId: 'submitted-session',
+          turnId: 'turn-submitted',
+          title: 'Not approved',
+          steps: [{ id: 'one', title: 'Wait', description: 'Remain a proposal' }],
+        });
+        await approve('interrupted-session', 'interrupted');
+        await store.interruptActiveExecution(
+          'interrupted-session',
+          'host restarted',
+          'interrupt-test',
+        );
+        const cancelledExecutionId = await approve('cancelled-session', 'cancelled');
+        await store.cancelExecution({
+          operationId: 'cancel-test',
+          sessionId: 'cancelled-session',
+          executionId: cancelledExecutionId,
+          reason: 'cancelled',
+        });
+
+        assert.deepEqual(await store.listPlanRecoverySessionIds(), ['active-session']);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   test('persists Plan exclusively through events', async () => {
     await withRoot(async (root) => {
       const store = createSqlitePlanStore(root, {

@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider, type ComposerHandle, type TransientUserMessageProjection } from '@maka/ui';
+import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import {
   ComposerMentionsProvider,
   ConversationServicesProvider,
@@ -43,7 +44,8 @@ afterEach(cleanupFakeDom);
 
 const draft: DesktopLocalMessageDraft = {
   messageId: 'failed', text: 'Original failed prompt', attachments: [],
-  stagedAttachments: [], directoryReferences: [], inlineReferences: [],
+  stagedAttachments: [{ name: 'old.txt', mimeType: 'text/plain', content: new Uint8Array([1]) }],
+  directoryReferences: [], inlineReferences: [],
   quotes: [{ text: 'Original quote' }],
 };
 
@@ -63,6 +65,7 @@ async function recoveryFixture() {
   let releaseRead!: (value: DesktopLocalMessageDraft) => void;
   let mentions!: ComposerMentions;
   let quotes!: ReturnType<typeof useComposerQuotes>;
+  let attachments!: ReturnType<typeof useComposerAttachments>;
   const composerRef: { current: Pick<ComposerHandle, 'getText' | 'setText'> } = {
     current: { getText: () => text, setText(value) { text = value; } },
   };
@@ -71,12 +74,16 @@ async function recoveryFixture() {
       sessionId: 'current', messageId: 'failed', createdAt: 1, state: 'failed',
       text: draft.text, attachments: [], inlineReferences: [], placement: 'next_turn', canCancel: true,
     }],
-    readFailedMessage: async () => {
+    readFailedMessage: () => {
       reads++;
       return new Promise<DesktopLocalMessageDraft>((resolve) => { releaseRead = resolve; });
     },
     cancelMessage: async () => {}, reconcileMessage: async () => {}, subscribeChanges: () => () => {},
-    sessions: { readSnapshot: async () => { throw new Error('Recovery must not resolve newer Session references'); } },
+    sessions: {
+      readSnapshot: async () => { throw new Error('Recovery must not resolve newer Session references'); },
+      readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
+    },
+    runtimeHosts: { subscribeChanges: () => () => {} },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
     newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [],
@@ -91,14 +98,26 @@ async function recoveryFixture() {
       sessionId: 'current', publish, update: publish, retire: () => {},
       ...composerMessageRecovery({
         sessionId: 'current', directoryHostId: 'host', composerRef, enabled: true,
-        hasPendingContext: false, pendingQuotes: quotes.pendingQuotes,
-        restoreMessageContext: () => { contextRestores++; },
+        hasPendingContext: attachments.hasPendingContextNow, pendingQuotes: quotes.pendingQuotes,
+        restoreMessageContext: (...args) => { contextRestores++; attachments.restoreMessageContext(...args); },
         restoreQuotes: (sessionId, recovered) => quotes.restoreQuotes(sessionId, recovered),
       }),
     });
   }
   function ComposerOwner() {
     quotes = useComposerQuotes({ draftKey: 'current' });
+    attachments = useComposerAttachments({
+      draftKey: 'current', directoryHostId: 'host',
+      copy: { attachmentFailedTitle: 'Attachment failed', tryAgain: 'Try again',
+        imageAttachmentNotDirectTitle: '', imageAttachmentNotDirectDescription: '' },
+      formatError: (_error, fallback) => fallback,
+      toastApi: { error: (title) => assert.fail(title) },
+      service: {
+        pickFiles: async () => ({ ok: true, files: [{ approvalId: 'new', name: 'new.txt', size: 1 }] }),
+        previewApproval: async () => ({ ok: false, reason: 'unused' }),
+        pickDirectory: async () => ({ ok: true, reference: { hostId: 'host', path: '/new' } }),
+      },
+    });
     return createElement(ComposerMentionsProvider, {
       sessionId: 'current', skillCatalogRevision: 0,
       onAddQuote: quotes.addQuote, pendingQuotes: quotes.pendingQuotes,
@@ -117,6 +136,36 @@ async function recoveryFixture() {
     pick: () => mentions.onPickSessionReference!({ id: 'source', name: 'source' }),
     edit: () => messages.get('failed')!.deliveryActions!.find((action) => action.label === copy.edit)!.onClick(),
     release: () => releaseRead(draft),
+    assertComposerUntouched() {
+      assert.equal(text, '', 'the read continuation must not overwrite a newly staged draft before React renders');
+      assert.equal(contextRestores, 0);
+    },
+    stage: (kind: 'file' | 'drop' | 'directory') => kind === 'file'
+      ? attachments.pickAttachments()
+      : kind === 'drop'
+        ? attachments.attachFilePaths([new File(['new'], 'new.txt', { type: 'text/plain' })])
+        : attachments.directoryComposerProps.onPickDirectory!(),
+    assertContextBlocked(kind: 'file' | 'drop' | 'directory') {
+      assert.equal(text, '', 'new context must not be combined with the old failed prompt');
+      assert.equal(contextRestores, 0);
+      assert.deepEqual(quotes.pendingQuotes, []);
+      assert.deepEqual(attachments.pendingAttachments.map((item) => item.displayName),
+        kind === 'directory' ? [] : ['new.txt']);
+      assert.deepEqual(attachments.pendingDirectories,
+        kind === 'directory' ? [{ hostId: 'host', path: '/new' }] : []);
+      assert.equal(messages.get('failed')!.deliveryDetail, copy.draftBlocked);
+    },
+    async recoverAfterContextRemoval(kind: 'file' | 'drop' | 'directory') {
+      await act(() => kind === 'directory'
+        ? attachments.directoryComposerProps.onRemoveDirectory(0) : attachments.removeAttachment(0));
+      await act(() => this.edit());
+      await act(async () => releaseRead(draft));
+      assert.equal(text, draft.text);
+      assert.equal(contextRestores, 1);
+      assert.deepEqual(attachments.pendingAttachments.map((item) => item.displayName), ['old.txt']);
+      assert.deepEqual(quotes.pendingQuotes, draft.quotes);
+      assert.equal(messages.get('failed')!.deliveryDetail, copy.draftReady);
+    },
     assertBlocked() {
       assert.equal(text, '', 'a newer Session reference must block replacing the blank draft');
       assert.equal(contextRestores, 0);
@@ -161,3 +210,25 @@ test('a Session reference selected during the failed-draft read prevents recover
   fixture.assertBlocked();
   await fixture.assertRecoveryAfterRemoval();
 });
+
+for (const kind of ['file', 'drop', 'directory'] as const) {
+  for (const duringRead of [false, true]) {
+    test(`a staged ${kind} blocks failed-draft recovery ${duringRead ? 'during' : 'before'} the read without a render`, async () => {
+      const fixture = await recoveryFixture();
+      if (duringRead) await act(() => fixture.edit());
+      await act(async () => {
+        await fixture.stage(kind);
+        // Both continuations run in one React batch: the pending-state render
+        // must not be required for either recovery guard to see new context.
+        if (duringRead) {
+          fixture.release();
+          await Promise.resolve();
+          fixture.assertComposerUntouched();
+        } else fixture.edit();
+      });
+      assert.equal(fixture.readCount(), duringRead ? 1 : 0);
+      fixture.assertContextBlocked(kind);
+      await fixture.recoverAfterContextRemoval(kind);
+    });
+  }
+}

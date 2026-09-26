@@ -251,13 +251,6 @@
      emphasis, and using this for CTAs is exactly the palette-invisibility
      bug called out in the --brand-deep note above. */
   --maka-brand: #71a8fd;
-  /* Every MCP market tile renders a real library brand mark on a neutral plate
-     (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk + the
-     vendored Feishu mark), so no per-brand plate-tint token is needed — a
-     colourful logo already supplies the brand identity. The system-banner tint
-     alias went the same way: the scheduled-tasks banner derives from --accent
-     directly, which is one indirection fewer for the same result. */
-
   /* === text variants (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
   --destructive-text: color-mix(in oklab, var(--destructive) 50%, var(--foreground));
@@ -756,7 +749,7 @@
   /* ICON_SIZE in @maka/ui's icons.tsx is the icon scale; components pass it as
      a prop. These two rungs exist only for the sites that size a glyph from
      CSS — add a rung here when a CSS site needs one, not to mirror the TS. */
-  --icon-meta: 13px;
+  --icon-meta: 12px;
   --icon-control: 14px;
 
   /* === motion ===
@@ -1405,18 +1398,12 @@
 
   /* ---- Chat surface ----------------------------------------------- */
 
-  /* Turn grouping (per kenji UI-04): user msg + tools + assistant answer
-   * cluster into one visual unit. The section is a flex container; both the
-   * between-turn and within-turn gaps are uniform (CHAT-TURN-SPACING-0), so
-   * a turn reads as one unit by grouping, not by tighter internal spacing. */
+  /* A turn reads as one unit because its internal gap is well under the
+     between-turn gap, which the transcript row in chat-view.tsx owns. */
   .maka-turn {
     display: flex;
     flex-direction: column;
-    /* The content wrapper owns between-turn flex layout. */
     flex: 0 0 auto;
-    /* PR5 CHAT-TURN-SPACING-0: uniform 12px within-turn gap, matching the
-       between-turn gap (.maka-chatContent) — one density, no between/within
-       split. */
     gap: var(--space-3);
     max-width: var(--maka-reading-measure);
     margin: 0 auto;

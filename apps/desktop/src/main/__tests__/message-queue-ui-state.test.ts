@@ -37,6 +37,7 @@ test('local delivery recovery respects started Turns without republishing accept
     sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
     text: messageId, attachments: [], inlineReferences: [],
     placement: messageId === 'steering' ? 'current_turn' : 'next_turn',
+    ...(messageId === 'root' ? { localDisplayPlacement: 'current_turn' as const } : {}),
   }));
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ConversationServicesProvider, { services: {
@@ -44,7 +45,11 @@ test('local delivery recovery respects started Turns without republishing accept
       readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
       cancelMessage: async () => {}, reconcileMessage: async () => {},
-      sessions: { readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
+      sessions: {
+        readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
+        readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
+      },
+      runtimeHosts: { subscribeChanges: () => () => {} },
       skills: { listInvocable: async () => [] },
       workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
       newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
@@ -60,7 +65,8 @@ test('local delivery recovery respects started Turns without republishing accept
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
   assert.equal(transient.get('steering')?.transientPlacement, 'current_turn');
-  assert.equal(transient.get('root')?.transientPlacement, 'next_turn', 'a follow-up without Turn ownership stays in the pending queue');
+  assert.equal(transient.get('root')?.transientPlacement, 'current_turn', 'a restored ordinary send stays in the transcript');
+  assert.equal(transient.get('followup')?.transientPlacement, 'next_turn', 'an explicit follow-up stays queued');
   transient.delete('steering');
   transient.delete('followup');
   messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn', admission: 'turn_started' as const } : {}) }));
@@ -95,7 +101,11 @@ test('a Host queue seeded before the first local snapshot owns accepted and unce
     readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
     subscribeChanges: (handler: (sessionId: string) => void) => { changed = handler; return () => {}; },
     cancelMessage: async () => {}, reconcileMessage: async () => {},
-    sessions: { readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
+    sessions: {
+      readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
+      readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
+    },
+    runtimeHosts: { subscribeChanges: () => () => {} },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
     newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
@@ -188,26 +198,13 @@ test('queue_update events drive the independent desktop queue projection', () =>
   });
   assert.equal(transientMessages.size, 0, 'Host evidence retires local placeholders');
 
-  handlers.handleEvent('session-1', {
-    type: 'steering_message',
-    id: 'steering-message-steer',
-    turnId: 'turn-1',
-    messageId: 'message-steer',
-    ts: 2,
-    content: { text: 'adjust this run' },
-  });
-  assert.equal(transientMessages.size, 0);
-  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
-    queueRevision: 3,
-    entries: [{
-      entryId: 'entry-next',
-      messageId: 'message-next',
-      content: { text: 'do this next' },
-      placement: 'next_turn',
-      state: 'queued',
-    }],
-  });
-
+  const nextEntry = {
+    entryId: 'entry-next',
+    messageId: 'message-next',
+    content: { text: 'do this next' },
+    placement: 'next_turn' as const,
+    state: 'queued' as const,
+  };
   handlers.handleEvent('session-1', {
     type: 'queue_update',
     id: 'queue-2',
@@ -217,23 +214,28 @@ test('queue_update events drive the independent desktop queue projection', () =>
     steering: ['adjust this run'],
     followup: ['do this next'],
     steeringEntries: [inFlightEntry],
-    followupEntries: [{
-      entryId: 'entry-next',
-      messageId: 'message-next',
-      content: { text: 'do this next' },
-      placement: 'next_turn',
-      state: 'queued',
-    }],
+    followupEntries: [nextEntry],
   });
-  assert.deepEqual(controller.getState().messageQueueBySession['session-1']?.entries, [{
-    entryId: 'entry-next',
-    messageId: 'message-next',
-    content: { text: 'do this next' },
-    placement: 'next_turn',
-    state: 'queued',
-  }]);
-  assert.equal(transientMessages.size, 0);
+  assert.deepEqual(
+    controller.getState().messageQueueBySession['session-1']?.entries,
+    [inFlightEntry, nextEntry],
+    'a pulled message stays pending until the runtime places it',
+  );
   assert.equal(transientMessages.size, 0, 'in-flight queue projection must not re-add a local row');
+
+  handlers.handleEvent('session-1', {
+    type: 'steering_message',
+    id: 'steering-message-steer',
+    turnId: 'turn-1',
+    messageId: 'message-steer',
+    ts: 4,
+    content: { text: 'adjust this run' },
+  });
+  assert.equal(transientMessages.size, 0);
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
+    queueRevision: 4,
+    entries: [nextEntry],
+  });
 
   handlers.handleEvent('session-1', {
     type: 'message_admission',
@@ -326,4 +328,35 @@ test('complete events deliver the durable context compaction outcome to Desktop'
       outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
     },
   ]);
+});
+
+test('an interaction request notifies that the turn is waiting on the user', () => {
+  const controller = createAppShellSessionUiStateController();
+  const notified: unknown[] = [];
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'en',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+    notifyRunEnded(payload) {
+      notified.push(payload);
+    },
+  });
+
+  handlers.handleEvent('session-1', {
+    type: 'user_question_request',
+    id: 'question-1',
+    turnId: 'turn-1',
+    ts: 1,
+    requestId: 'request-1',
+    toolUseId: 'tool-1',
+    questions: [{ question: 'Which branch?', options: [{ label: 'main' }] }],
+  });
+
+  assert.deepEqual(notified, [{ kind: 'waiting', sessionId: 'session-1', body: 'Which branch?' }]);
 });

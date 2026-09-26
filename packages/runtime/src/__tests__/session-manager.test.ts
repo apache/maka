@@ -65,6 +65,7 @@ import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-stor
 import { deriveTurnRecords } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
+import { buildInterruptedToolOutcomeCommits } from '../recovery-resolver.js';
 import { buildImmutableRuntimePrefix, decodeContinuationClaim } from '@maka/core/runtime-boundary';
 import type {
   CreateSandboxBoundaryRequest,
@@ -3700,6 +3701,95 @@ describe('SessionManager child-session runtime primitive', () => {
     });
   }
 
+  test('startup recovery reads Runtime handoff evidence only for a domain-owned active Plan', async () => {
+    const store = new MemorySessionStore();
+    const runtimeEventStore = new MemoryAgentRunStore();
+    const originalListInvocations =
+      runtimeEventStore.listSessionInvocations.bind(runtimeEventStore);
+    let planStateReads = 0;
+    const invocationReads: string[] = [];
+    const planInterrupts: string[] = [];
+    let activePlanSessionId = '';
+    runtimeEventStore.listSessionInvocations = async (sessionId: string) => {
+      invocationReads.push(sessionId);
+      return originalListInvocations(sessionId);
+    };
+    const manager = new SessionManager({
+      store,
+      runtimeEventStore,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(400),
+      planStore: {
+        readState: async (sessionId: string) => {
+          planStateReads += 1;
+          return sessionId === activePlanSessionId
+            ? { ...emptyPlanSessionState(sessionId), activeExecutionId: 'active-plan-execution' }
+            : emptyPlanSessionState(sessionId);
+        },
+        interruptActiveExecution: async (sessionId: string) => {
+          planInterrupts.push(sessionId);
+          return {
+            event: {} as PlanEvent,
+            state: emptyPlanSessionState(sessionId),
+          };
+        },
+      } as unknown as PlanStore,
+    });
+    await manager.createSession(makeInput());
+    activePlanSessionId = (await manager.createSession(makeInput())).id;
+
+    assert.deepStrictEqual(await manager.recoverInterruptedSessions(), [activePlanSessionId]);
+    assert.strictEqual(planStateReads, 2);
+    assert.deepStrictEqual(invocationReads, [activePlanSessionId]);
+    assert.deepStrictEqual(planInterrupts, [activePlanSessionId]);
+  });
+
+  test('startup recovery reads Plan evidence only for inventory candidates', async () => {
+    const store = new MemorySessionStore();
+    const runtimeEventStore = new MemoryAgentRunStore();
+    const originalListInvocations =
+      runtimeEventStore.listSessionInvocations.bind(runtimeEventStore);
+    const planStateReads: string[] = [];
+    const invocationReads: string[] = [];
+    const planInterrupts: string[] = [];
+    let activePlanSessionId = '';
+    runtimeEventStore.listSessionInvocations = async (sessionId: string) => {
+      invocationReads.push(sessionId);
+      return originalListInvocations(sessionId);
+    };
+    const manager = new SessionManager({
+      store,
+      runtimeEventStore,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(400),
+      planStore: {
+        listPlanRecoverySessionIds: async () => [activePlanSessionId],
+        readState: async (sessionId: string) => {
+          planStateReads.push(sessionId);
+          return sessionId === activePlanSessionId
+            ? { ...emptyPlanSessionState(sessionId), activeExecutionId: 'active-plan-execution' }
+            : emptyPlanSessionState(sessionId);
+        },
+        interruptActiveExecution: async (sessionId: string) => {
+          planInterrupts.push(sessionId);
+          return {
+            event: {} as PlanEvent,
+            state: emptyPlanSessionState(sessionId),
+          };
+        },
+      } as unknown as PlanStore,
+    });
+    await manager.createSession(makeInput());
+    activePlanSessionId = (await manager.createSession(makeInput())).id;
+
+    assert.deepStrictEqual(await manager.recoverInterruptedSessions(), [activePlanSessionId]);
+    assert.deepStrictEqual(planStateReads, [activePlanSessionId]);
+    assert.deepStrictEqual(invocationReads, [activePlanSessionId]);
+    assert.deepStrictEqual(planInterrupts, [activePlanSessionId]);
+  });
+
   test('startup recovery repairs an interrupted child inline run only in the child session', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -4920,104 +5010,183 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 });
 
 describe('SessionManager permission mode updates', () => {
-  for (const route of ['direct', 'legacy'] as const) {
-    test(`serializes concurrent ${route} boundary commits before they can become narrowing`, {
-      timeout: 10_000,
-    }, async (t) => {
-      const root = await mkdtemp(join(tmpdir(), 'maka-boundary-commit-race-'));
-      const store = createSessionStore(root);
-      // Hide optional capabilities from Runtime, without changing SQLite's own
-      // internal method calls, to exercise the legacy SessionStore contract.
-      const runtimeStore =
-        route === 'legacy'
-          ? new Proxy(store, {
-              get(target, key) {
-                if (key === 'readHeaderRecordSnapshot' || key === 'updateSessionConfiguration')
-                  return undefined;
-                const value = Reflect.get(target, key, target);
-                return typeof value === 'function' ? value.bind(target) : value;
-              },
-            })
-          : store;
-      const gate = makeGate();
-      t.after(async () => {
-        gate.release();
-        await store.close?.();
-        await rm(root, { recursive: true, force: true });
-      });
-      const calls: string[] = [];
-      const backends = new BackendRegistry();
-      let backend: TestBackend | undefined;
-      backends.register('ai-sdk', (ctx) => (backend = new TestBackend(ctx, gate)));
-      const manager = new SessionManager({
-        store: runtimeStore,
-        backends,
-        newId: nextId(),
-        now: nextNow(979),
-        shellRuns: {
-          async terminateSession(sessionId: string) {
-            calls.push(`terminate:${sessionId}`);
-            return { sessionId, token: Symbol('test') };
-          },
-          async commitSessionClose() {
-            calls.push('commit');
-          },
-          rollbackSessionClose() {
-            calls.push('rollback');
-          },
-          resumeSession(sessionId: string) {
-            calls.push(`resume:${sessionId}`);
-          },
-        } as never,
-      });
-      const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
-      const update = (bypass: boolean) =>
-        route === 'direct'
-          ? manager.setExecutionBoundaryKind(session.id, bypass ? 'bypass' : 'managed')
-          : manager.setPermissionMode(session.id, bypass ? 'bypass' : 'ask');
-      const turn = manager
-        .sendMessage(session.id, { turnId: 'turn-racing', text: 'keep running' })
-        [Symbol.asyncIterator]();
-      try {
-        await turn.next();
-        // Both requests initially observe Explore. The second must not reuse
-        // that classification after the first has committed Bypass.
-        const results = await Promise.allSettled([update(true), update(false)]);
-        assert.deepStrictEqual(
-          results.map((result) => result.status),
-          ['fulfilled', 'rejected'],
-        );
-        const conflict = results[1];
-        assert.ok(conflict?.status === 'rejected');
-        assert.ok(conflict.reason instanceof SessionConfigurationTransitionError);
-        assert.strictEqual(conflict.reason.code, 'operation_conflict');
-        assert.deepStrictEqual(await store.readExecutionBoundary(session.id), {
-          kind: 'bypass',
-          revision: 1,
-        });
-        assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
-        assert.deepStrictEqual(manager.runningTurnIds(session.id), ['turn-racing']);
-        assert.strictEqual(backend?.stopCalls, 0);
-        assert.deepStrictEqual(calls, []);
-        // A fresh retry is now correctly classified as narrowing.
-        await assert.rejects(update(false), (error: unknown) => {
-          assert.ok(error instanceof SessionConfigurationTransitionError);
-          assert.strictEqual(error.code, 'session_busy');
-          return true;
-        });
-      } finally {
-        gate.release();
-        while (!(await turn.next()).done) {}
-      }
-      // The conflict released the mutation lane; idle narrowing still revokes shells.
-      await update(false);
-      assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
-      assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+  test('preserves the plugin executor when widening permission with an active turn', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(977),
+      runtimeKernel: kernel,
     });
-  }
+    const session = await manager.createSession(
+      makeInput({ permissionMode: 'explore', executorId: 'codex' }),
+    );
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    kernel.activeRuns = true;
+
+    const next = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+    });
+
+    assert.strictEqual(next.header.backend, 'plugin-executor');
+    assert.strictEqual(next.header.executorId, 'codex');
+    assert.strictEqual(next.header.permissionMode, 'bypass');
+    assert.strictEqual(next.revision, current.revision + 1);
+    assert.deepStrictEqual((await store.readHeaderRecordSnapshot(session.id)).header, next.header);
+    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'bypass');
+    assert.deepStrictEqual(kernel.stopped, []);
+    assert.deepStrictEqual(kernel.disposed, []);
+  });
+
+  test('configuration authority rejects a stale revision without changing the committed grant', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(978),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+    const original = await store.readHeaderRecordSnapshot(session.id);
+    const update = (permissionMode: PermissionMode) =>
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: original.revision,
+        clearConnectionBlock: false,
+        permissionModeOnly: true,
+        configuration: configurationForHeader(original.header, { permissionMode }),
+      });
+
+    await update('bypass');
+    const committed = await store.readHeaderRecordSnapshot(session.id);
+    const boundary = await store.readExecutionBoundary(session.id);
+    assert.strictEqual(committed.revision, original.revision + 1);
+    assert.strictEqual(committed.header.permissionMode, 'bypass');
+    await assert.rejects(update('ask'), (error: unknown) => {
+      assert.ok(error instanceof SessionConfigurationRevisionConflictError);
+      assert.strictEqual(error.expectedRevision, original.revision);
+      assert.strictEqual(error.actualRevision, committed.revision);
+      return true;
+    });
+    assert.deepStrictEqual(await store.readHeaderRecordSnapshot(session.id), committed);
+    assert.deepStrictEqual(await store.readExecutionBoundary(session.id), boundary);
+  });
+
+  test('serializes configuration commits that observed the same execution boundary', {
+    timeout: 10_000,
+  }, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-commit-race-'));
+    const store = createSessionStore(root);
+    const gate = makeGate();
+    const bothBoundariesRead = makeGate();
+    const releaseBoundaryReads = makeGate();
+    const readExecutionBoundary = store.readExecutionBoundary.bind(store);
+    t.after(async () => {
+      releaseBoundaryReads.release();
+      gate.release();
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    });
+    const calls: string[] = [];
+    const backends = new BackendRegistry();
+    let backend: TestBackend | undefined;
+    backends.register('ai-sdk', (ctx) => (backend = new TestBackend(ctx, gate)));
+    const manager = new SessionManager({
+      store,
+      backends,
+      newId: nextId(),
+      now: nextNow(979),
+      shellRuns: {
+        async terminateSession(sessionId: string) {
+          calls.push(`terminate:${sessionId}`);
+          return { sessionId, token: Symbol('test') };
+        },
+        async commitSessionClose() {
+          calls.push('commit');
+        },
+        rollbackSessionClose() {
+          calls.push('rollback');
+        },
+        resumeSession(sessionId: string) {
+          calls.push(`resume:${sessionId}`);
+        },
+      } as never,
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+    const update = (snapshot: VersionedSessionHeader, permissionMode: PermissionMode) =>
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: snapshot.revision,
+        clearConnectionBlock: false,
+        permissionModeOnly: true,
+        configuration: configurationForHeader(snapshot.header, { permissionMode }),
+      });
+    const turn = manager
+      .sendMessage(session.id, { turnId: 'turn-racing', text: 'keep running' })
+      [Symbol.asyncIterator]();
+    try {
+      await turn.next();
+      const snapshot = await store.readHeaderRecordSnapshot(session.id);
+      let boundaryReads = 0;
+      store.readExecutionBoundary = async (sessionId) => {
+        const boundary = await readExecutionBoundary(sessionId);
+        if (++boundaryReads <= 2) {
+          if (boundaryReads === 2) bothBoundariesRead.release();
+          await releaseBoundaryReads.promise;
+        }
+        return boundary;
+      };
+      // A shared configuration snapshot alone does not fix which fence wins.
+      // Hold both initial boundary reads until each has observed Explore, so
+      // the second commit hits the boundary revision fence before its CAS.
+      const pending = Promise.allSettled([update(snapshot, 'bypass'), update(snapshot, 'ask')]);
+      await bothBoundariesRead.promise;
+      releaseBoundaryReads.release();
+      const results = await pending;
+      store.readExecutionBoundary = readExecutionBoundary;
+      assert.deepStrictEqual(
+        results.map((result) => result.status),
+        ['fulfilled', 'rejected'],
+      );
+      const conflict = results[1];
+      assert.ok(conflict?.status === 'rejected');
+      assert.ok(conflict.reason instanceof SessionConfigurationTransitionError);
+      assert.strictEqual(conflict.reason.code, 'operation_conflict');
+      assert.match(conflict.reason.message, /execution boundary changed/);
+      const committed = await store.readHeaderRecordSnapshot(session.id);
+      assert.strictEqual(committed.revision, snapshot.revision + 1);
+      assert.strictEqual(committed.header.permissionMode, 'bypass');
+      assert.deepStrictEqual(await store.readExecutionBoundary(session.id), {
+        kind: 'bypass',
+        revision: 1,
+      });
+      assert.deepStrictEqual(manager.runningTurnIds(session.id), ['turn-racing']);
+      assert.strictEqual(backend?.stopCalls, 0);
+      assert.deepStrictEqual(calls, []);
+      // A fresh retry sees Bypass and is now correctly classified as narrowing.
+      await assert.rejects(update(committed, 'ask'), (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(error.code, 'session_busy');
+        return true;
+      });
+      assert.deepStrictEqual(await store.readHeaderRecordSnapshot(session.id), committed);
+    } finally {
+      store.readExecutionBoundary = readExecutionBoundary;
+      releaseBoundaryReads.release();
+      gate.release();
+      while (!(await turn.next()).done) {}
+    }
+    // The conflict released the mutation lane; idle narrowing still revokes shells.
+    await update(await store.readHeaderRecordSnapshot(session.id), 'ask');
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+    assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+  });
 
   test('rejects unprotected boundary commits when admission mutation authority is unavailable', async () => {
-    const store = new MemorySessionStore();
+    const store = new VersionedConfigurationMemorySessionStore();
     const kernel = new DelegatingRuntimeKernel();
     Object.defineProperty(kernel, 'runSessionAdmissionMutation', { value: undefined });
     const manager = new SessionManager({
@@ -5028,8 +5197,14 @@ describe('SessionManager permission mode updates', () => {
       now: nextNow(979),
     });
     const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+    const current = await store.readHeaderRecordSnapshot(session.id);
     await assert.rejects(
-      manager.setExecutionBoundaryKind(session.id, 'bypass'),
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: current.revision,
+        clearConnectionBlock: false,
+        permissionModeOnly: true,
+        configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+      }),
       (error: unknown) => {
         assert.ok(error instanceof SessionConfigurationTransitionError);
         assert.strictEqual(error.code, 'operation_unavailable');
@@ -5431,143 +5606,126 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
   });
 
-  for (const route of ['configuration', 'boundary'] as const) {
-    for (const grant of ['read', 'write', 'network'] as const) {
-      test(`restoring Explore revokes an approved ${grant} through the durable ${route} path`, async (t) => {
-        const root = await mkdtemp(join(tmpdir(), 'maka-explore-read-revocation-'));
-        const store = createSessionStore(root);
-        t.after(async () => {
-          await store.close?.();
-          await rm(root, { recursive: true, force: true });
-        });
-        const gate = makeGate();
-        const calls: string[] = [];
-        const backends = new BackendRegistry();
-        const runStore = new MemoryAgentRunStore();
-        backends.register('ai-sdk', (ctx) => new TestBackend(ctx, gate));
-        const manager = new SessionManager({
-          store,
-          runStore,
-          runtimeEventStore: runStore,
-          backends,
-          newId: nextId(),
-          now: nextNow(988),
-          shellRuns: {
-            async terminateSession(sessionId: string) {
-              calls.push(`terminate:${sessionId}`);
-              return { sessionId, token: Symbol('test') };
-            },
-            async commitSessionClose() {
-              calls.push('commit');
-            },
-            rollbackSessionClose() {
-              calls.push('rollback');
-            },
-            resumeSession(sessionId: string) {
-              calls.push(`resume:${sessionId}`);
-            },
-          } as never,
-        });
-        const workspaceRoot = join(root, 'workspace');
-        const outsidePath = join(root, 'approved', 'input.txt');
-        const session = await manager.createSession(
-          makeInput({ permissionMode: 'explore', cwd: workspaceRoot }),
-        );
-        const updatePermissionMode = async (permissionMode: PermissionMode) => {
-          const current = await store.readHeaderRecordSnapshot(session.id);
-          return manager.transitionSessionConfiguration(session.id, {
-            expectedRevision: current.revision,
-            clearConnectionBlock: false,
-            permissionModeOnly: true,
-            configuration: configurationForHeader(current.header, { permissionMode }),
-          });
-        };
-        await store.createSandboxBoundaryRequest({
-          sessionId: session.id,
-          requestId: 'approved-expansion',
-          turnId: 'turn-approval',
-          runId: 'run-approval',
-          expansion:
-            grant === 'network'
-              ? { network: { enabled: true } }
-              : {
-                  filesystem: { entries: [{ path: outsidePath, access: grant, scope: 'exact' }] },
-                },
-          justification: 'Approve one specific sandbox expansion.',
-        });
-        const settlement = await store.settleSandboxBoundaryRequest({
-          sessionId: session.id,
-          requestId: 'approved-expansion',
-          decision: 'allow',
-        });
-        assert.strictEqual(settlement.request.status, 'approved');
-        if (route === 'configuration') await updatePermissionMode('ask');
-        const restoreExplore = () =>
-          route === 'configuration'
-            ? updatePermissionMode('explore')
-            : manager.setExecutionBoundaryKind(session.id, 'managed');
-        const expanded = await store.readExecutionBoundary(session.id);
-        assert.strictEqual(expanded.kind, 'managed');
-        if (expanded.kind !== 'managed') throw new Error('Expected a managed boundary');
-        assert.strictEqual(expanded.profile.name, 'read-only');
-        assert.strictEqual(isReadOnlyPermissionProfile(expanded.profile), grant === 'read');
-        assert.strictEqual(
-          expanded.profile.network.kind,
-          grant === 'network' ? 'enabled' : 'restricted',
-        );
-        assert.strictEqual(
-          canReadPath(expanded.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
-          grant !== 'network',
-        );
-        assert.deepStrictEqual(calls, []);
-
-        const activeTurn = manager
-          .sendMessage(session.id, { turnId: 'turn-expanded-read', text: 'keep reading' })
-          [Symbol.asyncIterator]();
-        try {
-          await activeTurn.next();
-          await assert.rejects(restoreExplore(), (error: unknown) => {
-            if (route === 'boundary') {
-              assert.ok(error instanceof SessionConfigurationTransitionError);
-              assert.strictEqual(error.code, 'session_busy');
-              return true;
-            }
-            assert.ok(error instanceof SessionConfigurationTransitionError);
-            assert.strictEqual(error.code, 'session_busy');
-            return true;
-          });
-          assert.deepStrictEqual(await store.readExecutionBoundary(session.id), expanded);
-          assert.strictEqual(
-            (await store.readHeader(session.id)).permissionMode,
-            route === 'configuration' ? 'ask' : 'explore',
-          );
-          assert.deepStrictEqual(calls, []);
-        } finally {
-          gate.release();
-          while (!(await activeTurn.next()).done) {}
-        }
-
-        await restoreExplore();
-        assert.deepStrictEqual(calls, [
-          `terminate:${session.id}`,
-          'commit',
-          `resume:${session.id}`,
-        ]);
-        const narrowed = await store.readExecutionBoundary(session.id);
-        assert.strictEqual(narrowed.kind, 'managed');
-        if (narrowed.kind !== 'managed') throw new Error('Expected a managed boundary');
-        assert.deepStrictEqual(narrowed.profile, createReadOnlyPermissionProfile());
-        assert.strictEqual(
-          canReadPath(narrowed.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
-          false,
-        );
-        assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
+  for (const grant of ['read', 'write', 'network'] as const) {
+    test(`restoring Explore revokes an approved ${grant} through configuration authority`, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-explore-read-revocation-'));
+      const store = createSessionStore(root);
+      t.after(async () => {
+        await store.close?.();
+        await rm(root, { recursive: true, force: true });
       });
-    }
+      const gate = makeGate();
+      const calls: string[] = [];
+      const backends = new BackendRegistry();
+      const runStore = new MemoryAgentRunStore();
+      backends.register('ai-sdk', (ctx) => new TestBackend(ctx, gate));
+      const manager = new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: runStore,
+        backends,
+        newId: nextId(),
+        now: nextNow(988),
+        shellRuns: {
+          async terminateSession(sessionId: string) {
+            calls.push(`terminate:${sessionId}`);
+            return { sessionId, token: Symbol('test') };
+          },
+          async commitSessionClose() {
+            calls.push('commit');
+          },
+          rollbackSessionClose() {
+            calls.push('rollback');
+          },
+          resumeSession(sessionId: string) {
+            calls.push(`resume:${sessionId}`);
+          },
+        } as never,
+      });
+      const workspaceRoot = join(root, 'workspace');
+      const outsidePath = join(root, 'approved', 'input.txt');
+      const session = await manager.createSession(
+        makeInput({ permissionMode: 'explore', cwd: workspaceRoot }),
+      );
+      const updatePermissionMode = async (permissionMode: PermissionMode) => {
+        const current = await store.readHeaderRecordSnapshot(session.id);
+        return manager.transitionSessionConfiguration(session.id, {
+          expectedRevision: current.revision,
+          clearConnectionBlock: false,
+          permissionModeOnly: true,
+          configuration: configurationForHeader(current.header, { permissionMode }),
+        });
+      };
+      await store.createSandboxBoundaryRequest({
+        sessionId: session.id,
+        requestId: 'approved-expansion',
+        turnId: 'turn-approval',
+        runId: 'run-approval',
+        expansion:
+          grant === 'network'
+            ? { network: { enabled: true } }
+            : {
+                filesystem: { entries: [{ path: outsidePath, access: grant, scope: 'exact' }] },
+              },
+        justification: 'Approve one specific sandbox expansion.',
+      });
+      const settlement = await store.settleSandboxBoundaryRequest({
+        sessionId: session.id,
+        requestId: 'approved-expansion',
+        decision: 'allow',
+      });
+      assert.strictEqual(settlement.request.status, 'approved');
+      await updatePermissionMode('ask');
+      const restoreExplore = () => updatePermissionMode('explore');
+      const expanded = await store.readExecutionBoundary(session.id);
+      assert.strictEqual(expanded.kind, 'managed');
+      if (expanded.kind !== 'managed') throw new Error('Expected a managed boundary');
+      assert.strictEqual(expanded.profile.name, 'read-only');
+      assert.strictEqual(isReadOnlyPermissionProfile(expanded.profile), grant === 'read');
+      assert.strictEqual(
+        expanded.profile.network.kind,
+        grant === 'network' ? 'enabled' : 'restricted',
+      );
+      assert.strictEqual(
+        canReadPath(expanded.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
+        grant !== 'network',
+      );
+      assert.deepStrictEqual(calls, []);
+
+      const activeTurn = manager
+        .sendMessage(session.id, { turnId: 'turn-expanded-read', text: 'keep reading' })
+        [Symbol.asyncIterator]();
+      try {
+        await activeTurn.next();
+        await assert.rejects(restoreExplore(), (error: unknown) => {
+          assert.ok(error instanceof SessionConfigurationTransitionError);
+          assert.strictEqual(error.code, 'session_busy');
+          return true;
+        });
+        assert.deepStrictEqual(await store.readExecutionBoundary(session.id), expanded);
+        assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+        assert.deepStrictEqual(calls, []);
+      } finally {
+        gate.release();
+        while (!(await activeTurn.next()).done) {}
+      }
+
+      await restoreExplore();
+      assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+      const narrowed = await store.readExecutionBoundary(session.id);
+      assert.strictEqual(narrowed.kind, 'managed');
+      if (narrowed.kind !== 'managed') throw new Error('Expected a managed boundary');
+      assert.deepStrictEqual(narrowed.profile, createReadOnlyPermissionProfile());
+      assert.strictEqual(
+        canReadPath(narrowed.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
+        false,
+      );
+      assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
+    });
   }
 
-  test('revokes descendant background shell authority through the direct boundary API', async () => {
-    const store = new AtomicBoundaryMemorySessionStore();
+  test('configuration narrowing revokes descendant background shell authority', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
     const calls: string[] = [];
     const backends = new BackendRegistry();
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
@@ -5663,7 +5821,13 @@ describe('SessionManager permission mode updates', () => {
     );
     store.disposeCount = 0;
 
-    await manager.setExecutionBoundaryKind(session.id, 'managed');
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'ask' }),
+    });
 
     assert.deepStrictEqual(calls, [
       `terminate:${session.id}`,
@@ -5752,15 +5916,21 @@ describe('SessionManager permission mode updates', () => {
         ['turn-2', 'completed'],
       ],
     );
-    const summary = await manager.setPermissionMode(session.id, 'bypass');
-    assert.strictEqual(summary.permissionMode, 'bypass');
+    const afterTurns = await store.readHeaderRecordSnapshot(session.id);
+    const unchanged = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: afterTurns.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(afterTurns.header, { permissionMode: 'bypass' }),
+    });
+    assert.deepStrictEqual(unchanged, afterTurns);
   });
 
   test('legacy research Sessions stay read-only after restart until explicitly changed', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
     const backends = new BackendRegistry();
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
-    const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(6_000) });
+    const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(6_100) });
     const session = await manager.createSession(
       makeInput({
         permissionMode: 'explore',
@@ -5783,32 +5953,54 @@ describe('SessionManager permission mode updates', () => {
     );
     assert.equal((await store.readHeader(session.id)).permissionMode, 'explore');
     assert.deepEqual(await restarted.readExecutionBoundary(session.id), boundaryBeforeRestart);
-    const summary = await restarted.setPermissionMode(session.id, 'ask');
-
-    assert.strictEqual(summary.permissionMode, 'ask');
-    assert.deepStrictEqual(summary.labels, ['mode:deep_research', 'kept']);
-    assert.deepStrictEqual((await store.readHeader(session.id)).labels, [
-      'mode:deep_research',
-      'kept',
-    ]);
-  });
-
-  test('temporarily preserves setPermissionMode for legacy SessionStore implementations', async () => {
-    const store = new MemorySessionStore();
-    const manager = new SessionManager({
-      store,
-      backends: new BackendRegistry(),
-      newId: nextId(),
-      now: nextNow(6_100),
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    const next = await restarted.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'ask' }),
     });
-    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
 
-    const summary = await manager.setPermissionMode(session.id, 'bypass');
-
-    assert.strictEqual(summary.permissionMode, 'bypass');
-    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
-    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'bypass');
+    assert.strictEqual(next.header.permissionMode, 'ask');
+    assert.strictEqual(next.revision, current.revision + 1);
+    assert.deepStrictEqual(next.header.labels, ['mode:deep_research', 'kept']);
+    const persisted = await store.readHeaderRecordSnapshot(session.id);
+    assert.deepStrictEqual(persisted.header, next.header);
+    assert.strictEqual(persisted.revision, next.revision);
   });
+
+  for (const missing of ['readHeaderRecordSnapshot', 'updateSessionConfiguration'] as const) {
+    test(`configuration changes require Store capability: ${missing}`, async () => {
+      const store = new VersionedConfigurationMemorySessionStore();
+      const manager = new SessionManager({
+        store,
+        backends: new BackendRegistry(),
+        newId: nextId(),
+        now: nextNow(6_100),
+      });
+      const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+      const readSnapshot = store.readHeaderRecordSnapshot.bind(store);
+      const current = await readSnapshot(session.id);
+      const boundary = await store.readExecutionBoundary(session.id);
+      Object.defineProperty(store, missing, { value: undefined });
+
+      await assert.rejects(
+        manager.transitionSessionConfiguration(session.id, {
+          expectedRevision: current.revision,
+          clearConnectionBlock: false,
+          permissionModeOnly: true,
+          configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof SessionConfigurationTransitionError);
+          assert.strictEqual(error.code, 'operation_unavailable');
+          return true;
+        },
+      );
+      assert.deepStrictEqual(await readSnapshot(session.id), current);
+      assert.deepStrictEqual(await store.readExecutionBoundary(session.id), boundary);
+    });
+  }
 
   test('starts a new turn without workspace identity when safety inspection fails', async () => {
     const store = new MemorySessionStore();
@@ -11581,8 +11773,24 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await store.readHeader(session.id)).status, 'waiting_for_user');
     const [run] = await runStore.listSessionInvocations(session.id);
     assert.strictEqual(run?.terminalEvent, undefined);
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /pending Interaction/);
-    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    const boundary = await store.readExecutionBoundary(session.id);
+    await assert.rejects(
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: current.revision,
+        clearConnectionBlock: false,
+        permissionModeOnly: true,
+        configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(error.code, 'session_busy');
+        assert.match(error.message, /pending Interaction/);
+        return true;
+      },
+    );
+    assert.deepStrictEqual(await store.readHeaderRecordSnapshot(session.id), current);
+    assert.deepStrictEqual(await store.readExecutionBoundary(session.id), boundary);
 
     await manager.respondToSandboxBoundary(session.id, {
       requestId: 'boundary-1',
@@ -12606,7 +12814,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await turnOf(activeDone.id, 'active-turn'))?.status, 'completed');
   });
 
-  test('startup recovery derives the interrupted outcome sink from the runtime store', async () => {
+  test('startup recovery settles arbitrary dispatched tools before terminalizing the run', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
@@ -12647,6 +12855,7 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-1',
         status: 'running',
         toolMode: 'code_mode',
+        toolBoundaryProtocol: 't1_after_preflight_v1',
       }),
       [
         makeRunEvent({
@@ -12658,7 +12867,7 @@ describe('SessionManager permission mode updates', () => {
         }),
       ],
     );
-    const code = { code: 'return await tools.Read({ path: "a.ts" })' };
+    const command = { command: 'echo interrupted' };
     await runStore.appendRuntimeEvent(
       session.id,
       'run-1',
@@ -12668,7 +12877,6 @@ describe('SessionManager permission mode updates', () => {
         role: 'user',
         author: 'user',
         content: { kind: 'text', text: 'inspect' },
-        actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
       }),
     );
     await runStore.appendRuntimeEvent(
@@ -12681,7 +12889,7 @@ describe('SessionManager permission mode updates', () => {
         author: 'agent',
         origin: 'provider',
         modelVisibility: 'visible',
-        content: { kind: 'function_call', id: 'exec-1', name: 'exec', args: code },
+        content: { kind: 'function_call', id: 'exec-1', name: 'Bash', args: command },
         refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
       }),
     );
@@ -12696,8 +12904,8 @@ describe('SessionManager permission mode updates', () => {
             protocol: 't1_after_preflight_v1',
             operationId: 'outer-op',
             providerToolCallId: 'exec-1',
-            toolName: 'exec',
-            canonicalArgsHash: canonicalToolArgsHash('exec', code),
+            toolName: 'Bash',
+            canonicalArgsHash: canonicalToolArgsHash('Bash', command),
             recoveryMode: 'never_auto_retry',
           },
         },
@@ -12705,6 +12913,11 @@ describe('SessionManager permission mode updates', () => {
       }),
     );
 
+    const preRecoveryEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
+    assert.equal(
+      buildInterruptedToolOutcomeCommits(preRecoveryEvents, 12_825, 'code_mode').length,
+      1,
+    );
     await manager.recoverInterruptedSessions();
 
     assert.equal((await readInvocation(runStore, session.id, 'run-1')).terminalEvent, undefined);
@@ -12728,14 +12941,16 @@ describe('SessionManager permission mode updates', () => {
     assert.deepEqual(
       response?.content?.kind === 'function_response' ? response.content.result : undefined,
       {
-        kind: 'json',
-        value: {
-          kind: 'code_mode',
-          status: 'interrupted',
-          message: 'Code Mode execution was interrupted by runtime recovery.',
-        },
+        kind: 'text',
+        text: 'Tool Bash was interrupted before its result was committed. Its side effects may or may not have occurred. Do not retry it immediately; inspect the current state first.',
+        uncertainOutcome: { code: 'outcome_unknown', retrySafe: false },
       },
     );
+    const responseIndex = runtimeEvents.findIndex(
+      (event) => event.content?.kind === 'function_response',
+    );
+    const terminalIndex = runtimeEvents.findIndex(isTerminalRuntimeEvent);
+    assert.ok(responseIndex >= 0 && terminalIndex > responseIndex);
     assert.equal(
       runtimeInvocationOutcome(await readInvocation(runStore, session.id, 'run-1')),
       'failed',
@@ -14171,7 +14386,7 @@ class CheckpointRecorderContractProbeBackend implements AgentBackend {
 class MemorySessionStore implements SessionStore {
   private headers = new Map<string, SessionHeader>();
   private messages = new Map<string, StoredMessage[]>();
-  private executionBoundaries = new Map<string, ExecutionBoundary>();
+  protected readonly executionBoundaries = new Map<string, ExecutionBoundary>();
   private sandboxBoundaryRequests = new Map<string, SandboxBoundaryRequest>();
   readonly failReadMessagesFor = new Set<string>();
   readonly failNextReadMessagesFor = new Map<string, number>();
@@ -14303,31 +14518,6 @@ class MemorySessionStore implements SessionStore {
         : createGenesisExecutionBoundary(header.permissionMode),
     );
     return header;
-  }
-
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ) {
-    const current = await this.readHeader(sessionId);
-    const permissionMode =
-      projection?.permissionMode ??
-      (kind === 'bypass'
-        ? 'bypass'
-        : current.permissionMode === 'bypass'
-          ? 'ask'
-          : current.permissionMode);
-    await this.updateHeader(sessionId, {
-      permissionMode,
-      ...(projection?.labels ? { labels: [...projection.labels] } : {}),
-    });
-    const boundary = createGenesisExecutionBoundary(permissionMode);
-    this.executionBoundaries.set(sessionId, boundary);
-    return boundary;
   }
 
   async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
@@ -14519,6 +14709,16 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
     };
   }
 
+  override async updateHeader(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+  ): Promise<SessionHeader> {
+    if (Object.hasOwn(patch, 'permissionMode')) {
+      throw new Error('permissionMode must be projected by the configuration transition');
+    }
+    return super.updateHeader(sessionId, patch);
+  }
+
   async updateSessionConfiguration(
     sessionId: string,
     input: SessionConfigurationStoreUpdate,
@@ -14533,14 +14733,7 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
     if (revision !== input.expectedVersion) {
       throw new Error('injected configuration revision conflict');
     }
-    await super.setExecutionBoundaryKind(
-      sessionId,
-      input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed',
-      {
-        permissionMode: input.configuration.permissionMode,
-        labels: input.configuration.labels,
-      },
-    );
+    // Only configuration authority may project permissionMode into the header.
     const header = await super.updateHeader(sessionId, {
       ...input.configuration,
       labels: [...input.configuration.labels],
@@ -14552,6 +14745,10 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
           }
         : {}),
     });
+    this.executionBoundaries.set(
+      sessionId,
+      createGenesisExecutionBoundary(input.configuration.permissionMode),
+    );
     this.forcedBoundaries.delete(sessionId);
     this.revisions.set(sessionId, revision + 1);
     return { header, revision: revision + 1, committedAt: revision + 1 };
@@ -14566,82 +14763,9 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
     if (revision !== expectedRevision) {
       throw new SessionConfigurationRevisionConflictError(expectedRevision, revision);
     }
-    const header = await super.updateHeader(sessionId, patch);
+    const header = await this.updateHeader(sessionId, patch);
     this.revisions.set(sessionId, revision + 1);
     return { header, revision: revision + 1, committedAt: revision + 1 };
-  }
-}
-
-class AtomicBoundaryMemorySessionStore extends MemorySessionStore {
-  failAppends = false;
-  readonly boundaryCalls: Array<{
-    sessionId: string;
-    kind: 'managed' | 'bypass';
-    projection:
-      | {
-          permissionMode: SessionHeader['permissionMode'];
-          labels?: readonly string[];
-        }
-      | undefined;
-  }> = [];
-  private readonly boundaries = new Map<string, ExecutionBoundary>();
-  private projectingBoundary = false;
-
-  forceBoundary(sessionId: string, boundary: ExecutionBoundary): void {
-    this.boundaries.set(sessionId, boundary);
-  }
-
-  override async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
-    return this.boundaries.get(sessionId) ?? super.readExecutionBoundary(sessionId);
-  }
-
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ) {
-    this.boundaryCalls.push({ sessionId, kind, projection });
-    const current = await this.readHeader(sessionId);
-    const permissionMode =
-      projection?.permissionMode ??
-      (kind === 'bypass'
-        ? 'bypass'
-        : current.permissionMode === 'bypass'
-          ? 'ask'
-          : current.permissionMode);
-    this.projectingBoundary = true;
-    try {
-      await super.updateHeader(sessionId, {
-        permissionMode,
-        ...(projection?.labels ? { labels: [...projection.labels] } : {}),
-      });
-    } finally {
-      this.projectingBoundary = false;
-    }
-    const boundary = {
-      ...createGenesisExecutionBoundary(permissionMode),
-      revision: 1,
-    };
-    this.boundaries.set(sessionId, boundary);
-    return boundary;
-  }
-
-  override async updateHeader(
-    sessionId: string,
-    patch: Partial<SessionHeader>,
-  ): Promise<SessionHeader> {
-    if (!this.projectingBoundary && Object.hasOwn(patch, 'permissionMode')) {
-      throw new Error('permissionMode must be projected by the boundary transition');
-    }
-    return super.updateHeader(sessionId, patch);
-  }
-
-  override async appendMessage(sessionId: string, message: StoredMessage): Promise<void> {
-    if (this.failAppends) throw new Error('audit append failed');
-    return super.appendMessage(sessionId, message);
   }
 }
 
@@ -15288,6 +15412,7 @@ function configurationForHeader(
 ): SessionConfigurationTransitionRequest['configuration'] {
   return {
     backend: header.backend,
+    executorId: header.executorId,
     ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
@@ -15545,6 +15670,7 @@ interface TestRunHeader {
   orchestrationSource?: 'session' | 'turn_override';
   agentSwarmAuthorization?: 'none' | 'session_mode' | 'turn_override';
   toolMode?: ToolMode;
+  toolBoundaryProtocol?: 't1_after_preflight_v1';
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -15664,16 +15790,18 @@ async function seedInvocationOpening(
   store: Pick<RuntimeEventStore, 'appendRuntimeEvent'>,
   header: TestRunHeader,
 ): Promise<void> {
-  await store.appendRuntimeEvent(
-    header.sessionId,
-    header.runId,
-    buildInvocationOpenedEvent({
-      id: `${header.runId}-invocation-opened`,
-      run: runIdentityOf(header),
-      openedAt: header.createdAt,
-      opening: testInvocationOpening(header),
-    }),
-  );
+  const opened = buildInvocationOpenedEvent({
+    id: `${header.runId}-invocation-opened`,
+    run: runIdentityOf(header),
+    openedAt: header.createdAt,
+    opening: testInvocationOpening(header),
+  });
+  await store.appendRuntimeEvent(header.sessionId, header.runId, {
+    ...opened,
+    ...(header.toolBoundaryProtocol
+      ? { actions: { runtimeProtocol: { toolBoundary: header.toolBoundaryProtocol } } }
+      : {}),
+  });
 }
 
 /** The one event that ends the run, when the header says the run ended. */

@@ -127,7 +127,7 @@ export function SessionLocalMessages(props: {
       published.current.ids.add(message.messageId);
       project(sessionId, {
         id: message.messageId, text: message.text, ts: message.createdAt,
-        transientPlacement: message.turnId ? 'current_turn' : message.placement, attachments: message.attachments,
+        transientPlacement: message.turnId ? 'current_turn' : (message.localDisplayPlacement ?? message.placement), attachments: message.attachments,
         directoryReferences: message.directoryReferences, quotes: message.quotes,
         inlineReferences: message.inlineReferences, hostTurnId: message.turnId,
         deliveryStatus: presentation.status,

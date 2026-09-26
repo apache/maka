@@ -26,6 +26,7 @@ import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 import {
   SessionCollaborationServicesProvider,
+  createFakeSessionCollaborationServices,
   SessionTurnRequestComposer,
   type SessionCollaborationServices,
 } from '../../renderer/features/session-collaboration/testing.js';
@@ -79,6 +80,7 @@ test('keeps a newer Guest draft across remount when an old request settles later
     state: { kind: 'pending' },
   };
   const services: SessionCollaborationServices = {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async () => ({ kind: 'connected', mountId: 'unused' }),
     cancelImport: async () => 'cancelled',
     readInvitationClipboard: async () => '',
@@ -174,6 +176,7 @@ test('resumes an in-flight Guest request across remount without submitting it tw
     state: { kind: 'pending' },
   };
   const services: SessionCollaborationServices = {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async () => ({ kind: 'connected', mountId: 'unused' }),
     cancelImport: async () => 'cancelled',
     readInvitationClipboard: async () => '',

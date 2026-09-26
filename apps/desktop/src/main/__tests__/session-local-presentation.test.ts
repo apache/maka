@@ -94,7 +94,7 @@ function recoveryFixture(options: { sessionId?: string; enabled?: boolean; hasPe
   const pendingQuotes: QuoteRef[] = [];
   const recovery = composerMessageRecovery({
     sessionId: 'session', directoryHostId: 'host', composerRef,
-    enabled: true, hasPendingContext: false, pendingQuotes, ...options,
+    enabled: true, pendingQuotes, ...options, hasPendingContext: () => options.hasPendingContext ?? false,
     restoreMessageContext(sessionId, hostId, draft) { restored.push(['context', sessionId, hostId, draft]); },
     restoreQuotes(sessionId, quotes) { restored.push(['quotes', sessionId, quotes]); },
   });

@@ -17,14 +17,34 @@
  * under the License.
  */
 
-import { agent, methods, type AgentApp, type ClientCapabilities } from '@agentclientprotocol/sdk';
-import type { AcpSessionRegistry } from './session-registry.js';
+import {
+  agent,
+  methods,
+  RequestError,
+  type AgentContext,
+  type AgentApp,
+  type ClientCapabilities,
+} from '@agentclientprotocol/sdk';
+import { HOST_OPERATION_SPECS } from '@maka/runtime-host/protocol';
+import type { AcpLoadContext, AcpSessionRegistry } from './session-registry.js';
 
 export interface MakaAcpAgentOptions {
   readonly version: string;
   readonly sessionRegistry: Pick<
     AcpSessionRegistry,
-    'create' | 'list' | 'setConfigOption' | 'prompt' | 'cancel' | 'close'
+    | 'create'
+    | 'load'
+    | 'resume'
+    | 'resumeTurn'
+    | 'queryCopySource'
+    | 'branch'
+    | 'createRevision'
+    | 'abandonRevision'
+    | 'list'
+    | 'setConfigOption'
+    | 'prompt'
+    | 'cancel'
+    | 'close'
   >;
 }
 
@@ -35,7 +55,10 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
       clientCapabilities = structuredClone(params.clientCapabilities ?? {});
       return {
         protocolVersion: 1,
-        agentCapabilities: { sessionCapabilities: { list: {}, close: {} } },
+        agentCapabilities: {
+          loadSession: true,
+          sessionCapabilities: { list: {}, resume: {}, close: {} },
+        },
         authMethods: [],
         agentInfo: { name: 'maka', title: 'Maka', version: options.version },
       };
@@ -43,27 +66,135 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
     .onRequest(methods.agent.session.new, ({ params, signal }) =>
       options.sessionRegistry.create(params, signal),
     )
+    .onRequest(methods.agent.session.load, ({ params, signal, client }) =>
+      options.sessionRegistry.load(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest(methods.agent.session.resume, ({ params, signal, client }) =>
+      options.sessionRegistry.resume(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest(
+      '_maka/turn/resume',
+      (value: unknown) => {
+        try {
+          return HOST_OPERATION_SPECS['turn.resume.query'].decodeInput(value);
+        } catch {
+          throw RequestError.invalidParams(
+            { reason: 'invalid_resume_query' },
+            'Invalid Turn resume request',
+          );
+        }
+      },
+      ({ params, signal, client }) =>
+        options.sessionRegistry.resumeTurn(
+          params,
+          sessionContext(client, signal, clientCapabilities, true),
+        ),
+    )
+    .onRequest(
+      '_maka/session/copy-source/query',
+      {
+        parse: (value: unknown) => {
+          try {
+            return HOST_OPERATION_SPECS['session.turns.query'].decodeInput(value);
+          } catch {
+            throw RequestError.invalidParams(
+              { reason: 'invalid_copy_source_query' },
+              'Invalid Session copy source query',
+            );
+          }
+        },
+      },
+      ({ params }) => options.sessionRegistry.queryCopySource(params),
+    )
+    .onRequest(
+      '_maka/session/branch/create',
+      {
+        parse: (value: unknown) => {
+          try {
+            return HOST_OPERATION_SPECS['session.branch.create'].decodeInput(value);
+          } catch {
+            throw RequestError.invalidParams(
+              { reason: 'invalid_branch_input' },
+              'Invalid Session branch request',
+            );
+          }
+        },
+      },
+      ({ params }) => options.sessionRegistry.branch(params),
+    )
+    .onRequest(
+      '_maka/session/revision/create',
+      {
+        parse: (value: unknown) => {
+          try {
+            return HOST_OPERATION_SPECS['session.revision.create'].decodeInput(value);
+          } catch {
+            throw RequestError.invalidParams(
+              { reason: 'invalid_revision_input' },
+              'Invalid Session revision request',
+            );
+          }
+        },
+      },
+      ({ params }) => options.sessionRegistry.createRevision(params),
+    )
+    .onRequest(
+      '_maka/session/revision/abandon',
+      {
+        parse: (value: unknown) => {
+          try {
+            return HOST_OPERATION_SPECS['session.revision.abandon'].decodeInput(value);
+          } catch {
+            throw RequestError.invalidParams(
+              { reason: 'invalid_abandon_input' },
+              'Invalid Session abandon request',
+            );
+          }
+        },
+      },
+      ({ params }) => options.sessionRegistry.abandonRevision(params),
+    )
     .onRequest(methods.agent.session.list, ({ params }) => options.sessionRegistry.list(params))
     .onRequest(methods.agent.session.setConfigOption, ({ params }) =>
       options.sessionRegistry.setConfigOption(params),
     )
     .onRequest(methods.agent.session.prompt, ({ params, signal, client }) =>
-      options.sessionRegistry.prompt(params, {
-        signal,
-        notify: (notification) => client.notify(methods.client.session.update, notification),
-        interactions: {
-          capabilities: clientCapabilities,
-          requestPermission: (params, cancellationSignal) =>
-            client.request(methods.client.session.requestPermission, params, {
-              cancellationSignal,
-            }),
-          createElicitation: (params, cancellationSignal) =>
-            client.request(methods.client.elicitation.create, params, { cancellationSignal }),
-        },
-      }),
+      options.sessionRegistry.prompt(params, sessionContext(client, signal, clientCapabilities)),
     )
     .onNotification(methods.agent.session.cancel, ({ params }) =>
       options.sessionRegistry.cancel(params),
     )
     .onRequest(methods.agent.session.close, ({ params }) => options.sessionRegistry.close(params));
+}
+
+function sessionContext(
+  client: AgentContext,
+  signal: AbortSignal,
+  capabilities: ClientCapabilities,
+  turnStatus = false,
+): AcpLoadContext {
+  return {
+    signal,
+    notify: (notification) => client.notify(methods.client.session.update, notification),
+    interactions: {
+      capabilities,
+      requestPermission: (request, cancellationSignal) =>
+        client.request(methods.client.session.requestPermission, request, { cancellationSignal }),
+      createElicitation: (request, cancellationSignal) =>
+        client.request(methods.client.elicitation.create, request, { cancellationSignal }),
+    },
+    ...(turnStatus && capabilities._meta?.['_maka/turnStatus'] === true
+      ? {
+          notifyTurnStatus: (
+            status: Parameters<NonNullable<AcpLoadContext['notifyTurnStatus']>>[0],
+          ) => client.notify('_maka/turn/status', status),
+        }
+      : {}),
+  };
 }

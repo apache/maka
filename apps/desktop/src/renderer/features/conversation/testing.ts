@@ -26,3 +26,9 @@ export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-stat
 export { localMessagePresentation } from './controller/local-message-presentation.js';
 export { composerFollowUp } from './controller/composer-follow-up.js';
 export { composerMessageRecovery } from './controller/composer-message-recovery.js';
+export {
+  type ActiveExecutionBoundarySnapshot,
+  activeExecutionBoundaryOf,
+  activeExecutionBoundaryUnreadable,
+  startActiveExecutionBoundaryRead,
+} from './controller/use-active-execution-boundary.js';

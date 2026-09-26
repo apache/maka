@@ -21,60 +21,53 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export type McpCopy = {
   errors: {
-    load: string; install(name: string): string; cancelInstall(name: string): string; save: string; import: string;
+    load: string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
     importJson: string; importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
     writeDurabilityUnknown: string; writeOutOfSync: string;
   };
   toast: {
-    templateInstalled(name: string): string; templateInstalledDetail: string; installed(name: string): string;
-    installedDetail: string; installCancelled(name: string): string; saved: string; savedDetail: string;
+    saved: string; savedDetail: string;
     imported: string; importedDetail(count: number): string; connectionOk: string; toolLatency(count: number, latencyMs: number): string;
     connectionFailed: string; removed: string;
   };
   remove: { title(id: string): string; description: string; confirm: string; cancel: string };
   page: {
     actionsAria: string; refreshing: string; refresh: string; add: string;
-    metaInstalled(count: number): string; metaErrors(count: number): string;
+    metaConnections(count: number): string; metaAttention(count: number): string;
     searchMatches(count: number): string;
-    workspaceAria: string; toolbarAria: string; setupTitle: string; setupDescription: string; localStdio: string;
-    categoriesAria: string; market: string; installed: string; searchPlaceholder: string; searchAria: string;
-    noMarket: string; noMarketDetail(query: string): string; clearSearch: string; loading: string;
-    noInstalled: string; noInstalledDetail: string; browseMarket: string; noInstalledMatch: string; noInstalledMatchDetail(query: string): string;
+    toolbarAria: string; connections: string; searchPlaceholder: string; searchAria: string;
+    clearSearch: string; loading: string;
+    noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
+    recommended: string; addSuggestion(name: string): string;
+    suggestions: Record<'chrome' | 'notion' | 'linear' | 'feishu' | 'mcp-docs', { name: string; description: string }>;
   };
-  detail: {
-    label: string; enabled: string; transport: string; endpoint: string;
-    toolsLabel: string; statusLabel: string; protocolLabel: string;
-    negotiatedProtocol(era: 'legacy' | 'modern', revision: string): string;
-    inspectorOpened(id: string): string;
-  };
-  card: {
-    macOnly: string; manage: string; cancellingAria(name: string): string; cancelAria(name: string): string; installAria(name: string): string;
-    cancelling: string; cancel: string; install: string;
-  };
+  detail: { enabled: string; address: string; stderr: string; tools: string; chromeDisconnected: string; connectChrome: string };
   row: {
-    testing: string; test: string; edit: string;
-    delete: string; tools(count: number): string;
-    disabled: string; disconnected: string; connecting: string; connected(count: number): string; failed: string;
+    needsAuth: string; login: string; loginPending: string; authorizing: string; cancelLogin: string; logout: string;
+    test: string; edit: string;
+    delete: string;
+    disabled: string; disconnected: string; connecting: string; connected(count: number): string; failed: string; awaitingChrome: string;
   };
   editor: {
-    importTitle: string; editTitle(id: string): string; addTitle: string; importSubtitle: string; manualSubtitle: string;
-    modeAria: string; manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
+    importTitle: string; editTitle(id: string): string; addTitle: string;
+    manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
     importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
     serverId: string; command: string; commandPlaceholder: string; commandHelp: string;
     workingDirectory: string; workingDirectoryPlaceholder: string; environment: string; environmentHelp: string;
     url: string; headers: string; headersHelp: string; saveConnect: string;
+    idExists: string; changedElsewhere: string; changedElsewhereDetail: string; removedElsewhere: string; oauth: string; oauthHelp: string; issuer: string; clientId: string; clientSecret: string; scopes: string; callbackPort: string;
     required: string; invalidUrl: string; unbalancedQuote: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
     protocolLabel: string; protocolLegacy: string; protocolAuto: string; protocolModern: string;
-    protocolHelp: string; sseProtocolHelp: string; expandAdvanced: string; collapseAdvanced: string; stdioProtocolHelp: string;
+    protocolHelp: string; sseProtocolHelp: string; advanced: string; stdioProtocolHelp: string;
   };
 };
 
 const MCP_COPY = {
   'zh-CN': {
     errors: {
-      load: '载入 MCP 失败', install: (name) => `安装 ${name} 失败`, cancelInstall: (name) => `取消安装 ${name} 失败`, save: '保存 MCP 失败',
+      load: '载入 MCP 失败', save: '保存 MCP 失败',
       writeDurabilityUnknown: '写入已发布，但无法确认断电后是否保留。请检查刷新后的配置再决定是否重试。',
       writeOutOfSync: '写入的持久性尚未确认，MCP 运行状态也未能与配置同步。请检查配置并重新同步后再重试。',
       import: '导入 MCP 失败', update: '更新 MCP 失败', test: 'MCP 测试失败', remove: '删除 MCP 失败', unavailableStatus: 'Server 没有返回可用状态。',
@@ -83,59 +76,60 @@ const MCP_COPY = {
       importProtocolVersion: 'remote 的 protocol 需要 version 2 或 3；stdio 的 protocol 需要 version 3',
     },
     toast: {
-      templateInstalled: (name) => `${name} 模板已安装`, templateInstalledDetail: '请在「已安装」中完成凭据配置，再启用连接。',
-      installed: (name) => `${name} 已安装`, installedDetail: '发现的工具会从下一次 agent turn 开始生效。', installCancelled: (name) => `已取消安装 ${name}`,
-      saved: 'MCP 已保存', savedDetail: '新工具会从下一次 agent turn 开始生效。', imported: '已导入 MCP',
-      importedDetail: (count) => `本次导入 ${count} 个 server。`, connectionOk: 'MCP 连接正常',
+      saved: 'MCP 已保存', savedDetail: '新工具会在下一轮对话中生效。', imported: '已导入 MCP',
+      importedDetail: (count) => `已导入 ${count} 个连接。`, connectionOk: 'MCP 连接正常',
       toolLatency: (count, latencyMs) => `${count} 个工具 · ${latencyMs} ms`, connectionFailed: 'MCP 连接失败', removed: 'MCP 已删除',
     },
-    remove: { title: (id) => `删除 MCP「${id}」？`, description: '它提供的工具会从下一次 agent turn 中移除，配置无法自动恢复。', confirm: '删除', cancel: '取消' },
+    remove: { title: (id) => `删除 MCP「${id}」？`, description: '它提供的工具会从下一轮对话中移除；删除后无法自动恢复此连接。', confirm: '删除', cancel: '取消' },
     page: {
       actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
-      metaInstalled: (count) => `${count} 个已安装`, metaErrors: (count) => `${count} 个连接异常`,
+      metaConnections: (count) => `${count} 个连接`, metaAttention: (count) => `${count} 个需要处理`,
       searchMatches: (count) => `${count} 个匹配`,
-      workspaceAria: 'MCP 市场与已安装项', toolbarAria: 'MCP 浏览操作', setupTitle: '把 Maka 连接到你的工作环境', setupDescription: '从精选模板开始，或添加任意 stdio、Streamable HTTP 与 SSE server。',
-      localStdio: '本地 stdio', categoriesAria: 'MCP 分类', market: '市场', installed: '已安装',
-      searchPlaceholder: '搜索 MCP…', searchAria: '搜索 MCP', noMarket: '没有找到匹配的 MCP', noMarketDetail: (query) => `换一个关键词，或清空「${query}」查看全部模板。`,
-      clearSearch: '清空搜索', loading: '正在读取 MCP 配置…', noInstalled: '还没有安装 MCP', noInstalledDetail: '从市场选择模板，或手动添加你自己的 server。',
-      browseMarket: '浏览市场', noInstalledMatch: '没有匹配的已安装 MCP', noInstalledMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部已安装项。`,
+      toolbarAria: 'MCP 连接操作', connections: '已添加',
+      searchPlaceholder: '搜索连接…', searchAria: '搜索 MCP 连接',
+      clearSearch: '清空搜索', loading: '正在读取 MCP 连接…',
+      noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
+      recommended: '推荐', addSuggestion: (name) => `添加 ${name}`,
+      suggestions: {
+        chrome: { name: 'Chrome', description: '操作你已登录的 Chrome' },
+        notion: { name: 'Notion', description: '访问工作区页面' },
+        linear: { name: 'Linear', description: '访问问题与项目' },
+        feishu: { name: '飞书', description: '访问飞书文档' },
+        'mcp-docs': { name: 'MCP 官方文档', description: '搜索协议文档' },
+      },
     },
     detail: {
-      label: '服务器详情', enabled: '启用', transport: '传输方式', endpoint: '端点',
-      toolsLabel: '工具', statusLabel: '状态', protocolLabel: 'MCP 协议',
-      negotiatedProtocol: (era, revision) => `${era === 'modern' ? '现代' : '传统'} · ${revision}`,
-      inspectorOpened: (id) => `已打开 ${id} 的详情`,
-    },
-    card: {
-      macOnly: '仅 macOS', manage: '管理', cancellingAria: (name) => `正在取消安装 ${name}`, cancelAria: (name) => `取消安装 ${name}`, installAria: (name) => `安装 ${name}`,
-      cancelling: '正在取消…', cancel: '取消安装', install: '安装',
+      enabled: '启用', address: '地址', stderr: '错误输出', tools: '工具',
+      chromeDisconnected: '还没连上 Chrome。在 Chrome 中添加扩展后，这里会自动更新。', connectChrome: '连接 Chrome',
     },
     row: {
-      testing: '测试中…', test: '测试', edit: '编辑',
-      delete: '删除', tools: (count) => `${count} 个工具`,
-      disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败',
+      needsAuth: '需要登录', login: '登录', loginPending: '请在浏览器中完成授权', authorizing: '等待授权', cancelLogin: '取消登录', logout: '退出授权',
+      test: '测试连接', edit: '编辑',
+      delete: '删除',
+      disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败', awaitingChrome: '等待 Chrome',
     },
     editor: {
-      importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP', importSubtitle: '粘贴 mcpServers 配置，同名 server 会被更新。',
-      manualSubtitle: '配置保存在当前工作区的 mcp.json。', modeAria: 'MCP 添加方式', manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
-      jsonHelp: '支持完整 mcpServers 配置或直接的 server map。未在本次导入中出现的已有 MCP 会保留。', cancel: '取消', importConnect: '导入并连接',
-      transportAria: '连接方式', localStdio: '本地 stdio', remoteUrl: '远程 URL',
-      serverId: '服务器 ID', command: '命令',
-      commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
-      commandHelp: '完整命令行；含空格的参数用引号包裹，不经过 shell 解析。',
-      workingDirectory: '工作目录', workingDirectoryPlaceholder: '可选，例如 /path/to/project',
-      environment: '环境变量', environmentHelp: '每行一个 KEY=value；按 MCP 要求填写。', url: 'MCP URL', headers: 'HTTP 请求头', headersHelp: '每行一个 Header=value。',
-      saveConnect: '保存并连接',
+      idExists: '已有同名连接，请换个名称。', changedElsewhere: '这个连接刚在别处被修改过', changedElsewhereDetail: '保存会用这里的内容覆盖那次修改；想保留那次修改，就取消后重新打开。', removedElsewhere: '这个连接已在别处删除，无法再保存。', oauth: 'OAuth 设置', oauthHelp: '通常无需填写。只有服务提供固定客户端凭据时才配置；填写客户端 ID 时还需要授权服务器地址。', issuer: '授权服务器地址（issuer）', clientId: '客户端 ID', clientSecret: '客户端密钥', scopes: '权限范围（空格分隔）', callbackPort: '回调端口（可选）',
+      importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP',
+      manual: '手动填写', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
+      jsonHelp: '粘贴完整配置或各连接的 JSON 对象；同名连接会被更新，其余连接保留。', cancel: '取消', importConnect: '导入配置',
+      transportAria: '连接方式', localStdio: '本地命令', remoteUrl: '远程 URL',
+      serverId: '连接名称', command: '启动命令',
+      commandPlaceholder: 'node /path/to/server.js',
+      commandHelp: '填写启动命令及参数；含空格的参数请加引号。',
+      workingDirectory: '工作目录', workingDirectoryPlaceholder: '/path/to/project',
+      environment: '环境变量', environmentHelp: '每行一个 KEY=value；只填写此服务要求的变量。', url: 'MCP URL', headers: 'HTTP 请求头', headersHelp: '每行一个 Header=value；按服务文档填写。',
+      saveConnect: '保存连接',
       required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。', unbalancedQuote: '引号未闭合。',
-      transportLabel: '传输协议', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
-      protocolLabel: '协议偏好', protocolLegacy: '传统', protocolAuto: '自动协商', protocolModern: '仅 2026-07-28',
-      protocolHelp: '旧配置默认使用传统协议；自动协商会根据 server 能力选择协议。', sseProtocolHelp: '旧版 SSE 仅支持传统协议。', expandAdvanced: '显示高级设置', collapseAdvanced: '隐藏高级设置',
-      stdioProtocolHelp: '自动协商和“仅 2026-07-28”会先启动一个使用相同命令、参数、目录和环境的短期探测进程；探测结束后才启动实际连接。旧配置默认使用传统协议，只启动一个进程。',
+      transportLabel: '远程传输方式', transportAuto: '自动选择', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
+      protocolLabel: 'MCP 协议版本', protocolLegacy: '传统协议', protocolAuto: '自动协商', protocolModern: '仅 2026-07-28',
+      protocolHelp: '自动协商会按服务支持的版本连接；遇到兼容性问题时再固定版本。', sseProtocolHelp: '旧版 SSE 使用传统协议。', advanced: '高级设置',
+      stdioProtocolHelp: '自动协商或仅使用新版协议时，会额外启动一次服务器进行探测。',
     },
   },
   'zh-TW': {
     errors: {
-      load: '載入 MCP 失敗', install: (name) => `安裝 ${name} 失敗`, cancelInstall: (name) => `取消安裝 ${name} 失敗`, save: '儲存 MCP 失敗',
+      load: '載入 MCP 失敗', save: '儲存 MCP 失敗',
       writeDurabilityUnknown: '寫入已發布，但無法確認斷電後是否保留。請檢查重新整理後的設定再決定是否重試。',
       writeOutOfSync: '寫入的持久性尚未確認，MCP 執行狀態也未能與設定同步。請檢查設定並重新同步後再重試。',
       import: '匯入 MCP 失敗', update: '更新 MCP 失敗', test: 'MCP 測試失敗', remove: '刪除 MCP 失敗', unavailableStatus: 'Server 沒有返回可用狀態。',
@@ -144,59 +138,60 @@ const MCP_COPY = {
       importProtocolVersion: 'remote 的 protocol 需要 version 2 或 3；stdio 的 protocol 需要 version 3',
     },
     toast: {
-      templateInstalled: (name) => `${name} 模板已安裝`, templateInstalledDetail: '請在「已安裝」中完成憑據設定，再啟用連線。',
-      installed: (name) => `${name} 已安裝`, installedDetail: '發現的工具會從下一次 agent turn 開始生效。', installCancelled: (name) => `已取消安裝 ${name}`,
-      saved: 'MCP 已儲存', savedDetail: '新工具會從下一次 agent turn 開始生效。', imported: '已匯入 MCP',
-      importedDetail: (count) => `本次匯入 ${count} 個 server。`, connectionOk: 'MCP 連線正常',
+      saved: 'MCP 已儲存', savedDetail: '新工具會在下一輪對話中生效。', imported: '已匯入 MCP',
+      importedDetail: (count) => `已匯入 ${count} 個連線。`, connectionOk: 'MCP 連線正常',
       toolLatency: (count, latencyMs) => `${count} 個工具 · ${latencyMs} ms`, connectionFailed: 'MCP 連線失敗', removed: 'MCP 已刪除',
     },
-    remove: { title: (id) => `刪除 MCP「${id}」？`, description: '它提供的工具會從下一次 agent turn 中移除，設定無法自動恢復。', confirm: '刪除', cancel: '取消' },
+    remove: { title: (id) => `刪除 MCP「${id}」？`, description: '它提供的工具會從下一輪對話中移除；刪除後無法自動恢復此連線。', confirm: '刪除', cancel: '取消' },
     page: {
       actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增 MCP',
-      metaInstalled: (count) => `${count} 個已安裝`, metaErrors: (count) => `${count} 個連線異常`,
+      metaConnections: (count) => `${count} 個連線`, metaAttention: (count) => `${count} 個需要處理`,
       searchMatches: (count) => `${count} 個符合`,
-      workspaceAria: 'MCP 市場與已安裝項', toolbarAria: 'MCP 瀏覽操作', setupTitle: '把 Maka 連線到你的工作環境', setupDescription: '從精選模板開始，或新增任意 stdio、Streamable HTTP 與 SSE server。',
-      localStdio: '本地 stdio', categoriesAria: 'MCP 分類', market: '市場', installed: '已安裝',
-      searchPlaceholder: '搜尋 MCP…', searchAria: '搜尋 MCP', noMarket: '沒有找到符合的 MCP', noMarketDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部模板。`,
-      clearSearch: '清空搜尋', loading: '正在讀取 MCP 設定…', noInstalled: '還沒有安裝 MCP', noInstalledDetail: '從市場選擇模板，或手動新增你自己的 server。',
-      browseMarket: '瀏覽市場', noInstalledMatch: '沒有符合的已安裝 MCP', noInstalledMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部已安裝項。`,
+      toolbarAria: 'MCP 連線操作', connections: '已新增',
+      searchPlaceholder: '搜尋連線…', searchAria: '搜尋 MCP 連線',
+      clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…',
+      noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
+      recommended: '推薦', addSuggestion: (name) => `新增 ${name}`,
+      suggestions: {
+        chrome: { name: 'Chrome', description: '操作你已登入的 Chrome' },
+        notion: { name: 'Notion', description: '存取工作區頁面' },
+        linear: { name: 'Linear', description: '存取議題與專案' },
+        feishu: { name: '飛書', description: '存取飛書文件' },
+        'mcp-docs': { name: 'MCP 官方文件', description: '搜尋協議文件' },
+      },
     },
     detail: {
-      label: '伺服器詳情', enabled: '啟用', transport: '傳輸方式', endpoint: '端點',
-      toolsLabel: '工具', statusLabel: '狀態', protocolLabel: 'MCP 協議',
-      negotiatedProtocol: (era, revision) => `${era === 'modern' ? '現代' : '傳統'} · ${revision}`,
-      inspectorOpened: (id) => `已開啟 ${id} 的詳情`,
-    },
-    card: {
-      macOnly: '僅 macOS', manage: '管理', cancellingAria: (name) => `正在取消安裝 ${name}`, cancelAria: (name) => `取消安裝 ${name}`, installAria: (name) => `安裝 ${name}`,
-      cancelling: '正在取消…', cancel: '取消安裝', install: '安裝',
+      enabled: '啟用', address: '位址', stderr: '錯誤輸出', tools: '工具',
+      chromeDisconnected: '尚未連上 Chrome。在 Chrome 中新增擴充功能後，這裡會自動更新。', connectChrome: '連接 Chrome',
     },
     row: {
-      testing: '測試中…', test: '測試', edit: '編輯',
-      delete: '刪除', tools: (count) => `${count} 個工具`,
-      disabled: '已停用', disconnected: '未連線', connecting: '連線中', connected: (count) => `${count} 個工具`, failed: '連線失敗',
+      needsAuth: '需要登入', login: '登入', loginPending: '請在瀏覽器中完成授權', authorizing: '等待授權', cancelLogin: '取消登入', logout: '登出授權',
+      test: '測試連線', edit: '編輯',
+      delete: '刪除',
+      disabled: '已停用', disconnected: '未連線', connecting: '連線中', connected: (count) => `${count} 個工具`, failed: '連線失敗', awaitingChrome: '等待 Chrome',
     },
     editor: {
-      importTitle: '透過 JSON 匯入', editTitle: (id) => `編輯 ${id}`, addTitle: '新增 MCP', importSubtitle: '貼上 mcpServers 設定，同名 server 會被更新。',
-      manualSubtitle: '設定儲存在目前工作區的 mcp.json。', modeAria: 'MCP 新增方式', manual: '手動設定', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
-      jsonHelp: '支援完整 mcpServers 設定或直接的 server map。未在本次匯入中出現的已有 MCP 會保留。', cancel: '取消', importConnect: '匯入並連線',
-      transportAria: '連線方式', localStdio: '本地 stdio', remoteUrl: '遠端 URL',
-      serverId: '伺服器 ID', command: '命令',
-      commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
-      commandHelp: '完整命令列；含空格的引數用引號包裹，不經過 shell 解析。',
-      workingDirectory: '工作目錄', workingDirectoryPlaceholder: '可選，例如 /path/to/project',
-      environment: '環境變數', environmentHelp: '每行一個 KEY=value；按 MCP 要求填寫。', url: 'MCP URL', headers: 'HTTP 請求頭', headersHelp: '每行一個 Header=value。',
-      saveConnect: '儲存並連線',
+      idExists: '已有同名連線，請換個名稱。', changedElsewhere: '這個連線剛在別處被修改過', changedElsewhereDetail: '儲存會用這裡的內容覆蓋那次修改；想保留那次修改，就取消後重新開啟。', removedElsewhere: '這個連線已在別處刪除，無法再儲存。', oauth: 'OAuth 設定', oauthHelp: '通常無需填寫。只有服務提供固定用戶端憑據時才設定；填寫用戶端 ID 時還需要授權伺服器地址。', issuer: '授權伺服器地址（issuer）', clientId: '用戶端 ID', clientSecret: '用戶端密鑰', scopes: '權限範圍（空格分隔）', callbackPort: '回呼連接埠（選填）',
+      importTitle: '透過 JSON 匯入', editTitle: (id) => `編輯 ${id}`, addTitle: '新增 MCP',
+      manual: '手動填寫', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
+      jsonHelp: '貼上完整設定或各連線的 JSON 物件；同名連線會被更新，其餘連線保留。', cancel: '取消', importConnect: '匯入設定',
+      transportAria: '連線方式', localStdio: '本地命令', remoteUrl: '遠端 URL',
+      serverId: '連線名稱', command: '啟動命令',
+      commandPlaceholder: 'node /path/to/server.js',
+      commandHelp: '填寫啟動命令及引數；含空格的引數請加引號。',
+      workingDirectory: '工作目錄', workingDirectoryPlaceholder: '/path/to/project',
+      environment: '環境變數', environmentHelp: '每行一個 KEY=value；只填寫此服務要求的變數。', url: 'MCP URL', headers: 'HTTP 請求頭', headersHelp: '每行一個 Header=value；依服務文件填寫。',
+      saveConnect: '儲存連線',
       required: '此欄位為必填項。', invalidUrl: '請輸入有效的 HTTP 或 HTTPS URL。', unbalancedQuote: '引號未閉合。',
-      transportLabel: '傳輸協議', transportAuto: '自動回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '舊版 SSE',
-      protocolLabel: '協議偏好', protocolLegacy: '傳統', protocolAuto: '自動協商', protocolModern: '僅 2026-07-28',
-      protocolHelp: '舊設定預設使用傳統協議；自動協商會根據 server 能力選擇協議。', sseProtocolHelp: '舊版 SSE 僅支援傳統協議。', expandAdvanced: '顯示進階設定', collapseAdvanced: '隱藏進階設定',
-      stdioProtocolHelp: '自動協商和“僅 2026-07-28”會先啟動一個使用相同命令、引數、目錄和環境的短期探測程序；探測結束後才啟動實際連線。舊設定預設使用傳統協議，只啟動一個程序。',
+      transportLabel: '遠端傳輸方式', transportAuto: '自動選擇', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '舊版 SSE',
+      protocolLabel: 'MCP 協議版本', protocolLegacy: '傳統協議', protocolAuto: '自動協商', protocolModern: '僅 2026-07-28',
+      protocolHelp: '自動協商會依服務支援的版本連線；遇到相容性問題時再固定版本。', sseProtocolHelp: '舊版 SSE 使用傳統協議。', advanced: '進階設定',
+      stdioProtocolHelp: '自動協商或僅使用新版協議時，會額外啟動一次伺服器進行探測。',
     },
   },
   en: {
     errors: {
-      load: 'Failed to load MCP', install: (name) => `Failed to install ${name}`, cancelInstall: (name) => `Failed to cancel installation of ${name}`, save: 'Failed to save MCP',
+      load: 'Failed to load MCP', save: 'Failed to save MCP',
       writeDurabilityUnknown: 'The write was published, but survival after power loss could not be confirmed. Check the refreshed configuration before retrying.',
       writeOutOfSync: 'Write durability could not be confirmed, and MCP runtime state is out of sync with the configuration. Check the configuration and resynchronize before retrying.',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
@@ -205,54 +200,55 @@ const MCP_COPY = {
       importProtocolVersion: 'Remote protocol preferences require version 2 or 3; stdio protocol preferences require version 3',
     },
     toast: {
-      templateInstalled: (name) => `${name} template installed`, templateInstalledDetail: 'Finish configuring credentials under Installed before enabling the connection.',
-      installed: (name) => `${name} installed`, installedDetail: 'Discovered tools take effect from the next agent turn.', installCancelled: (name) => `Cancelled installation of ${name}`,
-      saved: 'MCP saved', savedDetail: 'New tools take effect from the next agent turn.', imported: 'MCP imported', importedDetail: (count) => `Imported ${count} ${count === 1 ? 'server' : 'servers'}.`,
+      saved: 'MCP saved', savedDetail: 'New tools become available in the next conversation turn.', imported: 'MCP imported', importedDetail: (count) => `Imported ${count} ${count === 1 ? 'connection' : 'connections'}.`,
       connectionOk: 'MCP connection healthy', toolLatency: (count, latencyMs) => `${count} ${count === 1 ? 'tool' : 'tools'} · ${latencyMs} ms`,
       connectionFailed: 'MCP connection failed', removed: 'MCP deleted',
     },
-    remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools will be removed from the next agent turn, and the configuration cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
+    remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools disappear from the next conversation turn. This connection cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
     page: {
       actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
-      metaInstalled: (count) => `${count} installed`, metaErrors: (count) => `${count} ${count === 1 ? 'connection error' : 'connection errors'}`,
+      metaConnections: (count) => `${count} connections`, metaAttention: (count) => `${count} need attention`,
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
-      workspaceAria: 'MCP marketplace and installed servers', toolbarAria: 'MCP browser controls', setupTitle: 'Connect Maka to your work environment', setupDescription: 'Start with a curated template, or add any stdio, Streamable HTTP, or SSE server.',
-      localStdio: 'Local stdio', categoriesAria: 'MCP categories', market: 'Marketplace', installed: 'Installed',
-      searchPlaceholder: 'Search MCP…', searchAria: 'Search MCP', noMarket: 'No matching MCP servers', noMarketDetail: (query) => `Try another keyword, or clear “${query}” to view every template.`,
-      clearSearch: 'Clear search', loading: 'Reading MCP configuration…', noInstalled: 'No MCP servers installed', noInstalledDetail: 'Choose a template from the marketplace, or add your own server manually.',
-      browseMarket: 'Browse marketplace', noInstalledMatch: 'No matching installed MCP servers', noInstalledMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every installed server.`,
+      toolbarAria: 'MCP connection controls', connections: 'Added',
+      searchPlaceholder: 'Search connections…', searchAria: 'Search MCP connections',
+      clearSearch: 'Clear search', loading: 'Loading MCP connections…',
+      noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
+      recommended: 'Recommended', addSuggestion: (name) => `Add ${name}`,
+      suggestions: {
+        chrome: { name: 'Chrome', description: 'Use your signed-in Chrome' },
+        notion: { name: 'Notion', description: 'Access workspace pages' },
+        linear: { name: 'Linear', description: 'Access issues and projects' },
+        feishu: { name: 'Feishu', description: 'Access Feishu documents' },
+        'mcp-docs': { name: 'Official MCP docs', description: 'Search protocol docs' },
+      },
     },
     detail: {
-      label: 'Server details', enabled: 'Enabled', transport: 'Transport', endpoint: 'Endpoint',
-      toolsLabel: 'Tools', statusLabel: 'Status', protocolLabel: 'MCP protocol',
-      negotiatedProtocol: (era, revision) => `${era === 'modern' ? 'Modern' : 'Legacy'} · ${revision}`,
-      inspectorOpened: (id) => `${id} details opened`,
-    },
-    card: {
-      macOnly: 'macOS only', manage: 'Manage', cancellingAria: (name) => `Cancelling installation of ${name}`, cancelAria: (name) => `Cancel installation of ${name}`, installAria: (name) => `Install ${name}`,
-      cancelling: 'Cancelling…', cancel: 'Cancel installation', install: 'Install',
+      enabled: 'Enabled', address: 'Address', stderr: 'Error output', tools: 'Tools',
+      chromeDisconnected: 'Chrome is not connected yet. Add the extension in Chrome and this updates on its own.', connectChrome: 'Connect Chrome',
     },
     row: {
-      testing: 'Testing…', test: 'Test', edit: 'Edit',
-      delete: 'Delete', tools: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`,
-      disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed',
+      needsAuth: 'Login required', login: 'Log in', loginPending: 'Complete authorization in your browser', authorizing: 'Authorizing', cancelLogin: 'Cancel login', logout: 'Log out',
+      test: 'Test connection', edit: 'Edit',
+      delete: 'Delete',
+      disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed', awaitingChrome: 'Waiting for Chrome',
     },
     editor: {
-      importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP', importSubtitle: 'Paste an mcpServers configuration; servers with matching names will be updated.',
-      manualSubtitle: 'Configuration is saved in mcp.json for the current workspace.', modeAria: 'MCP add method', manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
-      jsonHelp: 'Supports a complete mcpServers configuration or a server map. Existing MCP servers omitted from this import are preserved.', cancel: 'Cancel', importConnect: 'Import and connect',
-      transportAria: 'Connection method', localStdio: 'Local stdio', remoteUrl: 'Remote URL',
-      serverId: 'Server ID', command: 'Command',
-      commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
-      commandHelp: 'Full command line; quote arguments containing spaces. Not interpreted by a shell.',
-      workingDirectory: 'Working directory', workingDirectoryPlaceholder: 'Optional, for example /path/to/project',
-      environment: 'Environment', environmentHelp: 'One KEY=value entry per line; complete the variables required by this MCP.', url: 'MCP URL', headers: 'HTTP headers', headersHelp: 'One Header=value entry per line.',
-      saveConnect: 'Save and connect',
+      idExists: 'A connection with this name already exists. Choose another name.', changedElsewhere: 'This connection was just changed elsewhere', changedElsewhereDetail: 'Saving replaces that change with what is here. To keep that change, cancel and open it again.', removedElsewhere: 'This connection was deleted elsewhere and can no longer be saved.', oauth: 'OAuth settings', oauthHelp: 'Usually leave this blank. Configure it only when the service provides fixed client credentials; a client ID also requires the authorization server issuer.', issuer: 'Authorization server issuer', clientId: 'Client ID', clientSecret: 'Client secret', scopes: 'Scopes (space separated)', callbackPort: 'Callback port (optional)',
+      importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP',
+      manual: 'Fill in manually', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
+      jsonHelp: 'Paste a complete configuration or a JSON object of named connections. Matching names are updated; other connections are kept.', cancel: 'Cancel', importConnect: 'Import configuration',
+      transportAria: 'Connection method', localStdio: 'Local command', remoteUrl: 'Remote URL',
+      serverId: 'Connection name', command: 'Launch command',
+      commandPlaceholder: 'node /path/to/server.js',
+      commandHelp: 'Enter the launch command and arguments; quote arguments that contain spaces.',
+      workingDirectory: 'Working directory', workingDirectoryPlaceholder: '/path/to/project',
+      environment: 'Environment variables', environmentHelp: 'Add only variables required by this service, one KEY=value per line.', url: 'MCP URL', headers: 'HTTP headers', headersHelp: 'Use one Header=value per line, as specified by the service.',
+      saveConnect: 'Save connection',
       required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', unbalancedQuote: 'Unclosed quote.',
-      transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
-      protocolLabel: 'Protocol preference', protocolLegacy: 'Legacy', protocolAuto: 'Auto-negotiate', protocolModern: '2026-07-28 only',
-      protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.', expandAdvanced: 'Show advanced settings', collapseAdvanced: 'Hide advanced settings',
-      stdioProtocolHelp: 'Auto-negotiate and “2026-07-28 only” first start a short-lived probe with the same command, arguments, working directory, and environment. The session process starts only after the probe exits. Existing configurations default to Legacy and start one process.',
+      transportLabel: 'Remote transport', transportAuto: 'Automatic', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
+      protocolLabel: 'MCP protocol version', protocolLegacy: 'Legacy protocol', protocolAuto: 'Auto-negotiate', protocolModern: '2026-07-28 only',
+      protocolHelp: 'Auto-negotiation uses a version the service supports; pin a version only for compatibility.', sseProtocolHelp: 'Legacy SSE uses the legacy protocol.', advanced: 'Advanced settings',
+      stdioProtocolHelp: 'Auto-negotiation or modern-only mode starts the server one extra time to check protocol support.',
     },
   },
 } satisfies UiCatalog<McpCopy>;
