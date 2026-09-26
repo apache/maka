@@ -31,6 +31,7 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import {
   declaredModelApiProtocol,
   supportsCustomFastServiceTier,
@@ -714,6 +715,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           copy={copy}
           modelId={editingModelId}
           customDefaultApiProtocol={connection.defaultApiProtocol}
+          acceptsOutputTokenLimit={providerAcceptsOutputTokenLimit(connection.providerType)}
           numericInputs={numericInputs}
           onNumericInput={(field, input) => {
             setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: editingModelId, numericInputs: { ...numericInputs, [field]: input } }));

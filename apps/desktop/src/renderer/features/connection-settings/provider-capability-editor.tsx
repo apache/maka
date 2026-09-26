@@ -42,6 +42,8 @@ export function CapabilityEditor(props: {
   /** Set only on a custom connection, which alone takes wire and thinking declarations. */
   customDefaultApiProtocol?: ModelApiProtocol;
   declared: ModelOverride | undefined;
+  /** False where the provider rejects any output-token limit; the field is then read-only. */
+  acceptsOutputTokenLimit?: boolean;
   contextWindowInput: string;
   contextWindowInputInvalid: boolean;
   numericInputs?: Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>>;
@@ -182,6 +184,7 @@ export function CapabilityEditor(props: {
       {(['inputLimit', 'compactionThreshold', 'maxOutputTokens'] as const).map((field) => {
         const input = props.numericInputs?.[field] ?? String(declared?.[field] ?? '');
         const invalid = input.trim() !== '' && parseContextWindowInput(input) === null;
+        const unsupported = field === 'maxOutputTokens' && props.acceptsOutputTokenLimit === false;
         return (
           <TextInput
             size="sm"
@@ -191,11 +194,14 @@ export function CapabilityEditor(props: {
             labelTooltip={copy[`${field}Help`]}
             value={input}
             onChange={(value) => props.onNumericInput(field, value)}
-            isDisabled={props.disabled}
+            isDisabled={props.disabled || unsupported}
+            {...(unsupported ? { disabledMessage: copy.maxOutputTokensUnsupported } : {})}
             hasClear
             placeholder={field === 'inputLimit' && props.defaultInputLimit !== undefined ? String(props.defaultInputLimit) : field === 'maxOutputTokens' ? '8192 / 8K' : '128000 / 128K / 1M'}
             status={
-              invalid ? { type: 'error', message: copy.contextWindowInputInvalid } : field === 'inputLimit' && props.limitsConflict ? { type: 'error', message: copy.modelLimitsConflict } : undefined
+              unsupported && input.trim() !== ''
+                ? { type: 'warning', message: copy.maxOutputTokensUnsupported }
+                : invalid ? { type: 'error', message: copy.contextWindowInputInvalid } : field === 'inputLimit' && props.limitsConflict ? { type: 'error', message: copy.modelLimitsConflict } : undefined
             }
           />
         );
