@@ -102,6 +102,7 @@ import {
   type ClientCapabilityHostFrame,
 } from '../protocol/index.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import { HostWorkHubResultCoordinator } from '../server/workhub-result-coordinator.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
@@ -384,6 +385,61 @@ test('idle schedules and armed or paused Goals allow production handoff and reco
     } finally {
       await successorOwner.close();
     }
+  });
+});
+
+test('production handoff fences WorkHub result polling and waits for a poll resumed by cancellation', {
+  timeout: 20_000,
+}, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const finishPoll = deferred<void>();
+  let polls = 0;
+  t.mock.method(HostWorkHubResultCoordinator.prototype, 'reconcile', async () => {
+    polls += 1;
+    await finishPoll.promise;
+  });
+  await withCompositionRoot(async ({ owner }) => {
+    const residencies = new HostResidencyRegistry();
+    const { composition } = await createCapturedExecutionComposition(owner, { residencies });
+    try {
+      const cancelled = await composition.prepareHandoff!('old-host', new AbortController().signal);
+      assert.ok(cancelled);
+      assert.equal(await cancelled.seal(), true);
+      // Move past the startup poll while the handoff owns the scheduler.
+      t.mock.timers.tick(1000);
+      assert.equal(polls, 0);
+      const proof = await cancelled.residencies();
+      assert.ok(proof);
+      assert.equal(residencies.hasDrainResidenciesExcept(proof), false);
+
+      cancelled.cancel();
+      t.mock.timers.tick(100);
+      assert.equal(polls, 1);
+      assert.ok(residencies.drainCount > 0);
+      let prepared = false;
+      const preparing = composition.prepareHandoff!('old-host', new AbortController().signal).then(
+        (result) => {
+          prepared = true;
+          return result;
+        },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(prepared, false, 'handoff must wait for the poll and its residency to settle');
+      finishPoll.resolve();
+      const next = await preparing;
+      assert.ok(next);
+      assert.equal(await next.seal(), true);
+      const nextProof = await next.residencies();
+      assert.ok(nextProof);
+      assert.equal(residencies.hasDrainResidenciesExcept(nextProof), false);
+      await next.detach();
+      t.mock.timers.tick(60_000);
+      assert.equal(polls, 1, 'a detached predecessor must not restart result polling');
+    } finally {
+      finishPoll.resolve();
+      await composition.close();
+    }
+    assert.equal(residencies.activeCount, 0);
   });
 });
 
