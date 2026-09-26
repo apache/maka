@@ -77,7 +77,7 @@
   "devDependencies": {
     "@astryxdesign/core": "0.6.2",
     "@astryxdesign/theme-neutral": "0.6.2",
-    "@babel/parser": "7.29.7",
+    "@babel/parser": "7.29.9",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@maka/ui": "0.1.0",
@@ -96,7 +96,7 @@
     "linkedom": "^0.18.13",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "simple-icons": "16.31.0",
+    "simple-icons": "16.32.0",
     "storybook": "^10.4.6",
     "vite": "^8.3.0"
   },

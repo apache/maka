@@ -42,6 +42,6 @@
   "dependencies": {
     "@maka/core": "0.1.0",
     "@maka/runtime-host": "0.1.0",
-    "undici": "^8.10.2"
+    "undici": "^8.11.0"
   }
 }
