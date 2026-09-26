@@ -1974,13 +1974,10 @@ export class AiSdkTurn {
                   : undefined;
               if (recovered) {
                 attemptMessages = recovered.messages;
-                overflowRecoveryMaxOutputTokens = this.deps.modelAdapter.acceptsOutputTokenLimit()
-                  ? Math.min(
-                      this.deps.modelAdapter.maxOutputTokens() ??
-                        CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
-                      CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
-                    )
-                  : undefined;
+                overflowRecoveryMaxOutputTokens = Math.min(
+                  this.deps.modelAdapter.maxOutputTokens() ?? CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
+                  CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
+                );
                 continue;
               }
               // Window suggestion (#4559): the provider rejected a request and
