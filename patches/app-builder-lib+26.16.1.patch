@@ -1,7 +1,8 @@
 diff --git a/node_modules/app-builder-lib/out/targets/archive.js b/node_modules/app-builder-lib/out/targets/archive.js
+index 9595b4f..fd8fe92 100644
 --- a/node_modules/app-builder-lib/out/targets/archive.js
 +++ b/node_modules/app-builder-lib/out/targets/archive.js
-@@ -101,6 +101,7 @@ function compute7zCompressArgs(format, options = {}) {
+@@ -144,6 +144,7 @@ function compute7zCompressArgs(format, options = {}) {
          // For all other formats the codec is implicit from the output file extension.
          args.push(`-mm=${storeOnly ? "Copy" : "Deflate"}`);
          args.push("-mcu");
