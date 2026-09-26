@@ -30,14 +30,14 @@ import type {
   WorkHubPrepareAttachmentsResult,
 } from '../shared/workhub-conversation.js';
 import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { workHubControlBridge } from './workhub-control.js';
 import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
 } from '@maka/runtime-host/profile-kind';
-import { AttachmentIngestBlockedError } from '@maka/core/attachments';
+import { AttachmentIngestBlockedError, MAX_ATTACHMENT_DROP_COUNT } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { createRecallSearchClient } from './multi-host-recall-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
@@ -3322,6 +3322,25 @@ const makaBridge = {
   },
   attachments: {
     pickDirectory: () => invokeWhenReady('directories:pick'),
+    // The renderer hands over the dropped or pasted File objects, never paths:
+    // only a File backed by something the user dropped or pasted has a path,
+    // and main answers nothing but whether each one is a directory. The
+    // composer refuses a larger drop before asking, so a longer list is not
+    // from it and gets no per-file work here or in main.
+    detectDirectories(files: readonly File[]): Promise<boolean[]> {
+      if (files.length > MAX_ATTACHMENT_DROP_COUNT) {
+        return Promise.reject(new Error('Too many files to check for folders'));
+      }
+      const paths = files.map((file) => {
+        try {
+          return webUtils.getPathForFile(file);
+        } catch {
+          return '';
+        }
+      });
+      if (!paths.some(Boolean)) return Promise.resolve(paths.map(() => false));
+      return invokeWhenReady('attachments:detectDirectories', paths);
+    },
     pickFiles(): Promise<
       | {
           ok: true;

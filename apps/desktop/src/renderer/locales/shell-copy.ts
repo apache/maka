@@ -1022,6 +1022,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '单个附件超出大小限制。',
+        item_unreadable: '有附件无法读取，可能是文件夹或已被移动。请移除后重新添加。',
         items_invalid: '附件信息无效，请重新选择文件后再发送。',
         count_limit: '一次最多添加 8 个附件。',
         duplicate_source: '附件来源重复，请勿重复添加同一文件。',
@@ -1548,6 +1549,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '單一附件超出大小限制。',
+        item_unreadable: '有附件無法讀取，可能是資料夾或已被移動。請移除後重新新增。',
         items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
         count_limit: '一次最多新增 8 個附件。',
         duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
@@ -2080,6 +2082,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: 'One attachment exceeds the size limit.',
+        item_unreadable: 'An attachment could not be read. It may be a folder or may have moved. Remove it and add it again.',
         items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
         count_limit: 'At most 8 attachments per message.',
         duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',

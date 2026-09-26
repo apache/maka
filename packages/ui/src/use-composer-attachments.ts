@@ -20,6 +20,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ATTACHMENT_MIME_SNIFF_BYTES,
+  AttachmentIngestBlockedError,
+  MAX_ATTACHMENT_DROP_COUNT,
   attachmentKindFromMimeType,
   guessMimeFromName,
   resolveAttachmentMimeType,
@@ -62,6 +64,15 @@ export interface ComposerAttachmentService {
     | { ok: true; reference: DirectoryReference }
     | { ok: false; reason: 'cancelled' }
   >;
+  /**
+   * Whether each dropped or pasted file is a directory on disk. A folder copied
+   * in Finder arrives as a File that can never be read, so it is refused here
+   * rather than staged as an attachment that only fails on send. Surfaces that
+   * cannot tell leave this out; the send path still names an unreadable item.
+   * Never asked about more than MAX_ATTACHMENT_DROP_COUNT files: a larger drop
+   * is refused whole before it gets here.
+   */
+  detectDirectories?(files: readonly File[]): Promise<readonly boolean[]>;
 }
 
 type ToastApi = {
@@ -180,6 +191,8 @@ export interface ComposerAttachmentCopy {
   tryAgain: string;
   imageAttachmentNotDirectTitle: string;
   imageAttachmentNotDirectDescription: string;
+  folderNotAttachable: string;
+  folderNotAttachableUseReference: string;
 }
 
 export function useComposerAttachments(options: {
@@ -404,15 +417,54 @@ export function useComposerAttachments(options: {
     }
   }
 
+  /** Drops directories from one drop or paste and says why, once per batch. */
+  async function withoutDirectories(files: File[]): Promise<File[]> {
+    const owner = liveOptionsRef.current.directoryOwner;
+    if (!owner.service.detectDirectories) return files;
+    if (files.length > MAX_ATTACHMENT_DROP_COUNT) {
+      // Too many to check, and none may stage unchecked. A drop this large
+      // could never be sent, so it is refused in the send limit's own words.
+      if (lifecycle.mounted) {
+        const copy = liveOptionsRef.current.copy;
+        owner.toastApi.error(
+          copy.attachmentFailedTitle,
+          owner.formatError(new AttachmentIngestBlockedError('count_limit'), copy.tryAgain),
+        );
+      }
+      return [];
+    }
+    let directories: readonly boolean[] = [];
+    try {
+      directories = await owner.service.detectDirectories(files);
+    } catch {
+      // Best effort: an item that cannot be classified stages as before, and
+      // the send path reports it if it turns out to be unreadable.
+      directories = [];
+    }
+    const accepted = files.filter((_, index) => directories[index] !== true);
+    if (accepted.length < files.length && lifecycle.mounted) {
+      const copy = liveOptionsRef.current.copy;
+      owner.toastApi.error(
+        copy.attachmentFailedTitle,
+        owner.directoryHostId && owner.service.pickDirectory
+          ? copy.folderNotAttachableUseReference
+          : copy.folderNotAttachable,
+      );
+    }
+    return accepted;
+  }
+
   async function attachFilePaths(files: File[]): Promise<void> {
     if (!lifecycle.mounted || files.length === 0) return;
+    const accepted = await withoutDirectories(files);
+    if (!lifecycle.mounted || accepted.length === 0) return;
     // Bind the owner AFTER the sniff reads resolve, never before: fileToPending
     // became async to read each file's leading bytes, so the surface can change
     // during that I/O (a network volume or spun-down drive makes it seconds).
     // The files belong in the composer the user is looking at now — not a bucket
     // they have since left, where they would be invisible but still sendable.
     // Same reasoning as pickAttachments above.
-    const staged = await Promise.all(files.map(fileToPending));
+    const staged = await Promise.all(accepted.map(fileToPending));
     if (!lifecycle.mounted) return;
     const ownerKey = liveOptionsRef.current.draftKey;
     updateAttachments((map) => appendPending(map, ownerKey, staged));

@@ -109,6 +109,7 @@ import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
+import { registerAttachmentDirectoryDetectionIpc } from "./attachment-directory-detection.js";
 import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { DesktopSessionLocalStore } from './session-local-store.js';
 import { createSessionLocalChangedEmitter, DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
@@ -1972,6 +1973,7 @@ function registerPersistentClientIpc(): void {
       files: attachmentApprovals.issueApprovals(event.sender.id, chosen),
     };
   });
+  registerAttachmentDirectoryDetectionIpc({ ipcMain });
   registerAttachmentPreviewIpc({
     ipcMain,
     approvals: attachmentApprovals,
