@@ -25,7 +25,8 @@ import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, applyLiveTurnBufferEvent, reconcileLiveTurnBuffer } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { act, createElement } from 'react';
-import { LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
+import { parentTaskStatusFromFacts } from '../../renderer/features/workbar/testing.js';
+import { activeHostTurn, LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
 import {
@@ -69,7 +70,7 @@ it('reconciles late predecessor content after its durable answer is already load
     const controller = createAppShellSessionUiStateController();
     const b = { turnId: 'B', steps: [{ stepId: 'bash', tools: [{ toolUseId: 'bash', toolName: 'Bash', args: {}, status: 'running' as const }] }] };
     controller.setLiveTurnBySession(() => ({ session: [b] }));
-    controller.setExecution('session', { type: 'host_execution', available: true,
+    controller.setExecution('session', { type: 'host_execution', pendingInteractionKinds: [], available: true,
       rootTurn: { sessionId: 'session', turnId: 'B', runId: 'run-B', status: 'running' } });
     const messages: StoredMessage[] = [
       { type: 'assistant', id: 'answer-A', turnId: 'A', ts: 1, text: 'Alpha completed full answer', modelId: 'test' },
@@ -160,6 +161,7 @@ describe('app shell session UI state controller', () => {
     const controller = createAppShellSessionUiStateController();
     const projection = {
       type: 'host_execution' as const,
+      pendingInteractionKinds: [],
       available: true,
       rootTurn: { sessionId: 'session', turnId: 'turn', runId: 'run', status: 'running' as const },
     };
@@ -314,6 +316,83 @@ describe('app shell session UI state controller', () => {
     const projection = [armLiveTurn('turn-1')];
     controller.setLiveTurnBySession((current) => ({ ...current, session: projection }));
     assert.equal(controller.liveTurnBySessionRef.current.session, projection);
+  });
+});
+
+describe('producer-side execution history invalidation', () => {
+  const runningRoot = {
+    sessionId: 'session',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    status: 'running' as const,
+  };
+
+  it('reports a failure before the first seed as unavailable, not as unread', () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.setExecution('session', null);
+    assert.deepEqual(controller.getState().executionBySession.session, {
+      type: 'host_execution',
+      available: false,
+      rootTurn: null,
+      pendingInteractionKinds: [],
+    });
+  });
+
+  it('marks a known projection unavailable while keeping the identity Stop needs', () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.setExecution('session', {
+      type: 'host_execution',
+      available: true,
+      rootTurn: runningRoot,
+      pendingInteractionKinds: ['permission'],
+    });
+    controller.setExecution('session', null);
+    const projection = controller.getState().executionBySession.session;
+    assert.equal(projection?.available, false);
+    assert.equal(activeHostTurn(projection)?.turnId, 'turn-1');
+    assert.deepEqual(projection?.pendingInteractionKinds, ['permission']);
+  });
+
+  it('does not let the cleanup path claim a failure it did not observe', () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.setExecution('session', undefined);
+    assert.equal(controller.getState().executionBySession.session, undefined);
+  });
+
+  it('retains Stop identity but hides a normal resubscription until the new seed', () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.setExecution('session', {
+      type: 'host_execution', available: true, rootTurn: runningRoot, pendingInteractionKinds: [],
+    });
+    controller.setExecution('session', undefined);
+    const pending = controller.getState().executionBySession.session;
+    assert.equal(activeHostTurn(pending)?.turnId, 'turn-1');
+    assert.equal(parentTaskStatusFromFacts({ execution: pending, latestTurnRead: { status: 'pending' } }), null);
+    controller.setExecution('session', null);
+    const failed = controller.getState().executionBySession.session;
+    assert.equal(activeHostTurn(failed)?.turnId, 'turn-1');
+    assert.equal(parentTaskStatusFromFacts({ execution: failed, latestTurnRead: { status: 'pending' } }), 'unavailable');
+  });
+
+  it('rereads history once observation recovers', () => {
+    const controller = createAppShellSessionUiStateController();
+    const epoch = () => controller.getState().executionHistoryEpochBySession.session;
+    controller.setExecution('session', {
+      type: 'host_execution',
+      available: true,
+      rootTurn: runningRoot,
+      pendingInteractionKinds: [],
+    });
+    assert.equal(epoch(), undefined);
+    controller.setExecution('session', null);
+    assert.equal(epoch(), undefined, 'a failure is not a new history');
+    controller.setExecution('session', {
+      type: 'host_execution',
+      available: true,
+      rootTurn: null,
+      pendingInteractionKinds: [],
+    });
+    assert.equal(epoch(), 1, 'the settled projection invalidates the frozen history');
   });
 });
 

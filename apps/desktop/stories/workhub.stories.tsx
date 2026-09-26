@@ -86,7 +86,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
   let newWorkDefaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'> = {};
-  const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
+  const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, pendingInteractionKinds: [], rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
   const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
   return {
     inspector: {
@@ -523,7 +523,8 @@ export const QuestionLifecycle: Story = {
     await waitFor(() => expect(within(prompt).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeNull());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成');
+    // The transcript may remount after the question prompt disappears.
+    await waitFor(() => expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成'));
     expect(canvas.getByText('按公开测试安排发布。')).toBeInTheDocument();
     expect(writes.question).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ requestId: 'question-request' }));
   },

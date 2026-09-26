@@ -33,6 +33,7 @@ import {
   createFakeWorkbarServices,
   projectWorkbarPanelsForSession,
   useWorkbarController,
+  visibleSideChatParentSessionId,
   WorkbarServicesProvider,
   type UseWorkbarControllerInput,
   type WorkbarController,
@@ -1136,6 +1137,36 @@ describe('useWorkbarController', () => {
     await act(async () => root.unmount());
 
     assert.deepEqual(activeSessions, ['a', 'b']);
+  });
+
+  it('gates the parent status read on the projected Side Conversation the render shows', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const host = controller().host;
+    const gate = (visibility: typeof host = host) =>
+      visibleSideChatParentSessionId(
+        projectWorkbarPanelsForSession(
+          host.panelsState,
+          host.activeId,
+          new Set(host.quotes?.map((quote) => `side-chat:${quote.id}`)),
+        ),
+        visibility,
+        host.sourceSession?.id,
+      );
+    assert.equal(gate(), 'a', 'an open, active Side Conversation is worth the read');
+    assert.equal(gate({ ...host, hidden: true }), undefined);
+    assert.equal(gate({ ...host, rightCollapsed: true }), undefined);
+  });
+
+  it('exposes the parent conversation callback from the shell', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    await act(async () => renderController(root, services, input(session('a'))));
+    // The action itself is covered against a real DOM in
+    // parent-interaction-focus.test.ts; here the shell only has to expose it.
+    assert.equal(typeof controller().host.onOpenParentConversation, 'function');
   });
 
   it('opens Browser once when the active Session gains a live browser view', async () => {

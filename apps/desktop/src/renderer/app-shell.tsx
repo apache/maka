@@ -468,6 +468,7 @@ function AppShellContent({
     streamingSessionIds,
     activeLiveTurnSnapshot,
     activeExecution,
+    parentExecutionHistoryEpoch,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
   // The chat surface follows the active Session's Host. Settings and global
   // commands remain owned by the default Host.
@@ -1170,7 +1171,7 @@ function AppShellContent({
   );
   const workbar = useWorkbarController({
     workHub: { enabled: workHubEnabled, active: workHubActive },
-    available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
+    available: sessionsSelected,
     layoutSessionId: activeId,
     activeSession: activeHostSession,
     projectId: currentProjectId,
@@ -1184,6 +1185,8 @@ function AppShellContent({
     openSessionInChat,
     resolveWorkBoardTarget,
     prepareWorkBoardDraft,
+    parentExecution: activeExecution,
+    parentExecutionHistoryEpoch,
   });
   const { commands, selectors, LiveContextUsageProbe } = workbar;
 

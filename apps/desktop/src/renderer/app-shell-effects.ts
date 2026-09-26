@@ -422,7 +422,7 @@ export function useActiveSessionEvents(options: {
         () => {
           if (attempt !== observationAttempt) return;
           controller.observationChanged('pending');
-          options.setExecution(activeId, undefined);
+          options.setExecution(activeId, null);
           unsubscribeCurrent();
           observationFailures += 1;
           const retryDelayMs = Math.min(100 * (2 ** (observationFailures - 1)), 2_000);

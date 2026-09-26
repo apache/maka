@@ -34,6 +34,7 @@ const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBy
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
 const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
 const selectExecution = (state: AppShellSessionUiState, id: string | undefined) => id ? state.executionBySession[id] : undefined;
+const selectExecutionHistoryEpoch = (state: AppShellSessionUiState, id: string | undefined) => id ? state.executionHistoryEpochBySession[id] : undefined;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession, state.executionBySession);
 
 /**
@@ -55,8 +56,13 @@ export const sessionUiSelectors = {
   retry: selectMessageRetryPending, stop: selectStopPending, interaction: selectInteraction,
   queue: selectMessageQueue, pulse: selectPulseSet, pulseEqual: sessionIdSetsEqual,
   active: (state: AppShellSessionUiState, id: string | undefined) => ({
-    activeExecution: selectExecution(state, id), activeLiveTurnSnapshot: selectActiveSnapshot(state, id),
+    activeExecution: selectExecution(state, id),
+    /** Carried so a batched invalidation still re-renders its readers. */
+    parentExecutionHistoryEpoch: selectExecutionHistoryEpoch(state, id),
+    activeLiveTurnSnapshot: selectActiveSnapshot(state, id),
   }),
-  activeEqual: (a: { activeExecution: unknown; activeLiveTurnSnapshot: import('./live-turn-snapshot.js').LiveTurnSnapshot }, b: typeof a) =>
-    a.activeExecution === b.activeExecution && liveTurnSnapshotsEqual(a.activeLiveTurnSnapshot, b.activeLiveTurnSnapshot),
+  activeEqual: (a: { activeExecution: unknown; parentExecutionHistoryEpoch: number | undefined; activeLiveTurnSnapshot: import('./live-turn-snapshot.js').LiveTurnSnapshot }, b: typeof a) =>
+    a.activeExecution === b.activeExecution
+    && a.parentExecutionHistoryEpoch === b.parentExecutionHistoryEpoch
+    && liveTurnSnapshotsEqual(a.activeLiveTurnSnapshot, b.activeLiveTurnSnapshot),
 };

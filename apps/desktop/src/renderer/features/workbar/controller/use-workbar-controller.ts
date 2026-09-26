@@ -41,6 +41,10 @@ import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import { useWorkHubWorkspace } from '../../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import { useWorkbarServices } from '../services-context.js';
+import { focusParentConversation } from '../model/parent-interaction-focus.js';
+import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
+
+export { focusParentConversation };
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
 import {
@@ -116,6 +120,10 @@ export interface UseWorkbarControllerInput {
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
+  /** The owning conversation's canonical Host execution projection. */
+  parentExecution?: SessionExecutionProjection;
+  /** Producer-side history invalidation counter for `parentExecution`. */
+  parentExecutionHistoryEpoch?: number;
   openNewTaskSurface?(): number;
   openSessionInChat?(sessionId: string, turnId?: string): void;
   resolveWorkBoardTarget?(item: WorkBoardItem):
@@ -171,7 +179,7 @@ export function useWorkbarController(
     projectId: null,
     projectAliases: [],
     authoritativeSessionIds: coordination.authoritativeSessionIds,
-  } : { ...requested, authoritativeSessionIds: coordination.authoritativeSessionIds };
+  } : { ...requested, available: requested.available && Boolean(activeSessionId), authoritativeSessionIds: coordination.authoritativeSessionIds };
   const locale = useUiLocale();
   // Enforce development-only: the experimental Start-task path must never be
   // reachable in a production build even if the flag is set, so the gate
@@ -984,6 +992,9 @@ export function useWorkbarController(
       sourceSession: input.activeSession,
       onOpenConversation: input.openSessionInChat,
       modelChoices: input.modelChoices,
+      onOpenParentConversation: focusParentConversation,
+      parentExecution: input.parentExecution,
+      parentExecutionHistoryEpoch: input.parentExecutionHistoryEpoch,
       onStartWorkBoardTask: startWorkBoardTask,
       resolveWorkBoardStartTask: input.resolveWorkBoardTarget,
       onOpenWorkBoardSession: openWorkBoardSession,

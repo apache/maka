@@ -31,5 +31,7 @@
  */
 
 export { WorkbarSurface } from './ui/workbar-surface.js';
+
+export { SESSION_INTERACTION_CONTAINER_ATTRIBUTE, SESSION_PARENT_INTERACTION_ATTRIBUTE } from './model/parent-interaction-focus.js';
 export type { WorkbarHostModel } from './ui/workbar-host.js';
 export { useWorkbarLayoutState } from './controller/use-workbar-layout-state.js';

@@ -26,7 +26,11 @@ import {
   type LiveTurnBuffer,
 } from '@maka/ui';
 import { createObservableState } from './observable-state.js';
-import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
+import {
+  advanceExecutionHistory,
+  unavailableExecutionProjection,
+  type SessionExecutionProjection,
+} from '../../../application/contracts/session-execution.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 type ShellRunUpdatesBySession = Record<string, Record<string, ShellRunUpdate>>;
@@ -37,6 +41,13 @@ export interface AppShellSessionUiState {
   stopPendingBySession: Record<string, boolean>;
   liveTurnBySession: Record<string, LiveTurnBuffer>;
   executionBySession: Record<string, SessionExecutionProjection>;
+  /**
+   * Bumped by the projection producer whenever a write invalidates a settled
+   * history read. A consumer cannot recover that from the rendered projection
+   * alone: React can batch `available → unavailable → available` into one
+   * commit whose snapshot equals the one before it.
+   */
+  executionHistoryEpochBySession: Record<string, number>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
@@ -74,6 +85,7 @@ const SESSION_UI_MAP_KEYS = [
   'stopPendingBySession',
   'liveTurnBySession',
   'executionBySession',
+  'executionHistoryEpochBySession',
   'shellRunUpdatesBySession',
   'interactionBySession',
   'messageQueueBySession',
@@ -200,15 +212,26 @@ export function createAppShellSessionUiStateController(
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
-    setExecution: (sessionId: string, projection: SessionExecutionProjection | undefined) => {
-      updateMap('executionBySession', (current) => {
-        const previous = current[sessionId];
-        if (!projection) return previous?.available
-          ? { ...current, [sessionId]: { ...previous, available: false } } : current;
-        // The observation channel re-publishes the projection on every frame —
-        // catalog metadata writes included — with a fresh object each time.
-        if (previous !== undefined && valuesEqual(previous, projection)) return current;
-        return { ...current, [sessionId]: projection };
+    setExecution: (sessionId: string, projection: SessionExecutionProjection | null | undefined) => {
+      const latest = state.getState();
+      const previous = latest.executionBySession[sessionId];
+      // null is an observed failure; undefined is ordinary subscription cleanup.
+      const next = projection === null ? unavailableExecutionProjection(previous)
+        : projection ?? (previous ? { ...previous, available: false, observationPending: true } : undefined);
+      if (next === previous || (previous !== undefined && valuesEqual(previous, next))) return;
+      const advanced = advanceExecutionHistory(
+        { sessionId, projection: previous, historyEpoch: latest.executionHistoryEpochBySession[sessionId] ?? 0 },
+        sessionId,
+        next,
+      );
+      replaceState({
+        ...latest,
+        executionBySession: next === undefined
+          ? omitSessionKey(latest.executionBySession, sessionId)
+          : { ...latest.executionBySession, [sessionId]: next },
+        executionHistoryEpochBySession: advanced.historyEpoch === (latest.executionHistoryEpochBySession[sessionId] ?? 0)
+          ? latest.executionHistoryEpochBySession
+          : { ...latest.executionHistoryEpochBySession, [sessionId]: advanced.historyEpoch },
       });
     },
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),

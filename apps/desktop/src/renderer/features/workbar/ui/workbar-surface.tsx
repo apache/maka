@@ -44,8 +44,10 @@ import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import type { SessionSummary } from '@maka/core/session';
+import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { QuoteCompanionPanel } from '../tools/side-chat/quote-companion-panel';
+import { useParentTaskStatus } from '../controller/use-parent-task-status';
 import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
@@ -54,7 +56,8 @@ import {
   terminalRefFromWorkbarTab,
   reduceWorkbarPanels,
   projectWorkbarPanelsForSession,
-} from '../model/workbar-tabs';
+} from '../model/workbar-tabs.js';
+import { visibleSideChatParentSessionId } from '../model/parent-task-status.js';
 import {
   workbarToolsForWorkspace,
   workbarToolDefinition,
@@ -415,11 +418,16 @@ export function WorkbarSurface(props: {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  /** The owning conversation's canonical execution projection and its
+   * producer-side invalidation counter. */
+  parentExecution?: SessionExecutionProjection;
+  parentExecutionHistoryEpoch?: number;
   onStartWorkBoardTask?: (item: WorkBoardItem) => void;
   resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
   onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
   workBoardStartTaskEnabled?: boolean;
   confirmBypass: () => Promise<boolean>;
+  onOpenParentConversation?: (origin?: Element | null) => void;
 }) {
   const { inspector } = useWorkbarServices();
   const locale = useUiLocale();
@@ -459,6 +467,16 @@ export function WorkbarSurface(props: {
   const positionedTabs = placements.flatMap((placement) =>
     allowedPanels[placement].tabs.map((tab) => ({ placement, tab })),
   );
+  // Only a Side Conversation the reader can actually see and use is worth a
+  // Host read: the same projection, active tab and collapsed state the render
+  // below uses decide it.
+  const parentSessionId = props.workspace === 'workhub' ? undefined
+    : visibleSideChatParentSessionId(visiblePanels, props, props.sessionId);
+  const parentTaskStatus = useParentTaskStatus({
+    sessionId: parentSessionId,
+    execution: props.parentExecution,
+    historyEpoch: props.parentExecutionHistoryEpoch,
+  });
 
   return (
     <div className="maka-workbar-workspace-contents">
@@ -619,6 +637,8 @@ export function WorkbarSurface(props: {
                 onInitialPromptStarted={props.onInitialPromptStarted}
                 onPromptAccepted={props.onPromptAccepted}
                 onActivityStateChange={props.onActivityStateChange}
+                parentTaskStatus={parentTaskStatus}
+                onOpenParentConversation={props.onOpenParentConversation}
               />
             );
           }

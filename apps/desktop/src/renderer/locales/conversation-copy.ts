@@ -213,6 +213,17 @@ export interface DesktopConversationCopy {
       /** Responding to a permission / question prompt failed. */
       respondFailed: string;
     };
+    parentStatus: {
+      waitingInput: string;
+      waitingApproval: string;
+      waitingInputAndApproval: string;
+      running: string;
+      lastTurnCompleted: string;
+      lastTurnFailed: string;
+      lastTurnInterrupted: string;
+      unavailable: string;
+      openParent: string;
+    };
   };
   health: {
     blocked: Record<
@@ -548,6 +559,17 @@ const COPY = {
         settlementFailed: '运行已结束，但消息加载失败。请重试或重新打开侧边对话。',
         respondFailed: '响应失败，请稍后重试。',
       },
+      parentStatus: {
+        waitingInput: '主任务等待输入',
+        waitingApproval: '主任务等待审批，需在主对话处理',
+        waitingInputAndApproval: '主任务等待输入；审批需在主对话处理',
+        running: '主任务正在运行',
+        lastTurnCompleted: '主任务最近一轮已完成',
+        lastTurnFailed: '主任务最近一轮失败',
+        lastTurnInterrupted: '主任务最近一轮已中断',
+        unavailable: '主任务状态不可用',
+        openParent: '前往主对话',
+      },
     },
     health: {
       blocked: {
@@ -781,6 +803,17 @@ const COPY = {
         sendFailed: '追問失敗，請稍後重試。',
         settlementFailed: '執行已結束，但訊息載入失敗。請重試或重新開啟側邊對話。',
         respondFailed: '回應失敗，請稍後重試。',
+      },
+      parentStatus: {
+        waitingInput: '主任務等待輸入',
+        waitingApproval: '主任務等待核准，需在主對話處理',
+        waitingInputAndApproval: '主任務等待輸入；核准需在主對話處理',
+        running: '主任務正在執行',
+        lastTurnCompleted: '主任務最近一輪已完成',
+        lastTurnFailed: '主任務最近一輪失敗',
+        lastTurnInterrupted: '主任務最近一輪已中斷',
+        unavailable: '主任務狀態無法使用',
+        openParent: '前往主對話',
       },
     },
     health: {
@@ -1031,6 +1064,17 @@ const COPY = {
         sendFailed: 'The companion request failed. Please try again.',
         settlementFailed: 'The run ended, but its messages could not be loaded. Retry or reopen the side chat.',
         respondFailed: 'The response failed. Please try again.',
+      },
+      parentStatus: {
+        waitingInput: 'Parent task is waiting for input',
+        waitingApproval: 'Parent task is waiting for approval; approve it in the parent conversation',
+        waitingInputAndApproval: 'Parent task is waiting for input; approval is handled in the parent conversation',
+        running: 'Parent task is running',
+        lastTurnCompleted: 'Latest parent turn completed',
+        lastTurnFailed: 'Latest parent turn failed',
+        lastTurnInterrupted: 'Latest parent turn was interrupted',
+        unavailable: 'Parent task status is unavailable',
+        openParent: 'Open parent conversation',
       },
     },
     health: {
