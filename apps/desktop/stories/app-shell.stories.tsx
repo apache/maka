@@ -36,6 +36,7 @@ import {
   deriveTitlebarProjectName,
   TitlebarSessionIdentity,
   ToastProvider,
+  useUiLocale,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
@@ -66,6 +67,9 @@ import {
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import { Button } from '@astryxdesign/core';
 import { GoalDialog } from '../src/renderer/features/goals/testing';
+import { localMessagePresentation } from '../src/renderer/features/conversation/testing';
+import { getSessionLocalCopy } from '../src/renderer/locales/session-local-copy';
+import type { DesktopLocalMessage } from '../src/shared/session-local-contract';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -696,7 +700,6 @@ export const PromptSentBeforeTurnLands: Story = {
           ts: NOW,
           transientPlacement: 'transcript',
           hostTurnId: 'turn-sent',
-          deliveryStatus: '已接收',
         }],
       }}
     />
@@ -712,9 +715,83 @@ export const PromptSentBeforeTurnLands: Story = {
       const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
       expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
     });
-    // Delivery is news, so its row stays up at rest.
+    // Ordinary admission is not actionable delivery news. Only the Turn's
+    // running cue stays up; timestamp/copy follow the normal hover contract.
     (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
-    await expect(getComputedStyle(pending.querySelector('.maka-message-meta')!).opacity).toBe('1');
+    const pendingMetadata = pending.querySelector<HTMLElement>('.maka-message-meta')!;
+    await expect(pending.querySelector('.maka-message-delivery')).toBeNull();
+    await waitFor(() => expect(getComputedStyle(pendingMetadata).opacity).toBe('0'));
+    pendingMetadata.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(pendingMetadata).opacity).toBe('1'));
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await waitFor(() => expect(getComputedStyle(pendingMetadata).opacity).toBe('0'));
+  },
+};
+
+function FailedLocalMessageHarness() {
+  const locale = useUiLocale();
+  const copy = getSessionLocalCopy(locale);
+  const message: DesktopLocalMessage = {
+    sessionId: activeSession.id, messageId: 'failed-local', createdAt: NOW,
+    state: 'failed', canCancel: true, placement: 'next_turn', localDisplayPlacement: 'current_turn',
+    text: '请保留这条未发送的问题，我需要编辑后重新发送。',
+    attachments: [], inlineReferences: [], error: 'Host rejected the message before admission.',
+  };
+  const presentation = localMessagePresentation(message, locale);
+  return <ComposedShell chat={{
+    messages: conversation.slice(0, 2),
+    transientMessages: [{
+      id: message.messageId, text: message.text, ts: message.createdAt, transientPlacement: 'transcript',
+      deliveryStatus: presentation.status, deliveryDetail: presentation.detail, deliveryTone: presentation.tone,
+      deliveryDiagnostic: message.error, deliveryDiagnosticLabel: copy.diagnostics,
+      deliveryActions: [{ label: copy.edit, onClick: noop }, { label: copy.remove, onClick: noop }],
+    }],
+  }} />;
+}
+
+// Real path: send in an existing conversation → Host rejects admission → the
+// durable failed local copy retains its feedback and edit/delete actions.
+// The production presenter derives the failed status rather than hardcoding it.
+export const FailedLocalMessage: Story = {
+  render: () => <FailedLocalMessageHarness />,
+  play: async ({ canvasElement }) => {
+    const failed = canvasElement.querySelector('[data-transient-message-id="failed-local"]')!;
+    const failedMetadata = failed.querySelector<HTMLElement>('.maka-message-meta')!;
+    // Actionable delivery remains visible beside, not inside, the metadata.
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await expect(getComputedStyle(failedMetadata).opacity).toBe('1');
+    await expect(getComputedStyle(failedMetadata).pointerEvents).toBe('auto');
+    await expect(failed.querySelector('.maka-message-delivery [role="status"]')).toBeVisible();
+    await expect(failed.querySelectorAll('.maka-message-delivery-actions button')).toHaveLength(2);
+    await expect(canvasElement.querySelector('.maka-pending-turn')).toBeNull();
+    // The exception belongs only to this message, not the whole transcript.
+    // Settled metadata still reveals on keyboard focus and hides on blur.
+    // The virtualized history mounts after the local tail. Read it inside the
+    // wait instead of retaining a null from the tail's first render.
+    const settledMetadata = await waitFor(() => {
+      const metadata = canvasElement.querySelector<HTMLElement>('.maka-transcript-turn .maka-user-message .maka-message-meta');
+      expect(metadata).not.toBeNull();
+      return metadata!;
+    });
+    // Migrated from session-local-recovery.spec.ts: alignment is a browser
+    // layout contract, independent of Electron's durable recovery round trip.
+    await waitFor(() => {
+      const canonical = canvasElement.querySelector<HTMLElement>('.maka-transcript-turn .maka-turn');
+      expect(canonical).not.toBeNull();
+      const canonicalBox = canonical!.getBoundingClientRect();
+      const localBox = failed.getBoundingClientRect();
+      expect(canonicalBox.width).toBeGreaterThan(0);
+      expect(localBox.width).toBeGreaterThan(0);
+      expect(Math.abs(localBox.x - canonicalBox.x)).toBeLessThan(1);
+      expect(Math.abs(localBox.width - canonicalBox.width)).toBeLessThan(1);
+    });
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
+    settledMetadata.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('1'));
+    await expect(getComputedStyle(settledMetadata).pointerEvents).toBe('auto');
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
+    await expect(getComputedStyle(failedMetadata).opacity).toBe('1');
   },
 };
 

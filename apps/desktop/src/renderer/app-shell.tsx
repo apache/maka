@@ -30,7 +30,6 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
-  FollowUpMode,
   InlineReference,
   QuoteRef,
 } from '@maka/core/events';
@@ -384,11 +383,14 @@ function AppShellContent({
     pendingAttachments,
     submittableAttachments,
     hasPendingContext,
+    hasPendingContextNow,
     directoryOptions,
     directoryComposerProps,
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
+    restoreMessageContext,
+    retainAttachments,
     removeAttachment,
     clearSubmittedContext,
     imageNoticeLifecycle,
@@ -1360,17 +1362,10 @@ function AppShellContent({
    * flag for the whole call gives the submission one owner, and
    * ChatComposerRegion defers its carry until it drops.
    */
-  async function sendOwningItsTarget(
-    text: string,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean | void> {
-    setNewTaskSendPending(true);
-    try {
-      return await sendWithAttachments(text, metadata);
-    } finally {
-      setNewTaskSendPending(false);
-    }
-  }
+  const sendOwningItsTarget = Conversation.composerSend({
+    pending: submittableAttachments, retainAttachments,
+    setPending: setNewTaskSendPending, send: sendWithAttachments,
+  });
 
   function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
     const createdSessionId = activeIdRef.current;
@@ -1378,31 +1373,19 @@ function AppShellContent({
       imageNoticeLifecycle.transfer(NEW_TASK_PENDING_KEY, createdSessionId);
   }
 
-  async function enqueueFollowUp(
-    sessionId: string,
-    text: string,
-    mode: FollowUpMode,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean> {
-    try {
-      const sent = await enqueueMessage(sessionId, text,
-        mode === 'steer' ? 'current_turn' : 'next_turn', submittableAttachments, {
-          ...directoryOptions, quotes: pendingQuotes,
-          workspaceFileReferences: metadata?.workspaceFileReferences,
-        });
-      if (!sent) return false;
-      clearSubmittedContext(submittableAttachments);
-      clearQuotes();
-      return true;
-    } catch (error) {
+  const enqueueFollowUp = Conversation.composerFollowUp({
+    pending: submittableAttachments, quotes: pendingQuotes, directoryOptions,
+    enqueueMessage, retainAttachments, clearSubmittedContext, clearQuotes,
+    onError: (sessionId, error) => {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
-        showSessionError(sessionId, copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale));
+        showSessionError(
+          sessionId, copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
       }
-      return false;
-    }
-  }
+    },
+  });
 
   async function sendWithAttachments(
     text: string,
@@ -2084,7 +2067,6 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
     <CatalogRowWatch
       catalog={sessionCatalogController}
       sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}
@@ -2103,6 +2085,18 @@ function AppShellContent({
     <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
       render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
+    <Conversation.SessionLocalMessages
+      sessionId={activeId}
+      queue={activeMessageQueue?.entries}
+      session={activeSession}
+      publish={addTransientMessage} update={updateTransientMessage}
+      retire={removeTransientMessage}
+      {...Conversation.composerMessageRecovery({
+        sessionId: activeId, directoryHostId, composerRef,
+        enabled: navSelection.section === 'sessions' && canStageComposerContext && !revisionDraft,
+        hasPendingContext: hasPendingContextNow, pendingQuotes, restoreMessageContext, restoreQuotes,
+      })}
+    />
     <SessionCollaboration.SessionTurnRequestInboxProvider
       catalog={sessionCatalogController}
       onOpenSession={openSession}
@@ -2350,6 +2344,7 @@ function AppShellContent({
                   streaming={turnActive}
                   processing={transientMessages.length > 0}
                   onSend={sendOwningItsTarget}
+                  retainSendContext={() => retainAttachments(submittableAttachments)}
                   onStop={stop}
                   pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}

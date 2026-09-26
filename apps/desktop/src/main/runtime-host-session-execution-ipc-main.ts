@@ -166,6 +166,7 @@ async function submitMessageWithReconnect(
 }
 
 export interface RuntimeHostSessionExecutionIpcDeps {
+  retireCancelledMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -366,6 +367,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
         throw new Error('Duplicate cancelled Message identities');
       }
+      deps.retireCancelledMessages?.(normalizedSessionId, cancelledMessageIds);
       return { cancelledMessageIds };
     },
   );
@@ -970,7 +972,7 @@ function retainedAttachmentsForSession(
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
-    "beforeStop" | "client" | "observer" | "emitSessionsChanged"
+    "beforeStop" | "client" | "observer" | "emitSessionsChanged" | "retireCancelledMessages"
   >,
   newId: () => string = randomUUID,
 ): (
@@ -996,6 +998,7 @@ function createRuntimeHostSessionStop(
             }),
           () => deps.client.getSession(sessionId),
         );
+        deps.retireCancelledMessages?.(sessionId, [entry.messageId]);
         deps.emitSessionsChanged('status-change', sessionId);
         return { kind: 'retracted', messageId: entry.messageId };
       }
@@ -1037,6 +1040,7 @@ function createRuntimeHostSessionStop(
       turnId: turn.turnId,
       runId: turn.runId,
     });
+    deps.retireCancelledMessages?.(sessionId, interrupted.retracted.map((message) => message.messageId));
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,
     });

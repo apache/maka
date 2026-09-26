@@ -53,7 +53,7 @@ export type ConversationFileSearchResult =
 
 export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
+  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
   readonly promptSuggestions?: {
     generate(sessionId: string): Promise<string | undefined>;

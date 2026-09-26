@@ -82,6 +82,8 @@ function installCatalogRenderer(t: TestContext) {
   }> = [];
   const services: ConversationServices = {
     listMessages: async () => [],
+    readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in catalog tests'); },
+    releaseRecoveryAttachments: async () => {},
     cancelMessage: async () => undefined,
     reconcileMessage: async () => undefined,
     subscribeChanges: () => () => undefined,

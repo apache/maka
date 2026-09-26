@@ -19,42 +19,51 @@
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
-interface SessionLocalCopy {
-  saved: string;
-  unknown: string;
-  failed: string;
-  remove: string;
-  check: string;
-  updateError: string;
-}
-
+const en = {
+  saved: 'Waiting to send',
+  unknown: 'Delivery not confirmed', failed: 'Message not sent', checking: 'Checking delivery',
+  offline: 'Waiting for a connection',
+  remove: 'Delete failed message', cancel: 'Cancel sending', check: 'Check delivery',
+  edit: 'Edit and resend', busy: 'Updating message', diagnostics: 'Delivery details',
+  failedDetail: 'Edit this message to send it again. Deleting it does not stop a running reply.',
+  unknownDetail: 'This message may have arrived. Check its delivery before sending it again.',
+  retryDetail: 'Delivery will be checked again automatically when connected.',
+  savedDetail: 'Saved on this device. It will send when delivery is available.',
+  updateError: 'Unable to update this message. Its saved copy is still available.',
+  draftBlocked: 'Finish or clear the current draft, attachments and quotes before editing this message.',
+  draftReady: 'Ready to edit. The failed message is kept until you delete it.',
+};
+type SessionLocalCopy = { [K in keyof typeof en]: string };
 const catalog = {
-  en: {
-    saved: 'Saved locally · waiting to send',
-    unknown: 'Host outcome unknown',
-    failed: 'Not sent · local copy retained',
-    remove: 'Remove local copy',
-    check: 'Check status',
-    updateError: 'Unable to update the saved message',
-  },
+  en,
   'zh-CN': {
-    saved: '已本地保存 · 等待发送',
-    unknown: 'Host 接受结果未知',
-    failed: '未发送 · 本地副本已保留',
-    remove: '移除本地副本',
-    check: '核对状态',
-    updateError: '无法更新已保存的消息',
+    saved: '等待发送',
+    unknown: '发送结果待确认', failed: '消息未发送', checking: '正在确认发送结果',
+    offline: '等待连接恢复',
+    remove: '删除失败消息', cancel: '取消发送', check: '确认发送结果',
+    edit: '编辑后重发', busy: '正在更新消息', diagnostics: '发送详情',
+    failedDetail: '可以编辑后重新发送。删除这条消息不会停止正在进行的回复。',
+    unknownDetail: '这条消息可能已送达。再次发送前，请先确认发送结果。',
+    retryDetail: '连接可用时会自动再次确认发送结果。',
+    savedDetail: '已保存在此设备上，将在可以发送时继续发送。',
+    updateError: '无法更新这条消息，已保存的内容仍然保留。',
+    draftBlocked: '请先完成或清空输入框中的草稿、附件和引用，再编辑这条消息。',
+    draftReady: '已恢复到输入框，可编辑后发送。失败消息会保留，直到你删除它。',
   },
   'zh-TW': {
-    saved: '已儲存於本機 · 等待傳送',
-    unknown: 'Host 接受結果未知',
-    failed: '未傳送 · 本機副本已保留',
-    remove: '移除本機副本',
-    check: '核對狀態',
-    updateError: '無法更新已儲存的訊息',
+    saved: '等待傳送',
+    unknown: '傳送結果待確認', failed: '訊息未傳送', checking: '正在確認傳送結果',
+    offline: '等待連線恢復',
+    remove: '刪除失敗訊息', cancel: '取消傳送', check: '確認傳送結果',
+    edit: '編輯後重送', busy: '正在更新訊息', diagnostics: '傳送詳情',
+    failedDetail: '可以編輯後重新傳送。刪除這則訊息不會停止正在進行的回覆。',
+    unknownDetail: '這則訊息可能已送達。再次傳送前，請先確認傳送結果。',
+    retryDetail: '連線可用時會自動再次確認傳送結果。',
+    savedDetail: '已儲存在此裝置上，將在可以傳送時繼續傳送。',
+    updateError: '無法更新這則訊息，已儲存的內容仍然保留。',
+    draftBlocked: '請先完成或清空輸入框中的草稿、附件和引用，再編輯這則訊息。',
+    draftReady: '已恢復到輸入框，可編輯後傳送。失敗訊息會保留，直到你刪除它。',
   },
 } satisfies UiCatalog<SessionLocalCopy>;
 
-export function getSessionLocalCopy(locale: UiLocale): SessionLocalCopy {
-  return catalog[locale];
-}
+export function getSessionLocalCopy(locale: UiLocale): SessionLocalCopy { return catalog[locale]; }

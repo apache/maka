@@ -97,6 +97,12 @@
   flex: 0 0 auto;
 }
 
+.maka-composer-queue-local-actions {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 0 var(--space-2) var(--space-1);
+}
+
 .maka-composer-queue-edit {
   width: 100%;
   min-width: 0;
@@ -686,11 +692,19 @@
   white-space: nowrap;
 }
 
-.maka-composer-queue-delivery {
+.maka-composer-queue-feedback {
+  display: block;
+  padding: 0 var(--space-2) var(--space-1);
   font-size: 11px;
   color: var(--muted-foreground);
 }
 
+.maka-composer-queue-delivery-detail {
+  display: block;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 /* Share a grid cell so a wrapping suggestion reserves exactly the same height
    as the accepted draft, without measuring layout or mutating the editor. */
 .maka-composer-input-suggestion-wrap { display: grid; min-width: 0; }

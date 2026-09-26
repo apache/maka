@@ -72,6 +72,12 @@ const OPTIMISTIC_BUBBLE: TransientUserMessageProjection = {
   transientPlacement: 'transcript',
 };
 
+const ACTIVE_SESSION: NonNullable<ComponentProps<typeof ChatView>['activeSession']> = {
+  id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
+  labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+  llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+};
+
 test('ChatView renders the optimistic bubble and running status before a session exists', () => {
   const markup = renderChatView({
     transientMessages: [{ ...OPTIMISTIC_BUBBLE, hostTurnId: 'turn-1' }],
@@ -145,11 +151,7 @@ test('a prompt on its way to the Host holds its Turn place beside a copy that di
 
 test('ordinary sends stay in ChatView while queued prompts stay in the composer', () => {
   const render = (message: TransientUserMessageProjection) => parseHTML(renderChatView({
-    activeSession: {
-      id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
-      labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
-    },
+    activeSession: ACTIVE_SESSION,
     transientMessages: [message],
   }, createElement(Composer, {
     pendingMessages: [message], onSend() {}, onStop() {},
@@ -172,5 +174,29 @@ test('ordinary sends stay in ChatView while queued prompts stay in the composer'
     const document = render({ ...OPTIMISTIC_BUBBLE, transientPlacement });
     assert.ok(document.querySelector('.maka-composer-queue')?.textContent?.includes(OPTIMISTIC_BUBBLE.text));
     assert.equal(document.querySelector('.maka-user-message'), null, `${transientPlacement} stays out of the transcript`);
+  }
+});
+
+test('failed local feedback remains outside a Host Turn while ordinary prompts group by its identity', () => {
+  for (const failed of [false, true]) {
+    const message: TransientUserMessageProjection = {
+      ...OPTIMISTIC_BUBBLE, hostTurnId: 'host-turn',
+      ...(failed ? {
+        deliveryStatus: 'Message not sent', deliveryTone: 'danger',
+        deliveryActions: [{ label: 'Edit and resend', onClick() {} }],
+      } as const : {}),
+    };
+    const { document } = parseHTML(renderChatView({
+      activeSession: ACTIVE_SESSION,
+      messages: [{ type: 'turn_state', id: 'started', turnId: 'host-turn', ts: 2, status: 'running' }],
+      activeTurn: { turnId: 'host-turn' },
+      transientMessages: [message],
+    }));
+    const prompt = document.querySelector('[data-transient-message-id="turn-1"]')!;
+    assert.ok(prompt, 'the local prompt remains visible exactly once');
+    assert.equal(document.querySelectorAll('[data-transient-message-id="turn-1"]').length, 1);
+    assert.equal(Boolean(prompt.closest('[data-transcript-turn-id="host-turn"]')), !failed);
+    assert.equal(Boolean(prompt.querySelector('.maka-message-delivery')), failed);
+    if (failed) assert.match(prompt.textContent!, /Edit and resend/);
   }
 });

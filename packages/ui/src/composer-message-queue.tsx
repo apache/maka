@@ -167,6 +167,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
           return (
             <div
               key={entry.entryId}
+              role={entry.localMessage ? 'listitem' : undefined}
               data-maka-queue-drop-target={reorderable ? 'true' : undefined}
               onDragOver={(event) => {
                 if (reorderable && dragEntryId.current) event.preventDefault();
@@ -174,6 +175,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
               onDrop={reorderable ? () => dropOn(entry.entryId) : undefined}
             >
               <ListItem
+              role={entry.localMessage ? 'presentation' : undefined}
               label={editing ? (
                 <textarea
                   autoFocus
@@ -201,7 +203,6 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                   <span className="maka-composer-queue-text" title={entry.content.displayText ?? entry.content.text}>
                     {entry.content.displayText ?? entry.content.text}
                   </span>
-                  {entry.localMessage?.deliveryStatus && <span className="maka-composer-queue-delivery" role="status" title={entry.localMessage.deliveryDetail}>{entry.localMessage.deliveryStatus}</span>}
                 </>
               )}
               style={{ minHeight: 28, paddingBlock: 0 }}
@@ -223,11 +224,9 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                   <GripVertical size={ICON_SIZE.control} aria-hidden="true" />
                 </span>
               )}
-              endContent={(
+              endContent={entry.localMessage ? undefined : (
                 <span className="maka-composer-queue-actions">
-                  {entry.localMessage?.deliveryActions?.length ? entry.localMessage.deliveryActions.map((action) => (
-                    <Button key={action.label} variant="ghost" size="sm" type="button" label={action.label} onClick={action.onClick} />
-                  )) : editing ? (
+                  {editing ? (
                     <>
                       <IconButton
                         variant="ghost"
@@ -300,6 +299,17 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                 </span>
               )}
             />
+            {entry.localMessage && <span className="maka-composer-queue-feedback" role="status">
+              {entry.localMessage.deliveryStatus && <span className="maka-composer-queue-delivery">{entry.localMessage.deliveryStatus}</span>}
+              {entry.localMessage.deliveryDetail && <span className="maka-composer-queue-delivery-detail">
+                {entry.localMessage.deliveryStatus && ' '}{entry.localMessage.deliveryDetail}
+              </span>}
+            </span>}
+            {!!entry.localMessage?.deliveryActions?.length && <span className="maka-composer-queue-actions maka-composer-queue-local-actions">
+              {entry.localMessage.deliveryActions.map((action) => (
+                <Button key={action.label} variant="ghost" size="sm" type="button" label={action.label} isDisabled={action.disabled} onClick={action.onClick} />
+              ))}
+            </span>}
             </div>
           );
         })}

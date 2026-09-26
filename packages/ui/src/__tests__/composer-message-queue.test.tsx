@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { act, createElement } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
+import type { ComposerMessageQueueProps } from '../composer-message-queue.js';
 import { getConversationCopy } from '../conversation-copy.js';
 import { installDom } from './mermaid-test-dom.js';
 
@@ -42,14 +43,7 @@ function queued(entryId: string, text: string): MessageQueueEntryProjection {
   };
 }
 
-async function mountQueue(props: {
-  queuedMessages: readonly MessageQueueEntryProjection[];
-  queueRevision?: number;
-  onUpdateEntry?(entryId: string, expectedQueueRevision: number, text: string): void | Promise<void>;
-  onDeleteEntry?(entryId: string): void | Promise<void>;
-  onPromoteEntry?(entryId: string): void | Promise<void>;
-  onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
-}) {
+async function mountQueue(props: Omit<ComposerMessageQueueProps, 'copy'>) {
   const dom = installDom();
   const { createRoot } = await import('react-dom/client');
   const { ComposerMessageQueue } = await import('../composer-message-queue.js');
@@ -174,6 +168,110 @@ test('queue actions stay disabled until the entry is Host-admitted', async () =>
     assert.ok(edits.every((button) => button.disabled), 'no row is editable without a queue revision');
   } finally {
     await view.close();
+  }
+});
+
+test('local delivery actions suppress activation while disabled and become usable again', async () => {
+  const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
+  const label = 'Edit and resend';
+  for (const transientPlacement of ['steering', 'follow_up'] as const) {
+    let calls = 0;
+    const pending = (disabled: boolean) => projectComposerMessageQueue([], [{
+      id: 'local', text: 'unsent message', ts: 1, transientPlacement,
+      deliveryActions: [{ label, disabled, onClick() { calls++; } }],
+    }]);
+    const view = await mountQueue({ queuedMessages: pending(true) });
+    try {
+      const button = actionButton(view.document, label);
+      const item = button.closest('[role="listitem"]');
+      assert.ok(item, 'a local message owns one semantic list item, including its feedback');
+      assert.equal(item.querySelector('li')?.getAttribute('role'), 'presentation');
+      assert.equal(item.querySelectorAll('[role="listitem"]').length, 0);
+      assert.ok(button.closest('.maka-composer-queue-local-actions'), 'local actions wrap below the message instead of consuming its width');
+      const actions = button.closest('.maka-composer-queue-local-actions');
+      assert.equal(actions?.parentElement, item, 'actions use the full row outside the compact ListItem');
+      assert.equal(actions?.previousElementSibling?.getAttribute('role'), 'status', 'recovery actions follow their status and guidance');
+      assert.ok(button.disabled, 'unavailable actions use native button disabling');
+      await click(button);
+      assert.equal(calls, 0, 'disabled delivery actions cannot invoke recovery');
+      await view.rerender({ queuedMessages: pending(false) });
+      assert.equal(actionButton(view.document, label).disabled, false);
+      await click(actionButton(view.document, label));
+      assert.equal(calls, 1, 'recovery becomes usable when the pending operation settles');
+    } finally {
+      await view.close();
+    }
+  }
+});
+
+test('local delivery feedback stays visible in one stable polite status region', async () => {
+  const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
+  const deliveryStatus = 'Message not sent';
+  const details = [
+    'Finish or clear the current draft, attachments and quotes before editing this message.',
+    'Could not update the saved message. Try again.',
+    'The message is ready in the composer. Review it before sending.',
+  ];
+  const message = { id: 'local', text: 'unsent message', ts: 1, transientPlacement: 'follow_up' as const };
+  const view = await mountQueue({ queuedMessages: projectComposerMessageQueue([], [message]) });
+  try {
+    const statusSelector = '.maka-composer-queue-feedback[role="status"]';
+    const status = view.document.querySelector(statusSelector);
+    assert.ok(status, 'the live region exists before feedback is available');
+    const item = status.closest('[role="listitem"]');
+    assert.ok(item);
+    assert.equal(status.parentElement, item, 'feedback gets a full-width row, outside the action-bearing ListItem');
+    assert.equal(status.closest('li'), null, 'feedback does not compete with actions in the compact ListItem');
+    assert.equal(item.querySelector('.maka-composer-queue-actions'), null, 'local rows without recovery actions do not show unavailable Host controls');
+    assert.equal(status.textContent, '');
+    for (const detail of details) {
+      await view.rerender({ queuedMessages: projectComposerMessageQueue([], [{
+        ...message, deliveryStatus, deliveryDetail: detail,
+      }]) });
+      assert.equal(view.document.querySelectorAll(statusSelector).length, 1);
+      assert.equal(view.document.querySelector(statusSelector), status, 'updates reuse the live region');
+      assert.equal(status.getAttribute('aria-live'), null, 'role=status already supplies polite announcements');
+      assert.equal(status.getAttribute('title'), null, 'feedback is not hidden in a pointer-only title');
+      assert.ok(status.textContent?.includes(deliveryStatus));
+      assert.ok(status.textContent?.includes(detail));
+      assert.ok(view.document.body.textContent?.includes(detail), 'recovery guidance is visible page text');
+    }
+  } finally {
+    await view.close();
+  }
+});
+
+test('Host-owned entries keep their ListItem semantics without a local feedback row', async () => {
+  const view = await mountQueue({ queuedMessages: [queued('host', 'queued message')] });
+  try {
+    assert.equal(view.document.querySelectorAll('.maka-composer-queue-list li').length, 1);
+    assert.equal(view.document.querySelector('.maka-composer-queue-list li')?.getAttribute('role'), null);
+    assert.equal(view.document.querySelectorAll('.maka-composer-queue-list [role="listitem"]').length, 0);
+    assert.equal(view.document.querySelector('.maka-composer-queue-feedback'), null);
+  } finally {
+    await view.close();
+  }
+});
+
+test('local messages without delivery actions never inherit Host queue controls', async () => {
+  const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
+  for (const deliveryActions of [undefined, []]) {
+    const message = { id: 'local', text: 'saved follow-up', ts: 1, transientPlacement: 'follow_up' as const,
+      deliveryStatus: 'Waiting to send', deliveryActions };
+    const view = await mountQueue({ queuedMessages: projectComposerMessageQueue([], [message]) });
+    try {
+      const item = view.document.querySelector('.maka-composer-queue-list [role="listitem"]');
+      assert.ok(item);
+      assert.equal(item.querySelector('.maka-composer-queue-delivery')?.textContent, 'Waiting to send');
+      assert.equal(item.querySelectorAll('button').length, 0, 'saved messages have no fake Host actions');
+      await view.rerender({ queuedMessages: projectComposerMessageQueue([], [{
+        ...message, deliveryActions: [{ label: 'Check delivery', onClick() {} }],
+      }]) });
+      assert.equal(item.querySelectorAll('button').length, 1);
+      assert.equal(item.querySelector('button')?.textContent, 'Check delivery');
+    } finally {
+      await view.close();
+    }
   }
 });
 

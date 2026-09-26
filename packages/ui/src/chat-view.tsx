@@ -124,7 +124,10 @@ export interface ChatViewGoalIndicatorProps {
 export interface TransientUserMessageProjection {
   deliveryStatus?: string;
   deliveryDetail?: string;
-  deliveryActions?: readonly { label: string; onClick(): void }[];
+  deliveryTone?: 'neutral' | 'warning' | 'danger';
+  deliveryDiagnostic?: string;
+  deliveryDiagnosticLabel?: string;
+  deliveryActions?: readonly { label: string; disabled?: boolean; onClick(): void }[];
   id: string;
   text: string;
   ts: number;
@@ -492,6 +495,7 @@ export function ChatView(props: {
     const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
     if (
       turn === undefined
+      || message.deliveryTone === 'danger'
       || turn.user !== undefined
       || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
     ) continue;

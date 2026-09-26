@@ -44,9 +44,11 @@ let root: Root | undefined;
 
 const sessionLocalServices: Pick<
   ConversationServices,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
+  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
 > = {
   listMessages: async () => [],
+  readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in reference tests'); },
+  releaseRecoveryAttachments: async () => {},
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,
   subscribeChanges: () => () => undefined,

@@ -203,3 +203,49 @@ test('keeps a transient message send time when a later update carries a new time
 
   assert.deepEqual(mergeTransientMessageProjection(first, later), { ...later, ts: 2 });
 });
+
+test('explicit three-state placement updates are not locked by local delivery feedback', () => {
+  for (const from of ['transcript', 'steering', 'follow_up'] as const) {
+    for (const to of ['transcript', 'steering', 'follow_up'] as const) {
+      const current = {
+        ...transient, transientPlacement: from, hostTurnId: 'host-turn',
+        deliveryStatus: 'Delivery not confirmed', deliveryTone: 'warning' as const,
+      };
+      const merged = mergeTransientMessageProjection(current, {
+        ...transient, transientPlacement: to, ts: 9, deliveryStatus: 'Message not sent',
+      });
+      assert.equal(merged.transientPlacement, to, `${from} -> ${to}`);
+      assert.equal(merged.hostTurnId, 'host-turn', 'late local updates retain Host identity');
+      assert.equal(merged.ts, transient.ts, 'placement changes do not move the send time');
+      assert.equal(merged.deliveryTone, 'warning');
+    }
+  }
+});
+
+test('queue and late IPC projections preserve local delivery controls until canonical handoff', () => {
+  const local = {
+    ...transient, deliveryStatus: 'Checking delivery', deliveryTone: 'warning' as const,
+    deliveryDiagnostic: 'lost acknowledgement', deliveryDiagnosticLabel: 'Delivery details',
+    deliveryActions: [{ label: 'Check delivery', disabled: true, onClick() {} }],
+  };
+  const pending = new Map([[local.id, local]]);
+  projectQueuedTransientMessages(pending, [{ ...transient, text: 'Host content' }]);
+  const queued = pending.get(local.id)!;
+  assert.equal(queued.text, 'Host content');
+  assert.equal(queued.deliveryStatus, local.deliveryStatus);
+  assert.equal(queued.deliveryTone, 'warning');
+  assert.equal(queued.deliveryActions, local.deliveryActions);
+  assert.equal(queued.deliveryDiagnostic, local.deliveryDiagnostic);
+  assert.equal(queued.deliveryDiagnosticLabel, local.deliveryDiagnosticLabel);
+  const accepted = mergeTransientMessageProjection(queued, {
+    ...transient, deliveryTone: 'neutral', deliveryDiagnostic: undefined,
+    deliveryDiagnosticLabel: undefined, deliveryDetail: undefined,
+    deliveryActions: [], deliveryStatus: undefined,
+  });
+  assert.equal(accepted.deliveryStatus, undefined, 'ordinary admission clears non-actionable progress');
+  assert.equal(accepted.deliveryDetail, undefined);
+  assert.equal(accepted.deliveryDiagnostic, undefined);
+  assert.equal(accepted.deliveryDiagnosticLabel, undefined);
+  assert.deepEqual(accepted.deliveryActions, []);
+  assert.deepEqual(reconcileTransientMessages(pending, [canonicalSend()]), []);
+});

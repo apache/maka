@@ -1,0 +1,206 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { localMessagePresentation, composerSend, composerFollowUp, composerMessageRecovery } from '../../renderer/features/conversation/testing.js';
+import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
+import type { QuoteRef } from '@maka/core/events';
+import type { ComposerHandle } from '@maka/ui';
+import type { PendingAttachment } from '@maka/ui/composer-attachments';
+
+const message: DesktopLocalMessage = {
+  sessionId: 'session', messageId: 'message', text: 'hello', state: 'accepted', createdAt: 1,
+  canCancel: false, placement: 'current_turn', attachments: [], inlineReferences: [],
+};
+test('ordinary delivery stays silent and admission receipts never claim live progress', () => {
+  for (const admission of ['followup', 'steering', 'turn_started'] as const) {
+    assert.deepEqual(localMessagePresentation({ ...message, admission, turnId: 'old-turn' }, 'en'), { tone: 'neutral' });
+  }
+  assert.deepEqual(localMessagePresentation({ ...message, state: 'sending' }, 'en'), { tone: 'neutral' });
+  assert.deepEqual(localMessagePresentation({ ...message, state: 'saved', delivering: true }, 'en'), { tone: 'neutral' });
+});
+
+test('offline or failed delivery retains actionable feedback', () => {
+  const saved = { ...message, state: 'saved' as const };
+  assert.equal(localMessagePresentation(saved, 'en').status, 'Waiting to send');
+  assert.equal(localMessagePresentation({ ...saved, waitingForConnection: true }, 'en').status, 'Waiting for a connection');
+  assert.equal(localMessagePresentation({ ...saved, delivering: true, error: 'Host not ready' }, 'en').status, 'Waiting to send');
+  assert.equal(localMessagePresentation({ ...saved, state: 'failed', delivering: true }, 'en').status, 'Message not sent');
+});
+test('unknown outcome only promises checking when a check is active or scheduled', () => {
+  const unknown = { ...message, state: 'unknown' as const };
+  assert.equal(localMessagePresentation(unknown, 'en').status, 'Delivery not confirmed');
+  assert.doesNotMatch(localMessagePresentation(unknown, 'en').detail!, /automatically/);
+  assert.equal(localMessagePresentation({ ...unknown, checking: true }, 'en').status, 'Checking delivery');
+  assert.match(localMessagePresentation({ ...unknown, retryScheduled: true }, 'en').detail!, /automatically/);
+  assert.doesNotMatch(localMessagePresentation({ ...unknown, retryScheduled: true, waitingForConnection: true }, 'en').detail!, /automatically/);
+});
+
+
+test('follow-up recovery consumes context only after admission and preserves it on refusal or error', async () => {
+  const quotes = [{ text: 'original quote', sourceTurnId: 'old-turn' }];
+  for (const outcome of [false, true, 'error'] as const) {
+    let cleared = 0;
+    let errors = 0;
+    let held = false;
+    let releases = 0;
+    const submit = composerFollowUp({
+      pending: undefined, quotes, directoryOptions: {},
+      retainAttachments() {
+        held = true;
+        return () => { held = false; releases++; };
+      },
+      async enqueueMessage(sessionId, text, placement, pending, options) {
+        assert.equal(held, true, 'the Follow Up owns its attachments before the first await');
+        assert.equal(sessionId, 'session');
+        assert.equal(text, 'recovered');
+        assert.equal(placement, 'next_turn');
+        assert.equal(pending, undefined);
+        assert.deepEqual(options.quotes, quotes);
+        if (outcome === 'error') throw new Error('delivery failed');
+        return outcome;
+      },
+      clearSubmittedContext() { assert.equal(held, true); cleared++; }, clearQuotes() { cleared++; },
+      onError() { errors++; },
+    });
+    assert.equal(await submit('session', 'recovered', 'queue'), outcome === true);
+    assert.equal(cleared, outcome === true ? 2 : 0);
+    assert.equal(errors, outcome === 'error' ? 1 : 0);
+    assert.equal(held, false);
+    assert.equal(releases, 1);
+  }
+});
+
+test('ordinary sends retain the captured attachments across readiness and release on every outcome', async () => {
+  const pending: PendingAttachment[] = [{
+    stagingKey: 'recovered', displayName: 'a.txt', kind: 'code', size: 1,
+    source: { type: 'approval', approvalId: 'local-recovery:one', name: 'a.txt' },
+  }];
+  for (const outcome of [true, false, 'error'] as const) {
+    const events: string[] = [];
+    let settle!: () => void;
+    const ready = new Promise<void>((resolve) => { settle = resolve; });
+    const send = composerSend({
+      pending,
+      retainAttachments(captured) {
+        assert.equal(captured, pending);
+        events.push('hold');
+        return () => events.push('release');
+      },
+      setPending: (value) => { events.push(`pending:${value}`); },
+      async send(text) {
+        assert.equal(text, 'send restored content');
+        events.push('readiness');
+        await ready;
+        if (outcome === 'error') throw new Error('readiness failed');
+        return outcome;
+      },
+    });
+    const result = send('send restored content');
+    assert.deepEqual(events, ['hold', 'pending:true', 'readiness']);
+    settle();
+    if (outcome === 'error') await assert.rejects(result, /readiness failed/);
+    else assert.equal(await result, outcome);
+    assert.deepEqual(events, ['hold', 'pending:true', 'readiness', 'release', 'pending:false']);
+  }
+});
+
+const recoveredDraft: DesktopLocalMessageDraft = {
+  messageId: 'failed-message', text: '/swarm inspect repository',
+  attachments: [{ kind: 'code', name: 'saved.ts', mimeType: 'text/plain', bytes: 3,
+    ref: { kind: 'workspace_file', relativePath: 'saved.ts' } }],
+  stagedAttachments: [{ approvalId: 'local-recovery:draft', name: 'draft.ts', mimeType: 'text/plain', size: 3 }],
+  directoryReferences: [{ hostId: 'host', path: '/workspace' }],
+  quotes: [{ text: 'original quote', sourceTurnId: 'original-turn' }],
+  inlineReferences: [{ kind: 'workspace_file', value: 'repository', label: 'repository', start: 15 }],
+};
+
+function recoveryFixture(options: { sessionId?: string; enabled?: boolean; hasPendingContext?: boolean } = {}) {
+  const restored: unknown[][] = [];
+  let text = '';
+  const composerRef: { current: Pick<ComposerHandle, 'getText' | 'setText'> | null } = {
+    current: {
+      getText: () => text,
+      setText(value, references) { restored.push(['text', value, references]); text = value; },
+    },
+  };
+  const pendingQuotes: QuoteRef[] = [];
+  const recovery = composerMessageRecovery({
+    sessionId: 'session', directoryHostId: 'host', composerRef,
+    enabled: true, pendingQuotes, ...options, hasPendingContext: () => options.hasPendingContext ?? false,
+    restoreMessageContext(sessionId, hostId, draft) { restored.push(['context', sessionId, hostId, draft]); },
+    restoreQuotes(sessionId, quotes) { restored.push(['quotes', sessionId, quotes]); },
+  });
+  return { recovery, composerRef, pendingQuotes, restored, setText(value: string) { text = value; } };
+}
+
+test('failed-message recovery preserves complete context, text, and inline tokens in restore order', () => {
+  const { recovery, restored } = recoveryFixture();
+  assert.equal(recovery.canRestoreDraft(), true);
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored, [
+    ['context', 'session', 'host', recoveredDraft],
+    ['quotes', 'session', recoveredDraft.quotes],
+    ['text', recoveredDraft.text, recoveredDraft.inlineReferences],
+  ]);
+  assert.equal(recovery.canRestoreDraft(), false);
+});
+
+test('failed-message recovery checks the live composer and quote bucket before overwriting', () => {
+  const { recovery, composerRef, pendingQuotes, restored, setText } = recoveryFixture();
+  assert.equal(recovery.canRestoreDraft(), true);
+  setText('newer draft');
+  assert.equal(recovery.canRestoreDraft(), false);
+  setText('');
+  pendingQuotes.push({ text: 'newer quote' });
+  assert.equal(recovery.canRestoreDraft(), false);
+  pendingQuotes.length = 0;
+  assert.equal(recovery.canRestoreDraft(), true);
+  composerRef.current = null;
+  assert.equal(recovery.canRestoreDraft(), false);
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored, []);
+});
+
+test('failed-message recovery respects shell eligibility, staged context, and missing session fences', () => {
+  for (const options of [{ enabled: false }, { hasPendingContext: true }, { sessionId: undefined }]) {
+    assert.equal(recoveryFixture(options).recovery.canRestoreDraft(), false);
+  }
+  const { recovery, restored } = recoveryFixture({ sessionId: undefined });
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored, []);
+});
+
+test('failed-message recovery resolves the mounted composer when each callback runs', () => {
+  const { recovery, composerRef, restored } = recoveryFixture();
+  assert.equal(recovery.canRestoreDraft(), true);
+  composerRef.current = {
+    getText: () => 'another composer draft',
+    setText: () => assert.fail('the blocked composer must not be overwritten'),
+  };
+  assert.equal(recovery.canRestoreDraft(), false);
+  composerRef.current = {
+    getText: () => '',
+    setText(text, references) { restored.push(['replacement', text, references]); },
+  };
+  assert.equal(recovery.canRestoreDraft(), true);
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored.at(-1), ['replacement', recoveredDraft.text, recoveredDraft.inlineReferences]);
+});

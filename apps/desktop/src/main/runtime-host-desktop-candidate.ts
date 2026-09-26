@@ -123,6 +123,8 @@ type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler"
 
 export interface DesktopRuntimeHostCandidateDeps {
   readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
+  readonly retireCancelledMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
+  readonly failNotAdmittedMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
   readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
@@ -665,9 +667,33 @@ export async function createDesktopRuntimeHostCandidate(
         interactions,
       });
     };
+    const retireCancelledMessages = (sessionId: string, messageIds: readonly string[]) => {
+      if (target.access === 'owner' && isTargetActive()) {
+        deps.retireCancelledMessages?.(scope, sessionId, messageIds);
+      }
+    };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
       transcriptHistoryBytes: deps.transcriptHistoryBytes,
+      onMessageRetraction: (sessionId, messageIds, proof) => {
+        if (target.access !== 'owner' || !isTargetActive()) return;
+        // Execution resolution is already positive Host proof. Preserve its
+        // kind: not_admitted has no cancellation tombstone to query, and its
+        // unsent content must remain recoverable instead of being discarded.
+        if (proof === 'not_admitted') {
+          deps.failNotAdmittedMessages?.(scope, sessionId, messageIds);
+          return;
+        }
+        if (proof === 'cancelled') {
+          retireCancelledMessages(sessionId, messageIds);
+          return;
+        }
+        // Projection disappearance alone is not durable cancellation proof.
+        // Another client may have stopped the Turn: confirm with the Host first.
+        void client.queryMessages({ sessionId, messageIds })
+          .then((result) => retireCancelledMessages(sessionId, result.cancelledMessageIds))
+          .catch(reportError);
+      },
       cacheTranscript: (snapshot) => {
         if (target.access === 'owner') deps.cacheTranscript?.(scope, snapshot);
       },
@@ -925,6 +951,7 @@ export async function createDesktopRuntimeHostCandidate(
           {
             client,
             observer: sessionObserver,
+            retireCancelledMessages,
             attachmentApprovals: deps.attachmentApprovals,
             emitSessionsChanged,
             stat: deps.stat,

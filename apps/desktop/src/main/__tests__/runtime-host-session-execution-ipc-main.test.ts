@@ -1040,6 +1040,7 @@ test("submits an ordinary composer message once under its stable message identit
 test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
   const queriedMessageIds: string[][] = [];
+  const retired: unknown[] = [];
   registerExecutionIpc(
     {
       client: executionClient({
@@ -1052,6 +1053,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
           };
         },
       }),
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
     },
     ipc,
   );
@@ -1064,6 +1066,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
     { cancelledMessageIds: ['message-cancelled'] },
   );
   assert.deepEqual(queriedMessageIds, [['message-accepted', 'message-cancelled']]);
+  assert.deepEqual(retired, [{ sessionId: 'session-1', messageIds: ['message-cancelled'] }]);
 });
 
 test('batches cancellation proof queries at the Runtime Host protocol boundary', async () => {
@@ -1969,6 +1972,7 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
 });
 
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
+  const retired: unknown[] = [];
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
   const retractions: unknown[] = [];
@@ -2057,6 +2061,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       beforeStop() {
         stopLifecycle.push("teardown");
       },
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
       newId: () => `id-${++sequence}`,
     },
     ipc,
@@ -2123,6 +2128,10 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   assert.deepEqual(stopLifecycle, [
     'teardown',
     'interrupt',
+  ]);
+  assert.deepEqual(retired, [
+    { sessionId: 'session-1', messageIds: ['steer-ticket-1'] },
+    { sessionId: 'session-1', messageIds: ['message-followup'] },
   ]);
 
   assert.deepEqual(submits, [

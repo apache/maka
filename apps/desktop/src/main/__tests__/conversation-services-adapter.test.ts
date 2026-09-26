@@ -27,6 +27,7 @@ test('Desktop conversation adapter keeps snapshot reads and catalog access on th
   const bridge = {
     sessionLocal: {
       listMessages: async () => [],
+      releaseRecoveryAttachments: async (ids: readonly string[]) => { calls.push(`release:${ids.join(',')}`); },
       cancelMessage: async () => undefined,
       reconcileMessage: async () => undefined,
       subscribeChanges: () => () => undefined,
@@ -58,7 +59,8 @@ test('Desktop conversation adapter keeps snapshot reads and catalog access on th
 
   await services.sessions.readSnapshot('source');
   services.runtimeHosts.subscribeChanges(() => undefined);
-  assert.deepEqual(calls, ['snapshot:source', 'host-changes']);
+  await services.releaseRecoveryAttachments(['local-recovery:source']);
+  assert.deepEqual(calls, ['snapshot:source', 'host-changes', 'release:local-recovery:source']);
 });
 
 

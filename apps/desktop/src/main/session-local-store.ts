@@ -349,6 +349,53 @@ export class DesktopSessionLocalStore {
     });
   }
 
+  /** Successful Stop responses and durable Host tombstones prove cancellation
+   * across Host restarts: the current epoch need not match the dispatch epoch.
+   * Delete exact dispatched identities in one commit; worker ownership fences late ACKs.
+   */
+  retireCancelledMessages(partition: string, sessionId: string, messageIds: readonly string[]): boolean {
+    if (!messageIds.length) return false;
+    return this.#transaction(() => {
+      let changed = false;
+      const remove = this.#db.prepare(
+        'DELETE FROM outbox WHERE partition = ? AND session_id = ? AND message_id = ?',
+      );
+      for (const messageId of messageIds) {
+        const record = this.get(partition, messageId);
+        if (!record || record.sessionId !== sessionId || !record.intent.originHostEpoch) continue;
+        if (remove.run(partition, sessionId, messageId).changes) changed = true;
+      }
+      // Like retireObservedMessages, removing outbox rows does not invalidate
+      // a pending canonical transcript snapshot for the same Session.
+      return changed;
+    });
+  }
+
+  /** A positive Host not_admitted proof releases delivery ordering, but is
+   * not user cancellation: retain the exact local content for recovery.
+   */
+  failNotAdmittedMessages(partition: string, sessionId: string, messageIds: readonly string[]): boolean {
+    if (!messageIds.length) return false;
+    return this.#transaction(() => {
+      let changed = false;
+      const fail = this.#db.prepare(
+        'UPDATE outbox SET state = ?, payload = ? WHERE partition = ? AND session_id = ? AND message_id = ?',
+      );
+      for (const messageId of messageIds) {
+        const record = this.get(partition, messageId);
+        if (!record || record.sessionId !== sessionId || !record.intent.originHostEpoch || record.state === 'failed') continue;
+        const failed: LocalOutboxRecord = {
+          ...record,
+          state: 'failed',
+          result: undefined,
+          error: 'The Host never admitted this message; the local copy is retained.',
+        };
+        if (fail.run('failed', JSON.stringify(failed), partition, sessionId, messageId).changes) changed = true;
+      }
+      return changed;
+    });
+  }
+
   saveTranscript(partition: string, snapshot: DesktopTranscriptReplicaSnapshot): void {
     const payload = JSON.stringify(snapshot);
     if (Buffer.byteLength(payload) > MAX_CACHE_SESSION_BYTES) return;
