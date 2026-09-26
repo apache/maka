@@ -38,6 +38,7 @@ Code and focused tests are the final authority. Windows enforcement work is trac
 
 - `types.ts` defines sandbox selection, command, path-context, execution-request, and typed failure contracts.
 - `sandbox-manager.ts` decides whether a profile requires a sandbox, selects a platform backend, and delegates transformation.
+- `macos-command-paths.ts` resolves canonical Apple developer runtime directories and verifies the Apple signer before command policy construction.
 - `macos-seatbelt.ts` builds the Seatbelt policy and wraps inner argv with `/usr/bin/sandbox-exec`.
 - `linux-sandbox.ts` builds the bubblewrap mounts, namespace arguments, and network seccomp filter.
 - `linux-capability.ts` proves bubblewrap and namespace availability before selection is usable.
@@ -52,6 +53,9 @@ Code and focused tests are the final authority. Windows enforcement work is trac
 - Unrestricted, disabled, and external profiles do not add a Maka-managed local sandbox.
 - `require` forces platform sandbox selection; `forbid` selects host execution and is an internal orchestration input, not proof of approval.
 - macOS selects the Seatbelt backend and fails closed when the backend is unavailable.
+- Writable sandboxed macOS commands admit the selected CLT/Xcode library roots only after Apple-anchor signature verification. Selection and verification each have a one-second subprocess timeout; failure adds no roots. Read-only and unsandboxed commands perform no toolchain discovery.
+- Explicit path denies also apply to executable and runtime-readable roots, including filesystem-worker dependency roots. A deny overlapping required libraries can prevent worker startup; these implementation grants do not override the requested boundary.
+- The selected toolchain is canonicalized and revalidated immediately before policy construction, without process-lifetime caching. Its canonical directory is not fd-pinned, so replacement before child startup remains a residual limitation.
 - Linux selects the bubblewrap backend and fails closed when its executable, namespace probe, or
   requested profile cannot be enforced.
 - Windows selects the AppContainer broker only when its packaged native resource exists; otherwise it
@@ -96,6 +100,7 @@ A bypass boundary, unrestricted managed profiles, and disabled profiles do not r
 
 - Core profile factories, compiler, and matchers: `packages/core/src/__tests__/permission-profile*.test.ts`
 - Selection and transformation: `packages/runtime/src/__tests__/sandbox-manager.test.ts`
+- macOS toolchain selection and signer validation: `packages/runtime/src/__tests__/macos-command-paths.test.ts`
 - macOS policy and wrapper: `packages/runtime/src/__tests__/macos-seatbelt.test.ts`
 - macOS platform behavior: `packages/runtime/src/__tests__/macos-seatbelt-smoke.test.ts`
 - macOS filesystem-worker behavior: `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts`

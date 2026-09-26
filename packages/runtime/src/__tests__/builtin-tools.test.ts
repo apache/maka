@@ -1534,6 +1534,71 @@ describe('builtin Bash streaming output', () => {
     }
   });
 
+  test('does not turn Git config references into host-discovered sandbox grants', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-bash-no-git-config-scan-'));
+    try {
+      const config = join(root, 'outside.config');
+      await writeFile(config, `[include]\n\tpath = ${join(root, 'included.config')}\n`);
+      let input: Parameters<ShellRunLauncher['runForegroundBash']>[0] | undefined;
+      const shellRuns: ShellRunLauncher = {
+        async runForegroundBash(value) {
+          input = value;
+          return {
+            kind: 'terminal',
+            cwd: value.cwd,
+            cmd: value.command,
+            status: 'completed',
+            exitCode: 0,
+            output: {
+              mode: 'pipes',
+              stdout: '',
+              stderr: '',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              redacted: false,
+            },
+          };
+        },
+        async runBackgroundBash() {
+          throw new Error('not used');
+        },
+      };
+      const bash = buildBuiltinTools({
+        shellRuns,
+        shellEnvironment: { GIT_CONFIG_GLOBAL: config },
+        permissionProfile: createWorkspaceWritePermissionProfile(),
+        sandboxManager: new SandboxManager([new MacosSeatbeltBackend()]),
+        sandboxPlatform: 'darwin',
+      }).find((candidate) => candidate.name === 'Bash');
+      if (!bash) throw new Error('Bash tool missing');
+
+      await bash.impl(
+        { command: '/usr/bin/git status --short' },
+        {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          toolCallId: 'tool-1',
+          cwd: root,
+          permissionMode: 'ask',
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+        },
+      );
+
+      assert.ok(input?.argv);
+      assert.equal(
+        input.argv.some((argument) => argument.includes(config)),
+        false,
+      );
+      assert.equal(
+        input.argv.some((argument) => argument.includes('RUNTIME_READABLE_FILE')),
+        false,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('Read treats runtime background task refs as whole resources', async () => {
     const calls: unknown[] = [];
     const runtimeResources = {

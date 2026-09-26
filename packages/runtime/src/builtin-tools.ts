@@ -87,6 +87,7 @@ import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-m
 import { SandboxCommandError } from './sandbox/errors.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
 import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
+import { resolveMacosCommandPaths } from './sandbox/macos-command-paths.js';
 import { pinExistingLinuxProfilePath } from './sandbox/linux-profile-path.js';
 import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
 import type { ChildFdInput } from './child-fd-input.js';
@@ -235,6 +236,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
                     ctx,
                     requiredBoundary,
                     'background_command',
+                    options.shellEnvironment,
                   );
                   if (!options.shellEnvironment) return transformed;
                   return {
@@ -743,6 +745,7 @@ function sandboxCommand(
   ctx: MakaToolContext,
   requiredBoundary?: SandboxBoundaryExpansion,
   domain: 'command' | 'background_command' = 'command',
+  environment?: Readonly<Record<string, string | undefined>>,
 ):
   | {
       argv?: readonly string[];
@@ -761,7 +764,7 @@ function sandboxCommand(
     boundary?.kind === 'managed'
       ? { profile: boundary.profile, workspaceRoots: [cwd] }
       : effectivePermissionProfile(explicitProfile, ctx.permissionMode ?? 'ask', cwd);
-  const env = { ...process.env };
+  const env = { ...process.env, ...environment };
   if (pty) {
     if (profileRequiresSandbox(effective.profile)) {
       throw new SandboxCommandError({
@@ -831,6 +834,15 @@ function sandboxCommand(
     });
   }
   const onCompletion = preparedProfilePathCompletion(preparedProfile.paths);
+  // Discovery is deliberately adjacent to policy construction. The selected
+  // path is canonicalized and code-sign validated, but is not fd-pinned;
+  // replacement after this point remains a documented residual limitation.
+  const macosPaths =
+    platform === 'darwin'
+      ? manager.shouldSandbox(effective.profile)
+        ? resolveMacosCommandPaths(effective.profile, env)
+        : { executableRoots: [] }
+      : undefined;
 
   let result: ReturnType<SandboxManager['transform']>;
   try {
@@ -846,9 +858,12 @@ function sandboxCommand(
           workspaceRoots: effective.workspaceRoots,
           tmpdir: tmpdir(),
           ...(platform === 'win32' ? {} : { slashTmp: '/tmp' }),
-          ...(platform === 'darwin'
+          ...(macosPaths
             ? {
-                executableRoots: macosRuntimeExecutableRoots(process.execPath),
+                executableRoots: [
+                  ...macosRuntimeExecutableRoots(process.execPath),
+                  ...macosPaths.executableRoots,
+                ],
               }
             : {}),
           ...(platform === 'linux'
