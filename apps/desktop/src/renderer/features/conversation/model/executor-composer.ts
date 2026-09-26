@@ -43,6 +43,7 @@ export function executorComposerProps(
             loading: executor.loading,
             error: executor.error,
             onSelect: (selection) => executor.select(selection),
+            onRestore: () => executor.restore(),
             onRetry: () => {
               void executor.refresh();
             },

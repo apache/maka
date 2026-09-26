@@ -52,6 +52,7 @@ export interface ExecutorModelPickerProps {
   onSetup(): void;
   onRetry(): void;
   onNewTask(): void;
+  onRestore?(): void | Promise<void>;
 }
 
 interface ExecutorCopy {
@@ -64,6 +65,11 @@ interface ExecutorCopy {
   unavailable: string;
   authentication_required: string;
   history_only: string;
+  restorable: string;
+  restoring: string;
+  restore_failed: string;
+  history_gap: string;
+  restore: string;
   fixed: string;
   attachments: string;
   retry: string;
@@ -83,6 +89,11 @@ const EXECUTOR_COPY = {
     authentication_required: 'Sign in from External Agents settings.',
     history_only:
       'The external process was lost. History is readable; start a new task to continue.',
+    restorable: 'The external Session can be restored. Restore it before continuing.',
+    restoring: 'Restoring the external Session…',
+    restore_failed: 'Restoration failed. History is readable; retry or start a new task.',
+    history_gap: 'The Agent may be ahead of saved history. Start a new task to avoid an incomplete transcript.',
+    restore: 'Restore Session',
     fixed: 'Start a new task to switch executors.',
     attachments:
       'This executor does not support these attachments. Remove them or select Maka. Your draft is preserved.',
@@ -100,6 +111,11 @@ const EXECUTOR_COPY = {
     unavailable: '当前不可用，请检查设置后重试。',
     authentication_required: '需要登录，请前往外部 Agent 设置。',
     history_only: '外部进程已丢失。历史仍可阅读，请新建任务继续。',
+    restorable: '外部会话可以恢复。请先恢复，再继续对话。',
+    restoring: '正在恢复外部会话…',
+    restore_failed: '恢复失败，历史仍可阅读。请重试或新建任务。',
+    history_gap: 'Agent 的进度可能超出已保存历史。请新建任务，避免记录不完整。',
+    restore: '恢复会话',
     fixed: '切换执行者需要新建任务。',
     attachments: '此执行者不支持这些附件。请移除附件或选择 Maka，草稿会保留。',
     retry: '重试',
@@ -116,6 +132,11 @@ const EXECUTOR_COPY = {
     unavailable: '目前無法使用，請檢查設定後重試。',
     authentication_required: '需要登入，請前往外部 Agent 設定。',
     history_only: '外部程序已遺失。歷史仍可閱讀，請建立新任務繼續。',
+    restorable: '外部會話可以恢復。請先恢復，再繼續對話。',
+    restoring: '正在恢復外部會話…',
+    restore_failed: '恢復失敗，歷史仍可閱讀。請重試或建立新任務。',
+    history_gap: 'Agent 的進度可能超出已儲存歷史。請建立新任務，避免記錄不完整。',
+    restore: '恢復會話',
     fixed: '切換執行者需要建立新任務。',
     attachments: '此執行者不支援這些附件。請移除附件或選擇 Maka，草稿會保留。',
     retry: '重試',
@@ -187,6 +208,12 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
   const openNewTask = () => {
     setOpen(false);
     props.onNewTask();
+  };
+  const restore = () => {
+    if (props.onRestore && !selecting) {
+      setSelecting(true);
+      void Promise.resolve(props.onRestore()).catch(() => setSelectionFailed(true)).finally(() => setSelecting(false));
+    }
   };
   const lockedTo = props.fixed ? props.selection?.executorId ?? NATIVE : undefined;
   return (
@@ -283,9 +310,11 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
               ) : (
                 <div className="maka-executor-picker-readiness">
                   <p>{browsed ? copy[browsed.readiness] : copy.unavailable}</p>
-                  {browsed?.readiness === 'history_only' ? (
+                  {browsed?.readiness === 'restorable' || browsed?.readiness === 'restore_failed' ? (
+                    <Button label={copy.restore} variant="ghost" size="sm" isDisabled={selecting || !props.onRestore} onClick={restore} />
+                  ) : browsed?.readiness === 'history_only' || browsed?.readiness === 'history_gap' ? (
                     <Button label={copy.newTask} variant="ghost" size="sm" onClick={openNewTask} />
-                  ) : (
+                  ) : browsed?.readiness === 'restoring' ? null : (
                     <Button label={copy.manage} variant="ghost" size="sm" onClick={openSetup} />
                   )}
                 </div>
@@ -307,9 +336,11 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
       {(selectedUnavailable || props.error) && (
         <span role="status" className="maka-executor-notice">
           {selected && selected.readiness !== 'ready' ? copy[selected.readiness] : copy.unavailable}
-          {selected?.readiness === 'history_only' ? (
+          {selected?.readiness === 'restorable' || selected?.readiness === 'restore_failed' ? (
+            <Button label={copy.restore} variant="ghost" size="sm" isDisabled={selecting || !props.onRestore} onClick={restore} />
+          ) : selected?.readiness === 'history_only' || selected?.readiness === 'history_gap' ? (
             <Button label={copy.newTask} variant="ghost" size="sm" onClick={openNewTask} />
-          ) : (
+          ) : selected?.readiness === 'restoring' ? null : (
             <>
               <Button label={copy.manage} variant="ghost" size="sm" onClick={openSetup} />
               <Button

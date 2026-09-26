@@ -155,6 +155,28 @@ test('executor bindings pin one provider generation', async () => {
   await root.fiber.dispose();
 });
 
+test('executor acknowledgement is bound to one Session and provider generation', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const owner = plugin(root, 'profile', 'provider', 1);
+  const acknowledged: string[] = [];
+  const dispose = owner.executors.register({
+    id: 'remote',
+    execute: async () => ({ status: 'completed', text: 'ok' }),
+    acknowledgeExecution: async (conversationKey, turnId) => {
+      acknowledged.push(`${conversationKey}:${turnId}`);
+    },
+  });
+  const binding = service.bind('session-a', 'remote');
+  await binding.acknowledgeExecution!('session-a', 'turn-a');
+  await assert.rejects(binding.acknowledgeExecution!('session-b', 'turn-b'));
+  assert.deepEqual(acknowledged, ['session-a:turn-a']);
+  await dispose();
+  await assert.rejects(binding.acknowledgeExecution!('session-a', 'turn-c'));
+  assert.deepEqual(acknowledged, ['session-a:turn-a']);
+  await root.fiber.dispose();
+});
+
 test('executor completion after caller cancellation is normalized to cancelled', async () => {
   const root = new Context();
   const service = new PluginExecutorService(root);

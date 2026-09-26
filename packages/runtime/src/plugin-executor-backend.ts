@@ -91,14 +91,24 @@ export class PluginExecutorBackend implements AgentBackend {
     const producer = this.#produce(input, messageId, abort.signal, queue).finally(() =>
       queue.close(),
     );
-    const active: ActiveExecution = { abort, settled: producer };
+    const active: ActiveExecution = { abort, settled: producer.then(() => undefined) };
     this.#active.add(active);
     try {
       for await (const event of queue) {
         yield event;
         queue.ackConsumed();
       }
-      await producer;
+      const returnedResult = await producer;
+      if (returnedResult) {
+        // The Runtime Kernel requests the next item only after onSessionEvent
+        // resolves. Reaching this point means its terminal event was accepted.
+        // The Plugin decides whether its external execution actually settled;
+        // uncertain execution or a failed checkpoint keeps the pending marker.
+        if (this.#binding.acknowledgeExecution)
+          await this.#binding
+            .acknowledgeExecution(this.sessionId, input.turnId)
+            .catch(() => undefined);
+      }
     } finally {
       queue.noteConsumerDetached();
       abort.abort(new Error('Plugin executor event consumer detached'));
@@ -132,7 +142,7 @@ export class PluginExecutorBackend implements AgentBackend {
     messageId: string,
     signal: AbortSignal,
     queue: AsyncEventQueue<SessionEvent>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const turnId = input.turnId;
     let thinkingText = '';
     const toolUseIds = new Map<string, string>();
@@ -191,7 +201,7 @@ export class PluginExecutorBackend implements AgentBackend {
           false,
           queue,
         );
-      return;
+      return false;
     }
     if (result === undefined) {
       this.#publishFailure(
@@ -201,9 +211,10 @@ export class PluginExecutorBackend implements AgentBackend {
         false,
         queue,
       );
-      return;
+      return false;
     }
     this.#publishResult(turnId, messageId, result, queue);
+    return true;
   }
 
   async #requestPermission(

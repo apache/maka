@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
 import { access, mkdtemp, rm, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type { ExecutorCatalogEntry, ExecutorConfiguration } from '@maka/core/executor-catalog';
@@ -105,6 +105,25 @@ export type AcpConnectionFactory = (input: AcpConnectionFactoryInput) => AcpConn
 export interface AcpConversationStateStore {
   has(conversationKey: string, cwd: string): Promise<boolean>;
   mark(conversationKey: string, cwd: string): Promise<void>;
+  /** Versioned Plugin-private state. Older test providers may expose only v1 markers. */
+  read?(conversationKey: string): Promise<unknown>;
+  write?(conversationKey: string, state: AcpContinuityRecord): Promise<void>;
+}
+
+export interface AcpContinuityRecord {
+  readonly version: 2;
+  readonly cwd: string;
+  /** Digest of the adapter and exact executable/helper bytes; never sent to the Host. */
+  readonly binding: string;
+  readonly phase: 'reserved' | 'established' | 'prompt_pending' | 'committed' | 'history_gap';
+  readonly committedPrompts: number;
+  readonly sessionId?: string;
+  readonly pendingTurnId?: string;
+  readonly confirmedModel?: string;
+  readonly gapEvidence?: {
+    readonly replayedUpdates: number;
+    readonly replayedUserChunks: number;
+  };
 }
 
 interface ActivePrompt {
@@ -135,6 +154,12 @@ interface RetainedSession {
   owner?: AcpConnectionOwner;
   connection?: ClientConnection;
   acpSessionId?: string;
+  record?: AcpContinuityRecord;
+  restoring?: boolean;
+  replay?: { updates: number; userChunks: number };
+  restoreFailed?: boolean;
+  historyGap?: boolean;
+  awaitingAck?: string;
   continuityReserved?: boolean;
   configOptions: readonly SessionConfigOption[];
   initialization?: Promise<void>;
@@ -215,27 +240,59 @@ export class AcpExecutor implements PluginExecutorProvider {
   }): Promise<ExecutorCatalogEntry> {
     const session = this.#sessions.get(input.conversationKey);
     if (this.#disposed) return this.#catalogEntry('unavailable');
-    if (session?.lost || (!session && (await this.#state?.has(input.conversationKey, input.cwd))))
-      return this.#catalogEntry('history_only');
-    return this.#catalogEntry('ready', session?.configOptions ?? [], input.configuration?.model);
+    if (session && session.cwd !== resolve(input.cwd))
+      return this.#catalogEntry('history_only', [], input.configuration?.model);
+    if (session?.restoring)
+      return this.#catalogEntry('restoring', session.configOptions, input.configuration?.model);
+    if (session?.restoreFailed)
+      return this.#catalogEntry(
+        'restore_failed',
+        session.configOptions,
+        input.configuration?.model,
+      );
+    if (session?.historyGap)
+      return this.#catalogEntry('history_gap', session.configOptions, input.configuration?.model);
+    if (session && !session.lost)
+      return this.#catalogEntry('ready', session.configOptions, input.configuration?.model);
+    if (session?.lost && !session.record)
+      return this.#catalogEntry('history_only', session.configOptions, input.configuration?.model);
+    const stored = this.#state?.read
+      ? decodeContinuity(await this.#state.read(input.conversationKey))
+      : (await this.#state?.has(input.conversationKey, input.cwd))
+        ? 'legacy'
+        : undefined;
+    if (!stored) return this.#catalogEntry('ready', [], input.configuration?.model);
+    if (stored === 'invalid' || stored === 'legacy' || stored.cwd !== resolve(input.cwd))
+      return this.#catalogEntry('history_only', [], input.configuration?.model);
+    if (stored.phase === 'reserved')
+      return this.#catalogEntry('history_only', [], input.configuration?.model);
+    return this.#catalogEntry(
+      stored.phase === 'prompt_pending' || stored.phase === 'history_gap'
+        ? 'history_gap'
+        : 'restorable',
+      [],
+      input.configuration?.model ?? stored.confirmedModel,
+    );
   }
 
   async configureConversation(
     input: { conversationKey: string; cwd: string; configuration?: ExecutorConfiguration },
     signal: AbortSignal,
   ): Promise<void> {
-    const session = this.#sessions.get(input.conversationKey);
-    if (
-      !session?.connection ||
-      session.lost ||
-      session.active ||
-      session.configuring ||
-      !input.configuration?.model
-    )
-      throw new Error('ACP model change is unavailable');
+    if (!input.configuration?.model) throw new Error('ACP model change is unavailable');
+    const session = await this.#session(input);
+    if (session.active || session.configuring) throw new Error('ACP model change is unavailable');
     session.configuring = true;
+    const wasConnected = !!session.connection;
     try {
+      await this.#ensureInitialized(session, signal);
       await this.#applyInitialConfig(session, { model: input.configuration.model }, signal, true);
+    } catch (error) {
+      if (!wasConnected || session.lost) {
+        await this.#lose(session);
+        if (session.record?.sessionId && !session.historyGap) session.restoreFailed = true;
+      }
+      throw error;
     } finally {
       session.configuring = false;
     }
@@ -255,12 +312,17 @@ export class AcpExecutor implements PluginExecutorProvider {
         ? model.options
             .flatMap((entry) => ('options' in entry ? entry.options : [entry]))
             .map((entry) => ({ id: entry.value, name: entry.name }))
-        : [];
+        : (this.#catalog?.models ?? []);
     return {
       id: this.id,
       displayName: this.displayName,
       readiness,
-      ...(this.#adapter.describeModels?.(models) ?? { models }),
+      ...(model?.type === 'select'
+        ? (this.#adapter.describeModels?.(models) ?? { models })
+        : {
+            models,
+            ...(this.#catalog?.modelGroups ? { modelGroups: this.#catalog.modelGroups } : {}),
+          }),
       ...(model?.type === 'select'
         ? { currentModel: model.currentValue }
         : selected
@@ -294,11 +356,11 @@ export class AcpExecutor implements PluginExecutorProvider {
     if (model) request = { ...request, configuration: { model } };
     let session: RetainedSession;
     try {
-      session = this.#session(request);
+      session = await this.#session(request);
     } catch (error) {
       return failure(safeErrorMessage(error), errorCode(error));
     }
-    if (session.active || session.configuring)
+    if (session.active || session.configuring || session.awaitingAck)
       return failure(`${this.displayName} ACP Session is busy`, 'acp_busy', true);
     const active: ActivePrompt = { context, tools: new Map(), text: '' };
     session.active = active;
@@ -311,12 +373,17 @@ export class AcpExecutor implements PluginExecutorProvider {
           { model: request.configuration.model },
           context.signal,
         );
+      await this.#beginPrompt(session, request.turnId);
       const prompt = session.connection!.agent.request(methods.agent.session.prompt, {
         sessionId: session.acpSessionId!,
         prompt: [{ type: 'text', text: promptText(request) }],
       });
       const response = await this.#awaitPrompt(session, prompt, context.signal);
       if (!response) return { status: 'cancelled', reason: 'timeout' };
+      // A settled prompt can be checkpointed even when it was cancelled or failed.
+      // Timeouts and transport failures never reach this point, and the Runtime
+      // must still durably consume the terminal event before acknowledging it.
+      if (session.record) session.awaitingAck = request.turnId;
       if (context.signal.aborted || response.stopReason === 'cancelled') {
         return { status: 'cancelled', providerStopReason: response.stopReason };
       }
@@ -331,13 +398,16 @@ export class AcpExecutor implements PluginExecutorProvider {
       }
       return { status: 'completed', text: active.text };
     } catch (error) {
+      if (errorCode(error) === 'acp_history_gap') session.historyGap = true;
       await this.#lose(session);
+      if (session.record?.sessionId && !session.historyGap) session.restoreFailed = true;
       // Retry only when no session/new was attempted. Once continuity is
       // reserved, a lost response may hide an established Agent Session.
       const retryable =
         !session.acpSessionId &&
         !session.continuityReserved &&
-        errorCode(error) !== 'acp_history_only';
+        errorCode(error) !== 'acp_history_only' &&
+        errorCode(error) !== 'acp_history_gap';
       if (retryable && this.#sessions.get(session.conversationKey) === session)
         this.#sessions.delete(session.conversationKey);
       if (context.signal.aborted) {
@@ -373,18 +443,27 @@ export class AcpExecutor implements PluginExecutorProvider {
     if (failures.length) throw new AggregateError(failures, 'ACP process cleanup failed');
   }
 
-  #session(request: Readonly<PluginExecutorRequest>): RetainedSession {
+  async #session(request: {
+    readonly conversationKey: string;
+    readonly cwd: string;
+    readonly configuration?: ExecutorConfiguration;
+  }): Promise<RetainedSession> {
     const cwd = resolve(request.cwd);
     const existing = this.#sessions.get(request.conversationKey);
     if (existing) {
       if (existing.cwd !== cwd)
         throw new AcpRuntimeError('ACP conversation cannot change workspace', 'acp_cwd_changed');
-      if (existing.lost)
+      if (!existing.lost) return existing;
+      if (existing.active || existing.configuring)
+        throw new AcpRuntimeError('ACP Session is busy', 'acp_busy');
+      if (!existing.record)
         throw new AcpRuntimeError(
           'ACP conversation is history-only because its external process was lost',
           'acp_history_only',
         );
-      return existing;
+      await existing.loss;
+      if (this.#sessions.get(request.conversationKey) === existing)
+        this.#sessions.delete(request.conversationKey);
     }
     const created: RetainedSession = {
       conversationKey: request.conversationKey,
@@ -405,21 +484,54 @@ export class AcpExecutor implements PluginExecutorProvider {
       await initialization;
     } catch (error) {
       session.initialization = undefined;
+      session.restoring = false;
+      session.replay = undefined;
       throw error;
     }
   }
 
   async #initialize(session: RetainedSession, signal: AbortSignal, probe = false): Promise<void> {
-    if (!probe && (await this.#state?.has(session.conversationKey, session.cwd))) {
-      throw new AcpRuntimeError(
-        'ACP conversation is history-only after the Plugin or Host was restarted',
-        'acp_history_only',
-      );
-    }
     const timeout = AbortSignal.timeout(INITIALIZE_TIMEOUT_MS);
     const startupSignal = AbortSignal.any([signal, timeout]);
     startupSignal.throwIfAborted();
     const launch = this.#configured.launch;
+    const stored = probe
+      ? undefined
+      : this.#state?.read
+        ? decodeContinuity(await this.#state.read(session.conversationKey))
+        : (await this.#state?.has(session.conversationKey, session.cwd))
+          ? 'legacy'
+          : undefined;
+    if (stored === 'legacy')
+      throw new AcpRuntimeError(
+        'ACP conversation is history-only after the Plugin or Host was restarted',
+        'acp_history_only',
+      );
+    if (
+      stored === 'invalid' ||
+      (stored && stored.cwd !== session.cwd) ||
+      stored?.phase === 'reserved'
+    )
+      throw new AcpRuntimeError(
+        'ACP conversation has no recoverable external Session identity',
+        'acp_history_only',
+      );
+    if (stored?.phase === 'history_gap')
+      throw new AcpRuntimeError(
+        'External Session history cannot be aligned with saved conversation events',
+        'acp_history_gap',
+      );
+    if (stored) {
+      session.record = stored;
+      session.acpSessionId = stored.sessionId;
+      session.restoring = true;
+    }
+    const binding =
+      !probe && this.#state?.write
+        ? await launchBinding(this.id, launch, startupSignal)
+        : undefined;
+    if (stored && stored.binding !== binding)
+      throw new AcpRuntimeError('ACP Agent installation changed', 'acp_restore_identity_changed');
     const executable = await checkedExecutable(launch.executable);
     await Promise.all((launch.requiredExecutables ?? []).map(checkedExecutable));
     const owner = this.#createConnection({
@@ -449,11 +561,70 @@ export class AcpExecutor implements PluginExecutorProvider {
       owner.failed,
     ]);
     if (initialized.protocolVersion !== 1) throw new Error('Unsupported ACP protocol version');
+    if (stored) {
+      session.replay = { updates: 0, userChunks: 0 };
+      const pending = stored.phase === 'prompt_pending';
+      const supported = pending
+        ? initialized.agentCapabilities?.loadSession
+        : initialized.agentCapabilities?.sessionCapabilities?.resume;
+      if (!supported)
+        throw new AcpRuntimeError(
+          'ACP Agent cannot restore this Session',
+          'acp_restore_unsupported',
+        );
+      const restored = await Promise.race([
+        owner.connection.agent.request(
+          pending ? methods.agent.session.load : methods.agent.session.resume,
+          { sessionId: stored.sessionId!, cwd: session.cwd, mcpServers: [] },
+          { cancellationSignal: startupSignal },
+        ),
+        owner.failed,
+      ]);
+      session.configOptions = restored.configOptions ?? [];
+      const restoredModel = currentAcpModel(session.configOptions);
+      if (restoredModel) await this.#persistConfirmedModel(session, restoredModel);
+      session.restoring = false;
+      if (pending) {
+        // The Agent may have progressed beyond Maka's last durable event. Replay
+        // identities are not sufficient to fabricate canonical history: failed
+        // turns can change tool IDs between live output and load. Keep every
+        // replay notification separate and expose an explicit history gap.
+        session.historyGap = true;
+        session.record = {
+          ...session.record!,
+          phase: 'history_gap',
+          pendingTurnId: undefined,
+          gapEvidence: {
+            replayedUpdates: session.replay?.updates ?? 0,
+            replayedUserChunks: session.replay?.userChunks ?? 0,
+          },
+        };
+        await this.#state?.write?.(session.conversationKey, session.record);
+        session.replay = undefined;
+        throw new AcpRuntimeError(
+          'External Session was restored, but conversation history may have a gap',
+          'acp_history_gap',
+        );
+      }
+      session.replay = undefined;
+      return;
+    }
     if (!probe) {
       startupSignal.throwIfAborted();
       // Reserve continuity before asking the Agent to create a Session. A failed
       // or interrupted session/new may still have created one remotely.
-      await this.#state?.mark(session.conversationKey, session.cwd);
+      if (this.#state?.write && binding) {
+        session.record = {
+          version: 2,
+          cwd: session.cwd,
+          binding,
+          phase: 'reserved',
+          committedPrompts: 0,
+        };
+        await this.#state.write(session.conversationKey, session.record);
+      } else {
+        await this.#state?.mark(session.conversationKey, session.cwd);
+      }
       session.continuityReserved = true;
     }
     const created = await Promise.race([
@@ -466,6 +637,17 @@ export class AcpExecutor implements PluginExecutorProvider {
     ]);
     session.acpSessionId = created.sessionId;
     session.configOptions = created.configOptions ?? [];
+    if (session.record) {
+      const established: AcpContinuityRecord = {
+        ...session.record,
+        phase: 'established',
+        sessionId: created.sessionId,
+      };
+      await this.#state?.write?.(session.conversationKey, established);
+      session.record = established;
+      const createdModel = currentAcpModel(session.configOptions);
+      if (createdModel) await this.#persistConfirmedModel(session, createdModel);
+    }
     if (!probe) {
       await this.#applyInitialConfig(
         session,
@@ -475,6 +657,44 @@ export class AcpExecutor implements PluginExecutorProvider {
         startupSignal,
       );
     }
+  }
+
+  async #beginPrompt(session: RetainedSession, turnId: string): Promise<void> {
+    if (!session.record) return;
+    const pending: AcpContinuityRecord = {
+      ...session.record,
+      phase: 'prompt_pending',
+      pendingTurnId: turnId,
+    };
+    await this.#state?.write?.(session.conversationKey, pending);
+    session.record = pending;
+  }
+
+  /** Called only after the Runtime Kernel has durably accepted the terminal event. */
+  async acknowledgeExecution(conversationKey: string, turnId: string): Promise<void> {
+    const session = this.#sessions.get(conversationKey);
+    if (
+      !session?.record ||
+      session.awaitingAck !== turnId ||
+      session.record.phase !== 'prompt_pending' ||
+      session.record.pendingTurnId !== turnId
+    )
+      return;
+    const committed: AcpContinuityRecord = {
+      ...session.record,
+      phase: 'committed',
+      committedPrompts: session.record.committedPrompts + 1,
+      pendingTurnId: undefined,
+    };
+    try {
+      await this.#state?.write?.(conversationKey, committed);
+    } catch (error) {
+      session.historyGap = true;
+      await this.#lose(session);
+      throw error;
+    }
+    session.record = committed;
+    session.awaitingAck = undefined;
   }
 
   async #applyInitialConfig(
@@ -501,7 +721,10 @@ export class AcpExecutor implements PluginExecutorProvider {
           `ACP configuration value is unavailable: ${key}`,
           'acp_config_invalid',
         );
-      if (option.currentValue === value) continue;
+      if (option.currentValue === value) {
+        if (key === 'model') await this.#persistConfirmedModel(session, value);
+        continue;
+      }
       signal.throwIfAborted();
       try {
         const updated = await session.connection!.agent.request(
@@ -516,6 +739,7 @@ export class AcpExecutor implements PluginExecutorProvider {
             'acp_config_unconfirmed',
           );
         session.configOptions = updated.configOptions;
+        if (key === 'model') await this.#persistConfirmedModel(session, value);
       } catch (error) {
         // A rejected/unconfirmed mutation can have reached the Agent. Restore the
         // previous real ID and require an acknowledgement before permitting retry.
@@ -536,6 +760,7 @@ export class AcpExecutor implements PluginExecutorProvider {
               !session.lost
             ) {
               session.configOptions = rollback.configOptions;
+              if (key === 'model') await this.#persistConfirmedModel(session, option.currentValue);
               restored = true;
             }
           } catch {
@@ -546,6 +771,13 @@ export class AcpExecutor implements PluginExecutorProvider {
         throw error;
       }
     }
+  }
+
+  async #persistConfirmedModel(session: RetainedSession, model: string): Promise<void> {
+    if (!session.record || session.record.confirmedModel === model) return;
+    const record = { ...session.record, confirmedModel: model };
+    await this.#state?.write?.(session.conversationKey, record);
+    session.record = record;
   }
 
   #configureClient(session: RetainedSession, app: ClientApp): void {
@@ -571,6 +803,8 @@ export class AcpExecutor implements PluginExecutorProvider {
 
   async #requestPermission(session: RetainedSession, request: RequestPermissionRequest) {
     this.#assertSession(session, request.sessionId);
+    if (session.restoring || session.historyGap || session.lost)
+      return { outcome: { outcome: 'cancelled' as const } };
     const active = session.active;
     if (!active) return { outcome: { outcome: 'cancelled' as const } };
     const outcome = await active.context.requestPermission({
@@ -583,6 +817,14 @@ export class AcpExecutor implements PluginExecutorProvider {
   }
 
   #acceptUpdate(session: RetainedSession, update: SessionUpdate): void {
+    if (session.restoring) {
+      if (session.replay) {
+        session.replay.updates++;
+        if (update.sessionUpdate === 'user_message_chunk') session.replay.userChunks++;
+      }
+      return;
+    }
+    if (session.historyGap || session.lost) return;
     if (update.sessionUpdate === 'config_option_update') {
       // During our mutation, its response (or rollback response) is authoritative.
       if (!session.configuring && !session.lost) session.configOptions = update.configOptions;
@@ -715,6 +957,14 @@ export class AcpExecutor implements PluginExecutorProvider {
   }
 }
 
+function currentAcpModel(options: readonly SessionConfigOption[]): string | undefined {
+  const option = options.find(
+    (candidate) =>
+      candidate.type === 'select' && (candidate.id === 'model' || candidate.category === 'model'),
+  );
+  return option?.type === 'select' ? option.currentValue : undefined;
+}
+
 function toolTextContent(content: readonly ToolCallContent[]): string {
   return content
     .flatMap((item) =>
@@ -760,14 +1010,92 @@ function pluginStateStore(
     `acp/${executorId}/${createHash('sha256').update(conversationKey).digest('hex')}`;
   return {
     async has(conversationKey) {
-      const value = (await storage.get<{ version?: unknown; cwd?: unknown }>(key(conversationKey)))
-        .value;
-      return value?.version === 1;
+      return (await storage.get(key(conversationKey))).value !== undefined;
     },
     async mark(conversationKey, cwd) {
       await storage.set(key(conversationKey), { version: 1, cwd });
     },
+    async read(conversationKey) {
+      return (await storage.get(key(conversationKey))).value;
+    },
+    async write(conversationKey, state) {
+      await storage.set(key(conversationKey), state);
+    },
   };
+}
+
+type StoredContinuity = AcpContinuityRecord | 'legacy' | 'invalid' | undefined;
+
+function decodeContinuity(value: unknown): StoredContinuity {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'invalid';
+  const record = value as Record<string, unknown>;
+  if (record.version === 1) return 'legacy';
+  if (
+    record.version !== 2 ||
+    typeof record.cwd !== 'string' ||
+    !isAbsolute(record.cwd) ||
+    typeof record.binding !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/u.test(record.binding) ||
+    !Number.isSafeInteger(record.committedPrompts) ||
+    (record.committedPrompts as number) < 0 ||
+    !['reserved', 'established', 'prompt_pending', 'committed', 'history_gap'].includes(
+      String(record.phase),
+    ) ||
+    (record.sessionId !== undefined &&
+      (typeof record.sessionId !== 'string' ||
+        !record.sessionId ||
+        record.sessionId.length > 4096)) ||
+    (record.pendingTurnId !== undefined &&
+      (typeof record.pendingTurnId !== 'string' || !record.pendingTurnId)) ||
+    (record.confirmedModel !== undefined &&
+      (typeof record.confirmedModel !== 'string' || !record.confirmedModel)) ||
+    (record.phase === 'reserved' && record.sessionId !== undefined) ||
+    (record.phase !== 'reserved' && !record.sessionId) ||
+    (record.phase === 'prompt_pending' && !record.pendingTurnId) ||
+    (record.phase !== 'prompt_pending' && record.pendingTurnId !== undefined) ||
+    (record.gapEvidence !== undefined &&
+      (record.phase !== 'history_gap' ||
+        !record.gapEvidence ||
+        typeof record.gapEvidence !== 'object' ||
+        !Number.isSafeInteger((record.gapEvidence as Record<string, unknown>).replayedUpdates) ||
+        !Number.isSafeInteger((record.gapEvidence as Record<string, unknown>).replayedUserChunks) ||
+        ((record.gapEvidence as Record<string, unknown>).replayedUpdates as number) < 0 ||
+        ((record.gapEvidence as Record<string, unknown>).replayedUserChunks as number) < 0))
+  )
+    return 'invalid';
+  return record as unknown as AcpContinuityRecord;
+}
+
+async function launchBinding(
+  adapterId: string,
+  launch: AcpLaunchSpec,
+  signal: AbortSignal,
+): Promise<string> {
+  const paths = [launch.executable, ...(launch.requiredExecutables ?? [])];
+  const files = [];
+  for (const path of paths) {
+    signal.throwIfAborted();
+    const resolved = await checkedExecutable(path);
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(resolved)) {
+      signal.throwIfAborted();
+      hash.update(chunk);
+    }
+    files.push({ path: resolved, digest: hash.digest('hex') });
+  }
+  return `sha256:${createHash('sha256')
+    .update(
+      JSON.stringify({
+        adapterId,
+        files,
+        args: launch.args ?? [],
+        cwd: launch.cwd ?? dirname(files[0]!.path),
+        platform: process.platform,
+        arch: process.arch,
+      }),
+    )
+    .digest('hex')}`;
 }
 
 function validateAdapter<T>(adapter: AcpAgentAdapter<T>): AcpAgentAdapter<T> {

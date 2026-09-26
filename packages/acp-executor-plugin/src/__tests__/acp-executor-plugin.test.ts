@@ -29,6 +29,7 @@ import {
   type AcpAgentAdapter,
   type AcpConnectionFactory,
   type AcpConversationStateStore,
+  type AcpContinuityRecord,
 } from '../index.js';
 
 const adapter: AcpAgentAdapter<{ executable: string; model?: string }> = {
@@ -41,6 +42,329 @@ const adapter: AcpAgentAdapter<{ executable: string; model?: string }> = {
     },
   }),
 };
+
+function durableState() {
+  const values = new Map<string, unknown>();
+  let rejectCommit = false;
+  const state: AcpConversationStateStore = {
+    has: async (key) => values.has(key),
+    mark: async (key, cwd) => {
+      values.set(key, { version: 1, cwd });
+    },
+    read: async (key) => structuredClone(values.get(key)),
+    write: async (key, record) => {
+      if (rejectCommit && record.phase === 'committed') throw new Error('Commit unavailable');
+      values.set(key, structuredClone(record));
+    },
+  };
+  return {
+    state,
+    values,
+    rejectCommit: () => {
+      rejectCommit = true;
+    },
+    record: (key = 'session-a') => values.get(key) as AcpContinuityRecord,
+  };
+}
+
+test('durably acknowledged ACP Session resumes the same external ID without replay or session/new', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.supportsRestore = true;
+  const storage = durableState();
+  const make = () =>
+    new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      {
+        state: storage.state,
+        createConnection: protocol.factory,
+      },
+    );
+  const first = make();
+  try {
+    assert.equal((await first.execute(request('first'), executorContext([]))).status, 'completed');
+    assert.equal(storage.record().phase, 'prompt_pending');
+    await first.acknowledgeExecution('session-a', 'turn-first');
+    assert.equal(storage.record().phase, 'committed');
+    assert.equal(storage.record().committedPrompts, 1);
+    await first.dispose();
+    const restored = make();
+    try {
+      assert.equal(
+        (await restored.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
+          .readiness,
+        'restorable',
+      );
+      await restored.configureConversation(
+        { conversationKey: 'session-a', cwd: process.cwd(), configuration: { model: 'default' } },
+        new AbortController().signal,
+      );
+      assert.equal(protocol.sessions, 1);
+      assert.equal(protocol.resumes, 1);
+      assert.equal(protocol.loads, 0);
+      assert.equal(
+        (await restored.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
+          .readiness,
+        'ready',
+      );
+      assert.equal(
+        (await restored.execute(request('second'), executorContext([]))).status,
+        'completed',
+      );
+      await restored.acknowledgeExecution('session-a', 'turn-second');
+      assert.equal(storage.record().committedPrompts, 2);
+      assert.equal(protocol.sessions, 1);
+    } finally {
+      await restored.dispose();
+    }
+  } finally {
+    await first.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('unacknowledged prompt loads replay as restoration and exposes history gap without a second prompt', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.supportsRestore = true;
+  const storage = durableState();
+  const make = () =>
+    new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      {
+        state: storage.state,
+        createConnection: protocol.factory,
+      },
+    );
+  const first = make();
+  try {
+    assert.equal((await first.execute(request('first'), executorContext([]))).status, 'completed');
+    await first.dispose();
+    const restored = make();
+    const events: unknown[] = [];
+    try {
+      assert.equal(
+        (await restored.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
+          .readiness,
+        'history_gap',
+      );
+      const result = await restored.execute(request('new-input'), executorContext(events));
+      assert.equal(result.status, 'failed');
+      if (result.status === 'failed') assert.equal(result.code, 'acp_history_gap');
+      assert.deepEqual(events, []);
+      assert.equal(protocol.loads, 1);
+      assert.equal(protocol.resumes, 0);
+      assert.equal(protocol.sessions, 1);
+      assert.equal(protocol.prompts, 1);
+      assert.equal(storage.record().phase, 'history_gap');
+      assert.equal(storage.record().gapEvidence?.replayedUserChunks, 1);
+    } finally {
+      await restored.dispose();
+    }
+    const reopened = make();
+    try {
+      const repeated = await reopened.execute(request('still-blocked'), executorContext(events));
+      assert.equal(repeated.status, 'failed');
+      if (repeated.status === 'failed') assert.equal(repeated.code, 'acp_history_gap');
+      assert.equal(protocol.loads, 1);
+      assert.equal(protocol.prompts, 1);
+    } finally {
+      await reopened.dispose();
+    }
+  } finally {
+    await first.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('late restored-session updates stay quarantined while the history gap is persisted', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.supportsRestore = true;
+  const storage = durableState();
+  let releaseGapWrite!: () => void;
+  const gapWriteBlocked = new Promise<void>((resolve) => {
+    releaseGapWrite = resolve;
+  });
+  let gapWriteStarted!: () => void;
+  const gapWriteReached = new Promise<void>((resolve) => {
+    gapWriteStarted = resolve;
+  });
+  const state: AcpConversationStateStore = {
+    ...storage.state,
+    write: async (key, record) => {
+      if (record.phase === 'history_gap') {
+        gapWriteStarted();
+        await gapWriteBlocked;
+      }
+      await storage.state.write!(key, record);
+    },
+  };
+  const make = () =>
+    new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      { state, createConnection: protocol.factory },
+    );
+  const first = make();
+  try {
+    assert.equal((await first.execute(request('first'), executorContext([]))).status, 'completed');
+    await first.dispose();
+    const restored = make();
+    const events: unknown[] = [];
+    try {
+      const execution = restored.execute(request('unsent-new-turn'), executorContext(events));
+      await gapWriteReached;
+      protocol.notifyUpdate({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'LATE OLD EXTERNAL OUTPUT' },
+      });
+      protocol.notifyUpdate({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'late-old-tool',
+        title: 'Historical tool',
+      });
+      assert.deepEqual(await protocol.requestPermission(), { outcome: { outcome: 'cancelled' } });
+      releaseGapWrite();
+      const result = await execution;
+      assert.equal(result.status, 'failed');
+      if (result.status === 'failed') assert.equal(result.code, 'acp_history_gap');
+      assert.deepEqual(events, []);
+      assert.equal(protocol.prompts, 1);
+      assert.equal(storage.record().phase, 'history_gap');
+    } finally {
+      releaseGapWrite();
+      await restored.dispose();
+    }
+  } finally {
+    await first.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('failed restore permits explicit retry and never creates a replacement Session', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.supportsRestore = true;
+  const storage = durableState();
+  const make = () =>
+    new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      {
+        state: storage.state,
+        createConnection: protocol.factory,
+      },
+    );
+  const first = make();
+  try {
+    await first.execute(request('first'), executorContext([]));
+    await first.acknowledgeExecution('session-a', 'turn-first');
+    await first.dispose();
+    const restored = make();
+    const input = {
+      conversationKey: 'session-a',
+      cwd: process.cwd(),
+      configuration: { model: 'default' },
+    };
+    try {
+      protocol.restoreFailure = true;
+      await assert.rejects(restored.configureConversation(input, new AbortController().signal));
+      assert.equal((await restored.inspectConversation(input)).readiness, 'restore_failed');
+      protocol.restoreFailure = false;
+      await restored.configureConversation(input, new AbortController().signal);
+      assert.equal((await restored.inspectConversation(input)).readiness, 'ready');
+      assert.equal(protocol.sessions, 1);
+      assert.equal(protocol.resumes, 1);
+    } finally {
+      await restored.dispose();
+    }
+  } finally {
+    await first.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('missing restore capability, corrupted record and changed executable fail closed', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.supportsRestore = true;
+  const storage = durableState();
+  const make = () =>
+    new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      {
+        state: storage.state,
+        createConnection: protocol.factory,
+      },
+    );
+  const first = make();
+  try {
+    await first.execute(request('first'), executorContext([]));
+    await first.acknowledgeExecution('session-a', 'turn-first');
+    await first.dispose();
+    const input = {
+      conversationKey: 'session-a',
+      cwd: process.cwd(),
+      configuration: { model: 'default' },
+    };
+    protocol.supportsRestore = false;
+    const unsupported = make();
+    await assert.rejects(unsupported.configureConversation(input, new AbortController().signal));
+    await unsupported.dispose();
+    protocol.supportsRestore = true;
+    await writeFile(fixture.executable, 'changed fixture');
+    const changed = make();
+    await assert.rejects(changed.configureConversation(input, new AbortController().signal));
+    assert.equal((await changed.inspectConversation(input)).readiness, 'restore_failed');
+    await writeFile(fixture.executable, 'fixture');
+    await changed.configureConversation(input, new AbortController().signal);
+    assert.equal((await changed.inspectConversation(input)).readiness, 'ready');
+    await changed.dispose();
+    storage.values.set('session-a', { version: 2, cwd: process.cwd(), sessionId: 'acp-session' });
+    const corrupt = make();
+    assert.equal((await corrupt.inspectConversation(input)).readiness, 'history_only');
+    assert.equal((await corrupt.execute(request('second'), executorContext([]))).status, 'failed');
+    await corrupt.dispose();
+    assert.equal(protocol.sessions, 1);
+    assert.equal(protocol.prompts, 1);
+  } finally {
+    await first.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('failed Plugin acknowledgement leaves a visible gap', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.supportsRestore = true;
+  const storage = durableState();
+  const executor = new AcpExecutor(
+    adapter,
+    { executable: fixture.executable },
+    {
+      state: storage.state,
+      createConnection: protocol.factory,
+    },
+  );
+  try {
+    await executor.execute(request('first'), executorContext([]));
+    storage.rejectCommit();
+    await assert.rejects(executor.acknowledgeExecution('session-a', 'turn-first'));
+    assert.equal(
+      (await executor.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
+        .readiness,
+      'history_gap',
+    );
+    assert.equal(storage.record().phase, 'prompt_pending');
+  } finally {
+    await executor.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test('runtime retains one ACP process and Session across prompts', async () => {
   const fixture = await executableFixture();
@@ -385,6 +709,7 @@ for (const stopReason of [
 ]) {
   test(`runtime drains cancellation and preserves ${stopReason}`, async () => {
     const fixture = await executableFixture();
+    const storage = durableState();
     let started!: () => void;
     const ready = new Promise<void>((resolve) => {
       started = resolve;
@@ -429,7 +754,7 @@ for (const stopReason of [
     const executor = new AcpExecutor(
       adapter,
       { executable: fixture.executable },
-      { createConnection: factory },
+      { createConnection: factory, state: storage.state },
     );
     const abort = new AbortController();
     const execution = executor.execute(request('cancel'), executorContext([], abort.signal));
@@ -443,6 +768,16 @@ for (const stopReason of [
           : { providerStopReason: stopReason }),
       });
       assert.equal(cancellations, 1);
+      assert.equal(storage.record().phase, 'prompt_pending');
+      await executor.acknowledgeExecution('session-a', 'turn-cancel');
+      const uncertain = ['request_error', 'process_crash'].includes(stopReason);
+      assert.equal(storage.record().phase, uncertain ? 'prompt_pending' : 'committed');
+      await executor.disposeConversation('session-a');
+      assert.equal(
+        (await executor.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
+          .readiness,
+        uncertain ? 'restore_failed' : 'restorable',
+      );
     } finally {
       await executor.dispose();
       await rm(fixture.root, { recursive: true, force: true });
@@ -532,26 +867,26 @@ test('discovery shares a disposable probe, does not mark a task, and first promp
     const before = protocol.connections;
     const status = await executor.inspectConversation({
       conversationKey: 'session-a',
-      cwd: fixture.root,
+      cwd: process.cwd(),
     });
     assert.equal(status.currentModel, 'fast');
     assert.equal(protocol.connections, before);
     await executor.configureConversation(
-      { conversationKey: 'session-a', cwd: fixture.root, configuration: { model: 'default' } },
+      { conversationKey: 'session-a', cwd: process.cwd(), configuration: { model: 'default' } },
       new AbortController().signal,
     );
     assert.equal(protocol.selectedModel, 'default');
     await assert.rejects(
       () =>
         executor.configureConversation(
-          { conversationKey: 'session-a', cwd: fixture.root, configuration: { model: 'removed' } },
+          { conversationKey: 'session-a', cwd: process.cwd(), configuration: { model: 'removed' } },
           new AbortController().signal,
         ),
       /unavailable/u,
     );
     assert.equal(protocol.selectedModel, 'default');
     assert.equal(
-      (await executor.inspectConversation({ conversationKey: 'session-a', cwd: fixture.root }))
+      (await executor.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
         .readiness,
       'ready',
     );
@@ -586,14 +921,14 @@ for (const failure of ['response_lost', 'timeout'] as const) {
       timeout = setTimeout(() => abort.abort(new DOMException('Timed out', 'TimeoutError')), 50);
       await assert.rejects(
         executor.configureConversation(
-          { conversationKey: 'session-a', cwd: fixture.root, configuration: { model: 'fast' } },
+          { conversationKey: 'session-a', cwd: process.cwd(), configuration: { model: 'fast' } },
           abort.signal,
         ),
       );
       // The external mutation happened even though no matching confirmation arrived.
       assert.equal(protocol.selectedModel, failure === 'timeout' ? 'fast' : 'default');
       assert.equal(
-        (await executor.inspectConversation({ conversationKey: 'session-a', cwd: fixture.root }))
+        (await executor.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
           .readiness,
         'history_only',
       );
@@ -706,6 +1041,12 @@ function fakeProtocol(): {
   configurationFailure?: 'response_lost' | 'unconfirmed' | 'timeout' | 'once';
   sessionCreationFailure?: 'once';
   promptModels: string[];
+  supportsRestore: boolean;
+  restoreFailure?: boolean;
+  resumes: number;
+  loads: number;
+  notifyUpdate(update: unknown): void;
+  requestPermission(): Promise<unknown>;
   notifyConfiguration(model: string): void;
 } {
   const fixture = {
@@ -722,6 +1063,12 @@ function fakeProtocol(): {
       | undefined,
     sessionCreationFailure: undefined as 'once' | undefined,
     promptModels: [] as string[],
+    supportsRestore: false,
+    restoreFailure: false,
+    resumes: 0,
+    loads: 0,
+    notifyUpdate: (_update: unknown): void => {},
+    requestPermission: async (): Promise<unknown> => undefined,
     notifyConfiguration: (_model: string): void => {},
     factory: undefined as unknown as AcpConnectionFactory,
   };
@@ -740,6 +1087,19 @@ function fakeProtocol(): {
       },
     } as unknown as ClientApp;
     input.configureClient(app);
+    fixture.notifyUpdate = (update) => {
+      notifications.get(methods.client.session.update)?.({
+        params: { sessionId: 'acp-session', update } as never,
+      });
+    };
+    fixture.requestPermission = async () =>
+      await requests.get(methods.client.session.requestPermission)?.({
+        params: {
+          sessionId: 'acp-session',
+          toolCall: { toolCallId: 'late-old-tool', title: 'Allow edit?' },
+          options: [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' }],
+        } as never,
+      });
     fixture.notifyConfiguration = (model) => {
       notifications.get(methods.client.session.update)?.({
         params: {
@@ -769,7 +1129,44 @@ function fakeProtocol(): {
           params: Record<string, unknown>,
           options?: { cancellationSignal?: AbortSignal },
         ) => {
-          if (method === methods.agent.initialize) return { protocolVersion: 1 };
+          if (method === methods.agent.initialize)
+            return {
+              protocolVersion: 1,
+              agentCapabilities: fixture.supportsRestore
+                ? { loadSession: true, sessionCapabilities: { resume: {} } }
+                : {},
+            };
+          if (method === methods.agent.session.resume || method === methods.agent.session.load) {
+            assert.equal(params.sessionId, 'acp-session');
+            assert.equal(params.cwd, process.cwd());
+            if (fixture.restoreFailure) throw new Error('Session unavailable');
+            if (method === methods.agent.session.resume) fixture.resumes += 1;
+            else {
+              fixture.loads += 1;
+              for (const update of [
+                { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'first' } },
+                { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replay' } },
+                { sessionUpdate: 'tool_call', toolCallId: 'replay-tool', title: 'Historical tool' },
+              ])
+                notifications.get(methods.client.session.update)?.({
+                  params: { sessionId: 'acp-session', update } as never,
+                });
+            }
+            return {
+              configOptions: [
+                {
+                  type: 'select',
+                  id: 'model',
+                  name: 'Model',
+                  currentValue: fixture.selectedModel ?? 'default',
+                  options: [
+                    { value: 'default', name: 'Default' },
+                    { value: 'fast', name: 'Fast' },
+                  ],
+                },
+              ],
+            };
+          }
           if (method === methods.agent.session.new) {
             fixture.sessions += 1;
             if (fixture.sessionCreationFailure === 'once') {
@@ -931,7 +1328,7 @@ for (const failure of ['once', 'unconfirmed'] as const)
     );
     const input = {
       conversationKey: 'session-a',
-      cwd: fixture.root,
+      cwd: process.cwd(),
       configuration: { model: 'fast' },
     };
     try {
@@ -970,7 +1367,7 @@ test('idle Agent configuration notifications update the inspected model without 
     );
     protocol.notifyConfiguration('fast');
     assert.equal(
-      (await executor.inspectConversation({ conversationKey: 'session-a', cwd: fixture.root }))
+      (await executor.inspectConversation({ conversationKey: 'session-a', cwd: process.cwd() }))
         .currentModel,
       'fast',
     );

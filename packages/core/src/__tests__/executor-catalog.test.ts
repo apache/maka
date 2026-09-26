@@ -48,6 +48,16 @@ test('structured capabilities survive wire normalization with immutable exact re
   assert.ok(Object.isFrozen(output.modelGroups![0]!.variants[0]));
   assert.notEqual(output.modelGroups, catalog.modelGroups);
 });
+for (const readiness of ['restorable', 'restoring', 'restore_failed', 'history_gap'] as const)
+  test(`restoration readiness survives executor catalog normalization: ${readiness}`, () => {
+    assert.equal(
+      normalizeCatalogEntry(
+        { ...catalog, readiness, models: [], modelGroups: undefined },
+        'external',
+      ).readiness,
+      readiness,
+    );
+  });
 for (const variants of [
   [
     { modelId: 'invented', level: 'high' },

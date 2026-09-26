@@ -28,6 +28,54 @@ import { useExecutorSelection, newTaskConfiguration, ConversationServicesProvide
 
 const entry: ExecutorCatalogEntry = { id: 'external', displayName: 'External', readiness: 'ready', models: [{ id: 'selected', name: 'Selected' }], supportsAttachments: false, supportsModelChange: true };
 
+test('explicit restore confirms the saved model while preserving the current task', async () => {
+  const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
+  const values = { document, window, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true };
+  const originals = new Map(Object.keys(values).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(values)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  const root = createRoot(document.getElementById('root')!);
+  let latest!: ReturnType<typeof useExecutorSelection>;
+  let ready = false;
+  let finishRestore!: () => void;
+  const confirmation = new Promise<void>((resolve) => { finishRestore = resolve; });
+  const writes: Array<{ sessionId: string; model: string | undefined }> = [];
+  const services = {
+    subscribeChanges: () => () => {},
+    newTasks: { subscribeChanges: () => () => {}, getExecutors: async () => [entry] },
+    sessions: {
+      getExecutorState: async () => [{ ...entry, readiness: ready ? 'ready' : 'restorable', currentModel: 'selected' }],
+      setExecutorModelConfiguration: async (sessionId: string, config: { model?: string }) => {
+        writes.push({ sessionId, model: config.model });
+        await confirmation;
+        ready = true;
+        return { ok: true, session: { executorConfig: config } };
+      },
+    },
+  } as unknown as ConversationServices;
+  function Probe() {
+    latest = useExecutorSelection({
+      key: 'saved', cwd: '/fixture',
+      target: { hostId: 'host', profileId: 'profile', projectId: null },
+      session: { id: 'saved', executorId: 'external', executorConfig: { model: 'selected' } } as SessionSummary,
+    });
+    return null;
+  }
+  try {
+    await act(async () => root.render(createElement(ConversationServicesProvider, { services, children: createElement(Probe) })));
+    assert.equal(latest.entry?.readiness, 'restorable');
+    let restoring!: Promise<void>;
+    await act(async () => { restoring = latest.restore(); });
+    assert.equal(latest.entry?.readiness, 'restoring');
+    await act(async () => { finishRestore(); await restoring; });
+    assert.deepEqual(writes, [{ sessionId: 'saved', model: 'selected' }]);
+    assert.equal(latest.entry?.readiness, 'ready');
+    assert.equal(latest.selection?.executorId, 'external');
+  } finally {
+    await act(async () => root.unmount());
+    for (const [key, descriptor] of originals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
+  }
+});
+
 test('a catalog change during failed discovery retries after the in-flight result settles', async () => {
   const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
   const values = { document, window, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true };

@@ -325,14 +325,17 @@ test('executor choice shares the native searchable list and exposes every extern
   }
 });
 
-test('history-only state keeps the executor fixed and offers a new task', async () => {
+for (const [readiness, notice] of [
+  ['history_only', '歷史仍可閱讀'],
+  ['history_gap', '進度可能超出已儲存歷史'],
+] as const) test(`${readiness} keeps the executor fixed and offers a new task`, async () => {
   const dom = installTranscriptDom();
   let newTasks = 0;
   try {
     await dom.render(
       <LocaleProvider locale="zh-TW">
         <ExecutorModelPicker
-          catalog={[{ ...catalog[0]!, readiness: 'history_only' }]}
+          catalog={[{ ...catalog[0]!, readiness }]}
           selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
           fixed
           onSelect={() => assert.fail('History cannot change executor')}
@@ -344,7 +347,7 @@ test('history-only state keeps the executor fixed and offers a new task', async 
         />
       </LocaleProvider>,
     );
-    assert.ok(dom.document.body.textContent?.includes('歷史仍可閱讀'));
+    assert.ok(dom.document.body.textContent?.includes(notice));
     const executorTrigger = dom.document.querySelector('.maka-executor-selector');
     assert.notEqual(executorTrigger?.getAttribute('aria-disabled'), 'true');
     const button = [...dom.document.querySelectorAll('button')].find(
@@ -356,6 +359,56 @@ test('history-only state keeps the executor fixed and offers a new task', async 
   } finally {
     await dom.cleanup();
   }
+});
+
+test('restorable task offers an explicit restore action without selecting a model', async () => {
+  const dom = installTranscriptDom();
+  let restores = 0;
+  try {
+    await dom.render(
+      <LocaleProvider locale="en">
+        <ExecutorModelPicker
+          catalog={[{ ...catalog[0]!, readiness: 'restorable' }]}
+          selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
+          fixed
+          onSelect={() => assert.fail('Restoration must not commit a model choice')}
+          onRestore={async () => { restores++; }}
+          onSetup={() => {}}
+          onRetry={() => {}}
+          onNewTask={() => assert.fail('The Session is restorable')}
+        />
+      </LocaleProvider>,
+    );
+    assert.match(dom.document.body.textContent ?? '', /Restore it before continuing/u);
+    const button = [...dom.document.querySelectorAll('button')].find(
+      candidate => candidate.textContent === 'Restore Session',
+    );
+    assert.ok(button);
+    await act(async () => button.dispatchEvent(new dom.window.Event('click', { bubbles: true })));
+    assert.equal(restores, 1);
+  } finally { await dom.cleanup(); }
+});
+
+test('restoring task shows progress without offering another action', async () => {
+  const dom = installTranscriptDom();
+  try {
+    await dom.render(
+      <LocaleProvider locale="en">
+        <ExecutorModelPicker
+          catalog={[{ ...catalog[0]!, readiness: 'restoring' }]}
+          selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
+          fixed
+          onSelect={() => assert.fail('Restoration is pending')}
+          onSetup={() => assert.fail('Setup is unavailable while restoring')}
+          onRetry={() => assert.fail('Retry is unavailable while restoring')}
+          onNewTask={() => assert.fail('New Task is unavailable while restoring')}
+        />
+      </LocaleProvider>,
+    );
+    assert.match(dom.document.body.textContent ?? '', /Restoring the external Session/u);
+    assert.equal([...dom.document.querySelectorAll('button')].some(button =>
+      ['Manage agents', 'Restore Session', 'New Task'].includes(button.textContent ?? '')), false);
+  } finally { await dom.cleanup(); }
 });
 
 test('unavailable executors can be inspected but never committed', async () => {
