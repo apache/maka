@@ -240,6 +240,7 @@ packages/ui/src/client-plugin-runtime.tsx
 packages/ui/src/client-plugin-slots.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
+packages/ui/src/composer-model-label.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx
