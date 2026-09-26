@@ -29,6 +29,7 @@ import type { ProviderType } from '@maka/core/llm-connections';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { Settings, ICON_SIZE } from './icons.js';
 import { ModelPickerPanel, ModelPickerPanelContext } from './model-picker-panel.js';
+import { ComposerModelLabel } from './composer-model-label.js';
 import { providerMarkIcon } from './model-picker-internals.js';
 import { executorModelGroup, highestExecutorModelVariant } from './executor-model-presentation.js';
 import { ThinkingLevelSelector } from './chat-model-switcher.js';
@@ -301,7 +302,9 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
           isDisabled={props.disabled || props.isReadOnly}
           tooltip={props.fixed ? copy.fixed : undefined}
           className="maka-model-switcher-trigger maka-executor-selector"
-        />
+        >
+          <ComposerModelLabel text={triggerLabel} />
+        </Button>
       </Popover>
       {props.selection ? <ExecutorThinkingLevelSelector {...props} disabled={props.disabled || selecting} /> : props.nativeThinkingControl}
       {(selectedUnavailable || props.error) && (

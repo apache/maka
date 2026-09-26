@@ -407,6 +407,17 @@
 .maka-composer-left-controls .maka-new-chat-model-selector {
   min-width: 100px;
   max-width: min(220px, 28vw);
+  justify-content: flex-start;
+  text-align: left;
+}
+.maka-composer-model-label {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
 }
 /* External model names share this row with an executor selector. Size the
    trigger to its label and let the pair wrap instead of squeezing the model
