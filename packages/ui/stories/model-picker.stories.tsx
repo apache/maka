@@ -530,10 +530,13 @@ const SUFFIX_CHOICES = ['low', 'high'].map((suffix) => ({
   label: `${LONG_CHOICES[0]!.label}-${suffix}`,
 }));
 
-function LongModelNameComposer({ existing }: { existing: boolean }) {
+const COMPOSER_LABEL_CHOICES = [...SUFFIX_CHOICES, { ...SUFFIX_CHOICES[0]!, model: 'gpt-5', label: 'GPT-5' }];
+
+function LongModelNameComposer({ kind }: { kind: 'existing' | 'new' | 'unified' }) {
+  const existing = kind === 'existing';
   const [selected, setSelected] = useState(SUFFIX_CHOICES[0]!);
   const onPick = (input: { model: string }) => {
-    const next = SUFFIX_CHOICES.find((candidate) => candidate.model === input.model);
+    const next = COMPOSER_LABEL_CHOICES.find((candidate) => candidate.model === input.model);
     if (next) setSelected(next);
   };
   const target = {
@@ -555,7 +558,7 @@ function LongModelNameComposer({ existing }: { existing: boolean }) {
     permissionMode: 'ask',
   } satisfies SessionSummary;
   return (
-    <section aria-label={existing ? 'Existing conversation' : 'New conversation'}>
+    <section aria-label={kind === 'unified' ? 'Unified picker' : existing ? 'Existing conversation' : 'New conversation'}>
       <Composer
         activeSession={existing ? session : undefined}
         activeModelLabel={selected.label}
@@ -563,7 +566,14 @@ function LongModelNameComposer({ existing }: { existing: boolean }) {
         newChatModel={target}
         newChatProviderType="custom"
         modelLabel={selected.label}
-        modelChoices={SUFFIX_CHOICES}
+        modelChoices={COMPOSER_LABEL_CHOICES}
+        executorPicker={kind === 'unified' ? {
+          catalog: [],
+          onSelect: () => undefined,
+          onSetup: () => undefined,
+          onRetry: () => undefined,
+          onNewTask: () => undefined,
+        } : undefined}
         renderProviderMark={providerMark}
         onModelChange={onPick}
         onPickNewChatModel={onPick}
@@ -576,43 +586,68 @@ function LongModelNameComposer({ existing }: { existing: boolean }) {
 
 // Real path: a custom relay exposes two path-like model IDs differing only in
 // their suffix. Each panel uses the production Composer that owns the trigger's
-// width cap: an existing native session and the standalone new-chat fallback.
+// width cap: an existing native session, the standalone new-chat fallback,
+// and the unified home / side-chat default picker.
 // The stacked arrangement is a review scaffold, not a single application screen.
 export const LongModelNames: Story = {
   render: () => (
     <div style={{ width: 460, maxWidth: '100%', display: 'grid', gap: 24 }}>
-      <LongModelNameComposer existing />
-      <LongModelNameComposer existing={false} />
+      <LongModelNameComposer kind="existing" />
+      <LongModelNameComposer kind="new" />
+      <LongModelNameComposer kind="unified" />
     </div>
   ),
   play: async ({ canvasElement }) => {
     await document.fonts.ready;
-    for (const name of ['Existing conversation', 'New conversation']) {
+    for (const name of ['Existing conversation', 'New conversation', 'Unified picker']) {
       const panel = within(canvasElement).getByRole('region', { name });
       const trigger = within(panel).getByRole('button', {
-        name: /切换当前任务模型|Switch model for this task|选择新任务模型|Choose a model for the new task/,
+        name: (label) => label.includes(SUFFIX_CHOICES[0]!.label),
       });
-      const expectVisibleSuffix = async (suffix: string) => {
+      const expectVisibleEnds = async (suffix: string) => {
         await expect(trigger).toHaveTextContent(suffix);
         await expect(trigger.querySelector('.modelPickerProviderMark')).toBeNull();
-        const label = trigger.querySelector<HTMLElement>('.modelPickerOptionLabel, .maka-composer-model-label');
+        // Include the old label layouts so reverting the fix fails on clipped
+        // text geometry, not merely on the absence of the new label component.
+        const triggerText = document.createTreeWalker(trigger, NodeFilter.SHOW_TEXT).nextNode();
+        const label = trigger.querySelector<HTMLElement>('.maka-composer-model-label-text, .modelPickerOptionLabel')
+          ?? triggerText?.parentElement;
         if (!label) throw new Error('Missing selected model label');
-        await expect(getComputedStyle(label).textAlign).toBe('left');
-        await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
-        const text = document.createTreeWalker(label, NodeFilter.SHOW_TEXT).nextNode();
-        if (!text?.textContent) throw new Error('Missing model label text');
-        const range = document.createRange();
-        range.setStart(text, text.textContent.length - suffix.length);
-        range.setEnd(text, text.textContent.length);
-        const tail = range.getBoundingClientRect();
+        const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+        const nodes: Node[] = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        if (!first?.textContent || !last?.textContent) throw new Error('Missing model label text');
         const clip = label.getBoundingClientRect();
-        // Text content alone passes even when the identifying suffix is clipped.
-        // Chromium must place the entire suffix inside the visible label box.
-        await expect(tail.width).toBeGreaterThan(0);
-        await expect(tail.left).toBeGreaterThanOrEqual(clip.left - 1);
-        await expect(tail.right).toBeLessThanOrEqual(clip.right + 1);
+        const expectVisibleRange = async (node: Node, start: number, end: number) => {
+          const range = document.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, end);
+          const bounds = range.getBoundingClientRect();
+          await expect(bounds.width).toBeGreaterThan(0);
+          await expect(bounds.left).toBeGreaterThanOrEqual(clip.left - 1);
+          await expect(bounds.right).toBeLessThanOrEqual(clip.right + 1);
+        };
+        // Both identifying ends must be painted inside the real clipped box.
+        await expectVisibleRange(first, 0, 'accounts/'.length);
+        await expectVisibleRange(last, last.textContent.length - suffix.length, last.textContent.length);
+        await expect(getComputedStyle(label).textAlign).toBe('left');
+        const overflowed = label.textContent?.includes('…') || [label, ...label.querySelectorAll<HTMLElement>('span')]
+          .some((element) => element.scrollWidth > element.clientWidth);
+        await expect(overflowed).toBe(true);
       };
-      await expectVisibleSuffix('-low');
+      await expectVisibleEnds('-low');
+      await userEvent.click(trigger);
+      await userEvent.click(await within(document.body).findByRole('option', { name: 'GPT-5' }));
+      await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+      await waitFor(() => expect(trigger.querySelector('.maka-composer-model-label-text')).toHaveTextContent(/^GPT-5$/));
+      await expect(trigger).toHaveAccessibleName(/GPT-5/);
+      const shortLabel = trigger.querySelector<HTMLElement>('.maka-composer-model-label-text')!;
+      const shortRange = document.createRange();
+      shortRange.selectNodeContents(shortLabel);
+      await expect(shortRange.getBoundingClientRect().left).toBeCloseTo(shortLabel.getBoundingClientRect().left, 0);
+      await expect(shortRange.getBoundingClientRect().right).toBeLessThanOrEqual(shortLabel.getBoundingClientRect().right + 1);
       await userEvent.click(trigger);
       const option = await within(document.body).findByRole('option', {
         name: new RegExp(SUFFIX_CHOICES[1]!.label),
@@ -620,7 +655,7 @@ export const LongModelNames: Story = {
       await expect(option.querySelector('.modelPickerProviderMark')).not.toBeNull();
       await userEvent.click(option);
       await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
-      await expectVisibleSuffix('-high');
+      await expectVisibleEnds('-high');
     }
   },
 };
