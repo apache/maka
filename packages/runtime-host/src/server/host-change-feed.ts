@@ -53,7 +53,6 @@ interface HostChangeSink {
 interface Subscription {
   readonly sink: HostChangeSink;
   readonly mask: HostChangeSubscriptionMask;
-  sessionAttention: boolean;
 }
 
 export class HostChangeFeed {
@@ -68,7 +67,7 @@ export class HostChangeFeed {
     mask: HostChangeSubscriptionMask,
     sink: HostChangeSink,
   ): HostChangeSubscription {
-    const subscription = { sink, mask, sessionAttention: false } satisfies Subscription;
+    const subscription = { sink, mask } satisfies Subscription;
     this.#subscriptions.set(connectionId, subscription);
     return {
       close: () => {
@@ -104,34 +103,8 @@ export class HostChangeFeed {
     });
   }
 
-  publishSessionCatalog(sessionId: string): void {
-    this.#publishSessionCatalog(sessionId);
-  }
-
-  enableSessionAttention(connectionId: string): void {
-    const subscription = this.#subscriptions.get(connectionId);
-    if (!subscription || subscription.mask.sessionCatalog === undefined) {
-      throw new Error('Connection cannot subscribe to Session attention');
-    }
-    subscription.sessionAttention = true;
-  }
-
-  publishSessionAttention(sessionId: string, attention: SessionAttention): void {
-    this.#sessionCatalogRevision += 1;
-    const frame: SessionCatalogChangedFrame = {
-      kind: 'session.catalog.changed',
-      revision: this.#sessionCatalogRevision,
-      sessionId,
-      attention,
-    };
-    for (const [connectionId, subscription] of this.#subscriptions) {
-      if (!subscription.sessionAttention || !isSubscribed(subscription.mask, frame)) continue;
-      void subscription.sink.send(frame).catch(() => {
-        if (this.#subscriptions.get(connectionId) === subscription) {
-          this.#subscriptions.delete(connectionId);
-        }
-      });
-    }
+  publishSessionCatalog(sessionId: string, attention?: SessionAttention): void {
+    this.#publishSessionCatalog(sessionId, undefined, attention);
   }
 
   /** Publish the final scoped invalidation, then stop that resource-scoped feed. */
@@ -139,12 +112,17 @@ export class HostChangeFeed {
     this.#publishSessionCatalog(sessionId, principalId);
   }
 
-  #publishSessionCatalog(sessionId: string, closeScopeFor?: string): void {
+  #publishSessionCatalog(
+    sessionId: string,
+    closeScopeFor?: string,
+    attention?: SessionAttention,
+  ): void {
     this.#sessionCatalogRevision += 1;
     const frame: SessionCatalogChangedFrame = {
       kind: 'session.catalog.changed',
       revision: this.#sessionCatalogRevision,
       sessionId,
+      ...(attention ? { attention } : {}),
     };
     for (const [connectionId, subscription] of this.#subscriptions) {
       if (!isSubscribed(subscription.mask, frame)) continue;

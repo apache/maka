@@ -287,13 +287,14 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly onPublicationFailure: (error: unknown) => void = () => undefined,
     transcriptReader?: SessionTranscriptReader,
-    private readonly onCatalogChanged: (sessionId: string) => void = () => undefined,
+    private readonly onCatalogChanged: (
+      sessionId: string,
+      attention?: SessionAttention,
+    ) => void | Promise<void> = () => undefined,
     sessionAccessAuthority?: Pick<
       RuntimeHostAccessAuthority,
       'activeSessionGrant' | 'subscribeGrantRevocations'
     >,
-    private readonly onAttention: (sessionId: string, attention: SessionAttention) => void = () =>
-      undefined,
   ) {
     this.#hostEpoch = hostEpoch;
     this.#readCanonical = readCanonical;
@@ -340,8 +341,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
-  async refreshCanonical(sessionId: string, admission?: SessionAdmissionLease): Promise<void> {
-    this.onCatalogChanged(sessionId);
+  async refreshCanonical(
+    sessionId: string,
+    admission?: SessionAdmissionLease,
+    attention?: SessionAttention,
+  ): Promise<void> {
     await this.#runInSessionLane(
       sessionId,
       async () => {
@@ -356,6 +360,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       },
       admission,
     );
+    await this.onCatalogChanged(sessionId, attention);
   }
 
   /** Safe for synchronous commit hooks: this only schedules and coalesces lane work. */
@@ -691,12 +696,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.toolResultPreviews.clear();
         this.#broadcastProjection(state, snapshot);
         if (publishCompletionAttention && rootTurn.status === 'completed') {
-          this.onAttention(sessionId, {
+          await this.onCatalogChanged(sessionId, {
             kind: 'completed',
             eventId: rootTurn.terminalEventId,
           });
         } else if (rootTurn.status === 'failed') {
-          this.onAttention(sessionId, {
+          await this.onCatalogChanged(sessionId, {
             kind: 'errored',
             eventId: rootTurn.terminalEventId,
             ...(rootTurn.failureMessage ? { body: rootTurn.failureMessage } : {}),

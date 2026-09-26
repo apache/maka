@@ -164,7 +164,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeDesktopInteractionTurn: (
     sessionId: string,
   ) => void | Promise<void>;
-  readonly notifyRun?: (input: RunNotificationEvent) => Promise<void>;
+  readonly notifyRun: (input: RunNotificationEvent) => Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly transcriptHistoryBytes?: number;
   readonly renderer?: {
@@ -956,11 +956,9 @@ export async function createDesktopRuntimeHostCandidate(
           }),
         })
       : noGuestBotService();
-    if (deps.notifyRun) {
-      disposeNotifications = observeRuntimeHostNotifications(
-        client, deps.notifyRun, reportError, target.access === 'session_guest',
-      );
-    }
+    disposeNotifications = observeRuntimeHostNotifications(
+      client, deps.notifyRun, reportError, target.access === 'session_guest',
+    );
     return new DesktopRuntimeHostCandidateImpl({
       client,
       observer: sessionObserver,

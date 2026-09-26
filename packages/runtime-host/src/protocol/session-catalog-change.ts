@@ -17,14 +17,46 @@
  * under the License.
  */
 
-import { requireCount, requireId, requireShapedRecord } from './codec.js';
-import { decodeSessionAttention, type SessionAttention } from './session-attention.js';
+import { requireCount, requireId, requireShapedRecord, requireUtf8String } from './codec.js';
+import { invalidProtocolFrame } from './errors.js';
+
+export const SESSION_ATTENTION_BODY_MAX_BYTES = 2_048;
+
+export interface SessionAttention {
+  readonly kind: 'completed' | 'errored' | 'waiting';
+  readonly eventId: string;
+  readonly body?: string;
+}
 
 export interface SessionCatalogChangedFrame {
   readonly kind: 'session.catalog.changed';
   readonly revision: number;
   readonly sessionId: string;
   readonly attention?: SessionAttention;
+}
+
+function decodeSessionAttention(value: unknown): SessionAttention {
+  const attention = requireShapedRecord(value, 'Session attention', ['kind', 'eventId'], ['body']);
+  if (
+    attention.kind !== 'completed' &&
+    attention.kind !== 'errored' &&
+    attention.kind !== 'waiting'
+  ) {
+    throw invalidProtocolFrame('Invalid Session attention kind');
+  }
+  return {
+    kind: attention.kind,
+    eventId: requireId(attention.eventId, 'Session attention eventId'),
+    ...(attention.body === undefined
+      ? {}
+      : {
+          body: requireUtf8String(
+            attention.body,
+            'Session attention body',
+            SESSION_ATTENTION_BODY_MAX_BYTES,
+          ),
+        }),
+  };
 }
 
 export function decodeSessionCatalogChangedFrame(value: unknown): SessionCatalogChangedFrame {

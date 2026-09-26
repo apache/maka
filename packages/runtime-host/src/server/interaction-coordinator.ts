@@ -112,8 +112,8 @@ export interface HostInteractionCoordinatorOptions {
   readonly refreshCanonicalContinuity: (
     sessionId: string,
     admission: SessionAdmissionLease,
+    attention?: SessionAttention,
   ) => Promise<void>;
-  readonly publishAttention?: (sessionId: string, attention: SessionAttention) => void;
   readonly onPoison: (error: RuntimeInteractionFailStopError) => void;
   /** Resolve the root Session while the settled Session still holds admission. */
   readonly resolveSandboxBoundaryRootSession: (
@@ -229,7 +229,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly #now: () => number;
   readonly #preflightSessionSnapshot: HostInteractionCoordinatorOptions['preflightSessionSnapshot'];
   readonly #refreshCanonicalContinuity: HostInteractionCoordinatorOptions['refreshCanonicalContinuity'];
-  readonly #publishAttention: NonNullable<HostInteractionCoordinatorOptions['publishAttention']>;
   readonly #onPoison: HostInteractionCoordinatorOptions['onPoison'];
   readonly #resolveSandboxBoundaryRootSession: HostInteractionCoordinatorOptions['resolveSandboxBoundaryRootSession'];
   readonly #onSandboxBoundaryGraphWake: HostInteractionCoordinatorOptions['onSandboxBoundaryGraphWake'];
@@ -247,7 +246,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#now = options.now ?? Date.now;
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
-    this.#publishAttention = options.publishAttention ?? (() => {});
     this.#onPoison = options.onPoison;
     this.#resolveSandboxBoundaryRootSession = options.resolveSandboxBoundaryRootSession;
     this.#onSandboxBoundaryGraphWake = options.onSandboxBoundaryGraphWake;
@@ -756,13 +754,12 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       );
     }
     entry.phase = 'live';
-    await this.#refreshCanonicalContinuity(entry.request.sessionId, admission);
-    this.#throwIfPoisoned();
-    this.#publishAttention(entry.request.sessionId, {
+    await this.#refreshCanonicalContinuity(entry.request.sessionId, admission, {
       kind: 'waiting',
       eventId: entry.request.requestId,
       ...waitingAttentionBody(entry.request),
     });
+    this.#throwIfPoisoned();
     return;
   }
 
@@ -866,13 +863,12 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       phase: 'live',
     };
     this.#live.set(boundaryRequest.requestId, entry);
-    await this.#refreshCanonicalContinuity(run.sessionId, admission);
-    this.#throwIfPoisoned();
-    this.#publishAttention(run.sessionId, {
+    await this.#refreshCanonicalContinuity(run.sessionId, admission, {
       kind: 'waiting',
       eventId: boundaryRequest.requestId,
       body: truncateUtf8(boundaryRequest.justification, SESSION_ATTENTION_BODY_MAX_BYTES, '…'),
     });
+    this.#throwIfPoisoned();
   }
 
   #query(

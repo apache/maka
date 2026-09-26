@@ -990,9 +990,22 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       context.requestDrain,
       transcriptReader,
-      (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+      async (sessionId, attention) => {
+        if (attention) {
+          try {
+            if (
+              (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy.incognitoActive
+            ) {
+              attention = undefined;
+            }
+          } catch (error) {
+            attention = undefined;
+            console.warn('[runtime-host] Could not read notification privacy policy', error);
+          }
+        }
+        hostChanges.publishSessionCatalog(sessionId, attention);
+      },
       context.sessionAccessAuthority,
-      (sessionId, attention) => hostChanges.publishSessionAttention(sessionId, attention),
     );
     const continuityCoordinator = continuity;
     const planStore = observeInteractivePlanStoreWriter(
@@ -1052,12 +1065,10 @@ export async function createExecutionRuntimeHostComposition(
         canonicalProjectionReader.fitsCandidate(sessionId, {
           interactions: interactionProjection,
         }),
-      refreshCanonicalContinuity: async (sessionId, admission) => {
-        await continuityCoordinator.refreshCanonical(sessionId, admission);
+      refreshCanonicalContinuity: async (sessionId, admission, attention) => {
+        await continuityCoordinator.refreshCanonical(sessionId, admission, attention);
         sessionAdmission.detach(() => workHubResults?.notify(sessionId));
       },
-      publishAttention: (sessionId, attention) =>
-        hostChanges.publishSessionAttention(sessionId, attention),
       onPoison: (error) => {
         if (poisonFailure) return;
         poisonFailure = error;
@@ -2857,12 +2868,6 @@ export async function createExecutionRuntimeHostComposition(
         id: 'session',
         handlers: [
           sessionCatalog.handlers,
-          {
-            'session.attention.subscribe': async (_input, operationContext) => {
-              hostChanges.enableSessionAttention(operationContext.connectionId);
-              return { ok: true, result: { subscribed: true } };
-            },
-          },
           externalSessions.handlers,
           sessionBundles.handlers,
           sessionRevisions.handlers,

@@ -115,16 +115,10 @@ test('keeps catalog revisions independent and removes failed subscriptions', asy
   );
 });
 
-test('publishes Session attention only after opt-in and within the catalog scope', () => {
+test('publishes Session attention within the catalog scope and stops after Guest revocation', () => {
   const feed = new HostChangeFeed();
-  const legacy: unknown[] = [];
   const owner: unknown[] = [];
   const guest: unknown[] = [];
-  feed.attachConnection(
-    'legacy',
-    { sessionCatalog: true },
-    { send: async (frame) => void legacy.push(frame) },
-  );
   feed.attachConnection(
     'owner',
     { sessionCatalog: true },
@@ -135,20 +129,16 @@ test('publishes Session attention only after opt-in and within the catalog scope
     { sessionCatalog: { sessionId: 'session-1', principalId: 'guest-1' } },
     { send: async (frame) => void guest.push(frame) },
   );
-  feed.enableSessionAttention('owner');
-  feed.enableSessionAttention('guest');
-
-  feed.publishSessionAttention('session-1', {
+  feed.publishSessionCatalog('session-1', {
     kind: 'waiting',
     eventId: 'interaction-1',
     body: 'Choose one',
   });
-  feed.publishSessionAttention('session-2', {
+  feed.publishSessionCatalog('session-2', {
     kind: 'completed',
     eventId: 'terminal-2',
   });
 
-  assert.deepEqual(legacy, []);
   assert.deepEqual(owner, [
     {
       kind: 'session.catalog.changed',
@@ -164,4 +154,9 @@ test('publishes Session attention only after opt-in and within the catalog scope
     },
   ]);
   assert.deepEqual(guest, [owner[0]]);
+  feed.publishSessionCatalogAndCloseScope('session-1', 'guest-1');
+  const guestFrames = guest.length;
+  feed.publishSessionCatalog('session-1', { kind: 'completed', eventId: 'terminal-1' });
+  assert.equal(guest.length, guestFrames);
+  assert.equal(owner.length, 4);
 });

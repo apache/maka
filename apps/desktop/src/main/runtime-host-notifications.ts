@@ -21,7 +21,7 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RunNotificationEvent } from './notifications-policy.js';
 
 export function observeRuntimeHostNotifications(
-  client: Pick<DesktopRuntimeHostClient, 'hostEpoch' | 'request' | 'subscribeSessionCatalogChanges' | 'subscribeConnectionAvailability' | 'getSession' | 'getSharedSession'>,
+  client: Pick<DesktopRuntimeHostClient, 'hostEpoch' | 'subscribeSessionCatalogChanges' | 'getSession' | 'getSharedSession'>,
   notify: (input: RunNotificationEvent) => Promise<void>,
   onError: (error: unknown) => void,
   shared = false,
@@ -45,14 +45,8 @@ export function observeRuntimeHostNotifications(
         });
       }).catch(onError);
   });
-  const unsubscribeAvailability = client.subscribeConnectionAvailability((availability) => {
-    if (availability.kind === 'connected' && !closed) {
-      void client.request('session.attention.subscribe', {}).catch(onError);
-    }
-  });
   return () => {
     closed = true;
     unsubscribe();
-    unsubscribeAvailability();
   };
 }

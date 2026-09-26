@@ -54,8 +54,6 @@ import {
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
-  isRuntimeHostReconnectingConnection,
-  type RuntimeHostConnectionAvailability,
   prepareConnectedRuntimeHostRetirement,
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
@@ -404,15 +402,6 @@ export class DesktopRuntimeHostClient {
   ): () => void {
     this.#assertOpen();
     return this.connection.subscribeSessionCatalogChanges(listener);
-  }
-
-  subscribeConnectionAvailability(listener: (availability: RuntimeHostConnectionAvailability) => void): () => void {
-    this.#assertOpen();
-    if (isRuntimeHostReconnectingConnection(this.connection)) {
-      return this.connection.subscribeConnectionAvailability(listener);
-    }
-    listener({ kind: 'connected', hostEpoch: this.connection.hostEpoch, connectionId: this.connection.connectionId });
-    return () => {};
   }
 
   subscribeScheduledTaskChanges(

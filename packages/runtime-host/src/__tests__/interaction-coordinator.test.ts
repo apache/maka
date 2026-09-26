@@ -309,13 +309,13 @@ describe('HostInteractionCoordinator', () => {
           assert.equal(await store.readInteraction('question_1'), undefined);
           return true;
         },
-        refreshCanonicalContinuity: async () => {
+        refreshCanonicalContinuity: async (sessionId, _admission, event) => {
           const record = await store.readInteraction('question_1');
           order.push(record?.outcome ? 'refresh:answered' : 'refresh:pending');
-        },
-        publishAttention: (sessionId, event) => {
-          order.push('attention');
-          attention.push({ sessionId, ...event });
+          if (event) {
+            order.push('attention');
+            attention.push({ sessionId, ...event });
+          }
         },
       });
       const owner = coordinator.bindRun(RUN);

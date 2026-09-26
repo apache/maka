@@ -26,13 +26,12 @@ import {
 } from '../notifications-policy.js';
 
 it('gates native notifications through every required condition', () => {
-  const base = { enabled: true, supported: true, windowFocused: false, incognito: false, e2e: false };
+  const base = { enabled: true, supported: true, windowFocused: false, e2e: false };
   const cases = [
     [base, true],
     [{ ...base, enabled: false }, false],
     [{ ...base, supported: false }, false],
     [{ ...base, windowFocused: true }, false],
-    [{ ...base, incognito: true }, false],
     [{ ...base, e2e: true }, false],
   ] as const;
 
@@ -62,7 +61,7 @@ it('sanitizes notification content, caps it, and falls back per field', () => {
   assert.deepEqual(clean, { title: '会话 A', body: 'line one line two indented' });
 
   const completedFallback = runNotificationCopy('completed', 'zh-CN');
-  for (const value of ['', '   ', undefined, null, 42, {}]) {
+  for (const value of ['', '   ', undefined]) {
     assert.deepEqual(
       resolveNotificationContent({ kind: 'completed', title: value, body: value }, 'zh-CN'),
       completedFallback,

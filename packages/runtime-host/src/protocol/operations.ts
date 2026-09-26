@@ -53,7 +53,6 @@ import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
 import { RUNTIME_RESOURCE_OPERATION_SPECS } from './runtime-resource.js';
 import { SCHEDULED_TASK_OPERATION_SPECS } from './scheduled-task.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
-import { SESSION_ATTENTION_OPERATION_SPECS } from './session-attention.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
 import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
@@ -217,7 +216,6 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SESSION_TRANSCRIPT_OPERATION_SPECS,
   SESSION_TURNS_OPERATION_SPECS,
   SESSION_CATALOG_OPERATION_SPECS,
-  SESSION_ATTENTION_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
   PROMPT_SUGGESTION_OPERATION_SPECS,
   SESSION_REVISION_OPERATION_SPECS,
@@ -329,7 +327,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'scheduled-task.mutate',
   'scheduled-task.query',
   'session.branch.create',
-  'session.attention.subscribe',
   'session.catalog.query',
   'session.configuration.update',
   'session.create',

@@ -47,7 +47,6 @@ export function createRunNotifier(deps: NotificationsDeps): (input: RunNotificat
       enabled: settings.notifications.runComplete,
       supported,
       windowFocused: deps.mainWindowController.isFocused(),
-      incognito: settings.privacy.incognitoActive,
       e2e: deps.e2e,
     };
     if (!shouldRaiseRunNotification(gate)) return;

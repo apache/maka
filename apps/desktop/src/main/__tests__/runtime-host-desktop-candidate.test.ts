@@ -1288,6 +1288,7 @@ function deps(
     resolveExternalSessionImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
     completeDesktopInteractionTurn() {},
+    notifyRun: async () => {},
     createSessionCopyCleanup: () => ({
       ownCreation: (_creation, operation) => operation(),
       rejectCreation: async () => undefined,
@@ -1352,7 +1353,6 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
-      if (operation === 'session.attention.subscribe') return { subscribed: true };
       if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&

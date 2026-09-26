@@ -752,19 +752,7 @@ test('executor configuration rejects ambiguous routes and malformed values', () 
   );
 });
 
-test('decodes an opted-in Session attention payload', () => {
-  assert.deepEqual(
-    decodeClientFrame({
-      requestId: 'attention-subscribe',
-      operation: 'session.attention.subscribe',
-      input: {},
-    }),
-    {
-      requestId: 'attention-subscribe',
-      operation: 'session.attention.subscribe',
-      input: {},
-    },
-  );
+test('decodes a Session attention payload on a catalog change', () => {
   assert.deepEqual(
     decodeHostFrame({
       kind: 'session.catalog.changed',
