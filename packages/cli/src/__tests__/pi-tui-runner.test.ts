@@ -92,6 +92,8 @@ import {
 } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
+import { stripAnsi } from '../tui-ansi.js';
+import { TUI_FULLSCREEN_ENV } from '../fullscreen-mode.js';
 import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
 import type { TuiMcpAction, TuiMcpManagement } from '../tui-mcp-control.js';
 import {
@@ -13197,3 +13199,319 @@ async function runFatalExitProbe(
   clearTimeout(killTimer);
   return { code, signal, stdout, stderr };
 }
+
+describe('fullscreen TUI trial (#4136)', () => {
+  const ALT_SCREEN_ENTER = '\x1b[?1049h';
+
+  /** A history tall enough to overflow a 24-row terminal many times over. */
+  function tallHistory(): StoredMessage[] {
+    const messages: StoredMessage[] = [];
+    for (let index = 0; index < 24; index += 1) {
+      messages.push(
+        storedUserMessage(
+          `u${index}`,
+          `turn-${index}`,
+          `HISTORY-QUESTION-${index}: ${'detail '.repeat(8)}`,
+        ),
+        storedAssistantMessage(
+          `a${index}`,
+          `turn-${index}`,
+          `HISTORY-ANSWER-${index}: ${'result '.repeat(14)}`,
+        ),
+      );
+    }
+    return messages;
+  }
+
+  function screenLines(terminal: FakeTerminal): string[] {
+    return terminal
+      .screenOutput()
+      .split(/\r?\n/)
+      .map((line) => stripAnsi(line));
+  }
+
+  test('wheel scrolling keeps the composer anchored and typing re-anchors the transcript', async () => {
+    const terminal = new FakeTerminal(80, 24);
+    const driver = new SlashCommandDriver(
+      [fakeSessionSummary('session-2', '/repo')],
+      new Map([['session-2', tallHistory()]]),
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      tuiFullscreen: true,
+      resumeSessionId: 'session-2',
+    });
+
+    await waitFor(() => screenLines(terminal).join('\n').includes('HISTORY-ANSWER-23'));
+    // The composer is anchored to the screen bottom, status line last.
+    let lines = screenLines(terminal);
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+    assert.match(stripAnsi(lines.at(-2) ?? ''), /^─+$/);
+    // The transcript follows the newest output; the top of history is
+    // windowed out of the viewport instead of pushed into scrollback.
+    assert.equal(lines.join('\n').includes('HISTORY-QUESTION-0'), false);
+
+    // The mouse wheel scrolls the application-owned viewport up.
+    for (let index = 0; index < 150; index += 1) {
+      terminal.input('\x1b[<64;40;12M');
+    }
+    await waitFor(() => screenLines(terminal).join('\n').includes('HISTORY-QUESTION-0'));
+    lines = screenLines(terminal);
+    // The reading position moved up; the composer and status line did not.
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+    assert.match(stripAnsi(lines.at(-2) ?? ''), /^─+$/);
+
+    // Typing re-anchors to the newest output (the trial's chosen answer to
+    // issue #4136's "what happens when the user types while reading older
+    // content?"): the composer is never blind at the bottom of the screen.
+    terminal.input('x');
+    await waitFor(() => !screenLines(terminal).join('\n').includes('HISTORY-QUESTION-0'));
+    lines = screenLines(terminal);
+    assert.match(lines.join('\n'), /HISTORY-ANSWER-23/);
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('the trial follows the build channel and the MAKA_TUI_FULLSCREEN override', async () => {
+    const runsFullscreen = async (input: {
+      buildVersion?: string;
+      override?: string;
+    }): Promise<boolean> => {
+      const terminal = new FakeTerminal(80, 24);
+      const driver = new SlashCommandDriver();
+      const previousOverride = process.env[TUI_FULLSCREEN_ENV];
+      if (input.override === undefined) delete process.env[TUI_FULLSCREEN_ENV];
+      else process.env[TUI_FULLSCREEN_ENV] = input.override;
+      try {
+        const run = runMakaPiTui({
+          title: 'Maka',
+          driver,
+          cwd: '/repo',
+          model: 'claude-sonnet-4-5',
+          connectionSlug: 'claude-subscription',
+          permissionMode: 'ask',
+          terminal,
+          ...(input.buildVersion !== undefined ? { buildVersion: input.buildVersion } : {}),
+        });
+        await waitForTuiPaint(terminal);
+        const fullscreen = terminal.output().includes(ALT_SCREEN_ENTER);
+        exitMaka(terminal);
+        await Promise.race([
+          run,
+          delay(CLOSE_BUDGET_MS).then(() => {
+            throw new Error('TUI did not close during test cleanup');
+          }),
+        ]);
+        return fullscreen;
+      } finally {
+        if (previousOverride === undefined) delete process.env[TUI_FULLSCREEN_ENV];
+        else process.env[TUI_FULLSCREEN_ENV] = previousOverride;
+      }
+    };
+
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0' }),
+      false,
+      'release builds stay on the main screen',
+    );
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0-dev.42.20260829' }),
+      true,
+      'nightly builds opt into the fullscreen trial',
+    );
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0', override: '1' }),
+      true,
+      'the override opts a release build in',
+    );
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0-dev.42.20260829', override: '0' }),
+      false,
+      'the override opts a nightly build out',
+    );
+  });
+
+  test('answers sequential questions inline in fullscreen mode (#4136 review P1)', async () => {
+    const terminal = new FakeTerminal(80, 24);
+    const driver = new UserQuestionPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      tuiFullscreen: true,
+    });
+
+    terminal.input('choose');
+    terminal.input('\r');
+    // The regression: fullscreen renders and routes input through the mounted
+    // layout root only, so a question attached to the inert main-screen layout
+    // was focused but never drawn, and the Turn waited on a blind answer. The
+    // chrome must render the question with its options and the input row.
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Choose an approach'),
+    );
+    const firstScreen = plainTerminalOutput(terminal.screenOutput());
+    assert.ok(firstScreen.includes('Extend'));
+    assert.ok(firstScreen.includes('Separate'));
+    assert.ok(firstScreen.includes('Other: type your answer'));
+    assert.ok(firstScreen.includes('Ctrl+C stop'));
+    // The question sits inside the anchored chrome, budgeted above the status
+    // line: the status row remains the last line on screen.
+    const firstLines = firstScreen.split(/\r?\n/);
+    const questionIndex = firstLines.findIndex((line) => line.includes('Choose an approach'));
+    const statusIndex = firstLines.findIndex((line) =>
+      line.includes('Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo'),
+    );
+    assert.ok(questionIndex >= 0 && questionIndex < statusIndex);
+    assert.equal(statusIndex, terminal.rows - 1);
+
+    // Q1: Enter selects the highlighted first option; Q2: Escape skips;
+    // Q3: typing jumps to the Other row — the same answers as the
+    // main-screen production test, through the fullscreen input path.
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Keep the default'));
+    terminal.input('\x1b');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Anything else'));
+    terminal.input('Use the existing seam');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Use the existing seam'),
+    );
+    assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('Nothing'));
+    terminal.input('\r');
+
+    await waitFor(() => driver.responses.length === 1);
+    assert.deepEqual(driver.responses, [
+      {
+        requestId: 'question-1',
+        answers: ['Extend', null, 'Use the existing seam'],
+      },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('keeps the status line and a usable answer input for a live question on a 10-row terminal (#4136 review P2)', async () => {
+    // The row account must include the live-activity separator: a Host
+    // question is raised while the Turn is still running, so the activity
+    // strip and its blank separator are chrome rows that squeeze the
+    // remaining budget. On a 10-row fullscreen terminal the separator row
+    // pushed the chrome one row past its VStack allocation and clipped the
+    // status line off the bottom of the screen. The strip yields before the
+    // question's minimum viewport does.
+    const terminal = new FakeTerminal(80, 10);
+    const driver = new UserQuestionPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      tuiFullscreen: true,
+    });
+
+    terminal.input('choose');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Choose an approach'),
+    );
+    // The question is visible with its answer affordances: option rows and
+    // the free-text Other row are on screen, and the status line survived at
+    // the bottom of the screen — the regression clipped it away.
+    const lines = screenLines(terminal);
+    const joined = lines.join('\n');
+    assert.ok(joined.includes('Choose an approach'));
+    assert.ok(joined.includes('Extend'));
+    assert.ok(joined.includes('Other: type your answer'));
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+    // The live turn may still show its Working strip — but never at the cost
+    // of the question being answerable or the status line visible.
+    // Q1 answered through the option path: Enter picks the highlighted row.
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Keep the default'));
+    terminal.input('\x1b');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Anything else'));
+    terminal.input('Short');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Short'));
+    terminal.input('\r');
+    await waitFor(() => driver.responses.length === 1);
+    assert.deepEqual(driver.responses, [
+      {
+        requestId: 'question-1',
+        answers: ['Extend', null, 'Short'],
+      },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('renders the live Todo indicator in the mounted fullscreen chrome (#4136 review P1)', async () => {
+    const terminal = new FakeTerminal(80, 24);
+    const driver = Object.assign(new SlashCommandDriver(), {
+      async queryTodo(sessionId: string) {
+        return {
+          sessionId,
+          items: [{ content: 'Fullscreen todo item', status: 'in_progress' as const }],
+        };
+      },
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+      tuiFullscreen: true,
+    });
+    // The Todo row shared the question's mount split: rendered by the inert
+    // main-screen layout, invisible in fullscreen. It must appear in the
+    // anchored chrome, above the composer.
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Fullscreen todo item'),
+    );
+    const lines = screenLines(terminal);
+    const todoIndex = lines.findIndex((line) => line.includes('Fullscreen todo item'));
+    const statusIndex = lines.length - 1;
+    assert.ok(todoIndex >= 0 && todoIndex < statusIndex);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+});

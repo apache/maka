@@ -23,6 +23,14 @@ import type { UiLocale } from '@maka/core/ui-locale';
 // compare the same canonical lines pi-tui diffs, and pi-tui normalizes Thai/Lao
 // AM sequences before its diff. Pinned to pi-tui 0.80.3.
 import { normalizeTerminalOutput } from '@earendil-works/pi-tui/dist/utils.js';
+// Separate statements, anchored below the deep import rather than appended to
+// the Container import: upstream inserts its UiLocale import directly after
+// the Container line and its TranscriptDocument import after the
+// pi-transcript block, and imports in this gap keep this PR's changes out of
+// both of those diff gaps so the three-way merge resolves cleanly.
+import { ScrollView, type ScrollViewOptions } from '@earendil-works/pi-tui';
+import type { UnreadOutputFeed } from './fullscreen-mode.js';
+import { renderUnreadIndicator, UnreadOutputCounter } from './fullscreen-mode.js';
 import {
   renderMakaPiActivityStrip,
   renderMakaPiPendingQueue,
@@ -43,12 +51,39 @@ interface ViewportAwareEditor extends ViewportAwareComponent {
   isShowingAutocomplete(): boolean;
 }
 
+/** Rows the transcript keeps in the fullscreen layout even on tiny terminals. */
+const FULLSCREEN_TRANSCRIPT_MIN_ROWS = 1;
+
 export function fitPendingQueueLines(lines: readonly string[], maxRows: number): string[] {
   const rowBudget = Math.max(0, Math.floor(maxRows));
   if (lines.length <= rowBudget) return [...lines];
   if (rowBudget === 0) return [];
   if (rowBudget === 1) return [`… ${lines.length} more`];
   return [...lines.slice(0, rowBudget - 1), `… ${lines.length - rowBudget + 1} more`];
+}
+
+/**
+ * The fullscreen chrome's editor/pending-queue row account, isolated in one
+ * function so the budget and its consumers cannot drift apart: from the rows
+ * available below the transcript, reserve the editor's minimum viewport while
+ * the autocomplete is open (the queue trims first), then give the editor
+ * whatever remains. `rowsAvailable` is everything already carved out of the
+ * terminal rows — the chrome subtracts the status line, activity strip, unread
+ * indicator, and the reserved transcript row before calling. The main-screen
+ * layout keeps its own (upstream-owned) accounting; its contract is identical,
+ * so the two can be unified onto this function after merge.
+ */
+function budgetEditorAndPendingRows(
+  rowsAvailable: number,
+  allPendingLines: readonly string[],
+  editor: ViewportAwareEditor,
+): { pendingLines: string[]; editorRows: number } {
+  const budget = Math.max(0, Math.floor(rowsAvailable));
+  const pendingRowsAvailable = editor.isShowingAutocomplete()
+    ? Math.max(0, budget - editor.minimumViewportRows())
+    : allPendingLines.length;
+  const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
+  return { pendingLines, editorRows: Math.max(0, budget - pendingLines.length) };
 }
 
 export class MakaTranscriptComponent implements Component {
@@ -328,5 +363,246 @@ export class MakaPiLayoutComponent extends Container {
       if (firstChanged === -1 && previous.length - lines.length > rows) return tailTop;
     }
     return Math.max(current, tailTop);
+  }
+}
+
+/**
+ * The ScrollView child of the fullscreen layout: renders the complete
+ * transcript document (the scroll view windows it) and exposes the rendered
+ * line count so the scroll view can count lines appended while the user is
+ * scrolled away. Lives in pi-tui-layout.ts alongside the other transcript
+ * adapters.
+ */
+export class MakaTranscriptDocumentComponent implements Component {
+  /** Rendered transcript document lines from the most recent frame. */
+  documentLines = 0;
+
+  constructor(private readonly transcript: MakaTranscriptComponent) {}
+
+  invalidate(): void {
+    this.transcript.invalidate();
+  }
+
+  render(width: number): string[] {
+    const lines = this.transcript.render(width);
+    this.documentLines = lines.length;
+    return lines;
+  }
+}
+
+/**
+ * The fullscreen layout's transcript scroll view. `ScrollView.updateLayout`
+ * runs at the layout pass with this frame's content height and scroll state —
+ * the one point in the frame where the window is fresh — so this subclass
+ * computes the unread count there and compares it with what the anchored
+ * chrome actually rendered (`presentedUnread`, written back by the chrome via
+ * its `UnreadOutputFeed`). The chrome is measured before the scroll view is
+ * laid out, so its view lags one frame; when the rendered count falls behind,
+ * a catch-up render is requested and the indicator settles deterministically.
+ */
+export class MakaTranscriptScrollView extends ScrollView {
+  /** Unread count as of the most recent layout pass. */
+  computedUnread = 0;
+  /** Unread count the chrome last rendered. */
+  presentedUnread = 0;
+
+  private readonly counter = new UnreadOutputCounter();
+
+  constructor(
+    private readonly document: MakaTranscriptDocumentComponent,
+    options: ScrollViewOptions,
+  ) {
+    super(document, options);
+  }
+
+  override updateLayout(
+    contentHeight: number,
+    viewportHeight: number,
+    requestRender: () => void,
+  ): void {
+    super.updateLayout(contentHeight, viewportHeight, requestRender);
+    this.computedUnread = this.counter.update({
+      followingEnd: this.isFollowingEnd,
+      documentLines: this.document.documentLines,
+    });
+    if (this.computedUnread !== this.presentedUnread) requestRender();
+  }
+}
+
+/**
+ * The anchored bottom chrome of the fullscreen layout (issue #4136): unread
+ * indicator, activity strip, pending queue, editor, and status line — stacked
+ * below the scrolling transcript and pinned to the screen bottom by the
+ * VStack. The transcript region above owns its own scrolling, so unlike
+ * `MakaPiLayoutComponent` this component emits only the chrome rows and never
+ * pads or windows the transcript.
+ *
+ * The unread count comes from the scroll view's `UnreadOutputFeed` (see
+ * `MakaTranscriptScrollView`): the layout engine measures this component
+ * before the scroll view is laid out, so the count it reads lags one frame and
+ * the scroll view requests a catch-up render whenever the rendered count falls
+ * behind.
+ *
+ * `renderGeometry.viewportTop` is pinned to 0: the app owns the whole screen,
+ * no rendered line sits in untouchable terminal scrollback, so the
+ * entry-freeze and viewport-restricted expansion toggles that main-screen mode
+ * needs (#1097, #1134, #4011) must not engage — every entry stays
+ * re-renderable and globally toggleable.
+ */
+export class MakaFullscreenChromeComponent extends Container {
+  /**
+   * Host-owned blocking interaction (the inline user-question prompt). The
+   * fullscreen layout root renders and routes only the mounted tree, so in
+   * fullscreen this chrome owns the role `MakaPiLayoutComponent` owns on the
+   * main screen: it draws the interaction with the same row budgeting (the
+   * editor yields to it, the transcript keeps its minimum row) and mounts it
+   * as a child so input routing reaches it (#4136 review P1).
+   */
+  private blockingInteraction: ViewportAwareComponent | undefined;
+
+  constructor(
+    private readonly state: MakaPiTranscriptState,
+    private readonly activityStrip: MakaActivityStripComponent,
+    private readonly pendingQueue: MakaPendingQueueComponent,
+    private readonly editor: ViewportAwareEditor,
+    private readonly statusLine: Component,
+    private readonly terminal: Terminal,
+    private readonly unreadFeed: UnreadOutputFeed,
+    private readonly accent: (text: string) => string,
+    private readonly todoIndicator?: Component,
+  ) {
+    super();
+  }
+
+  setBlockingInteraction(interaction: ViewportAwareComponent | undefined): void {
+    if (this.blockingInteraction === interaction) return;
+    if (this.blockingInteraction) this.removeChild(this.blockingInteraction);
+    this.blockingInteraction = interaction;
+    if (interaction) this.addChild(interaction);
+  }
+
+  override render(width: number): string[] {
+    const unreadLines = this.unreadFeed.current();
+    const indicatorLines = renderUnreadIndicator(unreadLines, this.accent);
+    this.unreadFeed.present(unreadLines);
+    // App-owned viewport: no terminal scrollback exists, so expansion toggles
+    // may retarget any entry and no entry is ever frozen off-screen.
+    this.state.renderGeometry.viewportTop = 0;
+
+    const allActivityLines = this.activityStrip.render(width);
+    // The activity strip renders one row even when idle (an empty string);
+    // an all-empty strip would burn a permanent chrome row between the
+    // transcript and the editor, so it collapses to nothing when idle.
+    const activityRows = allActivityLines.some((line) => line.length > 0) ? allActivityLines : [];
+    // #1064's separator, fullscreen edition: keep "Working... Ns" from
+    // touching the last visible transcript line when a turn is running. This
+    // row is part of the chrome's emitted height, so the budget must count it
+    // too — otherwise the VStack clips the chrome's bottom (the status line)
+    // on short terminals while a Host question is live (#4136 review P2).
+    const activitySeparator = activityRows.length > 0 ? [''] : [];
+    const allPendingLines = this.pendingQueue.render(width);
+    const statusLines = this.statusLine.render(width);
+    const blockingInteraction = this.blockingInteraction;
+    // Same input selection as MakaPiLayoutComponent: an active blocking
+    // question replaces the composer in the chrome stack.
+    const input = blockingInteraction ?? this.editor;
+    const minimumInputRows = input.minimumViewportRows();
+    // Same row account as MakaPiLayoutComponent via budgetEditorAndPendingRows,
+    // with the unread indicator, the live-activity separator, the Todo row, and
+    // the transcript's minimum row reserved up front so the chrome's intrinsic
+    // height can never push the transcript below one row or overflow the
+    // allocation the VStack gives it.
+    let effectiveMargin = blockingInteraction ? 1 : 0;
+    const fixedChrome =
+      indicatorLines.length +
+      activitySeparator.length +
+      activityRows.length +
+      statusLines.length +
+      effectiveMargin +
+      FULLSCREEN_TRANSCRIPT_MIN_ROWS;
+    const todoLines =
+      this.todoIndicator &&
+      this.terminal.rows > fixedChrome + allPendingLines.length + minimumInputRows
+        ? (this.todoIndicator.render(width) ?? []).slice(0, 1)
+        : [];
+    // With a blocking question live, the pending queue yields to the question
+    // (budgeted against the question's minimum rows, as on the main screen)
+    // and the question then takes the remaining rows; without one, the editor
+    // and pending queue split the budget through the shared helper.
+    const budgetChrome = (fixed: number): { pendingLines: string[]; inputRows: number } =>
+      blockingInteraction
+        ? (() => {
+            const questionPending = fitPendingQueueLines(
+              allPendingLines,
+              Math.max(0, this.terminal.rows - fixed - todoLines.length - minimumInputRows),
+            );
+            return {
+              pendingLines: questionPending,
+              inputRows: this.terminal.rows - fixed - todoLines.length - questionPending.length,
+            };
+          })()
+        : (() => {
+            const budgeted = budgetEditorAndPendingRows(
+              this.terminal.rows - fixed - todoLines.length,
+              allPendingLines,
+              this.editor,
+            );
+            return { pendingLines: budgeted.pendingLines, inputRows: budgeted.editorRows };
+          })();
+    let effectiveFixedChrome = fixedChrome;
+    let effectiveSeparator = activitySeparator;
+    let effectiveActivityRows = activityRows;
+    let effectiveIndicator = indicatorLines;
+    let { pendingLines, inputRows } = budgetChrome(effectiveFixedChrome);
+    // Squeeze rule (#4136 review P2): if the remaining budget cannot even give
+    // the input its own minimum, the input is load-bearing and clamps to that
+    // minimum, so decorative chrome rows yield in priority order until the
+    // frame fits the chrome's VStack allocation: the live activity strip and
+    // its separator first, then the question's blank margin row (pure
+    // decoration), and only as a last resort the unread banner — information
+    // yields after decoration. A user scrolled away can catch up after
+    // answering; a clipped status line or an unreachable answer field cannot.
+    // The second round of this review caught the residual case at the 8-row
+    // boundary: an unread banner plus a three-option question still pushed the
+    // chrome two rows past its allocation because only the strip yielded.
+    const yielders: Array<() => number> = [
+      () => {
+        const drop = effectiveSeparator.length + effectiveActivityRows.length;
+        if (drop === 0) return 0;
+        effectiveSeparator = [];
+        effectiveActivityRows = [];
+        return drop;
+      },
+      () => {
+        if (effectiveMargin === 0) return 0;
+        effectiveMargin = 0;
+        return 1;
+      },
+      () => {
+        const drop = effectiveIndicator.length;
+        if (drop === 0) return 0;
+        effectiveIndicator = [];
+        return drop;
+      },
+    ];
+    for (const yieldRows of yielders) {
+      if (inputRows >= minimumInputRows) break;
+      const dropped = yieldRows();
+      if (dropped === 0) continue;
+      effectiveFixedChrome -= dropped;
+      ({ pendingLines, inputRows } = budgetChrome(effectiveFixedChrome));
+    }
+    input.setViewportRows(inputRows);
+    const inputLines = input.render(width);
+    return [
+      ...effectiveIndicator,
+      ...effectiveSeparator,
+      ...effectiveActivityRows,
+      ...pendingLines,
+      ...todoLines,
+      ...inputLines,
+      ...(effectiveMargin > 0 ? [''] : []),
+      ...statusLines,
+    ];
   }
 }
