@@ -24,12 +24,20 @@ import { dirname, join, resolve } from 'node:path';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = resolve(scriptDirectory, '..');
-const defaultBiomePath = join(
-  defaultRepoRoot,
-  'node_modules',
-  '.bin',
-  process.platform === 'win32' ? 'biome.cmd' : 'biome',
-);
+
+export function resolveBiomePath(
+  root = defaultRepoRoot,
+  platform = process.platform,
+  arch = process.arch,
+) {
+  if (platform === 'win32') {
+    const packageName = arch === 'arm64' ? 'cli-win32-arm64' : 'cli-win32-x64';
+    return join(root, 'node_modules', '@biomejs', packageName, 'biome.exe');
+  }
+  return join(root, 'node_modules', '.bin', 'biome');
+}
+
+const defaultBiomePath = resolveBiomePath();
 
 const maxBlobBytes = 16 * 1024 * 1024;
 
