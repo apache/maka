@@ -88,7 +88,6 @@ export interface SharedUiCopy {
     automations: string;
     loadingAutomations: string;
     dailyReview: string;
-    loadingDailyReview: string;
     dailyReviewDescription: string;
     dailyReviewDisconnectedTitle: string;
     dailyReviewDisconnectedBody: string;
@@ -183,7 +182,6 @@ const SHARED_UI_COPY = {
       automations: '定时任务',
       loadingAutomations: '正在加载定时任务…',
       dailyReview: '每日回顾',
-      loadingDailyReview: '正在加载每日回顾…',
       dailyReviewDescription: '自动汇总本机任务，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。',
       dailyReviewDisconnectedTitle: '等待连接每日回顾数据',
       dailyReviewDisconnectedBody: '桌面端数据桥当前未连接。',
@@ -263,7 +261,6 @@ const SHARED_UI_COPY = {
       automations: '定時任務',
       loadingAutomations: '正在載入定時任務…',
       dailyReview: '每日回顧',
-      loadingDailyReview: '正在載入每日回顧…',
       dailyReviewDescription: '自動彙總本機任務，生成摘要、遺漏提醒與深度分析；可在設定中開啟定時執行。',
       dailyReviewDisconnectedTitle: '等待連線每日回顧資料',
       dailyReviewDisconnectedBody: '桌面端資料橋目前未連線。',
@@ -343,7 +340,6 @@ const SHARED_UI_COPY = {
       automations: 'Scheduled tasks',
       loadingAutomations: 'Loading scheduled tasks…',
       dailyReview: 'Daily review',
-      loadingDailyReview: 'Loading daily review…',
       dailyReviewDescription: 'Summarize local tasks into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.',
       dailyReviewDisconnectedTitle: 'Waiting for daily review data',
       dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',

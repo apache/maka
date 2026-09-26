@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { localDayBoundsAt } from '@maka/core/daily-review';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
@@ -36,7 +37,7 @@ import {
 } from '../../../daily-review-actions.js';
 import { getShellCopy } from '../../../locales/shell-copy.js';
 import { getShellRemainingCopy } from '../../../locales/shell-remaining-copy.js';
-import type { ModuleHubRuntimeHostRef, ModuleHubServices } from '../ports.js';
+import type { ModuleHubRuntimeHostChangedEvent, ModuleHubRuntimeHostRef, ModuleHubServices } from '../ports.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   defaultRuntimeHostOperationHost,
@@ -68,7 +69,8 @@ export interface ActiveComposerClaim {
 
 /** Structural equivalent of the UI bridge; kept here so @maka/ui stays leaf-only. */
 export interface DailyReviewBridge {
-  fetchDay(offsetDays: number, daySpan?: number): Promise<DailyReviewSummary>;
+  readCachedDay?(offsetDays: number, daySpan?: number): DailyReviewSummary | undefined;
+  fetchDay(offsetDays: number, daySpan?: number, signal?: AbortSignal): Promise<DailyReviewSummary>;
   runOnce?(input: {
     range: DailyReviewRange;
     offsetDays?: number;
@@ -150,19 +152,57 @@ async function readCurrentDefaultHost<T>(
 export function createDailyReviewBridge(
   services: ModuleHubServices,
   locale: UiLocale,
-): DailyReviewBridge {
+): DailyReviewBridge & {
+  invalidateCache(): void;
+  handleHostChange(event: ModuleHubRuntimeHostChangedEvent): void;
+} {
   const copy = getShellRemainingCopy(locale).dailyReview;
+  // Every leaf mount starts on today. Keep only that snapshot, rather than
+  // retaining an unbounded history of date/range selections in the renderer.
+  type TodayRead = {
+    dayStart: number;
+    snapshot?: { summary: DailyReviewSummary; host: ModuleHubRuntimeHostRef };
+    pendingHost?: ModuleHubRuntimeHostRef;
+  };
+  let today: TodayRead | undefined;
+  function invalidateCache() {
+    today = undefined;
+  }
   return {
-    async fetchDay(offsetDays: number, daySpan?: number) {
-      return readCurrentDefaultHost(services, async (host) => {
-        const result = await services.dailyReview.day(
-          offsetDays,
-          daySpan,
-          host,
-        );
-        if (!result.ok) throw new Error(result.error.message);
-        return result.data;
-      });
+    invalidateCache,
+    handleHostChange(event) {
+      if (
+        event.isDefault || event.profileId === today?.snapshot?.host.profileId
+        || event.profileId === today?.pendingHost?.profileId
+      ) invalidateCache();
+    },
+    readCachedDay(offsetDays, daySpan = 1) {
+      if (offsetDays !== 0 || daySpan !== 1) return undefined;
+      if (today?.dayStart !== localDayBoundsAt(Date.now(), 0).fromMs) return undefined;
+      return today.snapshot?.summary;
+    },
+    async fetchDay(offsetDays: number, daySpan = 1, signal?: AbortSignal) {
+      const dayStart = localDayBoundsAt(Date.now(), 0).fromMs;
+      // Replace the read owner while retaining the last-good snapshot. A
+      // superseded or invalidated request can only update its detached owner.
+      const read: TodayRead | undefined = offsetDays === 0 && daySpan === 1
+        ? { dayStart, snapshot: today?.dayStart === dayStart ? today.snapshot : undefined }
+        : undefined;
+      if (read) today = read;
+      try {
+        const snapshot = await readCurrentDefaultHost(services, async (host) => {
+          signal?.throwIfAborted();
+          if (read) read.pendingHost = host;
+          const result = await services.dailyReview.day(offsetDays, daySpan, host);
+          if (!result.ok) throw new Error(result.error.message);
+          return { summary: result.data, host };
+        });
+        signal?.throwIfAborted();
+        if (read) read.snapshot = snapshot;
+        return snapshot.summary;
+      } finally {
+        if (read) read.pendingHost = undefined;
+      }
     },
     runOnce(input) {
       return services.dailyReview.runOnce(input);
@@ -189,6 +229,13 @@ export function useDailyReviewController(
     () => createDailyReviewBridge(input.services, input.uiLocale),
     [input.services, input.uiLocale],
   );
+  useEffect(() => {
+    const unsubscribe = input.services.runtimeHosts.subscribeChanges(bridge.handleHostChange);
+    return () => {
+      unsubscribe();
+      bridge.invalidateCache();
+    };
+  }, [bridge, input.services.runtimeHosts]);
 
   return useMemo(() => {
     const copy = getShellCopy(input.uiLocale).commandActions;

@@ -18,7 +18,7 @@
  */
 
 import type { StatusSemantic } from '@maka/ui';
-import { useEffect, useState, type ComponentType } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import {
   ICON_SIZE,
   Accessibility as AccessibilityIcon,
@@ -61,11 +61,14 @@ import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/p
 import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import {
+  RuntimeHostSettingsGenerationBoundary,
+  runtimeHostSettingsKey,
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
 import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
+import type { SettingsSnapshotCache } from './settings-snapshot-cache.js';
 import { useActionGuard } from './use-action-guard';
 import {
   SettingsStatusSummaryFilter,
@@ -100,13 +103,31 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
 
 type PermissionStatusFilter = 'granted' | 'pending' | 'denied' | 'other';
 
-export function PermissionCenterPage() {
+interface PermissionCenterPageProps {
+  snapshotCache: SettingsSnapshotCache;
+}
+
+export function PermissionCenterPage(props: PermissionCenterPageProps) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      {(generationKey) => <PermissionCenterContent {...props} generationKey={generationKey} />}
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function PermissionCenterContent(props: PermissionCenterPageProps & { generationKey: string }) {
   const host = useRuntimeHostSettingsTarget();
+  const { generationKey } = props;
+  const snapshotTarget = useMemo(
+    () => ({ hostKey: runtimeHostSettingsKey(host), generationKey }),
+    [host, generationKey],
+  );
   const locale = useUiLocale();
   const copy = getPermissionCenterCopy(locale);
-  const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
-  const [capabilities, setCapabilities] = useState<CapabilitySnapshotCollection | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialSnapshot = props.snapshotCache.readRuntimeHostPermissionCenter(snapshotTarget);
+  const [permissions, setPermissions] = useState<PermissionSnapshot | null>(initialSnapshot?.permissions ?? null);
+  const [capabilities, setCapabilities] = useState<CapabilitySnapshotCollection | null>(initialSnapshot?.capabilities ?? null);
+  const [loading, setLoading] = useState(permissions === null || capabilities === null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pendingPermAction, setPendingPermAction] = useState<string | null>(null);
@@ -117,6 +138,7 @@ export function PermissionCenterPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const commitSnapshot = props.snapshotCache.beginRuntimeHostPermissionCenterRead(snapshotTarget);
     setLoading(true);
     setError(null);
     Promise.all([
@@ -124,6 +146,11 @@ export function PermissionCenterPage() {
       window.maka.capabilities.getSnapshot(host),
     ])
       .then(([perm, caps]) => {
+        // Keep complete reads in this Host's cache after navigation.
+        commitSnapshot({
+          permissions: perm,
+          capabilities: caps,
+        });
         if (cancelled) return;
         setPermissions(perm);
         setCapabilities(caps);
@@ -137,7 +164,7 @@ export function PermissionCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, refreshTick]);
+  }, [host, locale, props.snapshotCache, snapshotTarget, refreshTick]);
 
   useEffect(() => {
     const refreshAfterSystemSettings = () => {
@@ -203,13 +230,13 @@ export function PermissionCenterPage() {
     }
   }
 
-  if (loading) {
+  if (loading && (!permissions || !capabilities)) {
     return (
       <SettingsSkeletonStack label={copy.loading} />
     );
   }
 
-  if (error || !permissions || !capabilities) {
+  if (!permissions || !capabilities) {
     return (
       <SettingsPage>
         <Banner
@@ -239,6 +266,17 @@ export function PermissionCenterPage() {
 
   return (
     <SettingsPage>
+      {error ? (
+        <Banner
+          status="error"
+          role="alert"
+          title={copy.readFailed}
+          description={error}
+          endContent={(
+            <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
+          )}
+        />
+      ) : null}
       {/* The page opened with a SectionHeader whose title was the page title
           VERBATIM (权限与能力 twice, ~40px apart) and whose subtitle restated
           the 系统权限 section's own help line below it. Worse, the refresh
@@ -260,6 +298,7 @@ export function PermissionCenterPage() {
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
+              isLoading={loading}
               label={copy.detectAgain}
             />
           </div>

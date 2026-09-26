@@ -28,6 +28,14 @@ import {
 import { useToast } from "@maka/ui";
 export interface SettingsHostTarget { readonly profileId: string; readonly hostId: string; }
 
+export function runtimeHostSettingsKey(host: SettingsHostTarget): string {
+  return `${host.profileId}:${host.hostId}`;
+}
+
+export function runtimeHostSettingsGenerationKey(host: SettingsHostTarget, generation?: string): string {
+  return `${runtimeHostSettingsKey(host)}@${generation ?? "unversioned"}`;
+}
+
 interface RuntimeHostSettingsTargetValue {
   readonly host: SettingsHostTarget;
   /**
@@ -50,8 +58,7 @@ export function RuntimeHostSettingsTarget(props: {
     if (!props.host) return null;
     return {
       host: props.host,
-      generationKey:
-        `${props.host.profileId}:${props.host.hostId}@${props.generation ?? "unversioned"}`,
+      generationKey: runtimeHostSettingsGenerationKey(props.host, props.generation),
     };
   }, [props.generation, props.host]);
   return (
@@ -81,12 +88,17 @@ export function useRuntimeHostSettingsGenerationKey(): string {
  * Retires only the Host-owned controller below this boundary when the selected
  * Runtime Host enters a new lifecycle generation. Parent route, draft, scroll,
  * and focus state remain owned by their existing Settings components.
+ * Function children can bind snapshot reads to the same generation key.
  */
 export function RuntimeHostSettingsGenerationBoundary(props: {
-  readonly children: ReactNode;
+  readonly children: ReactNode | ((generationKey: string) => ReactNode);
 }) {
   const generationKey = useRuntimeHostSettingsGenerationKey();
-  return <Fragment key={generationKey}>{props.children}</Fragment>;
+  return (
+    <Fragment key={generationKey}>
+      {typeof props.children === "function" ? props.children(generationKey) : props.children}
+    </Fragment>
+  );
 }
 
 export function useRuntimeHostSettingsErrorReporter() {

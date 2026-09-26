@@ -3175,7 +3175,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "../application/contracts/settings-presentation/runtime-host-settings-target.js": 1
+        }
       },
       "src/renderer/settings/settings-status-badge.ts": {
         "bridgePaths": {},

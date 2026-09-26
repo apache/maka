@@ -18,17 +18,30 @@
  */
 
 import type { AppSettings, RuntimeHostAppSettings } from '@maka/core/settings';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type {
-  ProjectedLlmConnection,
-} from '@maka/core/llm-connections';
-import type {
-  DesktopRuntimeHostProfileSnapshot,
-  DesktopRuntimeHostRef,
-} from '../../preload/bridge-contract.js';
+  CapabilitySnapshotCollection,
+  PermissionSnapshot,
+} from '@maka/core/capabilities';
+import type { HealthSnapshot } from '@maka/core/health';
+import type { DesktopRuntimeHostProfileSnapshot } from '../../preload/bridge-contract.js';
+import { runtimeHostSettingsKey } from '../application/contracts/settings-presentation/runtime-host-settings-target.js';
+
+export { runtimeHostSettingsKey };
 
 export interface RuntimeHostConnectionsSnapshot {
   readonly connections: ProjectedLlmConnection[];
   readonly defaultSlug: string | null;
+}
+
+export interface PermissionCenterSnapshot {
+  readonly permissions: PermissionSnapshot;
+  readonly capabilities: CapabilitySnapshotCollection;
+}
+
+export interface SettingsSnapshotTarget {
+  readonly hostKey: string;
+  readonly generationKey: string;
 }
 
 export interface SettingsSnapshotCache {
@@ -46,14 +59,47 @@ export interface SettingsSnapshotCache {
     key: string,
     snapshot: RuntimeHostConnectionsSnapshot,
   ): void;
+
+  readRuntimeHostHealth(target: SettingsSnapshotTarget): HealthSnapshot | undefined;
+  beginRuntimeHostHealthRead(target: SettingsSnapshotTarget): (snapshot: HealthSnapshot) => void;
+
+  readRuntimeHostPermissionCenter(target: SettingsSnapshotTarget): PermissionCenterSnapshot | undefined;
+  beginRuntimeHostPermissionCenterRead(target: SettingsSnapshotTarget): (snapshot: PermissionCenterSnapshot) => void;
 }
 
-export function runtimeHostSettingsKey(host: DesktopRuntimeHostRef): string {
-  return `${host.profileId}:${host.hostId}`;
+/** One incarnation per Host, with a commit authority that survives page unmounts. */
+function createHostSnapshotCache<T>() {
+  const entries = new Map<string, {
+    generationKey: string;
+    snapshot?: T;
+  }>();
+  return {
+    read(target: SettingsSnapshotTarget): T | undefined {
+      const entry = entries.get(target.hostKey);
+      return entry?.generationKey === target.generationKey ? entry.snapshot : undefined;
+    },
+    beginRead(target: SettingsSnapshotTarget): (snapshot: T) => void {
+      const previous = entries.get(target.hostKey);
+      // A new entry owns each read. Late results only update retired entries.
+      const entry = {
+        generationKey: target.generationKey,
+        snapshot: previous?.generationKey === target.generationKey ? previous.snapshot : undefined,
+      };
+      entries.set(target.hostKey, entry);
+      return (snapshot) => {
+        entry.snapshot = snapshot;
+      };
+    },
+    prune(currentHostKeys: ReadonlySet<string>): void {
+      for (const key of entries.keys()) {
+        if (!currentHostKeys.has(key)) entries.delete(key);
+      }
+    },
+  };
 }
 
 /**
- * Renderer-memory cache for masked read snapshots. It deliberately has no
+ * Renderer-memory cache for successful Settings reads. It deliberately has no
  * method that accepts a settings mutation response: update responses may
  * reveal the just-submitted secret, while subsequent GETs are masked again.
  */
@@ -62,6 +108,8 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
   let runtimeHostCatalog: DesktopRuntimeHostProfileSnapshot | undefined;
   const runtimeHostSettings = new Map<string, RuntimeHostAppSettings>();
   const runtimeHostConnections = new Map<string, RuntimeHostConnectionsSnapshot>();
+  const runtimeHostHealth = createHostSnapshotCache<HealthSnapshot>();
+  const runtimeHostPermissionCenter = createHostSnapshotCache<PermissionCenterSnapshot>();
 
   return {
     readClient: () => client,
@@ -84,6 +132,8 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
       for (const key of runtimeHostConnections.keys()) {
         if (!currentHostKeys.has(key)) runtimeHostConnections.delete(key);
       }
+      runtimeHostHealth.prune(currentHostKeys);
+      runtimeHostPermissionCenter.prune(currentHostKeys);
     },
     readRuntimeHostSettings: (key) => runtimeHostSettings.get(key),
     commitRuntimeHostSettingsRead: (key, snapshot) => {
@@ -93,6 +143,10 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
     commitRuntimeHostConnectionsRead: (key, snapshot) => {
       runtimeHostConnections.set(key, snapshot);
     },
+    readRuntimeHostHealth: runtimeHostHealth.read,
+    beginRuntimeHostHealthRead: runtimeHostHealth.beginRead,
+    readRuntimeHostPermissionCenter: runtimeHostPermissionCenter.read,
+    beginRuntimeHostPermissionCenterRead: runtimeHostPermissionCenter.beginRead,
   };
 }
 
