@@ -720,6 +720,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     stagedGeneration += 1;
   };
   const clearStagedQuotes = () => setStagedQuotes([], null);
+  // Some actions supersede a pending restoration without writing the staging
+  // pair, because the staging is already empty: an ordinary submit that
+  // carries no quotes, or an explicit `/quotes clear` that finds nothing.
+  // Both still advance the generation, so an in-flight submit's failure
+  // callback cannot re-arm quotes the conversation has moved past (#5109
+  // review, second round).
+  const supersedePendingRestage = () => {
+    stagedGeneration += 1;
+  };
   let startAttachedTurn: ((attached: AttachedTurnContext) => void) | undefined;
   const startPendingAttachedTurn = () => {
     if (busy || turnRunning) return;
@@ -1402,6 +1411,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const staged = effectiveStagedQuotes();
     const originSessionId = input.driver.getSessionId();
     if (staged.length > 0) clearStagedQuotes();
+    else supersedePendingRestage();
     // The generation is read after the dispatch's own clear: the restore
     // guard compares against the staging state this submit actually left
     // behind, so an ordinary failure still passes while a Session switch, a
@@ -4697,7 +4707,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (parts.length === 2 && parts[1] === 'clear') {
           // Nothing staged (or the staged quotes already left on an in-flight
           // submit): say so instead of claiming a discard that did nothing.
+          // The explicit intent still supersedes an in-flight submit's
+          // pending restoration.
           if (effectiveStagedQuotes().length === 0) {
+            supersedePendingRestage();
             state.entries.push({
               kind: 'notice',
               level: 'info',
