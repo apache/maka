@@ -24,6 +24,8 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   buildRiveCommand,
+  redactRiveText,
+  redactRiveValue,
   runRiveCli,
   RiveCliError,
 } from '../rive-cli.js';
@@ -226,20 +228,47 @@ describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
 
   it('redacts secrets from bridge errors and output tails', async () => {
     await withFakeRive('failed-secret', async (riveBin, cwd) => {
+      const emitted: string[] = [];
       await assert.rejects(
         runRiveCli({
           action: 'workflow_status',
           workflowRunId: 'wfrun_secret',
-        }, { cwd, riveBin }),
+        }, { cwd, riveBin, emitOutput: (_stream, chunk) => emitted.push(chunk) }),
         (error) => {
           assert.equal(error instanceof RiveCliError, true);
           const riveError = error as RiveCliError;
           assert.equal(riveError.reason, 'rive_failed');
           assert.equal(JSON.stringify(riveError.envelope).includes('abc123-super-secret'), false);
           assert.equal((riveError.stderrTail ?? '').includes('abc123-super-secret'), false);
+          for (const text of [riveError.stderrTail ?? '', emitted.join('')]) {
+            assert.equal(text.includes('horse'), false);
+            assert.equal(text.includes('secret words'), false);
+            assert.match(text, /password="\[redacted\]"/);
+            assert.match(text, /client_secret: '\[redacted\]'/);
+          }
           return true;
         },
       );
+    });
+  });
+
+  it('uses the core redaction coverage for token forms and sensitive keys', () => {
+    const text = redactRiveText(
+      'ghp_12345678901234567890 AIza12345678901234567890 xoxb-1234567890 Bearer opaque-session-token',
+    );
+    assert.equal(text.includes('ghp_12345678901234567890'), false);
+    assert.equal(text.includes('AIza12345678901234567890'), false);
+    assert.equal(text.includes('xoxb-1234567890'), false);
+    assert.equal(text.includes('opaque-session-token'), false);
+    assert.match(text, /Bearer \[redacted\]/);
+
+    const value = redactRiveValue({
+      apiKey: 'plain-value',
+      nested: [{ authorization: 'Bearer plain-value' }],
+    });
+    assert.deepEqual(value, {
+      apiKey: '[redacted]',
+      nested: [{ authorization: '[redacted]' }],
     });
   });
 
@@ -314,6 +343,10 @@ function fakeRiveScript(mode: string): string {
     return [
       '#!/bin/sh',
       'echo "api_key=abc123-super-secret" >&2',
+      "cat <<'DIAGNOSTIC' >&2",
+      'password="correct horse battery staple"',
+      "client_secret: 'two secret words'",
+      'DIAGNOSTIC',
       'cat <<\'JSON\'',
       '{"error":{"code":"auth","message":"token=abc123-super-secret"}}',
       'JSON',
