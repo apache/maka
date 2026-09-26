@@ -373,6 +373,41 @@ describe('shellSessionRowEqual', () => {
     assert.equal(shellSessionRowEqual(future, row), false);
   });
 
+  it('orders same-revision rows by the live run epoch (#5713)', async () => {
+    const { root } = installReactRenderer();
+    try {
+      const catalog = createSessionCatalogController();
+      catalog.commitSessions([{ ...row, revision: 5, runningTurnIds: ['turn-1'], runEpoch: 2 }]);
+
+      // A read taken before the turn started lands after the running patch:
+      // same revision, older epoch — it must not flip the row back to idle.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runEpoch: 1,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-1'],
+        'the older live state must not overwrite the newer',
+      );
+
+      // A genuinely newer epoch updates the row even at the same revision.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runEpoch: 3,
+        });
+      });
+      assert.deepEqual(selectSessionById(catalog.getState(), row.id)?.runningTurnIds, []);
+    } finally { cleanupFakeDom(); }
+  });
+
   it('keeps a catalog row subscriber mounted through rail-only patches', async () => {
     const { root } = installReactRenderer();
     try {

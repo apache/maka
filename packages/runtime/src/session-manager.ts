@@ -967,12 +967,23 @@ export class SessionManager {
     return this.runtimeKernel.runningTurnIds?.(sessionId) ?? [];
   }
 
+  /**
+   * The live run state's own order, bumped on every turn start and end. Two
+   * same-revision catalog reads can disagree about `runningTurnIds`; the epoch
+   * says which one is older (#5713).
+   */
+  sessionRunEpoch(sessionId: string): number {
+    return this.runtimeKernel.sessionRunEpoch?.(sessionId) ?? 0;
+  }
+
   #projectLiveRunState(sessions: SessionSummary[]): SessionSummary[] {
     const runningTurnIds = this.runtimeKernel.runningTurnIds?.bind(this.runtimeKernel);
     if (!runningTurnIds) return sessions;
+    const sessionRunEpoch = this.runtimeKernel.sessionRunEpoch?.bind(this.runtimeKernel);
     return sessions.map((session) => ({
       ...session,
       runningTurnIds: runningTurnIds(session.id),
+      ...(sessionRunEpoch ? { runEpoch: sessionRunEpoch(session.id) } : {}),
     }));
   }
 

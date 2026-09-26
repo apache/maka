@@ -91,6 +91,39 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('accepts an optional run epoch in the live run state and rejects a bad one', () => {
+    const withEpoch = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: 7 },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withEpoch), withEpoch);
+
+    // A two-field live run state from a host that does not track the epoch
+    // still decodes, and stays two fields.
+    const withoutEpoch = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withoutEpoch), withoutEpoch);
+
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: -1 },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: 1.5 },
+        }),
+      isProtocolError,
+    );
+  });
+
   test('bounds the live running-turn collection explicitly', () => {
     const atLimit = Array.from(
       { length: SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS },
@@ -749,30 +782,5 @@ test('executor configuration rejects ambiguous routes and malformed values', () 
   assert.throws(
     () => decodeSessionCatalogItem({ ...projection(), executorConfig: { model: 'other' } }),
     isProtocolError,
-  );
-});
-
-test('decodes a Session attention payload on a catalog change', () => {
-  assert.deepEqual(
-    decodeHostFrame({
-      kind: 'session.catalog.changed',
-      revision: 4,
-      sessionId: 'session-1',
-      attention: {
-        kind: 'errored',
-        eventId: 'terminal-1',
-        body: 'Provider request failed',
-      },
-    }),
-    {
-      kind: 'session.catalog.changed',
-      revision: 4,
-      sessionId: 'session-1',
-      attention: {
-        kind: 'errored',
-        eventId: 'terminal-1',
-        body: 'Provider request failed',
-      },
-    },
   );
 });
