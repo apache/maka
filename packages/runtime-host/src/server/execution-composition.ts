@@ -992,6 +992,7 @@ export async function createExecutionRuntimeHostComposition(
       transcriptReader,
       (sessionId) => hostChanges.publishSessionCatalog(sessionId),
       context.sessionAccessAuthority,
+      (sessionId, attention) => hostChanges.publishSessionAttention(sessionId, attention),
     );
     const continuityCoordinator = continuity;
     const planStore = observeInteractivePlanStoreWriter(
@@ -1055,6 +1056,8 @@ export async function createExecutionRuntimeHostComposition(
         await continuityCoordinator.refreshCanonical(sessionId, admission);
         sessionAdmission.detach(() => workHubResults?.notify(sessionId));
       },
+      publishAttention: (sessionId, attention) =>
+        hostChanges.publishSessionAttention(sessionId, attention),
       onPoison: (error) => {
         if (poisonFailure) return;
         poisonFailure = error;
@@ -2854,6 +2857,12 @@ export async function createExecutionRuntimeHostComposition(
         id: 'session',
         handlers: [
           sessionCatalog.handlers,
+          {
+            'session.attention.subscribe': async (_input, operationContext) => {
+              hostChanges.enableSessionAttention(operationContext.connectionId);
+              return { ok: true, result: { subscribed: true } };
+            },
+          },
           externalSessions.handlers,
           sessionBundles.handlers,
           sessionRevisions.handlers,

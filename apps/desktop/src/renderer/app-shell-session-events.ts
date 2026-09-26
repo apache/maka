@@ -95,7 +95,7 @@ export function createAppShellSessionEventHandlers(options: {
     diagnosticTarget?: { sessionId: string },
   ) => void;
   toastApi: ToastApi;
-  notifyRunEnded?: (payload: { kind: 'completed' | 'errored' | 'waiting'; sessionId: string; body?: string }) => void;
+  onTurnCompleted?: (sessionId: string) => void;
   scheduleFrame?: (callback: () => void) => void;
   displayBatch?: AppShellSessionDisplayBatch;
 }): AppShellSessionEventHandlers {
@@ -114,7 +114,7 @@ export function createAppShellSessionEventHandlers(options: {
     onContextCompactionOutcome,
     showModelSetupToast,
     toastApi,
-    notifyRunEnded,
+    onTurnCompleted,
   } = options;
   const scheduleFrame = options.scheduleFrame ?? createConversationDisplayFrameScheduler();
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
@@ -345,11 +345,6 @@ export function createAppShellSessionEventHandlers(options: {
       case 'user_question_request':
       case 'form_request':
         onInteractionChanged?.(sessionId);
-        notifyRunEnded?.({
-          kind: 'waiting',
-          sessionId,
-          body: event.type === 'user_question_request' ? event.questions[0]?.question : undefined,
-        });
         break;
       // The runtime drops its owner on this ack, not on the tool result that
       // follows it, so this is where the request stops being answerable — the
@@ -387,7 +382,6 @@ export function createAppShellSessionEventHandlers(options: {
             );
           }
         }
-        notifyRunEnded?.({ kind: 'errored', sessionId, body: modelConnectionErrors.sessionEventErrorMessage(event, uiLocale) });
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
@@ -401,7 +395,7 @@ export function createAppShellSessionEventHandlers(options: {
         if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens')
-          notifyRunEnded?.({ kind: 'completed', sessionId });
+          onTurnCompleted?.(sessionId);
         void refreshSessions();
         const terminalMessageId = terminalRefreshOptions(before)?.requiredAssistantMessageId;
         if (terminalMessageId) {

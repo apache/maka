@@ -114,3 +114,54 @@ test('keeps catalog revisions independent and removes failed subscriptions', asy
     [1, 1, 2],
   );
 });
+
+test('publishes Session attention only after opt-in and within the catalog scope', () => {
+  const feed = new HostChangeFeed();
+  const legacy: unknown[] = [];
+  const owner: unknown[] = [];
+  const guest: unknown[] = [];
+  feed.attachConnection(
+    'legacy',
+    { sessionCatalog: true },
+    { send: async (frame) => void legacy.push(frame) },
+  );
+  feed.attachConnection(
+    'owner',
+    { sessionCatalog: true },
+    { send: async (frame) => void owner.push(frame) },
+  );
+  feed.attachConnection(
+    'guest',
+    { sessionCatalog: { sessionId: 'session-1', principalId: 'guest-1' } },
+    { send: async (frame) => void guest.push(frame) },
+  );
+  feed.enableSessionAttention('owner');
+  feed.enableSessionAttention('guest');
+
+  feed.publishSessionAttention('session-1', {
+    kind: 'waiting',
+    eventId: 'interaction-1',
+    body: 'Choose one',
+  });
+  feed.publishSessionAttention('session-2', {
+    kind: 'completed',
+    eventId: 'terminal-2',
+  });
+
+  assert.deepEqual(legacy, []);
+  assert.deepEqual(owner, [
+    {
+      kind: 'session.catalog.changed',
+      revision: 1,
+      sessionId: 'session-1',
+      attention: { kind: 'waiting', eventId: 'interaction-1', body: 'Choose one' },
+    },
+    {
+      kind: 'session.catalog.changed',
+      revision: 2,
+      sessionId: 'session-2',
+      attention: { kind: 'completed', eventId: 'terminal-2' },
+    },
+  ]);
+  assert.deepEqual(guest, [owner[0]]);
+});

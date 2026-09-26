@@ -751,3 +751,40 @@ test('executor configuration rejects ambiguous routes and malformed values', () 
     isProtocolError,
   );
 });
+
+test('decodes an opted-in Session attention payload', () => {
+  assert.deepEqual(
+    decodeClientFrame({
+      requestId: 'attention-subscribe',
+      operation: 'session.attention.subscribe',
+      input: {},
+    }),
+    {
+      requestId: 'attention-subscribe',
+      operation: 'session.attention.subscribe',
+      input: {},
+    },
+  );
+  assert.deepEqual(
+    decodeHostFrame({
+      kind: 'session.catalog.changed',
+      revision: 4,
+      sessionId: 'session-1',
+      attention: {
+        kind: 'errored',
+        eventId: 'terminal-1',
+        body: 'Provider request failed',
+      },
+    }),
+    {
+      kind: 'session.catalog.changed',
+      revision: 4,
+      sessionId: 'session-1',
+      attention: {
+        kind: 'errored',
+        eventId: 'terminal-1',
+        body: 'Provider request failed',
+      },
+    },
+  );
+});

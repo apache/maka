@@ -43,6 +43,7 @@ import {
   type OperationKey,
   type SessionAssistantStreamIdentity,
   type SessionCatalogProjection,
+  type SessionCatalogChangedFrame,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
@@ -392,6 +393,28 @@ test('routes Guest catalog changes through the mount projection authority', asyn
   assert.deepEqual(changes, []);
 
   await candidate.close();
+});
+
+test('owner and Guest candidates notify without opening a conversation and detach on close', async () => {
+  for (const access of ['owner', 'session_guest'] as const) {
+    const host = connectionHarness(access);
+    const notifications: unknown[] = [];
+    const candidate = await createCandidate(
+      host.connection,
+      {
+        ...deps(ipcHarness()),
+        onGuestSessionCatalogChanged: () => {},
+        notifyRun: async (input) => { notifications.push(input); },
+      },
+      undefined, 'external', 'remote', access,
+    );
+    host.publishSessionCatalogChange('session-' + access, { kind: 'waiting', eventId: 'question-1', body: 'Answer?' });
+    await pollFor(() => notifications.length === 1, { timeoutMs: 1000 });
+    assert.equal((notifications[0] as { body: string }).body, 'Answer?');
+    await candidate.close();
+    host.publishSessionCatalogChange('session-' + access, { kind: 'completed', eventId: 'terminal-1' });
+    assert.equal(notifications.length, 1);
+  }
 });
 
 test('rejects a stale Host identity when raw Session IDs collide', async () => {
@@ -1313,7 +1336,7 @@ function connectionHarness(
     resolveTurnStarted = resolve;
   });
   const closeSubscriptions = new Set<() => void>();
-  const sessionCatalogListeners = new Set<(frame: { sessionId: string }) => void>();
+  const sessionCatalogListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   let provider: ClientCapabilityProvider | undefined;
   let capabilityRegistrations = 0;
   let capabilityUnregistrations = 0;
@@ -1329,6 +1352,7 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      if (operation === 'session.attention.subscribe') return { subscribed: true };
       if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&
@@ -1503,7 +1527,7 @@ function connectionHarness(
       capabilityUnregistrations += 1;
       return { registrationId: `registration-${label}`, revision: 2 };
     },
-    subscribeSessionCatalogChanges: (listener: (frame: { sessionId: string }) => void) => {
+    subscribeSessionCatalogChanges: (listener: (frame: SessionCatalogChangedFrame) => void) => {
       sessionCatalogListeners.add(listener);
       return () => sessionCatalogListeners.delete(listener);
     },
@@ -1534,8 +1558,8 @@ function connectionHarness(
       }
       activeSubscriptionFrames.push(frame);
     },
-    publishSessionCatalogChange: (sessionId: string) => {
-      for (const listener of sessionCatalogListeners) listener({ sessionId });
+    publishSessionCatalogChange: (sessionId: string, attention?: SessionCatalogChangedFrame['attention']) => {
+      for (const listener of sessionCatalogListeners) listener({ kind: 'session.catalog.changed', revision: 1, sessionId, ...(attention ? { attention } : {}) });
     },
     get capabilityRegistrations() {
       return capabilityRegistrations;

@@ -88,6 +88,7 @@ export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';
+export * from './session-attention.js';
 export * from './session-collaboration.js';
 export * from './scheduled-task-change.js';
 export * from './session-retirement.js';
@@ -103,7 +104,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 190 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 191 as const;
+// 191: Session attention is an explicit connection subscription carried on
+// session catalog change frames. Older peers do not know the operation or the
+// optional strict-frame payload, so mixed builds must fail the handshake.
 // 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
 // 189: Remove form_interaction transcript messages and the transcript_changed close reason.
 // 188: Session capability replacement can require an atomic idle root check;

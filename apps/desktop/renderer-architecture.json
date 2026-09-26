@@ -597,7 +597,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2681
+        "nonTriviaTokens": 2603
       },
       "src/renderer/app-shell-session-ui-state.ts": {
         "importDeclarations": 0,
@@ -684,7 +684,6 @@
           "window.maka.diagnostics.copyPreviousMainProcessInterruption": 1,
           "window.maka.diagnostics.copyReport": 1,
           "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
-          "window.maka.notifications.runEnded": 1,
           "window.maka.onboarding.setMilestone": 1,
           "window.maka.sessions.compact": 1,
           "window.maka.sessions.listActiveInteractions": 1,
@@ -821,7 +820,7 @@
           "react": 1
         },
         "importSpecifiers": 94,
-        "nonTriviaTokens": 12526
+        "nonTriviaTokens": 12465
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,

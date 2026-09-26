@@ -457,10 +457,16 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   let projection = canonical({
     rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
   });
+  const attention: unknown[] = [];
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => projection,
     new SessionAdmissionGate(),
+    () => undefined,
+    undefined,
+    () => undefined,
+    undefined,
+    (sessionId, event) => attention.push({ sessionId, ...event }),
   );
   const sink = new RecordingSink();
   const connection = attachTestConnection(coordinator, 'connection-1', sink);
@@ -490,6 +496,13 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
     assert.equal(frame.snapshot.projectionRevision, 2);
     assert.equal(frame.snapshot.rootTurn?.status, 'completed');
   }
+  assert.deepEqual(attention, [
+    {
+      sessionId: SESSION_ID,
+      kind: 'completed',
+      eventId: 'event-terminal',
+    },
+  ]);
   coordinator.close();
 });
 

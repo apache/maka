@@ -202,7 +202,7 @@ npm Electron bundle, which macOS will not accept as a durable grant.
 | Suffix | Role | Examples |
 |---|---|---|
 | `runtime-host-*-ipc-main.ts` | Projects one Runtime Host protocol domain onto renderer IPC | `runtime-host-connections-ipc-main`, `runtime-host-session-execution-ipc-main`, `runtime-host-settings-ipc-main` |
-| `*-ipc-main.ts` | Registers a client-local Electron or OS-facing IPC domain | `browser-ipc-main`, `notifications-ipc-main`, `workspace-search-ipc-main` |
+| `*-ipc-main.ts` | Registers a client-local Electron or OS-facing IPC domain | `browser-ipc-main`, `workspace-search-ipc-main` |
 | `*-service.ts` / `*-controller.ts` | A client-local service without direct IPC ownership | `app-update-service`, `project-management-service`, `project-root-controller` |
 | `*-guard.ts` | Validation / security boundary | `external-link-guard`, `open-path-guard`, `permission-response-guard` |
 | (other) | Window, state, platform wiring | `main.ts` (entry), `main-window`, `window-state`, `theme-source`, `credential-store`, `skills`, `attachment-*` |

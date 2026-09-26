@@ -23,18 +23,11 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
  * Pure decision + copy helpers for desktop turn notifications.
  *
  * Kept free of any `electron` import so the gating logic can be unit
- * tested under plain `node --test` (the IPC glue in
- * `notifications-ipc-main.ts` owns everything Electron-shaped). The
- * renderer only reports *that* a turn ended or parked on the user; the main
- * process decides whether to actually raise an OS notification.
+ * tested under plain `node --test`; `notifications-main.ts` owns Electron.
  */
 
 /** Turn states worth pulling the user back for: it ended, or it waits on them. */
 export type RunNotificationKind = 'completed' | 'errored' | 'waiting';
-
-export function isRunNotificationKind(value: unknown): value is RunNotificationKind {
-  return value === 'completed' || value === 'errored' || value === 'waiting';
-}
 
 export interface RunNotificationGate {
   /** Product toggle: `settings.notifications.runComplete`. */
@@ -73,7 +66,7 @@ export interface RunNotificationCopy {
 }
 
 /**
- * Generic fallback text, keyed by terminal kind. Used when the renderer
+ * Generic fallback text, keyed by terminal kind. Used when the Host
  * could not supply a session name / reply preview (e.g. an untitled
  * session or a tool-only turn with no assistant text).
  */
@@ -102,7 +95,7 @@ export function runNotificationCopy(
   return RUN_NOTIFICATION_COPY[locale][kind];
 }
 
-/** Renderer-supplied content for a finished turn. Both fields are
+/** Host-supplied content for a finished turn. Both fields are
  * best-effort: `title` is the session name, `body` the start of the
  * reply (or the error message). Either may be missing/blank. */
 export interface RunNotificationInput {
@@ -112,15 +105,14 @@ export interface RunNotificationInput {
 }
 
 // The OS truncates long banners anyway; cap defensively so a runaway
-// reply (renderer bug, no-whitespace blob) can't bloat the payload.
+// reply cannot bloat the payload.
 const MAX_TITLE_CHARS = 80;
 const MAX_BODY_CHARS = 160;
 
 /**
- * Collapse a renderer-supplied string into a single trimmed line,
+ * Collapse a supplied string into a single trimmed line,
  * hard-capped with an ellipsis. Non-strings and blanks return '' so the
- * caller can fall back. Kept defensive because the value crosses the IPC
- * boundary as `unknown`.
+ * caller can fall back.
  */
 function sanitizeLine(value: unknown, max: number): string {
   if (typeof value !== 'string') return '';
@@ -130,10 +122,9 @@ function sanitizeLine(value: unknown, max: number): string {
 }
 
 /**
- * Final notification text: prefer the renderer's session name + reply
+ * Final notification text: prefer the Host's session name + reply
  * preview, falling back per-field to the generic copy when a field is
- * missing or blank. Sanitization + capping live here so the IPC handler
- * stays a thin shell and the logic is unit-testable without Electron.
+ * missing or blank.
  */
 export function resolveNotificationContent(
   input: RunNotificationInput,

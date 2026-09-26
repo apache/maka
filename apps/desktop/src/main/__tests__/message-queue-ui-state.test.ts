@@ -284,34 +284,3 @@ test('complete events deliver the durable context compaction outcome to Desktop'
     },
   ]);
 });
-
-test('an interaction request notifies that the turn is waiting on the user', () => {
-  const controller = createAppShellSessionUiStateController();
-  const notified: unknown[] = [];
-  const handlers = createAppShellSessionEventHandlers({
-    uiLocale: 'en',
-    activeIdRef: { current: 'session-1' },
-    liveTurnBySessionRef: controller.liveTurnBySessionRef,
-    refreshMessages: async () => true,
-    refreshSessions: async () => [],
-    setLiveTurnBySession: controller.setLiveTurnBySession,
-    setInteractionBySession: controller.setInteractionBySession,
-    showModelSetupToast() {},
-    toastApi: { error() {} },
-    notifyRunEnded(payload) {
-      notified.push(payload);
-    },
-  });
-
-  handlers.handleEvent('session-1', {
-    type: 'user_question_request',
-    id: 'question-1',
-    turnId: 'turn-1',
-    ts: 1,
-    requestId: 'request-1',
-    toolUseId: 'tool-1',
-    questions: [{ question: 'Which branch?', options: [{ label: 'main' }] }],
-  });
-
-  assert.deepEqual(notified, [{ kind: 'waiting', sessionId: 'session-1', body: 'Which branch?' }]);
-});

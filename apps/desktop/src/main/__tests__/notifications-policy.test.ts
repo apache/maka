@@ -20,7 +20,6 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  isRunNotificationKind,
   resolveNotificationContent,
   runNotificationCopy,
   shouldRaiseRunNotification,
@@ -42,12 +41,7 @@ it('gates native notifications through every required condition', () => {
   }
 });
 
-it('recognizes terminal kinds and keeps distinct localized fallback copy', () => {
-  for (const value of ['completed', 'errored', 'waiting']) assert.equal(isRunNotificationKind(value), true);
-  for (const value of ['complete', 'error', 'aborted', '', undefined, null, 1, {}]) {
-    assert.equal(isRunNotificationKind(value), false);
-  }
-
+it('keeps distinct localized fallback copy', () => {
   const completed = runNotificationCopy('completed', 'zh-CN');
   const errored = runNotificationCopy('errored', 'zh-CN');
   assert.ok(completed.title && completed.body);
@@ -60,7 +54,7 @@ it('recognizes terminal kinds and keeps distinct localized fallback copy', () =>
   });
 });
 
-it('sanitizes renderer content, caps it, and falls back per field', () => {
+it('sanitizes notification content, caps it, and falls back per field', () => {
   const clean = resolveNotificationContent(
     { kind: 'completed', title: '  会话  A  ', body: 'line one\n\nline two\tindented' },
     'zh-CN',

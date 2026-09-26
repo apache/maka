@@ -21,6 +21,8 @@ import { randomUUID } from "node:crypto";
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
+import type { RunNotificationInput } from './notifications-policy.js';
+import { observeRuntimeHostNotifications } from './runtime-host-notifications.js';
 import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import { isSideConversationSession } from '@maka/core/side-conversation';
@@ -162,6 +164,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeDesktopInteractionTurn: (
     sessionId: string,
   ) => void | Promise<void>;
+  readonly notifyRun?: (input: RunNotificationInput) => Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly transcriptHistoryBytes?: number;
   readonly renderer?: {
@@ -642,6 +645,7 @@ export async function createDesktopRuntimeHostCandidate(
   let closeSessionDomains: (() => Promise<void>) | undefined;
   let sharedShellRuns: RuntimeHostShellRunQueriesIpcHandle | undefined;
   let disposeClientIpc: (() => void | Promise<void>) | undefined;
+  let disposeNotifications: (() => void) | undefined;
   let observationsAttached = false;
   let capabilitiesRegistered = false;
   try {
@@ -952,6 +956,11 @@ export async function createDesktopRuntimeHostCandidate(
           }),
         })
       : noGuestBotService();
+    if (deps.notifyRun) {
+      disposeNotifications = observeRuntimeHostNotifications(
+        client, deps.notifyRun, reportError, target.access === 'session_guest',
+      );
+    }
     return new DesktopRuntimeHostCandidateImpl({
       client,
       observer: sessionObserver,
@@ -959,7 +968,10 @@ export async function createDesktopRuntimeHostCandidate(
       botIncoming,
       closeNativeCapabilities,
       closeSessionDomains: domains?.close ?? (() => Promise.resolve()),
-      disposeClientIpc,
+      disposeClientIpc: async () => {
+        disposeNotifications?.();
+        await disposeClientIpc?.();
+      },
       detachSessionObservations: () =>
         sessionObservations.detach(sessionObserver),
       closeSessionObservations: () =>
@@ -975,6 +987,7 @@ export async function createDesktopRuntimeHostCandidate(
     });
   } catch (error) {
     ipc.close();
+    disposeNotifications?.();
     if (observationsAttached && observer) sessionObservations.detach(observer);
     await Promise.resolve(disposeClientIpc?.()).catch(() => undefined);
     await closeSessionDomains?.().catch(() => undefined);

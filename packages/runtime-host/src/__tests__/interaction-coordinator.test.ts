@@ -298,6 +298,7 @@ describe('HostInteractionCoordinator', () => {
   test('admits a durable question before continuity and returns one canonical answer to concurrent clients', async () => {
     await withStore(async ({ store }) => {
       const order: string[] = [];
+      const attention: unknown[] = [];
       const continuation = questionContinuation('question_1', {
         answer: (answers) => order.push(`apply:${answers.join(',')}`),
       });
@@ -312,6 +313,10 @@ describe('HostInteractionCoordinator', () => {
           const record = await store.readInteraction('question_1');
           order.push(record?.outcome ? 'refresh:answered' : 'refresh:pending');
         },
+        publishAttention: (sessionId, event) => {
+          order.push('attention');
+          attention.push({ sessionId, ...event });
+        },
       });
       const owner = coordinator.bindRun(RUN);
 
@@ -319,7 +324,15 @@ describe('HostInteractionCoordinator', () => {
         request: questionEvent('question_1', 10),
         continuation,
       });
-      assert.deepEqual(order, ['preflight', 'refresh:pending']);
+      assert.deepEqual(order, ['preflight', 'refresh:pending', 'attention']);
+      assert.deepEqual(attention, [
+        {
+          sessionId: RUN.sessionId,
+          kind: 'waiting',
+          eventId: 'question_1',
+          body: 'Continue?',
+        },
+      ]);
       assert.equal(await coordinator.hasPendingSession(RUN.sessionId), true);
 
       const answer = {
@@ -333,7 +346,14 @@ describe('HostInteractionCoordinator', () => {
       ]);
       assert.equal(first.ok, true);
       assert.equal(second.ok, true);
-      assert.deepEqual(order, ['preflight', 'refresh:pending', 'refresh:answered', 'apply:Yes']);
+      assert.deepEqual(order, [
+        'preflight',
+        'refresh:pending',
+        'attention',
+        'refresh:answered',
+        'apply:Yes',
+      ]);
+      assert.equal(attention.length, 1);
       assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
 
       const conflicting = await coordinator.handlers['interaction.answer'](

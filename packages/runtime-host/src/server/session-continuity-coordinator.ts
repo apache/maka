@@ -37,6 +37,7 @@ import {
   type AgentGraphChangedFrame,
   type AgentGraphChangedReason,
   type SessionAssistantDelta,
+  type SessionAttention,
   type SessionContinuitySnapshot,
   type SessionDeltaFrame,
   type SessionDomainChange,
@@ -291,6 +292,8 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       RuntimeHostAccessAuthority,
       'activeSessionGrant' | 'subscribeGrantRevocations'
     >,
+    private readonly onAttention: (sessionId: string, attention: SessionAttention) => void = () =>
+      undefined,
   ) {
     this.#hostEpoch = hostEpoch;
     this.#readCanonical = readCanonical;
@@ -638,6 +641,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     turnId: string,
     runId: string,
     admission?: SessionAdmissionLease,
+    publishCompletionAttention = true,
   ): Promise<void> {
     await this.#runInSessionLane(
       sessionId,
@@ -686,6 +690,18 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.assistantStreams.clear();
         state.toolResultPreviews.clear();
         this.#broadcastProjection(state, snapshot);
+        if (publishCompletionAttention && rootTurn.status === 'completed') {
+          this.onAttention(sessionId, {
+            kind: 'completed',
+            eventId: rootTurn.terminalEventId,
+          });
+        } else if (rootTurn.status === 'failed') {
+          this.onAttention(sessionId, {
+            kind: 'errored',
+            eventId: rootTurn.terminalEventId,
+            ...(rootTurn.failureMessage ? { body: rootTurn.failureMessage } : {}),
+          });
+        }
         for (const subscriber of state.subscribers.values()) {
           this.#payAssistantBacklog(subscriber, state);
         }

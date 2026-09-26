@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type {
   ClientCapabilityGrantTarget,
   ClientCapabilitySessionGrant,
@@ -69,7 +70,9 @@ import {
 } from '@maka/storage/interaction-store';
 import {
   INTERACTION_MAX_PENDING_PER_SESSION,
+  SESSION_ATTENTION_BODY_MAX_BYTES,
   type InteractionAnswerInput,
+  type SessionAttention,
   type SessionInteractionProjection,
 } from '../protocol/index.js';
 import {
@@ -110,6 +113,7 @@ export interface HostInteractionCoordinatorOptions {
     sessionId: string,
     admission: SessionAdmissionLease,
   ) => Promise<void>;
+  readonly publishAttention?: (sessionId: string, attention: SessionAttention) => void;
   readonly onPoison: (error: RuntimeInteractionFailStopError) => void;
   /** Resolve the root Session while the settled Session still holds admission. */
   readonly resolveSandboxBoundaryRootSession: (
@@ -225,6 +229,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly #now: () => number;
   readonly #preflightSessionSnapshot: HostInteractionCoordinatorOptions['preflightSessionSnapshot'];
   readonly #refreshCanonicalContinuity: HostInteractionCoordinatorOptions['refreshCanonicalContinuity'];
+  readonly #publishAttention: NonNullable<HostInteractionCoordinatorOptions['publishAttention']>;
   readonly #onPoison: HostInteractionCoordinatorOptions['onPoison'];
   readonly #resolveSandboxBoundaryRootSession: HostInteractionCoordinatorOptions['resolveSandboxBoundaryRootSession'];
   readonly #onSandboxBoundaryGraphWake: HostInteractionCoordinatorOptions['onSandboxBoundaryGraphWake'];
@@ -242,6 +247,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#now = options.now ?? Date.now;
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
+    this.#publishAttention = options.publishAttention ?? (() => {});
     this.#onPoison = options.onPoison;
     this.#resolveSandboxBoundaryRootSession = options.resolveSandboxBoundaryRootSession;
     this.#onSandboxBoundaryGraphWake = options.onSandboxBoundaryGraphWake;
@@ -752,6 +758,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     entry.phase = 'live';
     await this.#refreshCanonicalContinuity(entry.request.sessionId, admission);
     this.#throwIfPoisoned();
+    this.#publishAttention(entry.request.sessionId, {
+      kind: 'waiting',
+      eventId: entry.request.requestId,
+      ...waitingAttentionBody(entry.request),
+    });
     return;
   }
 
@@ -857,6 +868,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#live.set(boundaryRequest.requestId, entry);
     await this.#refreshCanonicalContinuity(run.sessionId, admission);
     this.#throwIfPoisoned();
+    this.#publishAttention(run.sessionId, {
+      kind: 'waiting',
+      eventId: boundaryRequest.requestId,
+      body: truncateUtf8(boundaryRequest.justification, SESSION_ATTENTION_BODY_MAX_BYTES, '…'),
+    });
   }
 
   #query(
@@ -1939,6 +1955,25 @@ function isExpectedRuntimeError(error: unknown): boolean {
     error instanceof RuntimeInteractionAdmissionRejectedError ||
     error instanceof RuntimeInteractionFailStopError
   );
+}
+
+function waitingAttentionBody(request: StoredInteractionRequest): { readonly body?: string } {
+  let body: string | undefined;
+  switch (request.request.kind) {
+    case 'question':
+      body = request.request.questions[0]?.question;
+      break;
+    case 'form':
+      body = request.request.message;
+      break;
+    case 'sandbox_boundary':
+      body = request.request.justification;
+      break;
+    case 'permission':
+    case 'client_capability':
+      break;
+  }
+  return body ? { body: truncateUtf8(body, SESSION_ATTENTION_BODY_MAX_BYTES, '…') } : {};
 }
 
 function rejected<T>(error: unknown): Promise<T> {
