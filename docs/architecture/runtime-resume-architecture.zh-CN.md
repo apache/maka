@@ -497,7 +497,8 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。启动恢复也会通过这条
+seam 重建已经 admission 的 continuation，但不会自动选择普通的 failed 或 cancelled Run。
 
 ### 当前的 parked 原因边界
 
@@ -861,9 +862,14 @@ flowchart TD
 
 RuntimeEvent 迁移不再由开关控制；首次写入必然迁移。当前恢复行为开关如下：
 
-| 开关 | 作用 | 回滚含义 |
+| 设置 | 作用 | 回滚含义 |
 |---|---|---|
-| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 开启 Desktop 手动/自动 resume 与 CLI `/resume` | 可关闭用户可见 continuation，但不会删除或改写 durable facts |
+| 未设置 | 开启 Desktop 与 CLI/TUI 的显式 resume；保持 WorkHub 模型驱动 resume 关闭 | 默认产品行为 |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 额外开启 WorkHub 模型驱动 resume | 保留此前完整 opt-in 行为 |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` | 关闭显式和模型驱动 resume planning | 可能 park reconstruction，但不会删除 durable facts |
+
+未知的非空值与 `0` 一样 fail closed。所有已开启的入口仍使用同一个权威 planner；策略只决定
+新的 resume 尝试能否到达 planner。
 
 真正降级到不理解新 schema 的旧版本前，必须显式 export 并验证。Migration 失败不能删除 legacy JSONL；数据库版本比当前程序新时必须 fail closed。
 
