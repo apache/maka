@@ -44,6 +44,7 @@ import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
   DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_INITIAL_HISTORY_MAX_BYTES,
   DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
   type DesktopTranscriptBatch,
   type DesktopTranscriptBatchPayload,
@@ -239,6 +240,7 @@ export class RuntimeHostSessionObserver {
   readonly #emitSubscriptionRecovered: (sessionId: string) => void;
   readonly #recoverConnectionClosed: boolean;
   readonly #transcriptHistoryBytes: number;
+  readonly #transcriptInitialHistoryBytes: number;
   readonly #transcriptGlobalCacheMaxBytes: number;
   readonly #now: () => number;
   #closed = false;
@@ -264,6 +266,7 @@ export class RuntimeHostSessionObserver {
       deps.emitSubscriptionRecovered ?? (() => undefined);
     this.#recoverConnectionClosed = deps.recoverConnectionClosed ?? false;
     this.#transcriptHistoryBytes = deps.transcriptHistoryBytes ?? DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES;
+    this.#transcriptInitialHistoryBytes = deps.transcriptHistoryBytes ?? DESKTOP_TRANSCRIPT_INITIAL_HISTORY_MAX_BYTES;
     this.#transcriptGlobalCacheMaxBytes =
       deps.transcriptGlobalCacheMaxBytes ?? DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES;
     this.#now = deps.now ?? Date.now;
@@ -1436,7 +1439,12 @@ export class RuntimeHostSessionObserver {
       if (history.oldestSequence === null || !historyHasOlder(history)) return;
       earlierThan = history.oldestSequence;
     }
-    const budget = this.#transcriptHistoryBytes;
+    // Opening near the live tail needs a small answer. A recovery must still
+    // restore everything already delivered, so it uses the earlier-read budget
+    // and continues through the saved floor even when that exceeds the budget.
+    const budget = reset && floor === null
+      ? this.#transcriptInitialHistoryBytes
+      : this.#transcriptHistoryBytes;
     const identity = { sessionId: replica.sessionId, generation: replica.generation, hostEpoch: replica.hostEpoch };
     const isCurrent = () =>
       state.replica === replica &&
@@ -1465,7 +1473,7 @@ export class RuntimeHostSessionObserver {
     while (history.throughSequence !== null && historyHasOlder(history)) {
       let page: Awaited<ReturnType<DesktopTranscriptReplica['readOlderPage']>>;
       try {
-        page = await replica.readOlderPage(history.throughSequence, history.cursor);
+        page = await replica.readOlderPage(history.throughSequence, history.cursor, budget);
       } catch (error) {
         if (!isCurrent()) return;
         throw error;

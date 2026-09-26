@@ -594,13 +594,19 @@ function PagedWorkConversation() {
     </WorkHubHighlightContext.Provider>
   </ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
+// Real path: filter a WorkHub conversation to one Work and scroll upward into its older Turns.
 export const FilterWorkHistoryPages: Story = {
   render: () => <PagedWorkConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText('继续补充异常场景。')).toBeInTheDocument());
     expect(canvas.queryByText('请检查支付回调幂等性。')).toBeNull();
-    await userEvent.click(canvas.getByRole('button', { name: '载入更早的记录' }));
+    expect(canvas.queryByRole('button', { name: '载入更早的记录' })).toBeNull();
+    const scroller = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]');
+    expect(scroller).not.toBeNull();
+    scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
+    scroller!.scrollTop = 0;
+    scroller!.dispatchEvent(new Event('scroll'));
     await waitFor(() => expect(canvas.getByText('请检查支付回调幂等性。')).toBeInTheDocument());
     expect(canvas.queryByText('先讨论一下整体计划。')).toBeNull();
     expect(canvas.queryByRole('button', { name: '载入更早的记录' })).toBeNull();

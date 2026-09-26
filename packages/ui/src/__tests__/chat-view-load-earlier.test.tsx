@@ -110,18 +110,15 @@ function harness() {
     },
     readerScrollTo(scroller: HTMLElement, top: number): void {
       const wheel = new current.window.Event('wheel', { bubbles: true });
-      Object.defineProperty(wheel, 'deltaY', { value: top < scroller.scrollTop ? -120 : 120 });
+      Object.defineProperty(wheel, 'deltaY', { value: top <= scroller.scrollTop ? -120 : 120 });
       scroller.dispatchEvent(wheel);
       scroller.scrollTop = top;
       scroller.dispatchEvent(new current.window.Event('scroll'));
     },
-    click(element: Element): void {
-      element.dispatchEvent(new current.window.Event('click', { bubbles: true }));
-    },
   };
 }
 
-test('the load-earlier button exists only while earlier history does, and waits for its load', async () => {
+test('upward reading near the beginning loads one range, without a button or mount-time prefetch', async () => {
   const view = harness();
   await view.render({ messages: turnMessages(4, 8), onLoadEarlierHistory: () => {} });
   assert.equal(view.loadButton(), null, 'no button without earlier history');
@@ -132,27 +129,74 @@ test('the load-earlier button exists only while earlier history does, and waits 
     loads += 1;
     return new Promise<void>((resolve) => { finish = resolve; });
   };
-  await view.render({ messages: turnMessages(4, 8), hasEarlierHistory: true, onLoadEarlierHistory });
-  const button = view.loadButton();
-  assert.ok(button);
-  await act(async () => { view.click(button); });
+  const scroller = await view.render({ messages: turnMessages(4, 8), hasEarlierHistory: true, onLoadEarlierHistory });
+  assert.equal(view.loadButton(), null);
+  assert.equal(loads, 0, 'opening a conversation must not read all older history');
+  scroller.scrollTop = 1000;
+  await act(async () => { view.readerScrollTo(scroller, 800); });
+  assert.equal(loads, 0, 'reading far from the boundary does not load');
+  await act(async () => { view.readerScrollTo(scroller, 400); });
   assert.equal(loads, 1);
-  assert.equal(view.loadButton()?.disabled, true, 'a pending load cannot be requested again');
+  await act(async () => { view.readerScrollTo(scroller, 200); });
+  assert.equal(loads, 1, 'a pending load cannot be requested again');
 
   await act(async () => { finish(); });
-  assert.equal(view.loadButton()?.disabled, false);
+  assert.equal(loads, 1, 'settling a page does not recursively prefetch the rest');
+  await act(async () => { view.readerScrollTo(scroller, 300); });
+  assert.equal(loads, 1, 'downward reading does not load older history');
+  await act(async () => { view.readerScrollTo(scroller, 100); });
+  assert.equal(loads, 2);
+  await act(async () => { finish(); });
 });
 
 /**
  * A visible transcript with nothing in it is exactly when the reader most needs
- * the control: WorkHub filters the list to one Work, and a Work whose Turns are
- * all in unloaded history filters it down to nothing. The control is the only
- * way to load those Turns, so it cannot be inside the non-empty branch.
+ * an upward gesture: WorkHub may filter every loaded Turn out of the view.
+ * Even when there is no scroll distance, the reader can request older rows.
  */
-test('offers to load earlier history even with nothing to show', async () => {
+test('upward input reaches earlier history even with nothing to show', async () => {
   const view = harness();
-  await view.render({ messages: [], hasEarlierHistory: true, onLoadEarlierHistory: () => {} });
-  assert.ok(view.loadButton(), 'an empty message list hid the only way to load the rest');
+  let loads = 0;
+  const scroller = await view.render({ messages: [], hasEarlierHistory: true, onLoadEarlierHistory: () => { loads++; } });
+  assert.equal(loads, 0);
+  await act(async () => { view.readerScrollTo(scroller, 0); });
+  assert.equal(loads, 1);
+  assert.equal(view.loadButton(), null);
+});
+
+test('a previous conversation finishing does not unlock another conversation pending page', async () => {
+  const view = harness();
+  const finishes: Array<() => void> = [];
+  const onLoadEarlierHistory = () => new Promise<void>((resolve) => { finishes.push(resolve); });
+  const props = { messages: turnMessages(4, 8), hasEarlierHistory: true, onLoadEarlierHistory };
+  const scroller = await view.render(props);
+  await act(async () => { view.readerScrollTo(scroller, 0); });
+  assert.equal(finishes.length, 1);
+  await view.render({ ...props, activeSession: { ...activeSession, id: 'other-session' } });
+  await act(async () => { view.readerScrollTo(scroller, 0); });
+  assert.equal(finishes.length, 2);
+  await act(async () => { finishes[0]!(); });
+  await act(async () => { view.readerScrollTo(scroller, 0); });
+  assert.equal(finishes.length, 2, 'the old completion must not release the new pending request');
+  await act(async () => { finishes[1]!(); });
+  await view.render({ ...props, activeSession: { ...activeSession, id: 'other-session' }, hasEarlierHistory: false });
+  await act(async () => { view.readerScrollTo(scroller, 0); });
+  assert.equal(finishes.length, 2, 'exhausted history does not load again');
+});
+
+test('a failed automatic read retries only after another upward gesture', async () => {
+  const view = harness();
+  let loads = 0;
+  const scroller = await view.render({
+    messages: turnMessages(4, 8), hasEarlierHistory: true,
+    onLoadEarlierHistory: async () => { loads++; throw new Error('disconnected'); },
+  });
+  await act(async () => { view.readerScrollTo(scroller, 0); });
+  assert.equal(loads, 1);
+  await act(async () => {});
+  assert.equal(loads, 1, 'failure must not start a retry loop');
+  await act(async () => { view.readerScrollTo(scroller, 0); });
+  assert.equal(loads, 2);
 });
 
 test('prepended Turns keep a released reader on their Turn without re-pinning', async () => {
@@ -163,10 +207,7 @@ test('prepended Turns keep a released reader on their Turn without re-pinning', 
   assert.equal(view.authority.getSnapshot().pinned, false);
   assert.equal(view.anchors.at(-1), 'turn-5');
 
-  // The reader asks for history, which is the only way it arrives.
-  const button = view.loadButton();
-  assert.ok(button);
-  await act(async () => { view.click(button); });
+  // The upward gesture requested history; its eventual arrival is not input.
   await view.render({ messages: turnMessages(2, 8), hasEarlierHistory: false, onLoadEarlierHistory: () => {} });
   await act(() => { scroller.dispatchEvent(new dom!.window.Event('scroll')); });
   assert.equal(view.loadButton(), null);
@@ -185,10 +226,12 @@ test('a selection from outside every Turn keeps every Turn it spans mounted', as
   const rows = mounted();
   assert.ok(rows.length < 20, 'the fixture mounts only some of the Turns');
 
-  const button = view.loadButton();
+  const selectionStart = dom!.document.createElement('p');
+  selectionStart.textContent = 'Text before the transcript';
+  scroller.prepend(selectionStart);
   const last = dom!.container.querySelector(`[data-transcript-turn-id="${rows.at(-1)}"]`);
-  assert.ok(button && last);
-  const selection = { isCollapsed: false, anchorNode: button, focusNode: last };
+  assert.ok(last);
+  const selection = { isCollapsed: false, anchorNode: selectionStart, focusNode: last };
   dom!.document.getSelection = () => selection as unknown as Selection;
   await act(async () => { dom!.document.dispatchEvent(new dom!.window.Event('selectionchange')); });
   await act(() => { view.readerScrollTo(scroller, 16 * TURN_HEIGHT); });

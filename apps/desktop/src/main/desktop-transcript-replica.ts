@@ -262,6 +262,7 @@ export class DesktopTranscriptReplica {
   async readOlderPage(
     throughSequence: number,
     cursor: string | null,
+    maxBytes = SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   ): Promise<DesktopTranscriptHistoryPage> {
     this.#assertLive();
     const page = await this.#handle.loadTranscriptPage({
@@ -269,7 +270,7 @@ export class DesktopTranscriptReplica {
       throughSequence,
       cursor,
       anchorSequence: null,
-      maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      maxBytes: Math.min(maxBytes, SESSION_TRANSCRIPT_PAGE_MAX_BYTES),
     });
     return this.#withDecodedPage(page, (decoded) => {
       this.#assertLive();
