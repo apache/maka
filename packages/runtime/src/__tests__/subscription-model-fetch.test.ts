@@ -209,6 +209,48 @@ describe('subscription model fetch', () => {
     );
   });
 
+  test('rejects an incomplete folded Codex stream instead of returning its partial output', async () => {
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-incomplete',
+      modelId: 'gpt-5.5',
+      fetchFn: async () =>
+        sse([
+          {
+            type: 'response.output_item.done',
+            output_index: 0,
+            item: {
+              type: 'message',
+              id: 'msg-1',
+              role: 'assistant',
+              status: 'incomplete',
+              content: [{ type: 'output_text', text: 'Planning a Sm', annotations: [] }],
+            },
+          },
+          {
+            type: 'response.incomplete',
+            response: {
+              id: 'resp-1',
+              status: 'incomplete',
+              incomplete_details: { reason: 'content_filter' },
+              output: [],
+            },
+          },
+        ]),
+    });
+    assert.ok(modelFetch);
+
+    // Folded as a normal body, the fragment would resolve as the caller's
+    // result: a Session title of "Planning a Sm", recorded as a success.
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [] }),
+      }),
+      /incomplete: content_filter/,
+    );
+  });
+
   test('surfaces a failed folded Codex stream as an error, not an empty success', async () => {
     const modelFetch = buildSubscriptionModelFetch({
       connection: openAiCodexConnection(),

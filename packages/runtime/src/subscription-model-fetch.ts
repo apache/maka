@@ -251,6 +251,15 @@ async function foldOpenAiCodexStream(response: Response): Promise<Response> {
       `Codex OAuth request failed: ${typeof error?.message === 'string' ? error.message : 'response.failed'}`,
     );
   }
+  // An incomplete response carries partial output (e.g. a content filter cut
+  // it off). Folded into a normal body, a caller would take the fragment as
+  // its result, so it is rejected like a failed one.
+  if (terminalType === 'response.incomplete') {
+    const details = terminal.incomplete_details as { reason?: unknown } | null | undefined;
+    throw new Error(
+      `Codex OAuth request incomplete: ${typeof details?.reason === 'string' ? details.reason : 'response.incomplete'}`,
+    );
+  }
   const output =
     Array.isArray(terminal.output) && terminal.output.length > 0 ? terminal.output : doneItems;
   return new Response(JSON.stringify({ ...terminal, output }), {
