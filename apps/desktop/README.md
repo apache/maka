@@ -57,6 +57,47 @@ npm run build:main --workspace apps/desktop
 node --test apps/desktop/dist/main/__tests__/managed-artifact-preview.test.js apps/desktop/dist/main/__tests__/runtime-host-artifacts-ipc-main.test.js
 ```
 
+## Worktree development profiles
+
+Run `npm run dev:worktree` from the repository root to start desktop HMR with
+an independent data directory for this checkout. This prevents experimental
+branches from reading or writing another checkout's settings, sessions, and
+runtime policy. The first launch opens onboarding with an empty configuration;
+existing data and credentials are not copied. Only the profile is separate:
+user-level state outside it, such as skills in `~/.maka/skills` and
+`~/.agents/skills`, stays shared with every checkout.
+
+The launcher prints the selected directory before building. It uses the
+checkout's canonical path, not its branch name: restarting or switching branches
+in the same checkout reuses the profile; distinct checkouts get separate
+profiles, even when their directory names match. Symlink aliases reuse the same
+profile. Moving a checkout selects a new profile and leaves its old data intact.
+
+Profiles live in `Maka Dev Worktrees/<checkout-name>-<path-hash>` beneath:
+
+- macOS: `~/Library/Application Support`
+- Windows: `%APPDATA%` (defaults to `%USERPROFILE%\AppData\Roaming`)
+- Linux: `$XDG_CONFIG_HOME` (defaults to `~/.config`)
+
+An explicit directory takes precedence, with relative paths resolved against the
+checkout root. Both argument forms are accepted:
+
+```sh
+npm run dev:worktree -- --user-data-dir="/path/to/my profile"
+npm run dev:worktree -- --user-data-dir "/path/to/my profile"
+MAKA_DEV_TCC=1 npm run dev:worktree  # macOS permission development
+```
+
+This command uses the existing desktop launcher, including its process cleanup
+and macOS TCC support. `npm run dev`, `npm start`, and the CLI retain their
+existing profile selection. With `MAKA_DEV_TCC=1`, every launch republishes the
+profile of this checkout's app bundle, so reopening the bundle from the Dock,
+Spotlight, or a permission prompt uses the profile of the last TCC launch here:
+after a TCC `npm run dev` or `npm start`, run `dev:worktree` again before
+reopening it. Removing a Git worktree does not remove its data, and a checkout
+later created at the same path reuses it: quit the app and manually remove its
+printed profile directory when it is no longer needed.
+
 ## macOS development permissions
 
 `npm run dev` and `npm start` use the plain Electron executable on every

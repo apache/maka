@@ -486,7 +486,7 @@ export const TurnView = memo(function TurnView(props: {
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   const answerContext = accessibleActionContext(
     turn.user?.text ?? finalReply?.text ?? '',
-    turn.startedAt,
+    turn.startedAt > MIN_PLAUSIBLE_TURN_TS ? turn.startedAt : undefined,
     locale,
   );
   // A recorded conversational terminal turn owns presentation beyond its
@@ -579,7 +579,7 @@ export const TurnView = memo(function TurnView(props: {
         </Marker>
       )}
       {props.transientMessages?.map((message) => (
-        <TransientUserMessage key={message.id} message={message} />
+        <TransientUserMessage key={message.id} message={message} status={props.promptStatus} />
       ))}
       {turn.user && turn.user.hostOrigin?.kind !== 'workhub_result' && (
         <LocalizedChatMessage
@@ -937,6 +937,33 @@ export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnP
  */
 const MIN_PLAUSIBLE_TURN_TS = 1_000_000_000_000;
 
+// Reserve the same answer and footer rows before the transcript arrives without
+// inventing a Turn or assigning unrelated local prompts to the active Turn.
+export function PendingTurnAnswer(props: {
+  turnId?: string;
+  startedAt?: number;
+  running: boolean;
+  providerRetry?: LiveProviderRetry;
+}) {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+  const startedAt = (props.startedAt ?? 0) > MIN_PLAUSIBLE_TURN_TS ? props.startedAt : undefined;
+  const context = accessibleActionContext('', startedAt, locale);
+  return (
+    <LocalizedChatMessage
+      accessibleLabel={`${copy.assistantAriaLabel} · ${context}`}
+      sender="assistant"
+      className="maka-chat-message maka-assistant-answer"
+    >
+      <div className="maka-assistant-answer-content">
+        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} providerRetry={props.providerRetry} />
+        {props.providerRetry && <ModelProviderRetryIndicator retry={props.providerRetry} />}
+      </div>
+      <TurnFooter turnId={props.turnId} actions={[]} live context={context} />
+    </LocalizedChatMessage>
+  );
+}
+
 /**
  * The turn's one status: the running cue while work is in flight, the settled
  * outcome (word + duration) once the turn ends. Rendered inside the status row
@@ -997,9 +1024,8 @@ function TurnStatusRow(props: TurnStatusRowProps): ReactNode {
   return <span className="maka-turn-statusbar-text">{label}</span>;
 }
 
-/** Standalone status row for a turn with no process disclosure to carry it —
- *  and for the pre-turn cue before the transcript contains the turn. */
-export function TurnStatusBar(props: TurnStatusRowProps) {
+/** Standalone status row for a turn with no process disclosure to carry it. */
+function TurnStatusBar(props: TurnStatusRowProps) {
   return (
     <div className="maka-turn-statusbar" data-turn-status={props.status}>
       <TurnStatusRow {...props} />
@@ -1026,8 +1052,9 @@ function TurnFooter(props: {
       className={markerVariants({ variant: 'footer' })}
       role={isToolbar ? 'toolbar' : undefined}
       aria-label={isToolbar ? copy.answerActionsAriaLabel(props.context) : undefined}
+      // Live: reserves the actions' row.
       footer={
-        hasActions || props.finishedAt !== undefined ? (
+        hasActions || props.finishedAt !== undefined || props.live ? (
         <>
           {props.actions.map((action) =>
             action.id === 'copy' ? (

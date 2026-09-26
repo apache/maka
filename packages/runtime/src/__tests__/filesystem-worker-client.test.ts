@@ -743,7 +743,7 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
         truncated: false,
       };
     case 'glob':
-      return { kind: 'glob', files: [] };
+      return { kind: 'glob', files: [], truncated: false };
     default:
       throw new Error(`Unexpected fake worker operation: ${request.operation.kind}`);
   }

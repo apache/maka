@@ -94,12 +94,13 @@ export function useAppShellSessionList(
   const actions = useMemo(() => {
     const drain = createSessionPatchDrain({
       normalize: normalizeSessionSummaryForDisplay,
-      commitPatch: (sessionId, summary) => catalog.commitPatch(sessionId, summary),
+      commitPatch: catalog.commitPatch,
       onReadFailure: () => void refresher.refresh().catch(() => undefined),
     });
     return {
       refreshSessions: () => refresher.refresh(),
       refreshChangedSession: drain.request,
+      commitSession: drain.commit,
       seedSessions(snapshotSessions: readonly DesktopSessionSummary[]) {
         const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
         catalog.commitSessions(next);

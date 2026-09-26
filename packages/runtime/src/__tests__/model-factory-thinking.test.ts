@@ -731,15 +731,17 @@ describe('buildProviderOptions: thinking level', () => {
   });
 
   test('Vercel Gateway sends reasoning effort under its stable namespace and exact model id', () => {
-    // The effort list is read verbatim from the models.dev snapshot, whose
-    // #5678 refresh added minimal and xhigh for this model.
-    assert.deepEqual(
-      [...thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking')],
-      ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-    );
-    assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'high'), {
-      vercel: { reasoningEffort: 'high' },
-    });
+    // Keep the known effort levels covered while allowing models.dev to add
+    // levels; every advertised level must retain its namespace and wire mapping.
+    const levels = thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking');
+    for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const) {
+      assert.ok(levels.includes(level), `Vercel must advertise ${level}`);
+    }
+    for (const level of levels) {
+      assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', level), {
+        vercel: { reasoningEffort: level === 'off' ? 'none' : level },
+      });
+    }
     assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'off'), {
       vercel: { reasoningEffort: 'none' },
     });

@@ -339,6 +339,24 @@ export const ConversationStates: Story = {
       })} />
     </StoryFrame>
   ),
+  play: async ({ canvasElement }) => {
+    // The ring, every status dot and the ⋯ that replaces them on hover share
+    // one vertical axis.
+    const centerX = (element: Element | null) => {
+      if (!element) throw new Error('trailing element is missing');
+      const box = element.getBoundingClientRect();
+      return box.x + box.width / 2;
+    };
+    const axis = centerX(
+      canvasElement.querySelector('[data-session-id="status-running"] .maka-running-indicator'),
+    );
+    for (const row of canvasElement.querySelectorAll<HTMLElement>('.maka-session-row')) {
+      expect(Math.abs(centerX(row.querySelector('[data-session-status]')) - axis)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(centerX(row.querySelector(':scope > .maka-session-row-action')) - axis),
+      ).toBeLessThanOrEqual(1);
+    }
+  },
 };
 
 // Real path: switching between two ordinary Sessions in a populated rail. The
@@ -517,6 +535,20 @@ export const PinnedAndRecentSections: Story = {
       />
     </StoryFrame>
   ),
+  play: async ({ canvasElement }) => {
+    // The ring and the timestamps end on the row's padding edge, not on a
+    // centered column that leaves them floating inside the row.
+    for (const row of canvasElement.querySelectorAll<HTMLElement>('.maka-session-row')) {
+      const signal = row.querySelector('.maka-session-row-signal');
+      const content = signal?.firstElementChild;
+      if (!signal || !content) throw new Error(`${row.dataset.sessionId} has no signal`);
+      const item = row.querySelector('.astryx-side-nav-item');
+      if (!item) throw new Error('nav item is missing');
+      const paddingEdge =
+        item.getBoundingClientRect().right - Number.parseFloat(getComputedStyle(item).paddingRight);
+      expect(Math.abs(content.getBoundingClientRect().right - paddingEdge)).toBeLessThanOrEqual(1);
+    }
+  },
 };
 
 // Real path: group-by-project — collapsible project rows, sessions on the

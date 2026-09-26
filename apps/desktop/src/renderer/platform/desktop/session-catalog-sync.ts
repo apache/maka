@@ -26,6 +26,8 @@ export type SessionCatalogSource = {
 export interface SessionPatchDrain {
   /** Resolves with the committed row, or null when it left the catalog. */
   request(sessionId: string): Promise<DesktopSessionSummary | null>;
+  /** Commits a row the caller already holds, without a read. */
+  commit(session: DesktopSessionSummary): void;
 }
 
 /**
@@ -79,6 +81,9 @@ export function createSessionPatchDrain(
         void drain();
       }
       return promise;
+    },
+    commit(session) {
+      options.commitPatch(session.id, options.normalize(session));
     },
   };
 }

@@ -47,8 +47,7 @@ import type { SessionTurnLandmark } from '../protocol/index.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 /** One event can emit content, a permission, usage, and terminal/notice rows. */
-// A single event can anchor a batch of Host interaction outcomes.
-const EVENT_SEQUENCE_STRIDE = 4_096;
+const EVENT_SEQUENCE_STRIDE = 8;
 const TRANSCRIPT_TURN_MAX_MESSAGES = 4_096;
 export const TRANSCRIPT_TURN_MAX_BYTES = 16 * 1024 * 1024;
 const TRANSCRIPT_SOURCE_MAX_EVENTS = TRANSCRIPT_TURN_MAX_MESSAGES * 2;
@@ -176,43 +175,6 @@ function createDurableLedgerTranscriptReader(input: {
     if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
       throw new Error('Durable RuntimeEvent transcript projection is incomplete');
     }
-    const interactions = await input.stores.interactionStore.listTurnInteractions(
-      turn.invocation.sessionId,
-      turn.invocation.turnId,
-    );
-    interactions.sort(
-      (a, b) =>
-        (a.outcome?.outcome.committedAt ?? a.request.createdAt) -
-        (b.outcome?.outcome.committedAt ?? b.request.createdAt),
-    );
-    for (const record of interactions) {
-      const { request, outcome } = record;
-      if (
-        request.runId !== turn.invocation.runId ||
-        (request.request.kind !== 'form' && request.request.kind !== 'question') ||
-        !outcome ||
-        (outcome.outcome.kind !== 'form_answer' &&
-          outcome.outcome.kind !== 'question_answer' &&
-          outcome.outcome.kind !== 'closure')
-      )
-        continue;
-      // Anchor after acceptance, so an incremental reader that already saw the
-      // pending request receives the settled history row as well.
-      const source =
-        turn.projection.anchors.find((event) => event.ts >= outcome.outcome.committedAt) ??
-        turn.projection.anchors.at(-1);
-      if (!source) continue;
-      projected.messages.push({
-        type: 'form_interaction',
-        id: request.requestId,
-        turnId: request.turnId,
-        ts: outcome.outcome.committedAt,
-        request: request.request,
-        outcome: outcome.outcome,
-      });
-      projected.sourceEventIds.push(source.id);
-    }
-    assertTurnPresentationBounded(projected.messages);
     const admission =
       turn.invocation.sessionId === WORKHUB_COORDINATION_SESSION_ID
         ? await input.stores.agentRunStore.readRootTurnAdmission(
@@ -226,26 +188,24 @@ function createDurableLedgerTranscriptReader(input: {
         : undefined;
     const ordinals = turn.ordinals;
     const emitted = new Map<number, number>();
-    return projected.messages
-      .map((message, index) => {
-        const ordinal = ordinals.get(projected.sourceEventIds[index]!);
-        if (ordinal === undefined) {
-          throw new Error('Durable transcript message has no source RuntimeEvent');
-        }
-        const offset = emitted.get(ordinal) ?? 0;
-        if (offset >= EVENT_SEQUENCE_STRIDE) {
-          throw new Error('RuntimeEvent exceeds its transcript sequence stride');
-        }
-        emitted.set(ordinal, offset + 1);
-        return {
-          sequence: ordinal * EVENT_SEQUENCE_STRIDE + offset,
-          message:
-            message.type === 'user' && actionId
-              ? { ...message, coordinationActionId: actionId }
-              : message,
-        };
-      })
-      .sort((a, b) => a.sequence - b.sequence);
+    return projected.messages.map((message, index) => {
+      const ordinal = ordinals.get(projected.sourceEventIds[index]!);
+      if (ordinal === undefined) {
+        throw new Error('Durable transcript message has no source RuntimeEvent');
+      }
+      const offset = emitted.get(ordinal) ?? 0;
+      if (offset >= EVENT_SEQUENCE_STRIDE) {
+        throw new Error('RuntimeEvent exceeds its transcript sequence stride');
+      }
+      emitted.set(ordinal, offset + 1);
+      return {
+        sequence: ordinal * EVENT_SEQUENCE_STRIDE + offset,
+        message:
+          message.type === 'user' && actionId
+            ? { ...message, coordinationActionId: actionId }
+            : message,
+      };
+    });
   };
 
   const readRun = async (
@@ -627,7 +587,6 @@ interface PendingTranscriptRun extends RuntimeTranscriptRun {
 /** Keep only presentation state while the storage snapshot visits complete facts. */
 function createTranscriptProjection(invocations: readonly RuntimeInvocationRecord[]) {
   const canonicalPermissionOutcomes = new Map<string, CanonicalPermissionOutcomeRecord>();
-  const anchors: { id: string; ts: number }[] = [];
   let messageCount = 0;
   let messageBytes = 0;
   let eventCount = 0;
@@ -644,9 +603,7 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
     },
   });
   return {
-    anchors,
     push(event: RuntimeEvent) {
-      anchors.push({ id: event.id, ts: event.ts });
       eventCount += 1;
       const content = event.content;
       // The durable model projection is never a transcript input. Large Bash

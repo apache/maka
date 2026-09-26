@@ -443,7 +443,6 @@ function isRecoverableSubscriptionFailure(error: unknown): boolean {
   if (!(error instanceof RuntimeHostSubscriptionError)) return false;
   return (
     error.reason === 'slow_consumer' ||
-    error.reason === 'transcript_changed' ||
     error.reason === 'sequence_gap' ||
     error.reason === 'projection_revision_invalid'
   );

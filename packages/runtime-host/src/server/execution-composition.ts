@@ -169,6 +169,7 @@ import {
   createHostSessionEffectModel,
   createHostPromptSuggestionModel,
   type HostWorkHubRoutingModel,
+  type HostSessionEffectModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
@@ -310,6 +311,7 @@ export interface ExecutionRuntimeHostCompositionDependencies {
   readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
   readonly workHubRoutingModel?: HostWorkHubRoutingModel;
+  readonly generateSessionTitle?: HostSessionEffectModel['generateTitle'];
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
     'startCodexAuthorization' | 'pollCodexAuthorization' | 'exchangeCodexCode'
@@ -1397,13 +1399,17 @@ export async function createExecutionRuntimeHostComposition(
       runtimeEventStore: stores.runtimeEventStore,
       canonicalPermissionOutcomes,
     });
+    const sessionEffectModel = createHostSessionEffectModel({
+      runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
+      usage: openedUsageStores,
+      requestDrain: context.requestDrain,
+    });
     const sessionEffectCoordinator = new HostSessionEffectCoordinator({
-      model: createHostSessionEffectModel({
-        runtimePolicy: runtimePolicyStores,
-        oauthCredentials,
-        usage: openedUsageStores,
-        requestDrain: context.requestDrain,
-      }),
+      model: {
+        ...sessionEffectModel,
+        generateTitle: dependencies.generateSessionTitle ?? sessionEffectModel.generateTitle,
+      },
       readModel: {
         getSessionView: async (sessionId) => {
           // A Session whose transcript predates the ledger projects an empty
@@ -1636,6 +1642,7 @@ export async function createExecutionRuntimeHostComposition(
           state.kind === 'removed' || (state.kind === 'present' && state.record.header.isArchived)
         );
       },
+      isSessionTurnBusy: (sessionId) => rootCoordinator?.hasActiveOrPendingTurn(sessionId) ?? false,
       onModelToolsChanged: registerBackendInvalidation,
       interactions,
       grants: stores.interactionStore,

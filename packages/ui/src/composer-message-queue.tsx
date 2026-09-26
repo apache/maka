@@ -54,11 +54,11 @@ export function projectComposerMessageQueue(
   transient: readonly TransientUserMessageProjection[],
 ): readonly ComposerQueueEntry[] {
   const ids = new Set(queued.map((entry) => entry.messageId));
-  const pending = transient.filter((message) => (message.pendingSteering || message.transientPlacement === 'next_turn') && !ids.has(message.id));
+  const pending = transient.filter((message) => message.transientPlacement !== 'transcript' && !ids.has(message.id));
   if (pending.length === 0) return queued;
   return [...queued, ...pending.map((message): ComposerQueueEntry => ({
     entryId: message.id, messageId: message.id, content: { text: message.text },
-    placement: message.transientPlacement, state: 'local', localMessage: message,
+    placement: message.transientPlacement === 'steering' ? 'current_turn' : 'next_turn', state: 'local', localMessage: message,
   }))];
 }
 

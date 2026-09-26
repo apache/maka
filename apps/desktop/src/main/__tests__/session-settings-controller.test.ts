@@ -25,8 +25,8 @@ import { parseHTML } from 'linkedom';
 import {
   SessionSettingsServicesProvider,
   type SessionSettingsServices,
-  useSessionSettingIntent,
 } from '../../renderer/features/session-settings/index.js';
+import { useSessionSettingsController } from '../../renderer/features/session-settings/testing.js';
 import { reconcileRuntimeHostSessionCatalog } from '../../preload/runtime-host-session-catalog.js';
 import {
   createSessionCatalogController,
@@ -34,7 +34,7 @@ import {
 } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
-type Controller = ReturnType<typeof useSessionSettingIntent<{ sessionId?: string }>>;
+type Controller = ReturnType<typeof useSessionSettingsController<{ sessionId?: string }>>;
 
 const originalGlobals = {
   document: globalThis.document,
@@ -479,7 +479,7 @@ function Harness(props: {
     model: string;
   }): void;
 }) {
-  const controller = useSessionSettingIntent({
+  const controller = useSessionSettingsController({
     catalog: props.catalog,
     isActiveSession: () => true,
     newSessionPermissionMode: 'ask',
@@ -487,7 +487,7 @@ function Harness(props: {
     saveComposerDefaults: props.saveComposerDefaults,
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
     showSessionError: () => {},
-    planMode: { write: async () => true },
+    planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => props.owner,
     isOwnerActive: () => true,
     setNewTaskPermissionMode: props.setNewTaskPermissionMode,
@@ -501,7 +501,7 @@ function CausalRetirementHarness(props: {
   capture(controller: Controller): void;
   catalog: SessionCatalogController;
 }) {
-  const controller = useSessionSettingIntent({
+  const controller = useSessionSettingsController({
     catalog: props.catalog,
     isActiveSession: () => true,
     newSessionPermissionMode: 'ask',
@@ -509,7 +509,7 @@ function CausalRetirementHarness(props: {
     saveComposerDefaults: () => {},
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
     showSessionError: () => {},
-    planMode: { write: async () => true },
+    planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => ({ sessionId: 'session-a' }),
     isOwnerActive: () => true,
     setNewTaskPermissionMode: () => {},
@@ -545,6 +545,7 @@ function createServices(
   overrides: Partial<SessionSettingsServices> = {},
 ): SessionSettingsServices {
   return {
+    getPlanState: async (sessionId) => ({ schemaVersion: 1, sessionId, storeVersion: 0, proposals: [], executions: [] }),
     setModelConfiguration: async () => ({} as DesktopSessionSummary),
     setPermissionMode: async () => ({} as DesktopSessionSummary),
     setOrchestrationMode: async () => ({} as DesktopSessionSummary),
