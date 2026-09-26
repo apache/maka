@@ -47,7 +47,11 @@ export function SessionLocalMessages(props: {
   const [snapshot, setSnapshot] = useState<{ sessionId: string; messages: readonly DesktopLocalMessage[] }>();
   const { sessionId, publish, update, retire, queue } = props;
   const runningTurnIds = props.session?.localState ? undefined : props.session?.runningTurnIds;
-  const published = useRef<{ sessionId?: string; ids: Set<string> }>({ ids: new Set() });
+  // Workspace transients survive selection changes, so their ownership must too.
+  const publishedBySession = useRef(new Map<string, {
+    states: Map<string, 'seen' | 'retired'>;
+    snapshotIds: Set<string>;
+  }>());
   const generation = useRef(0);
   useEffect(() => {
     const owner = ++generation.current;
@@ -67,16 +71,33 @@ export function SessionLocalMessages(props: {
   }, [sessionId, services]);
 
   useEffect(() => {
-    if (published.current.sessionId !== sessionId) published.current = { sessionId, ids: new Set() };
     if (!sessionId || snapshot?.sessionId !== sessionId) return;
+    let published = publishedBySession.current.get(sessionId);
+    if (!published) {
+      published = { states: new Map(), snapshotIds: new Set() };
+      publishedBySession.current.set(sessionId, published);
+    }
+    const states = published.states;
+    const snapshotIds = new Set(snapshot.messages.map((message) => message.messageId));
+    for (const messageId of published.snapshotIds) {
+      if (!snapshotIds.has(messageId)) {
+        states.set(messageId, 'retired');
+        retire(sessionId, messageId);
+      }
+    }
+    // Cancellation can remove durable rows without a Turn or Host event. The
+    // snapshot owns only their transient presentation; retain published IDs as
+    // tombstones so a later stale local row cannot recreate retired messages.
+    published.snapshotIds = snapshotIds;
     const copy = getSessionLocalCopy(locale);
     const queuedIds = new Set(queue?.map((entry) => entry.messageId));
     for (const message of snapshot.messages) {
+      const previous = states.get(message.messageId);
+      if (previous !== 'retired') states.set(message.messageId, 'seen');
       if (message.state !== 'failed' && queuedIds.has(message.messageId)) {
         // The Host queue may arrive before the first local snapshot. Its exact
         // identity already owns presentation, including a stale unknown receipt.
         // Remember the handoff so a later queue removal cannot recreate the row.
-        published.current.ids.add(message.messageId);
         retire(sessionId, message.messageId);
         continue;
       }
@@ -111,6 +132,7 @@ export function SessionLocalMessages(props: {
         label: message.state === 'failed' ? copy.remove : copy.cancel, disabled: !!busy,
         onClick: run(async () => {
           await services.cancelMessage(sessionId, message.messageId);
+          states.set(message.messageId, 'retired');
           setSnapshot((current) => current?.sessionId === sessionId
             ? { ...current, messages: current.messages.filter((item) => item.messageId !== message.messageId) }
             : current);
@@ -121,10 +143,10 @@ export function SessionLocalMessages(props: {
         onClick: run(() => services.reconcileMessage(sessionId, message.messageId)),
       });
       const presentation = localMessagePresentation(message, locale, queue, runningTurnIds);
-      // Queue/Turn refreshes update existing rows. They must not recreate a row
-      // already retired by a Host retraction or canonical transcript handoff.
-      const project = published.current.ids.has(message.messageId) ? update : publish;
-      published.current.ids.add(message.messageId);
+      // A current durable failure owns its recovery actions even after a late
+      // Host retraction. Upsert it by identity, unless durable deletion already
+      // retired it. Ordinary refreshes still cannot recreate handed-off rows.
+      const project = previous === undefined || (message.state === 'failed' && previous !== 'retired') ? publish : update;
       project(sessionId, {
         id: message.messageId, text: message.text, ts: message.createdAt,
         transientPlacement: message.turnId ? 'current_turn' : (message.localDisplayPlacement ?? message.placement), attachments: message.attachments,

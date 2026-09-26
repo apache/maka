@@ -371,6 +371,31 @@ export class DesktopSessionLocalStore {
     });
   }
 
+  /** A positive Host not_admitted proof releases delivery ordering, but is
+   * not user cancellation: retain the exact local content for recovery.
+   */
+  failNotAdmittedMessages(partition: string, sessionId: string, messageIds: readonly string[]): boolean {
+    if (!messageIds.length) return false;
+    return this.#transaction(() => {
+      let changed = false;
+      const fail = this.#db.prepare(
+        'UPDATE outbox SET state = ?, payload = ? WHERE partition = ? AND session_id = ? AND message_id = ?',
+      );
+      for (const messageId of messageIds) {
+        const record = this.get(partition, messageId);
+        if (!record || record.sessionId !== sessionId || !record.intent.originHostEpoch || record.state === 'failed') continue;
+        const failed: LocalOutboxRecord = {
+          ...record,
+          state: 'failed',
+          result: undefined,
+          error: 'The Host never admitted this message; the local copy is retained.',
+        };
+        if (fail.run('failed', JSON.stringify(failed), partition, sessionId, messageId).changes) changed = true;
+      }
+      return changed;
+    });
+  }
+
   saveTranscript(partition: string, snapshot: DesktopTranscriptReplicaSnapshot): void {
     const payload = JSON.stringify(snapshot);
     if (Buffer.byteLength(payload) > MAX_CACHE_SESSION_BYTES) return;

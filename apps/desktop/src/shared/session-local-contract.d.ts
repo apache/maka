@@ -54,7 +54,8 @@ export interface DesktopLocalMessageDraft {
   readonly messageId: string;
   readonly text: string;
   readonly attachments: readonly AttachmentRef[];
-  readonly stagedAttachments: readonly { name: string; mimeType: string; content: Uint8Array }[];
+  /** Opaque, scoped, one-shot approvals; attachment bytes never cross into the renderer. */
+  readonly stagedAttachments: readonly { approvalId: string; name: string; mimeType?: string; size: number }[];
   readonly directoryReferences: readonly DirectoryReference[];
   readonly quotes: readonly QuoteRef[];
   readonly inlineReferences: readonly InlineReference[];

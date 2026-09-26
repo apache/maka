@@ -423,6 +423,123 @@ test('admission-targeted Stop after Host restart retires only the retracted loca
   assert.ok(local.store.get('authority', 'other-message'));
 });
 
+test('removed queue not_admitted proof settles the durable local copy without cancellation tombstones', async (t) => {
+  const local = await stopLocalMessages(t);
+  local.enqueue('not-admitted');
+  local.enqueue('retained');
+  local.enqueue('never-dispatched', 'session-1', 'authority', false);
+  local.enqueue('other-session', 'session-2');
+  local.enqueue('not-admitted', 'session-1', 'other-authority');
+  const ipc = ipcHarness();
+  const removed = ['not-admitted', 'never-dispatched', 'other-session'];
+  const queried: string[][] = [];
+  let cancellationQueries = 0;
+  const host = connectionHarness('1', {
+    sideConversation: true,
+    subscriptionSnapshot: continuitySnapshot({
+      queue: {
+        hostEpoch: 'host-1', queueRevision: 1, steering: [],
+        followup: removed.map((messageId) => ({
+          entryId: `entry-${messageId}`, messageId, content: { text: messageId },
+          placement: 'next_turn', state: 'queued',
+        })),
+      },
+    }),
+    queryMessageExecutions: async ({ messageIds }) => {
+      queried.push([...messageIds]);
+      return { resolutions: [...messageIds, 'retained'].map((messageId) => ({ messageId, state: 'not_admitted' })) };
+    },
+    queryMessages: async () => { cancellationQueries += 1; return { cancelledMessageIds: [] }; },
+  });
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc), ...local.callbacks,
+  });
+  t.after(() => candidate.close());
+  await ipc.invoke('sessions:observe', 'session-1', 'observer-1');
+  host.pushSubscriptionFrame({
+    kind: 'subscription.session_projection', hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1', sequence: 1,
+    snapshot: continuitySnapshot({
+      projectionRevision: 2,
+      queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+    }),
+  });
+  await waitFor(() => queried.length === 1);
+  await waitFor(() => ipc.sender.sent.some(({ payload }) =>
+    (payload as { type?: string }).type === 'message_admission'));
+  assert.equal(local.store.get('authority', 'not-admitted')?.state, 'failed');
+  assert.match(local.store.get('authority', 'not-admitted')?.error ?? '', /never admitted/);
+  assert.equal(local.store.get('authority', 'not-admitted')?.result, undefined);
+  assert.equal(cancellationQueries, 0, 'execution proof must not be narrowed to cancellation tombstones');
+  await candidate.close();
+  local.reopen();
+  assert.equal(local.store.get('authority', 'not-admitted')?.state, 'failed');
+  assert.deepEqual(local.store.stagedAttachments('authority', 'not-admitted')[0]?.content,
+    new Uint8Array(Buffer.from('retained bytes')));
+  assert.equal(local.store.get('authority', 'retained')?.state, 'accepted');
+  assert.equal(local.store.get('authority', 'never-dispatched')?.state, 'saved');
+  assert.equal(local.store.get('authority', 'other-session')?.state, 'accepted');
+  assert.equal(local.store.get('other-authority', 'not-admitted')?.state, 'accepted');
+  assert.doesNotThrow(() => local.store.cancel('authority', 'not-admitted'));
+  assert.equal(local.store.get('authority', 'not-admitted'), undefined);
+  assert.equal(local.store.stagedAttachments('authority', 'not-admitted').length, 0);
+});
+
+for (const outcome of ['cancelled', 'owned', 'pending', 'omitted', 'unavailable', 'inactive-target', 'no-turn'] as const) {
+  test(`removed queue ${outcome} proof keeps local settlement within its authority`, async (t) => {
+    const local = await stopLocalMessages(t);
+    local.enqueue('removed');
+    const ipc = ipcHarness();
+    let active = true;
+    let queried = false;
+    const host = connectionHarness('1', {
+      sideConversation: true,
+      subscriptionSnapshot: continuitySnapshot({
+        ...(outcome === 'no-turn' ? { rootTurn: null } : {}),
+        queue: {
+          hostEpoch: 'host-1', queueRevision: 1, steering: [],
+          followup: [{ entryId: 'entry-removed', messageId: 'removed', content: { text: 'removed' },
+            placement: 'next_turn', state: 'queued' }],
+        },
+      }),
+      queryMessageExecutions: async () => {
+        queried = true;
+        if (outcome === 'unavailable') throw new Error('Host cannot prove the outcome');
+        if (outcome === 'inactive-target') active = false;
+        return { resolutions: outcome === 'omitted' ? [] : [{
+          messageId: 'removed',
+          ...(outcome === 'owned'
+            ? { state: 'owned' as const, turnId: 'turn-1', runId: 'run-1' }
+            : { state: outcome === 'inactive-target' || outcome === 'no-turn' ? 'not_admitted' as const : outcome }),
+        }] };
+      },
+      queryMessages: async () => ({ cancelledMessageIds: [] }),
+    });
+    const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+      ...deps(ipc), ...local.callbacks, isTargetActive: () => active,
+    });
+    t.after(() => candidate.close());
+    await ipc.invoke('sessions:observe', 'session-1', 'observer-1');
+    host.pushSubscriptionFrame({
+      kind: 'subscription.session_projection', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sequence: 1,
+      snapshot: continuitySnapshot({
+        ...(outcome === 'no-turn' ? { rootTurn: null } : {}),
+        projectionRevision: 2,
+        queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+      }),
+    });
+    await waitFor(() => queried);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await candidate.close();
+    local.reopen();
+    assert.equal(local.store.get('authority', 'removed')?.state,
+      outcome === 'cancelled' ? undefined : outcome === 'no-turn' ? 'failed' : 'accepted');
+    assert.equal(local.store.stagedAttachments('authority', 'removed').length,
+      outcome === 'cancelled' ? 0 : 1);
+  });
+}
+
 for (const outcome of ['rejected', 'inactive-target'] as const) {
   test(`Stop ${outcome} response cannot retire local messages`, async (t) => {
     const local = await stopLocalMessages(t);
@@ -474,7 +591,9 @@ async function stopLocalMessages(t: TestContext) {
     callbacks: {
       retireCancelledMessages: (scope, sessionId, messageIds) =>
         service.retireCancelledMessages(scope, sessionId, messageIds),
-    } satisfies Pick<DesktopRuntimeHostCandidateDeps, 'retireCancelledMessages'>,
+      failNotAdmittedMessages: (scope, sessionId, messageIds) =>
+        service.failNotAdmittedMessages(scope, sessionId, messageIds),
+    } satisfies Pick<DesktopRuntimeHostCandidateDeps, 'retireCancelledMessages' | 'failNotAdmittedMessages'>,
     enqueue(messageId: string, sessionId = 'session-1', partition = 'authority', dispatched = true) {
       const record = store.enqueue(partition, {
         command: { messageId, sessionId, placement: 'next_turn', content: { text: messageId } },
@@ -1472,6 +1591,7 @@ function connectionHarness(
   options: {
     rootId?: string;
     sessionId?: string;
+    sideConversation?: boolean;
     revisionAbandon?: 'abandoned' | 'retained';
     subscriptionSnapshot?: SessionContinuitySnapshot;
     activeAssistantStreams?: readonly SessionAssistantStreamIdentity[];
@@ -1481,6 +1601,8 @@ function connectionHarness(
     sharedSessionAvailable?: boolean;
     interrupt?: (input: OperationInput<'turn.interrupt'>) => Promise<OperationOutput<'turn.interrupt'>>;
     retract?: (input: OperationInput<'queue.entry.retract'>) => Promise<OperationOutput<'queue.entry.retract'>>;
+    queryMessages?: (input: OperationInput<'turn.message.query'>) => Promise<OperationOutput<'turn.message.query'>>;
+    queryMessageExecutions?: (input: OperationInput<'turn.message.execution.query'>) => Promise<OperationOutput<'turn.message.execution.query'>>;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -1513,6 +1635,12 @@ function connectionHarness(
       }
       if (operation === 'queue.entry.retract' && options.retract) {
         return options.retract(input as OperationInput<'queue.entry.retract'>);
+      }
+      if (operation === 'turn.message.query' && options.queryMessages) {
+        return options.queryMessages(input as OperationInput<'turn.message.query'>);
+      }
+      if (operation === 'turn.message.execution.query' && options.queryMessageExecutions) {
+        return options.queryMessageExecutions(input as OperationInput<'turn.message.execution.query'>);
       }
       if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
@@ -1556,7 +1684,10 @@ function connectionHarness(
           kind: 'session',
           session:
             options.revisionAbandon === undefined
-              ? session(sessionId)
+              ? {
+                  ...session(sessionId),
+                  labels: options.sideConversation ? ['mode:side_conversation'] : [],
+                }
               : {
                   ...session(sessionId),
                   revisionRootSessionId: 'source-revision-root',

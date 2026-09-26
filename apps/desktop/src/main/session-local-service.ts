@@ -58,6 +58,7 @@ import {
   type LocalOutboxRecord,
 } from './session-local-store.js';
 import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
+import { SessionLocalAttachmentRecovery } from './session-local-attachment-recovery.js';
 
 /** The Host resolved no Skill for a Message that is settled from durable facts. */
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
@@ -96,6 +97,7 @@ export function desktopSessionLocalPartition(input: {
 }
 
 export class DesktopSessionLocalService {
+  readonly attachmentRecovery = new SessionLocalAttachmentRecovery();
   readonly #checking = new Set<string>();
   readonly #running = new Set<string>();
   readonly #probed = new Map<string, DesktopSessionLocalTarget['client']>();
@@ -228,7 +230,7 @@ export class DesktopSessionLocalService {
   }
 
   readFailedMessage(
-    target: DesktopSessionLocalTarget, sessionId: string, messageId: string,
+    target: DesktopSessionLocalTarget, sessionId: string, messageId: string, senderId: number,
   ): DesktopLocalMessageDraft {
     const record = this.store.get(target.partition, messageId);
     if (!record || record.sessionId !== sessionId || record.state !== 'failed') {
@@ -249,7 +251,10 @@ export class DesktopSessionLocalService {
       messageId,
       text: prefix + command.content.text,
       attachments: command.content.attachments ?? [],
-      stagedAttachments: this.store.stagedAttachments(target.partition, messageId),
+      stagedAttachments: this.attachmentRecovery.issue(
+        { senderId, partition: target.partition, scope: target.scope, sessionId },
+        this.store.stagedAttachments(target.partition, messageId),
+      ),
       directoryReferences: command.content.directoryReferences ?? [],
       quotes: command.content.quotes ?? [],
       inlineReferences: (command.content.inlineReferences ?? []).map((reference) => ({
@@ -356,6 +361,7 @@ export class DesktopSessionLocalService {
     // is not the user removing an authority or cancelling durable intentions.
     if (this.#closed) return;
     if (revoked) this.#revoked.add(target.partition);
+    this.attachmentRecovery.clear(target.partition);
     for (const [key, entry] of this.#snapshots)
       if (entry.target.partition === target.partition) this.#snapshots.delete(key);
     this.store.purge(target.partition);
@@ -409,8 +415,34 @@ export class DesktopSessionLocalService {
     }
   }
 
+  failNotAdmittedMessages(scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]): void {
+    if (this.#closed) return;
+    let target: DesktopSessionLocalTarget;
+    try { target = this.target(scope); } catch { return; }
+    const updated = this.store.failNotAdmittedMessages(target.partition, sessionId, messageIds);
+    const failedIds = messageIds.filter((messageId) => {
+      const record = this.store.get(target.partition, messageId);
+      return record?.sessionId === sessionId && record.state === 'failed' && !!record.intent.originHostEpoch;
+    });
+    if (failedIds.length) {
+      for (const messageId of failedIds) {
+        const key = `${target.partition}:${messageId}`;
+        clearTimeout(this.#retries.get(key));
+        this.#retries.delete(key);
+        this.#checking.delete(key);
+        this.#probed.delete(key);
+      }
+      // The delivery worker may have settled this row first. Re-notify even
+      // then: the observer is about to retract its old queue presentation,
+      // and the subsequent local snapshot must restore the recovery actions.
+      this.deps.changed(target.scope, sessionId);
+      if (updated) this.wake();
+    }
+  }
+
   close(): void {
     this.#closed = true;
+    this.attachmentRecovery.clear();
     this.#snapshots.clear();
     for (const timer of this.#retries.values()) clearTimeout(timer);
     this.#retries.clear();
@@ -448,8 +480,11 @@ export class DesktopSessionLocalService {
     const key = `${target.partition}:${record.messageId}`;
     if (original.state === 'unknown') this.#checking.add(key);
     this.#probed.set(key, client);
-    const stillOwned = () =>
-      this.#current(target) && this.store.get(record.partition, record.messageId) !== undefined;
+    const stillOwned = () => {
+      if (!this.#current(target)) return false;
+      const current = this.store.get(record.partition, record.messageId);
+      return current !== undefined && current.state !== 'failed';
+    };
     try {
       // A Message whose immutable dispatch epoch is gone cannot be replayed:
       // the running Host has no in-memory submit for it and answers
@@ -574,7 +609,11 @@ export class DesktopSessionLocalService {
   ): Promise<void> {
     const client = target.client!;
     const key = `${target.partition}:${record.messageId}`;
-    const stillOwned = () => this.#current(target) && this.store.get(target.partition, record.messageId) !== undefined;
+    const stillOwned = () => {
+      if (!this.#current(target)) return false;
+      const current = this.store.get(target.partition, record.messageId);
+      return current !== undefined && current.state !== 'failed';
+    };
     let resolution: TurnMessageExecutionResolution | undefined;
     try {
       const resolved = await client.queryMessageExecutions!({
@@ -676,8 +715,8 @@ export function registerDesktopSessionLocalIpc(deps: {
   ipcMain.handle('session-local:messages', (_event, scope: unknown, sessionId: string) =>
     service.listMessages(service.target(scope), requiredId(sessionId)),
   );
-  ipcMain.handle('session-local:edit', (_event, scope: unknown, sessionId: string, messageId: string) =>
-    service.readFailedMessage(service.target(scope), requiredId(sessionId), requiredId(messageId)),
+  ipcMain.handle('session-local:edit', (event, scope: unknown, sessionId: string, messageId: string) =>
+    service.readFailedMessage(service.target(scope), requiredId(sessionId), requiredId(messageId), event.sender.id),
   );
   ipcMain.handle('session-local:transcript', (_event, scope: unknown, sessionId: string) =>
     service.readTranscript(service.target(scope), requiredId(sessionId)),
@@ -791,11 +830,16 @@ export function registerDesktopSessionLocalIpc(deps: {
         base64: Buffer.from(content).toString('base64'),
       });
       let prepared: Awaited<ReturnType<typeof prepareIngestItems>>;
+      let recovery: ReturnType<SessionLocalAttachmentRecovery['prepare']>;
       let staged: Awaited<ReturnType<typeof resolveAttachmentRefs<Awaited<ReturnType<typeof snapshot>>>>>;
       try {
+        recovery = service.attachmentRecovery.prepare(
+          { senderId: event.sender.id, partition: target.partition, scope: target.scope, sessionId },
+          command.attachmentItems ?? [],
+        );
         prepared = await prepareIngestItems({
           senderId: event.sender.id,
-          items: command.attachmentItems ?? [],
+          items: recovery.items,
           approvals: deps.approvals,
           stat,
           maxAttachments: MAX_ATTACHMENT_COUNT - retained.length,
@@ -824,7 +868,7 @@ export function registerDesktopSessionLocalIpc(deps: {
       try {
         // The approval can be consumed while the reads above were in flight, so
         // admission is part of the same conversion to the envelope.
-        prepared.commit(() =>
+        recovery.commit(() => prepared.commit(() =>
           service.store.enqueue(target.partition, {
             staged,
             ...(localDisplayPlacement ? { localDisplayPlacement } : {}),
@@ -844,7 +888,7 @@ export function registerDesktopSessionLocalIpc(deps: {
               ...(command.turnOrchestration ? { turnOrchestration: command.turnOrchestration } : {}),
             },
           }),
-        );
+        ));
       } catch (error) {
         if (error instanceof AttachmentIngestBlockedError) {
           return { ok: false as const, reason: 'attachment_blocked' as const, code: error.code };

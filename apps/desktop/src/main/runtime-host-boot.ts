@@ -1150,6 +1150,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       : {}),
     retireCancelledMessages: (scope, sessionId, messageIds) =>
       sessionLocal.retireCancelledMessages(scope, sessionId, messageIds),
+    failNotAdmittedMessages: (scope, sessionId, messageIds) =>
+      sessionLocal.failNotAdmittedMessages(scope, sessionId, messageIds),
     completeDesktopInteractionTurn,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({

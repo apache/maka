@@ -436,22 +436,16 @@ export function useComposerAttachments(options: {
     for (const item of staged) lifecycle.stagedKeys.add(item.stagingKey);
   }
 
-  /** Restore already prepared local bytes and Host references without consuming either source. */
+  /** Restore Main-owned recovery approvals and Host references without consuming either source. */
   function restoreMessageContext(ownerKey: string, hostId: string | undefined, input: {
     attachments: readonly AttachmentRef[];
-    stagedAttachments: readonly { name: string; mimeType: string; content: Uint8Array }[];
+    stagedAttachments: readonly { approvalId: string; name: string; mimeType?: string; size: number }[];
     directoryReferences: readonly DirectoryReference[];
   }): void {
     if (!lifecycle.mounted) return;
     const staged = [
       ...input.attachments.map(retainedToPending),
-      ...input.stagedAttachments.map((item): PendingAttachment => {
-        const file = new File([new Uint8Array(item.content).buffer], item.name, { type: item.mimeType });
-        return {
-          stagingKey: crypto.randomUUID(), displayName: item.name, mimeType: item.mimeType,
-          kind: attachmentKindFromMimeType(item.mimeType, item.name), size: file.size, source: { type: 'file', file },
-        };
-      }),
+      ...input.stagedAttachments.map(approvalToPending),
     ];
     updatePendingState((current) => ({
       attachments: appendPending(current.attachments, ownerKey, staged),

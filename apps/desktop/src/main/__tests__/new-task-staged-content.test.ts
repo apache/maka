@@ -400,7 +400,7 @@ test('retracted queue attachments can be restored and submitted without re-inges
   assert.equal(probe.latest().pendingAttachments[0]?.source.type, 'retained');
 });
 
-test('failed-message byte recovery preserves extension-based kinds and submittable file contents', async () => {
+test('failed-message recovery preserves extension-based kinds without returning file contents', async () => {
   const probe = await mountProbe((options) => useComposerAttachments({
     ...options, toastApi: { error() {} }, service: idleAttachmentService,
   }));
@@ -416,12 +416,15 @@ test('failed-message byte recovery preserves extension-based kinds and submittab
   assert.deepEqual(probe.latest().pendingAttachments.map((item) => item.kind), ['code', 'doc']);
   await probe.render('recovered');
   await act(() => probe.latest().restoreMessageContext('recovered', undefined, {
-    attachments: [], stagedAttachments, directoryReferences: [],
+    attachments: [], stagedAttachments: stagedAttachments.map((item, index) => ({
+      approvalId: `local-recovery:${index}`, name: item.name, mimeType: item.mimeType, size: item.content.byteLength,
+    })), directoryReferences: [],
   }));
   assert.deepEqual(probe.latest().pendingAttachments.map((item) => item.kind), ['code', 'doc']);
   for (const item of probe.latest().pendingAttachments) {
-    assert.equal(item.source.type, 'file');
-    if (item.source.type === 'file') assert.equal(await item.source.file.text(), 'original attachment');
+    assert.equal(item.source.type, 'approval');
+    assert.equal('file' in item.source, false);
+    if (item.source.type === 'approval') assert.match(item.source.approvalId, /^local-recovery:/);
   }
 });
 

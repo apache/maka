@@ -897,7 +897,9 @@ for (const resolution of ['owned', 'cancelled', 'not_admitted', 'pending', 'unav
   test(`proves a removed follow-up is ${resolution} before successor content`, async (t) => {
     const events = new AsyncFrameQueue();
     const queries: string[][] = [];
+    const retractions: Array<{ sessionId: string; messageIds: readonly string[]; proof?: string }> = [];
     const observer = new RuntimeHostSessionObserver({
+      onMessageRetraction: (sessionId, messageIds, proof) => retractions.push({ sessionId, messageIds, proof }),
       client: {
         openSession: async () => runtimeHostSessionFixture({
           snapshot: continuitySnapshot({
@@ -942,6 +944,9 @@ for (const resolution of ['owned', 'cancelled', 'not_admitted', 'pending', 'unav
     await waitFor(() => target.events.some((event) => event.type === 'text_delta'));
 
     assert.deepEqual(queries, [['followup-1']]);
+    assert.deepEqual(retractions, resolution === 'cancelled' || resolution === 'not_admitted'
+      ? [{ sessionId: 'session-1', messageIds: ['followup-1'], proof: resolution }]
+      : []);
     const admissions = target.events.filter((event) => event.type === 'message_admission');
     assert.deepEqual(admissions.map((event) => ({
       messageId: event.messageId, turnId: event.turnId, outcome: event.outcome,

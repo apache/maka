@@ -44,7 +44,7 @@ afterEach(cleanupFakeDom);
 
 const draft: DesktopLocalMessageDraft = {
   messageId: 'failed', text: 'Original failed prompt', attachments: [],
-  stagedAttachments: [{ name: 'old.txt', mimeType: 'text/plain', content: new Uint8Array([1]) }],
+  stagedAttachments: [{ approvalId: 'local-recovery:old', name: 'old.txt', mimeType: 'text/plain', size: 1 }],
   directoryReferences: [], inlineReferences: [],
   quotes: [{ text: 'Original quote' }],
 };

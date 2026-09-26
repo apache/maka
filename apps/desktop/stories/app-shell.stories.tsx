@@ -727,9 +727,23 @@ export const PromptSentBeforeTurnLands: Story = {
       const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
       expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
     });
-    // Delivery is news, so its row stays up at rest.
+    // Delivery is news, so its feedback and associated metadata stay up at
+    // rest even when feedback lives outside the bubble's metadata row.
     (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
-    await expect(getComputedStyle(pending.querySelector('.maka-message-meta')!).opacity).toBe('1');
+    const pendingMetadata = pending.querySelector<HTMLElement>('.maka-message-meta')!;
+    await expect(getComputedStyle(pendingMetadata).opacity).toBe('1');
+    await expect(getComputedStyle(pendingMetadata).pointerEvents).toBe('auto');
+    await expect(pending.querySelector('.maka-message-delivery [role="status"]')).toBeVisible();
+    // The exception belongs only to this message, not the whole transcript.
+    // Settled metadata still reveals on keyboard focus and hides on blur.
+    const settledMetadata = canvasElement.querySelector<HTMLElement>('.maka-transcript-turn .maka-user-message .maka-message-meta')!;
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
+    settledMetadata.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('1'));
+    await expect(getComputedStyle(settledMetadata).pointerEvents).toBe('auto');
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
+    await expect(getComputedStyle(pendingMetadata).opacity).toBe('1');
   },
 };
 

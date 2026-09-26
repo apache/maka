@@ -39,6 +39,7 @@ import {
 } from '@maka/runtime-host/profile-kind';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
+import { projectLocalMessageDraft } from './session-local-draft.js';
 import { createRecallSearchClient } from './multi-host-recall-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import {
@@ -2201,7 +2202,7 @@ const makaBridge = {
     async readFailedMessage(sessionId, messageId) {
       const session = await runtimeHostSessionRef(sessionId);
       const draft = await ipcRenderer.invoke('session-local:edit', session.scope, session.sessionId, messageId) as import('../shared/session-local-contract.js').DesktopLocalMessageDraft;
-      return { ...draft, attachments: projectDesktopAttachmentRefs(session.scope, draft.attachments) };
+      return { ...projectLocalMessageDraft(draft), attachments: projectDesktopAttachmentRefs(session.scope, draft.attachments) };
     },
     async listMessages(sessionId) {
       const session = await runtimeHostSessionRef(sessionId);

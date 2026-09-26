@@ -76,7 +76,7 @@ const recoveredDraft: DesktopLocalMessageDraft = {
   messageId: 'failed-message', text: '/swarm inspect repository',
   attachments: [{ kind: 'code', name: 'saved.ts', mimeType: 'text/plain', bytes: 3,
     ref: { kind: 'workspace_file', relativePath: 'saved.ts' } }],
-  stagedAttachments: [{ name: 'draft.ts', mimeType: 'text/plain', content: new Uint8Array([1, 2, 3]) }],
+  stagedAttachments: [{ approvalId: 'local-recovery:draft', name: 'draft.ts', mimeType: 'text/plain', size: 3 }],
   directoryReferences: [{ hostId: 'host', path: '/workspace' }],
   quotes: [{ text: 'original quote', sourceTurnId: 'original-turn' }],
   inlineReferences: [{ kind: 'workspace_file', value: 'repository', label: 'repository', start: 15 }],

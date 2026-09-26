@@ -245,7 +245,10 @@ test('a failed message restores its durable attachment without replacing a newer
   await expect(page.locator(COMPOSER_INPUT)).toHaveText('recover this original message');
   await expect(page.getByText('recovery.txt', { exact: true })).toBeVisible();
   const draft = await page.evaluate((id) => window.maka.sessionLocal.readFailedMessage(id, 'e2e-failed-message'), sessionId);
-  expect(Array.from(draft.stagedAttachments[0]!.content)).toEqual(Array.from(Buffer.from('durable recovery bytes')));
+  expect(draft.stagedAttachments[0]).toEqual({
+    approvalId: expect.stringMatching(/^local-recovery:/), name: 'recovery.txt',
+    mimeType: 'text/plain', size: Buffer.byteLength('durable recovery bytes'),
+  });
   await page.screenshot({ path: testInfo.outputPath('restored-draft.png') });
 
   await page.locator(COMPOSER_INPUT).fill('edited recovery message');

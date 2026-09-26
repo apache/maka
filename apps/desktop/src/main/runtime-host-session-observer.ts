@@ -92,7 +92,11 @@ export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<Session
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
-  onMessageRetraction?: (sessionId: string, messageIds: readonly string[]) => void;
+  onMessageRetraction?: (
+    sessionId: string,
+    messageIds: readonly string[],
+    proof?: 'cancelled' | 'not_admitted',
+  ) => void;
   cacheTranscript?: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
   client: SessionObserverClient;
   emitSessionsChanged: (
@@ -226,7 +230,7 @@ export class RuntimeHostSessionObserver {
   readonly #emitRuntimeResourcePtyData: (event: ShellRunPtyDataEvent) => void;
   readonly #emitRuntimeResourcePtyReset: (sessionId: string) => void;
   readonly #cacheTranscript: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
-  readonly #onMessageRetraction: (sessionId: string, messageIds: readonly string[]) => void;
+  readonly #onMessageRetraction: NonNullable<RuntimeHostSessionObserverDeps['onMessageRetraction']>;
   readonly #emitAgentGraphChanged: (
     event: AgentGraphClientChangedEvent,
   ) => void;
@@ -893,6 +897,7 @@ export class RuntimeHostSessionObserver {
       });
       if (this.#closed || state.closing || state.projector !== projector) return;
       for (const resolution of resolutions) {
+        if (!messageIds.includes(resolution.messageId)) continue;
         if (resolution.state === 'pending') continue;
         const turnId = resolution.state === 'owned'
           ? resolution.turnId : (next.rootTurn ?? previous.rootTurn)?.turnId;
@@ -906,13 +911,15 @@ export class RuntimeHostSessionObserver {
             ? 'retracted' as const
             : undefined;
         if (!outcome) continue;
+        const retractionProof = resolution.state === 'cancelled' || resolution.state === 'not_admitted'
+          ? resolution.state : undefined;
         if (!turnId) {
           // A retracted queued message can outlive the Turn that owned the
-          // queue snapshot. The Host proof is still sufficient to retire the
+          // queue snapshot. The Host proof is still sufficient to settle the
           // local delivery record even when there is no Turn left to receive
           // a message_admission event.
           if (outcome === 'retracted') {
-            this.#onMessageRetraction(state.sessionId, [resolution.messageId]);
+            this.#onMessageRetraction(state.sessionId, [resolution.messageId], retractionProof);
           }
           continue;
         }
@@ -923,7 +930,7 @@ export class RuntimeHostSessionObserver {
           ts: this.#now(),
           messageId: resolution.messageId,
           outcome,
-        });
+        }, retractionProof);
       }
     } catch {
       // Keep unproven messages visible. Durable transcript admission or the
@@ -931,9 +938,13 @@ export class RuntimeHostSessionObserver {
     }
   }
 
-  #broadcast(sessionId: string, event: SessionEvent | SessionObservationMessage): void {
+  #broadcast(
+    sessionId: string,
+    event: SessionEvent | SessionObservationMessage,
+    retractionProof?: 'cancelled' | 'not_admitted',
+  ): void {
     if (event.type === 'message_admission' && event.outcome === 'retracted') {
-      this.#onMessageRetraction(sessionId, [event.messageId]);
+      this.#onMessageRetraction(sessionId, [event.messageId], retractionProof);
     }
     const state = this.#states.get(sessionId);
     if (!state) return;

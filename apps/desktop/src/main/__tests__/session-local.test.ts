@@ -43,6 +43,8 @@ import type { DesktopSessionSummaryInput } from '../../shared/desktop-session-pr
 import type { DesktopTranscriptReplicaSnapshot } from '../desktop-transcript-replica.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { parseDesktopSlashCommand } from '../../renderer/desktop-slash-command.js';
+import { projectLocalMessageDraft } from '../../preload/session-local-draft.js';
+import type { DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
 
 const accepted: TurnMessageSubmitResult = {
   disposition: 'turn_started',
@@ -462,7 +464,7 @@ test('an unknown Host outcome blocks later local sends until the original messag
   assert.equal(checking.state, 'unknown');
   assert.equal(checking.checking, true);
   assert.equal(checking.canCancel, false);
-  assert.throws(() => service.readFailedMessage(target, 'session-1', 'message-1'), /definitively failed/);
+  assert.throws(() => service.readFailedMessage(target, 'session-1', 'message-1', 7), /definitively failed/);
   originalAck.resolve(accepted);
   await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
   assert.deepEqual(calls, ['message-1', 'other-session', 'message-1', 'message-2']);
@@ -1013,23 +1015,63 @@ test('editing a preparation failure preserves bytes across restart and a new sen
   };
   const source = db.store.enqueue(target.partition, intent());
   db.store.update({ ...source, state: 'failed' });
-  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
-  const draft = service.readFailedMessage(target, 'session-1', source.messageId);
-  assert.equal(Buffer.from(draft.stagedAttachments[0]!.content).toString(), 'original bytes');
-  assert.equal(draft.attachments.length, 0);
-  assert.equal(db.store.get(target.partition, source.messageId)?.state, 'failed');
-  service.close();
   db.reopen();
   assert.equal(db.store.get(target.partition, source.messageId)?.state, 'failed');
-  const resend = db.store.enqueue(target.partition, {
-    command: { sessionId: 'session-1', messageId: 'edited-message', placement: 'current_turn', content: { text: 'edited', attachments: [...draft.attachments] } },
-    staged: draft.stagedAttachments.map((item) => ({ name: item.name, mimeType: item.mimeType, base64: Buffer.from(item.content).toString('base64') })),
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+  const handlers = new Map<string, Parameters<Ipc['handle']>[1]>();
+  registerDesktopSessionLocalIpc({
+    ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler); } },
+    service, approvals: createAttachmentApprovalRegistry(), resizeImage: async (bytes) => bytes,
+    resolveWorkspace: async () => { throw new Error('Unexpected workspace request'); }, changed() {},
   });
-  assert.equal(resend.state, 'saved');
-  assert.equal(Buffer.from(db.store.stagedAttachments(target.partition, resend.messageId)[0]!.content).toString(), 'original bytes');
+  const event = { sender: { id: 7 } } as IpcMainInvokeEvent;
+  const draft = projectLocalMessageDraft(await handlers.get('session-local:edit')!(
+    event, target.scope, 'session-1', source.messageId,
+  ));
+  assert.deepEqual(draft.stagedAttachments, [{
+    approvalId: draft.stagedAttachments[0]!.approvalId, name: 'note.txt', mimeType: 'text/plain', size: 14,
+  }]);
+  assert.match(draft.stagedAttachments[0]!.approvalId, /^local-recovery:/);
+  assert.equal(draft.attachments.length, 0);
+  assert.equal(db.store.get(target.partition, source.messageId)?.state, 'failed');
+  const send = (messageId: string, senderId = 7, sessionId = 'session-1') => handlers.get('session-local:submit')!(
+    { sender: { id: senderId } } as IpcMainInvokeEvent, target.scope, sessionId, 'current_turn',
+    { messageId, text: 'edited', attachmentItems: draft.stagedAttachments },
+  );
+  const blocked = { ok: false, reason: 'attachment_blocked', code: 'source_expired' };
+  assert.deepEqual(await send('wrong-window', 8), blocked);
+  assert.deepEqual(await send('wrong-session', 7, 'session-2'), blocked);
+  // A failed durable admission must not consume recovery approvals.
+  for (let index = 0; index < 255; index++)
+    db.store.enqueue(target.partition, { ...intent(`full-${index}`), staged: [] });
+  await assert.rejects(() => send('edited-message'), /Local message storage is full/);
+  // The restored composer owns a Main-only snapshot even if the original row is deleted.
   db.store.cancel(target.partition, source.messageId);
-  assert.equal(db.store.get(target.partition, resend.messageId)?.state, 'saved');
-  assert.equal(db.store.stagedAttachments(target.partition, resend.messageId).length, 1);
+  assert.equal((await send('edited-message')).disposition, 'locally_saved');
+  assert.equal(db.store.get(target.partition, 'edited-message')?.state, 'saved');
+  assert.equal(Buffer.from(db.store.stagedAttachments(target.partition, 'edited-message')[0]!.content).toString(), 'original bytes');
+  assert.deepEqual(await send('replayed-message'), blocked);
+});
+
+test('preload recovery projection rejects raw attachment bytes rather than forwarding them', () => {
+  const draft: DesktopLocalMessageDraft = {
+    messageId: 'failed', text: 'draft', attachments: [], directoryReferences: [], quotes: [], inlineReferences: [],
+    stagedAttachments: [{ approvalId: 'local-recovery:test', name: 'note.txt', mimeType: 'text/plain', size: 1 }],
+  };
+  assert.deepEqual(projectLocalMessageDraft(draft), draft);
+  for (const leaked of [
+    { content: new Uint8Array([42]) }, { base64: 'Kg==' }, { path: '/secret/note.txt' },
+    { bytes: { type: 'Buffer', data: [42] } },
+  ]) {
+    assert.throws(() => projectLocalMessageDraft({
+      ...draft, stagedAttachments: [{ ...draft.stagedAttachments[0]!, ...leaked }],
+    }), /Invalid local attachment recovery approval/);
+  }
+  assert.throws(() => projectLocalMessageDraft({
+    ...draft, stagedAttachments: [{ name: 'note.txt', mimeType: 'text/plain', content: new Uint8Array([42]) }],
+  } as unknown as DesktopLocalMessageDraft), /Invalid local attachment recovery approval/);
 });
 
 test('editing a one-shot orchestration failure restores the slash command before skills and references', async (t) => {
@@ -1047,7 +1089,7 @@ test('editing a one-shot orchestration failure restores the slash command before
           inlineReferences: [{ kind: 'workspace_file', value: 'repository', label: 'repository', start: 6 }] } },
     });
     store.update({ ...source, state: 'failed' });
-    const draft = service.readFailedMessage(target, 'session-1', mode);
+    const draft = service.readFailedMessage(target, 'session-1', mode, 7);
     assert.equal(draft.text, `/${mode} /skill:audit audit repository`);
     assert.equal(draft.inlineReferences[0]?.start, draft.text.indexOf('repository'));
     assert.deepEqual(parseDesktopSlashCommand(draft.text), {
@@ -1156,6 +1198,79 @@ test('retraction before the submit ACK fences the late completion without recrea
   assert.equal(store.get('authority', 'message-1'), undefined);
 });
 
+for (const outcome of ['accepted', 'rejected', 'execution-proof'] as const) {
+  test(`not_admitted settlement fences a late ${outcome} completion without discarding the local copy`, async (t) => {
+    const db = await database(t);
+    const ack = deferred<TurnMessageSubmitResult>();
+    const proof = deferred<{ resolutions: [{ messageId: string; state: 'owned'; turnId: string; runId: string }] }>();
+    let dispatched = false;
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+      client: {
+        ...client('epoch'),
+        queryMessageExecutions: async () => { dispatched = true; return proof.promise; },
+      },
+      submit: async () => { dispatched = true; return ack.promise; },
+    };
+    const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+    db.beforeClose.push(() => service.close());
+    const record = db.store.enqueue('authority', { ...intent(), staged: [] });
+    if (outcome === 'execution-proof') db.store.update({
+      ...record, state: 'unknown', intent: { ...record.intent, originHostEpoch: 'old-epoch' },
+    });
+    service.wake();
+    await waitFor(() => dispatched);
+    service.failNotAdmittedMessages({ ...target.scope, targetEpoch: 'retired' }, 'session-1', ['message-1']);
+    assert.notEqual(db.store.get('authority', 'message-1')?.state, 'failed');
+    service.failNotAdmittedMessages(target.scope, 'session-1', ['message-1']);
+    if (outcome === 'rejected') ack.reject(new Error('late interrupted submit'));
+    else if (outcome === 'execution-proof') proof.resolve({
+      resolutions: [{ messageId: 'message-1', state: 'owned', turnId: 'turn-1', runId: 'run-1' }],
+    });
+    else ack.resolve(accepted);
+    await nextTurn();
+    await nextTurn();
+    service.close();
+    db.reopen();
+    assert.equal(db.store.get('authority', 'message-1')?.state, 'failed');
+    assert.equal(db.store.get('authority', 'message-1')?.intent.command.content.text, 'hello');
+    assert.equal(db.store.get('authority', 'message-1')?.result, undefined);
+    assert.match(db.store.get('authority', 'message-1')?.error ?? '', /never admitted/);
+  });
+}
+
+test('repeated not_admitted proof refreshes an already failed dispatched row without crossing ownership', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const changed: string[] = [];
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target], changed: (_scope, sessionId) => { changed.push(sessionId!); }, onError: assert.fail,
+  });
+  beforeClose.push(() => service.close());
+  for (const [partition, sessionId, messageId, dispatched] of [
+    ['authority', 'session-1', 'failed', true],
+    ['authority', 'session-1', 'never-dispatched', false],
+    ['authority', 'session-2', 'other-session', true],
+    ['other-authority', 'session-1', 'other-authority', true],
+  ] as const) {
+    const row = store.enqueue(partition, intent(messageId, sessionId));
+    store.update({ ...row, state: 'failed', intent: { ...row.intent, ...(dispatched ? { originHostEpoch: 'old-epoch' } : {}) } });
+  }
+  service.failNotAdmittedMessages({ ...target.scope, targetEpoch: 'retired' }, 'session-1', ['failed']);
+  service.failNotAdmittedMessages(target.scope, 'session-1', ['never-dispatched', 'other-session', 'other-authority', 'missing']);
+  assert.deepEqual(changed, []);
+  service.failNotAdmittedMessages(target.scope, 'session-1', ['failed']);
+  service.failNotAdmittedMessages(target.scope, 'session-1', ['failed']);
+  assert.deepEqual(changed, ['session-1', 'session-1']);
+  assert.equal(store.get('authority', 'failed')?.state, 'failed');
+  assert.equal(store.stagedAttachments('authority', 'failed').length, 1);
+  store.cancel('authority', 'failed');
+  service.failNotAdmittedMessages(target.scope, 'session-1', ['failed']);
+  assert.equal(changed.length, 2, 'removed rows are never recreated or advertised as recoverable');
+});
+
 test('editing a submitted failure retains references and rejects unsettled or differently owned messages', async (t) => {
   const { store } = await database(t);
   const target: DesktopSessionLocalTarget = {
@@ -1166,13 +1281,13 @@ test('editing a submitted failure retains references and rejects unsettled or di
   store.update({ ...source, state: 'failed', intent: { ...source.intent, attachmentsPrepared: true, originHostEpoch: 'epoch', command: { ...source.intent.command, content: { text: 'hello', attachments: [attachment] } } } });
   const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
   t.after(() => service.close());
-  const draft = service.readFailedMessage(target, 'session-1', source.messageId);
+  const draft = service.readFailedMessage(target, 'session-1', source.messageId, 7);
   assert.deepEqual(draft.attachments, [attachment]);
   assert.deepEqual(draft.stagedAttachments, []);
-  assert.throws(() => service.readFailedMessage(target, 'other-session', source.messageId), /definitively failed/);
-  assert.throws(() => service.readFailedMessage({ ...target, partition: 'other-authority' }, 'session-1', source.messageId), /definitively failed/);
+  assert.throws(() => service.readFailedMessage(target, 'other-session', source.messageId, 7), /definitively failed/);
+  assert.throws(() => service.readFailedMessage({ ...target, partition: 'other-authority' }, 'session-1', source.messageId, 7), /definitively failed/);
   for (const state of ['saved', 'sending', 'unknown', 'accepted'] as const) {
     store.update({ ...store.get(target.partition, source.messageId)!, state });
-    assert.throws(() => service.readFailedMessage(target, 'session-1', source.messageId), /definitively failed/);
+    assert.throws(() => service.readFailedMessage(target, 'session-1', source.messageId, 7), /definitively failed/);
   }
 });
