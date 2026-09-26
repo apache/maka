@@ -160,7 +160,13 @@ export class RuntimeHostSessionProjector {
 
   seedActive(includeAssistantText: boolean): SessionEvent[] {
     const root = this.#snapshot.rootTurn;
-    if (!root) return [];
+    if (!root) {
+      // A Session whose root Turn is gone still owns an authoritative queue:
+      // a client resubscribing after navigating away may hold a stale queued
+      // card that only this seed can retire, because no live drain will run
+      // while it is the active view (apache/maka#5520 review).
+      return [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), '', this.#now())];
+    }
     const events: SessionEvent[] = [];
     const queueEvents =
       this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)

@@ -463,6 +463,31 @@ test('projects a queue drain that lands while no root Turn is live', () => {
   assert.deepEqual(update.followup, []);
 });
 
+test('seeding a rootless snapshot conveys the authoritative queue', () => {
+  // A Desktop that navigates away unsubscribes; if the queue drains while the
+  // Session is inactive, the resubscribing client's stale queued card survives
+  // until a queue_update that the rootless seed never produced (apache/maka
+  // #5520 review). The rootless seed must carry the authoritative queue once.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ rootTurn: null, queue: queue(3, []) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const seeded = projector.seedActive(true);
+  assert.deepEqual(
+    seeded.map((event) => event.type),
+    ['queue_update'],
+  );
+  const update = seeded.find(
+    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+      event.type === 'queue_update',
+  );
+  assert.ok(update);
+  assert.deepEqual(update.steering, []);
+  assert.deepEqual(update.followup, []);
+});
+
 test('reseeds the latest provider retry when the active Turn still carries one', () => {
   const retry = {
     phase: 'scheduled' as const,
