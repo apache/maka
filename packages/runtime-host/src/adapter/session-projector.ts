@@ -164,8 +164,15 @@ export class RuntimeHostSessionProjector {
       // A Session whose root Turn is gone still owns an authoritative queue:
       // a client resubscribing after navigating away may hold a stale queued
       // card that only this seed can retire, because no live drain will run
-      // while it is the active view (apache/maka#5520 review).
-      return [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), '', this.#now())];
+      // while it is the active view (apache/maka#5520 review). Snapshots that
+      // carry no queue at all project as empty.
+      const queue = this.#snapshot.queue ?? {
+        hostEpoch: '',
+        queueRevision: 0,
+        steering: [],
+        followup: [],
+      };
+      return [projectQueueUpdate(this.#unplacedQueue(queue), '', this.#now())];
     }
     const events: SessionEvent[] = [];
     const queueEvents =
