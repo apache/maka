@@ -287,6 +287,13 @@
       "count": 1
     },
     {
+      "implementation": "src/renderer/features/workbar/controller/use-workbar-controller.ts",
+      "symbol": "useWorkbarController",
+      "owner": "src/renderer/features/workbar/ui/workbar-provider.tsx",
+      "ownerSymbol": "WorkbarProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/workhub/controller/use-workhub-controller.ts",
       "symbol": "useWorkHubController",
       "owner": "src/renderer/features/workhub/ui/workhub-root.tsx",
@@ -735,8 +742,7 @@
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
-          "useTurnActionRegistry": 1,
-          "useWorkbarController": 1
+          "useTurnActionRegistry": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,

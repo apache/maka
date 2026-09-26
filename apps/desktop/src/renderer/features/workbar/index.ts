@@ -24,7 +24,8 @@
 // which nothing shipped imports.
 export { WorkbarTitlebarActions } from './ui/workbar-toggle';
 export { WorkbarHost } from './ui/workbar-host';
+export { WorkbarProvider } from './ui/workbar-provider';
+export { WorkbarShellRoot, type WorkbarShellProjection } from './ui/workbar-shell-root';
 export { WorkbarServicesProvider } from './services-context';
-export { useWorkbarController } from './controller/use-workbar-controller';
 export type { SessionWorkbarTabKind } from './model/workbar-tabs';
 export type { WorkbarServices } from './ports';

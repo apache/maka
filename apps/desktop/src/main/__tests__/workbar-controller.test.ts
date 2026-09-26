@@ -688,6 +688,14 @@ describe('useWorkbarController', () => {
     const firstStop = deferred<void>();
     const retryStop = deferred<void>();
     const stops: Array<{ sessionId: string; ref: string }> = [];
+    const stopErrors: Array<{ title: string; description?: string; sessionId?: string }> = [];
+    const toastApi: ToastApi = {
+      ...createFakeToastApi(),
+      error: (title, description, _action, options) => {
+        stopErrors.push({ title, description, sessionId: options?.sessionId });
+        return '';
+      },
+    };
     const defaults = createFakeWorkbarServices();
     const services = createFakeWorkbarServices({
       terminal: {
@@ -700,7 +708,7 @@ describe('useWorkbarController', () => {
       },
     });
 
-    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () => renderController(root, services, input(session('a'), toastApi)));
     await act(async () => controller().commands.openTool('terminal'));
     const tab = controller().host.panelsState.right.tabs.find(
       (candidate) => candidate.kind === 'terminal',
@@ -715,12 +723,20 @@ describe('useWorkbarController', () => {
       firstStop.reject(new Error('Host disconnected'));
       await Promise.resolve();
     });
-    await act(async () => renderController(root, services, input(session('b'))));
+    // The failure is reported against the Terminal's owner Session, and the
+    // Session id never lands in the visible title or description.
+    assert.ok(stopErrors.length > 0);
+    for (const error of stopErrors) {
+      assert.equal(error.sessionId, 'a');
+      assert.notEqual(error.title, 'a');
+      assert.notEqual(error.description, 'a');
+    }
+    await act(async () => renderController(root, services, input(session('b'), toastApi)));
     assert.equal(stops.length, 1);
-    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () => renderController(root, services, input(session('a'), toastApi)));
     assert.ok(controller().host.panelsState.right.tabs.includes(tab));
     await act(async () => controller().host.onCloseTab('right', tab));
-    await act(async () => renderController(root, services, input(session('b'))));
+    await act(async () => renderController(root, services, input(session('b'), toastApi)));
     await act(async () => controller().commands.toggleRight());
     assert.equal(controller().host.rightCollapsed, false);
     await act(async () => retryStop.resolve());
