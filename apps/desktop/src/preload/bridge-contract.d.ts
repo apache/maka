@@ -824,6 +824,8 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
    * reads this: auxiliary prompts have their own cache prefix (#5691).
    */
   readonly mainSummary?: DesktopSessionUsageSummary;
+  /** The narrower read failed; the blended rate must not stand in for it. */
+  readonly mainSummaryUnavailable?: boolean;
 }
 
 export interface MakaBridge {
