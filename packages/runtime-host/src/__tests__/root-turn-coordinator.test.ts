@@ -518,6 +518,48 @@ test('turn.start enforces the admitted step cap at the backend boundary', async 
   }
 });
 
+test('turn.start retains an external trigger origin for runtime authority and recovery', async () => {
+  let backend: StepCapProbeBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new StepCapProbeBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const origin = { kind: 'cloud_activation' as const, activationId: 'activation-1' };
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-activation-origin',
+        content: { text: 'Inspect the workspace' },
+        origin,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      'turn-activation-origin',
+    );
+    assert.deepEqual(admission?.execution, { kind: 'external_message', origin });
+    assert.equal(backend?.sendInputs[0]?.allowPriorUnknownToolOutcomes, undefined);
+    const userMessage = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.turnId === 'turn-activation-origin');
+    assert.ok(userMessage?.type === 'user');
+    if (userMessage?.type === 'user') assert.deepEqual(userMessage.origin, origin);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('does not advance a finished graph for an ordinary default Turn', async () => {
   let cutovers = 0;
   const fixture = await createFailureFixture({

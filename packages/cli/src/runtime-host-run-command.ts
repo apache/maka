@@ -32,7 +32,11 @@ import {
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
+import type {
+  InteractionPendingSnapshot,
+  SessionCatalogItem,
+  TurnResumePlan,
+} from '@maka/runtime-host/protocol';
 import {
   runMakaTextCliCore,
   type MakaRunContext,
@@ -317,6 +321,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       turnId: input.turnId,
       ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
       ...(maxSteps !== undefined ? { maxSteps } : {}),
+      ...(input.origin !== undefined ? { origin: input.origin } : {}),
     });
     if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
     const activeTurn = {
@@ -348,7 +353,27 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   async resumeLatest(sessionId: string): Promise<AsyncIterable<SessionEvent> | null> {
     await this.#attach(sessionId);
     const plan = await this.#connection.request('turn.resume.query', { sessionId });
-    return plan.disposition === 'ready' ? this.#driver.resumeLatest() : null;
+    return plan.disposition === 'ready' ? this.#resumeAndObserve(plan) : null;
+  }
+
+  async *#resumeAndObserve(
+    plan: Extract<TurnResumePlan, { disposition: 'ready' }>,
+  ): AsyncIterable<SessionEvent> {
+    const turn = await this.#driver.resumeLatestTurn(plan);
+    if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
+    const activeTurn: ActiveRuntimeHostTurn = {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+      outcome: new TurnOutcomeClassifier(turn.runId),
+    };
+    this.#activeTurn = activeTurn;
+    try {
+      if (this.#stopRequested) await this.#stopTurn(activeTurn);
+      yield* this.#observeTurn(turn, activeTurn);
+    } finally {
+      if (this.#activeTurn === activeTurn) this.#activeTurn = undefined;
+    }
   }
 
   async stopSession(sessionId: string): Promise<void> {

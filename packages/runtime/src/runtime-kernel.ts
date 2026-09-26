@@ -763,6 +763,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       this.attachExecutionClaim(execution, run);
       yield* this.runAgentTurn(sessionId, run, execution, {
         steering: true,
+        allowPriorUnknownToolOutcomes: isExplicitClientMessage(input),
         onRunStarted: options.onRunStarted,
         initialHeader: header,
       });
@@ -1364,6 +1365,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
     options: {
       steering?: boolean;
+      allowPriorUnknownToolOutcomes?: boolean;
       onRunStarted?: (runId: string, initialHeader: SessionHeader) => void | Promise<void>;
       initialHeader?: SessionHeader;
       prepareBackendActivation?: () => Promise<void>;
@@ -1415,6 +1417,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         invocationId: begin.initialRuntimeEvent.invocationId,
         runId: run.runId,
         ...begin.backendInput,
+        ...(options.allowPriorUnknownToolOutcomes ? { allowPriorUnknownToolOutcomes: true } : {}),
         headAnchorRuntimeEvent: begin.initialRuntimeEvent,
         handoffBoundary: (signal, remainingSteps) =>
           run.reachHandoffBoundary(signal, remainingSteps),
@@ -3593,6 +3596,19 @@ function assertNoRemovedChildAgentRunLineage(input: UserMessageInput): void {
   ) {
     throw new Error('Live Turn cannot use removed child AgentRun lineage');
   }
+}
+
+function isExplicitClientMessage(input: UserMessageInput): boolean {
+  return (
+    input.origin === undefined &&
+    input.agentId === undefined &&
+    input.agentName === undefined &&
+    input.parentSessionId === undefined &&
+    input.parentTurnId === undefined &&
+    input.retriedFromTurnId === undefined &&
+    input.regeneratedFromTurnId === undefined &&
+    input.branchOfTurnId === undefined
+  );
 }
 
 async function interactionResumeAllowed(
