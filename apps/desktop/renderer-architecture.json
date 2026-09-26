@@ -297,7 +297,7 @@
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-chat-actions.ts": {
-        "importDeclarations": 7,
+        "importDeclarations": 6,
         "bridgePaths": {
           "window.maka.newTasks.create": 1,
           "window.maka.sessions.remove": 1,
@@ -323,11 +323,11 @@
           "@maka/core/session-name": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 10,
+        "importSpecifiers": 9,
         "nonTriviaTokens": 3565
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
-        "importDeclarations": 1,
+        "importDeclarations": 0,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -342,7 +342,7 @@
           "./shell/window-titlebar": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 1,
+        "importSpecifiers": 0,
         "nonTriviaTokens": 122
       },
       "src/renderer/app-shell-command-actions.ts": {
@@ -494,7 +494,7 @@
         "nonTriviaTokens": 3509
       },
       "src/renderer/app-shell-overlays.tsx": {
-        "importDeclarations": 5,
+        "importDeclarations": 4,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.addEventListener": 1,
@@ -520,7 +520,7 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 8,
+        "importSpecifiers": 7,
         "nonTriviaTokens": 858
       },
       "src/renderer/app-shell-project-actions.ts": {
@@ -554,7 +554,7 @@
         "nonTriviaTokens": 2157
       },
       "src/renderer/app-shell-revision-actions.ts": {
-        "importDeclarations": 3,
+        "importDeclarations": 2,
         "bridgePaths": {
           "window.maka.sessions.abandonSessionCopy": 2,
           "window.maka.sessions.reviseBeforeTurn": 1
@@ -571,13 +571,13 @@
           "./locales/shell-copy.js": 1,
           "./session-copy-attempt.js": 1,
           "./session-workspace-errors.js": 1,
-          "@maka/core/session": 1
+          "@maka/ui": 1
         },
-        "importSpecifiers": 7,
-        "nonTriviaTokens": 2028
+        "importSpecifiers": 3,
+        "nonTriviaTokens": 482
       },
       "src/renderer/app-shell-session-events.ts": {
-        "importDeclarations": 2,
+        "importDeclarations": 1,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.setTimeout": 1
@@ -596,7 +596,7 @@
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 7,
+        "importSpecifiers": 1,
         "nonTriviaTokens": 2681
       },
       "src/renderer/app-shell-session-ui-state.ts": {
@@ -654,7 +654,7 @@
         "nonTriviaTokens": 571
       },
       "src/renderer/app-shell-turn-view-model.ts": {
-        "importDeclarations": 6,
+        "importDeclarations": 5,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -673,11 +673,11 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 10,
+        "importSpecifiers": 7,
         "nonTriviaTokens": 1243
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 58,
+        "importDeclarations": 57,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -820,8 +820,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 94,
-        "nonTriviaTokens": 12526
+        "importSpecifiers": 82,
+        "nonTriviaTokens": 12511
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -838,7 +838,7 @@
         "nonTriviaTokens": 24
       },
       "src/renderer/use-app-shell-session-list.ts": {
-        "importDeclarations": 5,
+        "importDeclarations": 4,
         "bridgePaths": {
           "window.maka.sessions.list": 1
         },
@@ -863,7 +863,7 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 6,
+        "importSpecifiers": 5,
         "nonTriviaTokens": 481
       },
       "src/renderer/use-app-shell-session-ui-reads.ts": {

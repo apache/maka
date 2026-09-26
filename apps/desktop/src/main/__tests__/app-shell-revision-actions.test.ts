@@ -48,6 +48,11 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
   let composerText = '';
   let selectionRevision = 0;
   const activeIdRef: { current: string | undefined } = { current: SESSION_1 };
+  const staged: {
+    quotes: unknown[];
+    restoredQuotes: unknown[][];
+    clearedKeys: string[];
+  } = { quotes: [], restoredQuotes: [], clearedKeys: [] };
   const revisionDraftRef: { current: unknown } = { current: null };
   const actions = createAppShellRevisionActions({
     uiLocale: 'en' as never,
@@ -71,6 +76,18 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
     },
     messages: input.messages,
     hasPendingAttachments: () => false,
+    stagedContext: () => ({
+      quotes: staged.quotes,
+      attachments: [],
+      restoreQuotes: (_ownerKey: string, quotes: unknown[]) => {
+        staged.restoredQuotes.push(quotes);
+        staged.quotes.push(...quotes);
+      },
+      clearQuotes: (ownerKey: string) => {
+        staged.clearedKeys.push(ownerKey);
+        staged.quotes.length = 0;
+      },
+    }),
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
       activeIdRef.current = sessionId;
@@ -91,6 +108,7 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
   } as never);
   return Object.assign(actions, {
     drafts,
+    staged,
     errors,
     infos,
     activeIdRef,
@@ -134,7 +152,7 @@ describe('app-shell revision actions with structured context (#5109)', () => {
     assert.equal(h.composerState.text, 'plain follow-up');
   });
 
-  it('rejects a source message that itself carries attachments', () => {
+  it('refuses editing a message that carries attachments (#5109 review)', () => {
     const h = createActions({
       messages: [
         userMessage('turn-1', 'with image', {
@@ -153,7 +171,30 @@ describe('app-shell revision actions with structured context (#5109)', () => {
 
     h.beginEditUserMessage('turn-1');
 
-    assert.equal(h.drafts.at(-1), undefined, 'attachment-bearing sources stay explicitly rejected');
+    assert.equal(
+      h.drafts.at(-1),
+      undefined,
+      'a revision copy excludes the revised turn, so no target-owned attachment rewrite exists to restage',
+    );
+    assert.equal(h.composerState.text, '', 'the composer stays untouched');
+  });
+
+  it('stages a source message quotes into the composer', () => {
+    const quote = { text: 'a large pasted excerpt', sourceTurnId: 'turn-0' };
+    const h = createActions({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quote] })],
+    });
+
+    h.beginEditUserMessage('turn-1');
+
+    const draft = h.drafts.at(-1) as { originalQuotes?: unknown[] } | undefined;
+    assert.ok(draft, 'a quote-carrying source message is editable now');
+    assert.deepEqual(draft?.originalQuotes, [quote]);
+    assert.deepEqual(
+      h.staged.restoredQuotes.at(-1),
+      [quote],
+      'the source quotes stage into the composer verbatim',
+    );
   });
 });
 
@@ -263,6 +304,12 @@ describe('revision draft lifecycle over a prepared send', () => {
       },
       messages: [userMessage('turn-1', 'original message')],
       hasPendingAttachments: () => false,
+      stagedContext: () => ({
+        quotes: [],
+        attachments: [],
+        restoreQuotes: (_ownerKey: string, _quotes: unknown[]) => {},
+        clearQuotes: (_ownerKey: string) => {},
+      }),
       openSessionInChat: (sessionId: string) => {
         selectionRevision += 1;
         activeIdRef.current = sessionId;

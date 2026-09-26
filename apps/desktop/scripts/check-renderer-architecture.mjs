@@ -108,6 +108,10 @@ const RENDERER_VITE_CONFIG = 'vite.config.ts';
 const RENDERER_BUILD_SCRIPT =
   'vite build && node scripts/check-renderer-entry-output.mjs && node ../../scripts/check-third-party-notices.mjs';
 const DESKTOP_SELF_PREFIX = '@maka/desktop/';
+// The package renderer ownership is migrating into. Shell debt is defined to
+// shrink by moving onto it, so depending on the destination is the opposite
+// of debt and its edges are sanctioned for shell importers.
+const MIGRATION_TARGET_PACKAGE = '@maka/ui';
 const CAPABILITY_DEBT_METRICS = [
   'actionFactories',
   'bridgePaths',
@@ -3099,9 +3103,28 @@ function withoutSanctionedDependencies(desktopRoot, section, importerPath, depen
   return filtered;
 }
 
+function isMigrationTargetPackageSpecifier(dependency) {
+  const specifier = dependency.split(/[?#]/u, 1)[0];
+  return (
+    specifier === MIGRATION_TARGET_PACKAGE ||
+    specifier.startsWith(`${MIGRATION_TARGET_PACKAGE}/`)
+  );
+}
+
 function isSanctionedDependencyTarget(desktopRoot, section, importerPath, dependency) {
   const target = resolveDependency(desktopRoot, resolve(desktopRoot, importerPath), dependency);
-  if (!target) return false;
+  if (!target) {
+    // Bare package specifiers resolve to nothing inside the desktop tree.
+    // The migration destination is the one free among them: a shell importer
+    // depending on @maka/ui sheds ownership the shell is defined to lose,
+    // the same way validated copy catalogs take bare-package imports for
+    // free. Root entries stay fully priced: they are meant to become thin
+    // mounts.
+    return (
+      (section === 'legacyAppShell' || section === 'legacyAppShellClosure') &&
+      isMigrationTargetPackageSpecifier(dependency)
+    );
+  }
   const targetRelative = normalizePath(relative(desktopRoot, target));
   if (isValidatedCopyCatalog(desktopRoot, targetRelative)) return true;
   // Root entries are meant to become thin mounts; only catalogs are free for them.

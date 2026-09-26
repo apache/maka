@@ -314,7 +314,6 @@ function AppShellContent({
     retiredSessionIds,
     messages,
     transientMessages,
-    setMessages,
     commitTranscript,
     addTransientMessage,
     updateTransientMessage,
@@ -1341,6 +1340,12 @@ function AppShellContent({
     composerRef,
     messages,
     hasPendingAttachments: () => hasPendingContext,
+    stagedContext: () => ({
+      quotes: pendingQuotes,
+      attachments: submittableAttachments ?? [],
+      restoreQuotes,
+      clearQuotes,
+    }),
     openSessionInChat,
     refreshSessions,
     commitRevisionDraft,
@@ -1429,26 +1434,22 @@ function AppShellContent({
       if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
       return queued;
     }
-    if (
-      revisionSend &&
-      revision &&
-      text.trim() === revision.originalText.trim() &&
-      !hasPendingContext
-    ) {
-      const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
-      return false;
-    }
+    // The revision lifecycle re-keys the restored quotes onto the branch child
+    // while this send awaits `prepareRevisionSend`, and the re-key empties the
+    // source session's bucket — the same array this render closure holds as
+    // `pendingQuotes`. Snapshot the payload before the gate so the send
+    // carries the quotes the user staged, not what the re-key left behind
+    // (#5109 review, second round).
+    const revisionQuotes =
+      revisionSend && revision && pendingQuotes.length ? [...pendingQuotes] : undefined;
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (hasPendingContext) {
-        toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
-        return false;
-      }
       if (slashCommand) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
         return false;
       }
+      // The unchanged / mixed-context refusals live inside the revision
+      // lifecycle (prepareRevisionSend), which toasts and stops the send.
       if (!(await prepareRevisionSend(text))) return false;
     }
     if (slashCommand?.kind === 'compact') {
@@ -1600,7 +1601,7 @@ function AppShellContent({
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+    const quotes = revisionQuotes ?? (pendingQuotes.length ? pendingQuotes : undefined);
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
       targetSessionId: expectedRevisionDraft?.draftSessionId,
@@ -1613,7 +1614,9 @@ function AppShellContent({
     });
     if (ok !== false) {
       clearSubmittedContext(pending);
-      if (quotes) clearQuotes();
+      // A revision's quotes now live under the branch child's bucket; clear
+      // that owner explicitly rather than the stale closure's default key.
+      if (quotes) clearQuotes(expectedRevisionDraft?.draftSessionId);
       settleNewTaskImageNoticeOwner(sessionId);
       if (sessionId) delete retractedWorkspaceReferencesRef.current[sessionId];
     }
