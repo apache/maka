@@ -29,7 +29,7 @@ type DesktopModuleHubSettingsBridge = Partial<
 
 export type DesktopModuleHubBridge = Pick<
   MakaBridge,
-  'dailyReview' | 'runtimeHostProfiles' | 'scheduledTasks' | 'skills'
+  'dailyReview' | 'runtimeHostProfiles' | 'scheduledTasks' | 'skills' | 'mcp'
 > & {
   /** Optional at runtime so a renderer can coexist with an older preload. */
   readonly settings?: DesktopModuleHubSettingsBridge;
@@ -52,6 +52,7 @@ export function createDesktopModuleHubServices(
     typeof updateClientSettings === 'function';
 
   return {
+    mcp: bridge.mcp,
     runtimeHosts: {
       getDefault: () => bridge.runtimeHostProfiles.getDefaultHost(),
       subscribeChanges: (handler) =>

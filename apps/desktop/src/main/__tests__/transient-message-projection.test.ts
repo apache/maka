@@ -37,7 +37,7 @@ const transient: TransientUserMessageProjection = {
   id: 'message-1',
   ts: 2,
   text: 'send now',
-  transientPlacement: 'current_turn',
+  transientPlacement: 'transcript',
 };
 
 test('keeps a transient message through sparse transcript replacement', () => {
@@ -161,12 +161,18 @@ test('derives one queue projection for main and Side Conversation consumers', ()
     ],
   });
 
-  assert.deepEqual(projection.entries.map((entry) => entry.entryId), ['steer', 'next']);
+  assert.deepEqual(projection.entries.map((entry) => entry.entryId), ['in-flight', 'steer', 'next']);
   assert.deepEqual(projection.transientMessages, [
     {
+      id: 'message-in-flight',
+      transientPlacement: 'steering',
+      hostTurnId: 'turn-1',
+      ts: 7,
+      text: 'in flight',
+    },
+    {
       id: 'message-steer',
-      pendingSteering: true,
-      transientPlacement: 'current_turn',
+      transientPlacement: 'steering',
       hostTurnId: 'turn-1',
       ts: 7,
       text: 'steer',
@@ -174,7 +180,7 @@ test('derives one queue projection for main and Side Conversation consumers', ()
     },
     {
       id: 'message-next',
-      transientPlacement: 'next_turn',
+      transientPlacement: 'follow_up',
       ts: 7,
       text: 'next',
     },

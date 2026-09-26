@@ -246,11 +246,13 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigUpdateResult,
   McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
   McpTestResult,
+  OpencliChromeStatus,
 } from '@maka/core/mcp';
 import type {
   AgentGraphClientSnapshot,
@@ -325,6 +327,18 @@ export interface OnboardingSnapshot {
   chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
   sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
 }
+
+export type DesktopOnboardingSessionUpdate =
+  | { kind: 'resync' }
+  | {
+      kind: 'delta';
+      sessionId: string;
+      outcome: import('@maka/core/session-send-projection').SessionSendProjection | null;
+      defaultHost?: {
+        state: OnboardingState;
+        milestones: OnboardingMilestone[];
+      };
+    };
 
 export interface DesktopTaskSubmissionReadinessRequest {
   connectionSlug?: string;
@@ -526,14 +540,6 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly hostId?: string;
   readonly isDefault: boolean;
   readonly removed?: boolean;
-}
-
-export interface DesktopRuntimeHostIdentity extends DesktopRuntimeHostRef {
-  readonly targetEpoch: string;
-  readonly profileName: string;
-  readonly profileKind: RuntimeHostProfileKind;
-  readonly profileAccess: RuntimeHostProfileAccess;
-  readonly readiness: 'ready' | 'reconnecting';
 }
 
 export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
@@ -1012,6 +1018,7 @@ export interface MakaBridge {
   };
 
   newTasks: {
+    getExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
@@ -1142,11 +1149,15 @@ export interface MakaBridge {
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<WorkHubPrepareAttachmentsResult>;
     answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
+    getNewWorkDefaults(coordinationSessionId: string): Promise<Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>>;
+    setNewWorkDefaults(coordinationSessionId: string, defaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>): Promise<void>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }>;
 
   };
   sessions: {
+    setExecutorModelConfiguration(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    getExecutorState(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
     get(sessionId: string): Promise<DesktopSessionSummary | null>;
     listWithCoverage(): Promise<{
@@ -1236,6 +1247,8 @@ export interface MakaBridge {
       command: {
         messageId: string;
         text: string;
+        /** Local presentation before the Host assigns a Turn or queue entry. */
+        localDisplayPlacement?: 'current_turn' | 'next_turn';
         displayText?: string;
         skillIds?: string[];
         turnOrchestration?: TurnOrchestration;
@@ -1296,6 +1309,8 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
+    /** Request a bounded next-prompt prediction for this Session. */
+    generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult>;
     /** Read a bounded, redacted tail from another same-Host Session. */
     readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
@@ -1382,6 +1397,11 @@ export interface MakaBridge {
       llmConnectionId: string;
       llmConnectionSlug: string;
       model: string;
+      thinkingLevel: ThinkingLevel | null;
+    }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    setExecutorConfiguration(sessionId: string, input: {
+      executorId: string;
+      model?: string;
       thinkingLevel: ThinkingLevel | null;
     }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
@@ -1572,15 +1592,18 @@ export interface MakaBridge {
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
-    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    /** Saves an edit made against `basis`, the server as last shown; one
+     * changed or removed elsewhere since comes back `stale`. */
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
     login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
     /** Ends an in-flight login round; resolves false when none is active. */
     cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
     logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus>;
+    connectChrome(host?: DesktopRuntimeHostRef): Promise<void>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
   externalAgents: {
@@ -1618,18 +1641,19 @@ export interface MakaBridge {
   };
   notifications: {
     /** Fire-and-forget: report that an agent turn reached a terminal
-     * state. `title` is the session name, `body` the start of the
-     * reply (or error message); main sanitizes + falls back to
-     * generic copy. Main gates on the product toggle + window focus
-     * before raising a native OS notification. */
+     * state or is waiting on the user. `title` is the session name,
+     * `body` the start of the reply, error message, or question; main
+     * sanitizes + falls back to generic copy. Main gates on the product
+     * toggle + window focus before raising a native OS notification. */
     runEnded(payload: {
-      kind: 'completed' | 'errored';
+      kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;
     }): Promise<void>;
   };
   onboarding: {
     getSnapshot(): Promise<OnboardingSnapshot>;
+    getSessionUpdate(sessionId: string): Promise<DesktopOnboardingSessionUpdate | null>;
     setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',

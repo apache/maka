@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration } from '@maka/core/executor-catalog';
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
@@ -144,6 +145,7 @@ type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 interface ResolvedSessionConfiguration {
   readonly backend: 'ai-sdk' | 'plugin-executor';
   readonly executorId: string | undefined;
+  readonly executorConfig?: import('@maka/core/executor-catalog').ExecutorConfiguration;
   readonly llmConnectionId: string | undefined;
   readonly llmConnectionSlug: string;
   readonly model: string;
@@ -201,7 +203,20 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
-  readonly assertExecutorAvailable?: (sessionId: string, executorId: string) => void;
+  readonly configureExecutor?: (
+    header: SessionHeader,
+    config: import('@maka/core/executor-catalog').ExecutorConfiguration,
+  ) => Promise<void>;
+  readonly retireExecutor?: (sessionId: string) => Promise<void>;
+  readonly assertExecutorAvailable?: (
+    sessionId: string,
+    executorId: string,
+    config: import('@maka/core/executor-catalog').ExecutorConfiguration | undefined,
+    cwd: string,
+  ) =>
+    | void
+    | import('@maka/core/executor-catalog').ExecutorConfiguration
+    | Promise<void | import('@maka/core/executor-catalog').ExecutorConfiguration>;
   readonly sessionAccessAuthority?: Pick<
     RuntimeHostAccessAuthority,
     'activeSessionGrantForPrincipal'
@@ -314,7 +329,9 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
-  readonly #assertExecutorAvailable: ((sessionId: string, executorId: string) => void) | undefined;
+  readonly #configureExecutor: HostSessionCatalogCoordinatorOptions['configureExecutor'];
+  readonly #retireExecutor: HostSessionCatalogCoordinatorOptions['retireExecutor'];
+  readonly #assertExecutorAvailable: HostSessionCatalogCoordinatorOptions['assertExecutorAvailable'];
   readonly #sessionAccessAuthority:
     | Pick<RuntimeHostAccessAuthority, 'activeSessionGrantForPrincipal'>
     | undefined;
@@ -328,6 +345,8 @@ export class HostSessionCatalogCoordinator {
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
+    this.#configureExecutor = options.configureExecutor;
+    this.#retireExecutor = options.retireExecutor;
     this.#assertExecutorAvailable = options.assertExecutorAvailable;
     this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
@@ -398,7 +417,7 @@ export class HostSessionCatalogCoordinator {
     const prepared = await prepareCreate(input);
     return this.#workspaceResolver.runWithUsageRecorded(input.workspace, async (workspace) => {
       const [model, policy] = await Promise.all([
-        this.#resolveCreateExecution(input),
+        this.#resolveCreateExecution(input, workspace.cwd),
         this.#readRuntimePolicy(),
       ]);
       return {
@@ -409,7 +428,12 @@ export class HostSessionCatalogCoordinator {
           ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
           name: prepared.name,
           labels: [...prepared.labels],
-          ...(model.executorId ? { executorId: model.executorId } : {}),
+          ...(model.executorId
+            ? {
+                executorId: model.executorId,
+                ...(model.executorConfig ? { executorConfig: model.executorConfig } : {}),
+              }
+            : {}),
           ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
           llmConnectionSlug: model.connectionSlug,
           model: model.model,
@@ -635,7 +659,7 @@ export class HostSessionCatalogCoordinator {
           input.workspace,
           async (workspace) => {
             const [model, policy] = await Promise.all([
-              this.#resolveCreateExecution(input),
+              this.#resolveCreateExecution(input, workspace.cwd),
               this.#readRuntimePolicy(),
             ]);
             const createInput: CreateSessionInput = {
@@ -643,7 +667,12 @@ export class HostSessionCatalogCoordinator {
               ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
               name: prepared.name,
               labels: [...prepared.labels],
-              ...(model.executorId ? { executorId: model.executorId } : {}),
+              ...(model.executorId
+                ? {
+                    executorId: model.executorId,
+                    ...(model.executorConfig ? { executorConfig: model.executorConfig } : {}),
+                  }
+                : {}),
               ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
@@ -758,6 +787,7 @@ export class HostSessionCatalogCoordinator {
     }
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
+      let confirmedExecutor: SessionHeader | undefined;
       try {
         const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
         if (
@@ -790,7 +820,11 @@ export class HostSessionCatalogCoordinator {
         const clearsConnectionBlock =
           input.patch.modelTarget !== undefined &&
           current.header.blockedReason === 'NO_REAL_CONNECTION';
-        if (!clearsConnectionBlock && sessionConfigurationMatches(current.header, configuration)) {
+        if (
+          !clearsConnectionBlock &&
+          !input.patch.executorConfig &&
+          sessionConfigurationMatches(current.header, configuration)
+        ) {
           return configurationSuccess({
             kind: 'committed',
             session: projectSessionCatalogRecord(
@@ -800,6 +834,30 @@ export class HostSessionCatalogCoordinator {
               ),
             ),
           });
+        }
+        if (input.patch.executorConfig) {
+          if (
+            this.#manager.runningTurnIds(input.sessionId).length ||
+            current.header.status === 'waiting_for_user'
+          )
+            throw new SessionOperationFailure(
+              'operation_conflict',
+              'Executor model can only change while idle',
+            );
+          if (!this.#configureExecutor)
+            throw new SessionOperationFailure(
+              'operation_unavailable',
+              'Executor configuration is unavailable',
+            );
+          try {
+            await this.#configureExecutor(current.header, input.patch.executorConfig);
+            confirmedExecutor = current.header;
+          } catch {
+            throw new SessionOperationFailure(
+              'operation_unavailable',
+              'The external agent did not confirm the model change. Retry while idle or start a new task.',
+            );
+          }
         }
         commitAttempted = true;
         await this.#manager.transitionSessionConfiguration(input.sessionId, {
@@ -816,6 +874,7 @@ export class HostSessionCatalogCoordinator {
           ),
         );
       } catch (error) {
+        if (confirmedExecutor) await this.#reconcileExecutorAfterFailedCommit(confirmedExecutor);
         if (
           !commitAttempted &&
           !isNotFound(error) &&
@@ -838,6 +897,28 @@ export class HostSessionCatalogCoordinator {
         );
       }
     });
+  }
+
+  async #reconcileExecutorAfterFailedCommit(previous: SessionHeader): Promise<void> {
+    try {
+      const actual = (await this.#stores.readHeaderRecordSnapshot(previous.id)).header;
+      if (
+        actual.executorId !== previous.executorId ||
+        !actual.executorConfig?.model ||
+        !this.#configureExecutor
+      )
+        throw new Error('Confirmed executor model is unavailable');
+      await this.#configureExecutor(actual, actual.executorConfig);
+    } catch {
+      // When the durable value or rollback cannot be confirmed, never leave a
+      // live external Session that might answer on a different model.
+      try {
+        if (!this.#retireExecutor) throw new Error('Executor retirement is unavailable');
+        await this.#retireExecutor(previous.id);
+      } catch {
+        this.#requestDrain();
+      }
+    }
   }
 
   async #relocateWorkspace(
@@ -1257,7 +1338,24 @@ export class HostSessionCatalogCoordinator {
     current: SessionHeader,
     patch: SessionConfigurationUpdateInput['patch'],
   ): Promise<ResolvedSessionConfiguration> {
-    if (current.backend === 'fake' && patch.modelTarget === undefined) {
+    if (current.executorConfig && Object.keys(patch).some((key) => key !== 'executorConfig'))
+      throw new SessionOperationFailure(
+        'operation_unavailable',
+        'Native execution settings require a new Maka task',
+      );
+    if (
+      patch.executorConfig &&
+      (!current.executorId ||
+        patch.executorTarget !== undefined ||
+        patch.modelTarget !== undefined ||
+        !isExecutorConfiguration(patch.executorConfig))
+    )
+      throw new SessionOperationFailure('invalid_request', 'Invalid executor configuration');
+    if (
+      current.backend === 'fake' &&
+      patch.modelTarget === undefined &&
+      patch.executorTarget === undefined
+    ) {
       throw new SessionOperationFailure(
         'operation_conflict',
         'Legacy test backend configuration requires an explicit account selection',
@@ -1266,7 +1364,8 @@ export class HostSessionCatalogCoordinator {
     if (
       current.backend !== 'plugin-executor' &&
       current.llmConnectionId === undefined &&
-      patch.modelTarget === undefined
+      patch.modelTarget === undefined &&
+      patch.executorTarget === undefined
     ) {
       throw new SessionOperationFailure(
         'operation_conflict',
@@ -1277,6 +1376,35 @@ export class HostSessionCatalogCoordinator {
       patch.thinkingLevel === undefined
         ? current.thinkingLevel
         : (patch.thinkingLevel ?? undefined);
+    if (patch.executorTarget !== undefined) {
+      let executorConfig;
+      try {
+        executorConfig = await this.#assertExecutorAvailable?.(
+          current.id,
+          patch.executorTarget.executorId,
+          patch.executorTarget.model ? { model: patch.executorTarget.model } : undefined,
+          current.cwd,
+        );
+      } catch {
+        throw new SessionOperationFailure(
+          'operation_unavailable',
+          `Plugin executor is unavailable: ${patch.executorTarget.executorId}`,
+        );
+      }
+      return {
+        backend: 'plugin-executor',
+        executorId: patch.executorTarget.executorId,
+        ...(executorConfig ? { executorConfig } : {}),
+        llmConnectionId: undefined,
+        llmConnectionSlug: `executor:${patch.executorTarget.executorId}`,
+        model: patch.executorTarget.model ?? patch.executorTarget.executorId,
+        thinkingLevel,
+        connectionLocked: current.connectionLocked,
+        permissionMode: patch.permissionMode ?? current.permissionMode,
+        collaborationMode: patch.collaborationMode ?? current.collaborationMode ?? 'agent',
+        orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode ?? 'default',
+      };
+    }
     let model: {
       readonly connectionId?: string;
       readonly connectionSlug: string;
@@ -1303,9 +1431,10 @@ export class HostSessionCatalogCoordinator {
     return {
       backend: patch.modelTarget || current.backend === 'ai-sdk' ? 'ai-sdk' : 'plugin-executor',
       executorId: patch.modelTarget ? undefined : current.executorId,
+      executorConfig: patch.executorConfig ?? current.executorConfig,
       llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
-      model: model.model,
+      model: patch.executorConfig?.model ?? model.model,
       thinkingLevel,
       connectionLocked: patch.modelTarget === undefined ? current.connectionLocked : true,
       permissionMode: patch.permissionMode ?? current.permissionMode,
@@ -1314,16 +1443,27 @@ export class HostSessionCatalogCoordinator {
     };
   }
 
-  async #resolveCreateExecution(input: SessionCreateInput): Promise<{
+  async #resolveCreateExecution(
+    input: SessionCreateInput,
+    cwd: string,
+  ): Promise<{
     readonly executorId?: string;
+    readonly executorConfig?: import('@maka/core/executor-catalog').ExecutorConfiguration;
     readonly connectionId?: string;
     readonly connectionSlug: string;
     readonly model: string;
     readonly thinkingLevel?: SessionHeader['thinkingLevel'];
   }> {
     if (input.executorId) {
+      const requestedModel = input.executorConfig?.model ?? input.executorModel;
+      let executorConfig;
       try {
-        this.#assertExecutorAvailable?.(input.sessionId, input.executorId);
+        executorConfig = await this.#assertExecutorAvailable?.(
+          input.sessionId,
+          input.executorId,
+          requestedModel ? { model: requestedModel } : input.executorConfig,
+          cwd,
+        );
       } catch {
         throw new SessionOperationFailure(
           'operation_unavailable',
@@ -1332,8 +1472,12 @@ export class HostSessionCatalogCoordinator {
       }
       return {
         executorId: input.executorId,
+        ...((executorConfig ?? input.executorConfig)
+          ? { executorConfig: executorConfig ?? input.executorConfig }
+          : {}),
         connectionSlug: `executor:${input.executorId}`,
-        model: input.executorId,
+        model: input.executorConfig?.model ?? input.executorModel ?? input.executorId,
+        thinkingLevel: input.thinkingLevel ?? undefined,
       };
     }
     if (!input.modelTarget) {
@@ -1367,6 +1511,7 @@ function sessionConfigurationMatches(
   return (
     header.backend === configuration.backend &&
     header.executorId === configuration.executorId &&
+    header.executorConfig?.model === configuration.executorConfig?.model &&
     header.llmConnectionId === configuration.llmConnectionId &&
     header.llmConnectionSlug === configuration.llmConnectionSlug &&
     header.model === configuration.model &&
@@ -1382,6 +1527,8 @@ function isPermissionModeOnlyPatch(patch: SessionConfigurationUpdateInput['patch
   return (
     patch.permissionMode !== undefined &&
     patch.modelTarget === undefined &&
+    patch.executorTarget === undefined &&
+    patch.executorConfig === undefined &&
     patch.thinkingLevel === undefined &&
     patch.collaborationMode === undefined &&
     patch.orchestrationMode === undefined
@@ -1395,6 +1542,11 @@ interface PreparedSessionCreate {
 }
 
 async function prepareCreate(input: SessionCreateInput): Promise<PreparedSessionCreate> {
+  if (
+    input.executorConfig !== undefined &&
+    (!input.executorId || !isExecutorConfiguration(input.executorConfig))
+  )
+    throw new SessionOperationFailure('invalid_request', 'Invalid executor configuration');
   if ((input.executorId === undefined) === (input.modelTarget === undefined)) {
     throw new SessionOperationFailure(
       'invalid_request',
@@ -1403,6 +1555,16 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
   }
   if (input.executorId !== undefined && !isExecutorId(input.executorId)) {
     throw new SessionOperationFailure('invalid_request', 'Session executor id is invalid');
+  }
+  if (
+    input.executorConfig?.model &&
+    input.executorModel !== undefined &&
+    input.executorConfig.model !== input.executorModel
+  ) {
+    throw new SessionOperationFailure('invalid_request', 'Conflicting executor models');
+  }
+  if (input.executorModel !== undefined && input.executorId === undefined) {
+    throw new SessionOperationFailure('invalid_request', 'Executor model requires an executor id');
   }
   if (input.labels?.some(isExecutionSemanticLabel)) {
     throw new SessionOperationFailure(
@@ -1440,7 +1602,7 @@ function createRequestFingerprint(
     prepared.name,
     prepared.labels,
     input.executorId
-      ? ['executor', input.executorId]
+      ? ['executor', input.executorId, input.executorConfig?.model ?? input.executorModel ?? null]
       : input.modelTarget?.kind === 'default'
         ? ['default']
         : [
@@ -1521,7 +1683,12 @@ export function projectSessionCatalogRecord(
     ...(header.revisionIndex === undefined ? {} : { revisionIndex: header.revisionIndex }),
     ...(header.revisionState === undefined ? {} : { revisionState: header.revisionState }),
     backend: header.backend,
-    ...(header.executorId ? { executorId: header.executorId } : {}),
+    ...(header.executorId
+      ? {
+          executorId: header.executorId,
+          ...(header.executorConfig ? { executorConfig: header.executorConfig } : {}),
+        }
+      : {}),
     llmConnectionId: header.llmConnectionId ?? null,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,

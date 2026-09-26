@@ -107,6 +107,7 @@ import {
   createHostGoalEvaluator,
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
+  createHostPromptSuggestionModel,
   createHostWorkHubRoutingModel,
 } from '../server/execution-model-authority.js';
 import {
@@ -157,9 +158,9 @@ const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const HEADLESS_CODING_V1_PROMPT_HASH =
-  'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
+  'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:9ef90b13f64829ae5baba777e929177838b59c9ed73e12a8c0b24c418ea2e473';
+  'sha256:b4fd61c4eeec3ed41f22d36b61c800331e6c18a9704f5b7806acafea919945b0';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -974,11 +975,17 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
     assert.ok(body);
     assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
-    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
+    const toolText = latestToolResultText(body);
+    assert.ok(toolText);
+    assert.equal(toolText.includes(pngBytes.toString('base64')), false);
+    const images = (Array.isArray(body.messages) ? body.messages : [])
+      .filter((message) => message.role === 'user' && Array.isArray(message.content))
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'image_url');
+    assert.deepEqual(images, [
       {
-        type: 'file',
-        mediaType: 'image/png',
-        data: { type: 'data', data: pngBytes.toString('base64') },
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${pngBytes.toString('base64')}` },
       },
     ]);
   };
@@ -2582,14 +2589,25 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
     assert.deepEqual(responsesToolNames(request?.body), [
       'Bash',
-      'Edit',
       'Glob',
       'Grep',
       'Read',
       'StopBackgroundTask',
-      'Write',
       'WriteStdin',
+      'apply_patch',
     ]);
+    // DeepSeek defaults to portable ApplyPatch instead of Write/Edit, including
+    // hosted headless sessions. Freeze its actual function-call wire format.
+    const patch = tools.find((tool) => tool.name === 'apply_patch');
+    assert.ok(patch);
+    assert.equal(patch.type, 'function');
+    assert.deepEqual(patch.parameters, {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: { patch: { type: 'string' } },
+      required: ['patch'],
+      additionalProperties: false,
+    });
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
     // The Eval session runs with Full access: the product Bash, minus the
@@ -3988,6 +4006,67 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       }),
       '## Goal',
     );
+    let suggestionCall = 0;
+    const suggestionModel = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => String(++suggestionCall),
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.equal(
+        await suggestionModel(
+          {
+            sessionId: session.id,
+            turnId: 'suggestion-turn',
+            terminalEventId: 'suggestion-terminal',
+            header: session,
+            messages: [
+              {
+                type: 'user',
+                id: 'suggestion-user',
+                ts: 1,
+                turnId: 'suggestion-turn',
+                text: '先设计，再实现',
+              },
+            ],
+          },
+          new AbortController().signal,
+        ),
+        SUMMARY_TEXT,
+      );
+    }
+    const suggestionRows = (await usage.telemetry.logs({ range: 'all' })).rows.filter(
+      (row) => row.callKind === 'prompt_suggestion',
+    );
+    assert.equal(suggestionRows.length, 2);
+    assert.equal(new Set(suggestionRows.map((row) => row.callId)).size, 2);
+    const suggestionRequest = provider.requests.at(-1)!;
+    assert.equal(suggestionRequest.authorization, `Bearer ${API_KEY}`);
+    assert.equal((suggestionRequest.body as Record<string, unknown>).tools, undefined);
+    const suggestionLog = (await usage.telemetry.logs({ range: 'all' })).rows.find(
+      (row) => row.callKind === 'prompt_suggestion',
+    );
+    assert.equal(suggestionLog?.inputTokens, 7);
+    assert.equal(suggestionLog?.outputTokens, 3);
+    assert.equal(suggestionLog?.status, 'success');
+    const providerRequestsBeforePluginTitle = provider.requests.length;
+    assert.equal(
+      await sessionEffects.generateTitle({
+        sessionId: session.id,
+        header: {
+          ...session,
+          backend: 'plugin-executor',
+          executorId: 'codex.app-server',
+          llmConnectionId: undefined,
+          llmConnectionSlug: 'executor:codex.app-server',
+          model: 'gpt-5.6-sol',
+          thinkingLevel: 'high',
+        },
+        sourceText: 'Run this task through the Codex plugin executor',
+        abortSignal: new AbortController().signal,
+      }),
+      undefined,
+    );
+    assert.equal(provider.requests.length, providerRequestsBeforePluginTitle);
     const recap = await sessionEffects.generateRecap({
       sessionId: session.id,
       effectId: 'recap-effect-1',
@@ -4835,7 +4914,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     ).text,
     [
       'Complete the task by acting with the available tools, not by narrating.',
-      'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+      'Prefer Read, Glob, and Grep for inspection, the available file-editing tool for file changes, and Bash for shell commands and tests.',
       'Verify the result when practical.',
       'Stop when the task is complete.',
     ].join('\n'),
@@ -6090,3 +6169,131 @@ function closeServer(server: Server): Promise<void> {
     server.close((error) => (error ? reject(error) : resolve()));
   });
 }
+
+test('prompt suggestions enforce reasoning-off, reject truncation, do not retry and skip reasoning-only models', async () => {
+  const MODEL_ID = 'gpt-5.2';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'goal-evaluator-provider',
+        name: 'Goal evaluator provider',
+        providerType: 'openai',
+        modelOverrides: { [MODEL_ID]: { apiProtocol: 'openai-chat' } },
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'goal-evaluator-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const evaluatorInput = {
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
+      readSessionHeader: (sessionId: string) =>
+        execution.sessionStore.readHeaderSnapshot(sessionId),
+      newId: () => 'call-1',
+    };
+
+    let fetches = 0;
+    let mode = 'length';
+    let requestBody: Record<string, unknown> = {};
+    const suggest = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => `suggestion-${fetches}`,
+      createFetchTransport: () => ({
+        close: async () => {},
+        fetch: (async (_url, init) => {
+          fetches++;
+          requestBody = JSON.parse(String(init?.body));
+          if (mode === 'failure') return new Response('unavailable', { status: 503 });
+          return Response.json({
+            id: 'reply',
+            object: 'chat.completion',
+            created: 1,
+            model: MODEL_ID,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'partial' },
+                finish_reason: 'length',
+              },
+            ],
+            usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+          });
+        }) as typeof fetch,
+      }),
+    });
+    const source = {
+      sessionId: session.id,
+      turnId: 'turn',
+      terminalEventId: 'terminal',
+      header: session,
+      messages: [],
+    };
+    assert.equal(await suggest(source, new AbortController().signal), undefined);
+    assert.equal(requestBody.reasoning_effort, 'none');
+    assert.equal(fetches, 1);
+    mode = 'failure';
+    await assert.rejects(suggest(source, new AbortController().signal));
+    assert.equal(fetches, 2, 'a failed paid call must not retry');
+    const currentConnection = (await policy.connectionCatalog.getSnapshot()).connections.find(
+      (entry) => entry.connectionId === connection.connectionId,
+    )!;
+    const changed = await policy.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: currentConnection.revision },
+      changes: {
+        name: connection.name,
+        enabled: true,
+        enabledModelIds: ['gpt-5'],
+      },
+    });
+    assert.equal(changed.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'gpt-5');
+    await assert.rejects(
+      suggest({ ...source, header: { ...session, model: 'gpt-5' } }, new AbortController().signal),
+      /disable reasoning/,
+    );
+    assert.equal(fetches, 2, 'unsupported off must not reach the provider');
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});

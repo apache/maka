@@ -29,7 +29,7 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { openResponsesUrl } from './provider-urls.js';
+import { openAiChatUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
@@ -384,7 +384,7 @@ async function probeOpenAI(
     // chat with the provider error class.
     return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
   }
-  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/chat/completions`, {
+  const r = await fetchForConnectionEffect(fetchFn, openAiChatUrl(baseUrl), {
     method: 'POST',
     headers: {
       ...requestHeaders,

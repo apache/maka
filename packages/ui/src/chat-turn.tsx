@@ -18,7 +18,7 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, ChevronRight, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
@@ -177,29 +177,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     // Timestamp takes milliseconds directly for modern chat timestamps.
     <Timestamp className="maka-message-time-inline" value={props.ts} format="auto" isLive />
   ) : null;
+  // Astryx lays a user's metadata out row-reverse: the stamp goes last in the
+  // DOM so it renders first, left of the actions.
   const userMetadata = (
     <ChatMessageMetadata
       className="maka-message-meta"
       footer={
         <>
-          {props.status ? <span className="maka-message-status-time">
-            {props.status}
-            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
-            {timeOrDelivery}
-          </span> : timeOrDelivery}
-          {props.delivery?.deliveryActions?.map((action) => (
-            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
-          ))}
-          <CopyButton
-            copyKey="message"
-            text={props.text}
-            label={copyText.copy}
-            ariaLabel={copyText.messageActionAriaLabel(
-              copyText.copy,
-              accessibleActionContext(props.text, props.ts, locale),
-            )}
-            dataMessageId={props.messageId}
-          />
           {props.onEditUserMessage ? (
             <UiIconButton
               label={copyText.messageActionAriaLabel(
@@ -217,6 +201,24 @@ const UserMessageBody = memo(function UserMessageBody(props: {
               onClick={() => props.onEditUserMessage?.()}
             />
           ) : null}
+          <CopyButton
+            copyKey="message"
+            text={props.text}
+            label={copyText.copy}
+            ariaLabel={copyText.messageActionAriaLabel(
+              copyText.copy,
+              accessibleActionContext(props.text, props.ts, locale),
+            )}
+            dataMessageId={props.messageId}
+          />
+          {props.delivery?.deliveryActions?.map((action) => (
+            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+          ))}
+          {props.status ? <span className="maka-message-status-time">
+            {props.status}
+            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
+            {timeOrDelivery}
+          </span> : timeOrDelivery}
         </>
       }
     />
@@ -375,7 +377,7 @@ function CopyButton(props: {
  */
 export const TurnView = memo(function TurnView(props: {
   turn: TurnViewModel;
-  /** Optional identity repeated beside each prompt and answer in this turn. */
+  /** Optional identity shown once above the turn's root prompt. */
   messageHeader?: ReactNode;
   /** Optional accessible action on each message edge. */
   messageRail?: ReactNode;
@@ -484,7 +486,7 @@ export const TurnView = memo(function TurnView(props: {
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   const answerContext = accessibleActionContext(
     turn.user?.text ?? finalReply?.text ?? '',
-    turn.startedAt,
+    turn.startedAt > MIN_PLAUSIBLE_TURN_TS ? turn.startedAt : undefined,
     locale,
   );
   // A recorded conversational terminal turn owns presentation beyond its
@@ -557,6 +559,15 @@ export const TurnView = memo(function TurnView(props: {
           <span>{copy.goalContinued}</span>
         </Marker>
       )}
+      {turn.user?.hostOrigin?.kind === 'workhub_result' && (
+        <ChatSystemMessage
+          className="maka-chat-system-message"
+          icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
+          aria-label={`${copy.workHubResultReceived} · ${turn.user.text}`}
+        >
+          {copy.workHubResultReceived} · {turn.user.text}
+        </ChatSystemMessage>
+      )}
       {turn.user?.hostOrigin?.kind === 'agent_graph' && (
         <Marker
           variant="host-origin"
@@ -568,9 +579,9 @@ export const TurnView = memo(function TurnView(props: {
         </Marker>
       )}
       {props.transientMessages?.map((message) => (
-        <TransientUserMessage key={message.id} message={message} />
+        <TransientUserMessage key={message.id} message={message} status={props.promptStatus} />
       ))}
-      {turn.user && (
+      {turn.user && turn.user.hostOrigin?.kind !== 'workhub_result' && (
         <LocalizedChatMessage
           accessibleLabel={
             turn.user.hostOrigin?.kind === 'legacy_automation'
@@ -651,7 +662,6 @@ export const TurnView = memo(function TurnView(props: {
               className="maka-chat-message maka-user-message maka-steering-message"
             >
               {props.messageRail}
-              {props.messageHeader}
               <UserMessageBody
                 messageId={message.id}
                 text={message.text}
@@ -689,9 +699,10 @@ export const TurnView = memo(function TurnView(props: {
               : undefined,
         };
         const footerActions = props.liveStreaming ? [] : props.footerActions ?? [];
-        const footerMeta = turnMetaSummary(turn);
+        // Gated on the live-aware status: a live turn has no recorded turn_state
+        // yet, so `turn.status` reads `completed` as soon as one step lands.
         const finishedAt =
-          turn.status !== 'running' &&
+          statusBarStatus !== 'running' &&
           turn.durationMs !== undefined &&
           turn.startedAt > MIN_PLAUSIBLE_TURN_TS
             ? turn.startedAt + turn.durationMs
@@ -711,7 +722,6 @@ export const TurnView = memo(function TurnView(props: {
             >
             <div className="maka-assistant-answer-content">
               {props.messageRail}
-              {props.messageHeader}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
@@ -812,7 +822,6 @@ export const TurnView = memo(function TurnView(props: {
               <TurnFooter
                 turnId={turn.turnId}
                 actions={footerActions}
-                meta={footerMeta}
                 finishedAt={finishedAt}
                 live={!!props.liveStreaming}
                 context={answerContext}
@@ -933,6 +942,33 @@ export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnP
  */
 const MIN_PLAUSIBLE_TURN_TS = 1_000_000_000_000;
 
+// Reserve the same answer and footer rows before the transcript arrives without
+// inventing a Turn or assigning unrelated local prompts to the active Turn.
+export function PendingTurnAnswer(props: {
+  turnId?: string;
+  startedAt?: number;
+  running: boolean;
+  providerRetry?: LiveProviderRetry;
+}) {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+  const startedAt = (props.startedAt ?? 0) > MIN_PLAUSIBLE_TURN_TS ? props.startedAt : undefined;
+  const context = accessibleActionContext('', startedAt, locale);
+  return (
+    <LocalizedChatMessage
+      accessibleLabel={`${copy.assistantAriaLabel} · ${context}`}
+      sender="assistant"
+      className="maka-chat-message maka-assistant-answer"
+    >
+      <div className="maka-assistant-answer-content">
+        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} providerRetry={props.providerRetry} />
+        {props.providerRetry && <ModelProviderRetryIndicator retry={props.providerRetry} />}
+      </div>
+      <TurnFooter turnId={props.turnId} actions={[]} live context={context} />
+    </LocalizedChatMessage>
+  );
+}
+
 /**
  * The turn's one status: the running cue while work is in flight, the settled
  * outcome (word + duration) once the turn ends. Rendered inside the status row
@@ -993,9 +1029,8 @@ function TurnStatusRow(props: TurnStatusRowProps): ReactNode {
   return <span className="maka-turn-statusbar-text">{label}</span>;
 }
 
-/** Standalone status row for a turn with no process disclosure to carry it —
- *  and for the pre-turn cue before the transcript contains the turn. */
-export function TurnStatusBar(props: TurnStatusRowProps) {
+/** Standalone status row for a turn with no process disclosure to carry it. */
+function TurnStatusBar(props: TurnStatusRowProps) {
   return (
     <div className="maka-turn-statusbar" data-turn-status={props.status}>
       <TurnStatusRow {...props} />
@@ -1006,9 +1041,6 @@ export function TurnStatusBar(props: TurnStatusRowProps) {
 function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
-  /** Model · cost facts, before the actions. */
-  meta?: string;
-  /** Wall-clock finish time, rendered as a semantic Timestamp. */
   finishedAt?: number;
   live?: boolean;
   context: string;
@@ -1018,25 +1050,17 @@ function TurnFooter(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const hasSlotContent = useMakaClientSlotOccupied('conversation.turn.footer');
-  const hasFooterContent =
-    props.meta !== undefined || props.actions.length > 0 || hasSlotContent;
-  const isToolbar = !props.live && (props.actions.length > 0 || hasSlotContent);
+  const hasActions = props.actions.length > 0 || hasSlotContent;
+  const isToolbar = !props.live && hasActions;
   return (
     <ChatMessageMetadata
       className={markerVariants({ variant: 'footer' })}
       role={isToolbar ? 'toolbar' : undefined}
       aria-label={isToolbar ? copy.answerActionsAriaLabel(props.context) : undefined}
-      timestamp={
-        props.finishedAt !== undefined
-          ? <Timestamp value={props.finishedAt} format="auto" isLive />
-          : undefined
-      }
+      // Live: reserves the actions' row.
       footer={
-        hasFooterContent ? (
+        hasActions || props.finishedAt !== undefined || props.live ? (
         <>
-          {props.meta !== undefined ? (
-            <span className="maka-turn-footer-meta-model">{props.meta}</span>
-          ) : null}
           {props.actions.map((action) =>
             action.id === 'copy' ? (
               <CopyButton
@@ -1074,19 +1098,14 @@ function TurnFooter(props: {
               }}
             />
           ) : null}
+          {props.finishedAt !== undefined ? (
+            <Timestamp className="maka-message-time-inline" value={props.finishedAt} format="auto" isLive />
+          ) : null}
         </>
         ) : undefined
       }
     />
   );
-}
-
-/** "model · cost" facts for the footer; the turn's state lives in the status row. */
-function turnMetaSummary(turn: TurnViewModel): string | undefined {
-  const parts: string[] = [];
-  if (turn.modelId) parts.push(turn.modelId);
-  if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) parts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
-  return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
@@ -1429,6 +1448,9 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
+  const chevron = props.running ? null : (
+    <Icon icon="chevronRight" size="xsm" color="inherit" className="maka-processing-chevron" />
+  );
   return (
     <details
       className="maka-processing-sequence"
@@ -1448,11 +1470,14 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
         {props.statusRow ? (
           <span className="maka-turn-statusbar" data-turn-status={props.statusRow.status}>
             <TurnStatusRow {...props.statusRow} />
+            {chevron}
           </span>
         ) : (
-          <span>{copy.processDetails}</span>
+          <>
+            <span>{copy.processDetails}</span>
+            {chevron}
+          </>
         )}
-        {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
       <div className="maka-processing-body">
         {props.entries.map((entry, index) => (

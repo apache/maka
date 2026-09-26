@@ -94,8 +94,8 @@ provider-visible tool list, and the Eval metering proxy structurally strips
 named and provider-native web tools from external-harness requests, so
 results stay comparable across providers and baselines. Merely speaking
 Anthropic Messages is not enough to infer hosted-search support; Maka uses
-explicit model metadata or narrow model-id rules, including DeepSeek V4 Flash
-on an `anthropic-compatible` connection.
+explicit model metadata or narrow model-id rules. A custom connection never
+infers it: its models need `capabilities.webSearch=true`.
 
 An explicit `BackendFactoryContext.tools` list is a hard ceiling. Root surfaces
 may add native search, but scoped child agents do not gain it unless their
@@ -203,7 +203,7 @@ search-heavy workflows that value source visibility over cache economics.
 | --- | --- | --- | --- |
 | DeepSeek | Responses `web_search`, server-executed | `deepseek-v4-flash` and `deepseek-v4-pro` | Integrated through `openai-responses` |
 | OpenAI API | Responses `web_search` tool | Maka currently enables the native path for GPT-5 families, whose runtime wire is already Responses | Integrated through `openai-responses` |
-| Custom Responses relay | Responses `web_search` tool when explicitly declared by model metadata | `openai-responses-compatible` connections with `apiProtocol=openai-responses` and `capabilities.webSearch=true` | Integrated through `openai-responses` |
+| Custom connection | Responses `web_search` or Messages `web_search_20250305` when explicitly declared | `custom` models whose resolved wire is `openai-responses` or `anthropic-messages` and that declare `capabilities.webSearch=true` | Integrated through the resolved wire |
 | xAI API / OAuth | Responses Agent Tools `web_search` | Maka currently enables the verified Grok 4.5 Responses route | Integrated through `openai-responses` |
 | Alibaba Model Studio | Responses `web_search` | Qwen 3.5 Plus/Flash provider support is recorded | Provider supports it; Maka Responses adapter pending |
 | Anthropic / Claude subscription | Messages `web_search_20250305` | Current Claude Opus/Sonnet/Haiku/Fable families | Integrated through `anthropic-messages` |

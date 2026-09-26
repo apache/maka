@@ -59,6 +59,7 @@ import { runManagedRuntimeHostUpdateCli } from '../runtime-host-update-command.j
 import {
   cleanupRuntimeHostManagedDeployment,
   effectiveRuntimeHostProjectDirectoryRoots,
+  formatRuntimeHostServiceReadinessDiagnostic,
   manageRuntimeHostService,
   replaceRuntimeHostManagedService,
   resolveRuntimeHostManagedServiceConfigPath,
@@ -3166,6 +3167,25 @@ describe('managed Runtime Host service', () => {
     releaseReady();
     await installing;
     assert.notEqual((await status).service.config, null);
+  });
+
+  it('formats bounded, redacted readiness evidence for a failed managed Host', () => {
+    const diagnostic = formatRuntimeHostServiceReadinessDiagnostic({
+      lastFailure: 'Host state is failed; token=connection-secret',
+      status: {
+        state: 'failed',
+        active: false,
+        pid: null,
+        lastExitCode: 78,
+      },
+      logs: `${'x'.repeat(8_000)}\nstartup failed: {"apiKey":"fixture-secret"}`,
+    });
+
+    assert.match(diagnostic, /Host state is failed/u);
+    assert.match(diagnostic, /last exit code: 78/u);
+    assert.match(diagnostic, /service logs \(tail\):/u);
+    assert.doesNotMatch(diagnostic, /connection-secret|fixture-secret/u);
+    assert.ok(Buffer.byteLength(diagnostic, 'utf8') <= 2_048);
   });
 });
 

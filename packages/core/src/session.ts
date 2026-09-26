@@ -17,8 +17,11 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from './executor-catalog.js';
+
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isExecutorId } from './executor-id.js';
+import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
 import {
   MODEL_FAILURE_MESSAGE_MAX_BYTES,
@@ -298,6 +301,7 @@ export interface SessionHeader {
   backend: PersistedBackendKind;
   /** Named black-box executor contributed by a plugin. Present exactly for plugin-executor. */
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Optional only on legacy Session records. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -370,6 +374,8 @@ export interface SessionSummary {
   isArchived: boolean;
   labels: string[];
   hasUnread: boolean;
+  /** Host-owned recency, including creation before the first message; present on catalog rows. */
+  activityAt?: number;
   lastMessageAt?: number;
   lastMessagePreview?: string;
   status: SessionStatus;
@@ -410,6 +416,7 @@ export interface SessionSummary {
   revisionState?: 'preparing' | 'committed';
   backend: PersistedBackendKind;
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Optional only on legacy summaries. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -963,15 +970,21 @@ export type WorkHubDelegationWorkspace =
   | { readonly kind: 'project'; readonly projectId: string }
   | { readonly kind: 'host_path'; readonly path: string };
 
+/** UTF-8 wire limit shared by persisted and protocol Session model identifiers. */
+export const SESSION_MODEL_ID_MAX_BYTES = 512;
+
 /** User-selected creation defaults; never applied to an existing Work. */
 export interface WorkHubCreateDefaults {
   /** Named plugin executor for the new Session. Mutually exclusive with model. */
   readonly executorId?: string;
+  /** Executor-specific model forwarded only when executorId is selected. */
+  readonly executorModel?: string;
   readonly model?: {
     readonly llmConnectionId: string;
     readonly llmConnectionSlug: string;
     readonly model: string;
   };
+  readonly thinkingLevel?: ThinkingLevel;
   readonly permissionMode?: PermissionMode;
 }
 
@@ -979,13 +992,27 @@ export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateD
   if (
     !isRecord(value) ||
     Object.keys(value).some(
-      (key) => key !== 'executorId' && key !== 'model' && key !== 'permissionMode',
+      (key) =>
+        key !== 'executorId' &&
+        key !== 'executorModel' &&
+        key !== 'model' &&
+        key !== 'thinkingLevel' &&
+        key !== 'permissionMode',
     )
   )
     return false;
   if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
   if (value.executorId !== undefined && !isExecutorId(value.executorId)) return false;
+  if (
+    value.executorModel !== undefined &&
+    (typeof value.executorModel !== 'string' ||
+      value.executorModel.trim().length === 0 ||
+      new TextEncoder().encode(value.executorModel).byteLength > SESSION_MODEL_ID_MAX_BYTES)
+  )
+    return false;
+  if (value.executorModel !== undefined && value.executorId === undefined) return false;
   if (value.executorId !== undefined && value.model !== undefined) return false;
+  if (value.thinkingLevel !== undefined && !isThinkingLevel(value.thinkingLevel)) return false;
   if (value.model === undefined) return true;
   const model = value.model;
   return (
@@ -1033,6 +1060,8 @@ interface WorkHubCoordinationMessageEnvelope {
  */
 export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMessageEnvelope {
   kind: 'delegation_assigned';
+  /** New delegations opt into Host-owned asynchronous result delivery. */
+  returnResults?: true;
   delegationId: string;
   targetTurnId: string;
   targetMessageId: string;
@@ -1137,7 +1166,7 @@ export interface WorkHubDelegationStopResolvedMessage {
  * The exact durable operation one WorkHub action identity is allowed to own.
  *
  * Per-record identity is keyed by the thing each record is about — an
- * assignment by its action, a stop or replacement by its delegation — so no
+ * assignment by its action, a replacement by its delegation, a stop by its delegation and action — so no
  * single record can reject an action id that crossed to another delegation or
  * another disposition. This vocabulary names the one global owner that can.
  */
@@ -1222,7 +1251,6 @@ export interface TurnRecord {
 export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_compacted',
   'context_compaction_failed_open',
-  'context_provider_dropping',
   'context_window_suggestion',
   'context_window_overrun',
   'context_reported_window_exceeded',
@@ -1231,9 +1259,9 @@ export const RUNTIME_SYSTEM_NOTE_KINDS = [
 ] as const;
 
 /**
- * Notes only legacy transcripts carry, still decoded so those rows stay
- * readable. Nothing writes them: the Session header and the invocation's
- * opening and terminal facts already own what each of them said.
+ * Notes nothing writes any more, still decoded so old transcripts and run
+ * ledgers stay readable, and never shown. The session-level ones are owned by
+ * the Session header and the invocation's opening and terminal facts.
  */
 export const RETIRED_SYSTEM_NOTE_KINDS = [
   'session_start',
@@ -1242,6 +1270,7 @@ export const RETIRED_SYSTEM_NOTE_KINDS = [
   'model_change',
   'error',
   'abort',
+  'context_provider_dropping',
 ] as const;
 
 export type RuntimeSystemNoteKind = (typeof RUNTIME_SYSTEM_NOTE_KINDS)[number];
@@ -1249,6 +1278,12 @@ export type SystemNoteKind = RuntimeSystemNoteKind | (typeof RETIRED_SYSTEM_NOTE
 
 export function isRuntimeSystemNoteKind(kind: string): kind is RuntimeSystemNoteKind {
   return (RUNTIME_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
+}
+
+export function isSystemNoteKind(kind: string): kind is SystemNoteKind {
+  return (
+    isRuntimeSystemNoteKind(kind) || (RETIRED_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind)
+  );
 }
 
 export interface SystemNoteMessage {
@@ -1381,6 +1416,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
     [
       'attachments',
       'targetAttachments',
+      'returnResults',
       'create',
       'steered',
       'replacesActionId',
@@ -1510,10 +1546,6 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-const SYSTEM_NOTE_KINDS = new Set<string>([
-  ...RUNTIME_SYSTEM_NOTE_KINDS,
-  ...RETIRED_SYSTEM_NOTE_KINDS,
-]);
 
 export function decodeCanonicalMessage(value: unknown): StoredMessage {
   return decodeMessage(value, decodeCanonicalToolResultContent);
@@ -1665,7 +1697,7 @@ function decodeMessage(
         hasExactShape(message, SYSTEM_NOTE_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, false) &&
         isOptionalString(message.turnId) &&
-        SYSTEM_NOTE_KINDS.has(message.kind as string)
+        isSystemNoteKind(message.kind as string)
       )
         return message as unknown as SystemNoteMessage;
       break;
@@ -1800,6 +1832,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetMessageId === 'string' &&
     typeof message.targetSessionName === 'string' &&
     message.targetSessionName.trim().length > 0 &&
+    (message.returnResults === undefined || message.returnResults === true) &&
     (message.steered === undefined || message.steered === true) &&
     ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
       message.replacesActionId === undefined &&

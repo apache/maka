@@ -21,15 +21,17 @@
  * The one trust-boundary pipeline the renderer runs over a streamed text
  * buffer, shared by `assistant-stream` and `thinking-stream`. Both streams
  * append provider text into a live `LiveTurnProjection` field, and both need
- * the same three guarantees before that text becomes React state:
+ * the same two guarantees before that text becomes React state:
  *
- *   - secondary `redactSecrets` BEFORE state — the renderer cannot trust
- *     upstream to have masked every secret, and a raw `Authorization:
- *     Bearer …` prefix sitting in the live projection would leak through a
- *     React DevTools snapshot, the "copy message" affordance, and any future
- *     serialization that walks the streaming state;
- *   - a per-delta cap, defensive against one misbehaving multi-MB chunk;
+ *   - `redactSecrets` BEFORE state — a raw `Authorization: Bearer …` prefix
+ *     sitting in the live projection would leak through a React DevTools
+ *     snapshot, the "copy message" affordance, and any future serialization
+ *     that walks the streaming state;
  *   - a per-session total cap that bounds renderer state for a runaway stream.
+ *
+ * Delta boundaries are Runtime Host transport slices (merged under
+ * backpressure, paid out as backlog, or a whole reconnect seed), so nothing
+ * here keys on the size of a single delta.
  *
  * The streams differ only in their caps, their user-visible markers, and which
  * end of an over-cap buffer survives — the `recovery` direction
@@ -45,10 +47,6 @@
  *   head. The user watching extended thinking is following the CURRENT chain
  *   of thought, so the oldest reasoning is the least relevant.
  *
- * The per-delta cap is tail-keep with a head marker in BOTH streams: a single
- * oversize delta is runtime misbehavior, the user has not been reading inside
- * that chunk yet, and it is about to be appended atomically.
- *
  * `tool-output-stream` is deliberately not folded in here — it accumulates an
  * array of chunks with dedup-by-seq, which is a different problem.
  */
@@ -58,15 +56,12 @@ import {
   appendStreamingDisplayRedaction,
   copyStreamingDisplayRedactionState,
   createStreamingDisplayRedactionState,
-  truncateStreamingDisplayAppend,
   truncateStreamingDisplayTail,
   type StreamingDisplayRedactionState,
 } from './streaming-display-redaction.js';
 
 /** Caller-facing knobs, identical for both streams. */
 export interface ApplyStreamOptions {
-  /** Override per-delta cap. */
-  maxDeltaChars?: number;
   /** Override per-session total cap. */
   maxTotalChars?: number;
   /** Differential-safe state returned by the preceding delta. */
@@ -76,9 +71,7 @@ export interface ApplyStreamOptions {
 export interface ApplyStreamResult {
   /** Resulting accumulated text (post-redaction, post-cap). */
   text: string;
-  /** True if redaction modified anything during this call. */
-  redacted: boolean;
-  /** True if any per-delta or total truncation happened during this call. */
+  /** True if the total cap cut text during this call. */
   truncated: boolean;
   /** Bounded state needed to keep later prefixes oracle-equivalent. */
   redactionState?: StreamingDisplayRedactionState;
@@ -86,22 +79,16 @@ export interface ApplyStreamResult {
 
 /** Everything a concrete stream resolves before the shared pipeline runs. */
 export interface StreamDeltaSpec {
-  maxDeltaChars: number;
   maxTotalChars: number;
   /** Which end of an over-cap buffer survives. */
   recovery: 'head' | 'tail';
-  /** Marker for a single oversize delta (always prepended). */
-  chunkMarker: string;
   /** Marker for the total cap: appended for 'head', prepended for 'tail'. */
   totalMarker: string;
   redactionState?: StreamingDisplayRedactionState;
 }
 
 /** The `complete` path replaces rather than appends, so it needs less. */
-export type StreamCompleteSpec = Pick<
-  StreamDeltaSpec,
-  'maxTotalChars' | 'recovery' | 'totalMarker'
->;
+export type StreamCompleteSpec = Omit<StreamDeltaSpec, 'redactionState'>;
 
 /**
  * Apply a single delta to the prior accumulated text. Pure: no React state,
@@ -110,9 +97,7 @@ export type StreamCompleteSpec = Pick<
  * Pipeline (in order):
  *   1. Append through the differential-safe redactor. It caches complete
  *      lines and re-runs the whole-text oracle over only the mutable suffix.
- *   2. If the delta alone is oversized, cap the already-redacted mutable
- *      suffix so a cross-delta secret cannot leak through truncation.
- *   3. If the result exceeds `maxTotalChars`, cut the end `recovery` names.
+ *   2. If the result exceeds `maxTotalChars`, cut the end `recovery` names.
  *
  * The carried state is opaque: the live projection stores only a WeakMap key
  * and length counters, never the raw mutable suffix as enumerable React state.
@@ -122,15 +107,14 @@ export function applyStreamDelta(
   rawDelta: string,
   spec: StreamDeltaSpec,
 ): ApplyStreamResult {
-  const { maxDeltaChars, maxTotalChars, recovery, chunkMarker, totalMarker } = spec;
+  const { maxTotalChars, recovery, totalMarker } = spec;
   const previousText = prev ?? '';
 
   // Defensive guard: a non-string delta is a runtime contract violation. Drop
-  // it silently rather than coerce to '' and claim redaction happened.
+  // it silently rather than coerce it.
   if (typeof rawDelta !== 'string') {
     return {
       text: previousText,
-      redacted: false,
       truncated: false,
       ...(spec.redactionState === undefined
         ? {}
@@ -146,7 +130,7 @@ export function applyStreamDelta(
     previousText.length >= maxTotalChars &&
     previousText.endsWith(totalMarker)
   ) {
-    return { text: previousText, redacted: false, truncated: true };
+    return { text: previousText, truncated: true };
   }
 
   const redactionState = spec.redactionState ?? appendStreamingDisplayRedaction(
@@ -158,32 +142,17 @@ export function applyStreamDelta(
     }),
   ).state;
 
-  // Oversize deltas keep the established redact-before-truncate behavior.
-  // Normal deltas stay raw until the line-aware append below so a later prefix
-  // can legitimately make an opaque token visible again.
-  const redactedDelta = redactSecrets(rawDelta);
-  const perDeltaRedactionHappened = redactedDelta !== rawDelta;
-
-  const rawAppended = appendStreamingDisplayRedaction(
+  const appended = appendStreamingDisplayRedaction(
     previousText,
     rawDelta,
     redactionState,
   );
-  const appended = redactedDelta.length > maxDeltaChars
-    ? truncateStreamingDisplayAppend(
-        previousText,
-        rawAppended,
-        maxDeltaChars,
-        chunkMarker,
-      )
-    : rawAppended;
-  const deltaTruncated = appended !== rawAppended;
 
   let result = appended.text;
   let capped = appended;
-  let totalTruncated = false;
+  let truncated = false;
   if (result.length > maxTotalChars) {
-    totalTruncated = true;
+    truncated = true;
     if (recovery === 'head') {
       result = result.slice(0, maxTotalChars - totalMarker.length) + totalMarker;
     } else {
@@ -192,22 +161,22 @@ export function applyStreamDelta(
     }
   }
 
-  // Reconnect seeds can contain the full stream. Copy only the final bounded
-  // display and recovery state so their slices cannot keep that payload alive.
-  if (rawDelta.length > maxDeltaChars) {
+  // A reconnect seed can carry the full stream in one delta. When less of it
+  // survives than arrived, copy the bounded display and recovery state so
+  // their slices cannot keep that payload alive.
+  if (rawDelta.length > result.length) {
     result = structuredClone(result);
-    if (!(recovery === 'head' && totalTruncated)) {
+    if (!(recovery === 'head' && truncated)) {
       capped = { ...capped, state: copyStreamingDisplayRedactionState(capped.state) };
     }
   }
 
   return {
     text: result,
-    redacted: perDeltaRedactionHappened || appended.redacted,
-    truncated: deltaTruncated || totalTruncated,
+    truncated,
     // A head-keep cut drops the mutable suffix the state describes, so there
     // is nothing left to carry; every other path hands the state forward.
-    ...(recovery === 'head' && totalTruncated
+    ...(recovery === 'head' && truncated
       ? {}
       : { redactionState: capped.state }),
   };
@@ -215,8 +184,7 @@ export function applyStreamDelta(
 
 /**
  * Apply a `complete` final payload. The complete event carries the FULL final
- * text, so this is a replace path: redact and apply only the per-session total
- * cap, not the per-delta cap used for incremental chunks.
+ * text, so this is a replace path: redact, then apply the total cap.
  */
 export function applyStreamComplete(
   rawText: string,
@@ -225,25 +193,22 @@ export function applyStreamComplete(
   const { maxTotalChars, recovery, totalMarker } = spec;
 
   if (typeof rawText !== 'string') {
-    return { text: '', redacted: false, truncated: false };
+    return { text: '', truncated: false };
   }
 
-  const redacted = redactSecrets(rawText);
-
-  let result = redacted;
-  let totalTruncated = false;
+  let result = redactSecrets(rawText);
+  let truncated = false;
   if (result.length > maxTotalChars) {
     const keep = maxTotalChars - totalMarker.length;
     result = recovery === 'head'
       ? result.slice(0, keep) + totalMarker
       : totalMarker + result.slice(result.length - keep);
-    totalTruncated = true;
+    truncated = true;
   }
 
   return {
     // Detach the bounded display from a slice's potentially much larger backing string.
-    text: totalTruncated ? structuredClone(result) : result,
-    redacted: redacted !== rawText,
-    truncated: totalTruncated,
+    text: truncated ? structuredClone(result) : result,
+    truncated,
   };
 }

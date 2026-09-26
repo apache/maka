@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { openAiBaseUrl } from '@maka/core/openai-urls';
 import {
   PROVIDER_REGISTRY,
   providerFallbackModelIds,
@@ -202,7 +203,11 @@ async function fetchProviderModelsStrict(
   // The wire is the Runtime adapter's, not a second field beside it. Only four
   // adapter kinds reach here: every other one returned above on its own
   // discovery branch, and both OpenAI-shaped kinds speak the same /models wire.
-  switch (definition.runtimeAdapter.kind) {
+  const listAdapter =
+    (connection.defaultApiProtocol &&
+      definition.protocolAdapters?.[connection.defaultApiProtocol]) ||
+    definition.runtimeAdapter;
+  switch (listAdapter.kind) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
         headers: anthropicModelHeaders(apiKey),
@@ -222,7 +227,7 @@ async function fetchProviderModelsStrict(
     case 'openai-compatible': {
       const r = await fetchForConnectionEffect(
         fetchFn,
-        modelListUrl(baseUrl, discovery.path, discovery.query),
+        modelListUrl(openAiBaseUrl(baseUrl), discovery.path, discovery.query),
         {
           headers: {
             'content-type': 'application/json',

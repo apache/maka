@@ -285,6 +285,17 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('accepts XML text source inputs', async () => {
+    const fixture = createFixtureCandidate({
+      'website/public/sitemap.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<urlset></urlset>\n',
+    });
+    try {
+      await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('rejects unknown non-text release inputs', async () => {
     const fixture = createFixtureCandidate({ 'fixtures/unknown.bin': Buffer.from([0x01, 0x02]) });
     try {
@@ -477,9 +488,16 @@ describe('ASF source release verification', () => {
       writeFileSync(join(repositoryRoot, 'untracked.txt'), 'must not be released\n');
       mkdirSync(join(repositoryRoot, '.claude'));
       mkdirSync(join(repositoryRoot, '.maka-shots'));
+      mkdirSync(join(repositoryRoot, 'scripts/plugins/codex-app-server-executor'), {
+        recursive: true,
+      });
       writeFileSync(join(repositoryRoot, '.claude/launch.json'), '{}\n');
       writeFileSync(join(repositoryRoot, '.maka-shots/review.png'), 'review evidence\n');
       writeFileSync(join(repositoryRoot, 'maka-proposal-zh-review.txt'), 'working notes\n');
+      writeFileSync(
+        join(repositoryRoot, 'scripts/plugins/codex-app-server-executor/index.mjs'),
+        'export {};\n',
+      );
       mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain'), {
         recursive: true,
       });
@@ -596,6 +614,7 @@ describe('ASF source release verification', () => {
       });
       assert.doesNotMatch(entries, /untracked\.txt/);
       assert.doesNotMatch(entries, /\.claude|\.maka-shots|maka-proposal-zh-review/);
+      assert.doesNotMatch(entries, /scripts\/plugins\/codex-app-server-executor/);
       assert.doesNotMatch(entries, /deepseek-harness-toolchain\/package(?:-lock)?\.json/);
       assert.match(entries, /deepseek-harness-toolchain\/patch-subprocess-local\.mjs/);
       assert.match(entries, /deepseek-harness-profile\/cordis\.yml/);

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { IconButton } from '@astryxdesign/core/IconButton';
@@ -26,6 +26,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { InlineRenameInput } from './inline-rename-input.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
+import { presentSessionName } from './session-status-presentation.js';
 
 export interface TitlebarProject {
   name: string;
@@ -38,6 +39,29 @@ export interface TitlebarParentSession {
   onOpen(): void;
 }
 
+/** Astryx Button wraps children in an internal label span, so the ellipsis
+ * measurement must happen on the text node itself; the ellipsis CSS lives in
+ * the app shell (`maka-titlebar-identity__segment--session`). */
+function isNameClipped(el: HTMLElement | null): boolean {
+  return !!el && el.scrollWidth > el.clientWidth + 1;
+}
+
+/** Re-measure on every branch swap of the measured span, not just name
+ * changes: entering/leaving rename replaces the span and strands the observer. */
+function useNameClipped(sessionName: string, inactive: boolean) {
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [clipped, setClipped] = useState(false);
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    setClipped(isNameClipped(el));
+    if (!el || inactive || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => setClipped(isNameClipped(el)));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [sessionName, inactive]);
+  return { measureRef, clipped };
+}
+
 export function TitlebarSessionIdentity(props: {
   sessionName: string;
   onRenameSession(name: string): void;
@@ -46,9 +70,13 @@ export function TitlebarSessionIdentity(props: {
   readOnly?: boolean;
   action?: { readonly label: string; onClick(): void };
 }) {
-  const copy = getConversationCopy(useUiLocale());
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale);
+  const sessionName = presentSessionName(props.sessionName, locale);
   const clipboard = useClipboardCopyFeedback(undefined, { redact: false });
   const [renaming, setRenaming] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const nameRef = useRef<HTMLButtonElement>(null);
   const handBackFocusRef = useRef(false);
 
@@ -64,6 +92,10 @@ export function TitlebarSessionIdentity(props: {
   }, [renaming]);
 
   const path = props.project?.path;
+  const { measureRef, clipped } = useNameClipped(sessionName, renaming);
+  // Two kinds of hidden information: truncated → the full unseen text;
+  // visible → the rename affordance the surface never advertises.
+  const nameTooltip = clipped ? sessionName : copy.sessions.renameAriaLabel;
   const copyPhase = path ? clipboard.phaseFor(path) : null;
   const copyLabel = copyPhase === 'pending' ? copy.messages.copying
     : copyPhase === 'failed' ? copy.messages.copyFailed
@@ -89,7 +121,7 @@ export function TitlebarSessionIdentity(props: {
   ) : null;
 
   return (
-    <div className="maka-titlebar-identity" data-maka-contract="titlebar-identity" role="group" aria-label={copy.chat.titlebarIdentityAriaLabel}>
+    <div className="maka-titlebar-identity" data-maka-contract="titlebar-identity" data-interacting={renaming || projectMenuOpen || actionsMenuOpen || undefined} role="group" aria-label={copy.chat.titlebarIdentityAriaLabel}>
       {props.parentSession ? (
         <IconButton
           className="maka-titlebar-identity__action"
@@ -107,6 +139,8 @@ export function TitlebarSessionIdentity(props: {
             button={{ label: copy.chat.projectInfo, tooltip: copy.chat.projectInfo, icon: <Folder size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
             hasChevron={false}
             alignment="start"
+            isMenuOpen={projectMenuOpen}
+            onOpenChange={setProjectMenuOpen}
           >
             {projectContent}
           </DropdownMenu>
@@ -115,38 +149,40 @@ export function TitlebarSessionIdentity(props: {
       {renaming ? (
         <InlineRenameInput
           className="maka-titlebar-identity__rename-input"
-          defaultValue={props.sessionName}
+          defaultValue={sessionName}
           ariaLabel={copy.sessions.renameAriaLabel}
           onCommit={(name, via) => {
             endRename(via === 'keyboard');
-            if (name && name !== props.sessionName) props.onRenameSession(name);
+            if (name && name !== sessionName) props.onRenameSession(name);
           }}
           onCancel={() => endRename(true)}
         />
       ) : props.readOnly ? (
-        <span className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={props.sessionName}>
-          {props.sessionName}
+        <span ref={measureRef} className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={clipped ? sessionName : undefined}>
+          {sessionName}
         </span>
       ) : (
         <Button
           ref={nameRef}
           className="maka-titlebar-identity__name"
-          label={`${props.sessionName} — ${copy.sessions.renameAriaLabel}`}
-          tooltip={`${props.sessionName} — ${copy.sessions.renameAriaLabel}`}
+          label={`${sessionName} — ${copy.sessions.renameAriaLabel}`}
+          tooltip={nameTooltip}
           variant="ghost"
           size="sm"
           onClick={() => setRenaming(true)}
         >
-          <span className="maka-titlebar-identity__segment--session">{props.sessionName}</span>
+          <span ref={measureRef} className="maka-titlebar-identity__segment--session">{sessionName}</span>
         </Button>
       )}
       {!props.readOnly || props.action || (props.parentSession && props.project) ? (
         <span className="maka-titlebar-identity__action">
           <DropdownMenu
             className="maka-titlebar-menu"
-            button={{ label: copy.sessions.actionsAriaLabel(props.sessionName), tooltip: copy.sessions.actionsAriaLabel(props.sessionName), icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
+            button={{ label: `${sessionName} — ${copy.chat.taskActions}`, tooltip: copy.chat.taskActions, icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
             hasChevron={false}
             alignment="end"
+            isMenuOpen={actionsMenuOpen}
+            onOpenChange={setActionsMenuOpen}
           >
             {!props.readOnly ? <DropdownMenuItem label={copy.sessions.rename} onClick={() => setRenaming(true)} /> : null}
             {props.action ? <DropdownMenuItem label={props.action.label} onClick={props.action.onClick} /> : null}

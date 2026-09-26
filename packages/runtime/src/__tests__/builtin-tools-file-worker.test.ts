@@ -32,7 +32,7 @@ import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
 import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../filesystem-worker/protocol.js';
-import { READ_PAGE_MAX_CHARS, type ReadInput, type ReadPage } from '../read-page.js';
+import { READ_PAGE_MAX_BYTES, type ReadInput, type ReadPage } from '../read-page.js';
 
 const cleanup: string[] = [];
 
@@ -111,7 +111,7 @@ describe('builtin file tools use the sandboxed worker', () => {
     });
     const read = async (input: ReadInput) => {
       const page = (await runTool(tools, 'Read', input, cwd)) as ReadPage;
-      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
       return page;
     };
     const first = await read({ path });
@@ -220,7 +220,7 @@ describe('builtin file tools use the sandboxed worker', () => {
                 changed: true,
               };
             case 'glob':
-              return { kind: 'glob', files: ['worker.ts'] };
+              return { kind: 'glob', files: ['worker.ts'], truncated: false };
             case 'grep':
               return {
                 kind: 'grep',
