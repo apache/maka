@@ -461,8 +461,11 @@ function claudeThinkingMode(
  * `resolveThinkingLevel`.
  *
  * `'off'` is used when the model declares it. It is also used when the model
- * declares no levels, or speaks Anthropic Messages, because on those paths an
- * omitted parameter already means no extended reasoning.
+ * declares no levels, or is a Claude model on Anthropic Messages, because on
+ * those paths an omitted parameter already means no extended thinking, while
+ * the lowest effort would switch adaptive thinking on. That holds for Claude,
+ * not for every Anthropic Messages route: Kimi's K3 and kimi-for-coding think
+ * by default when no level is sent.
  *
  * Everywhere else a dropped `'off'` omits the effort parameter, and the
  * provider then runs its default reasoning (medium on GPT-5, GPT-6 and o3,
@@ -476,7 +479,9 @@ export function leastReasoningThinkingLevel(
 ): ThinkingLevel {
   const variants = thinkingVariantsForConnection(connection, modelId);
   if (variants.length === 0 || variants.includes('off')) return 'off';
-  if (runtime.wire === 'anthropic-messages') return 'off';
+  if (runtime.wire === 'anthropic-messages' && claudeFamilyId(modelId).startsWith('claude-')) {
+    return 'off';
+  }
   return THINKING_LEVELS.find((level) => variants.includes(level)) ?? 'off';
 }
 

@@ -6331,3 +6331,102 @@ test('prompt suggestions use the least reasoning each model accepts, reject trun
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('prompt suggestions ask Kimi K3 for its lowest effort instead of its default thinking', async () => {
+  const MODEL_ID = 'k3';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'kimi-coding-plan',
+        name: 'Kimi Coding Plan',
+        providerType: 'kimi-coding-plan',
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'kimi-coding-plan',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+
+    let requestBody: Record<string, unknown> = {};
+    const suggest = createHostPromptSuggestionModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('prompt suggestion telemetry must not drain the Host'),
+      newId: () => 'kimi-suggestion',
+      createFetchTransport: () => ({
+        close: async () => {},
+        fetch: (async (_url, init) => {
+          requestBody = JSON.parse(String(init?.body));
+          return Response.json({
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            model: MODEL_ID,
+            content: [{ type: 'text', text: 'Yes, add the tests next.' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 7, output_tokens: 6 },
+          });
+        }) as typeof fetch,
+      }),
+    });
+
+    const text = await suggest(
+      {
+        sessionId: session.id,
+        turnId: 'turn',
+        terminalEventId: 'terminal',
+        header: session,
+        messages: [],
+      },
+      new AbortController().signal,
+    );
+
+    assert.equal(text, 'Yes, add the tests next.');
+    assert.deepEqual(
+      requestBody.thinking,
+      { type: 'adaptive' },
+      'K3 must be sent an explicit thinking mode, not left on its default',
+    );
+    assert.match(
+      JSON.stringify(requestBody),
+      /"effort":"low"/,
+      'K3 must be asked for its lowest effort, not its default maximum',
+    );
+    assert.equal(requestBody.max_tokens, 1_024);
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});

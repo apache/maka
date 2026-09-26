@@ -1333,17 +1333,40 @@ describe('leastReasoningThinkingLevel', () => {
   });
 
   test('keeps off where an omitted parameter already means no extended reasoning', () => {
-    // Anthropic Messages effort models: omitting effort/thinking is non-thinking,
-    // while the lowest effort would switch adaptive thinking on.
-    const anthropic = conn('anthropic');
-    assert.equal(leastReasoningThinkingLevel(anthropic, 'claude-opus-4-8'), 'off');
-    const options = buildProviderOptions(anthropic, 'claude-opus-4-8', 'off').anthropic as Record<
-      string,
-      unknown
-    >;
-    assert.equal(options.effort, undefined);
-    assert.equal(options.thinking, undefined);
+    // Claude on Anthropic Messages: omitting effort/thinking is non-thinking,
+    // while the lowest effort would switch adaptive thinking on. That holds on
+    // a gateway serving Claude over the same wire.
+    for (const providerType of ['anthropic', 'opencode'] as const) {
+      const connection = conn(providerType);
+      assert.equal(
+        leastReasoningThinkingLevel(connection, 'claude-opus-4-8'),
+        'off',
+        `${providerType}/claude-opus-4-8`,
+      );
+      const options = (buildProviderOptions(connection, 'claude-opus-4-8', 'off').anthropic ??
+        {}) as Record<string, unknown>;
+      assert.equal(options.effort, undefined);
+      assert.equal(options.thinking, undefined);
+    }
     // Models with no declared levels keep the previous request unchanged.
     assert.equal(leastReasoningThinkingLevel(conn('openai'), 'gpt-4o'), 'off');
+  });
+
+  test('asks Kimi Coding Plan for its lowest effort, since it thinks by default when none is sent', () => {
+    // K3 and kimi-for-coding speak Anthropic Messages but are not Claude: an
+    // omitted level leaves the route on its default, maximum thinking.
+    const kimi = conn('kimi-coding-plan', 'kimi-coding-plan');
+    for (const [modelId, thinking] of [
+      ['k3', { type: 'adaptive' }],
+      ['k3-256k', { type: 'adaptive' }],
+      ['kimi-for-coding', { type: 'enabled', budgetTokens: 1_024 }],
+    ] as const) {
+      const level = leastReasoningThinkingLevel(kimi, modelId);
+      assert.equal(level, 'low', modelId);
+      assert.deepEqual(buildProviderOptions(kimi, modelId, level).anthropic, {
+        thinking,
+        effort: 'low',
+      });
+    }
   });
 });
