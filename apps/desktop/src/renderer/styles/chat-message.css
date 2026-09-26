@@ -33,13 +33,26 @@
 
 /* Astryx owns sender-aware row alignment; Maka only declares the product
    reading geometry and the deliberately dense conversation type scale. */
-.maka-chat-message {
-  width: 100%;
-  opacity: 1;
-}
 
-.maka-chat-message-list {
-  width: 100%;
+/* Like the startup reveal (#5494), the previous transcript stays put until the
+   live answer mounts the new one, which fades in once it is in place — no
+   cached tail, no intermediate partial state or position. The conversation's
+   recovery notices sit outside the transcript but swap with it. */
+.maka-chat-session-swap:not([data-placed]),
+.agents-chat-view-root:has(.maka-chat-session-swap:not([data-placed])) ~ .maka-chat-recovery-notice {
+  opacity: 0;
+}
+.maka-chat-session-swap[data-placed],
+.agents-chat-view-root:has(.maka-chat-session-swap[data-placed]) ~ .maka-chat-recovery-notice {
+  animation-name: maka-stream-fade-in;
+  animation-duration: var(--duration-emphasized);
+  animation-timing-function: var(--ease-out-strong);
+}
+@media (prefers-reduced-motion: reduce) {
+  .maka-chat-session-swap[data-placed],
+  .agents-chat-view-root:has(.maka-chat-session-swap[data-placed]) ~ .maka-chat-recovery-notice {
+    animation: none;
+  }
 }
 
 /* Native anchoring handles ordinary content growth. The scroll authority
@@ -51,16 +64,15 @@
 
 /* These rows mount and unmount around the reader without being anything the
    reader is reading, so anchoring on one moves the transcript for no content:
-   a send that is not durable yet, the placeholder held until the live Turn
-   exists. */
+   a send that is not durable yet, the Turn held until the transcript carries
+   it. */
 [data-transient-message-id],
-.maka-turn[data-live-streaming='true']:not([data-turn-id]) {
+.maka-pending-turn {
   overflow-anchor: none;
 }
 
 .maka-transcript-turn {
   display: flex;
-  width: 100%;
   flex-direction: column;
   gap: var(--spacing-4);
   /* Resident Turns contribute their real size before the first scroll. */
@@ -156,36 +168,10 @@
 /* Cursor for tool/reasoning disclosure triggers is owned by
    styles/native-cursor.css (role=button + default !important). */
 
+/* Astryx sets the tool name in monospace for raw tool ids; Maka's names are
+   localized sentences, which read badly in a code face. */
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
-  font: var(--maka-text-label);
-}
-
-/* Reasoning and tool-call rows read at BODY size, not supporting size.
-   Astryx puts the label and preview on inner spans styled as `supporting`
-   (12px on this scale). Measured on main they rendered at 9.75px — Astryx's
-   sm tier at 0.75rem against the old 13px root — which made them the least
-   legible text in the product, and they carry real content — what the agent is
-   thinking and which tool is running — not metadata.
-   Cursor makes the same call: its tool rows sit at body size and lean
-   entirely on --text-secondary/tertiary for de-emphasis. Weight and colour
-   already do that here, so size does not need to.
-
-   Rebinding the role token rather than restyling the spans. Astryx's
-   supporting atoms are `font-size: var(--text-supporting-size)` and
-   `line-height: var(--text-supporting-leading)`, so redefining those two on
-   the trigger reaches every span that opts into the role, at any depth,
-   through inheritance — no !important, since nothing else declares them
-   here, and no dependency on child order.
-   The earlier form of this rule selected `> span:not(:last-child)`, which
-   read as "every span except the chevron". It was wrong for exactly the
-   reason positional selectors are: ChatReasoning wraps its label, duration
-   and preview in a `<div>` (packages/ui/src/astryx-chat-reasoning.tsx), so
-   the rule enlarged the leading icon wrapper and left the reasoning text at
-   supporting size — the one row the retune was for. */
-.maka-turn .astryx-chat-reasoning [role="button"],
-.maka-turn .astryx-chat-tool-calls [role="button"] {
-  --text-supporting-size: var(--text-body-size);
-  --text-supporting-leading: var(--maka-line-body);
+  --font-family-code: var(--maka-font-family);
 }
 
 /* These boxes need no !important to beat Astryx: its StyleX atoms live in the
@@ -196,14 +182,6 @@
   width: 14px;
   height: 14px;
   margin-inline-start: auto;
-}
-
-/* Both chevrons are the same registry icon, which wraps its svg in a span —
-   so the wrapper (`> *`) needs sizing too, not just the svg. */
-.maka-turn :is(.astryx-chat-reasoning, .astryx-chat-tool-calls) [role="button"] > span:last-child svg,
-.maka-turn :is(.astryx-chat-reasoning, .astryx-chat-tool-calls) [role="button"] > span:last-child > * {
-  width: 10px;
-  height: 10px;
 }
 
 @media (hover: hover) {
@@ -238,6 +216,25 @@
 .maka-chat-tool-detail-inner {
   overflow: hidden;
   min-height: 0;
+}
+
+/* What a process row expands to reads at the row's own supporting size, and
+   what titles something in there takes heading-5, the 12px title rung.
+   Markdown and code blocks set body and code sizes on their own elements, so
+   the step-down is made on the tokens as well as the inherited font. The Maka
+   roles are composed at :root, so the ones used in here are restated; code
+   elements recompose theirs from the code tokens. */
+.maka-chat-tool-detail,
+.maka-chat-reasoning-content {
+  --text-body-size: var(--text-supporting-size);
+  --text-body-leading: var(--text-supporting-leading);
+  --text-code-size: var(--text-supporting-size);
+  --text-code-leading: var(--text-supporting-leading);
+  --maka-text-body: var(--maka-text-supporting);
+  --maka-text-label: var(--maka-text-heading-5);
+  --maka-text-heading-3: var(--maka-text-heading-5);
+  --maka-text-heading-4: var(--maka-text-heading-5);
+  font: var(--maka-text-supporting);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -282,6 +279,26 @@
   align-items: center;
   gap: var(--space-1-5);
   margin-top: var(--space-1-5);
+}
+
+/* Times and actions answer a reader already pointing at the message, so they
+   stay hidden until then. A delivery or Work status is news and stays visible.
+   Rows keep their space so the transcript does not move, and only opacity
+   hides them: the buttons must stay focusable for :focus-within to reveal
+   them. A tap must not land on a control it cannot see, and without hover
+   nothing would ever reveal them, so this is for hover pointers only. */
+@media (hover: hover) {
+  .maka-user-message .maka-message-meta:not(:has(.maka-message-delivery, .maka-message-status-time)),
+  .maka-assistant-answer .maka-turn-footer {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-fast) var(--ease-standard);
+  }
+  .maka-user-message:is(:hover, :focus-within) .maka-message-meta,
+  .maka-assistant-answer:is(:hover, :focus-within) .maka-turn-footer {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* Turn summary / lineage rows / footer measure column folded into the

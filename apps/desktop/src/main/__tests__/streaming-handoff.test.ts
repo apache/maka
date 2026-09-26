@@ -88,7 +88,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): Promise<string> {
 }
 
 describe('single live-turn handoff', () => {
-  it('keeps activity in the process row before the session or Turn arrives', async () => {
+  it('keeps activity in the top status row before the session or Turn arrives', async () => {
     const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
       id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
       labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -100,16 +100,19 @@ describe('single live-turn handoff', () => {
         messages: [],
         transientMessages: [{
           id: 'message-pending', ts: 1, text: 'send now',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         }],
         activeTurn: { turnId: 'turn-pending' },
         scrollBehavior: 'smooth',
         onNew() {},
       } satisfies Parameters<typeof ChatView>[0]));
       const { document } = parseHTML(markup);
-      const status = document.querySelector('.maka-processing-summary [role="status"]');
-      assert.ok(status, 'activity must occupy the process row');
-      assert.equal(document.querySelector('.maka-turn-footer'), null);
+      const status = document.querySelector(
+        '.maka-assistant-answer .maka-turn-statusbar [role="status"]',
+      );
+      assert.ok(status, 'activity must occupy the top status row');
+      assert.equal(document.querySelector('.maka-processing-block'), null);
+      assert.equal(document.querySelector('.maka-turn-footer')?.textContent, '');
       assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
     }
   });
@@ -127,7 +130,7 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-pending', ts: 2,
-          text: 'send now', transientPlacement: 'current_turn',
+          text: 'send now', transientPlacement: 'transcript',
         },
       ],
       scrollBehavior: 'smooth',
@@ -150,7 +153,7 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-pending', ts: 1,
-          text: 'inspect this image', transientPlacement: 'current_turn',
+          text: 'inspect this image', transientPlacement: 'transcript',
         },
       ],
       scrollBehavior: 'smooth',
@@ -174,7 +177,7 @@ describe('single live-turn handoff', () => {
         {
           id: 'turn-1', ts: 1, text: 'send now',
           hostTurnId: 'turn-1',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         },
       ],
       messageLoading: true,
@@ -210,11 +213,11 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-1', ts: 1, text: 'send now',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         },
         {
           id: 'message-next', ts: 2, text: 'do this next',
-          transientPlacement: 'next_turn',
+          transientPlacement: 'follow_up',
         },
       ],
       scrollBehavior: 'smooth',

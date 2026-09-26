@@ -30,9 +30,10 @@ import {
   Token,
   VStack,
 } from '@astryxdesign/core';
-import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
-  supportsRelayFastServiceTier,
+  declaredModelApiProtocol,
+  supportsCustomFastServiceTier,
   modelLimitsConflict,
   type ModelOverride,
 } from '@maka/core/model-thinking';
@@ -48,13 +49,14 @@ import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsActions, SettingsRow, SettingsSection } from './settings-section';
 import { providerDisplay } from './provider-display';
-import { CapabilityEditor, AddModelDialog, ConnectionUsageSection, ModelParametersDialog } from '../features/connection-settings';
+import { CapabilityEditor, AddModelDialog, ModelParametersDialog } from '../features/connection-settings';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
+  ProviderEndpointField,
   getProviderSettingsCopy,
   parseContextWindowInput,
   providerPanelActionErrorMessage,
@@ -201,7 +203,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  const isRelay = isRelayProviderType(connection.providerType);
   const entryById = new Map(modelChoices.map((entry) => [entry.id, entry]));
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
@@ -561,26 +562,38 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
             onSave={async () => { if (await save('endpoint')) setEditingRow(null); }}
           >
-            {endpointHasCredentials ? (
-              <PasswordInput
-                value={baseUrl}
-                onChange={setBaseUrl}
-                placeholder={defaults.baseUrl}
-                label={copy.endpoint}
-                isLabelHidden
-                description={copy.endpointCredentialsMasked}
-                isDisabled={allActionsBusy}
-              />
-            ) : (
-              <TextInput
-                label={copy.endpoint}
-                isLabelHidden
-                value={baseUrl}
-                onChange={setBaseUrl}
-                placeholder={defaults.baseUrl}
-                isDisabled={allActionsBusy}
-              />
-            )}
+            <ProviderEndpointField
+              providerType={connection.providerType}
+              baseUrl={baseUrl}
+              apiProtocol={declaredModelApiProtocol(connection, connection.defaultModel)}
+            >
+              {(requestDescription) => (
+                endpointHasCredentials ? (
+                  <PasswordInput
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    description={<>
+                      {copy.endpointCredentialsMasked}
+                      {requestDescription && <span className="maka-visually-hidden"> {requestDescription}</span>}
+                    </>}
+                    isDisabled={allActionsBusy}
+                  />
+                ) : (
+                  <TextInput
+                    aria-description={requestDescription}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    isDisabled={allActionsBusy}
+                  />
+                )
+              )}
+            </ProviderEndpointField>
           </SettingsExpandableRow>
         ) : (
           <SettingsRow label={copy.endpoint} description={endpointDisplay} align="start" />
@@ -604,19 +617,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           />
         )}
       </SettingsSection>
-      {/* Read-only account usage, for the providers that report it. Sits after
-          the credentials (which is what a usage read needs) and before the
-          model list. */}
-      {!retired && props.bridge.usage ? (
-        <SettingsSection title={copy.usage.title}>
-          <ConnectionUsageSection
-            connectionId={connection.connectionId}
-            slug={connection.slug}
-            providerType={connection.providerType}
-            load={props.bridge.usage.bind(props.bridge)}
-          />
-        </SettingsSection>
-      ) : null}
       {/* Everything below writes to the connection, and a retired one accepts
           no writes: the catalog refuses a model or request-body change, and the
           credential vault refuses a request header. Rendering the editors would
@@ -713,7 +713,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         {editingModelId !== null && <CapabilityEditor
           copy={copy}
           modelId={editingModelId}
-          isRelay={isRelay}
+          customDefaultApiProtocol={connection.defaultApiProtocol}
           numericInputs={numericInputs}
           onNumericInput={(field, input) => {
             setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: editingModelId, numericInputs: { ...numericInputs, [field]: input } }));
@@ -729,7 +729,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
           contextWindowInputInvalid={contextWindowInputInvalid}
           disabled={allActionsBusy}
-          showsFastMode={supportsRelayFastServiceTier(connection.providerType, editingModelId)}
+          showsFastMode={supportsCustomFastServiceTier(
+            { ...connection, modelOverrides: { [editingModelId]: declared ?? {} } },
+            editingModelId,
+          )}
           defaultVision={connection.catalogEntries.find((model) => model.id === editingModelId)?.defaultSupportsVision}
           onContextWindowInput={(input) => changeContextWindow(editingModelId, input)}
         />}
@@ -737,6 +740,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       <AddModelDialog
         isOpen={editingRow === 'add-model'}
         providerType={connection.providerType}
+        defaultApiProtocol={connection.defaultApiProtocol}
         /* The catalog, not just the selection: the resolved entries are usually
            a proper superset of what the user enabled. Checking only the
            selection lets a listed-but-unchecked id through, and the dialog

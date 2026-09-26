@@ -278,10 +278,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     providerTool: { kind: 'openai-apply-patch' },
     executionFacts,
     impl: async (input, ctx) => {
-      if (typeof input !== 'string') {
+      const patch = typeof input === 'string' ? input : input.patch;
+      if (typeof patch !== 'string') {
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
       }
-      const operations = parseCodexV4aPatch(input);
+      const operations = parseCodexV4aPatch(patch);
       return await executeApplyPatchOperations(
         operations,
         async (operation) => {
@@ -533,7 +534,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       name: 'Glob',
       activityKind: 'search',
       description:
-        'Find file and directory paths matching a glob pattern. Case sensitivity follows platform defaults. Hidden entries require an explicit dot-prefixed pattern component. Returns at most 200 matches in traversal order, without sorting.',
+        'Find file and directory paths matching a glob pattern. Case sensitivity follows platform defaults. Hidden entries require an explicit dot-prefixed pattern component. Returns at most 200 matches in traversal order, without sorting. `truncated` is true when more matches exist or an error prevents confirming whether more matches exist after the limit.',
       parameters: z.object({
         pattern: z
           .string()
@@ -559,7 +560,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             'no file list came back',
             'no files match the pattern',
           );
-        return { files: result.files };
+        return { files: result.files, truncated: result.truncated };
       },
     },
     {

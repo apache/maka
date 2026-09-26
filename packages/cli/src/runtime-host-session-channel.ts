@@ -269,9 +269,11 @@ export class RuntimeHostSessionChannel {
   }
 
   async *eventsForTurn(turnId: string): AsyncIterable<SessionEvent> {
+    const queue = this.#queue(turnId);
     try {
-      yield* this.#queue(turnId);
+      yield* queue;
     } finally {
+      queue.terminalTurn = undefined;
       if (this.#startedTurnBarrier === turnId) {
         this.#startedTurnBarrier = undefined;
         if (!this.#closing) this.#flushStartedTurns();
@@ -289,6 +291,101 @@ export class RuntimeHostSessionChannel {
 
   get firstObservedTurnId(): string | undefined {
     return this.#pendingStartedTurns.keys().next().value;
+  }
+
+  /** A successor behind the active consumer must be started by the channel. */
+  hasQueuedStartedTurn(turnId: string): boolean {
+    return this.#pendingStartedTurns.has(turnId);
+  }
+
+  /** The authoritative terminal fact travels with its queued events until consumption. */
+  terminalTurn(turnId: string): TerminalTurnSnapshot | undefined {
+    return this.#turns.get(turnId)?.terminalTurn;
+  }
+
+  /** Read a fresh, bounded page stream on the existing subscription for ACP load. */
+  async replayTranscript(
+    onMessages: (messages: readonly StoredMessage[]) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const subscription = this.#subscription;
+    const throughSequence = this.#transcriptThrough;
+    if (throughSequence === null) return;
+    const lifetime = AbortSignal.any([this.#lifetime.signal, ...(signal ? [signal] : [])]);
+    const result = await this.#scanTranscriptRange(
+      subscription,
+      null,
+      throughSequence,
+      onMessages,
+      lifetime,
+    );
+    if (result === 'replaced') {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session subscription changed during transcript replay',
+      );
+    }
+  }
+
+  /** The sole paged transcript scanner used by load and Turn reconciliation. */
+  async #scanTranscriptRange(
+    subscription: RuntimeHostSessionSubscription,
+    afterSequence: number | null,
+    throughSequence: number,
+    onMessages: (messages: readonly StoredMessage[]) => Promise<void>,
+    signal: AbortSignal,
+    turnId?: string,
+  ): Promise<'complete' | 'replaced'> {
+    let cursor: string | null = null;
+    do {
+      signal.throwIfAborted();
+      const page: SessionTranscriptPage = await awaitTranscript(
+        subscription.loadTranscriptPage({
+          direction: 'newer',
+          throughSequence,
+          cursor,
+          anchorSequence: cursor === null ? afterSequence : null,
+          maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+        }),
+        signal,
+      );
+      let assemblyBytes = 0;
+      const decoded: DecodedSessionTranscriptPage<StoredMessage> = await awaitTranscript(
+        subscription.decodeTranscriptPage(
+          page,
+          decodeStoredMessage,
+          PROMPT_TRANSCRIPT_RANGE_MAX_BYTES,
+          (delta) => {
+            assemblyBytes += delta;
+            if (assemblyBytes > PROMPT_TRANSCRIPT_RANGE_MAX_BYTES) {
+              throw new RangeError('Session transcript assembly exceeds the range byte limit');
+            }
+          },
+        ),
+        signal,
+      );
+      signal.throwIfAborted();
+      if (subscription !== this.#subscription) return 'replaced';
+      if (decoded.nextCursor !== null && decoded.nextCursor === cursor) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript cursor did not advance',
+        );
+      }
+      // A correlated cursor, not consecutive event ordinals, proves coverage.
+      const messages = decoded.messages
+        .map(({ message }) => message)
+        .filter((message) => turnId === undefined || message.turnId === turnId);
+      if (messages.length) await awaitTranscript(onMessages(messages), signal);
+      signal.throwIfAborted();
+      if (
+        turnId &&
+        messages.some((message) => message.type === 'turn_state' && message.status !== 'running')
+      )
+        return 'complete';
+      cursor = decoded.nextCursor;
+    } while (cursor !== null);
+    return 'complete';
   }
 
   /** Call before turn.start: this deliberately does not implement historical turn lookup. */
@@ -378,64 +475,16 @@ export class RuntimeHostSessionChannel {
         );
       }
       try {
-        let cursor: string | null = null;
-        do {
-          signal.throwIfAborted();
-          const page: SessionTranscriptPage = await awaitTranscript(
-            subscription.loadTranscriptPage({
-              direction: 'newer',
-              throughSequence,
-              cursor,
-              anchorSequence: cursor === null ? afterSequence : null,
-              maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-            }),
-            signal,
-          );
-          let assemblyBytes = 0;
-          const decoded: DecodedSessionTranscriptPage<StoredMessage> = await awaitTranscript(
-            subscription.decodeTranscriptPage(
-              page,
-              decodeStoredMessage,
-              PROMPT_TRANSCRIPT_RANGE_MAX_BYTES,
-              (delta) => {
-                assemblyBytes += delta;
-                if (assemblyBytes > PROMPT_TRANSCRIPT_RANGE_MAX_BYTES) {
-                  throw new RangeError(
-                    'Prompt transcript assembly exceeds the existing range byte limit',
-                  );
-                }
-              },
-            ),
-            signal,
-          );
-          signal.throwIfAborted();
-          if (subscription !== this.#subscription) break;
-          if (
-            decoded.nextCursor !== null &&
-            (decoded.nextCursor === cursor || decoded.messages.length === 0)
-          ) {
-            throw new RuntimeHostSubscriptionError(
-              'correlation_changed',
-              'Prompt transcript cursor did not advance',
-            );
-          }
-          // Durable event ordinals may be sparse. The correlated cursor, not
-          // consecutive message numbers, establishes coverage of this cut.
-          const messages = decoded.messages
-            .map((entry) => entry.message)
-            .filter((message) => message.turnId === turnId);
-          if (messages.length) await awaitTranscript(onMessages(messages), signal);
-          signal.throwIfAborted();
-          if (
-            messages.some(
-              (message) => message.type === 'turn_state' && message.status !== 'running',
-            )
-          )
-            return nextCut;
-          cursor = decoded.nextCursor;
-        } while (cursor !== null);
+        const scan = await this.#scanTranscriptRange(
+          subscription,
+          afterSequence,
+          throughSequence,
+          onMessages,
+          signal,
+          turnId,
+        );
         // Commit progress only after every page and its consumer succeed.
-        if (subscription === this.#subscription) return nextCut;
+        if (scan === 'complete' && subscription === this.#subscription) return nextCut;
       } catch (error) {
         lifetime.throwIfAborted();
         if (this.#failure) throw this.#failure;
@@ -477,6 +526,7 @@ export class RuntimeHostSessionChannel {
   seedTerminalCut(turn: TerminalTurnSnapshot): void {
     if (!this.#projector) return;
     for (const event of this.#projector.seedTerminal(turn)) this.#emit(event);
+    this.#queue(turn.turnId).terminalTurn = turn;
     this.#queue(turn.turnId).finish();
   }
 
@@ -751,6 +801,7 @@ export class RuntimeHostSessionChannel {
       }
     } else if (root && isTerminalTurn(root) && !sameRuntimeHostTerminalTurn(previousRoot, root)) {
       for (const event of this.#projector.seedTerminal(root)) this.#emit(event);
+      this.#queue(root.turnId).terminalTurn = root;
       this.#queue(root.turnId).finish();
       if (this.#activated) this.#onTranscriptSettlement(root.turnId);
       else this.#pendingTranscriptSettlements.push(root.turnId);
@@ -874,6 +925,7 @@ export class RuntimeHostSessionChannel {
       else this.#pendingStartedTurns.set(turn.turnId, turn);
     }
     if (update.terminalTurn) {
+      this.#queue(update.terminalTurn.turnId).terminalTurn = update.terminalTurn;
       this.#queue(update.terminalTurn.turnId).finish();
       if (this.#activated) this.#onTranscriptSettlement(update.terminalTurn.turnId);
       else this.#pendingTranscriptSettlements.push(update.terminalTurn.turnId);
@@ -933,6 +985,7 @@ function awaitTranscript<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> 
 }
 
 class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<SessionEvent> {
+  terminalTurn?: TerminalTurnSnapshot;
   readonly #items: SessionEvent[] = [];
   readonly #onLag: () => void;
   #waiting:

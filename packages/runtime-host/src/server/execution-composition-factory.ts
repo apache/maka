@@ -26,7 +26,7 @@ import type { RuntimeHostCompositionContext } from './host-kernel.js';
 import {
   defineInteractiveRuntimeHostComposition,
   type RuntimeHostCompositionSource,
-} from './host-composition.js';
+} from './host-composition-source.js';
 
 export interface ExecutionRuntimeHostCompositionSourceOptions {
   readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;

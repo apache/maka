@@ -714,16 +714,16 @@ test('drains an accepted Host-backed Bot turn before closing its generation', as
 
 test('rolls back only candidate-owned IPC after a registration collision', async () => {
   const ipc = ipcHarness();
-  ipc.handle('deepResearch:get', async () => 'embedded');
+  ipc.handle('todo:read', async () => 'embedded');
   const host = connectionHarness('collision');
 
   await assert.rejects(
     () => createDesktopRuntimeHostCandidate(host.connection, deps(ipc)),
-    /duplicate handler: deepResearch:get/,
+    /duplicate handler: todo:read/,
   );
 
-  assert.equal(await ipc.invoke('deepResearch:get'), 'embedded');
-  assert.deepEqual(ipc.channels, ['deepResearch:get']);
+  assert.equal(await ipc.invoke('todo:read'), 'embedded');
+  assert.deepEqual(ipc.channels, ['todo:read']);
   assert.equal(host.closeCalls, 1);
 });
 
@@ -1262,6 +1262,7 @@ function deps(
       workspace: { kind: 'host_path', path: '/workspace' },
     }),
     resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
+    resolveExternalSessionImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
     completeDesktopInteractionTurn() {},
     createSessionCopyCleanup: () => ({

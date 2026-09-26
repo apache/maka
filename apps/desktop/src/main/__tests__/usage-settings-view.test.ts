@@ -629,6 +629,8 @@ it('capacity failure never retries and retains the original query until a comple
   await act(async () => {root.render(scopeTree(services, Probe)); await flush();});
   await act(async () => {await scope.reload('all');});
   assert.equal(calls, 1); assert.equal(scope.state, 'error'); assert.equal(Boolean(scope.stats), false);
+  assert.deepEqual(scope.failure, {kind: 'screen_response_too_large', section: 'pricing'});
+  assert.equal(scope.error, null, 'typed capacity is not flattened into an error string');
   fail = false;
   await act(async () => {await scope.reload('all', {search: 'old-filter', status: 'all'});});
   fail = true;
@@ -677,6 +679,7 @@ it('numbered pages are present initially and jumping to the last page keeps the 
   await act(async () => {button('Go to page 3').click(); await flush();});
   assert.equal(calls, 1);
   assert.equal(button('Go to next page').disabled, true);
+  assert.match(container.textContent ?? '', /Loading page 1 of 3/);
   assert.match(container.textContent ?? '', /first-0/);
   await act(async () => {
     continuation.resolve({kind: 'activity', page: {revision: 'same-revision', queryIdentity: 'query',
@@ -697,3 +700,163 @@ it('numbered pages are present initially and jumping to the last page keeps the 
   assert.equal(calls, 2, 'returning to a cached page does not fetch again');
   await act(async () => root.unmount());
 });
+
+it('debounces search edits, refreshes immediately, and cancels pending queries on unmount', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const {container, root} = setupDom();
+  let settings = mergeSettings(createDefaultSettings(), {
+    usage: {range: 'all', activeTab: 'requests', showDetails: true},
+  });
+  const queries: UsageScreenQuery[] = [];
+  const services: UsageServices = {
+    loadUsageStats: async (_range, query) => {
+      assert.ok(query);
+      queries.push(query);
+      return navigable(0, query, 'query');
+    },
+    updateUsageSettings: async (patch) => mergeSettings(settings, {usage: patch}).usage,
+  };
+  const render = async (search: string, targetKey = 'host') => {
+    settings = mergeSettings(settings, {usage: {modelFilter: search}});
+    await act(async () => {
+      root.render(tree({active: true, settings, targetKey, services}));
+      await flush();
+    });
+  };
+  const tick = async (ms: number) => {
+    await act(async () => {
+      t.mock.timers.tick(ms);
+      await flush();
+    });
+  };
+
+  await render('');
+  assert.equal(queries.length, 1, 'mount loads immediately');
+  await render('a');
+  await tick(200);
+  await render('ab');
+  await tick(249);
+  assert.equal(queries.length, 1);
+  await tick(1);
+  assert.deepEqual(queries.map((query) => query.search), ['', 'ab']);
+  assert.deepEqual(queries[1]!.range, queries[0]!.range, 'typing preserves time bounds');
+
+  await render(' AB  ');
+  await tick(250);
+  assert.equal(queries.length, 2, 'an equivalent normalized search keeps the current screen');
+
+  await render('abc');
+  await act(async () => {
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]');
+    assert.ok(refresh);
+    refresh.click();
+    await flush();
+  });
+  assert.equal(queries.at(-1)!.search, 'abc');
+  await tick(250);
+  assert.equal(queries.length, 3, 'refresh consumes the pending search');
+
+  await render('host-search');
+  await render('host-search', 'new-host');
+  assert.equal(queries.length, 4, 'Host change bypasses debounce');
+  await tick(250);
+  assert.equal(queries.length, 4, 'old Host timer was cancelled');
+
+  await render('unmounted', 'new-host');
+  await act(async () => root.unmount());
+  await tick(250);
+  assert.equal(queries.length, 4, 'unmount cancels the pending query');
+});
+
+for (const failure of ['revision_changed', 'screen_response_too_large', 'filter_error'] as const) {
+  it(`keeps cached navigation after ${failure}`, async () => {
+    const {container, root} = setupDom();
+    const settings = mergeSettings(createDefaultSettings(), {
+      usage: {range: 'all', activeTab: 'requests', showDetails: true},
+    });
+    const row = (id: string) => ({
+      id,
+      ts: 1,
+      kind: 'model' as const,
+      provider: 'p',
+      model: id,
+      inputTokens: 0,
+      outputTokens: 0,
+      status: 'success' as const,
+    });
+    let calls = 0;
+    const services: UsageServices = {
+      loadUsageStats: async (_range, query) => {
+        assert.ok(query);
+        if (failure === 'filter_error' && query.status === 'error') throw new Error('filter failed');
+        return {
+          ...navigable(151, query, 'query'),
+          logs: Array.from({length: 50}, (_, index) => row(`first-${index}`)),
+        };
+      },
+      loadUsageActivity: async () => {
+        calls++;
+        if (calls > 1) {
+          return failure === 'revision_changed'
+            ? {kind: 'revision_changed'}
+            : {kind: 'screen_response_too_large', section: 'activity_page'};
+        }
+        return {
+          kind: 'activity',
+          page: {
+            revision: 'same-revision',
+            queryIdentity: 'query',
+            nextCursor: 'third',
+            logs: Array.from({length: 50}, (_, index) => row(`second-${index}`)),
+          },
+        };
+      },
+      updateUsageSettings: async () => settings.usage,
+    };
+    const button = (label: string) => {
+      const result = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+      assert.ok(result, label);
+      return result;
+    };
+    const click = async (label: string) => {
+      await act(async () => {
+        button(label).click();
+        await flush();
+      });
+    };
+
+    await act(async () => {
+      root.render(tree({active: true, settings, targetKey: 'host', services}));
+      await flush();
+    });
+    await click('Go to page 2');
+    assert.match(container.textContent ?? '', /second-0/);
+    if (failure === 'filter_error') {
+      const filteredSettings = mergeSettings(settings, {usage: {status: 'error'}});
+      await act(async () => {
+        root.render(tree({active: true, settings: filteredSettings, targetKey: 'host', services}));
+        await flush();
+      });
+    } else {
+      await click('Go to page 3');
+    }
+
+    const expectedCalls = failure === 'filter_error' ? 1 : 2;
+    assert.equal(calls, expectedCalls);
+    assert.equal(button('Go to next page').disabled, true);
+    assert.equal(button('Go to page 3').disabled, true);
+    assert.equal(button('Go to page 4').disabled, true);
+    assert.equal(button('Go to previous page').disabled, false);
+    await click('Go to page 1');
+    assert.match(container.textContent ?? '', /first-0/);
+    assert.equal(button('Go to next page').disabled, false);
+    await click('Go to next page');
+    assert.match(container.textContent ?? '', /second-0/);
+    await click('Go to previous page');
+    assert.match(container.textContent ?? '', /first-0/);
+    await click('Go to page 2');
+    assert.match(container.textContent ?? '', /second-0/);
+    assert.equal(calls, expectedCalls, 'cached navigation never requests another Host page');
+    await act(async () => root.unmount());
+  });
+}

@@ -132,6 +132,15 @@ export class DesktopSessionLocalService {
     return target;
   }
 
+  /** True while the local store still owns the Session's creation intent. */
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean {
+    try {
+      return this.store.creation(this.target(scope).partition, sessionId) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   changed(scope?: DesktopTargetScope): void {
     if (scope) {
       const target = this.deps
@@ -199,6 +208,7 @@ export class DesktopSessionLocalService {
         (!record.intent.originHostEpoch && record.state !== 'accepted') ||
         record.state === 'failed',
       placement: record.intent.command.placement,
+      localDisplayPlacement: record.intent.localDisplayPlacement,
       text: record.intent.command.content.displayText ?? record.intent.command.content.text,
       attachments: record.intent.command.content.attachments ?? [],
       directoryReferences: record.intent.command.content.directoryReferences,
@@ -206,6 +216,7 @@ export class DesktopSessionLocalService {
       inlineReferences: record.intent.command.content.inlineReferences ?? [],
       ...(record.result?.disposition === 'turn_started' ? { turnId: record.result.turnId } : {}),
       ...(record.error ? { error: record.error } : {}),
+      ...(target.client && target.submit ? { delivering: true as const } : {}),
     }));
   }
 
@@ -702,8 +713,13 @@ export function registerDesktopSessionLocalIpc(deps: {
       requiredId(sessionId);
       if (placement !== 'current_turn' && placement !== 'next_turn')
         throw new Error('Invalid message placement');
+      const submitted = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+      const { localDisplayPlacement } = submitted;
+      if (localDisplayPlacement !== undefined && localDisplayPlacement !== 'current_turn'
+        && localDisplayPlacement !== 'next_turn')
+        throw new Error('Invalid local display placement');
       const command = normalizeSessionSendCommand({
-        ...(value && typeof value === 'object' ? value : {}),
+        ...submitted,
         type: 'send',
       });
       if (!command?.messageId) throw new Error('Invalid submitted message');
@@ -757,6 +773,7 @@ export function registerDesktopSessionLocalIpc(deps: {
         prepared.commit(() =>
           service.store.enqueue(target.partition, {
             staged,
+            ...(localDisplayPlacement ? { localDisplayPlacement } : {}),
             command: {
               sessionId,
               messageId,
@@ -797,4 +814,26 @@ function requiredId(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 256)
     throw new Error('Invalid local Session or Message identity');
   return value;
+}
+
+/**
+ * `session-local:changed` keeps the row id for message-level readers, while
+ * `sessions:changed` drops it for a Session the local store still owns: a
+ * targeted `sessions.get` can only answer for Host-owned rows, so a pending
+ * Session's change must signal a merged-list refresh instead.
+ */
+export function createSessionLocalChangedEmitter(deps: {
+  send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean;
+}): (scope: DesktopTargetScope, sessionId?: string) => void {
+  return (scope, sessionId) => {
+    deps.send('session-local:changed', scope, { sessionId });
+    const catalogSessionId =
+      sessionId !== undefined && !deps.locallyOwned(scope, sessionId) ? sessionId : undefined;
+    deps.send('sessions:changed', scope, {
+      reason: 'updated',
+      ts: Date.now(),
+      ...(catalogSessionId !== undefined ? { sessionId: catalogSessionId } : {}),
+    });
+  };
 }

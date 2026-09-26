@@ -38,20 +38,13 @@ import {
 } from './stream-delta.js';
 
 /**
- * Default caps. Tuned to:
- *   - 4 KB per single delta: matches A3 tool-output's per-chunk
- *     cap and the runtime's `TOOL_OUTPUT_DELTA_MAX_CHARS`. Streaming
- *     models normally emit ≤ a few hundred chars per delta; a single
- *     4KB+ delta is misbehavior and gets tail-kept.
- *   - 256 KB total per session: a generous bound for ONE assistant
- *     turn. A typical model reply runs 200B-30KB; long-form code +
- *     prose can hit ~80KB; 256KB caps a runaway stream while
- *     leaving 99% of legitimate replies untouched. Past this cap,
- *     further deltas are dropped (the buffer freezes with a
- *     trailing marker; the user sees the head of the answer plus
- *     "[…后续已截断]" — not a silently-truncated mess).
+ * 256 KB total per session: a generous bound for ONE assistant turn. A
+ * typical model reply runs 200B-30KB; long-form code + prose can hit ~80KB;
+ * 256KB caps a runaway stream while leaving 99% of legitimate replies
+ * untouched. Past this cap, further deltas are dropped (the buffer freezes
+ * with a trailing marker; the user sees the head of the answer plus
+ * "[…后续已截断]" — not a silently-truncated mess).
  */
-export const ASSISTANT_MAX_DELTA_CHARS = 4 * 1024;
 export const ASSISTANT_MAX_TOTAL_CHARS = 256 * 1024;
 
 export interface ApplyAssistantOptions extends ApplyStreamOptions {
@@ -67,13 +60,10 @@ export function applyAssistantDelta(
   rawDelta: string,
   options: ApplyAssistantOptions,
 ): ApplyAssistantResult {
-  const copy = getSharedUiCopy(options.locale).stream;
   return applyStreamDelta(prev, rawDelta, {
-    maxDeltaChars: options.maxDeltaChars ?? ASSISTANT_MAX_DELTA_CHARS,
     maxTotalChars: options.maxTotalChars ?? ASSISTANT_MAX_TOTAL_CHARS,
     recovery: 'head',
-    chunkMarker: copy.assistantChunkTruncated,
-    totalMarker: copy.assistantTailTruncated,
+    totalMarker: getSharedUiCopy(options.locale).stream.assistantTailTruncated,
     ...(options.redactionState === undefined
       ? {}
       : { redactionState: options.redactionState }),

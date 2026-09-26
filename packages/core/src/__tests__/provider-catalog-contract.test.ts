@@ -174,8 +174,8 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
         },
       },
       {
-        providerType: 'openai-responses-compatible',
-        via: 'runtimeAdapter',
+        providerType: 'custom',
+        via: 'protocolAdapters.openai-responses',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
       {
@@ -228,7 +228,7 @@ describe('retired provider contract', () => {
   );
 
   it('pins the entries this catalog retires', () => {
-    assert.deepEqual(retired, ['opencode-free', 'claude-subscription']);
+    assert.deepEqual(retired, ['opencode-free', 'commandcode-go', 'claude-subscription']);
   });
 
   it('keeps a retired provider registered but unwired', () => {

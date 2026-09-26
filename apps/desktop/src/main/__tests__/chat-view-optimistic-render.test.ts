@@ -19,12 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type ComponentProps, createElement } from 'react';
+import { type ComponentProps, type ReactNode, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import {
   AstryxLocaleProvider,
   ChatSurfaceLayout,
   ChatView,
+  Composer,
   LocaleProvider,
   type TransientUserMessageProjection,
 } from '@maka/ui';
@@ -36,8 +38,9 @@ import {
 // #4654 that the hook-only tests could not prove. The panel wires it up:
 // `activeSession={companion.companionSession}` (undefined pre-fork) and
 // `transientMessages`/`runningStatus` from the same hook.
-function renderNoSessionChatView(
+function renderChatView(
   props: Partial<ComponentProps<typeof ChatView>>,
+  composer: ReactNode = null,
 ): string {
   const view = createElement(ChatView, {
     messages: [],
@@ -53,7 +56,7 @@ function renderNoSessionChatView(
     ...props,
   } as ComponentProps<typeof ChatView>);
   const layout = createElement(ChatSurfaceLayout, {
-    composer: null,
+    composer,
     children: view,
   });
   const astryx = createElement(AstryxLocaleProvider, { children: layout });
@@ -66,30 +69,108 @@ const OPTIMISTIC_BUBBLE: TransientUserMessageProjection = {
   id: 'turn-1',
   text: 'why does this fail?',
   ts: 1,
-  transientPlacement: 'current_turn',
+  transientPlacement: 'transcript',
 };
 
 test('ChatView renders the optimistic bubble and running status before a session exists', () => {
-  const markup = renderNoSessionChatView({
-    transientMessages: [OPTIMISTIC_BUBBLE],
+  const markup = renderChatView({
+    transientMessages: [{ ...OPTIMISTIC_BUBBLE, hostTurnId: 'turn-1' }],
     activeTurn: { turnId: 'turn-1' },
+    turnDecorations: new Map([['turn-1', {
+      header: null,
+      promptStatus: createElement('span', { 'data-testid': 'prompt-status' }),
+    }]]),
   });
-  // The user's question is on screen immediately, before the fork/session lands.
-  assert.match(markup, /why does this fail\?/);
-  // The running-status line rides alongside it (the no-turn bare-turn fallback).
-  assert.match(markup, /data-live-streaming="true"/);
+  const { document } = parseHTML(markup);
+  const turn = document.querySelector('.maka-pending-turn');
+  assert.ok(turn?.querySelector('.maka-user-message')?.textContent?.includes('why does this fail?'));
+  assert.ok(turn?.querySelector('.maka-user-message [data-testid="prompt-status"]'), 'the prompt keeps its Turn status');
+  assert.ok(turn?.querySelector('.maka-turn-processing'));
   // The optimistic content takes over from the empty state.
   assert.doesNotMatch(markup, /empty-state-marker/);
 });
 
+test('tail prompts keep only their own Host status before the transcript arrives', () => {
+  const messages = [
+    { ...OPTIMISTIC_BUBBLE, id: 'previous', hostTurnId: 'previous-turn' },
+    { ...OPTIMISTIC_BUBBLE, id: 'next' },
+  ];
+  const decorations = new Map([
+    ['previous-turn', { header: null, promptStatus: 'Completed' }],
+    ['next-turn', { header: null, promptStatus: 'Running' }],
+  ]);
+  for (const activeTurn of [undefined, { turnId: 'next-turn' }]) {
+    for (const admitted of [false, true]) {
+      const { document } = parseHTML(renderChatView({
+        activeTurn,
+        turnDecorations: decorations,
+        transientMessages: messages.map((message) => message.id === 'next' && admitted
+          ? { ...message, hostTurnId: 'next-turn' } : message),
+      }));
+      const previous = document.querySelector('[data-transient-message-id="previous"]')!;
+      const next = document.querySelector('[data-transient-message-id="next"]')!;
+      assert.match(previous.textContent!, /Completed/);
+      assert.doesNotMatch(previous.textContent!, /Running/);
+      assert.doesNotMatch(next.textContent!, /Completed/);
+      assert.equal(next.textContent!.includes('Running'), admitted);
+      assert.equal(previous.closest('[data-turn-id]'), null, 'pending layout does not assign Turn ownership');
+      assert.equal(next.closest('[data-turn-id]'), null, 'only Host evidence assigns Turn ownership');
+    }
+  }
+});
+
 test('ChatView shows the empty state when there is neither a bubble nor a running turn', () => {
-  const markup = renderNoSessionChatView({
+  const markup = renderChatView({
     transientMessages: [],
     activeTurn: undefined,
   });
   assert.doesNotMatch(markup, /why does this fail\?/);
-  assert.doesNotMatch(markup, /data-live-streaming="true"/);
+  assert.doesNotMatch(markup, /maka-turn-processing/);
   // The empty state (onboarding surface / hero) must still render — the empty
   // optimistic fragments must not suppress it.
   assert.match(markup, /empty-state-marker/);
+});
+
+test('a prompt on its way to the Host holds its Turn place beside a copy that did not send', () => {
+  const failed = { ...OPTIMISTIC_BUBBLE, id: 'failed', deliveryStatus: 'Failed' };
+  const render = (transientMessages: TransientUserMessageProjection[]) =>
+    parseHTML(renderChatView({ transientMessages })).document;
+
+  const document = render([failed, { ...OPTIMISTIC_BUBBLE, id: 'fresh' }]);
+  const answer = document.querySelector('.maka-pending-turn[data-awaiting-host] .maka-assistant-answer');
+  assert.ok(answer, 'the answer row is laid out ahead of the Host');
+  assert.doesNotMatch(answer?.getAttribute('aria-label') ?? '', /1970/, 'no answer time is claimed before the Host starts one');
+  assert.equal(render([failed]).querySelector('.maka-pending-turn'), null, 'nothing is on its way');
+});
+
+test('ordinary sends stay in ChatView while queued prompts stay in the composer', () => {
+  const render = (message: TransientUserMessageProjection) => parseHTML(renderChatView({
+    activeSession: {
+      id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
+      labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+    },
+    transientMessages: [message],
+  }, createElement(Composer, {
+    pendingMessages: [message], onSend() {}, onStop() {},
+  }))).document;
+
+  for (const message of [
+    OPTIMISTIC_BUBBLE,
+    { ...OPTIMISTIC_BUBBLE, deliveryStatus: 'Saved locally' },
+    { ...OPTIMISTIC_BUBBLE, deliveryStatus: 'Failed' },
+    { ...OPTIMISTIC_BUBBLE, hostTurnId: 'host-turn' },
+  ]) {
+    const document = render(message);
+    assert.equal(Boolean(document.querySelector('.maka-composer-queue')), false,
+      `no pending plate during ${message.deliveryStatus ?? 'optimistic send'}`);
+    assert.ok(document.querySelector('.maka-user-message')?.textContent?.includes(OPTIMISTIC_BUBBLE.text),
+      'the ordinary prompt remains in the transcript');
+  }
+
+  for (const transientPlacement of ['steering', 'follow_up'] as const) {
+    const document = render({ ...OPTIMISTIC_BUBBLE, transientPlacement });
+    assert.ok(document.querySelector('.maka-composer-queue')?.textContent?.includes(OPTIMISTIC_BUBBLE.text));
+    assert.equal(document.querySelector('.maka-user-message'), null, `${transientPlacement} stays out of the transcript`);
+  }
 });

@@ -17,12 +17,18 @@
  * under the License.
  */
 
-import type { SearchErrorReason } from '@maka/core/search';
+import type { RecallFailureReason } from '@maka/core/recall';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
-export type ThreadSearchErrorReason = Extract<
-  SearchErrorReason,
-  'incognito_active' | 'invalid_query' | 'aborted' | 'disabled' | 'provider_error'
+/**
+ * The failures the Search modal can show. Recall's own vocabulary, because
+ * recall is what runs: a search is refused for reasons a generic search
+ * contract has no notion of, and widening a shared union would push them onto
+ * every other search surface.
+ */
+export type RecallSearchErrorReason = Extract<
+  RecallFailureReason,
+  'incognito_active' | 'invalid_query' | 'aborted'
 >;
 
 type ShellControlsCopy = {
@@ -44,7 +50,7 @@ type ShellControlsCopy = {
     conversationsLabel: string;
     placeholder: string;
     unavailable: string;
-    errorByReason: Record<ThreadSearchErrorReason, string>;
+    errorByReason: Record<RecallSearchErrorReason | 'provider_error' | 'not_found', string>;
     errorFallback: string;
     introduction: string;
     empty: string;
@@ -74,7 +80,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
         incognito_active: '关闭隐私模式后可以继续按关键词查找历史任务。',
         invalid_query: '搜索词无效，请缩短内容或移除凭据后重试。',
         aborted: '搜索已取消。',
-        disabled: '搜索当前不可用。',
+        not_found: '没有找到匹配的历史任务。换个关键词试试。',
         provider_error: '搜索服务出错，请重试。',
       },
       errorFallback: '搜索服务需要刷新，请重试。',
@@ -104,7 +110,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
         incognito_active: '關閉隱私模式後可以繼續按關鍵詞查詢歷史任務。',
         invalid_query: '搜尋詞無效，請縮短內容或移除憑證後重試。',
         aborted: '搜尋已取消。',
-        disabled: '搜尋目前無法使用。',
+        not_found: '沒有找到符合的歷史任務。換個關鍵詞試試。',
         provider_error: '搜尋服務發生錯誤，請重試。',
       },
       errorFallback: '搜尋服務需要重新整理，請重試。',
@@ -134,7 +140,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
         incognito_active: 'Turn off privacy mode to search previous tasks by keyword.',
         invalid_query: 'Invalid search query. Shorten it or remove credential material and try again.',
         aborted: 'Search was canceled.',
-        disabled: 'Search is unavailable right now.',
+        not_found: 'No matching previous task was found. Try another keyword.',
         provider_error: 'Search failed. Try again.',
       },
       errorFallback: 'Search needs to be refreshed. Try again.',

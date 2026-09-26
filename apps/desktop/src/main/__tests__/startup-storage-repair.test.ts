@@ -44,14 +44,18 @@ async function compile(name: string, asynchronous = false): Promise<string> {
     const imports = parse(source, { sourceType: 'module', plugins: ['typescript'] }).program.body
       .filter((node) => node.type === 'ImportDeclaration');
     const end = imports.at(-1)?.end ?? 0;
-    source = `${source.slice(0, end)}\nexport default async function() {\n${source.slice(end)}\n}`;
+    // The wrapped body keeps the module's own `export` keywords (early-window
+    // exports its products) — they are illegal inside the function wrapper and
+    // the sandbox reaches the bindings through the deps object anyway.
+    const body = source.slice(end).replace(/\bexport\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/gu, '');
+    source = `${source.slice(0, end)}\nexport default async function() {\n${body}\n}`;
   }
   return (await transform(source, {
     loader: 'ts', format: 'cjs', target: 'esnext', define: { 'import.meta': 'importMeta' },
   })).code;
 }
 
-const boot = await compile('runtime-host-boot', true);
+const boot = await compile('early-window', true);
 const context = await compile('startup-context');
 
 for (const accept of [false, true]) {
@@ -104,8 +108,6 @@ for (const accept of [false, true]) {
         createClientRuntimeHostProfileCatalog: () => ({}),
         resolveDesktopRuntimeHostStartup: async () => ({}),
         resolveE2eFixture: () => undefined,
-        desktopStartupProgressWindow: () => undefined,
-        updateDesktopStartupProgress: () => {},
         resolveDesktopStorageRoot,
         startupStep,
         getNativeDiagnosticDialogCopy,

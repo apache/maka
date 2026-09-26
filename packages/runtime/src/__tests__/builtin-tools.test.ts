@@ -209,6 +209,12 @@ describe('builtin apply_patch', () => {
 
     assert.equal(await readFile(join(cwd, 'added.txt'), 'utf8'), 'hello\n');
     assert.equal(await readFile(join(cwd, 'changed.txt'), 'utf8'), 'after\n');
+    await runTool(
+      applyPatch,
+      { patch: '*** Begin Patch\n*** Delete File: added.txt\n*** End Patch' },
+      cwd,
+    );
+    await assert.rejects(access(join(cwd, 'added.txt')));
   });
 });
 
@@ -2724,7 +2730,7 @@ function fakeExecutor(overrides: Partial<WorkspaceExecutor>): WorkspaceExecutor 
     resolveExistingPath: async ({ path }) => ({ path }),
     resolveWritablePath: async ({ path }) => ({ path }),
     writeLockKey: async ({ cwd, path }) => ({ key: `${cwd}:${path}` }),
-    globFiles: async () => ({ files: [] }),
+    globFiles: async () => ({ files: [], truncated: false }),
     grepFiles: async () => ({
       matches: [],
       matchedLines: 0,

@@ -905,6 +905,42 @@ interface RecordedRequest {
   input: unknown;
 }
 
+test('a relocate conflict is reported, not replayed with a stale directory', async () => {
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'session',
+      session: session('session-1', 1, {
+        workspace: { target: { kind: 'host_path', path: '/old' }, hostCwd: '/old' },
+      }),
+    },
+    { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 2 },
+  ]);
+
+  const current = await client.getSession('session-1');
+  assert.ok(current);
+  await assert.rejects(
+    () =>
+      client.relocateSessionWorkspace('session-1', current.revision, {
+        kind: 'host_path',
+        path: current.workspace.hostCwd,
+      }),
+    /kept changing during relocate/,
+  );
+
+  // One attempt, at the revision the directory was read from. A replay would
+  // commit `/old` under revision 2 — moving the Session back to a directory a
+  // concurrent writer had already left.
+  assert.deepEqual(
+    requests.map(({ operation }) => operation),
+    ['session.catalog.query', 'session.workspace.relocate'],
+  );
+  assert.deepEqual(requests[1]?.input, {
+    sessionId: 'session-1',
+    expectedRevision: 1,
+    workspace: { kind: 'host_path', path: '/old' },
+  });
+});
+
 function clientWithResponses(responses: unknown[]): {
   client: DesktopRuntimeHostClient;
   requests: RecordedRequest[];

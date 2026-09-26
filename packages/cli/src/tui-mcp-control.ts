@@ -20,7 +20,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   MCP_CONFIG_VERSION,
-  mcpConfigChangeRetiresCredentials,
   resolveMcpProtocolPreference,
   type McpConfigFile,
   type McpConfigSourceFailureReason,
@@ -34,7 +33,8 @@ import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
-  assertMcpEndpointPolicyOnChanges,
+  updateMcpConfiguration,
+  McpConfigurationValidationError,
   McpConfigSourceError,
   normalizeMcpConfig,
   normalizeMcpImport,
@@ -46,6 +46,8 @@ import type {
   RuntimeHostReconnectingConnection,
 } from '@maka/runtime-host/client';
 import { createMcpCapabilityProvider } from './mcp-capability-provider.js';
+
+import { McpCapabilityPublication } from './mcp-capability-publication.js';
 
 const RUNTIME_HOST_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
 
@@ -211,7 +213,7 @@ export interface TuiMcpPublicationTarget
 }
 
 interface TuiMcpControllerDeps {
-  readonly configStore: Pick<McpConfigStore, 'get' | 'transform'>;
+  readonly configStore: Pick<McpConfigStore, 'get' | 'transform' | 'subscribeChanges'>;
   readonly manager: TuiMcpManager;
   readonly createProvider: (manager: TuiMcpManager) => ClientCapabilityProvider | undefined;
 }
@@ -243,6 +245,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
   readonly #listeners = new Set<() => void>();
   readonly #disposeManagerChange: () => void;
   readonly #disposeConnectionAvailability: () => void;
+  readonly #disposeConfigChanges: () => void;
   readonly #initialization: Promise<void>;
   #availability: TuiMcpPublicationAvailability = { kind: 'unavailable' };
   #closed = false;
@@ -256,15 +259,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     | undefined;
   #actionLane: Promise<void> = Promise.resolve();
   #publicationSuppressed = false;
-  #publicationRequested = false;
-  #publicationTask: Promise<void> | undefined;
-  #published:
-    | {
-        readonly identity: string;
-        readonly revision: number;
-        readonly registered: boolean;
-      }
-    | undefined;
+  readonly #publication: McpCapabilityPublication;
   #snapshot: TuiMcpSnapshot = freezeSnapshot({
     initialization: 'loading',
     configuration: 'synchronizing',
@@ -283,6 +278,26 @@ class TuiMcpControllerImpl implements TuiMcpController {
         connection.setCredential && connection.removeCredential,
       ),
     });
+    this.#publication = new McpCapabilityPublication({
+      connectionIdentity: () =>
+        this.#availability.kind === 'connected'
+          ? connectionIdentity(this.#availability)
+          : undefined,
+      revision: () => this.#deps.manager.toolSnapshot().revision,
+      createProvider: () => this.#deps.createProvider(this.#deps.manager),
+      replace: (provider) => this.#connection.replaceClientCapabilities(provider),
+      unregister: () => this.#connection.unregisterClientCapabilities(),
+      onState: (state) => {
+        this.#updateSnapshot({
+          publication:
+            state === 'unavailable'
+              ? this.#availability.kind === 'unavailable'
+                ? (this.#availability.reason ?? 'host_unavailable')
+                : 'waiting'
+              : state,
+        });
+      },
+    });
     this.#disposeManagerChange = deps.manager.onChange(() => {
       try {
         this.#refreshManagerSnapshot();
@@ -297,7 +312,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       (availability) => {
         this.#availability = availability;
         if (availability.kind === 'unavailable') {
-          this.#published = undefined;
+          this.#publication.invalidate();
           this.#updateSnapshot({
             publication: availability.reason ?? 'host_unavailable',
             ...(availability.reason === 'provider_conflict'
@@ -310,6 +325,16 @@ class TuiMcpControllerImpl implements TuiMcpController {
         }
       },
     );
+    // Desktop edits the same file. A change during startup waits for it
+    // rather than being dropped, since startup may have read the file first.
+    // Failing to follow leaves the TUI's own edits working, so it stays quiet
+    // rather than print over the screen.
+    this.#disposeConfigChanges = deps.configStore.subscribeChanges((error) => {
+      if (error) return;
+      void this.#initialization
+        .then(() => this.#serializeAction(() => this.#followConfigChange()))
+        .catch(() => undefined);
+    });
     this.#initialization = this.#initialize();
   }
 
@@ -376,17 +401,14 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#closed = true;
     this.#disposeManagerChange();
     this.#disposeConnectionAvailability();
+    this.#disposeConfigChanges();
     this.#listeners.clear();
     this.#preparedImport = undefined;
-    this.#publicationRequested = false;
+    const publicationClosing = this.#publication.close().catch(() => undefined);
     const managerClosing = this.#deps.manager.close();
     await this.#actionLane.catch(() => undefined);
     this.#config = undefined;
-    await this.#publicationTask?.catch(() => undefined);
-    if (this.#availability.kind === 'connected') {
-      await this.#connection.unregisterClientCapabilities().catch(() => undefined);
-    }
-    this.#published = undefined;
+    await publicationClosing;
     await this.#connection.closePublication?.().catch(() => undefined);
     await managerClosing;
     await this.#initialization.catch(() => undefined);
@@ -407,7 +429,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     }
   }
 
-  #serializeAction(work: () => Promise<TuiMcpActionResult>): Promise<TuiMcpActionResult> {
+  #serializeAction<T>(work: () => Promise<T>): Promise<T> {
     const run = this.#actionLane.then(work, work);
     this.#actionLane = run.then(
       () => undefined,
@@ -471,37 +493,30 @@ class TuiMcpControllerImpl implements TuiMcpController {
   ): Promise<TuiMcpActionResult> {
     let committed: McpConfigFile;
     try {
-      committed = await this.#deps.configStore.transform(async (current) => {
-        if (this.#closed) {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
-        }
-        const prepared = this.#prepareMutation(current, action);
-        if ('status' in prepared) throw new TuiMcpMutationError(prepared);
-        const { next } = prepared;
-        try {
-          assertMcpEndpointPolicyOnChanges(current, next);
-        } catch {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'invalid-config' });
-        }
-        try {
-          for (const [serverId, previous] of Object.entries(current.mcpServers)) {
-            if (!mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) continue;
+      committed = await updateMcpConfiguration(
+        this.#deps.configStore,
+        (current) => {
+          if (this.#closed) throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+          const prepared = this.#prepareMutation(current, action);
+          if ('status' in prepared) throw new TuiMcpMutationError(prepared);
+          return prepared.next;
+        },
+        async (serverId, previous) => {
+          try {
             await this.#deps.manager.forgetServerCredentials(serverId, previous);
-            if (this.#closed) {
-              throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
-            }
+          } catch {
+            throw new TuiMcpMutationError({
+              status: 'failed',
+              reason: 'credential-cleanup-failed',
+            });
           }
-        } catch (error) {
-          if (error instanceof TuiMcpMutationError) throw error;
-          throw new TuiMcpMutationError({
-            status: 'failed',
-            reason: 'credential-cleanup-failed',
-          });
-        }
-        return next;
-      });
+          if (this.#closed) throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+        },
+      );
     } catch (error) {
       if (error instanceof TuiMcpMutationError) return error.result;
+      if (error instanceof McpConfigurationValidationError)
+        return { status: 'failed', reason: 'invalid-config' };
       if (error instanceof AtomicFileWriteCommitUnknownError) {
         // The transform has already published, including any credential
         // retirement. Reload its authority; never replay those effects.
@@ -537,7 +552,21 @@ class TuiMcpControllerImpl implements TuiMcpController {
       }
       return { status: 'failed', reason: 'persist-failed' };
     }
+    this.#preparedImport = undefined;
     return (await this.#synchronizeCommittedConfig(committed)).result;
+  }
+
+  async #followConfigChange(): Promise<void> {
+    if (this.#closed) return;
+    if (this.#snapshot.initialization === 'error') return this.#initialize();
+    const latest = await this.#deps.configStore.get();
+    // An import preview survives: its commit re-checks each server it replaces.
+    if (
+      this.#snapshot.configuration !== 'ready' ||
+      JSON.stringify(latest) !== JSON.stringify(this.#config)
+    ) {
+      await this.#synchronizeCommittedConfig(latest);
+    }
   }
 
   async #synchronizeCommittedConfig(committed: McpConfigFile): Promise<{
@@ -545,7 +574,6 @@ class TuiMcpControllerImpl implements TuiMcpController {
     readonly reconciliationError?: unknown;
   }> {
     if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
-    this.#preparedImport = undefined;
     this.#config = cloneConfig(committed);
     this.#updateSnapshot({ configuration: 'synchronizing' });
     this.#refreshManagerSnapshot();
@@ -618,9 +646,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   async #settlePublication(): Promise<TuiMcpActionEffect> {
-    this.#requestPublication();
-    while (!this.#closed && (this.#publicationTask || this.#publicationRequested)) {
-      await this.#publicationTask?.catch(() => undefined);
+    if (
+      !this.#closed &&
+      this.#snapshot.initialization === 'ready' &&
+      !this.#publicationSuppressed
+    ) {
+      await this.#publication.settle();
     }
     if (
       this.#snapshot.publication === 'error' ||
@@ -670,73 +701,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   #requestPublication(): void {
-    if (this.#closed) {
-      this.#publicationRequested = false;
+    if (this.#closed || this.#snapshot.initialization !== 'ready' || this.#publicationSuppressed)
       return;
-    }
-    if (this.#snapshot.initialization !== 'ready' || this.#publicationSuppressed) return;
-    this.#publicationRequested = true;
-    if (this.#publicationTask) return;
-    this.#publicationTask = this.#runPublicationQueue().finally(() => {
-      this.#publicationTask = undefined;
-      if (this.#publicationRequested) this.#requestPublication();
-    });
-  }
-
-  async #runPublicationQueue(): Promise<void> {
-    while (this.#publicationRequested && !this.#closed) {
-      this.#publicationRequested = false;
-      await this.#publishCurrentSnapshot();
-    }
-  }
-
-  async #publishCurrentSnapshot(): Promise<void> {
-    const availability = this.#availability;
-    if (availability.kind !== 'connected') {
-      this.#updateSnapshot({ publication: availability.reason ?? 'host_unavailable' });
-      return;
-    }
-    const identity = connectionIdentity(availability);
-    const revision = this.#deps.manager.toolSnapshot().revision;
-    if (this.#published?.identity === identity && this.#published.revision === revision) {
-      this.#updateSnapshot({
-        publication: this.#snapshot.toolCount === 0 ? 'not_published' : 'published',
-      });
-      return;
-    }
-    let provider: ClientCapabilityProvider | undefined;
-    this.#updateSnapshot({ publication: 'publishing' });
-    try {
-      provider = this.#deps.createProvider(this.#deps.manager);
-      if (provider) {
-        await this.#connection.replaceClientCapabilities(provider);
-      } else if (this.#published?.identity === identity && this.#published.registered) {
-        await this.#connection.unregisterClientCapabilities();
-      }
-    } catch {
-      await closeProvider(provider);
-      if (this.#isCurrent(identity, revision)) {
-        this.#updateSnapshot({ publication: 'error' });
-      } else {
-        this.#requestPublication();
-      }
-      return;
-    }
-    if (!this.#isCurrent(identity, revision)) {
-      this.#requestPublication();
-      return;
-    }
-    this.#published = { identity, revision, registered: provider !== undefined };
-    this.#updateSnapshot({ publication: provider ? 'published' : 'not_published' });
-  }
-
-  #isCurrent(identity: string, revision: number): boolean {
-    return (
-      !this.#closed &&
-      this.#availability.kind === 'connected' &&
-      connectionIdentity(this.#availability) === identity &&
-      this.#deps.manager.toolSnapshot().revision === revision
-    );
+    this.#publication.request();
   }
 
   #updateSnapshot(
@@ -793,14 +760,6 @@ function connectionIdentity(
   availability: Extract<RuntimeHostConnectionAvailability, { kind: 'connected' }>,
 ): string {
   return `${availability.hostEpoch}\0${availability.connectionId}`;
-}
-
-async function closeProvider(provider: ClientCapabilityProvider | undefined): Promise<void> {
-  try {
-    await provider?.close?.();
-  } catch {
-    // A rejected provider never crossed into Host ownership.
-  }
 }
 
 function cloneConfig(config: McpConfigFile): McpConfigFile {

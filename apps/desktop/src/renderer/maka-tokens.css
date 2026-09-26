@@ -251,13 +251,6 @@
      emphasis, and using this for CTAs is exactly the palette-invisibility
      bug called out in the --brand-deep note above. */
   --maka-brand: #71a8fd;
-  /* Every MCP market tile renders a real library brand mark on a neutral plate
-     (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk + the
-     vendored Feishu mark), so no per-brand plate-tint token is needed — a
-     colourful logo already supplies the brand identity. The system-banner tint
-     alias went the same way: the scheduled-tasks banner derives from --accent
-     directly, which is one indirection fewer for the same result. */
-
   /* === text variants (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
   --destructive-text: color-mix(in oklab, var(--destructive) 50%, var(--foreground));
@@ -756,7 +749,7 @@
   /* ICON_SIZE in @maka/ui's icons.tsx is the icon scale; components pass it as
      a prop. These two rungs exist only for the sites that size a glyph from
      CSS — add a rung here when a CSS site needs one, not to mirror the TS. */
-  --icon-meta: 13px;
+  --icon-meta: 12px;
   --icon-control: 14px;
 
   /* === motion ===
@@ -1166,8 +1159,7 @@
    no --info hue: "info" is a semantic slot (Banner status), so it paints with
    the accent at 0.24 like its three siblings. It has to be the
    same CONSTRUCTION and not just the same weight — an opaque tint does not
-   compose, so a tinted chip on a tinted panel (deep-research's count pill,
-   plan-mode's in-progress marker) resolves to the parent's exact pixel and
+   compose, so a tinted chip on a tinted panel (plan-mode's in-progress marker) resolves to the parent's exact pixel and
    disappears. Alpha is also what upstream ships this token as (#0082FB33,
    0.20); theme-neutral is what flattens it to an opaque #f1f1f1.
 
@@ -1406,18 +1398,12 @@
 
   /* ---- Chat surface ----------------------------------------------- */
 
-  /* Turn grouping (per kenji UI-04): user msg + tools + assistant answer
-   * cluster into one visual unit. The section is a flex container; both the
-   * between-turn and within-turn gaps are uniform (CHAT-TURN-SPACING-0), so
-   * a turn reads as one unit by grouping, not by tighter internal spacing. */
+  /* A turn reads as one unit because its internal gap is well under the
+     between-turn gap, which the transcript row in chat-view.tsx owns. */
   .maka-turn {
     display: flex;
     flex-direction: column;
-    /* The content wrapper owns between-turn flex layout. */
     flex: 0 0 auto;
-    /* PR5 CHAT-TURN-SPACING-0: uniform 12px within-turn gap, matching the
-       between-turn gap (.maka-chatContent) — one density, no between/within
-       split. */
     gap: var(--space-3);
     max-width: var(--maka-reading-measure);
     margin: 0 auto;
@@ -1426,17 +1412,21 @@
   }
 
   /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
-     Core's atom sheet already contains every compiled StyleX atom except the
-     five shimmer declarations below; these are copied verbatim from lab.css. */
-  @keyframes x1ofn8cw-B {
+     Its streaming-label sweep is Maka-local: background-position cannot run on
+     the compositor, so upstream's linear timing repaints the glyph-clipped
+     gradient every frame for the whole turn. `steps(60)` holds the same look
+     at ~15fps — measured ~4x cheaper on one label. */
+  @keyframes maka-reasoning-shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
   }
-  .xct3ic7:not(#\#):not(#\#):not(#\#) { background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%); }
-  .xakli9p:not(#\#):not(#\#):not(#\#) { background-size: 200% 100%; }
-  .x1ta4xzc:not(#\#):not(#\#):not(#\#) { background-clip: text; }
-  .x3mlza6:not(#\#):not(#\#):not(#\#) { animation-name: x1ofn8cw-B; }
-  .xeaay5l:not(#\#):not(#\#):not(#\#) { animation-duration: 4s; }
+  .maka-reasoning-shimmer {
+    background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%);
+    background-size: 200% 100%;
+    background-clip: text;
+    color: transparent;
+    animation: maka-reasoning-shimmer 4s steps(60) infinite;
+  }
 
   /* ---- Tool activity ---------------------------------------------- */
 
@@ -1476,10 +1466,9 @@
 
 /* `maka-text-shimmer` and the `TextShimmer` primitive it drove are gone. The
    sweep-across-glyphs idiom is Astryx's: its `ChatReasoning` shimmers its own
-   streaming label off `x1ofn8cw-B` above, and that atom is the one this repo
-   copies from lab.css. A second, faster sweep on the turn's status line put two
-   of them a few pixels apart at different speeds, which read as two things
-   competing rather than one turn working. */
+   streaming label via `.maka-reasoning-shimmer` above. A second, faster sweep
+   on the turn's status line put two of them a few pixels apart at different
+   speeds, which read as two things competing rather than one turn working. */
 
 /* Shared short opacity entrance used by continuing and tool-settle cues. */
 @keyframes maka-stream-fade-in {

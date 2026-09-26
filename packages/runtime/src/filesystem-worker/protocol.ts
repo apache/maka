@@ -22,9 +22,10 @@ import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v10 adds bounded Read pages to v9's exact Grep counts. Older workers cannot
-// satisfy the combined result contract and must be rejected at the handshake.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 10 as const;
+// v10 adds bounded Read pages to v9's exact Grep counts; v11 adds Glob's
+// truncation flag to v10's result contract. Older workers cannot satisfy the
+// combined result contract and must be rejected at the handshake.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 11 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -217,7 +218,9 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
       diff: z.string().optional(),
     })
     .strict(),
-  z.object({ kind: z.literal('glob'), files: z.array(z.string()) }).strict(),
+  z
+    .object({ kind: z.literal('glob'), files: z.array(z.string()), truncated: z.boolean() })
+    .strict(),
   z
     .object({
       kind: z.literal('grep'),

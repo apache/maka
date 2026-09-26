@@ -24,7 +24,7 @@ import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
  * Lifecycle meaning for a task itself: paused is the only state that asks
  * for attention, completed is spent, everything else is simply live.
  *
- * Shared by the list page and the inspector so one task never reads as two
+ * Shared by the list page and the detail dialog so one task never reads as two
  * different severities depending on where it is shown. Says what the state
  * MEANS and lets status-vocabulary decide the colour — the domain judgement
  * (that paused deserves attention) is this file's, the palette is not.

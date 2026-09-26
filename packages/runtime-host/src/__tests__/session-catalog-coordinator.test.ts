@@ -31,7 +31,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { type ModelOverride } from '@maka/core/model-thinking';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -264,7 +263,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
-    labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL],
+    labels: ['old-user-label', 'mode:deep_research'],
     manager: {
       runningTurnIds: () => ['turn-live'],
     },
@@ -275,7 +274,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision(),
       patch: {
-        labels: ['new-user-label', DEEP_RESEARCH_SESSION_LABEL],
+        labels: ['new-user-label', 'mode:deep_research'],
       },
     },
     context,
@@ -288,7 +287,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
   if ('kind' in outcome.result.session) {
     assert.fail('Metadata replacement returned an unsupported Session projection');
   }
-  assert.deepEqual(outcome.result.session.labels, ['new-user-label', DEEP_RESEARCH_SESSION_LABEL]);
+  assert.deepEqual(outcome.result.session.labels, ['new-user-label', 'mode:deep_research']);
   assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
   assert.equal(fixture.drainRequests(), 0);
 });
@@ -547,7 +546,7 @@ test('creation rejects reserved execution labels before claiming a Session ident
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      labels: [DEEP_RESEARCH_SESSION_LABEL],
+      labels: ['mode:deep_research'],
       modelTarget: { kind: 'default' },
     },
     context,
@@ -665,7 +664,7 @@ test('WorkHub thinking level persists, clears to default and rejects unsupported
       permissionMode: 'bypass',
     },
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       modelOverrides: { 'model-1': { thinkingLevels: ['low', 'high'] } },
     },
   });
@@ -742,7 +741,7 @@ test('ordinary metadata and configuration reject a corrupt Coordination role on 
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('creation on a relay connection honours declared levels via the catalog projection', async () => {
+test('creation on a custom connection honours declared levels via the catalog projection', async () => {
   // The catalog entry carries the typed modelOverrides projection (never
   // the extras bag), so a declared relay level passes the gate — and what
   // passes is exactly what execution rebuilds the runtime connection from.
@@ -751,7 +750,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   let persistedConnectionId: unknown;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
       modelOverrides: { 'relay-model': { thinkingLevels: ['minimal', 'low'] } },
@@ -794,7 +793,7 @@ test("creation applies the selected model's configured thinking default", async 
   let persistedThinkingLevel: unknown;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
       modelOverrides: {
@@ -837,7 +836,7 @@ test('creation can explicitly bypass a configured model thinking default', async
   let persistedThinkingLevel: unknown = 'not-called';
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
       modelOverrides: {
@@ -885,8 +884,9 @@ test('plugin executor creation bypasses model resolution and persists the execut
       ...base,
       backend: 'plugin-executor',
       executorId: 'codex',
+      executorConfig: { model: 'account-model' },
       llmConnectionSlug: 'executor:codex',
-      model: 'codex',
+      model: 'gpt-codex',
     };
   };
   const fixture = createFixture({
@@ -910,20 +910,100 @@ test('plugin executor creation bypasses model resolution and persists the execut
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
       executorId: 'codex',
+      executorModel: 'gpt-codex',
+      thinkingLevel: 'high',
+      executorConfig: { model: 'gpt-codex' },
     },
     context,
   );
 
   assert.equal(outcome.ok, true, JSON.stringify(outcome));
   assert.equal(persistedInput?.executorId, 'codex');
+  assert.deepEqual(persistedInput?.executorConfig, { model: 'gpt-codex' });
   assert.equal(persistedInput?.llmConnectionId, undefined);
   assert.equal(persistedInput?.llmConnectionSlug, 'executor:codex');
-  assert.equal(persistedInput?.model, 'codex');
+  assert.equal(persistedInput?.model, 'gpt-codex');
+  assert.equal(persistedInput?.thinkingLevel, 'high');
   if (outcome.ok && !('kind' in outcome.result)) {
     assert.equal(outcome.result.backend, 'plugin-executor');
     assert.equal(outcome.result.executorId, 'codex');
+    assert.deepEqual(outcome.result.executorConfig, { model: 'account-model' });
   }
 });
+
+for (const selection of [
+  { executorModel: 'chosen' },
+  { executorModel: 'chosen', executorConfig: {} },
+  { executorConfig: { model: 'chosen' } },
+  { executorModel: 'chosen', executorConfig: { model: 'chosen' } },
+  {},
+]) {
+  test(`catalog-managed executor creation pins configuration for ${JSON.stringify(selection)}`, async () => {
+    let persistedInput: Parameters<CatalogStores['createStableSession']>[0]['input'] | undefined;
+    const expected =
+      'executorModel' in selection || 'executorConfig' in selection ? { model: 'chosen' } : {};
+    const fixture = createFixture({
+      assertExecutorAvailable: (_session, _executor, configuration) => {
+        assert.deepEqual(configuration ?? {}, expected);
+        return configuration ?? {};
+      },
+      stores: {
+        createStableSession: async (args) => {
+          persistedInput = args.input;
+          return {
+            kind: 'existing' as const,
+            record: headerSnapshot(sessionHeader(args.sessionId, []), 1),
+          };
+        },
+      },
+    });
+    const result = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        executorId: 'fixture-acp',
+        ...selection,
+      },
+      context,
+    );
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(persistedInput?.executorConfig, expected);
+    assert.equal(persistedInput?.model, expected.model ?? 'fixture-acp');
+  });
+}
+
+for (const selection of [
+  { executorModel: 'removed' },
+  { executorModel: 'removed', executorConfig: {} },
+  { executorConfig: { model: 'removed' } },
+  { executorModel: 'fast', executorConfig: { model: 'slow' } },
+]) {
+  test(`invalid executor model selection never persists: ${JSON.stringify(selection)}`, async () => {
+    const fixture = createFixture({
+      assertExecutorAvailable: (_session, _executor, configuration) => {
+        if (configuration?.model === 'removed') throw new Error('model unavailable');
+      },
+      stores: {
+        createStableSession: async () => assert.fail('Invalid selection must not persist'),
+      },
+    });
+    const result = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        executorId: 'fixture-acp',
+        ...selection,
+      },
+      context,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok)
+      assert.equal(
+        result.error.code,
+        selection.executorModel === 'fast' ? 'invalid_request' : 'operation_unavailable',
+      );
+  });
+}
 
 test('plugin executor creation fails before persistence when the executor is unavailable', async () => {
   let createAttempts = 0;
@@ -1163,14 +1243,14 @@ test('creation admits an enabled model a live list omits', async () => {
   assert.equal(createAttempts, 1);
 });
 
-test('creation on a relay connection without declarations still fails closed on any thinkingLevel', async () => {
+test('creation on a custom connection without declarations still fails closed on any thinkingLevel', async () => {
   // Undeclared relay models resolve no variants — accepting an unverifiable
   // level would be worse than rejecting it, because the wire could never
   // honour what the catalog cannot see.
   let createAttempts = 0;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
     },
@@ -1305,41 +1385,6 @@ test('new tasks snapshot the current global Code Mode setting', async () => {
     'direct',
   );
   assert.deepEqual(modes.slice(2), ['code_mode', 'direct']);
-});
-
-test('creation materializes Deep Research semantics inside the Host transaction', async () => {
-  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
-  const fixture = createFixture({
-    stores: {
-      createStableSession: async (request) => {
-        created = request;
-        return {
-          kind: 'existing',
-          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
-        };
-      },
-    },
-  });
-
-  const outcome = await fixture.coordinator.handlers['session.create'](
-    {
-      sessionId: fixture.sessionId,
-      workspace: { kind: 'host_path', path: process.cwd() },
-      mode: 'deep_research',
-      name: 'Caller override',
-      labels: ['customer-label'],
-      modelTarget: { kind: 'default' },
-      permissionMode: 'ask',
-    },
-    context,
-  );
-
-  assert.equal(outcome.ok, true);
-  assert.ok(created);
-  assert.equal(created.input.name, DEEP_RESEARCH_SESSION_NAME);
-  assert.deepEqual(created.input.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-  assert.equal(created.input.permissionMode, 'explore');
-  assert.equal(fixture.drainRequests(), 0);
 });
 
 test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {
@@ -2103,7 +2148,9 @@ function createFixture(
     readonly onProjectChanged?: () => void;
     readonly legacyConnectionIdentity?: boolean;
     readonly header?: Partial<SessionHeader>;
-    readonly assertExecutorAvailable?: (sessionId: string, executorId: string) => void;
+    readonly assertExecutorAvailable?: HostSessionCatalogCoordinatorOptions['assertExecutorAvailable'];
+    readonly configureExecutor?: HostSessionCatalogCoordinatorOptions['configureExecutor'];
+    readonly retireExecutor?: HostSessionCatalogCoordinatorOptions['retireExecutor'];
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -2193,6 +2240,8 @@ function createFixture(
     requestDrain: () => {
       drains += 1;
     },
+    ...(options.configureExecutor ? { configureExecutor: options.configureExecutor } : {}),
+    ...(options.retireExecutor ? { retireExecutor: options.retireExecutor } : {}),
     ...(options.assertExecutorAvailable
       ? { assertExecutorAvailable: options.assertExecutorAvailable }
       : {}),
@@ -2211,7 +2260,7 @@ type FixtureConnection = {
     | 'claude-subscription'
     | 'deepseek'
     | 'openai'
-    | 'openai-compatible'
+    | 'custom'
     | 'volcengine-agent-plan';
   /** Lets a case exercise a resolver verdict other than `ready`. */
   readonly executionResolution?: ResolveExecutionConnectionResult;
@@ -2235,6 +2284,9 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
     slug: 'test',
     name: 'Test',
     providerType: overrides.providerType ?? ('openai' as const),
+    ...(overrides.providerType === 'custom'
+      ? { baseUrl: 'https://relay.example/v1', defaultApiProtocol: 'openai-chat' as const }
+      : {}),
     enabled: true,
     enabledModelIds: overrides.enabledModelIds ?? ['model-1'],
     models: overrides.models ?? [{ id: 'model-1' }],
@@ -2395,3 +2447,179 @@ function catalogRecord(header: SessionHeader, revision: number): SessionCatalogR
     summary: headerToSummary(header),
   };
 }
+
+test('executor model changes commit only after idle agent confirmation', async () => {
+  const order: string[] = [];
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+    configureExecutor: async (_header, config) => {
+      assert.equal(fixture.header().executorConfig?.model, 'before');
+      assert.equal(config.model, 'after');
+      order.push('confirmed');
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.deepEqual(order, ['confirmed']);
+  assert.equal(fixture.header().executorConfig?.model, 'after');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('failed Session commit restores the confirmed executor model', async () => {
+  const confirmed: string[] = [];
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+    configureExecutor: async (_header, config) => {
+      confirmed.push(config.model!);
+    },
+    manager: {
+      transitionSessionConfiguration: async () => {
+        throw new SessionConfigurationTransitionError('operation_unavailable', 'Commit failed');
+      },
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(confirmed, ['after', 'before']);
+  assert.equal(fixture.header().executorConfig?.model, 'before');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('failed executor rollback retires the external conversation', async () => {
+  let retired = false;
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+    configureExecutor: async (_header, config) => {
+      if (config.model === 'before') throw new Error('Rollback failed');
+    },
+    retireExecutor: async () => {
+      retired = true;
+    },
+    manager: {
+      transitionSessionConfiguration: async () => {
+        throw new SessionConfigurationTransitionError('operation_unavailable', 'Commit failed');
+      },
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(retired, true);
+  assert.equal(fixture.header().executorConfig?.model, 'before');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('rejected or busy executor model changes preserve durable configuration without draining Host', async () => {
+  for (const busy of [false, true]) {
+    let called = false;
+    const fixture = createFixture({
+      header: {
+        backend: 'plugin-executor',
+        executorId: 'remote',
+        executorConfig: { model: 'before' },
+      },
+      manager: { runningTurnIds: () => (busy ? ['turn'] : []) },
+      configureExecutor: async () => {
+        called = true;
+        throw new Error('unconfirmed');
+      },
+    });
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { executorConfig: { model: 'after' } },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, false);
+    assert.equal(called, !busy);
+    assert.equal(fixture.header().executorConfig?.model, 'before');
+    assert.equal(fixture.drainRequests(), 0);
+  }
+});
+
+test('native execution settings cannot mutate an external task', async () => {
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+  });
+  for (const patch of [
+    { permissionMode: 'bypass' },
+    { thinkingLevel: 'high' },
+    { collaborationMode: 'plan' },
+    { orchestrationMode: 'swarm' },
+  ] as const) {
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      { sessionId: fixture.sessionId, expectedRevision: fixture.revision(), patch },
+      context,
+    );
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.error.code, 'operation_unavailable');
+    assert.equal(fixture.header().executorConfig?.model, 'before');
+    assert.equal(fixture.drainRequests(), 0);
+  }
+});
+
+test('reselecting the persisted executor model still confirms the Agent state and respects busy locks', async () => {
+  for (const busy of [false, true]) {
+    let confirmations = 0;
+    const fixture = createFixture({
+      header: {
+        backend: 'plugin-executor',
+        executorId: 'remote',
+        executorConfig: { model: 'same' },
+      },
+      manager: { runningTurnIds: () => (busy ? ['turn'] : []) },
+      configureExecutor: async () => {
+        confirmations++;
+      },
+    });
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { executorConfig: { model: 'same' } },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, !busy);
+    assert.equal(confirmations, busy ? 0 : 1);
+    assert.equal(fixture.header().executorConfig?.model, 'same');
+  }
+});

@@ -277,6 +277,7 @@ describe('Session catalog protocol', () => {
           sessionId: 'session-executor',
           workspace: { kind: 'project', projectId: 'project-1' },
           executorId: 'codex.app-server',
+          executorConfig: { model: 'account-model' },
         },
       }),
       {
@@ -286,6 +287,7 @@ describe('Session catalog protocol', () => {
           sessionId: 'session-executor',
           workspace: { kind: 'project', projectId: 'project-1' },
           executorId: 'codex.app-server',
+          executorConfig: { model: 'account-model' },
         },
       },
     );
@@ -509,14 +511,14 @@ describe('Session catalog protocol', () => {
       input: {
         sessionId: 'session-mode',
         workspace: { kind: 'host_path', path: '/workspace' },
-        mode: 'deep_research',
+        mode: 'bot',
         modelTarget: { kind: 'default' },
       },
     });
     if ('kind' in decoded || decoded.operation !== 'session.create') {
       assert.fail('Expected Session create frame');
     }
-    assert.equal(decoded.input.mode, 'deep_research');
+    assert.equal(decoded.input.mode, 'bot');
     assert.throws(
       () =>
         decodeClientFrame({
@@ -525,7 +527,7 @@ describe('Session catalog protocol', () => {
           input: {
             sessionId: 'session-invalid-mode',
             workspace: { kind: 'host_path', path: '/workspace' },
-            mode: 'unknown',
+            mode: 'deep_research',
             modelTarget: { kind: 'default' },
           },
         }),
@@ -712,3 +714,40 @@ function isProtocolError(error: unknown): boolean {
 function isInvalidSessionStatus(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError && error.message === 'Invalid Session status';
 }
+
+test('executor configuration rejects ambiguous routes and malformed values', () => {
+  const base = {
+    sessionId: 'session-executor',
+    workspace: { kind: 'project', projectId: 'project-1' },
+  };
+  for (const executorConfig of [
+    null,
+    { model: '' },
+    { model: 'bad\nvalue' },
+    { mode: 'yolo' },
+    { model: 4 },
+  ]) {
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'r',
+          operation: 'session.create',
+          input: { ...base, executorId: 'remote', executorConfig },
+        }),
+      isProtocolError,
+    );
+  }
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        requestId: 'r',
+        operation: 'session.create',
+        input: { ...base, modelTarget: { kind: 'default' }, executorConfig: { model: 'other' } },
+      }),
+    isProtocolError,
+  );
+  assert.throws(
+    () => decodeSessionCatalogItem({ ...projection(), executorConfig: { model: 'other' } }),
+    isProtocolError,
+  );
+});

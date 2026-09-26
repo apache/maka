@@ -66,6 +66,8 @@ export interface TurnFooterAction {
    * Chinese; never exposes the raw TurnStatus enum identifier.
    */
   tooltip?: string;
+  /** Busy from click until the action settles — UI renders the spinner. */
+  pending?: boolean;
 }
 
 export interface TurnFooterContext {
@@ -104,7 +106,7 @@ export function deriveTurnFooterActions(input: TurnFooterContext): TurnFooterAct
   const PENDING_TOOLTIP = copyText.pending;
 
   const branch: TurnFooterAction = isPending('branch')
-    ? { id: 'branch', label: actionLabel.branch, enabled: false, tooltip: PENDING_TOOLTIP }
+    ? { id: 'branch', label: actionLabel.branch, enabled: false, tooltip: PENDING_TOOLTIP, pending: true }
     : {
         id: 'branch',
         label: actionLabel.branch,

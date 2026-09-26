@@ -34,6 +34,7 @@ type WidenCopy<T> = T extends string
     ? (...args: Args) => string
     : { [K in keyof T]: WidenCopy<T[K]> };
 
+
 // Capability-section strings for the connection detail page — the add-provider
 // form deliberately carries no declaration controls (capabilities are edited
 // after the connection exists).
@@ -54,6 +55,11 @@ const zhCapabilitiesCopy = {
     supported === undefined ? '自动' : supported ? '自动 · 支持' : '自动 · 不支持',
   visionEnabledOption: '支持',
   visionDisabledOption: '不支持',
+  applyPatch: 'ApplyPatch 文件编辑',
+  applyPatchHelp: '自动跟随模型默认设置；手动启用或关闭仅影响此连接中的当前模型。启用时使用 ApplyPatch 编辑文件，关闭时使用 Write/Edit。选择自动可恢复默认设置。',
+  applyPatchDefaultOption: (enabled: boolean) => (enabled ? '自动 · 启用' : '自动 · 关闭'),
+  applyPatchEnabled: '启用',
+  applyPatchDisabled: '关闭',
   contextWindow: '上下文窗口',
   inputLimit: '输入上限',
   inputLimitHelp: '单次请求可输入的 token 数。留空时按模型资料设置。',
@@ -67,6 +73,11 @@ const zhCapabilitiesCopy = {
   fastModeHelp: '选择更快的服务档位，可能产生额外费用。',
   fastAuto: '自动',
   fastEnabled: 'Fast',
+  apiProtocol: '请求协议',
+  apiProtocolHelp: '此模型使用的接口格式。同一地址同时提供多种协议时，可为单个模型单独选择。',
+  apiProtocolDefaultOption: (protocol: string) => `跟随连接 · ${protocol}`,
+  connectionApiProtocol: '默认请求协议',
+  connectionApiProtocolHelp: '模型未单独选择协议时使用。创建后不可更改，可在每个模型上单独覆盖。',
 };
 
 const zhTwCapabilitiesCopy = {
@@ -86,6 +97,11 @@ const zhTwCapabilitiesCopy = {
     supported === undefined ? '自動' : supported ? '自動 · 支援' : '自動 · 不支援',
   visionEnabledOption: '支援',
   visionDisabledOption: '不支援',
+  applyPatch: 'ApplyPatch 檔案編輯',
+  applyPatchHelp: '自動依模型預設設定；手動啟用或關閉僅影響此連線中的目前模型。啟用時使用 ApplyPatch 編輯檔案，關閉時使用 Write/Edit。選擇自動可恢復預設設定。',
+  applyPatchDefaultOption: (enabled: boolean) => (enabled ? '自動 · 啟用' : '自動 · 關閉'),
+  applyPatchEnabled: '啟用',
+  applyPatchDisabled: '關閉',
   contextWindow: '上下文視窗',
   inputLimit: '輸入上限',
   inputLimitHelp: '單次請求可輸入的 token 數。留空時依模型資料設定。',
@@ -99,6 +115,11 @@ const zhTwCapabilitiesCopy = {
   fastModeHelp: '選擇更快的服務檔位，可能產生額外費用。',
   fastAuto: '自動',
   fastEnabled: 'Fast',
+  apiProtocol: '請求協定',
+  apiProtocolHelp: '此模型使用的介面格式。同一位址同時提供多種協定時，可為單一模型單獨選擇。',
+  apiProtocolDefaultOption: (protocol: string) => `跟隨連線 · ${protocol}`,
+  connectionApiProtocol: '預設請求協定',
+  connectionApiProtocolHelp: '模型未單獨選擇協定時使用。建立後不可變更，可在每個模型上單獨覆寫。',
 };
 const enCapabilitiesCopy = {
   capabilities: 'Capabilities',
@@ -117,6 +138,12 @@ const enCapabilitiesCopy = {
     supported === undefined ? 'Use model information' : supported ? 'Model information: allow images' : 'Model information: no images',
   visionEnabledOption: 'Allow images',
   visionDisabledOption: 'Do not send images',
+  applyPatch: 'ApplyPatch file editing',
+  applyPatchHelp: 'Automatic follows the model default. Enabled uses ApplyPatch to edit files; Disabled uses Write/Edit. Manual choices apply only to this model on this connection. Select Automatic to restore the default.',
+  applyPatchDefaultOption: (enabled: boolean) =>
+    enabled ? 'Automatic: enabled' : 'Automatic: disabled',
+  applyPatchEnabled: 'Enabled',
+  applyPatchDisabled: 'Disabled',
   contextWindow: 'Context window',
   inputLimit: 'Input limit',
   inputLimitHelp: 'Maximum input tokens per request. Leave empty to use model information.',
@@ -130,6 +157,11 @@ const enCapabilitiesCopy = {
   fastModeHelp: 'Use the faster service tier. Additional charges may apply.',
   fastAuto: 'Auto',
   fastEnabled: 'Fast',
+  apiProtocol: 'Request protocol',
+  apiProtocolHelp: 'The API format this model uses. When one address serves several protocols, choose one per model.',
+  apiProtocolDefaultOption: (protocol: string) => `Connection default: ${protocol}`,
+  connectionApiProtocol: 'Default request protocol',
+  connectionApiProtocolHelp: 'Used by models without their own protocol. It cannot be changed after the connection is added; each model can override it.',
 };
 
 const zhCopy = {
@@ -237,6 +269,7 @@ const zhCopy = {
     },
   },
   shared: {
+    requestUrlLabel: '请求地址：',
     connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
@@ -271,11 +304,6 @@ const zhCopy = {
   add: {
     slugIssues: { required: '请填写连接标识', format: '连接标识只能包含小写字母、数字和连字符', too_long: '连接标识不能超过 64 个字符' }, duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
     accountLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。',
-    transportNoticeTitle: '这个供应商走官方 CLI 的私有通道',
-    transportNoticeDetail:
-      '请求发往该 CLI 使用的接口，并带上它的身份标识，而不是 Maka 的；该接口不属于已公开的 Provider API。',
-    transportAcknowledgeLabel: '我了解上述情况，并自行承担',
-    transportAcknowledgeRequired: '请先勾选上面的确认再添加。',
     apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', accountTitle: '使用账号连接登录',
     advancedRequest: '高级请求设置', expandAdvancedRequest: '展开高级请求设置', collapseAdvancedRequest: '收起高级请求设置',
     requestHeaders: '自定义请求头', headerName: '请求头名称', headerValue: '请求头值', retainedHeaderValue: '保留已保存的值', addHeader: '添加请求头', removeHeader: '移除', noRequestHeaders: '未设置自定义请求头。',
@@ -284,25 +312,6 @@ const zhCopy = {
     slug: '连接标识', name: '显示名称',
     accountIdPlaceholder: '填写账户 ID',
     saving: '保存中…', save: '保存供应商', keyRequired: (name: string) => `请填写 ${name} API Key`,
-    browserLogin: {
-      or: '或',
-      title: '使用 Command Code 账号登录',
-      description: '在浏览器中完成授权后，API Key 会自动填入上方输入框。',
-      action: '在浏览器中登录',
-      waiting: '正在等待浏览器中完成授权…',
-      openAgain: '浏览器没有打开？点此打开授权页',
-      cancel: '取消',
-      retry: '重试',
-      filled: (userName: string) => `已填入 ${userName} 的 API Key。`,
-      failed: {
-        denied: '授权已被拒绝。可以改为手动粘贴 API Key。',
-        timeout: '等待授权超时。可以重试，或手动粘贴 API Key。',
-        superseded: '这次登录已被新的尝试替代。',
-        port_unavailable: '本机 5959–5968 端口都被占用，请手动粘贴 API Key。',
-        browser_unavailable: '无法打开浏览器，请手动粘贴 API Key。',
-        unavailable: '浏览器登录暂不可用，请手动粘贴 API Key。',
-      },
-    },
     apiKeyLabel: 'API Key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: '服务地址',
     defaultModel: '默认模型', defaultModelPlaceholder: '留空即可，保存后自动拉取', defaultModelHelp: '保存后 Maka 会向该端点拉取模型目录。只有当端点不提供目录时，才需要在这里手填一个模型 ID。',
     stepsAria: '添加连接步骤', stepCredentials: '密钥', stepModels: '选择模型',
@@ -463,6 +472,7 @@ const zhTwCopy = {
     },
   },
   shared: {
+    requestUrlLabel: '請求地址：',
     connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
@@ -495,11 +505,6 @@ const zhTwCopy = {
   add: {
     slugIssues: { required: '請填寫連線標識', format: '連線標識只能包含小寫字母、數字和連字號', too_long: '連線標識不能超過 64 個字元' }, duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
     accountLogin: '請到帳號連線完成登入；登入成功後會自動建立模型連線。',
-    transportNoticeTitle: '這個供應商走官方 CLI 的私有通道',
-    transportNoticeDetail:
-      '請求發往該 CLI 使用的介面，並帶上它的身分標示，而不是 Maka 的；該介面不屬於已公開的 Provider API。',
-    transportAcknowledgeLabel: '我了解上述情況，並自行承擔',
-    transportAcknowledgeRequired: '請先勾選上面的確認再新增。',
     apiKeyPlaceholder: '輸入或貼上 API Key', cancel: '取消', accountTitle: '使用帳號連線登入',
     advancedRequest: '高階請求設定', expandAdvancedRequest: '展開高階請求設定', collapseAdvancedRequest: '收起高階請求設定',
     requestHeaders: '自訂請求頭', headerName: '請求頭名稱', headerValue: '請求頭值', retainedHeaderValue: '保留已儲存的值', addHeader: '新增請求頭', removeHeader: '移除', noRequestHeaders: '未設定自訂請求頭。',
@@ -508,25 +513,6 @@ const zhTwCopy = {
     slug: '連線標識', name: '顯示名稱',
     accountIdPlaceholder: '填寫帳號 ID',
     saving: '儲存中…', save: '儲存供應商', keyRequired: (name: string) => `請填寫 ${name} API Key`,
-    browserLogin: {
-      or: '或',
-      title: '使用 Command Code 帳號登入',
-      description: '在瀏覽器中完成授權後，API Key 會自動填入上方輸入框。',
-      action: '在瀏覽器中登入',
-      waiting: '正在等待瀏覽器中完成授權…',
-      openAgain: '瀏覽器沒有開啟？點此開啟授權頁',
-      cancel: '取消',
-      retry: '重試',
-      filled: (userName: string) => `已填入 ${userName} 的 API Key。`,
-      failed: {
-        denied: '授權已被拒絕。可以改為手動貼上 API Key。',
-        timeout: '等待授權逾時。可以重試，或手動貼上 API Key。',
-        superseded: '這次登入已被新的嘗試取代。',
-        port_unavailable: '本機 5959–5968 連接埠都被佔用，請手動貼上 API Key。',
-        browser_unavailable: '無法開啟瀏覽器，請手動貼上 API Key。',
-        unavailable: '瀏覽器登入暫不可用，請手動貼上 API Key。',
-      },
-    },
     apiKeyLabel: 'API Key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: '服務地址',
     defaultModel: '預設模型', defaultModelPlaceholder: '留空即可，儲存後自動拉取', defaultModelHelp: '儲存後 Maka 會向該端點拉取模型目錄。只有當端點不提供目錄時，才需要在這裡手填一個模型 ID。',
     stepsAria: '新增連線步驟', stepCredentials: '金鑰', stepModels: '選擇模型',
@@ -688,6 +674,7 @@ const enCopy: ProviderSettingsCopy = {
     },
   },
   shared: {
+    requestUrlLabel: 'Request URL:',
     connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
@@ -720,11 +707,6 @@ const enCopy: ProviderSettingsCopy = {
   add: {
     slugIssues: { required: 'Enter a connection identifier', format: 'Connection identifiers use lowercase letters, digits, and hyphens', too_long: 'Connection identifiers are at most 64 characters' }, duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
     accountLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.',
-    transportNoticeTitle: 'This provider uses the official CLI\'s private transport',
-    transportNoticeDetail:
-      'Requests go to the endpoint that CLI uses and carry its identity headers rather than Maka\'s. The endpoint is not part of the published Provider API.',
-    transportAcknowledgeLabel: 'I understand and accept this for my install',
-    transportAcknowledgeRequired: 'Tick the acknowledgement above before adding.',
     apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', accountTitle: 'Sign in with an account connection',
     advancedRequest: 'Advanced request settings', expandAdvancedRequest: 'Show advanced request settings', collapseAdvancedRequest: 'Hide advanced request settings',
     requestHeaders: 'Custom request headers', headerName: 'Header name', headerValue: 'Header value', retainedHeaderValue: 'Keep saved value', addHeader: 'Add header', removeHeader: 'Remove', noRequestHeaders: 'No custom request headers.',
@@ -733,25 +715,6 @@ const enCopy: ProviderSettingsCopy = {
     slug: 'Connection identifier', name: 'Display name',
     accountIdPlaceholder: 'Enter account ID',
     saving: 'Saving…', save: 'Save provider', keyRequired: (name: string) => `Enter the ${name} API key`,
-    browserLogin: {
-      or: 'or',
-      title: 'Sign in with your Command Code account',
-      description: 'Approve in the browser and the API key is filled in above.',
-      action: 'Sign in in the browser',
-      waiting: 'Waiting for you to approve in the browser…',
-      openAgain: 'Browser did not open? Open the approval page',
-      cancel: 'Cancel',
-      retry: 'Retry',
-      filled: (userName: string) => `Filled in an API key for ${userName}.`,
-      failed: {
-        denied: 'Authorization was denied. You can paste an API key instead.',
-        timeout: 'Timed out waiting for approval. Retry, or paste an API key.',
-        superseded: 'This sign-in was replaced by a newer attempt.',
-        port_unavailable: 'Ports 5959–5968 are all in use on this machine. Paste an API key instead.',
-        browser_unavailable: 'The browser could not be opened. Paste an API key instead.',
-        unavailable: 'Browser sign-in is unavailable right now. Paste an API key instead.',
-      },
-    },
     apiKeyLabel: 'API key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: 'Service URL',
     defaultModel: 'Default model', defaultModelPlaceholder: 'Leave empty — fetched after saving', defaultModelHelp: 'Maka fetches the model catalog from this endpoint after saving. Type a model id here only if the endpoint serves no catalog.',
     stepsAria: 'Steps to add the connection', stepCredentials: 'Key', stepModels: 'Choose models',

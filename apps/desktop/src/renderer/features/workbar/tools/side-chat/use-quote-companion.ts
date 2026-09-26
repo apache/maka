@@ -29,6 +29,7 @@ import {
   reconcileLiveTurnBuffer,
   useMountedRef,
   useSessionSettingIntent,
+  type SessionSettingIntentCatalog,
   type InteractionQueues,
   type LiveTurnProjection,
   type TransientUserMessageProjection,
@@ -54,6 +55,7 @@ import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
+import { createObservableState } from '../../../../application/contracts/session-catalog/observable-state.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
   abandonPendingCompanionCopy,
@@ -127,6 +129,9 @@ function admissionOutcomeForMessage(
 export interface UseQuoteCompanionInput {
   /** Stable owner for the currently mounted panel generation. */
   panelId: string;
+  /** Whether anyone can see the transcript. Observation follows this: hidden
+   *  releases the fork's observer; visible re-seeds and reconciles. */
+  active: boolean;
   /** Excerpts staged for the next send; accumulates as the user adds more from
    *  the main transcript. Attached to the next turn, then cleared by the host. */
   pendingQuotes: readonly StagedCompanionQuote[];
@@ -262,14 +267,17 @@ function transcriptRecordsTerminalTurn(
  * exchange never flickers away. Asking never writes back to the main conversation;
  * inherited history is hidden from the side transcript. The subscription is
  * established the moment the fork commits — before the run starts — so no
- * prompt/complete is missed. Explicit tab close removes the ephemeral fork;
- * navigation/layout remounts retain it while Workspace still owns the panel.
- * Workbar collapse and New Tab navigation keep the conversation alive.
+ * prompt/complete is missed, and it lives only while the panel is visible:
+ * hiding releases the observer and showing re-seeds it. Explicit tab close
+ * removes the ephemeral fork; navigation/layout remounts retain it while
+ * Workspace still owns the panel. Workbar collapse and New Tab navigation
+ * keep the conversation alive.
  */
 export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompanionResult {
   const { sideChat } = useWorkbarServices();
   const {
     panelId,
+    active,
     locale,
     sourceSession,
     modelChoices,
@@ -297,6 +305,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const sourceSessionId = sourceSession?.id;
   const sourceSessionIdRef = useRef(sourceSession?.id);
   sourceSessionIdRef.current = sourceSessionId;
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
   const stopRequestRef = useRef<{ promise: Promise<unknown>; turnId?: string } | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
@@ -368,9 +378,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // double-invoke; a hand-rolled disposed flag would stay tripped after replay).
   const mountedRef = useMountedRef();
   const dismissalGuardRef = useRef(createCompanionDismissalGuard());
-  const [permissionCatalogRevision, setPermissionCatalogRevision] = useState(0);
+  // The companion's own one-row catalog: its commits retire the intent
+  // overlay, not the shell catalog's.
+  const permissionCatalogRevisionRef = useRef(createObservableState(0));
+  const permissionCatalogRef = useRef<SessionSettingIntentCatalog | null>(null);
+  permissionCatalogRef.current ??= {
+    revision: () => permissionCatalogRevisionRef.current.getState(),
+    subscribeChanged: permissionCatalogRevisionRef.current.subscribe,
+  };
   const permissionModeIntent = useSessionSettingIntent<QuoteCompanionSettingValues>({
-    catalogRevision: permissionCatalogRevision,
+    catalog: permissionCatalogRef.current,
     refreshCatalog: async () => {
       const sessionId = companionIdRef.current;
       if (!sessionId) return;
@@ -379,7 +396,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (!mountedRef.current || companionIdRef.current !== sessionId || !next) return;
       companionRef.current = next;
       setCompanion(next);
-      setPermissionCatalogRevision((revision) => revision + 1);
+      const revisions = permissionCatalogRevisionRef.current;
+      revisions.replaceState(revisions.getState() + 1);
     },
     channels: {
       permissionMode: {
@@ -462,13 +480,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const bindPendingMessageTurn = useCallback((messageId: string, turnId: string, startsTurn = false) => {
     const message = pendingUserMessagesRef.current.get(messageId);
     if (!message) return;
-    const movedToSuccessor = message.pendingSteering
+    const movedToSuccessor = message.transientPlacement === 'steering'
       && message.hostTurnId !== undefined && message.hostTurnId !== turnId;
     pendingUserMessagesRef.current.set(messageId, {
       ...message,
       hostTurnId: turnId,
-      ...((startsTurn || movedToSuccessor || message.transientPlacement === 'next_turn') && {
-        transientPlacement: 'current_turn', pendingSteering: false,
+      ...((startsTurn || movedToSuccessor || message.transientPlacement === 'follow_up') && {
+        transientPlacement: 'transcript',
       }),
     });
   }, []);
@@ -875,10 +893,30 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       companionIdRef.current = session.id;
       companionRef.current = session;
       setCompanion(session);
-      subscriptionReadyRef.current = subscribeToFork(session.id);
+      // A send implies a visible panel, but a resolved promise — not a live
+      // observer — is all `send` needs from this either way.
+      subscriptionReadyRef.current = activeRef.current
+        ? subscribeToFork(session.id)
+        : Promise.resolve();
     },
     [subscribeToFork],
   );
+
+  // The fork's observation period is the panel's interest period: a hidden
+  // panel renders nothing, so its observer is released; returning re-seeds it
+  // through the same recovery path a lost subscription takes (seeded events
+  // replay, then readSettledMessages reconciles the durable transcript).
+  useEffect(() => {
+    if (!active) {
+      unsubscribeRef.current?.();
+      unsubscribeRef.current = null;
+      return;
+    }
+    const forkId = companionIdRef.current;
+    if (forkId && unsubscribeRef.current === null) {
+      subscriptionReadyRef.current = subscribeToFork(forkId);
+    }
+  }, [active, subscribeToFork]);
 
   const ensureFork = useCallback(
     (name: string): Promise<EnsureCompanionForkResult> => {
@@ -1163,7 +1201,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         id: turnId,
         text: trimmed,
         ts: Date.now(),
-        transientPlacement: 'current_turn',
+        transientPlacement: 'transcript',
         ...(quoteSnapshot.quotes.length > 0 ? { quotes: quoteSnapshot.quotes } : {}),
       };
       addPendingUserMessage(optimisticMessage);
@@ -1432,8 +1470,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       id: admissionId,
       text: trimmed,
       ts: Date.now(),
-      transientPlacement: placement,
-      ...(placement === 'current_turn' && { pendingSteering: true }),
+      transientPlacement: placement === 'current_turn' ? 'steering' : 'follow_up',
       ...(placement === 'current_turn' && activeTurnIdRef.current
         ? { hostTurnId: activeTurnIdRef.current }
         : {}),

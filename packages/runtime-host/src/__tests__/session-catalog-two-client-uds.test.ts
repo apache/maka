@@ -28,7 +28,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
@@ -215,20 +214,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       if ('kind' in planSession) assert.fail('Plan Session must be wire-representable');
       assert.equal(planSession.collaborationMode, 'plan');
-      const researchSession = requireSessionProjection(
-        await desktop.request('session.create', {
-          sessionId: 'deep-research-session',
-          workspace: { kind: 'host_path', path: root },
-          mode: 'deep_research',
-          name: 'Caller override',
-          labels: ['customer-label'],
-          modelTarget: { kind: 'default' },
-          permissionMode: 'bypass',
-        }),
-      );
-      assert.equal(researchSession.name, DEEP_RESEARCH_SESSION_NAME);
-      assert.deepEqual(researchSession.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-      assert.equal(researchSession.permissionMode, 'explore');
 
       const sandboxChoice = requireSessionProjection(
         await desktop.request('session.create', {

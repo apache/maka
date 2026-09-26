@@ -19,12 +19,6 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  buildCommandCodeCliRequest,
-  commandCodeCliGenerateUrl,
-  commandCodeCliHeaders,
-  summarizeCommandCodeCliStream,
-} from './commandcode-cli-language-model.js';
-import {
   PROVIDER_REGISTRY,
   effectiveBaseUrl,
   providerDefaultsOf,
@@ -35,7 +29,7 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { openResponsesUrl } from './provider-urls.js';
+import { openAiChatUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
@@ -256,65 +250,7 @@ async function testConnectionModel(
       );
     case 'cohere':
       return await probeCohere(baseUrl, secret, testModel, t0, fetchFn);
-    case 'commandcode-cli':
-      return await probeCommandCodeCli(baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
   }
-}
-
-async function probeCommandCodeCli(
-  baseUrl: string,
-  apiKey: string,
-  model: string,
-  t0: number,
-  fetchFn: ConnectionEffectFetch | undefined,
-  requestHeaders: Readonly<Record<string, string>> | undefined,
-): Promise<ConnectionTestResult> {
-  const { body } = buildCommandCodeCliRequest(
-    { prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }], maxOutputTokens: 16 },
-    { modelId: model },
-  );
-  const r = await fetchForConnectionEffect(fetchFn, commandCodeCliGenerateUrl(baseUrl), {
-    method: 'POST',
-    headers: { ...commandCodeCliHeaders(apiKey, 'maka'), ...(requestHeaders ?? {}) },
-    body: JSON.stringify(body),
-    timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
-  });
-  if (!r.ok) return httpFailure(r, t0);
-  // HTTP 200 is only the handshake on this wire. The generation adapter fails
-  // the send on an in-band `error` event and on a stream that ends without a
-  // `finish`, so a probe that stopped at the status would store a connection
-  // as verified whose very next send is rejected.
-  const outcome = summarizeCommandCodeCliStream(
-    await r.readText(CONNECTION_EFFECT_JSON_BODY_MAX_BYTES),
-  );
-  const latencyMs = Date.now() - t0;
-  if (outcome.error) {
-    const { message, statusCode } = outcome.error;
-    return {
-      ok: false,
-      latencyMs,
-      errorMessage: message.slice(0, 200),
-      ...(statusCode === undefined ? {} : { statusCode }),
-      errorClass: commandCodeCliStreamErrorClass(statusCode),
-    };
-  }
-  if (!outcome.finished) {
-    return {
-      ok: false,
-      latencyMs,
-      errorMessage: 'The Command Code GO stream ended before the turn finished',
-      errorClass: 'network',
-    };
-  }
-  return { ok: true, latencyMs, modelTested: model };
-}
-
-function commandCodeCliStreamErrorClass(statusCode: number | undefined): ConnectionTestErrorClass {
-  if (statusCode === 401 || statusCode === 403) return 'auth';
-  if (statusCode === 429 || (statusCode !== undefined && statusCode >= 500)) {
-    return 'provider_unavailable';
-  }
-  return 'unknown';
 }
 
 async function probeGitHubCopilot(
@@ -448,7 +384,7 @@ async function probeOpenAI(
     // chat with the provider error class.
     return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
   }
-  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/chat/completions`, {
+  const r = await fetchForConnectionEffect(fetchFn, openAiChatUrl(baseUrl), {
     method: 'POST',
     headers: {
       ...requestHeaders,

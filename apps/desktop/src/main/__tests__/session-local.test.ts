@@ -30,9 +30,10 @@ import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
-import type { TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import type { SessionCreateInput, TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
 import { DesktopSessionLocalStore, type LocalMessageIntent } from '../session-local-store.js';
 import {
+  createSessionLocalChangedEmitter,
   DesktopSessionLocalService,
   desktopSessionLocalPartition,
   registerDesktopSessionLocalIpc,
@@ -150,6 +151,26 @@ test('local acceptance survives restart with attachment bytes and an immutable d
   assert.throws(() => db.store.cancel('authority-1', record.messageId), /Host may already own/);
 });
 
+test('ordinary send presentation survives local outbox restart', async (t) => {
+  const db = await database(t);
+  db.store.enqueue('authority-1', {
+    ...intent(),
+    command: { ...intent().command, placement: 'next_turn' },
+    localDisplayPlacement: 'current_turn',
+  });
+  db.reopen();
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  t.after(() => service.close());
+  const [restored] = service.listMessages({
+    partition: 'authority-1', profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+  }, 'session-1');
+  assert.equal(restored?.placement, 'next_turn');
+  assert.equal(restored.localDisplayPlacement, 'current_turn');
+});
+
 test('local IDs bind content, retries are idempotent, and admission stays bounded', async (t) => {
   const { store } = await database(t);
   const first = store.enqueue('authority-1', intent());
@@ -247,6 +268,46 @@ test('a catalog read begun before local creation cannot erase that Session or it
   assert.equal(store.list('authority').length, 1);
 });
 
+test('a locally-owned Session change signals a list refresh, not a targeted row read', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const sent: { channel: string; payload: unknown }[] = [];
+  const emit = createSessionLocalChangedEmitter({
+    send: (channel, _scope, payload) => sent.push({ channel, payload }),
+    locallyOwned: (scope, sessionId) => service.locallyOwned(scope, sessionId),
+  });
+  // The store still holds the creation intent, so no Host row exists for a
+  // targeted `sessions.get` to read.
+  store.saveSession(
+    'authority',
+    { id: 'session-1', name: 'task' } as DesktopSessionSummaryInput,
+    { sessionId: 'session-1' } as SessionCreateInput,
+  );
+  emit(target.scope, 'session-1');
+  assert.deepEqual(
+    sent.map(({ channel, payload }) => [channel, (payload as { sessionId?: string }).sessionId]),
+    [
+      ['session-local:changed', 'session-1'],
+      ['sessions:changed', undefined],
+    ],
+  );
+  // Host admission clears the creation marker, so the targeted path resumes.
+  store.saveSession('authority', { id: 'session-1', name: 'task' } as DesktopSessionSummaryInput);
+  emit(target.scope, 'session-1');
+  const last = sent[sent.length - 1]?.payload as { sessionId?: string } | undefined;
+  assert.equal(last?.sessionId, 'session-1');
+});
+
 test('an authorization failure quarantines the still-connected authority from cache and admission', async (t) => {
   const { store, beforeClose } = await database(t);
   const target: DesktopSessionLocalTarget = {
@@ -290,18 +351,30 @@ test('offline intents are dispatched only after connectivity returns', async (t)
   service.wake();
   await nextTurn();
   assert.equal(store.get('authority', 'message-1')?.state, 'saved');
+  assert.equal(service.listMessages(target, 'session-1')[0]!.delivering, undefined);
   assert.equal(calls.length, 0);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
   target = {
     ...target,
     client: client('epoch-1'),
     submit: async (input) => {
       calls.push(input);
+      await released;
       return accepted;
     },
   };
   service.wake();
-  await waitFor(() => store.get('authority', 'message-1')?.state === 'accepted');
-  assert.equal(calls.length, 1);
+  await waitFor(() => calls.length === 1);
+  store.enqueue('authority', intent('message-2'));
+  service.wake();
+  await nextTurn();
+  const queued = service.listMessages(target, 'session-1').find((message) => message.messageId === 'message-2');
+  assert.equal(queued?.state, 'saved', 'the second message waits behind the first');
+  assert.equal(queued?.delivering, true);
+  release();
+  await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
+  assert.equal(calls.length, 2);
   assert.equal(calls[0]!.originHostEpoch, 'epoch-1');
   assert.equal(calls[0]!.content.attachments?.length, 1);
 });
@@ -876,19 +949,37 @@ test('local submit preserves picked-file approvals until durable admission succe
   });
   for (let index = 0; index < 256; index++)
     store.enqueue('authority', { ...intent(`full-${index}`), staged: [] });
-  const draft = { messageId: 'picked-message', text: 'hello', attachmentItems: [picked] };
+  const draft = {
+    messageId: 'picked-message',
+    text: 'hello',
+    attachmentItems: [picked],
+    localDisplayPlacement: 'current_turn',
+  };
   const send = () =>
     submit(
       { sender: { id: 7 } } as IpcMainInvokeEvent,
       target.scope,
       'session-1',
-      'current_turn',
+      'next_turn',
       draft,
     );
+  await assert.rejects(
+    () => submit(
+      { sender: { id: 7 } } as IpcMainInvokeEvent,
+      target.scope,
+      'session-1',
+      'next_turn',
+      { ...draft, messageId: 'invalid-display', localDisplayPlacement: 'later' },
+    ),
+    /Invalid local display placement/,
+  );
+  assert.equal(store.get('authority', 'invalid-display'), undefined);
   await assert.rejects(send, /Local message storage is full/);
   store.cancel('authority', 'full-0');
   await send();
   assert.equal(store.get('authority', 'picked-message')?.state, 'saved');
+  assert.equal(store.get('authority', 'picked-message')?.intent.command.placement, 'next_turn');
+  assert.equal(store.get('authority', 'picked-message')?.intent.localDisplayPlacement, 'current_turn');
   assert.equal(
     Buffer.from(store.stagedAttachments('authority', 'picked-message')[0]!.content).toString(),
     'x',

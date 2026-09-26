@@ -122,7 +122,7 @@ describe('model-metadata vision capability', () => {
   });
 
   it('confines the default to the providers that serve Anthropic their own models', () => {
-    const providerType = 'anthropic-compatible' satisfies ProviderType;
+    const providerType = 'custom' satisfies ProviderType;
     assert.equal(resolveModelVisionSupport(providerType, undefined, 'claude-opus-6'), false);
   });
 
@@ -135,32 +135,25 @@ describe('model-metadata vision capability', () => {
 
   it('lets a user declaration outrank every other signal, in both directions', () => {
     const stored: ModelInfo[] = [{ id: 'my-reasoner', capabilities: { vision: true } }];
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', false),
-      false,
-    );
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', true),
-      true,
-    );
+    assert.equal(resolveModelVisionSupport('custom', stored, 'my-reasoner', false), false);
+    assert.equal(resolveModelVisionSupport('custom', undefined, 'some-unlisted-model', true), true);
     assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-6', false), false);
+    assert.equal(resolveModelVisionSupport('custom', stored, 'my-reasoner', undefined), true);
     assert.equal(
-      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', undefined),
-      true,
-    );
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', undefined),
+      resolveModelVisionSupport('custom', undefined, 'some-unlisted-model', undefined),
       false,
     );
   });
 });
 
 describe('openAiAdapterApiProtocol', () => {
-  it('routes a normalized gpt-5 family to the Responses wire', () => {
+  it('routes normalized GPT-5 and GPT-6 families to the Responses wire', () => {
     assert.equal(openAiAdapterApiProtocol(' GPT-5.6-sol '), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('gpt-6-sol'), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('gpt-6-luna'), 'openai-responses');
   });
 
-  it('keeps a non-gpt-5 OpenAI model on the Chat Completions wire', () => {
+  it('keeps an older OpenAI model on the Chat Completions wire', () => {
     assert.equal(openAiAdapterApiProtocol('gpt-4o'), 'openai-chat');
   });
 
@@ -203,10 +196,8 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     );
   });
 
-  it('keeps the model present in the deepseek shipped baseline', () => {
-    assert.ok(
-      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
-    );
+  it('keeps the vision-capable baseline model in the deepseek shipped baseline', () => {
+    assert.ok(providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-flash'));
   });
 
   it('returns expected metadata from lookupModelMetadata', () => {
@@ -285,7 +276,7 @@ describe('Volcengine Agent Plan official catalog mirror', () => {
 });
 
 describe('Command Code static reasoning metadata', () => {
-  const commandCodeProviders = ['commandcode', 'commandcode-go'] as const;
+  const commandCodeProviders = ['commandcode'] as const;
   // The reference table this is ported from (dsh-commandcode-provider's
   // KNOWN_EFFORTS, re-verified against command-code@1.53.0).
   const expectedEfforts: Record<string, readonly ThinkingLevel[]> = {
@@ -306,7 +297,7 @@ describe('Command Code static reasoning metadata', () => {
     'zai-org/GLM-5.2': ['high', 'max'],
   };
 
-  it('serves the same table to both Command Code providers', () => {
+  it('serves the effort table to the Command Code provider', () => {
     for (const providerType of commandCodeProviders) {
       for (const [modelId, efforts] of Object.entries(expectedEfforts)) {
         assert.deepEqual(
@@ -329,9 +320,6 @@ describe('Command Code static reasoning metadata', () => {
   });
 
   it('leaves a model without a declared level uncovered', () => {
-    assert.equal(
-      lookupModelMetadata('commandcode-go', 'tencent/hy3-paid').thinkingOptions,
-      undefined,
-    );
+    assert.equal(lookupModelMetadata('commandcode', 'tencent/hy3-paid').thinkingOptions, undefined);
   });
 });
