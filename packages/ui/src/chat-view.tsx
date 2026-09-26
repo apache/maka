@@ -54,12 +54,13 @@ import type {
 import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
-import { finalAssistantReplyText, type TurnViewModel } from './materialize.js';
+import { finalAssistantReplyText } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   TurnView,
+  PendingTurnAnswer,
   TransientUserMessage,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
@@ -506,30 +507,18 @@ export function ChatView(props: {
     inlineTransientMessageIds,
     turns,
   );
-  // Rendered as the Turn it becomes, so the handoff moves nothing. Not in `turns`.
   const awaitingHost = props.activeTurn === undefined
     && tailTransientMessages.length > 0
     && tailTransientMessages.some((message) => message.deliveryStatus === undefined);
-  const pendingTurnId = tailTurnId !== undefined && !hasRenderedLiveTurn ? tailTurnId
-    : awaitingHost ? tailTransientMessages[0]!.hostTurnId ?? tailTransientMessages[0]!.id : undefined;
-  const pendingTurn: TurnViewModel | undefined = pendingTurnId === undefined ? undefined : {
-    turnId: pendingTurnId, status: 'running', tools: [], notes: [], timeline: [], startedAt: activeContent?.startedAt ?? 0,
-  };
+  const pendingTurnId = !hasRenderedLiveTurn ? tailTurnId : undefined;
+  const hasPendingAnswer = awaitingHost || pendingTurnId !== undefined;
   // Tail rows have no Turn ancestor, so the reading measure that `.maka-turn`
   // owns would not reach them: without it the bubble spans the full window.
-  const tail = pendingTurn ? (
-    <div className="maka-pending-turn" data-awaiting-host={awaitingHost || undefined}>
-      <TurnView
-        turn={pendingTurn}
-        activityObserved
-        promptStatus={props.turnDecorations?.get(pendingTurn.turnId)?.promptStatus}
-        transientMessages={tailTransientMessages}
-        userLabel={props.userLabel}
-        liveStreaming={{ runningStatus, providerRetry: activeContent?.providerRetry }}
-      />
-    </div>
-  ) : tailTransientMessages.length > 0 ? (
-    <section className="maka-turn">
+  const tail = hasPendingAnswer || tailTransientMessages.length > 0 ? (
+    <section
+      className={hasPendingAnswer ? 'maka-turn maka-pending-turn' : 'maka-turn'}
+      data-awaiting-host={awaitingHost || undefined}
+    >
       {tailTransientMessages.map((message) => (
         <TransientUserMessage
           key={message.id}
@@ -537,6 +526,14 @@ export function ChatView(props: {
           status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
         />
       ))}
+      {hasPendingAnswer && (
+        <PendingTurnAnswer
+          turnId={pendingTurnId}
+          startedAt={activeContent?.startedAt}
+          running={runningStatus}
+          providerRetry={activeContent?.providerRetry}
+        />
+      )}
     </section>
   ) : null;
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);

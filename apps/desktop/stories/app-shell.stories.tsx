@@ -681,21 +681,6 @@ export const RunningStatusDuringToolRun: Story = {
 // the expanded panel's bytes honest.
 const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3\n\n\n> maka@0.2.0 build:test\n> npm run clean && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test\n\n\n> maka@0.2.0 clean\n> node scripts/clean-build.mjs\n\ncleaned packages/core/dist\ncleaned packages/core/tsconfig.tsbuildinfo\ncleaned packages/storage/dist\ncleaned packages/storage/tsconfig.tsbuildinfo\ncleaned packages/mcp/dist\ncleaned packages/mcp/tsconfig.tsbuildinfo\ncleaned packages/runtime/dist\ncleaned packages/runtime/tsconfig.tsbuildinfo\ncleaned packages/runtime-host/dist\ncleaned packages/runtime-host/tsconfig.tsbuildinfo\ncleaned packages/eval/dist\ncleaned packages/eval/tsconfig.tsbuildinfo\ncleaned packages/computer-use/dist\ncleaned packages/computer-use/tsconfig.tsbuildinfo\ncleaned packages/cli/dist\ncleaned packages/cli/tsconfig.tsbuildinfo\ncleaned packages/ui/dist\ncleaned packages/ui/tsconfig.tsbuildinfo\ncleaned apps/desktop/dist\ncleaned apps/desktop/tsconfig.main.tsbuildinfo\ncleaned apps/desktop/tsconfig.renderer.tsbuildinfo\ncleaned 21 path(s).\n\n> @maka/core@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/storage@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/mcp@0.1.0 build\n> tsc -p tsconfig.json\n";
 
-// Real path: run the full test suite → the user hits stop before it returns.
-// Aborting settles the call as a cancelled `terminal` result (isError), and
-// `toolResultActivityStatus` maps a cancelled terminal to `interrupted`. There is
-// no `interrupted` turn status (only running/completed/aborted/failed) — the
-// tool-level state is derived from the settled result, not asserted.
-//
-// `npm test` runs for minutes (build:test then the runner), so a cancel at ~16s is
-// still inside a running process — it settles `cancelled`/130, not `timed_out`/124
-// (which needs the 120s foreground default) and not a `completed` run. The retained
-// stdout is a verbatim prefix of a real run (see NPM_TEST_STDOUT_AT_CANCEL), cut in
-// the build phase so there is no runner interleaving and nothing is truncated.
-//
-// This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
-// story that reaches the interrupted tool row. It goes through the real
-// ChatView → materializeTurns → ToolTrow path, so the row renders inside the
 // Real path: the prompt is admitted, its Turn has not reached the transcript
 // yet. The cue carries no clock until the Turn's own start arrives.
 export const PromptSentBeforeTurnLands: Story = {
@@ -722,7 +707,7 @@ export const PromptSentBeforeTurnLands: Story = {
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
     // The pending prompt already sits a Turn's distance below the last Turn,
     // so it does not move when its Turn lands.
-    const pending = canvasElement.querySelector<HTMLElement>('.maka-chat-session-swap + .maka-turn')!;
+    const pending = canvasElement.querySelector('[data-transient-message-id="msg-sent"]')!.closest('.maka-turn')!;
     await waitFor(() => {
       const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
       expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
@@ -733,8 +718,10 @@ export const PromptSentBeforeTurnLands: Story = {
   },
 };
 
-// production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
-// and composer agree with the transcript instead of still reading as active.
+// Real path: stop during `npm test` → cancelled terminal result → interrupted tool row.
+// The stdout fixture above comes from the build phase of a real run. ChatView →
+// materializeTurns → ToolTrow derives the interruption from the result; the
+// aborted Session also settles the sidebar and composer.
 export const InterruptedToolAfterTurnAbort: Story = {
   render: () => (
     <ComposedShell
@@ -2587,6 +2574,7 @@ async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> 
   expect(tailMetrics().distance).toBeLessThanOrEqual(4);
 }
 
+// Real path: send in an existing conversation → Host starts → transcript lands → reply streams and settles.
 export const SendKeepsPromptInPlace: Story = {
   render: () => <StreamingTailHarness hostAhead />,
   play: async ({ canvasElement }) => {
@@ -2595,6 +2583,7 @@ export const SendKeepsPromptInPlace: Story = {
   },
 };
 
+// Real path: first send leaves the empty home → Host starts → transcript lands → reply streams and settles.
 export const FirstSendKeepsPromptInPlace: Story = {
   render: () => <StreamingTailHarness hostAhead fresh />,
   play: async ({ canvasElement }) => verifySendKeepsPrompt(canvasElement),

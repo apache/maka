@@ -74,7 +74,7 @@ const OPTIMISTIC_BUBBLE: TransientUserMessageProjection = {
 
 test('ChatView renders the optimistic bubble and running status before a session exists', () => {
   const markup = renderChatView({
-    transientMessages: [OPTIMISTIC_BUBBLE],
+    transientMessages: [{ ...OPTIMISTIC_BUBBLE, hostTurnId: 'turn-1' }],
     activeTurn: { turnId: 'turn-1' },
     turnDecorations: new Map([['turn-1', {
       header: null,
@@ -82,12 +82,41 @@ test('ChatView renders the optimistic bubble and running status before a session
     }]]),
   });
   const { document } = parseHTML(markup);
-  const turn = document.querySelector('.maka-pending-turn > .maka-turn[data-turn-id="turn-1"]');
+  const turn = document.querySelector('.maka-pending-turn');
   assert.ok(turn?.querySelector('.maka-user-message')?.textContent?.includes('why does this fail?'));
   assert.ok(turn?.querySelector('.maka-user-message [data-testid="prompt-status"]'), 'the prompt keeps its Turn status');
   assert.ok(turn?.querySelector('.maka-turn-processing'));
   // The optimistic content takes over from the empty state.
   assert.doesNotMatch(markup, /empty-state-marker/);
+});
+
+test('tail prompts keep only their own Host status before the transcript arrives', () => {
+  const messages = [
+    { ...OPTIMISTIC_BUBBLE, id: 'previous', hostTurnId: 'previous-turn' },
+    { ...OPTIMISTIC_BUBBLE, id: 'next' },
+  ];
+  const decorations = new Map([
+    ['previous-turn', { header: null, promptStatus: 'Completed' }],
+    ['next-turn', { header: null, promptStatus: 'Running' }],
+  ]);
+  for (const activeTurn of [undefined, { turnId: 'next-turn' }]) {
+    for (const admitted of [false, true]) {
+      const { document } = parseHTML(renderChatView({
+        activeTurn,
+        turnDecorations: decorations,
+        transientMessages: messages.map((message) => message.id === 'next' && admitted
+          ? { ...message, hostTurnId: 'next-turn' } : message),
+      }));
+      const previous = document.querySelector('[data-transient-message-id="previous"]')!;
+      const next = document.querySelector('[data-transient-message-id="next"]')!;
+      assert.match(previous.textContent!, /Completed/);
+      assert.doesNotMatch(previous.textContent!, /Running/);
+      assert.doesNotMatch(next.textContent!, /Completed/);
+      assert.equal(next.textContent!.includes('Running'), admitted);
+      assert.equal(previous.closest('[data-turn-id]'), null, 'pending layout does not assign Turn ownership');
+      assert.equal(next.closest('[data-turn-id]'), null, 'only Host evidence assigns Turn ownership');
+    }
+  }
 });
 
 test('ChatView shows the empty state when there is neither a bubble nor a running turn', () => {
