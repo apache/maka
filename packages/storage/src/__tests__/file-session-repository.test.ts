@@ -70,6 +70,88 @@ test('persists a current Manifest head and first immutable object prefix across 
   });
 });
 
+for (const action of ['create', 'commit'] as const) {
+  test(`independent processes race Session ${action} with exactly one winner`, {
+    timeout: 20_000,
+  }, async () => {
+    await withTemporaryDirectory(async (root) => {
+      const repository = await openFileSessionRepository({ storageRoot: root });
+      const left = await publishCheckpoint(
+        repository,
+        await writeArtifact(root, 'left', 'left checkpoint'),
+      );
+      const right = await publishCheckpoint(
+        repository,
+        await writeArtifact(root, 'right', 'right checkpoint'),
+      );
+      let expectedRevision = '';
+      if (action === 'commit') {
+        expectedRevision = (
+          await repository.createSession({ sessionId: 'race', agentId: 'agent', checkpoint: left })
+        ).ref.revision;
+      }
+      const children: ReturnType<typeof fork>[] = [];
+      const closes: Promise<void>[] = [];
+      try {
+        const starts: Promise<unknown>[] = [];
+        for (const [index, checkpoint] of [left, right].entries()) {
+          const path = join(root, `race-${index}.json`);
+          await writeFile(
+            path,
+            JSON.stringify(
+              action === 'create'
+                ? { sessionId: 'race', agentId: 'agent', checkpoint }
+                : { sessionId: 'race', expectedRevision, checkpoint, commitId: `writer-${index}` },
+            ),
+          );
+          const child = fork(
+            new URL('./fixtures/session-repository-race-writer.js', import.meta.url),
+            [root, path, action],
+            {
+              stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+            },
+          );
+          children.push(child);
+          const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+          closes.push(closed);
+          starts.push(
+            Promise.race([
+              once(child, 'message', { signal: AbortSignal.timeout(10_000) }).then(([value]) => {
+                assert.equal(value, 'ready');
+              }),
+              closed.then(() => {
+                throw new Error('Race writer exited before ready');
+              }),
+            ]),
+          );
+        }
+        await Promise.all(starts);
+        const outcomes = children.map((child) =>
+          once(child, 'message', { signal: AbortSignal.timeout(10_000) }),
+        );
+        for (const child of children) child.send('go');
+        const results = (await Promise.all(outcomes)).map(([value]) => value);
+        assert.equal(results.filter((value) => value.kind === 'committed').length, 1);
+        assert.deepEqual(
+          results.find((value) => value.kind === 'rejected'),
+          {
+            kind: 'rejected',
+            code: action === 'create' ? 'session_already_exists' : 'revision_conflict',
+          },
+        );
+        assert.deepEqual(
+          await repository.checkoutCurrent('race'),
+          results.find((value) => value.kind === 'committed').result,
+        );
+      } finally {
+        for (const child of children)
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        await Promise.all(closes);
+      }
+    });
+  });
+}
+
 test('serializes concurrent local CAS writers across adapter instances', async () => {
   await withTemporaryDirectory(async (root) => {
     const left = await openFileSessionRepository({ storageRoot: root });

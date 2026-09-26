@@ -18,6 +18,7 @@
  */
 
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
+import { SnapshotOperationGate } from './snapshot-operation-gate.js';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type {
   RuntimeContinuationAuthorityStore,
@@ -203,6 +204,14 @@ interface ExecutionStoresWriterBase<K extends StorageRootKind> {
 }
 
 export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterBase<'interactive'> {
+  /** Trusted composition only. Holds the selected backend stable for a complete private copy. */
+  readonly snapshot?: {
+    runExclusive<T>(
+      operation: (
+        state: import('./quiescent-session-snapshot.js').SessionSnapshotStatePreparer,
+      ) => Promise<T>,
+    ): Promise<T>;
+  };
   readonly graphControlStore: ExecutionGraphStore;
   readonly goalStore: InteractiveGoalAuthorityWriter;
   readonly interactionStore: InteractiveInteractionStoreWriterFacade;
@@ -395,12 +404,13 @@ async function createExecutionStoresForWrite(
   let closed = false;
   let closeTask: Promise<void> | undefined;
   const active = new Set<Promise<unknown>>();
+  const snapshotGate = new SnapshotOperationGate();
   const subscriptions = new Set<() => void>();
   const run = <T>(operation: () => Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(invalidExecutionStores(kind, 'write'));
     const pending = runWithStorageRootLease(lease, kind, 'write', () => {
       if (closed) throw invalidExecutionStores(kind, 'write');
-      return operation();
+      return snapshotGate.run(operation);
     });
     active.add(pending);
     void pending.finally(() => active.delete(pending)).catch(() => undefined);
@@ -531,6 +541,40 @@ async function createExecutionStoresForWrite(
   });
 
   const stores: InteractiveExecutionStoresWriter = {
+    ...(persistence.createSnapshotStatePreparer
+      ? {
+          snapshot: Object.freeze({
+            runExclusive<T>(
+              operation: (
+                state: import('./quiescent-session-snapshot.js').SessionSnapshotStatePreparer,
+              ) => Promise<T>,
+            ): Promise<T> {
+              if (closed) return Promise.reject(invalidExecutionStores(kind, 'write'));
+              const pending = snapshotGate.exclusive(() =>
+                runWithStorageRootLease(lease, kind, 'write', async () => {
+                  if (closed) throw invalidExecutionStores(kind, 'write');
+                  const state = persistence.createSnapshotStatePreparer!(lease);
+                  let scopeActive = true;
+                  try {
+                    return await operation({
+                      prepareState: (input) => {
+                        if (!scopeActive || closed)
+                          return Promise.reject(invalidExecutionStores(kind, 'write'));
+                        return state.prepareState(input);
+                      },
+                    });
+                  } finally {
+                    scopeActive = false;
+                  }
+                }),
+              );
+              active.add(pending);
+              void pending.finally(() => active.delete(pending)).catch(() => {});
+              return pending;
+            },
+          }),
+        }
+      : {}),
     interactionStore,
     graphControlStore,
     goalStore,

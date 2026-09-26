@@ -29,6 +29,8 @@ import type {
 } from './execution-stores.js';
 import type { InteractionStoreWriter } from './interaction-store.js';
 import type { GoalAuthorityRepository } from './goal-authority.js';
+import type { SessionSnapshotStatePreparer } from './quiescent-session-snapshot.js';
+import type { StorageRootLease } from './root-authority.js';
 
 /** Graph and Session creation/retirement share one transaction authority. */
 export interface ExecutionGraphStore
@@ -51,6 +53,10 @@ export interface ExecutionGraphStore
  * in authenticated, lease-scoped capabilities.
  */
 export interface ExecutionPersistence {
+  /** Optional selected-backend capability. Absence never falls back to Local. */
+  createSnapshotStatePreparer?(
+    lease: StorageRootLease<'interactive', 'write'>,
+  ): SessionSnapshotStatePreparer;
   readonly sessionStore: ExecutionSessionWriter;
   readonly agentRunStore: ExecutionAgentRunWriter;
   readonly runtimeEventStore: ExecutionRuntimeEventWriter;

@@ -161,9 +161,30 @@ This proves recovery in the specified **before-first-target-dispatch** window, n
 
 ### What this boundary does not change
 
-SQLite and existing local files remain authoritative for live commits and ordinary in-place restart. No schema migration, new checkpoint I/O, or per-message packing is introduced here. The Repository Head from #2370 identifies a published checkpoint; it is not the metadata revision or event ordinal and must not overwrite newer live commits.
+SQLite and existing local files remain authoritative for live commits and ordinary in-place restart. The persistence boundary introduces no schema migration or per-message packing. Explicit checkpoint publication is a separate opt-in capability below; disabling it performs no Repository I/O. The Repository Head from #2370 identifies a published checkpoint; it is not the metadata revision or event ordinal and must not overwrite newer live commits.
 
-Host checkpoint publication and restricted exact-checkpoint restore are follow-up changes. In particular, independently restored Session checkpoints do not establish a consistent cross-Session WorkHub assignment. The initial local boundary work neither activates such a restore nor redesigns WorkHub, Memory retrieval, or cross-Host ownership.
+Restricted exact-checkpoint restore remains follow-up work. Independently restored Session checkpoints do not establish a consistent cross-Session WorkHub assignment. Publication neither activates such a restore nor redesigns WorkHub, Memory retrieval, or cross-Host ownership.
+
+### Explicit Host checkpoint publication
+
+Trusted composition can provide `checkpointPublication` in `ExecutionRuntimeHostCompositionDependencies` and call `composition.sessionCheckpoints.publish({ sessionId, requestId })`. It is a service management API, not a wire-protocol endpoint, model tool, UI action, or automatic turn hook. No configuration means `unsupported`, with no checkpoint directory opened. The independent Memory reference backend currently reports `unsupported` rather than exporting an unrelated Local database.
+
+Enabling it requires explicit Bundle quotas and a `HostCheckpointWorkspaceAuthority`. That deployment authority must fence **all** writers to the exact workspace, including external processes, for the complete private copy. This change deliberately supplies no pretend mutex for arbitrary developer directories: deployments without an offline/frozen/snapshot-capable workspace adapter must leave the capability disabled. Windows additionally requires the existing private-staging ACL verification authority. The first supported Session scope is an ordinary Session without subagent relationships, with a non-shared workspace; active/pending executions, Tool operations, approvals, boundary requests and active/orphaned shells are rejected. Publication does not certify the cross-Session dependency closure required for later activation, including WorkHub links.
+
+Capture takes Host Session admission, the Runtime mutation lane, the selected provider's exclusive snapshot boundary, and the trusted workspace fence. Normal execution-store operations remain concurrent outside that boundary. Local state export takes the existing Artifact writer lock followed by the root-wide context-value mutation gate, the same order as import. It holds both across the private database and payload copy, excluding Artifact cleanup and context GC. State and workspace are copied before the live boundary is released; packing/publication then reads only private files. Existing filtering, secret confirmation and size/path limits remain in force. Cancellation is cooperative; it never abandons a still-running copy while releasing its fence.
+
+`session-checkpoints-v1/` in the Host control directory owns the file Repository, staging and operation metadata. A dedicated persisted authority UUID and per-Session Repository UUID establish the binding independently of machine paths and `hostEpoch`. The bounded operation journal holds request/commit identities, the expected revision, exact prepared Manifest, and outcome; it is not a writable Head. Receipt capacity is reserved before CAS; quota exhaustion fails closed rather than expiring identities silently. Initialization failure in this optional metadata disables publication with an explicit error, without preventing ordinary Host recovery.
+
+- Bundle verification precedes Manifest verification; Head creation/CAS is last.
+- An interrupted capture becomes `aborted`; another snapshot requires a new request identity.
+- A `prepared` request retries only its recorded checkpoint. A different request waits for that outcome to be reconciled.
+- A lost creation reply is reconciled only against the exact binding and checkpoint. A commit retries its original Repository commit identity.
+- A definitive CAS conflict is retained as `conflicted`; retry never rebases that old snapshot onto a newer Head.
+- `committed` receipts replay the original committed revision even if live state or the Head has advanced. `stagingCleanup: pending_recovery` records a snapshot staging cleanup failure; `bundleCleanup` reports the latest temporary archive cleanup attempt. Neither turns a committed publication into a failure. Terminal requests retain archive cleanup ownership until cleanup succeeds; later requests reconcile it without deleting prepared inputs or immutable objects.
+
+Tests exercise real Host capture and codec hydration for inspection, pending-admission/secret/shared-workspace refusal, backend selection, complete-copy fencing, independent-process Repository races, and real Host termination before/after Head replacement. Inspection in those tests does not implement PR3 Runtime activation or establish whole-WorkHub restore safety.
+
+The opt-in [checkpoint performance baseline](session-checkpoint-performance.md) measures the root-wide fence separately from packing/publication, with repeatable fixtures and explicit RSS/disk measurement limits. It does not promise zero impact or enable automatic checkpoints.
 
 ## 5. Root admission and execution results
 

@@ -161,9 +161,30 @@ WorkHub 显式开启附件副本的验证式复用。存储层在 Artifact 写�
 
 ### 这条边界不改变什么
 
-SQLite 与现有本地文件仍是 live commit 和普通原地重启的权威。这里不引入 schema migration、checkpoint I/O 或逐消息打包。#2370 的 Repository Head 表示已发布 checkpoint，不是 metadata revision 或 event ordinal，更不能覆盖较新的 live commit。
+SQLite 与现有本地文件仍是 live commit 和普通原地重启的权威。持久化边界不引入 schema migration 或逐消息打包。下述显式 checkpoint 发布是独立的可选能力，关闭时不访问 Repository。#2370 的 Repository Head 表示已发布 checkpoint，不是 metadata revision 或 event ordinal，更不能覆盖较新的 live commit。
 
-Host checkpoint 发布和受限的精确 checkpoint 恢复属于后续修改。尤其是，分别恢复各 Session 的 checkpoint，并不能建立一致的跨 Session WorkHub 委派。当前边界整理不启用这种恢复，也不重做 WorkHub、Memory 检索或跨 Host ownership。
+受限的精确 checkpoint 恢复仍属后续工作。分别恢复各 Session 的 checkpoint，并不能建立一致的跨 Session WorkHub 委派。发布能力不启用这种恢复，也不重做 WorkHub、Memory 检索或跨 Host ownership。
+
+### 显式 Host checkpoint 发布
+
+可信装配层可以在 `ExecutionRuntimeHostCompositionDependencies` 中提供 `checkpointPublication`，再调用 `composition.sessionCheckpoints.publish({ sessionId, requestId })`。这是服务管理入口，不是协议端点、模型工具、UI 操作或每轮自动钩子。未配置时明确返回 `unsupported`，不创建 checkpoint 目录。当前独立 Memory 参考后端同样返回不支持，绝不偷偷导出 Local 数据库。
+
+启用需提供明确的 Bundle 配额和 `HostCheckpointWorkspaceAuthority`。后者必须能在完整私有复制期间排除该工作目录的所有写入者，包括外部进程。本改动不为任意开发目录提供虚假的一致性保证；没有离线、冻结或快照能力的 Workspace adapter 时应保持关闭。Windows 还需既有的私有暂存目录 ACL 验证能力。首版支持普通、无子 Agent 关系、非共享工作目录的 Session；活跃执行、待处理消息/Tool/审批/边界请求，以及活跃或 orphaned shell 均拒绝。
+
+复制阶段依次取得 Host Session admission、Runtime mutation lane、选定 provider 的快照排他边界和可信 Workspace fence。日常存储操作在排他区间外仍可并发。Local 导出按与导入相同的顺序取得 Artifact 写锁和根级 context-value mutation gate，覆盖数据库及其载荷的私有复制，排除 Artifact 清理与 context GC。状态和工作目录全部复制后才释放 live fence；打包和发布只读取私有副本。保留过滤、Secret 确认和大小/路径配额。取消是协作式的，不会在复制仍运行时提前释放排他。
+
+Host control directory 的 `session-checkpoints-v1/` 保存 file Repository、暂存与操作记录。首次持久化专用 authority UUID，每个 Session 绑定独立 Repository UUID，不用路径或 `hostEpoch` 充当身份。有界 journal 保存 request/commit 身份、预期 revision、固定 Manifest 和结果，不是另一份可写 Head；CAS 前预留收据容量，达到配额时明确失败，不静默遗忘幂等身份。可选元数据初始化失败时，发布能力明确报错，不阻止日常 Host 恢复。发布本身不证明后续激活所需的跨 Session 依赖闭包完整，包括 WorkHub 关联。
+
+- 先验证并发布 Bundle，再验证并发布 Manifest，最后 create/CAS Head。
+- 中断的 capture 标记为 `aborted`，重新取样必须使用新请求身份。
+- `prepared` 请求只能重试原固定 checkpoint，其他新请求需等待它协调完成。
+- 创建回执丢失时严格核对原绑定和确切 checkpoint；普通 commit 复用原 Repository commit 身份。
+- 确定的 CAS 冲突记录为 `conflicted`，不将旧快照自动重挂到新 Head。
+- `committed` 收据返回原提交版本，即便 live state 或 Head 已继续推进。`stagingCleanup: pending_recovery` 记录快照暂存清理失败，`bundleCleanup` 表示最近一次临时归档包清理结果，均不把已完成发布冒充失败。终态请求在清理成功前保留归档清理责任，后续请求继续协调，不删除 prepared 输入或不可变对象。
+
+测试覆盖真实 Host capture/codec 检查性解包、待处理消息/Secret/共享目录拒绝、后端选择、完整复制排他、独立进程 Repository 竞争，以及更新 Head 前后强杀真实 Host。测试中的检查性解包不等于 PR3 的 Runtime 激活，也不证明完整 WorkHub 的恢复安全。
+
+可选的 [checkpoint 性能基线](session-checkpoint-performance.md) 将整个存储根的写入冻结窗口与打包／发布分开测量，记录可复现夹具及 RSS／磁盘测量的局限；不承诺零影响，也不启用自动 checkpoint。
 
 ## 5. Root admission 与执行结果
 

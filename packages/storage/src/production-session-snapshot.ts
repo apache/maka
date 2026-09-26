@@ -213,6 +213,14 @@ export interface ProductionSessionSnapshotBinding {
   readonly cloudSessionId: string;
 }
 
+/** Backend-independent composition: state comes from the selected persistence provider. */
+export interface ProductionSessionSnapshotServiceOptions
+  extends Omit<FileProductionSessionSnapshotServiceOptions, 'stateRoot' | 'configRoot'> {
+  readonly state: SessionSnapshotStatePreparer;
+  /** Live/control roots that must never overlap the workspace or private staging. */
+  readonly sourceRoots: readonly string[];
+}
+
 export interface PackQuiescentSessionBundleInput {
   readonly destination: string;
   readonly lastCommittedActivationId?: string;
@@ -259,6 +267,21 @@ export interface FileProductionSessionSnapshotService {
 export async function createFileProductionSessionSnapshotService(
   options: FileProductionSessionSnapshotServiceOptions,
 ): Promise<FileProductionSessionSnapshotService> {
+  // Retain the original adapter's stricter state/config layout contract.
+  await assertProductionRootsSeparate({
+    stateRoot: options.stateRoot,
+    configRoot: options.configRoot,
+  });
+  return createProductionSessionSnapshotService({
+    ...options,
+    sourceRoots: [options.stateRoot, options.configRoot],
+    state: createFileSessionSnapshotStatePreparer(options),
+  });
+}
+
+export async function createProductionSessionSnapshotService(
+  options: ProductionSessionSnapshotServiceOptions,
+): Promise<FileProductionSessionSnapshotService> {
   const session = requireProductionSessionSnapshotBinding(options.session);
   assertSessionBundleLimits(options.limits);
   const limits = Object.freeze({ ...options.limits });
@@ -270,17 +293,13 @@ export async function createFileProductionSessionSnapshotService(
   });
   await stagingCleanup.recover();
   await assertProductionRootsSeparate({
-    stateRoot: options.stateRoot,
-    configRoot: options.configRoot,
+    ...Object.fromEntries(options.sourceRoots.map((root, index) => [`source${index}`, root])),
     workspaceRoot: options.workspaceRoot,
     stagingParent: stagingCleanup.stagingParent,
     cleanupStateRoot: options.cleanupStateRoot,
   });
   const stateBudgetsByStagingRoot = new Map<string, SnapshotStagingBudget>();
-  const fileStatePreparer = createFileSessionSnapshotStatePreparer({
-    stateRoot: options.stateRoot,
-    configRoot: options.configRoot,
-  });
+  const fileStatePreparer = options.state;
   const state: SessionSnapshotStatePreparer = {
     async prepareState(input): Promise<OpaqueStateIdentityDescriptor> {
       const identity = await fileStatePreparer.prepareState(input);
@@ -1014,13 +1033,9 @@ function requireProductionSessionSnapshotBinding(
   });
 }
 
-async function assertProductionRootsSeparate(input: {
-  readonly stateRoot: string;
-  readonly configRoot: string;
-  readonly workspaceRoot: string;
-  readonly stagingParent: string;
-  readonly cleanupStateRoot: string;
-}): Promise<void> {
+async function assertProductionRootsSeparate(
+  input: Readonly<Record<string, string>>,
+): Promise<void> {
   const roots = await Promise.all(
     Object.entries(input).map(async ([label, path]) => ({
       label,
