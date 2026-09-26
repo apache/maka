@@ -31,6 +31,11 @@ import type { DatabaseSync } from 'node:sqlite';
  * that NFC rewrites. On stable records `instr(lower(stored), term)` is exactly
  * recall's predicate, and on unstable ones the record is a candidate anyway,
  * so the scan never under-selects whatever script the transcript is in.
+ *
+ * That holds for terms the serialized record spells the way they were typed.
+ * A term with a character `JSON.stringify` escapes, or a lone surrogate, which
+ * cannot be bound at all, never reaches this scan: recall scans those fully
+ * (`hasJsonEscapedCharacter` in core `recall.ts`).
  */
 export const RECALL_FOLD_UNSTABLE_FUNCTION = 'maka_recall_fold_unstable';
 
