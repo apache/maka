@@ -157,28 +157,37 @@ describe('subscription model fetch', () => {
     assert.equal(result.usage.outputTokens.total, 7);
   });
 
-  test('passes a streaming Codex call through without folding it', async () => {
+  test('passes a streamed turn through unfolded, keeping its configured output cap', async () => {
+    const connection = openAiCodexConnection();
     let observedBody: Record<string, unknown> = {};
     const upstream = sse([{ type: 'response.completed', response: { id: 'resp-1', output: [] } }]);
     const modelFetch = buildSubscriptionModelFetch({
-      connection: openAiCodexConnection(),
+      connection,
       sessionId: 'session-turn',
-      modelId: 'gpt-5.5',
+      modelId: connection.defaultModel,
       fetchFn: async (_url, init) => {
         observedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return upstream;
       },
     });
     assert.ok(modelFetch);
-
-    const response = await modelFetch('https://chatgpt.com/backend-api/codex/responses', {
-      method: 'POST',
-      body: JSON.stringify({ input: [], stream: true, max_output_tokens: 64 }),
+    const model = getAIModel({
+      connection,
+      apiKey: codexToken('account-turn'),
+      modelId: connection.defaultModel,
+      fetch: modelFetch,
     });
 
-    assert.equal(response, upstream);
+    // A main turn streams, and a per-model output limit reaches it as
+    // maxOutputTokens. That is the user's setting, not ours to drop.
+    await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      maxOutputTokens: 64,
+      providerOptions: buildProviderOptions(connection, connection.defaultModel),
+    });
+
     assert.equal(observedBody.stream, true);
-    assert.equal('max_output_tokens' in observedBody, false);
+    assert.equal(observedBody.max_output_tokens, 64);
   });
 
   test('rejects a folded Codex stream that ends without a terminal response', async () => {

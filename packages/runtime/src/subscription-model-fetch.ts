@@ -154,13 +154,16 @@ function buildOpenAiCodexFetch(
     }
 
     // The Codex backend accepts only streamed requests and rejects
-    // `max_output_tokens`. Main turns already stream and never send the cap.
-    // Tool-free auxiliary calls (titles, goal evaluation, recap, Daily Review,
-    // prompt suggestions) go through `generateText`, so their request is
-    // streamed here and folded back into the one Responses body a
-    // non-streaming caller parses.
+    // `max_output_tokens`. Tool-free auxiliary calls (titles, goal evaluation,
+    // recap, Daily Review, prompt suggestions) go through `generateText`, so
+    // their request is streamed here and folded back into the one Responses
+    // body a non-streaming caller parses. Their output cap is an internal
+    // constant, so it is dropped. A streaming caller (a main turn) is sent as
+    // is: a cap it carries is the user's model setting and is not discarded
+    // here.
     const foldStream = parsedBody.stream !== true;
-    const { max_output_tokens: _unsupportedOutputCap, ...forwardedBody } = parsedBody;
+    const { max_output_tokens: _auxiliaryOutputCap, ...uncappedBody } = parsedBody;
+    const forwardedBody = foldStream ? { ...uncappedBody, stream: true } : parsedBody;
     const response = await checkedOpenAiCodexFetch(
       fetchFn,
       url,
@@ -169,7 +172,6 @@ function buildOpenAiCodexFetch(
         headers,
         body: JSON.stringify({
           ...forwardedBody,
-          ...(foldStream ? { stream: true } : {}),
           instructions: codexInstructionsFromBody(parsedBody),
           store: false,
           text: {
