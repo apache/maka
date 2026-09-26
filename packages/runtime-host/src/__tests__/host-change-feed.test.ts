@@ -63,10 +63,11 @@ test('routes each change kind only to subscribed connections', () => {
   feed.publishConfiguration();
   feed.publishConnectionCatalog();
   feed.publishProjectCatalog();
-  feed.publishSessionCatalog('session-1');
-  feed.publishSessionCatalog('session-2');
+  const attention = { kind: 'waiting', eventId: 'interaction-1', body: 'Choose one' } as const;
+  feed.publishSessionCatalog('session-1', attention);
+  feed.publishSessionCatalog('session-2', { kind: 'completed', eventId: 'terminal-2' });
   feed.publishSessionCatalogAndCloseScope('session-1', 'guest-1');
-  feed.publishSessionCatalog('session-1');
+  feed.publishSessionCatalog('session-1', { kind: 'completed', eventId: 'terminal-1' });
   feed.publishScheduledTask(7, 'updated', 'task-1');
 
   assert.deepEqual(
@@ -79,8 +80,17 @@ test('routes each change kind only to subscribed connections', () => {
     ['project.catalog.changed'],
   );
   assert.equal(all.length, 8);
+  assert.deepEqual(all.slice(3, 5), [
+    { kind: 'session.catalog.changed', revision: 1, sessionId: 'session-1', attention },
+    {
+      kind: 'session.catalog.changed',
+      revision: 2,
+      sessionId: 'session-2',
+      attention: { kind: 'completed', eventId: 'terminal-2' },
+    },
+  ]);
   assert.deepEqual(scopedSession, [
-    { kind: 'session.catalog.changed', revision: 1, sessionId: 'session-1' },
+    { kind: 'session.catalog.changed', revision: 1, sessionId: 'session-1', attention },
     { kind: 'session.catalog.changed', revision: 3, sessionId: 'session-1' },
   ]);
   assert.equal(otherGuest.length, 3);
@@ -89,6 +99,7 @@ test('routes each change kind only to subscribed connections', () => {
 test('keeps catalog revisions independent and removes failed subscriptions', async () => {
   const feed = new HostChangeFeed();
   const frames: unknown[] = [];
+  let failedSends = 0;
   feed.attachConnection(
     'working',
     { projectCatalog: true, sessionCatalog: true },
@@ -99,6 +110,7 @@ test('keeps catalog revisions independent and removes failed subscriptions', asy
     { projectCatalog: true },
     {
       send: async () => {
+        failedSends += 1;
         throw new Error('closed');
       },
     },
@@ -109,54 +121,9 @@ test('keeps catalog revisions independent and removes failed subscriptions', asy
   await Promise.resolve();
   feed.publishProjectCatalog();
 
+  assert.equal(failedSends, 1);
   assert.deepEqual(
     frames.map((frame) => (frame as { kind: string; revision: number }).revision),
     [1, 1, 2],
   );
-});
-
-test('publishes Session attention within the catalog scope and stops after Guest revocation', () => {
-  const feed = new HostChangeFeed();
-  const owner: unknown[] = [];
-  const guest: unknown[] = [];
-  feed.attachConnection(
-    'owner',
-    { sessionCatalog: true },
-    { send: async (frame) => void owner.push(frame) },
-  );
-  feed.attachConnection(
-    'guest',
-    { sessionCatalog: { sessionId: 'session-1', principalId: 'guest-1' } },
-    { send: async (frame) => void guest.push(frame) },
-  );
-  feed.publishSessionCatalog('session-1', {
-    kind: 'waiting',
-    eventId: 'interaction-1',
-    body: 'Choose one',
-  });
-  feed.publishSessionCatalog('session-2', {
-    kind: 'completed',
-    eventId: 'terminal-2',
-  });
-
-  assert.deepEqual(owner, [
-    {
-      kind: 'session.catalog.changed',
-      revision: 1,
-      sessionId: 'session-1',
-      attention: { kind: 'waiting', eventId: 'interaction-1', body: 'Choose one' },
-    },
-    {
-      kind: 'session.catalog.changed',
-      revision: 2,
-      sessionId: 'session-2',
-      attention: { kind: 'completed', eventId: 'terminal-2' },
-    },
-  ]);
-  assert.deepEqual(guest, [owner[0]]);
-  feed.publishSessionCatalogAndCloseScope('session-1', 'guest-1');
-  const guestFrames = guest.length;
-  feed.publishSessionCatalog('session-1', { kind: 'completed', eventId: 'terminal-1' });
-  assert.equal(guest.length, guestFrames);
-  assert.equal(owner.length, 4);
 });

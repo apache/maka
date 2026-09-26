@@ -54,13 +54,6 @@ const RUN_NOTIFICATION_COPY = {
   },
 } satisfies UiCatalog<Record<SessionAttention['kind'], RunNotificationCopy>>;
 
-export function runNotificationCopy(
-  kind: SessionAttention['kind'],
-  locale: UiLocale,
-): RunNotificationCopy {
-  return RUN_NOTIFICATION_COPY[locale][kind];
-}
-
 export interface RunNotificationEvent extends SessionAttention {
   readonly title?: string;
   readonly hostEpoch: string;
@@ -94,7 +87,7 @@ export function resolveNotificationContent(
   input: Pick<RunNotificationEvent, 'kind' | 'title' | 'body'>,
   locale: UiLocale,
 ): RunNotificationCopy {
-  const fallback = runNotificationCopy(input.kind, locale);
+  const fallback = RUN_NOTIFICATION_COPY[locale][input.kind];
   return {
     title: sanitizeLine(input.title, MAX_TITLE_CHARS) || fallback.title,
     body: sanitizeLine(input.body, MAX_BODY_CHARS) || fallback.body,
