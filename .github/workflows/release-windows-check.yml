@@ -157,7 +157,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Install Kache
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: kache@0.16.0
 
