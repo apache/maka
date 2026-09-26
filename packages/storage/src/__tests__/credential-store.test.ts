@@ -236,7 +236,7 @@ describe('FileCredentialStore compareAndSetSecret', () => {
     slug: string,
     kind: CredentialKind,
     expected: string | null,
-    value: string,
+    value: string | null,
   ): Promise<CredentialCasResult> {
     assert.ok(store.compareAndSetSecret, 'file store exposes the CAS capability');
     return store.compareAndSetSecret(slug, kind, expected, value);
@@ -312,6 +312,26 @@ describe('FileCredentialStore compareAndSetSecret', () => {
     });
   });
 
+  test('compare-and-delete removes only the credential version it observed', async () => {
+    await withTempDir(async (dir) => {
+      const a = createFileCredentialStore(dir);
+      const b = createFileCredentialStore(dir);
+      await a.setSecret('acct', 'oauth_token', 'tok-basis');
+
+      assert.deepEqual(await cas(a, 'acct', 'oauth_token', 'tok-basis', null), {
+        committed: true,
+      });
+      assert.equal(await a.getSecret('acct', 'oauth_token'), null);
+
+      await a.setSecret('acct', 'oauth_token', 'tok-newer');
+      assert.deepEqual(await cas(b, 'acct', 'oauth_token', 'tok-basis', null), {
+        committed: false,
+        current: 'tok-newer',
+      });
+      assert.equal(await b.getSecret('acct', 'oauth_token'), 'tok-newer');
+    });
+  });
+
   test('concurrent CAS from the same basis: exactly one wins, the loser returns the winner value', async () => {
     await withTempDir(async (dir) => {
       const a = createFileCredentialStore(dir);
@@ -331,6 +351,64 @@ describe('FileCredentialStore compareAndSetSecret', () => {
 
       const reader = createFileCredentialStore(dir);
       assert.equal(await reader.getSecret('acct', 'oauth_token'), winnerValue);
+    });
+  });
+
+  test('revision CAS rejects an ABA cycle even when the secret value matches again', async () => {
+    await withTempDir(async (dir) => {
+      const stale = createFileCredentialStore(dir);
+      const concurrent = createFileCredentialStore(dir);
+      await stale.setSecret('acct', 'oauth_token', 'tok-A');
+      assert.ok(stale.getSecretSnapshot);
+      assert.ok(stale.compareAndSetSecretRevision);
+      const basis = await stale.getSecretSnapshot('acct', 'oauth_token');
+
+      await concurrent.setSecret('acct', 'oauth_token', 'tok-B');
+      await concurrent.setSecret('acct', 'oauth_token', 'tok-A');
+
+      const result = await stale.compareAndSetSecretRevision(
+        'acct',
+        'oauth_token',
+        basis.revision,
+        'stale-rollback',
+      );
+      assert.equal(result.committed, false);
+      assert.equal(result.current.value, 'tok-A');
+      assert.notEqual(result.current.revision, basis.revision);
+      assert.equal(await stale.getSecret('acct', 'oauth_token'), 'tok-A');
+    });
+  });
+
+  test('revision CAS rejects a stale restore after an absent-state ABA cycle', async () => {
+    await withTempDir(async (dir) => {
+      const stale = createFileCredentialStore(dir);
+      const concurrent = createFileCredentialStore(dir);
+      await stale.setSecret('acct', 'oauth_token', 'tok-old');
+      assert.ok(stale.getSecretSnapshot);
+      assert.ok(stale.compareAndSetSecretRevision);
+      const beforeDelete = await stale.getSecretSnapshot('acct', 'oauth_token');
+      const deleted = await stale.compareAndSetSecretRevision(
+        'acct',
+        'oauth_token',
+        beforeDelete.revision,
+        null,
+      );
+      assert.equal(deleted.committed, true);
+      if (!deleted.committed) return;
+
+      await concurrent.setSecret('acct', 'oauth_token', 'tok-newer');
+      await concurrent.deleteSecret('acct', 'oauth_token');
+
+      const result = await stale.compareAndSetSecretRevision(
+        'acct',
+        'oauth_token',
+        deleted.revision,
+        'tok-old',
+      );
+      assert.equal(result.committed, false);
+      assert.equal(result.current.value, null);
+      assert.notEqual(result.current.revision, deleted.revision);
+      assert.equal(await stale.getSecret('acct', 'oauth_token'), null);
     });
   });
 });

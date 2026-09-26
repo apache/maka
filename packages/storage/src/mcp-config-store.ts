@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { randomUUID } from 'node:crypto';
 import { watch } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -46,6 +47,24 @@ const MAX_ID_LENGTH = 128;
 const MAX_STRING_LENGTH = 8_192;
 const MAX_CONFIG_BYTES = 1_048_576;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+// Internal metadata in the same atomic document as the config. Normalized
+// reads/imports exclude it; same-value writes must still advance ownership.
+const WRITE_REVISION_KEY = '_makaWriteRevision';
+
+export interface McpConfigTransaction {
+  /** Unique revision published atomically with this transaction's config. */
+  readonly writeRevision: string;
+  /** Call before compensation effects. Rejects if any store write superseded
+   * the expected revision, including same-value writes by another process. */
+  assertRevision(expected: string): void;
+}
+
+export class McpConfigRevisionConflictError extends Error {
+  constructor(readonly current: McpConfigFile) {
+    super('MCP configuration has a newer committed write');
+    this.name = 'McpConfigRevisionConflictError';
+  }
+}
 // An atomic replace is a temp write plus a rename; one settle window turns
 // that burst into one notification.
 const CHANGE_SETTLE_MS = 150;
@@ -63,9 +82,14 @@ export interface McpConfigStore {
    * remains held until the write settles. A write can fail after publication
    * with AtomicFileWriteCommitUnknownError when durability is unconfirmed:
    * reload with get() and reconcile consumers before considering a retry.
-   * Never blindly replay apply, whose effects may already have happened. */
+   * Never blindly replay apply, whose effects may already have happened.
+   * File stores supply a transaction receipt for conditional compensation.
+   * Its guard covers the entire document, including unrelated newer writes. */
   transform(
-    apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+    apply: (
+      current: McpConfigFile,
+      transaction?: McpConfigTransaction,
+    ) => McpConfigFile | Promise<McpConfigFile>,
   ): Promise<McpConfigFile>;
   upsert(serverId: string, config: McpServerConfig): Promise<McpConfigFile>;
   remove(serverId: string): Promise<McpConfigFile>;
@@ -140,11 +164,11 @@ export class McpConfigurationValidationError extends Error {
  * replacement. Both effects run under the config file's cross-process lock. */
 export function updateMcpConfiguration(
   store: Pick<McpConfigStore, 'transform'>,
-  prepare: (current: McpConfigFile) => McpConfigFile,
+  prepare: (current: McpConfigFile, transaction?: McpConfigTransaction) => McpConfigFile,
   retireCredentials: (serverId: string, previous: McpServerConfig) => Promise<void>,
 ): Promise<McpConfigFile> {
-  return store.transform(async (current) => {
-    const proposed = prepare(current);
+  return store.transform(async (current, transaction) => {
+    const proposed = prepare(current, transaction);
     let next: McpConfigFile;
     try {
       next = normalizeMcpConfig(proposed);
@@ -219,7 +243,7 @@ class FileMcpConfigStore implements McpConfigStore {
       return await this.read();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      return this.withUpdateLock(() => this.readOrCreate());
+      return this.withUpdateLock(async () => (await this.readOrCreate()).config);
     }
   }
 
@@ -241,13 +265,24 @@ class FileMcpConfigStore implements McpConfigStore {
   }
 
   async transform(
-    apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+    apply: (
+      current: McpConfigFile,
+      transaction?: McpConfigTransaction,
+    ) => McpConfigFile | Promise<McpConfigFile>,
   ): Promise<McpConfigFile> {
     return this.withUpdateLock(async () => {
-      const current = await this.readOrCreate();
-      const next = normalizeMcpConfig(await apply(current));
+      const { config: current, revision } = await this.readOrCreate();
+      const writeRevision = randomUUID();
+      const next = normalizeMcpConfig(
+        await apply(current, {
+          writeRevision,
+          assertRevision: (expected) => {
+            if (expected !== revision) throw new McpConfigRevisionConflictError(current);
+          },
+        }),
+      );
       assertMcpEndpointPolicyOnChanges(current, next);
-      await this.write(next);
+      await this.write(next, writeRevision);
       return next;
     });
   }
@@ -271,21 +306,34 @@ class FileMcpConfigStore implements McpConfigStore {
   }
 
   private async read(): Promise<McpConfigFile> {
+    return (await this.readSnapshot()).config;
+  }
+
+  private async readSnapshot(): Promise<{ config: McpConfigFile; revision?: string }> {
     const text = await readFile(this.path, 'utf8');
     if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES) {
       throw new Error('MCP config exceeds 1 MiB');
     }
-    return normalizeMcpConfig(JSON.parse(text));
+    const value = JSON.parse(text);
+    const config = normalizeMcpConfig(value);
+    // Legacy/external documents without a token cannot match a receipt from
+    // our writer. Every store write, including a same-value update, rotates it.
+    return {
+      config,
+      revision:
+        typeof value[WRITE_REVISION_KEY] === 'string' ? value[WRITE_REVISION_KEY] : undefined,
+    };
   }
 
-  private async readOrCreate(): Promise<McpConfigFile> {
+  private async readOrCreate(): Promise<{ config: McpConfigFile; revision?: string }> {
     try {
-      return await this.read();
+      return await this.readSnapshot();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       const empty = createDefaultMcpConfig();
-      await this.write(empty);
-      return empty;
+      const revision = randomUUID();
+      await this.write(empty, revision);
+      return { config: empty, revision };
     }
   }
 
@@ -294,9 +342,9 @@ class FileMcpConfigStore implements McpConfigStore {
     return withProcessLifetimeFileUpdateLock(this.path, operation);
   }
 
-  private async write(config: McpConfigFile): Promise<void> {
+  private async write(config: McpConfigFile, writeRevision: string): Promise<void> {
     await this.ensureDirectory();
-    await writeAtomicFile(this.path, `${JSON.stringify(config, null, 2)}\n`, {
+    await writeAtomicFile(this.path, serializeConfig(config, writeRevision), {
       fileMode: 0o600,
     });
   }
@@ -310,6 +358,10 @@ class FileMcpConfigStore implements McpConfigStore {
     });
     return ready;
   }
+}
+
+function serializeConfig(config: McpConfigFile, writeRevision: string): string {
+  return `${JSON.stringify({ ...config, [WRITE_REVISION_KEY]: writeRevision }, null, 2)}\n`;
 }
 
 /** Endpoint security policy, enforced at the WRITE boundary for new or

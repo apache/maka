@@ -29,6 +29,7 @@ import { McpClientManager } from '@maka/mcp';
 import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
+  normalizeMcpConfig,
   type McpConfigStore,
 } from '@maka/storage/mcp-config-store';
 import { registerMcpIpcMain, type McpIpcMainDeps } from '../mcp-ipc-main.js';
@@ -200,7 +201,7 @@ function trackTransform(t: TestContext, store: McpConfigStore, afterFailure?: ()
 }
 
 async function diskConfig(root: string): Promise<McpConfigFile> {
-  return JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8'));
+  return normalizeMcpConfig(JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8')));
 }
 
 function mutationHarness(t: TestContext, store: McpConfigStore, overrides: Partial<McpIpcMainDeps> = {}) {

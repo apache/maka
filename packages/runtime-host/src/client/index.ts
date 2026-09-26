@@ -83,6 +83,8 @@ export {
   type RuntimeHostProfileCatalog,
   type RuntimeHostConnectionPhase,
   type RuntimeHostRemoteProfileIncarnation,
+  type RuntimeHostCapabilityProviderCredentialMutationResult,
+  type RuntimeHostCapabilityProviderCredentialSnapshot,
   type RuntimeHostCapabilityProviderCredentialStore,
   RuntimeHostProfileConnectionError,
   type RuntimeHostProfileConnectionFailureReason,
@@ -194,7 +196,10 @@ export {
   type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
-export { ensureRuntimeHostPeerIdentity, RuntimeHostPeerError } from '../transport/peer-native.js';
+export {
+  ensureRuntimeHostPeerIdentity,
+  RuntimeHostPeerError,
+} from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,
