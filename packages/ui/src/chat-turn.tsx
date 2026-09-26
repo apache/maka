@@ -18,10 +18,10 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
-import { formatTurnDuration } from './chat-display-helpers.js';
+import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { isTimeDrivenMotionEnabled } from './streaming-presentation.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
@@ -822,6 +822,11 @@ export const TurnView = memo(function TurnView(props: {
               <TurnFooter
                 turnId={turn.turnId}
                 actions={footerActions}
+                safeResumeAction={
+                  statusBarStatus === 'aborted' && turn.abortSource === 'renderer.stop_button'
+                    ? props.safeResumeAction
+                    : undefined
+                }
                 finishedAt={finishedAt}
                 live={!!props.liveStreaming}
                 context={answerContext}
@@ -1041,6 +1046,7 @@ function TurnStatusBar(props: TurnStatusRowProps) {
 function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
+  safeResumeAction?: { pending: boolean; onResume(): void };
   finishedAt?: number;
   live?: boolean;
   context: string;
@@ -1050,7 +1056,7 @@ function TurnFooter(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const hasSlotContent = useMakaClientSlotOccupied('conversation.turn.footer');
-  const hasActions = props.actions.length > 0 || hasSlotContent;
+  const hasActions = props.actions.length > 0 || hasSlotContent || !!props.safeResumeAction;
   const isToolbar = !props.live && hasActions;
   return (
     <ChatMessageMetadata
@@ -1087,6 +1093,17 @@ function TurnFooter(props: {
                 onClick={() => props.onAction?.(action.id)}
               />
             ),
+          )}
+          {props.safeResumeAction && (
+            <UiButton
+              variant="ghost"
+              size="sm"
+              isDisabled={props.safeResumeAction.pending}
+              onClick={props.safeResumeAction.onResume}
+              label={
+                props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
+              }
+            />
           )}
           {hasSlotContent ? (
             <MakaClientSlotOutlet

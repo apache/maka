@@ -21,6 +21,7 @@ export interface InterruptedResumeTurn {
   turnId: string;
   status: string;
   errorClass?: string;
+  abortSource?: string;
   /** Tool activity already has a durable result in the rendered Turn. */
   tools?: readonly { status: string }[];
 }
@@ -29,6 +30,12 @@ export function latestInterruptedResumeTurnId(
   turns: readonly InterruptedResumeTurn[],
 ): string | undefined {
   const latestTurn = turns.at(-1);
+  if (
+    latestTurn?.status === 'aborted' &&
+    latestTurn.abortSource === 'renderer.stop_button'
+  ) {
+    return latestTurn.turnId;
+  }
   if (latestTurn?.status !== 'failed') return undefined;
   const errorClass = latestTurn.errorClass?.toLowerCase();
   if (errorClass === 'app_restarted') return latestTurn.turnId;
