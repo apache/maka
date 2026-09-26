@@ -1261,7 +1261,7 @@ test('a failed Run Composition commit can recover on a later dispatch', async ()
   }
 });
 
-test('Run Composition keeps the immutable composer Tool baseline', async () => {
+test('Run Composition keeps the Tool baseline while dispatch preserves dynamic context', async () => {
   const provider = await startProvider();
   const makeTool = (name: string): MakaTool => ({
     name,
@@ -1286,7 +1286,11 @@ test('Run Composition keeps the immutable composer Tool baseline', async () => {
           composerRevision: '1',
           tools: [initial],
           resolveTools: () => currentTools,
-          resolveSystemPrompt: async () => ({ text: 'test prompt', sourceRevisions: [] }),
+          resolveSystemPrompt: async () => ({
+            text: 'test prompt',
+            contexts: [{ name: 'test.context', text: 'HOST_DYNAMIC_CONTEXT' }],
+            sourceRevisions: [],
+          }),
         }),
         recordRunComposition: async (_runId, snapshot) => {
           committedToolNames = decodeRunCompositionSnapshot(snapshot).toolNames;
@@ -1306,6 +1310,7 @@ test('Run Composition keeps the immutable composer Tool baseline', async () => {
     }
 
     assert.deepEqual(committedToolNames, ['initial_tool']);
+    assert.match(JSON.stringify(provider.requests[0]?.body.messages), /HOST_DYNAMIC_CONTEXT/u);
     const requestTools = provider.requests[0]?.body.tools as Array<{
       function?: { name?: string };
     }>;
@@ -2403,6 +2408,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         .slice(requestsBeforeRecovery)
         .filter((request) => Array.isArray(request.body.tools));
       assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
+      assert.equal(
+        runtimeEnvironment(requests[0]!.body).cwd,
+        (await recoveredStores.sessionStore.readHeader(sessionId)).cwd,
+      );
+      assert.match(responsesDeveloperPrompt(requests[0]!.body) ?? '', /WorkHub/u);
       for (const name of [
         'mcp__desktop_workhub__control',
         'mcp__desktop_workhub__tasks',
@@ -2870,6 +2880,14 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
     );
     assert.equal(mainRequests.length, 5);
+    const environments = mainRequests.map((request) => runtimeEnvironment(request.body));
+    for (const environment of environments) {
+      assert.equal(environment.cwd, root);
+      assert.equal(environment.platform, process.platform);
+      assert.equal(environment.timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+      assert.equal(new Date(environment.sampledAt).toISOString(), environment.sampledAt);
+    }
+    assert.equal(new Set(environments.map(({ sampledAt }) => sampledAt)).size, 5);
     assert.ok(compactRequests.length >= 1);
     assert.ok(memoryRequests.length >= 1);
     assert.ok(memoryRequests.every((memoryRequest) => toolNames(memoryRequest.body).length === 0));
@@ -3393,6 +3411,11 @@ test('production Host executes a durable runnable child with an exact tool ceili
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(requests.length, 4);
+    const environments = requests.map((request) => runtimeEnvironment(request.body));
+    assert.ok(environments.every(({ cwd }) => cwd === project));
+    assert.deepEqual(environments[0], environments[1]);
+    assert.deepEqual(environments[0], environments[3]);
+    assert.match(JSON.stringify(requests[2]?.body.messages), /foreground local-read child agent/u);
     assert.ok(toolNames(requests[0]?.body).includes('tool_search'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
@@ -5450,6 +5473,26 @@ function responsesToolNames(body: Record<string, unknown> | undefined): string[]
       return typeof name === 'string' ? [name] : [];
     })
     .sort();
+}
+
+function runtimeEnvironment(body: Record<string, unknown>): {
+  cwd: string;
+  platform: string;
+  sampledAt: string;
+  timeZone: string;
+} {
+  const messages = (body.messages ?? body.input) as Array<{
+    role?: string;
+    content?: string | Array<{ text?: string }>;
+  }>;
+  const contexts = messages
+    .filter(({ role }) => role === 'user')
+    .flatMap(({ content }) =>
+      typeof content === 'string' ? [content] : (content ?? []).map(({ text }) => text ?? ''),
+    )
+    .filter((text) => text.startsWith('Runtime Host environment for this turn'));
+  assert.equal(contexts.length, 1, JSON.stringify(body));
+  return JSON.parse(contexts[0]!.slice(contexts[0]!.indexOf('\n') + 1));
 }
 
 function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
