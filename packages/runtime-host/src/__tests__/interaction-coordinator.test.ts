@@ -19,12 +19,15 @@
 
 import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { AgentGraphScheduleUpdateRequest } from '@maka/core/agent-graph-schedule';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
 import type {
   FormRequestEvent,
   SandboxBoundaryRequestEvent,
@@ -39,6 +42,13 @@ import {
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime/interaction-authority';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import { stableHash } from '@maka/runtime/request-shape';
+import {
+  AgentGraphCoordinator,
+  agentGraphIdForRootSession,
+} from '@maka/runtime/stream-graph-coordinator';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   openInteractiveExecutionStoresForWrite,
   type ExecutionStoresWriter,
@@ -60,6 +70,7 @@ import {
   type HostInteractionCoordinatorOptions,
 } from '../server/interaction-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { SessionInteractionActivityProjection } from '../server/session-interaction-activity.js';
 
 const RUN = Object.freeze({
   sessionId: 'session_1',
@@ -68,6 +79,133 @@ const RUN = Object.freeze({
 });
 
 describe('HostInteractionCoordinator', () => {
+  test('graph activity waits for every canonical request in a Run, including requests answered without Runtime acknowledgements', async () => {
+    await withGraphInteractionActivity(
+      async ({ coordinator, owner, identity, graph, activity, rootId }) => {
+        const answers: string[] = [];
+        for (const requestId of ['first', 'second']) {
+          await owner.acceptFormRequest!({
+            request: formEvent(requestId, 10),
+            continuation: {
+              ...formContinuation(requestId, { answer: () => answers.push(requestId) }),
+              ...identity,
+            },
+          });
+        }
+        assert.equal(
+          activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+          2,
+        );
+        assert.equal(graph.readSessionActivity(rootId), 'waiting_for_user');
+        assert.equal(
+          activity.readTurnPendingInteractionCount(identity.sessionId, 'another-turn'),
+          0,
+        );
+
+        for (const [index, requestId] of ['first', 'second'].entries()) {
+          const answered = await coordinator.handlers['interaction.answer'](
+            {
+              sessionId: identity.sessionId,
+              interactionId: requestId,
+              answer: { kind: 'form', action: 'accept', values: { replicas: 2 } },
+            },
+            connection(),
+          );
+          assert.equal(answered.ok, true);
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            1 - index,
+          );
+          assert.equal(
+            graph.readSessionActivity(rootId),
+            index === 0 ? 'waiting_for_user' : 'running',
+          );
+        }
+        assert.deepEqual(answers, ['first', 'second']);
+      },
+    );
+  });
+
+  test('producer withdrawal refreshes graph activity from durable pending requests without form_answer_ack', async () => {
+    await withGraphInteractionActivity(
+      async ({ owner, identity, graph, activity, rootId, store }) => {
+        const closures: string[] = [];
+        for (const requestId of ['withdraw-first', 'withdraw-second']) {
+          await owner.acceptFormRequest!({
+            request: formEvent(requestId, 10),
+            continuation: {
+              ...formContinuation(requestId, {
+                closure: (reason) => closures.push(`${requestId}:${reason}`),
+              }),
+              ...identity,
+            },
+          });
+        }
+        assert.equal(graph.readSessionActivity(rootId), 'waiting_for_user');
+        for (const [index, requestId] of ['withdraw-first', 'withdraw-second'].entries()) {
+          await owner.withdrawFormRequest(requestId);
+          assert.equal((await store.readInteraction(requestId))?.outcome?.outcome.kind, 'closure');
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            1 - index,
+          );
+          assert.equal(
+            graph.readSessionActivity(rootId),
+            index === 0 ? 'waiting_for_user' : 'running',
+          );
+        }
+        assert.deepEqual(closures, [
+          'withdraw-first:producer_cancelled',
+          'withdraw-second:producer_cancelled',
+        ]);
+      },
+    );
+  });
+
+  test('graph interaction activity follows the logical Turn across physical Run handoff and ignores other Turns', async () => {
+    await withGraphInteractionActivity(
+      async ({ coordinator, identity, graph, activity, rootId }) => {
+        const resumed = { ...identity, runId: 'resumed-physical-run' };
+        const otherTurn = { ...identity, runId: 'other-physical-run', turnId: 'other-turn' };
+        const resumedOwner = coordinator.bindRun(resumed);
+        const otherOwner = coordinator.bindRun(otherTurn);
+        try {
+          await otherOwner.acceptFormRequest!({
+            request: { ...formEvent('other-turn-form', 10), turnId: otherTurn.turnId },
+            continuation: { ...formContinuation('other-turn-form'), ...otherTurn },
+          });
+          assert.equal(graph.readSessionActivity(rootId), 'running');
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            0,
+          );
+
+          await resumedOwner.acceptFormRequest!({
+            request: formEvent('resumed-run-form', 11),
+            continuation: { ...formContinuation('resumed-run-form'), ...resumed },
+          });
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            1,
+          );
+          assert.equal(graph.readSessionActivity(rootId), 'waiting_for_user');
+          await resumedOwner.withdrawFormRequest('resumed-run-form');
+          assert.equal(graph.readSessionActivity(rootId), 'running');
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, otherTurn.turnId),
+            1,
+          );
+          await otherOwner.withdrawFormRequest('other-turn-form');
+        } finally {
+          await resumedOwner.close('turn_terminal');
+          resumedOwner.release();
+          await otherOwner.close('turn_terminal');
+          otherOwner.release();
+        }
+      },
+    );
+  });
+
   test('Host-owned forms reuse durable answers and concurrent requests without rebinding the Run', async () => {
     await withStore(async ({ store }) => {
       const published = deferred();
@@ -1446,6 +1584,154 @@ interface StoreContext {
   readonly owner: InteractiveRootOwner;
   readonly store: InteractiveInteractionStoreWriterFacade;
   readonly stores: ExecutionStoresWriter<'interactive'>;
+}
+
+async function withGraphInteractionActivity(
+  run: (context: {
+    coordinator: HostInteractionCoordinator;
+    owner: ReturnType<HostInteractionCoordinator['bindRun']>;
+    identity: RuntimeInteractionRunIdentity;
+    graph: AgentGraphCoordinator;
+    activity: SessionInteractionActivityProjection;
+    rootId: string;
+    store: InteractiveInteractionStoreWriterFacade;
+  }) => Promise<void>,
+): Promise<void> {
+  await withStore(async ({ owner: storageOwner, store, stores }) => {
+    const root = await stores.sessionStore.create({
+      cwd: storageOwner.capability.canonicalPath,
+      llmConnectionSlug: 'fixture',
+      permissionMode: 'ask',
+    });
+    const child = await stores.sessionStore.create({
+      cwd: storageOwner.capability.canonicalPath,
+      llmConnectionSlug: 'fixture',
+      permissionMode: 'ask',
+    });
+    const identity = { ...RUN, sessionId: child.id };
+    await seedInvocation(stores.runtimeEventStore, { ...identity, openedAt: 1 });
+    await stores.runtimeEventStore.appendRuntimeEvent(identity.sessionId, identity.runId, {
+      ...identity,
+      invocationId: identity.runId,
+      id: 'child-working',
+      ts: 2,
+      role: 'model',
+      author: 'agent',
+      partial: false,
+      content: { kind: 'text', text: 'The child remains running throughout the interaction test.' },
+    });
+    const graphId = agentGraphIdForRootSession(root.id);
+    const control = createAgentGraphControlStore(storageOwner.capability.canonicalPath);
+    const schedule: AgentGraphScheduleUpdateRequest = {
+      schemaVersion: 1,
+      updateId: `graph_update_${'4'.repeat(32)}`,
+      updateFingerprint: `sha256:${'5'.repeat(64)}`,
+      graphId,
+      source: {
+        sessionId: root.id,
+        runId: 'root-run',
+        turnId: 'root-turn',
+        toolCallId: 'schedule-work',
+      },
+      addWork: [
+        {
+          workId: `graph_work_${'6'.repeat(32)}`,
+          target: { kind: 'agent', agentId: 'local-read' },
+          instruction: 'Wait for independent Host forms.',
+          inputIds: [],
+        },
+      ],
+      stop: [],
+    };
+    await control.commitAgentGraphScheduleUpdate(schedule);
+    const provision: AgentGraphOperatorProvision = {
+      schemaVersion: 1,
+      provisionId: `graph_provision_${'1'.repeat(32)}`,
+      provisionFingerprint: `sha256:${'2'.repeat(64)}`,
+      graphId,
+      workId: schedule.addWork[0]!.workId,
+      agentId: 'local-read',
+      operatorId: `graph_operator_${'3'.repeat(32)}`,
+      initialTurnId: identity.turnId,
+      initialRunId: identity.runId,
+      edges: [],
+      targetSessionId: child.id,
+      provisionedAt: 1,
+    };
+    // A real scheduled activation owns a work-specific claim, even when its
+    // Runtime interaction events are deliberately absent from this fixture.
+    const intentHash = stableHash({ schemaVersion: 1, graphId, workId: provision.workId });
+    await control.claimAgentGraphIntent({
+      schemaVersion: 1,
+      claimId: `graph_claim_${'7'.repeat(32)}`,
+      graphId,
+      intentId: `graph_intent_${intentHash.slice('sha256:'.length, 'sha256:'.length + 32)}`,
+      intentFingerprint: `sha256:${'8'.repeat(64)}`,
+      readinessContextFingerprint: `sha256:${'9'.repeat(64)}`,
+      targetOperatorId: provision.operatorId,
+      targetSessionId: child.id,
+      targetTurnId: identity.turnId,
+      targetRunId: identity.runId,
+    });
+    const controlWithTopology = new Proxy(control, {
+      get(target, property) {
+        if (property === 'listAgentGraphOperatorProvisions') return async () => [provision];
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    let graph!: AgentGraphCoordinator;
+    const activity = new SessionInteractionActivityProjection({
+      interactions: store,
+      sandboxBoundaries: stores.sessionStore,
+      onChanged: (sessionId) => graph.refreshSessionInteractionActivity(sessionId),
+    });
+    graph = new AgentGraphCoordinator({
+      sessionStore: stores.sessionStore,
+      runtimeEventStore: stores.runtimeEventStore,
+      controlStore: controlWithTopology,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('An activity read cannot provision work');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('An activity read cannot dispatch work');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      readTurnPendingInteractionCount: (sessionId, turnId) =>
+        activity.readTurnPendingInteractionCount(sessionId, turnId),
+    });
+    const coordinator = createCoordinator(store, {
+      // This is the production publication bridge. There are no Session subscriptions
+      // and continuations below intentionally emit no Runtime interaction acknowledgements.
+      refreshCanonicalContinuity: (sessionId) => activity.refresh(sessionId),
+    });
+    const owner = coordinator.bindRun(identity);
+    try {
+      await graph.toolsForSession(root.id);
+      await graph.getSnapshot(root.id);
+      await activity.refresh(child.id);
+      assert.equal(graph.readSessionActivity(root.id), 'running');
+      const runtimeEventsBefore = await stores.runtimeEventStore.readImmutableRuntimeEvents(
+        child.id,
+        identity.runId,
+      );
+      await run({ coordinator, owner, identity, graph, activity, rootId: root.id, store });
+      assert.deepEqual(
+        await stores.runtimeEventStore.readImmutableRuntimeEvents(child.id, identity.runId),
+        runtimeEventsBefore,
+        'Pending authority publication must drive activity without any Runtime answer event',
+      );
+    } finally {
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+      await graph.close();
+      control.close();
+    }
+  });
 }
 
 async function withStore(run: (context: StoreContext) => Promise<void>): Promise<void> {

@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { deferred } from '@maka/core/test-only/async-primitives';
 
 type ScenarioPhase =
   | 'initial_root'
@@ -173,6 +174,136 @@ export class AgentGraphProviderScenario {
       case 'completed':
         assert.fail('Graph provider scenario received a request after completion');
     }
+  }
+}
+
+/** Real provider-wire barriers for the three-child sidebar activity regression. */
+export class GatedSwarmProviderScenario {
+  readonly childrenStarted = Array.from({ length: 3 }, () => deferred<void>());
+  readonly synthesisStarted = deferred<void>();
+  readonly #childReleases = Array.from({ length: 3 }, () => deferred<void>());
+  readonly #synthesisRelease = deferred<void>();
+  readonly #results: string[] = [];
+  #childrenRequested = 0;
+  #phase: 'schedule' | 'yield' | 'wake' | 'status' | 'output' | 'finish' | 'completed' = 'schedule';
+  #items: Array<{ childSessionId: string; runId: string }> = [];
+
+  releaseChild(index: number): void {
+    assert.ok(this.#childReleases[index]);
+    this.#childReleases[index]!.resolve();
+  }
+
+  releaseSynthesis(): void {
+    this.#synthesisRelease.resolve();
+  }
+
+  releaseAll(): void {
+    for (const release of this.#childReleases) release.resolve();
+    this.releaseSynthesis();
+  }
+
+  async respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): Promise<void> {
+    const names = toolNames(body);
+    if (names.join(',') === 'Glob,Grep,Read') {
+      const index = this.#childrenRequested++;
+      assert.ok(index < 3, 'Swarm must start exactly three child provider requests');
+      this.childrenStarted[index]!.resolve();
+      await this.#childReleases[index]!.promise;
+      reply.text(`Hosted swarm child ${index + 1} completed.`);
+      return;
+    }
+    for (const required of [
+      'agent_output',
+      'agent_swarm_status',
+      'update_agent_graph',
+      'yield_agent_graph',
+    ]) {
+      assert.ok(names.includes(required), `Swarm provider request omitted ${required}`);
+    }
+    const result = latestToolResultAfterCurrentUser(body);
+    switch (this.#phase) {
+      case 'schedule':
+        assert.equal(result, undefined);
+        this.#phase = 'yield';
+        reply.toolCall('update_agent_graph', {
+          operation: 'add_work',
+          add_work: Array.from({ length: 3 }, (_, index) => ({
+            target_kind: 'new_agent',
+            agent_id: 'local-read',
+            instruction: `Inspect independent hosted swarm area ${index + 1}.`,
+            input_ids: [],
+            replacement_mode: 'none',
+          })),
+        });
+        return;
+      case 'yield':
+        assert.equal(requireRecord(result, 'swarm schedule result').kind, 'agent_graph_updated');
+        this.#phase = 'wake';
+        reply.toolCall('yield_agent_graph', { reason: 'Wait for all three independent results.' });
+        return;
+      case 'wake':
+        assert.equal(result, undefined);
+        assert.match(latestUserText(body), /Asynchronous swarm .* reached settled\./);
+        this.#phase = 'status';
+        reply.toolCall('agent_swarm_status', {});
+        return;
+      case 'status': {
+        const status = requireRecord(result, 'swarm status');
+        assert.equal(status.kind, 'agent_swarm_status');
+        assert.equal(status.status, 'settled');
+        assert.equal(requireRecord(status.counts, 'swarm counts').completed, 3);
+        this.#items = requireArray(status.items, 'swarm items').map((value) => {
+          const item = requireRecord(value, 'swarm item');
+          assert.equal(item.status, 'completed');
+          return {
+            childSessionId: requireString(item.childSessionId, 'child Session id'),
+            runId: requireString(item.runId, 'child Run id'),
+          };
+        });
+        this.#phase = 'output';
+        this.#readNextOutput(reply);
+        return;
+      }
+      case 'output': {
+        const output = requireRecord(result, 'swarm agent output');
+        const payload = requireRecord(output.result, 'swarm committed result');
+        assert.equal(payload.status, 'completed');
+        this.#results.push(requireString(payload.resultRecordId, 'swarm result record id'));
+        if (this.#results.length < 3) {
+          this.#readNextOutput(reply);
+        } else {
+          this.#phase = 'finish';
+          reply.toolCall('update_agent_graph', {
+            operation: 'finish',
+            finish: { result_ids: this.#results, reason: 'All three swarm results are committed.' },
+          });
+        }
+        return;
+      }
+      case 'finish': {
+        const updated = requireRecord(result, 'swarm finish result');
+        assert.equal(updated.kind, 'agent_graph_updated');
+        assert.equal(requireRecord(updated.schedule, 'swarm finished schedule').closed, true);
+        this.#phase = 'completed';
+        this.synthesisStarted.resolve();
+        await this.#synthesisRelease.promise;
+        reply.text('Hosted three-child swarm synthesis completed.');
+        return;
+      }
+      case 'completed':
+        assert.fail('Swarm provider received another root request after completion');
+    }
+  }
+
+  #readNextOutput(reply: AgentGraphProviderReply): void {
+    const item = this.#items[this.#results.length]!;
+    reply.toolCall('agent_output', {
+      locator: 'child_session_run',
+      child_session_id: item.childSessionId,
+      run_id: item.runId,
+      view: 'result',
+      max_bytes: 32_768,
+    });
   }
 }
 

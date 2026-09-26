@@ -316,7 +316,11 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       }),
       {
         kind: 'session',
-        session: { ...created, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
+        session: {
+          ...created,
+          liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+          backgroundActivity: 'idle',
+        },
       },
     );
 
@@ -338,7 +342,11 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       renamed.kind === 'committed'
         ? {
             kind: 'session',
-            session: { ...renamed.session, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
+            session: {
+              ...renamed.session,
+              liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+              backgroundActivity: 'idle',
+            },
           }
         : assert.fail('Remote Session rename did not commit'),
     );

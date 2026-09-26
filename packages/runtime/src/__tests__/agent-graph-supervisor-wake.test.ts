@@ -33,6 +33,85 @@ import type { AgentGraphClientSnapshot } from '../stream-graph-read-model.js';
 import type { AgentGraphScheduleReconciliationResult } from '../stream-graph-schedule-reconcile.js';
 
 describe('Agent Graph supervisor wake delivery', () => {
+  test('projects queued activity synchronously, retains failure after retries, and clears it on recovery', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const releaseSnapshot = deferred();
+    let fail = true;
+    const activity: string[] = [];
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => {
+        await releaseSnapshot.promise;
+        return snapshot();
+      },
+      startTurn: async (_sessionId, input) =>
+        fail
+          ? { kind: 'errored', turnId: input.turnId, reason: 'provider unavailable' }
+          : { kind: 'completed', turnId: input.turnId },
+      inspectAttempt: async () => 'missing',
+      maxDeliveryAttempts: 2,
+      newId: sequentialIds(),
+      onSessionActivityChanged: (id) => activity.push(coordinator.readSessionActivity(id)),
+    });
+    try {
+      assert.equal(coordinator.readSessionActivity('root-session'), 'idle');
+      coordinator.notify('root-session', reconciliation());
+      assert.equal(
+        coordinator.readSessionActivity('root-session'),
+        'running',
+        'the checkpoint is active before its first asynchronous snapshot read',
+      );
+      coordinator.notify('root-session', reconciliation());
+      releaseSnapshot.resolve();
+      await coordinator.waitForIdle();
+      assert.equal(coordinator.readSessionActivity('root-session'), 'blocked');
+      assert.deepEqual(activity, ['running', 'blocked']);
+      fail = false;
+      coordinator.notify('root-session', reconciliation());
+      assert.equal(coordinator.readSessionActivity('root-session'), 'running');
+      await coordinator.waitForIdle();
+      assert.equal(coordinator.readSessionActivity('root-session'), 'idle');
+      assert.deepEqual(activity, ['running', 'blocked', 'running', 'idle']);
+    } finally {
+      releaseSnapshot.resolve();
+      await coordinator.close();
+      store.close();
+    }
+  });
+
+  test('a duplicate in-flight notification does not discard a suspended outcome', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const started = deferred();
+    const release = deferred();
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => {
+        started.resolve();
+        await release.promise;
+        return { kind: 'suspended', turnId: input.turnId, reason: 'permission handoff' };
+      },
+      inspectAttempt: async () => 'running',
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await started.promise;
+      await coordinator.notify('root-session', reconciliation());
+      release.resolve();
+      await coordinator.waitForIdle();
+      assert.equal(coordinator.readSessionActivity('root-session'), 'waiting_for_user');
+      await coordinator.runWithSessionWakesSuppressed('root-session', async () => {});
+      assert.equal(coordinator.readSessionActivity('root-session'), 'idle');
+    } finally {
+      release.resolve();
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('uses the shared compaction transaction for overflow recovery', async () => {
     const calls: Array<{ sessionId: string; turnId: string }> = [];
     const recovery = await recoverAgentGraphSupervisorContextOverflow({
@@ -389,6 +468,16 @@ describe('Agent Graph supervisor wake delivery', () => {
         'waiting_permission',
       );
       assert.equal(attempt, 1);
+      assert.equal(coordinator.readSessionActivity('root-session'), 'waiting_for_user');
+      coordinator.notify('root-session', reconciliation());
+      assert.equal(coordinator.readSessionActivity('root-session'), 'waiting_for_user');
+      await coordinator.waitForIdle();
+      assert.equal(
+        coordinator.readSessionActivity('root-session'),
+        'waiting_for_user',
+        'duplicate checkpoints must preserve a parked permission prompt',
+      );
+      assert.equal(attempt, 1);
     } finally {
       await coordinator.close();
       store.close();
@@ -420,7 +509,9 @@ describe('Agent Graph supervisor wake delivery', () => {
       );
 
       coordinator.notifyPermissionResponse('root-session');
+      assert.equal(coordinator.readSessionActivity('root-session'), 'running');
       await coordinator.waitForIdle();
+      assert.equal(coordinator.readSessionActivity('root-session'), 'idle');
 
       const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
       assert.equal(wake?.status, 'delivered');
@@ -466,6 +557,11 @@ describe('Agent Graph supervisor wake delivery', () => {
         'delivered',
       );
       assert.equal(attempt, 2);
+      assert.equal(
+        coordinator.readSessionActivity('root-session'),
+        'idle',
+        'the retried supervisor clears the raced suspended activity',
+      );
     } finally {
       await coordinator.close();
       store.close();
@@ -682,7 +778,9 @@ describe('Agent Graph supervisor wake delivery', () => {
       coordinator.notify('root-session', reconciliation());
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(residencies, 1);
+      assert.equal(coordinator.readSessionActivity('root-session'), 'running');
       await coordinator.close();
+      assert.equal(coordinator.readSessionActivity('root-session'), 'idle');
       assert.equal(residencies, 0);
       busy.release();
       await new Promise<void>((resolve) => setImmediate(resolve));

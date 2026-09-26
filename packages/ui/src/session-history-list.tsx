@@ -1620,6 +1620,12 @@ function sessionRowSignals(
   const signals: SessionRowSignal[] = [];
   const runningState = resolveSessionRunningState(session, options.streaming);
 
+  if (runningState.backgroundAttention) {
+    const label = runningState.backgroundAttention === 'waiting_for_user'
+      ? copy.backgroundWaitingForUser : copy.backgroundBlocked;
+    signals.push({ variant: dotForStatus('attention'), label, tooltip: label });
+  }
+
   // `active`, through the same vocabulary as everything else here: streaming is
   // the system working on it right now, which is what that semantic names.
   // Writing `accent` directly would resolve to the identical colour and reopen
@@ -1632,9 +1638,18 @@ function sessionRowSignals(
       tooltip: copy.respondingTitle,
     });
   }
+  if (runningState.backgroundRunning) {
+    signals.push({
+      variant: dotForStatus('active'),
+      label: copy.backgroundRunning,
+      running: true,
+      tooltip: copy.backgroundRunning,
+    });
+  }
 
   const { label, variant } = presentSessionStatus(session.status, locale);
-  if (variant && !runningState.liveStateOwnsRunningStatus) {
+  if (variant && !runningState.liveStateOwnsRunningStatus &&
+    !(session.status === 'running' && runningState.backgroundAttention)) {
     const blockedDetail =
       session.status === 'blocked' && session.blockedReason
         ? describeBlockedReason(session.blockedReason, locale)
@@ -1677,6 +1692,8 @@ function sessionRowSignals(
 interface SessionRunningState {
   responding: boolean;
   running: boolean;
+  backgroundRunning: boolean;
+  backgroundAttention: 'waiting_for_user' | 'blocked' | undefined;
   liveStateOwnsRunningStatus: boolean;
 }
 
@@ -1695,16 +1712,24 @@ function resolveSessionRunningState(
     session.status === 'waiting_for_user' || session.status === 'blocked';
   const liveStateOwnsRunningStatus =
     session.status === 'running' && session.runningTurnIds !== undefined;
+  const ownLiveRun = rendererStreaming || (session.runningTurnIds?.length ?? 0) > 0;
+  const ownRunning = !requiresUserAttention &&
+    (ownLiveRun || (session.status === 'running' && !liveStateOwnsRunningStatus));
+  // A question in child work needs a person. A failed child can still be handled
+  // by the parent's live answer, so it must not hide that answer's progress.
+  const backgroundAttention = !requiresUserAttention && (
+    session.backgroundActivity === 'waiting_for_user' ||
+    (session.backgroundActivity === 'blocked' && !ownRunning)
+  ) ? session.backgroundActivity : undefined;
   const responding =
-    !requiresUserAttention &&
-    (rendererStreaming || (session.runningTurnIds?.length ?? 0) > 0);
+    !requiresUserAttention && !backgroundAttention && ownLiveRun;
+  const backgroundRunning = !requiresUserAttention && !backgroundAttention &&
+    !responding && session.backgroundActivity === 'running';
   return {
     responding,
-    running:
-      responding ||
-      (!requiresUserAttention &&
-        session.status === 'running' &&
-        !liveStateOwnsRunningStatus),
+    backgroundRunning,
+    backgroundAttention,
+    running: !backgroundAttention && (ownRunning || backgroundRunning),
     liveStateOwnsRunningStatus,
   };
 }
