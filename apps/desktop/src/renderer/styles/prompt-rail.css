@@ -39,6 +39,19 @@
   pointer-events: none;
 }
 
+/* Below a 750px window the rail would sit on the transcript (#5615). Once the
+   reading column fills the scrollport, the room right of it is the transcript
+   gutter (4vw) plus the message list's 16px inline padding, while the rail
+   takes 46px from the scrollport's edge: its 12px inset plus a 34px box.
+   4vw + 16px reaches 46px at 750px; narrower, the ticks and their hit area
+   cover the right edge of user messages. The quote companion hides its rail
+   the same way. */
+@media (max-width: 749px) {
+  .maka-prompt-rail-host {
+    display: none;
+  }
+}
+
 .maka-prompt-rail {
   position: absolute;
   /* On macOS the chat scroller's vertical scrollbar is overlay: it takes no
@@ -59,7 +72,7 @@
   );
   overflow-y: auto;
   overscroll-behavior: contain;
-  /* The rail is 22px wide: a visible scrollbar crowds the ticks, and on macOS
+  /* The rail is 34px wide: a visible scrollbar crowds the ticks, and on macOS
      the overlay scrollbar's hit region swallows the right half of every tick
      for a beat after the rail scrolls itself. Wheel/trackpad scrolling still
      works with the bar hidden. */

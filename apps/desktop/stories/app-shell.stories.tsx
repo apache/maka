@@ -3333,6 +3333,37 @@ export const PromptRailStaysInsideTheScrollport: Story = {
   },
 };
 
+// The Storybook smoke renders `narrow` stories in a 720px viewport. There the
+// reading column fills the scrollport and leaves less room on its right than
+// the rail takes from the scrollport's edge (#5615).
+export const PromptRailClearsUserMessagesInANarrowWindow: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const scrollport = tailScroller().getBoundingClientRect();
+    const visibleUserBubbles = () =>
+      [...document.querySelectorAll<HTMLElement>('.maka-chat-message-bubble-user')]
+        .map((bubble) => bubble.getBoundingClientRect())
+        .filter((box) => box.bottom > scrollport.top && box.top < scrollport.bottom);
+    // The rail lists every Turn at once; the transcript mounts its rows after.
+    // Without a user message on screen there is nothing the rail could cover.
+    await waitFor(() => expect(visibleUserBubbles().length).toBeGreaterThan(0));
+    const bubbles = visibleUserBubbles();
+
+    const rail = document.querySelector('.maka-prompt-rail');
+    if (!rail) throw new Error('the prompt rail is missing');
+    // A hidden rail has no box; a shown one must end before every bubble on its rows.
+    if (rail.getClientRects().length === 0) return;
+    const box = rail.getBoundingClientRect();
+    expect(
+      bubbles
+        .filter((bubble) => bubble.bottom > box.top && bubble.top < box.bottom && bubble.right > box.left)
+        .map((bubble) => Math.round(bubble.right - box.left)),
+      'pixels of user messages under the rail',
+    ).toEqual([]);
+  },
+};
+
 export const PromptRailHasNoGapsBetweenTicks: Story = {
   render: () => <PromptRailHarness />,
   play: async () => {
