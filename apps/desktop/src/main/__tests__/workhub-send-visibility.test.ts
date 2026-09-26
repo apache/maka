@@ -343,7 +343,6 @@ test('WorkHub marks a failed submission and preserves its retry identity', async
   const turnId = h.requests[0]!.turnId;
   await act(async () => { h.admission.reject(new Error('admission rejected')); assert.equal(await sent, false); });
   assert.equal(h.controller.transientMessages.length, 1);
-  assert.equal(h.controller.turnStates[turnId], 'failed');
   assert.equal(h.controller.error, 'admission rejected');
   assert.equal(h.controller.liveTurn, undefined, 'rejected admission retires the waiting feedback');
   assert.equal(h.controller.busy, false);

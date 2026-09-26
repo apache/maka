@@ -20,53 +20,18 @@ import type { CSSProperties } from 'react';
 
 import { useContext, useMemo, type ComponentProps } from 'react';
 import { ChatView, useUiLocale } from '@maka/ui';
-import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, Link, Text } from '@astryxdesign/core';
 import { WorkHubHighlightContext, useWorkHubIdentityHue } from './workhub-work-identity.js';
-import type { WorkHubDelegationState, WorkHubLinkedWork } from '../model/linked-work.js';
+import type { WorkHubLinkedWork } from '../model/linked-work.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
-import { deriveWorkHubTurnPresentation } from '../model/turn-presentation.js';
+import { useAppShellTurnPresentation } from '../../../application/contracts/turn-presentation.js';
 
-export function WorkHubDelegationStatus(props: {
-  work: WorkHubLinkedWork;
-  locale: UiLocale;
-  showName?: boolean;
-}) {
-  const { work } = props;
-  const copy = workHubLiveCopy[props.locale];
-  if (work.operation) {
-    const operation = work.operation === 'stop' ? copy.stopAction : copy.resumeAction;
-    const state = work.operationState ?? 'pending';
-    const outcome = work.operationOutcome;
-    const label = state === 'pending' ? copy.actionPending : state === 'failed' ? copy.actionFailed
-      : outcome === 'stop_delivered' ? copy.stopDelivered
-      : outcome === 'already_terminal' ? copy.alreadyTerminal
-      : outcome === 'cancelled_pending' ? copy.pendingCancelled
-      : outcome === 'already_running' ? copy.alreadyRunning : copy.resumeStarted;
-    return <Text type="supporting" color="secondary" className="workhub-delegation-status" role="status" data-work-operation={work.operation}>
-      {props.showName ? `${work.targetSessionName}: ` : ''}{operation} · {label}
-    </Text>;
-  }
-  const state = work.state ?? 'accepted';
-  const stateLabel = {
-    accepted: copy.delegationAccepted,
-    running: copy.delegationRunning,
-    waiting_for_user: copy.delegationWaiting,
-    completed: copy.delegationCompleted,
-    failed: copy.delegationFailed,
-    aborted: copy.delegationAborted,
-    recovering: copy.delegationRecovering,
-  }[state];
-  return <Text type="supporting" color="secondary" className="workhub-delegation-status" role="status" data-work-state={state}>
-    {props.showName ? `${work.targetSessionName}: ` : ''}{stateLabel}
-  </Text>;
-}
-
-export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { workLinks: readonly WorkHubLinkedWork[]; onOpenWork(sessionId: string): void; promptStates?: ReadonlyMap<string, WorkHubDelegationState> }) {
-  const { onOpenWork, workLinks: assignments, promptStates, ...chat } = props;
+export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { workLinks: readonly WorkHubLinkedWork[]; onOpenWork(sessionId: string): void }) {
+  const { onOpenWork, workLinks: assignments, ...chat } = props;
   const highlight = useContext(WorkHubHighlightContext);
   const workHubIdentityHue = useWorkHubIdentityHue(assignments.map((work) => work.targetSessionId));
   const locale = useUiLocale();
+  const deriveTurnPresentation = useAppShellTurnPresentation({ uiLocale: locale, allowBranch: false });
   const copy = workHubLiveCopy[locale];
   // A coordination turn can delegate to several Works. Keep every label and
   // divide its rail evenly, keeping every segment linked to its own Session.
@@ -92,9 +57,6 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
   const promptTextByTurn = new Map(chat.messages?.flatMap((message) => message.type === 'user' ? [[message.turnId, message.text.slice(0, 80)] as const] : []));
   const turnDecorations = new Map<string, NonNullable<ComponentProps<typeof ChatView>['turnDecorations']> extends ReadonlyMap<string, infer V> ? V : never>([...worksByTurn].map(([turnId, works]) => [turnId, {
     accentColor: promptRailDecorations.get(turnId)?.accentColor ?? 'transparent',
-    promptStatus: <>{works.map((work, index) => <span key={work.id}>
-      {index > 0 ? ' / ' : ''}<WorkHubDelegationStatus work={work} locale={locale} showName={works.length > 1} />
-    </span>)}</>,
     messageRail: <>{works.map((work, index) => <Button key={work.targetSessionId}
       variant="ghost" isIconOnly icon={<span aria-hidden="true" />} className="workhub-message-rail"
       style={{ insetBlockStart: `${index * 100 / works.length}%`, insetBlockEnd: 'auto', height: `${100 / works.length}%`,
@@ -127,12 +89,6 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
       >{work.workspaceName ? `${work.workspaceName} / ${work.targetSessionName}` : work.targetSessionName}</Link>)}
     </div>,
   }]));
-  for (const [turnId, state] of promptStates ?? []) {
-    if (!turnDecorations.has(turnId)) turnDecorations.set(turnId, {
-      header: <></>, accentColor: undefined, messageRail: undefined,
-      promptStatus: <WorkHubDelegationStatus locale={locale} work={{ id: turnId, coordinationTurnId: turnId, targetSessionId: '', targetSessionName: '', state }} />,
-    });
-  }
   const selected = highlight.selectedWork;
   const matchingTurns = new Set([...worksByTurn].filter(([, works]) => works.some((work) => work.targetSessionId === selected?.sessionId)).map(([turnId]) => turnId));
   const messages = selected ? chat.messages.filter((message) => message.turnId !== undefined && matchingTurns.has(message.turnId)) : chat.messages;
@@ -148,7 +104,7 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
     liveTurns={liveTurns}
     transientMessages={selected ? chat.transientMessages?.filter((message) => message.hostTurnId && matchingTurns.has(message.hostTurnId)) : chat.transientMessages}
     activeTurn={activeTurn}
-    deriveTurnPresentation={(turns) => deriveWorkHubTurnPresentation(turns, locale)}
+    deriveTurnPresentation={deriveTurnPresentation}
     emptyOverride={selected ? <p>{copy.noWorkConversation}</p> : chat.emptyOverride}
     turnDecorations={turnDecorations}
     promptRailDecorations={promptRailDecorations}

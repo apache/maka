@@ -22,7 +22,7 @@ import { test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { InspectorCompositionSection } from '../../renderer/features/workbar/testing.js';
-import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 
 test('maps each request-composition category to the same colour in the chart and legend', () => {
   const markup = renderToStaticMarkup(

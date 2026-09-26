@@ -188,7 +188,7 @@ export function ChatView(props: {
    */
   emptyOverride?: ReactNode;
   /** Optional host-owned identity beside a turn; absent for ordinary transcripts. */
-  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; promptStatus?: ReactNode; messageRail?: ReactNode }>;
+  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; messageRail?: ReactNode }>;
   /** Session-owned records anchored after a durable conversation turn. */
   conversationItems?: ReadonlyArray<{
     id: string;
@@ -217,7 +217,7 @@ export function ChatView(props: {
    * imply it: a deriver rebuilt in the render body satisfies both and silently
    * gives back every re-render this projection exists to avoid, with no test
    * turning red. Supply it from a hook that holds the derivation in a ref (see
-   * `useAppShellTurnPresentation`); the one-shot form is for callers with no
+   * `useChatTurnPresentation`); the one-shot form is for callers with no
    * render loop at all, such as stories.
    */
   deriveTurnPresentation?: TurnPresentationDeriver;
@@ -523,7 +523,6 @@ export function ChatView(props: {
         <TransientUserMessage
           key={message.id}
           message={message}
-          status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
         />
       ))}
       {hasPendingAnswer && (
@@ -816,7 +815,6 @@ export function ChatView(props: {
                           activityObserved={turn.turnId === props.activeTurn?.turnId}
                           messageHeader={decoration?.header}
                           messageRail={decoration?.messageRail}
-                          promptStatus={decoration?.promptStatus}
                           transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                           userLabel={props.userLabel}
                           footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
@@ -832,7 +830,7 @@ export function ChatView(props: {
                           safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
                             ? props.safeResumeAction
                             : undefined}
-                          lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
+                          lineageBadges={props.onLineageBadgeClick ? turnPresentation?.lineageBadgesByTurn[turn.turnId] : undefined}
                           onLineageBadgeClick={stableLineageBadgeClick}
                           onOpenLinkedSession={
                             props.onOpenLinkedSession ? stableOpenLinkedSession : undefined

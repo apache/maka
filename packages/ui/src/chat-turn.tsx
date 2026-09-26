@@ -157,7 +157,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   editDisabled?: boolean;
   editDisabledReason?: string;
   delivery?: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
@@ -214,11 +213,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           {props.delivery?.deliveryActions?.map((action) => (
             <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
           ))}
-          {props.status ? <span className="maka-message-status-time">
-            {props.status}
-            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
-            {timeOrDelivery}
-          </span> : timeOrDelivery}
+          {timeOrDelivery}
         </>
       }
     />
@@ -281,7 +276,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
@@ -300,7 +294,6 @@ export function TransientUserMessage(props: {
           quotes={message.quotes}
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
-          status={props.status}
           delivery={message}
         />
       </LocalizedChatMessage>
@@ -382,7 +375,6 @@ export const TurnView = memo(function TurnView(props: {
   /** Optional accessible action on each message edge. */
   messageRail?: ReactNode;
   /** Host-owned status of the root prompt, displayed before its timestamp. */
-  promptStatus?: ReactNode;
   transientMessages?: readonly TransientUserMessageProjection[];
   userLabel?: string;
   /**
@@ -579,7 +571,7 @@ export const TurnView = memo(function TurnView(props: {
         </Marker>
       )}
       {props.transientMessages?.map((message) => (
-        <TransientUserMessage key={message.id} message={message} status={props.promptStatus} />
+        <TransientUserMessage key={message.id} message={message} />
       ))}
       {turn.user && turn.user.hostOrigin?.kind !== 'workhub_result' && (
         <LocalizedChatMessage
@@ -594,7 +586,6 @@ export const TurnView = memo(function TurnView(props: {
           {props.messageRail}
           {props.messageHeader}
           <UserMessageBody
-            status={props.promptStatus}
             messageId={turn.user.id}
             text={turn.user.text}
             ts={turn.user.ts}

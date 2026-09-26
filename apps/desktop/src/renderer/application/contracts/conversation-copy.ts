@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { InspectorCopy } from '../application/contracts/session-inspector/copy.js';
+import type { InspectorCopy } from './session-inspector/copy.js';
 
 import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';

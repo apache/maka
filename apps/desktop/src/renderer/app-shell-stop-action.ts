@@ -19,7 +19,7 @@
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 
 type RefBox<T> = { current: T };

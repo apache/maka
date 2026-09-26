@@ -196,24 +196,25 @@ test('turn identity stays on its exact durable anchor and is absent from ordinar
   const messages = ['one', 'two'].map((turnId) => ({ type: 'user' as const, id: `user-${turnId}`, turnId, text: turnId, ts: 1 }));
   const { document } = parseHTML(await renderChat(undefined, {
     messages,
-    turnDecorations: new Map([['one', { header: <span>Workspace / Work</span>, accentColor: 'red', promptStatus: <span data-test-status>Running work</span> }]]),
+    turnDecorations: new Map([['one', { header: <span>Workspace / Work</span>, accentColor: 'red' }]]),
   }));
   const one = document.querySelector('[data-transcript-turn-id="one"]')!;
   assert.equal(one.getAttribute('data-turn-accent'), 'true');
   assert.match(one.textContent!, /Workspace \/ Work/);
-  assert.equal(one.querySelectorAll('.maka-user-message [data-test-status]').length, 1);
-  assert.equal(document.querySelector('[data-transcript-turn-id="two"] [data-test-status]'), null);
-  assert.match(one.querySelector('.maka-message-meta')!.textContent!, /Running work/);
   assert.equal(document.querySelector('[data-transcript-turn-id="two"]')!.getAttribute('data-turn-accent'), null);
   assert.doesNotMatch(await renderChat(undefined, { messages }), /data-turn-accent|Workspace \/ Work/);
 });
 
-
-test('an initial optimistic prompt uses the same status projection as a durable prompt', async () => {
-  const { document } = parseHTML(await renderChat(undefined, {
-    messages: [], transientMessages: [{ id: 'pending', hostTurnId: 'choosing', text: 'Choose work', ts: 1, transientPlacement: 'transcript' }],
-    turnDecorations: new Map([['choosing', { header: <></>, promptStatus: <span data-test-status>Waiting for user</span> }]]),
-  }));
-  assert.equal(document.querySelectorAll('[data-test-status]').length, 1);
-  assert.match(document.querySelector('.maka-message-meta')!.textContent!, /Waiting for user/);
+test('shared turn presentation only exposes lineage when the surface supports navigation', async () => {
+  for (const canNavigate of [false, true]) {
+    const { document } = parseHTML(await renderChat(undefined, {
+      messages: [{ type: 'user', id: 'ask', turnId: 'turn', text: 'Ask', ts: 1 }],
+      deriveTurnPresentation: () => ({
+        footerActionsByTurn: {}, failedReasonLabels: {}, failedSeverities: {}, failedExecutionStateLabels: {},
+        lineageBadgesByTurn: { turn: [{ id: 'origin', targetTurnId: 'previous', label: 'Previous turn', direction: 'forward' }] },
+      }),
+      onLineageBadgeClick: canNavigate ? () => {} : undefined,
+    }));
+    assert.equal(document.querySelectorAll('.maka-turn-lineage-badge').length, canNavigate ? 1 : 0);
+  }
 });

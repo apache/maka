@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 301 files — blocker 0, reimplementation 0, polish 4, aligned 297.
+**Totals:** 300 files — blocker 0, reimplementation 0, polish 4, aligned 296.
 
 ## Exclusions (explicit)
 
@@ -100,7 +100,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog.tsx` | dialog-overlay | Banner, Button, Dialog, DialogHeader, FormLayout, Layout, LayoutContent, LayoutFooter, SegmentedControl, SegmentedControlItem, Text, TextArea | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, FormLayout, Layout, LayoutContent, LayoutFooter) | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx` | dialog-overlay | Badge, Banner, Button, Dialog, DialogHeader, FormLayout, HStack, Layout, LayoutContent, LayoutFooter, List, ListItem, TextArea, Tooltip, VStack | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, FormLayout, HStack, Layout) | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-navigation.tsx` | shell-chrome-or-panel | SideNavItem | aligned — uses Astryx (SideNavItem) | aligned |
-| `apps/desktop/src/renderer/features/session-collaboration/ui/session-guest-turn-actions.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx` | shell-chrome-or-panel | Banner, Button, HoverCard | aligned — uses Astryx (Banner, Button, HoverCard) | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx` | shell-chrome-or-panel | Badge | aligned — uses Astryx (Badge) | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, ChatComposerInput, Text, Tooltip | aligned — uses Astryx (Button, ChatComposer, ChatComposerInput, Text, Tooltip) | aligned |

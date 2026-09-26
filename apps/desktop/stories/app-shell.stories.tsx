@@ -56,7 +56,7 @@ import {
   type WorkbarLayoutState,
 } from '../src/renderer/features/workbar/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
-import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
+import { deriveChatTurnPresentation } from '../src/renderer/application/contracts/turn-presentation';
 import {
   deriveBranchBanner,
   deriveSessionRail,
@@ -398,7 +398,7 @@ function ComposedShell(props: {
   // same seam production uses (app-shell.tsx), so a story cannot show footer
   // actions the production rules would not produce for its messages.
   const deriveTurnPresentation = (turns: readonly TurnViewModel[]) =>
-    deriveAppShellTurnPresentation(turns, {
+    deriveChatTurnPresentation(turns, {
       activeId: active?.id,
       pendingTurnActions: new Set<string>(),
       uiLocale: 'zh-CN',

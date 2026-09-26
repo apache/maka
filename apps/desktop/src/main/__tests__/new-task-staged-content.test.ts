@@ -25,7 +25,7 @@ import { parseHTML } from 'linkedom';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import { LocaleProvider } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
-import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import {
   useComposerAttachments,
   type ComposerAttachmentService,

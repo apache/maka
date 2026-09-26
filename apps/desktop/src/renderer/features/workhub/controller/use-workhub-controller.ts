@@ -92,7 +92,6 @@ export function useWorkHubController(onSubmit?: () => void) {
   const refreshInteractions = useRef<() => void>(() => {});
   const interactionRevision = useRef(0);
   const [interactions, setInteractions] = useState<InteractionQueues>({});
-  const [turnStates, setTurnStates] = useState<Record<string, import('../model/linked-work.js').WorkHubDelegationState>>({});
   const activeInteraction = activeInteractionFor(interactions, sessionId);
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const [sending, setSending] = useState(false);
@@ -181,7 +180,6 @@ export function useWorkHubController(onSubmit?: () => void) {
       attempt.stop = undefined;
       if (current) {
         setStopPending(false);
-        setTurnStates((states) => ({ ...states, [attempt.input.turnId]: 'failed' }));
         setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== attempt.input.turnId || !turn.unconfirmed));
         setError(workHubLiveCopy[localeRef.current].sendNotAdmitted);
       }
@@ -335,7 +333,6 @@ export function useWorkHubController(onSubmit?: () => void) {
     if (!sessionId) return;
     let disposed = false;
     setInteractions({});
-    setTurnStates({});
     const unsubscribe = services.subscribeActiveInteractions((event) => {
       if (event.sessionId !== sessionId || disposed) return;
       interactionRevision.current++;
@@ -381,7 +378,6 @@ export function useWorkHubController(onSubmit?: () => void) {
         interactionRevision.current++;
         const terminal = event.type === 'complete' || event.type === 'abort' || event.type === 'error';
         setInteractions((current) => terminal ? clearInteractions(current, sessionId) : reduceInteractionQueues(current, sessionId, event));
-        if (terminal) setTurnStates((current) => Object.fromEntries([...Object.entries(current), [event.turnId, event.type === 'complete' ? 'completed' : event.type === 'abort' ? 'aborted' : 'failed']].slice(-64)));
         if (event.type === 'queue_update') {
           const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
           // Host evidence retires local submission placeholders. Queue state
@@ -547,7 +543,6 @@ export function useWorkHubController(onSubmit?: () => void) {
       };
       const pendingRejectedTurnId = previous?.admission === 'rejected' ? previous.input.turnId : undefined;
       pendingSend.current = attempt;
-      setTurnStates((states) => ({ ...states, [attempt.input.turnId]: 'running' }));
       setLiveTurns((previous) => retainLiveTurn(previous, armLiveTurn(attempt.input.turnId)));
       setMessagePresentation((previous) => ({ ...previous, transientMessages: [...previous.transientMessages.filter((message) => message.hostTurnId !== attempt.input.turnId && message.hostTurnId !== pendingRejectedTurnId), {
         id: attempt.input.turnId, hostTurnId: attempt.input.turnId, text, ts: Date.now(),
@@ -569,7 +564,6 @@ export function useWorkHubController(onSubmit?: () => void) {
           attempt.stop = undefined;
           setStopPending(false);
         }
-        if (failedTurnId && attempt?.admission === 'rejected') setTurnStates((states) => ({ ...states, [failedTurnId]: 'failed' }));
         setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== failedTurnId || !turn.unconfirmed));
         report(reason);
       }
@@ -693,8 +687,6 @@ export function useWorkHubController(onSubmit?: () => void) {
     },
     activeQuestion,
     activeInteraction,
-    turnStates,
-    pendingTurnId: pendingSend.current?.sessionId === sessionId ? pendingSend.current?.input.turnId : undefined,
     respondToUserQuestion: async (response: import('@maka/core/user-question').UserQuestionResponse) => {
       if (!sessionId) throw new Error('WorkHub Session is unavailable');
       await services.respondToUserQuestion(sessionId, response);

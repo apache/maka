@@ -120,12 +120,12 @@ import {
   sessionSettingFailureCopy,
 } from './locales/shell-copy';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { SessionSettingsProvider, useSessionSettingIntent } from './features/session-settings';
 import { pendingSessionView } from './pending-session-view';
-import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
+import { useAppShellTurnPresentation } from './application/contracts/turn-presentation';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { readNavigationState, selectNavigation } from './nav-selection';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
@@ -815,6 +815,7 @@ function AppShellContent({
   // derive these props, so the turn objects the projection kept are also what
   // keeps the props a memoized TurnView reads stable (#2030).
   const deriveTurnPresentation = useAppShellTurnPresentation({
+    allowBranch: !sharedSessionActive,
     activeId,
     pendingTurnActions: turnActionRegistry.keys,
     uiLocale,
@@ -2444,12 +2445,6 @@ function AppShellContent({
                 }
               >
                 {sessionsSelected ? (
-                  <SessionCollaboration.SessionGuestTurnActionBoundary
-                    sessionId={sharedSessionActive ? activeId : undefined}
-                    deriveTurnPresentation={deriveTurnPresentation}
-                    ownerTurnFooterAction={handleTurnFooterAction}
-                  >
-                    {(turnActions) => (
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
@@ -2480,8 +2475,8 @@ function AppShellContent({
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
-                deriveTurnPresentation={turnActions.deriveTurnPresentation}
-                onTurnFooterAction={turnActions.onTurnFooterAction}
+                deriveTurnPresentation={deriveTurnPresentation}
+                onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
                 safeResumeAction={!sharedSessionActive && activeId ? {
                   pending: resumePendingSessionId === activeId,
@@ -2576,8 +2571,7 @@ function AppShellContent({
                 }}
                 conversationItems={planConversationItems}
                   />
-                    )}
-                  </SessionCollaboration.SessionGuestTurnActionBoundary>
+
                 ) : null}
               </ChatSurfaceLayout>
             </div>

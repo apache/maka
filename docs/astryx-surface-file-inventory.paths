@@ -70,7 +70,6 @@ apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboratio
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-navigation.tsx
-apps/desktop/src/renderer/features/session-collaboration/ui/session-guest-turn-actions.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-composer.tsx

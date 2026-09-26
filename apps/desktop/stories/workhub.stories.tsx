@@ -112,11 +112,6 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     getSession: async () => session,
     listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => repairModel ? repairChoices : choices,
     setDefaultModel: async () => {},
-    delegationFeedback: async (references) => references.map(({ id }) => ({
-      id,
-      state: coloredHistory && id === 'link-1' ? 'waiting_for_user' as const : coloredHistory && id === 'link-2' ? 'running' as const : 'completed' as const,
-      resultPreview: '重复投递测试已通过，支付回调保持同一响应。',
-    })),
     attachments: { pickFiles: async () => ({ ok: true, files: [{ approvalId: 'file-1', name: 'requirements.txt', size: 12, mimeType: 'text/plain' }] }), previewApproval: async () => ({ ok: false, reason: 'not-image' }) },
     readAttachmentBytes: async () => { throw new Error('Not an image'); },
     prepareAttachments: async (id, items) => { writes.upload(id, items); return [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'artifact-1' } }]; },
@@ -217,9 +212,11 @@ export const FullConversationAndWorkIdentity: Story = {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
-    await waitFor(() => expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成'));
-    expect(getComputedStyle(canvasElement.querySelector('.workhub-delegation-status')!.closest('.maka-message-meta')!).opacity).toBe('1');
-    expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
+    const meta = canvasElement.querySelector<HTMLElement>('.maka-user-message .maka-message-meta')!;
+    await waitFor(() => expect(getComputedStyle(meta).opacity).toBe('0'));
+    meta.querySelector<HTMLButtonElement>('button[data-message-id]')!.focus();
+    await waitFor(() => expect(getComputedStyle(meta).opacity).toBe('1'));
+    (document.activeElement as HTMLElement).blur();
     await userEvent.click(canvasElement.querySelector('.workhub-turn-label') as HTMLElement);
     await waitFor(() => expect(writes.open).toHaveBeenCalledWith(targetId));
     await userEvent.hover(canvasElement.querySelector('.maka-user-message .workhub-message-rail') as HTMLElement);
@@ -396,13 +393,12 @@ export const ColoredWorkHistory: Story = {
     expect(turns[0]!.querySelector('.workhub-turn-label')).toHaveTextContent('maka / 支付回调幂等性');
     expect(turns[1]!.querySelector('.workhub-turn-label')).toHaveTextContent('desktop / 发布检查清单');
     expect(canvasElement.querySelector('[data-transcript-turn-id="unlinked-turn"]')).not.toHaveAttribute('data-turn-accent');
-    for (const [index, turn] of turns.entries()) {
+    for (const turn of turns) {
       expect(turn.querySelectorAll('.workhub-turn-label')).toHaveLength(1);
       expect(turn.querySelector('.maka-assistant-answer .workhub-turn-label')).toBeNull();
-      const status = turn.querySelector('.maka-user-message .workhub-delegation-status')!;
-      await waitFor(() => expect(status).toHaveTextContent(['已完成', '等待用户', '进行中'][index]!));
-      expect(turn.querySelector('.maka-assistant-answer .workhub-delegation-status')).toBeNull();
-      expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
+      expect(turn.querySelector('.maka-user-message .maka-message-status-time')).toBeNull();
+      expect(turn.querySelector('.maka-turn-footer [data-action="copy"]')).not.toBeNull();
+      expect(turn.querySelector('.maka-turn-footer [data-action="branch"]')).toBeNull();
       const label = getComputedStyle(turn.querySelector('.workhub-turn-label span')!);
       const time = getComputedStyle(turn.querySelector('.maka-user-message .maka-message-meta')!);
       expect(label.fontSize).toBe(time.fontSize);
@@ -448,7 +444,6 @@ export const TargetSelection: Story = {
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelector('.maka-form-interaction-prompt')).toBeInTheDocument());
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
   },
 };
 
@@ -512,7 +507,6 @@ export const QuestionLifecycle: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByRole('heading', { name: '首批发布范围选哪个？' })).toBeInTheDocument());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
     // The panel's digit/Enter shortcuts live on its own keydown, so focus must
     // have landed there before keys are sent.
@@ -523,7 +517,6 @@ export const QuestionLifecycle: Story = {
     await waitFor(() => expect(within(prompt).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeNull());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成');
     expect(canvas.getByText('按公开测试安排发布。')).toBeInTheDocument();
     expect(writes.question).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ requestId: 'question-request' }));
   },
@@ -535,7 +528,6 @@ export const QuestionPending: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByRole('heading', { name: '首批发布范围选哪个？' })).toBeInTheDocument());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
   },
 };
 
@@ -546,7 +538,6 @@ export const QuestionStopped: Story = {
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: '停止' }));
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeNull());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('中止');
   },
 };
 

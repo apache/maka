@@ -26,7 +26,7 @@ import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy';
 import { SessionTerminalHydration, SessionTerminalRenderQueue } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
 import { scheduleTerminalFrame } from './session-terminal-frame';

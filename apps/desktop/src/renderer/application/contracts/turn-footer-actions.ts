@@ -46,7 +46,7 @@
 import type { TurnStatus } from '@maka/core/session';
 
 import type { UiLocale } from '@maka/core/ui-locale';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './conversation-copy.js';
 
 export type TurnFooterActionId = 'branch' | 'copy';
 
@@ -72,6 +72,7 @@ export interface TurnFooterAction {
 
 export interface TurnFooterContext {
   status: TurnStatus;
+  allowBranch?: boolean;
   /**
    * True when the turn has at least one materialized assistant message
    * with non-empty text. Disables `copy` for empty turns (running
@@ -125,5 +126,5 @@ export function deriveTurnFooterActions(input: TurnFooterContext): TurnFooterAct
     tooltip: hasContent ? copyText.copy : copyText.copyEmpty,
   };
 
-  return [branch, copy];
+  return input.allowBranch === false ? [copy] : [branch, copy];
 }

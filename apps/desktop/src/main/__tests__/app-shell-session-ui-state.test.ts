@@ -27,7 +27,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { act, createElement } from 'react';
 import { LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
-import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
+import { normalizeSessionSummaryForDisplay } from '../../renderer/application/contracts/session-status-presentation.js';
 import {
   createSessionCatalogController,
   selectSessionById,

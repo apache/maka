@@ -282,13 +282,13 @@
 }
 
 /* Times and actions answer a reader already pointing at the message, so they
-   stay hidden until then. A delivery or Work status is news and stays visible.
+   stay hidden until then. A delivery status stays visible.
    Rows keep their space so the transcript does not move, and only opacity
    hides them: the buttons must stay focusable for :focus-within to reveal
    them. A tap must not land on a control it cannot see, and without hover
    nothing would ever reveal them, so this is for hover pointers only. */
 @media (hover: hover) {
-  .maka-user-message .maka-message-meta:not(:has(.maka-message-delivery, .maka-message-status-time)),
+  .maka-user-message .maka-message-meta:not(:has(.maka-message-delivery)),
   .maka-assistant-answer .maka-turn-footer {
     opacity: 0;
     pointer-events: none;

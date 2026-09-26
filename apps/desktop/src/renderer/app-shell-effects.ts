@@ -30,7 +30,7 @@ import { type ShellRunUpdate } from '@maka/core/events';
 import type { LiveTurnProjection, NavSelection } from '@maka/ui';
 import type { TranscriptPublisher } from './features/conversation/index.js';
 import { messageReadErrorMessage } from './app-shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
 import { startTitlebarModalSync } from './titlebar-modal-sync';
 import { safeLocalStorageSet } from './browser-storage';

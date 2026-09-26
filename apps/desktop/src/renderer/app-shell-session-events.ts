@@ -33,7 +33,7 @@ import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import { deriveMessageQueueProjection } from './application/contracts/message-queue-projection.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { createConversationDisplayFrameScheduler } from './features/conversation/index.js';
 
 type RefBox<T> = { current: T };

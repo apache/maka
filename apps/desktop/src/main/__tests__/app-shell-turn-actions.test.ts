@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
 import { createAppShellTurnActions } from '../../renderer/app-shell-turn-actions.js';
-import { deriveTurnFooterActions } from '../../renderer/turn-footer-actions.js';
+import { deriveTurnFooterActions } from '../../renderer/application/contracts/turn-footer-actions.js';
 
 test('footer no longer exposes Regenerate', () => {
   assert.deepEqual(

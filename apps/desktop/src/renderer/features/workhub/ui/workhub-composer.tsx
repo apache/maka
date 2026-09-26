@@ -23,7 +23,7 @@ import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { toComposerIngestItems } from '@maka/ui/composer-attachments';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import type { AttachmentRef, FollowUpMode } from '@maka/core/events';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';

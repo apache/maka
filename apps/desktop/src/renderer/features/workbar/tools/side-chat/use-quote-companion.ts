@@ -77,7 +77,7 @@ import {
   projectQueuedTransientMessages,
   reconcileTransientMessages,
 } from '../../../../application/contracts/transient-message-projection.js';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import {
   snapshotCompanionQuotes,
   type CompanionQuoteSnapshot,

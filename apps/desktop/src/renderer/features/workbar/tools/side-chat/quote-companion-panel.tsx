@@ -17,14 +17,13 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
   ChatView,
   ChatSurfaceLayout,
   Composer,
   ClientCapabilityPrompt,
-  finalAssistantReplyText,
   FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
@@ -41,8 +40,8 @@ import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
 import { preflightAttachmentItems } from '../../../../attachment-preflight';
 import { toComposerIngestItems } from '../../../../composer-attachments';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
-import { deriveTurnFooterActions } from '../../../../turn-footer-actions';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
+import { useAppShellTurnPresentation } from '../../../../application/contracts/turn-presentation.js';
 import {
   createQuoteCompanionCompactionPresentation,
   dispatchQuoteCompanionInput,
@@ -232,28 +231,8 @@ export function QuoteCompanionPanel(props: {
     companion.activeClientCapability ??
     companion.activeQuestion ??
     companion.activeForm;
-  const deriveTurnPresentation = useCallback<
-    NonNullable<ComponentProps<typeof ChatView>['deriveTurnPresentation']>
-  >(
-    (turns) => ({
-      footerActionsByTurn: Object.fromEntries(
-        turns.map((turn) => [
-          turn.turnId,
-          deriveTurnFooterActions({
-            status: turn.status,
-            locale,
-            hasContent: finalAssistantReplyText(turn).trim().length > 0,
-          }).filter((action) => action.id !== 'branch'),
-        ]),
-      ),
-      failedReasonLabels: {},
-      failedSeverities: {},
-      failedExecutionStateLabels: {},
-      lineageBadgesByTurn: {},
-    }),
-    [locale],
-  );
 
+  const deriveTurnPresentation = useAppShellTurnPresentation({ uiLocale: locale, allowBranch: false });
   return (
     <div className="maka-quote-companion">
       <ChatSurfaceLayout
