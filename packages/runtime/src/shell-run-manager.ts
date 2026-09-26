@@ -39,6 +39,7 @@ import {
   BASH_MAX_LIVE_EMIT_CHARS,
   BASH_MAX_RETAINED_CHARS,
   LIVE_OUTPUT_SUPPRESSED_MARKER,
+  buildUserCommandEnv,
 } from './shell-exec.js';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
@@ -761,6 +762,7 @@ export class ShellRunProcessManager
     sessionEpoch: number,
     onLiveAdmission: ((live: LiveShellRun) => void) | undefined,
   ): Promise<LivePipeShellRun> {
+    const env = buildUserCommandEnv(input.env ?? process.env);
     const collector = new PipeTailCollector(this.maxRetainedChars);
     const pending: Array<(live: LivePipeShellRun) => void> = [];
     let live: LivePipeShellRun | undefined;
@@ -777,11 +779,7 @@ export class ShellRunProcessManager
             args: [...input.argv.slice(1)],
             useShellOption: false,
           }
-        : buildShellSpawnPlan(
-            input.shell ?? defaultShellPlan(),
-            input.command,
-            input.env ?? process.env,
-          );
+        : buildShellSpawnPlan(input.shell ?? defaultShellPlan(), input.command, env);
       startingRecord = await this.createStartingRecord(
         input,
         shellRunId,
@@ -793,7 +791,7 @@ export class ShellRunProcessManager
       const driver = new PipeProcessDriver({
         plan,
         cwd: input.cwd,
-        ...((plan.env ?? input.env) ? { env: plan.env ?? input.env } : {}),
+        env: plan.env ?? env,
         ...(input.fdInputs ? { fdInputs: input.fdInputs } : {}),
         outputDrainMs: this.pipeOutputDrainMs,
         onData: (stream, data) => dispatch((target) => this.onPipeData(target, stream, data)),
@@ -839,6 +837,7 @@ export class ShellRunProcessManager
     slotReservation: ShellRunSlotReservation,
     sessionEpoch: number,
   ): Promise<LivePtyShellRun> {
+    const env = buildUserCommandEnv(input.env ?? process.env);
     const pending: Array<(live: LivePtyShellRun) => void> = [];
     let live: LivePtyShellRun | undefined;
     let driver: PtyProcessDriver | undefined;
@@ -862,11 +861,7 @@ export class ShellRunProcessManager
         onDirty: () => dispatch((target) => this.scheduleAutomaticFlush(target)),
         onFailure: (error) => dispatch((target) => this.handleIntegrityFailure(target, error)),
       });
-      const plan = buildPtyShellSpawnPlan(
-        input.shell ?? defaultShellPlan(),
-        input.command,
-        input.env ?? process.env,
-      );
+      const plan = buildPtyShellSpawnPlan(input.shell ?? defaultShellPlan(), input.command, env);
       startingRecord = await this.createStartingRecord(
         input,
         shellRunId,
@@ -879,7 +874,7 @@ export class ShellRunProcessManager
         file: plan.file,
         args: plan.args,
         cwd: input.cwd,
-        env: plan.env ?? input.env ?? process.env,
+        env: plan.env ?? env,
         cols: PTY_INITIAL_COLS,
         rows: PTY_INITIAL_ROWS,
         onData: (data) => dispatch((target) => this.onPtyData(target, data)),
