@@ -362,6 +362,75 @@ describe('AppUpdateService', () => {
     assert.equal(updater.quitAndInstallCalls, 0);
   });
 
+  test('can retry a failed provenance verification through the download action', async () => {
+    let verificationCalls = 0;
+    const updater = new FakeUpdater();
+    const { service } = createHarness({
+      updater,
+      verifyDownloadedUpdate: async () => {
+        verificationCalls += 1;
+        if (verificationCalls === 1) throw new Error('release provenance did not match');
+      },
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    assert.equal(service.getStatus().state, 'error');
+
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('update-available', updateInfo('1.1.0'));
+      updater.emit('update-downloaded', {
+        ...updateInfo('1.1.0'),
+        downloadedFile: '/tmp/maka-update.zip',
+      });
+      return { isUpdateAvailable: true };
+    };
+
+    const retried = await service.retryUpdateDownload();
+    assert.deepEqual(retried, {
+      state: 'downloaded',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+    });
+    assert.equal(updater.checkCalls, 1);
+    assert.equal(verificationCalls, 2);
+  });
+
+  test('keeps repeated errors in the download phase while its promise is pending', async () => {
+    const { service, updater } = createHarness();
+    let finishDownload!: (paths: string[]) => void;
+    const downloadPromise = new Promise<string[]>((resolve) => { finishDownload = resolve; });
+    updater.checkForUpdates = async () => {
+      updater.emit('checking-for-update');
+      updater.emit('update-available', updateInfo('1.1.0'));
+      return { isUpdateAvailable: true, downloadPromise };
+    };
+
+    try {
+      await service.checkForUpdatesNow();
+      updater.emit('error', new Error('temporary download failure'));
+      assert.equal(service.getStatus().state, 'error');
+      // 首次错误已覆盖可见阶段，第二次错误只能由尚未结束的下载任务判定阶段。
+      updater.emit('error', new Error('root was signed by 0/3 keys'));
+
+      assert.deepEqual(service.getStatus(), {
+        state: 'error',
+        currentVersion: '1.0.0',
+        latestVersion: '1.1.0',
+        operation: 'download',
+        message: 'root was signed by 0/3 keys',
+      });
+    } finally {
+      finishDownload([]);
+      await settleUpdateVerification();
+      service.dispose();
+    }
+  });
+
   test('cancels a stalled auto-download before retrying it', async () => {
     const updater = new FakeUpdater();
     const statuses: AppUpdateStatus[] = [];
