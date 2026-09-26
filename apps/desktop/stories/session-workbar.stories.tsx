@@ -28,8 +28,8 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ChatSurfaceLayout, Composer, ToastProvider } from '@maka/ui';
-import { WorkbarHost, WorkbarServicesProvider } from '../src/renderer/features/workbar';
-import { WorkbarSurface, useWorkbarLayoutState, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
+import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { WorkbarHostView, WorkbarSurface, useWorkbarLayoutState, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -1225,7 +1225,7 @@ function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boole
           border: '1px solid var(--border)', borderRadius: 8, background: 'var(--background)', color: 'var(--foreground)' }} />}>
       <div className="maka-chatContent">Conversation remains mounted while reading.</div>
     </ChatSurfaceLayout>}</div>
-    <WorkbarHost model={model} />
+    <WorkbarHostView model={model} />
   </div></ToastProvider>;
 }
 

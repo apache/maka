@@ -152,7 +152,6 @@ export const ALLOWED = {
     // one stays because the shell body reads `keys` to build the turn footer's
     // disabled mask.
     useTurnActionRegistry: 1,
-    useWorkbarController: 1,
   },
 };
 

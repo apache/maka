@@ -47,6 +47,7 @@ import type {
 } from '../tools/side-chat/quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
 import { SideChatCloseConfirmation } from './side-chat-close-confirmation.js';
+import { useWorkbarHostModel } from './workbar-provider.js';
 
 const WorkbarSurface = lazy(() =>
   import('./workbar-surface').then((module) => ({
@@ -134,7 +135,12 @@ export interface WorkbarHostModel {
   };
 }
 
-export function WorkbarHost({ model: props, togglePosition = 'edge' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
+export function WorkbarHost({ togglePosition }: { togglePosition?: WorkbarTogglePosition }) {
+  return <WorkbarHostView model={useWorkbarHostModel()} togglePosition={togglePosition} />;
+}
+
+/** Environment-free view seam for Storybook, which supplies its own model. */
+export function WorkbarHostView({ model: props, togglePosition = 'edge' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getShellCopy(locale).app;

@@ -38,17 +38,35 @@ remounted when the active session changes.
 - Desktop I/O enters through `WorkbarServices`; tool code does not read
   the Desktop global bridge directly.
 - `useWorkbarController` is the application boundary for topology, shortcuts,
-  dynamic resources and Side Chat visibility. `AppShell` supplies only the
-  active Session, workspace availability, authoritative Session ids, shell visibility and composer
-  mention/model context.
+  dynamic resources and Side Chat visibility. `WorkbarProvider` is its sole
+  production owner; `AppShell` supplies only the active Session, workspace
+  availability, authoritative Session ids, shell visibility and composer
+  mention/model context as the provider's `input`.
 
-## Public surface
+## Shell boundary
 
-- `host` is passed intact to `<WorkbarHost model={workbar.host} />`.
-- `commands.openTool`, `commands.openSideChatWithQuote` and
-  `commands.toggleRight` are the only shell actions.
-- `selectors.rightCollapsed` drives the titlebar restore affordance and
-  `selectors.hiddenSessionIds` filters ephemeral companion forks from the rail.
+`WorkbarShellRoot` sits above `AppShellContent` beside the other feature
+roots and hands it the Workbar projection, so the shell body calls no Workbar
+hook. The root owns a per-shell bridge and reads its equality-selected shell
+state, without calling the controller. `WorkbarProvider` publishes each
+committed controller into that bridge, so tab switches, panel topology and
+resize drags re-render the provider and the host model's readers, not the
+shell.
+
+- `commands` are stable delegates to the latest committed controller:
+  `openTool`, `openSideChatWithQuote`, `toggleRight`, `toggleTool`,
+  `setWorkbarCollapsed`, the interaction responders and
+  `bindNewTaskSessionResolver`. Before the provider publishes they are no-ops.
+- `selectors.hiddenSessionIds` filters ephemeral companion forks from the rail
+  and the command palette; `selectors.rightCollapsed` and `selectors.ready`
+  drive WorkHub's dock and navigation. The shell re-renders only when one of
+  these values changes.
+- `WorkbarHost` and `WorkbarTitlebarActions` read the host model from the
+  provider's context. The provider also publishes
+  `--maka-session-workbar-width` on an inherited custom property, so the frame
+  and titlebar size from it without a shell render. Storybook renders the
+  environment-free `WorkbarHostView` and `WorkbarTitlebarActionsView` with its
+  own model.
 
 ## Review comparison preference
 

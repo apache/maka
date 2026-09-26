@@ -28,10 +28,8 @@ import type { CSSProperties } from 'react';
 export function appShellFrameStyle(input: {
   sessionListCollapsed: boolean;
   sessionListWidth: number;
-  workbarRightWidth: number;
 }): CSSProperties {
   return {
-    '--maka-session-workbar-width': `${input.workbarRightWidth}px`,
     '--maka-sidenav-width': `${input.sessionListCollapsed ? 0 : input.sessionListWidth}px`,
   } as CSSProperties;
 }
