@@ -457,7 +457,8 @@ async function smokePatchedStreamingToolCalls(archiveRoot) {
   const model = getAIModel({
     connection: {
       slug: 'release-smoke',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-chat',
       baseUrl: 'https://release-smoke.invalid/v1',
       defaultModel: 'release-smoke-model',
     },

@@ -588,6 +588,59 @@ test('Maka forwards Host requirements and declared credential names', async () =
   );
 });
 
+test('a custom Maka subject forwards its default request protocol', async () => {
+  const config = {
+    ...makaConfig(),
+    providerType: 'custom',
+    defaultApiProtocol: 'anthropic-messages',
+    apiKeyEnvironment: 'RELAY_API_KEY',
+  };
+  const makaCell = cell('maka', config);
+  const bound = { ...makaCell, subject: { ...makaCell.subject, credentials: ['RELAY_API_KEY'] } };
+  const { defaultApiProtocol: _protocol, ...withoutProtocol } = config;
+  assert.throws(
+    () => createMakaSubjectAdapter().validate?.(cell('maka', withoutProtocol)),
+    /config fields are invalid/u,
+  );
+  assert.throws(
+    () =>
+      createMakaSubjectAdapter().validate?.(cell('maka', { ...config, defaultApiProtocol: 'x' })),
+    /defaultApiProtocol/u,
+  );
+  let forwarded: unknown;
+  await createMakaSubjectAdapter().execute({
+    cell: bound,
+    context: {
+      cwd: '/workspace',
+      taskInput: 'solve',
+      metadata: {},
+      execute: async (input) => {
+        const payload = JSON.parse(Buffer.from(input.args[1] ?? '', 'base64url').toString()) as {
+          connection: unknown;
+          execution: { executionId: string };
+        };
+        forwarded = payload.connection;
+        return {
+          termination: 'exited',
+          exitCode: 0,
+          stdout: JSON.stringify({
+            executionId: payload.execution.executionId,
+            kind: 'settled',
+            status: 'completed',
+            usage: usage(),
+            costUsd: null,
+          }),
+        };
+      },
+    },
+  });
+  assert.deepEqual(forwarded, {
+    providerType: 'custom',
+    defaultApiProtocol: 'anthropic-messages',
+    apiKeyEnvironment: 'RELAY_API_KEY',
+  });
+});
+
 // The relay tears the subject's process group down unless the wrapper exits
 // zero, so every wrapper has to project the same status the same way — an arm
 // whose failures exit zero would keep its background services through the

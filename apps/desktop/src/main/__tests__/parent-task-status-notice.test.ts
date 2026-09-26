@@ -62,26 +62,24 @@ describe('ParentTaskStatusNotice', () => {
     assert.equal(origin, button, 'the action hands its own workspace frame to the focus owner');
   });
 
-  it('renders one polite live region per notice', async () => {
-    const { root, container } = installReactRenderer();
-    const notice = () =>
-      createElement(LocaleProvider, {
-        locale: 'en',
-        children: createElement(ParentTaskStatusNotice, { status: 'waiting_approval' }),
+  for (const status of ['waiting_approval', 'running', 'last_turn_failed', 'last_turn_completed'] as const) {
+    it(`renders one polite live region for ${status}`, async () => {
+      const { root, container } = installReactRenderer();
+      await act(async () => {
+        root.render(createElement(LocaleProvider, {
+          locale: 'en',
+          children: createElement(ParentTaskStatusNotice, { status }),
+        }));
       });
-    await act(async () => {
-      root.render(notice());
+      const live = findByRole(container, 'status');
+      assert.ok(live, 'a status live region is missing');
+      assert.equal(live.attributes.get('aria-live'), 'polite');
+      assert.match(live.textContent, /parent/i);
+      assert.equal(countByRole(container, 'status') + countByRole(container, 'alert'), 1,
+        'the Banner owns the only live region, including warning and error states');
     });
-    const live = findByRole(container, 'status');
-    assert.ok(live, 'a status live region is missing');
-    assert.equal(live.attributes.get('aria-live'), 'polite');
-    assert.equal(live.textContent, 'Parent task is waiting for approval; approve it in the parent conversation');
-    assert.equal(
-      countByRole(container, 'status'),
-      1,
-      'each notice owns exactly one live region; a second notice announces separately',
-    );
-  });
+  }
+
 });
 
 function findByRole(

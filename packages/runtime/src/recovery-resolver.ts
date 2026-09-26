@@ -19,6 +19,7 @@
 
 import {
   TOOL_BOUNDARY_PROTOCOL_V1,
+  isTerminalRuntimeEvent,
   type RuntimeEvent,
   type ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
@@ -124,14 +125,17 @@ export function resolveRuntimeRecovery(events: readonly RuntimeEvent[]): Runtime
   };
 }
 
-export function buildInterruptedCodeModeOutcomeCommits(
+export function buildInterruptedToolOutcomeCommits(
   events: readonly RuntimeEvent[],
   now: number,
   toolMode: ToolMode,
 ): ToolOutcomeCommit[] {
-  if (toolMode !== 'code_mode') return [];
   const eventsById = new Map(events.map((event) => [event.id, event] as const));
+  const terminalInvocations = new Set(
+    events.filter(isTerminalRuntimeEvent).map((event) => event.invocationId),
+  );
   const recovery = resolveRuntimeRecovery(events);
+  if (recovery.hasCorruption) return [];
   return recovery.decisions.flatMap((decision) => {
     if (
       decision.status !== 'indeterminate' ||
@@ -143,23 +147,40 @@ export function buildInterruptedCodeModeOutcomeCommits(
     }
     const callEvent = eventsById.get(decision.callRuntimeEventId);
     const call = callEvent?.content;
-    if (
-      !callEvent ||
-      call?.kind !== 'function_call' ||
-      call.name !== 'exec' ||
-      callEvent.origin === 'code_mode' ||
-      callEvent.modelVisibility === 'hidden'
-    ) {
+    if (!callEvent || call?.kind !== 'function_call') {
       return [];
     }
-    const result = {
-      kind: 'json' as const,
-      value: {
-        kind: 'code_mode' as const,
-        status: 'interrupted' as const,
-        message: 'Code Mode execution was interrupted by runtime recovery.',
-      },
-    };
+    // A sealed invocation cannot accept new RuntimeEvents. Legacy sessions can
+    // still contain this gap; their projection is repaired from the terminal
+    // fact instead of appending a result after the immutable tail.
+    if (terminalInvocations.has(callEvent.invocationId)) return [];
+
+    const codeModeExec =
+      toolMode === 'code_mode' &&
+      call.name === 'exec' &&
+      callEvent.origin !== 'code_mode' &&
+      callEvent.modelVisibility !== 'hidden';
+    const interaction = call.name === 'AskUserQuestion';
+    const result = codeModeExec
+      ? {
+          kind: 'json' as const,
+          value: {
+            kind: 'code_mode' as const,
+            status: 'interrupted' as const,
+            message:
+              'Code Mode execution was interrupted by runtime recovery. Its side effects may or may not have occurred; do not retry it immediately. Inspect the current state first.',
+            uncertainOutcome: { code: 'outcome_unknown' as const, retrySafe: false as const },
+          },
+        }
+      : {
+          kind: 'text' as const,
+          text: interaction
+            ? 'This question was interrupted by runtime recovery before an answer was submitted.'
+            : `Tool ${call.name} was interrupted before its result was committed. Its side effects may or may not have occurred. Do not retry it immediately; inspect the current state first.`,
+          ...(!interaction
+            ? { uncertainOutcome: { code: 'outcome_unknown' as const, retrySafe: false as const } }
+            : {}),
+        };
     const responseContent = {
       kind: 'function_response' as const,
       id: call.id,
@@ -178,10 +199,19 @@ export function buildInterruptedCodeModeOutcomeCommits(
       partial: false,
       role: 'tool',
       author: 'tool',
-      origin: 'provider',
-      modelVisibility: 'visible',
+      origin: callEvent.origin ?? 'provider',
+      modelVisibility: callEvent.modelVisibility ?? 'visible',
       content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
-      refs: { operationId: decision.operationId, toolCallId: call.id },
+      refs: {
+        operationId: decision.operationId,
+        toolCallId: call.id,
+        ...(callEvent.refs?.parentToolCallId
+          ? { parentToolCallId: callEvent.refs.parentToolCallId }
+          : {}),
+        ...(callEvent.refs?.parentOperationId
+          ? { parentOperationId: callEvent.refs.parentOperationId }
+          : {}),
+      },
     };
     return [
       {

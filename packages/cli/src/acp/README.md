@@ -38,7 +38,10 @@ non-regular files, including POSIX FIFOs, before reading their content.
 After live attachment succeeds, the adapter uploads each linked file through the
 Host's existing Session Artifact protocol and uses its canonical attachment
 reference for Turn admission. Cancellation or close during an upload aborts staged
-content and prevents that prompt from starting a Turn.
+content and prevents that prompt from starting a Turn. Loaded history renders each
+stored attachment as a text placeholder with its name, media type and byte count,
+including attachment-only user messages. The chunk preserves the canonical
+references in `_meta["_maka/attachments"]`; it does not load attachment bytes.
 
 When a dispatched start loses its response, the adapter retries admission queries
 with bounded deadlines instead of replaying the start. Only a matching Turn or
@@ -58,18 +61,89 @@ or reconnection without waiting for the Host to become available.
 | Sandbox boundary and client capability approval | Standard `session/request_permission`. The `allow_always` choice explicitly grants only the displayed scope for this Session; `reject_once` denies it. Permission cancellation cancels the Turn. |
 | MCP | Session-owned stdio servers supplied in `session/new.mcpServers`; discovered tools and MCP form continuation use the existing MCP manager and Host capability path. |
 | Tool `permission` | Standard `session/request_permission`. One-shot allow/deny choices are preserved; eligible tool permissions also expose an explicit allow-for-this-Turn choice. Permission cancellation cancels the Turn. |
-| Load/resume, replacing all MCP configuration, HTTP/SSE/OAuth | Deferred. |
+| Load/resume | `session/load` replays durable user, assistant, thinking and tool rows before returning; `session/resume` attaches without replay. Both return current configuration and leave the Session attached for prompt. Neither restarts an interrupted Turn. |
+| Explicit interrupted Turn resume | `_maka/turn/resume` queries the Host safety plan and starts only a ready plan. A required MCP tool absent from the current Session binding leaves the plan parked. A parked plan is returned unchanged. A lost dispatched start returns `outcome_unknown` with the exact `turnId`; the adapter never retries that command. |
+| Copy source discovery | `_maka/session/copy-source/query` returns a bounded Host Turn page and `expectedSourceRevision` for an owned Session, so branch/revision parameters can be obtained entirely through ACP. |
+| Branch and revision | `_maka/session/branch/create`, `_maka/session/revision/create`, and `_maka/session/revision/abandon` map to the corresponding Host commands. The source must be owned by this ACP connection. A committed target becomes immediately usable; `retained` keeps its ownership and `abandoned` releases local resources. |
+| Replacing all MCP configuration | Every load/resume applies its complete stdio list through the existing Session MCP manager and publication. An omitted `session/resume.mcpServers` means an empty list. Equivalent normalized configuration reuses the process; changing or clearing it republishes the Session scope. An attached Session rejects a different configuration while the Host reports an active Turn; retry after that Turn settles. |
+| HTTP/SSE/OAuth MCP | Deferred. |
 
 The adapter saves the capabilities supplied during `initialize`. Missing form
-capability, unsupported client methods, or invalid answers explicitly fail the
-affected prompt and stop its exact Host Turn. Host owns interaction closure and
+capability, unsupported client methods, or invalid answers explicitly fail a
+locally admitted prompt and stop its exact Host Turn. For an attached Turn,
+presentation failure leaves the Host interaction pending for a capable client.
+Host owns interaction closure and
 the canonical answer, including externally answered or replayed requests. Client
 requests are fenced by Session, interaction, Turn/run, and attachment lifetime;
 cancel and EOF release local waits even when the client never responds.
 After a failed Stop, a cancelled Turn stays fenced even if its ACP prompt has
 returned; only an authoritative terminal observation or attachment closure
-releases the fence. An idle attachment does not present another client's Turn
-interactions through this ACP connection.
+releases the fence. An idle attachment created only by prompt does not present
+another client's Turn interactions through this ACP connection.
+
+After load/resume, the attachment observes an already running root Turn and its
+pending interactions through the same Session channel and Turn mapper used by
+prompt. A new Turn observed on that loaded attachment also uses this path.
+Clients that advertise `initialize.clientCapabilities._meta["_maka/turnStatus"]:
+true` receive `_maka/turn/status` notifications for non-prompt Turns after their
+standard output has settled. Each notification names `sessionId`, `turnId`,
+`runId`, and a `completed`, `failed`, `cancelled`, or `observation_failed` status.
+Terminal snapshots are retained with their exact Turn's event queue until
+consumption, including when a successor finishes before an output barrier releases
+its observation.
+Ordinary ACP clients can load/resume and prompt without this extension.
+
+The working directory in load/resume must resolve to the Session's Host cwd;
+additional directories are not supported. Missing and archived Sessions are
+rejected. A repeated successful load replays history again on the same retained
+attachment. Historical pages are read through that attachment's subscription,
+so they do not consume a second Host subscription slot.
+
+The Runtime Host composes the model prompt from its current policy, including
+workspace instructions when enabled. ACP clients provide user prompt content;
+`session/load` and `session/resume` do not replace the Host's system prompt or
+workspace instruction policy. The Host records model usage and context window
+facts in its runtime data, but this ACP v1 adapter does not emit a separate
+usage or context-window notification. An ACP client's own usage display should
+not infer those numbers from replayed text chunks.
+
+## Branch/revision source discovery
+
+After creating or loading a Session, call `_maka/session/copy-source/query` with:
+
+```json
+{
+  "sessionId": "source-session-id",
+  "throughSequence": null,
+  "position": 0,
+  "maxContributions": 64
+}
+```
+
+The response contains `sessionId`, `expectedSourceRevision`, `throughSequence`,
+`contributions`, and `nextPosition`. Each contribution contains a `turnId`,
+`firstSequence`, a bounded `userPromptPreview`, and `latestState` when available.
+To continue, carry the returned `throughSequence` and use `nextPosition` as the
+next request's `position`; `null` ends paging. The Host limits each page to 128
+contributions. A Turn can contribute to more than one page: merge by `turnId`,
+retaining the earliest `firstSequence` and the greatest `latestState.sequence`.
+Select a settled Turn after reading its state, rather than guessing a boundary
+from a text message ID. No additional subscription is opened by this query.
+
+Pass the selected `turnId` as `sourceTurnId`, the query's `sessionId` as
+`sourceSessionId`, and `expectedSourceRevision` unchanged to branch/revision
+creation, together with a new `targetSessionId`. The Host still validates the
+boundary and revision. If the source changes, `source_revision_conflict` requires
+an explicit refresh and a new client decision; the adapter does not retry copy
+commands. An empty source can be branched only with the Host's explicit
+`intent: "side_conversation"`; it cannot be used for revision creation.
+
+Cancelling a load/resume or explicit Turn-resume request while its initial
+subscription opens or hydrates releases that request's wait immediately. If no
+other request is awaiting the same attachment, initialization is aborted and a
+late subscription is closed. A concurrent prompt or restore retains its own
+wait and prepared Session resources. This does not stop an already attached
+Host Turn; use `session/cancel` for that operation.
 
 ## Tool output and completion
 
@@ -119,6 +193,16 @@ adapter retains the connection-local reservation and MCP resources. The client c
 continue with that ID or close it; creation is never silently retried.
 
 Different Sessions can use the same server/tool names with different processes.
+For the same Session, ACP publishes a SHA-256 identity of the complete normalized
+MCP configuration. Host atomically rejects a second provider with a different
+identity, including an empty configuration, before changing registration state.
+Load/resume reports `error.data.code: session_binding_conflict` for incompatible
+configurations; restore with the same configuration or close an active conflicting
+attachment. Equivalent configurations remain attachable, including live permission
+restoration. A disconnected frozen Session binding can be reclaimed by another
+local-owner connection of the same authenticated principal with the same complete configuration
+and contract set. This optional wire field and its typed conflict use
+Host compatibility epoch 185.
 Registration replacement, unregister, disconnection and invocation routing respect
 the target Session and owning connection. A default registration and its target
 Session registration may not expose the same tool identity. Another Session cannot

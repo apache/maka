@@ -18,7 +18,11 @@
  */
 
 import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
-import { formatQuietJsonValue, formatToolInvocationLine } from '@maka/core/tool-quiet-preview';
+import {
+  formatQuietJsonValue,
+  formatToolInvocationLine,
+  formatUserQuestionResult,
+} from '@maka/core/tool-quiet-preview';
 import { redactSecrets } from '@maka/core/display-redaction';
 import {
   isActiveShellRunStatus,
@@ -600,6 +604,11 @@ function plainResultText(entry: MakaPiToolEntry): string {
   if (result?.kind === 'text') return typeof result.text === 'string' ? result.text : '';
   if (result?.kind === 'json') {
     const value = result.value;
+    const answers =
+      entry.toolName === 'AskUserQuestion'
+        ? formatUserQuestionResult(entry.input, value, 'en')
+        : undefined;
+    if (answers) return answers;
     if (value !== null && typeof value === 'object') {
       const content = (value as { content?: unknown }).content;
       if (typeof content === 'string') return content;
@@ -610,8 +619,8 @@ function plainResultText(entry: MakaPiToolEntry): string {
     // Generic json fallback: use the shared quiet-value formatter instead of
     // dumping a single-line JSON blob. It extracts headline + body from
     // known shapes (lists, text payloads, Write/Edit results, key-value) and
-    // never produces escaped JSON braces (#1065). AskUserQuestion, GoalSet,
-    // ScheduledTask, and any future tool without a custom case render
+    // never produces escaped JSON braces (#1065). GoalSet, ScheduledTask,
+    // and any future tool without a custom case render
     // human-readable text here.
     const preview = formatQuietJsonValue(value, 'en');
     return preview.headline ? `${preview.headline}\n${preview.body}` : preview.body;

@@ -705,7 +705,8 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'openai-chat',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         defaultModel: 'chat-model',
       },
       apiKey: 'sk-test',

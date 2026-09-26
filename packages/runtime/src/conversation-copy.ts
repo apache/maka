@@ -18,7 +18,11 @@
  */
 
 import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
-import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
+import {
+  isPartialRuntimeEvent,
+  type RuntimeEvent,
+  type RuntimeEventInvocationOpenedContent,
+} from '@maka/core/runtime-event';
 import {
   buildInvocationOpenedEvent,
   isSessionInlineInvocation,
@@ -85,7 +89,7 @@ import {
   readToolResultPage,
   readableToolResult,
   resolveReadInput,
-  READ_PAGE_MAX_CHARS,
+  READ_PAGE_MAX_BYTES,
 } from './read-page.js';
 
 export interface ConversationCopySlice {
@@ -374,6 +378,7 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
     ),
   );
   const inlineRuntimeEvents = input.sourceEvents.flatMap((event) => {
+    if (isPartialRuntimeEvent(event)) return [];
     const opening = restoredOpenings.get(event.runId);
     if (!opening) return [event];
     restoredOpenings.delete(event.runId);
@@ -1001,7 +1006,10 @@ async function loadConversationCopyRunEvents(
           projectedEvents.length > 0
             ? projectedEvents
             : runtimeEventStore.readRuntimeEvents(run.sessionId, run.runId),
-        ).then((events) => {
+        ).then((sourceRunEvents) => {
+          // Copy settled facts only, including for older ledgers that persisted
+          // nested Code Mode heartbeats instead of keeping partial snapshots.
+          const events = sourceRunEvents.filter((event) => !isPartialRuntimeEvent(event));
           if (events.some((event) => event.content?.kind === 'invocation_opened')) {
             return { run, events };
           }
@@ -1360,7 +1368,7 @@ function cloneModelProjectionTransition(
       rewritten.page = readToolResultPage(
         serialized,
         { path: rewritten.resourceRef! },
-        READ_PAGE_MAX_CHARS - JSON.stringify(rewritten).length - 32,
+        READ_PAGE_MAX_BYTES - Buffer.byteLength(JSON.stringify(rewritten)) - 32,
       );
     }
     references.ledgerArchives?.set(

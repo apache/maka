@@ -125,7 +125,7 @@ export interface UseWorkbarControllerInput {
   /** Producer-side history invalidation counter for `parentExecution`. */
   parentExecutionHistoryEpoch?: number;
   openNewTaskSurface?(): number;
-  openSessionInChat?(sessionId: string): void;
+  openSessionInChat?(sessionId: string, turnId?: string): void;
   resolveWorkBoardTarget?(item: WorkBoardItem):
     | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
     | { ok: false; message: string };
@@ -990,6 +990,7 @@ export function useWorkbarController(
       },
       onActivityStateChange: sideConversations.setActive,
       sourceSession: input.activeSession,
+      onOpenConversation: input.openSessionInChat,
       modelChoices: input.modelChoices,
       onOpenParentConversation: focusParentConversation,
       parentExecution: input.parentExecution,

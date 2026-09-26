@@ -30,9 +30,9 @@ import {
   Token,
   VStack,
 } from '@astryxdesign/core';
-import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
-  supportsRelayFastServiceTier,
+  supportsCustomFastServiceTier,
   modelLimitsConflict,
   type ModelOverride,
 } from '@maka/core/model-thinking';
@@ -201,7 +201,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  const isRelay = isRelayProviderType(connection.providerType);
   const entryById = new Map(modelChoices.map((entry) => [entry.id, entry]));
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
@@ -700,7 +699,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         {editingModelId !== null && <CapabilityEditor
           copy={copy}
           modelId={editingModelId}
-          isRelay={isRelay}
+          customDefaultApiProtocol={connection.defaultApiProtocol}
           numericInputs={numericInputs}
           onNumericInput={(field, input) => {
             setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: editingModelId, numericInputs: { ...numericInputs, [field]: input } }));
@@ -716,7 +715,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
           contextWindowInputInvalid={contextWindowInputInvalid}
           disabled={allActionsBusy}
-          showsFastMode={supportsRelayFastServiceTier(connection.providerType, editingModelId)}
+          showsFastMode={supportsCustomFastServiceTier(
+            { ...connection, modelOverrides: { [editingModelId]: declared ?? {} } },
+            editingModelId,
+          )}
           defaultVision={connection.catalogEntries.find((model) => model.id === editingModelId)?.defaultSupportsVision}
           onContextWindowInput={(input) => changeContextWindow(editingModelId, input)}
         />}
@@ -724,6 +726,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       <AddModelDialog
         isOpen={editingRow === 'add-model'}
         providerType={connection.providerType}
+        defaultApiProtocol={connection.defaultApiProtocol}
         /* The catalog, not just the selection: the resolved entries are usually
            a proper superset of what the user enabled. Checking only the
            selection lets a listed-but-unchecked id through, and the dialog

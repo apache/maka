@@ -32,7 +32,7 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { isLoopbackHost, type McpServerStatus } from '@maka/core/mcp';
-import type { McpAuthorizationStart } from '@maka/mcp';
+import type { McpAuthorizationCallback, McpAuthorizationStart } from '@maka/mcp';
 
 const CALLBACK_PATH = '/callback';
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60_000;
@@ -49,7 +49,7 @@ export interface McpOAuthLoginManager {
   ): Promise<McpAuthorizationStart>;
   finishAuthorization(
     serverId: string,
-    callback: { code: string; iss?: string; state?: string },
+    callback: McpAuthorizationCallback,
     options?: { signal?: AbortSignal },
   ): Promise<McpServerStatus>;
   clearAuthorization(
@@ -141,7 +141,7 @@ export function createMcpOAuthController(deps: McpOAuthControllerDeps): McpOAuth
         });
     });
   const copy = deps.copy ?? {
-    successTitle: 'Login complete',
+    successTitle: 'Login response received',
     successBody: 'You can close this tab and return to Maka.',
     failureTitle: 'Login failed',
   };
@@ -212,7 +212,7 @@ export function createMcpOAuthController(deps: McpOAuthControllerDeps): McpOAuth
         // The shell launch rides the same deadline: a hung `openExternal`
         // must not hold the listener and the active guard past it.
         await deadline.race(deps.openExternal(authorizationUrl.toString()));
-        const payload = await deadline.race(callback.authorizationCode);
+        const payload = await deadline.race(callback.authorizationResponse);
         return await deadline.race(
           deps.manager.finishAuthorization(
             serverId,
@@ -273,7 +273,7 @@ export function createMcpOAuthController(deps: McpOAuthControllerDeps): McpOAuth
         return undefined;
       }
       try {
-        const payload = await deadline.race(callback.authorizationCode);
+        const payload = await deadline.race(callback.authorizationResponse);
         await deadline.race(Promise.resolve(deps.ensureReady?.()));
         return await deadline.race(
           deps.manager.finishAuthorization(
@@ -328,18 +328,9 @@ export function createMcpOAuthController(deps: McpOAuthControllerDeps): McpOAuth
   };
 }
 
-/** What the loopback listener hands back after verifying the state: the
- * full protocol payload the SDK still needs to validate — the code AND the
- * RFC 9207 `iss` parameter. Truncating to a bare code here would silently
- * disable the SDK's authorization-server mix-up defense. */
-export interface McpAuthorizationCallbackPayload {
-  code: string;
-  iss?: string;
-}
-
 interface CallbackListener {
   redirectUrl: string;
-  authorizationCode: Promise<McpAuthorizationCallbackPayload>;
+  authorizationResponse: Promise<McpAuthorizationCallback>;
   close(): void;
 }
 
@@ -391,15 +382,15 @@ function startCallbackListener(input: {
   copy: { successTitle: string; successBody: string; failureTitle: string };
 }): Promise<CallbackListener> {
   return new Promise((resolveListener, rejectListener) => {
-    let settleCode!: (payload: McpAuthorizationCallbackPayload) => void;
+    let settleCode!: (payload: McpAuthorizationCallback) => void;
     let failCode!: (error: Error) => void;
-    const authorizationCode = new Promise<McpAuthorizationCallbackPayload>((resolve, reject) => {
+    const authorizationResponse = new Promise<McpAuthorizationCallback>((resolve, reject) => {
       settleCode = resolve;
       failCode = reject;
     });
     // The 'authorized' short-circuit never awaits this promise, and close()
     // rejects it — mark it handled so that path can't crash the process.
-    authorizationCode.catch(() => {});
+    authorizationResponse.catch(() => {});
 
     let expectedHost: string | undefined;
     const server: Server = createServer((request, response) => {
@@ -431,23 +422,16 @@ function startCallbackListener(input: {
         return;
       }
       const error = url.searchParams.get('error');
-      if (error) {
-        // Fixed local copy only: `error_description` is the authorization
-        // server's arbitrary prose, and rendering it on a page the user
-        // reads as Maka's is a phishing surface even HTML-escaped. The
-        // sanitized code is the one server-controlled token shown.
-        respond(response, 200, input.copy.failureTitle, sanitizeOAuthErrorCode(error));
-        failCode(new Error(`Authorization failed: ${sanitizeOAuthErrorCode(error)}`));
-        return;
-      }
       const code = url.searchParams.get('code');
-      if (!code) {
+      if ((!code && !error) || (code && error)) {
         respond(response, 400, input.copy.failureTitle, 'Invalid callback.');
         return;
       }
       respond(response, 200, input.copy.successTitle, input.copy.successBody);
       const iss = url.searchParams.get('iss');
-      settleCode({ code, ...(iss !== null ? { iss } : {}) });
+      // The manager validates the issuer before accepting either result.
+      // Never display remote error text on this unauthenticated callback page.
+      settleCode({ ...(error ? { error } : { code: code! }), ...(iss !== null ? { iss } : {}) });
     });
     server.on('error', (error) => {
       rejectListener(error);
@@ -461,7 +445,7 @@ function startCallbackListener(input: {
       expectedHost = `127.0.0.1:${address.port}`;
       resolveListener({
         redirectUrl: `http://127.0.0.1:${address.port}${CALLBACK_PATH}`,
-        authorizationCode,
+        authorizationResponse,
         close: () => {
           failCode(new Error('Login cancelled'));
           server.close();
@@ -472,30 +456,6 @@ function startCallbackListener(input: {
       });
     });
   });
-}
-
-/** The registered OAuth error codes this flow can encounter (RFC 6749 §4.1.2.1
- * and §5.2, plus the OIDC interaction codes). A strict allowlist, not a shape
- * check: the parameter is attacker-writable, and anything that merely LOOKS
- * like a code (`opaqueSecret123`) must not tunnel through to the renderer. */
-const OAUTH_ERROR_CODES = new Set([
-  'invalid_request',
-  'unauthorized_client',
-  'access_denied',
-  'unsupported_response_type',
-  'invalid_scope',
-  'server_error',
-  'temporarily_unavailable',
-  'invalid_client',
-  'invalid_grant',
-  'unsupported_grant_type',
-  'interaction_required',
-  'login_required',
-  'consent_required',
-]);
-
-function sanitizeOAuthErrorCode(value: string): string {
-  return OAUTH_ERROR_CODES.has(value) ? value : 'unknown_error';
 }
 
 function requireStatus(manager: McpOAuthLoginManager, serverId: string): McpServerStatus {

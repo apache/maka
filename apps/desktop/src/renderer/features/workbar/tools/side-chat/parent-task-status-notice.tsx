@@ -57,6 +57,8 @@ export function ParentTaskStatusNotice(props: {
       data-status={props.status}
     >
       <Banner
+        role="status"
+        aria-live="polite"
         status={BANNER_STATUS[props.status]}
         container="section"
         title={title}
@@ -71,14 +73,6 @@ export function ParentTaskStatusNotice(props: {
           ) : undefined
         }
       />
-      {/* One polite region per notice. Two notices can be mounted at once (two
-          Side Conversation placements, or two Sessions), and each one announces
-          its own status, so the same text is announced twice when both are
-          visible. The region stays one per notice rather than one per app: the
-          status is local to the conversation the user is reading. */}
-      <span className="maka-visually-hidden" role="status" aria-live="polite">
-        {title}
-      </span>
     </div>
   );
 }

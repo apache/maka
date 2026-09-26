@@ -30,6 +30,8 @@ export function deriveDesktopExecutionBoundarySurface(
   activeSessionId: string | undefined,
   boundary: ExecutionBoundaryReadModel | undefined,
   fallbackMode: PermissionMode,
+  /** A mode change for this session that is still being written. */
+  pendingMode?: PermissionMode,
 ): DesktopExecutionBoundarySurface {
   if (!activeSessionId) {
     return {
@@ -41,9 +43,10 @@ export function deriveDesktopExecutionBoundarySurface(
   // `executionBoundaryDisplayMode` is the single place that maps it to a mode
   // the user sees — shared with the TUI so the two surfaces cannot drift.
   // Until it resolves (and permanently, for an externally isolated session)
-  // this surface fails closed: no mode, no local controls.
+  // this surface fails closed: no mode, no local controls — and a pending
+  // change shows only once the boundary it would change is known.
   const permissionMode = boundary ? executionBoundaryDisplayMode(boundary) : undefined;
   return permissionMode
-    ? { permissionMode, localInteractionAvailable: true }
+    ? { permissionMode: pendingMode ?? permissionMode, localInteractionAvailable: true }
     : { permissionMode: undefined, localInteractionAvailable: false };
 }

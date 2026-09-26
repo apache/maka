@@ -84,6 +84,7 @@ export function maskAppSettings(
 ): AppSettings {
   return {
     ...settings,
+    jev: { ...settings.jev, apiKey: maskSensitive(settings.jev.apiKey) ?? "" },
     botChat: {
       ...settings.botChat,
       channels: Object.fromEntries(
@@ -135,6 +136,8 @@ export function maskAppSettings(
 export function stripSettingsSecretsForExport(
   settings: AppSettings,
 ): Record<string, unknown> {
+  const jev = { ...settings.jev } as Record<string, unknown>;
+  delete jev.apiKey;
   const proxy = { ...settings.network.proxy } as Record<string, unknown>;
   delete proxy.password;
   delete proxy.passwordConfigured;
@@ -155,6 +158,7 @@ export function stripSettingsSecretsForExport(
 
   return {
     ...settings,
+    jev,
     network: { ...settings.network, proxy },
     botChat: { ...settings.botChat, channels },
     webSearch: {

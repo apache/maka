@@ -21,6 +21,11 @@ import { useId, type ReactNode } from 'react';
 import { parseContextWindowInput } from './context-window-input.js';
 import { DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout } from '@astryxdesign/core';
 import {
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
+  type ModelApiProtocol,
+} from '@maka/core/llm-connections';
+import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
   modelApplyPatchEnabled,
@@ -34,7 +39,8 @@ export function CapabilityEditor(props: {
   children?: ReactNode;
   copy: ReturnType<typeof getProviderSettingsCopy>['detail'];
   modelId: string;
-  isRelay: boolean;
+  /** Set only on a custom connection, which alone takes wire and thinking declarations. */
+  customDefaultApiProtocol?: ModelApiProtocol;
   declared: ModelOverride | undefined;
   contextWindowInput: string;
   contextWindowInputInvalid: boolean;
@@ -71,7 +77,8 @@ export function CapabilityEditor(props: {
       (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level) ||
       draftLevels.includes(level),
   );
-  const defaultThinkingLevels = props.isRelay && declared?.thinkingLevels !== undefined
+  const isCustom = props.customDefaultApiProtocol !== undefined;
+  const defaultThinkingLevels = isCustom && declared?.thinkingLevels !== undefined
     ? declared.thinkingLevels
     : props.thinkingLevels;
   const defaultThinkingLevel = declared?.defaultThinkingLevel !== undefined &&
@@ -81,6 +88,31 @@ export function CapabilityEditor(props: {
   return (
     <FormLayout direction="vertical" defaultOptionality="optional">
       {props.children}
+      {props.customDefaultApiProtocol !== undefined && (
+        <Selector
+          label={copy.apiProtocol}
+          labelTooltip={copy.apiProtocolHelp}
+          size="sm"
+          width="100%"
+          options={[
+            {
+              value: '',
+              label: copy.apiProtocolDefaultOption(
+                MODEL_API_PROTOCOL_LABELS[props.customDefaultApiProtocol],
+              ),
+            },
+            ...MODEL_API_PROTOCOLS.map((protocol) => ({
+              value: protocol,
+              label: MODEL_API_PROTOCOL_LABELS[protocol],
+            })),
+          ]}
+          value={declared?.apiProtocol ?? ''}
+          onChange={(value) =>
+            props.onChange({ apiProtocol: value === '' ? undefined : (value as ModelApiProtocol) })
+          }
+          isDisabled={props.disabled}
+        />
+      )}
       <TextInput
         size="sm"
         width="100%"
@@ -168,8 +200,7 @@ export function CapabilityEditor(props: {
           />
         );
       })}
-      {/* Only relays accept a reasoning_effort declaration. */}
-      {props.isRelay && (
+      {isCustom && (
         <Field
           label={copy.thinkingEffort}
           inputID={thinkingId}

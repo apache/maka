@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
@@ -24,7 +25,9 @@ import {
   PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
+import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
+import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
@@ -223,7 +226,7 @@ export interface HostWorkHubRoutingModel {
       }[];
     }>;
     readonly abortSignal: AbortSignal;
-  }): Promise<WorkHubRoutingDecision>;
+  }): Promise<WorkHubRoutingDecision | undefined>;
 }
 
 /** Uses the Coordination Session's exact saved model target for split Intent and Recall. */
@@ -387,6 +390,40 @@ export function createHostDailyReviewModel(
       }
     },
   });
+}
+
+export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (
+    source: import('./prompt-suggestion.js').PromptSuggestionSource,
+    abortSignal: AbortSignal,
+  ): Promise<string | undefined> => {
+    const result = await runHostAuxiliaryModelCall(authority, {
+      transportContextId: source.sessionId,
+      telemetrySessionId: source.sessionId,
+      header: { ...source.header, thinkingLevel: 'off' },
+      callKind: 'prompt_suggestion',
+      callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
+      abortSignal,
+      buildRequest: (target) => {
+        const variants = thinkingVariantsForConnection(target.connection, target.model);
+        if (variants.length && !variants.includes('off')) {
+          throw new AuxiliaryModelCallConfigurationError(
+            'Prompt suggestions require a model that can disable reasoning',
+          );
+        }
+        return {
+          prompt: buildPromptSuggestionPrompt(
+            source.messages,
+            source.header.role === 'workhub_coordination',
+          ),
+          maxOutputTokens: 128,
+          maxRetries: 0,
+        };
+      },
+    });
+    return result.finishReason === 'length' ? undefined : result.text;
+  };
 }
 
 /** Creates tool-free Session title and recap calls on canonical Host model authority. */
@@ -591,6 +628,11 @@ async function runHostAuxiliaryModelCall(
   readonly finishReason?: string;
   readonly modelId: string;
 }> {
+  if (input.header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin executor Sessions do not provide a native auxiliary model',
+    );
+  }
   const target = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(
       () =>
@@ -904,9 +946,14 @@ function providerStateIdentityForResolvedExecution(
     Awaited<ReturnType<RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']>>,
     { kind: 'ready' }
   >,
+  model: string,
 ): `sha256:${string}` {
   const credentialBasis = (material: typeof resolved.secretMaterial.connection) =>
     material ? { credentialId: material.credentialId, revision: material.revision } : null;
+  // Provider state from one wire cannot replay on another, so a model whose
+  // declared wire changes starts a new identity. Undeclared stays absent to
+  // keep every other identity unchanged.
+  const apiProtocol = declaredModelApiProtocol(resolved.connection, model);
   return stableHash({
     protocol: 'provider_state_identity_v1',
     connectionId: resolved.connection.connectionId,
@@ -914,6 +961,7 @@ function providerStateIdentityForResolvedExecution(
     endpoint: new URL(effectiveBaseUrl(resolved.connection)).toString(),
     credential: credentialBasis(resolved.secretMaterial.connection),
     requestHeaders: credentialBasis(resolved.secretMaterial.requestHeaders),
+    ...(apiProtocol === undefined ? {} : { apiProtocol }),
   });
 }
 
@@ -1016,6 +1064,9 @@ export async function resolveExecutionTarget(
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
+    ...(resolved.connection.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: resolved.connection.defaultApiProtocol }),
     defaultModel: model,
     models: discovered
       ? [...resolved.connection.models]
@@ -1030,7 +1081,7 @@ export async function resolveExecutionTarget(
   const requestHeaders = resolved.secretMaterial.requestHeaders
     ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
     : {};
-  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved);
+  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved, model);
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {

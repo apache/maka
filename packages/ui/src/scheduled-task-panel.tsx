@@ -40,7 +40,7 @@ import {
 } from './scheduled-task-helpers.js';
 import { scheduledTaskStatusDotVariant, scheduledTaskRunStatusDotVariant } from './scheduled-task-status.js';
 import { ScheduledTaskFormDialog } from './scheduled-task-form-dialog.js';
-import { ScheduledTaskInspector } from './scheduled-task-inspector.js';
+import { scheduledTaskDetail } from './scheduled-task-detail.js';
 import { useRovingRowFocus } from './use-roving-row-focus.js';
 import {
   Button as UiButton,
@@ -117,9 +117,7 @@ export function ScheduledTaskPanel(props: {
   // — which only happens when the main process pushes the new set back.
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
   const focusRowAfterRemovalRef = useRef<number | null>(null);
-  // One tab stop for the whole task list: without it, reaching the inspector
-  // from row k of N costs N−k presses, because the inspector renders after the
-  // list and every row is its own stop.
+  // One tab stop for the whole task list, so tabbing past it costs one press.
   const rovingRows = useRovingRowFocus(rowsContainerRef);
   const [taskView, setTaskView] = useState<ScheduledTaskView>('tasks');
   const [runRange, setRunRange] = useState<ScheduledTaskRunRange>('week');
@@ -161,7 +159,7 @@ export function ScheduledTaskPanel(props: {
     .sort((a, b) => b.run.at - a.run.at);
   const activeCount = props.tasks.filter((task) => task.status === 'active').length;
   // Derived, not stored: whatever hides the row — deletion, a filter, the
-  // 执行记录 view — closes the inspector without a reconciliation step, and the
+  // 执行记录 view — closes the detail without a reconciliation step, and the
   // panel always reads the freshest copy of the task. Note the id itself
   // survives, so clearing a filter re-opens the same selection; a deleted id
   // can never re-match, so only the reversible cases come back.
@@ -204,10 +202,10 @@ export function ScheduledTaskPanel(props: {
 
   // Astryx's Dialog does restore focus on close, but it captures the opener in
   // an Effect — after the commit that opened the dialog — and by then the
-  // inspector button that was clicked has been re-rendered, so what it captures
-  // is `body`. Capturing at click time instead is what actually gets focus back
-  // to 编辑. Deleting this effect fails the e2e Escape-restore assertion, which
-  // is the check that keeps the duplication honest.
+  // button that was clicked has been re-rendered, so what it captures is
+  // `body`. Capturing at click time instead is what actually gets focus back
+  // to 新建定时任务. Deleting this effect fails the e2e Escape-restore
+  // assertion, which is the check that keeps the duplication honest.
   useEffect(() => {
     if (formDialogOpen) return;
     const opener = formDialogOpenerRef.current;
@@ -252,10 +250,11 @@ export function ScheduledTaskPanel(props: {
     }
   }
 
-  function openTaskDialog(seed: ScheduledTaskFormSeed) {
-    formDialogOpenerRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+  function openTaskDialog(
+    seed: ScheduledTaskFormSeed,
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  ) {
+    formDialogOpenerRef.current = opener;
     setFormSeed(seed);
     setFormNonce((nonce) => nonce + 1);
     setFormDialogOpen(true);
@@ -333,46 +332,41 @@ export function ScheduledTaskPanel(props: {
       <ModulePage
         title={props.hubHeader?.title ?? copy.page.title}
         meta={copy.page.activeCount(activeCount)}
-        inspectorLabel={copy.detail.label}
-        inspectorAutoSaveId="maka-scheduled-task-inspector"
-        onInspectorDismiss={() => setSelectedTaskId(null)}
-        inspector={selectedTask ? (
-          <ScheduledTaskInspector
-            task={selectedTask}
-            pendingActionKeys={pendingActionKeys}
-            onToggle={(enabled) => void runScheduledTaskAction(
-              `${selectedTask.id}:toggle`,
-              () => props.onToggle?.(selectedTask.id, enabled),
-            )}
-            onEdit={() => openTaskDialog(scheduledTaskEditSeed(selectedTask))}
-            onDuplicate={() => openTaskDialog(scheduledTaskDuplicateSeed(selectedTask, locale))}
-            onTriggerNow={() => void runScheduledTaskAction(
-              `${selectedTask.id}:trigger`,
-              () => props.onTriggerNow?.(selectedTask.id),
-            )}
-            onSnooze={() => void runScheduledTaskAction(
-              `${selectedTask.id}:snooze`,
-              () => props.onSnooze?.(selectedTask.id),
-            )}
-            onClearRunHistory={() => void runScheduledTaskAction(
-              `${selectedTask.id}:clear-runs`,
-              () => props.onClearRunHistory?.(selectedTask.id),
-            )}
-            onDelete={() => {
-              // The 删除 button is about to unmount with the whole inspector,
-              // and nothing else would claim focus — it would fall to `body`,
-              // dropping a keyboard user at the top of the document. Hand it
-              // to the row that takes the deleted one's place.
-              focusRowAfterRemovalRef.current = sortedTasks.findIndex(
-                (task) => task.id === selectedTask.id,
-              );
-              void runScheduledTaskAction(
-                `${selectedTask.id}:delete`,
-                () => props.onDelete?.(selectedTask.id),
-              );
-            }}
-          />
-        ) : undefined}
+        onDetailDismiss={() => setSelectedTaskId(null)}
+        // The form dialog takes the detail's place instead of stacking on it;
+        // closing the form brings the detail back.
+        detail={selectedTask && !formDialogOpen ? scheduledTaskDetail(selectedTask, locale, {
+          pendingActionKeys,
+          onToggle: (enabled) => void runScheduledTaskAction(
+            `${selectedTask.id}:toggle`,
+            () => props.onToggle?.(selectedTask.id, enabled),
+          ),
+          onEdit: () => openTaskDialog(scheduledTaskEditSeed(selectedTask), null),
+          onDuplicate: () => openTaskDialog(scheduledTaskDuplicateSeed(selectedTask, locale), null),
+          onTriggerNow: () => void runScheduledTaskAction(
+            `${selectedTask.id}:trigger`,
+            () => props.onTriggerNow?.(selectedTask.id),
+          ),
+          onSnooze: () => void runScheduledTaskAction(
+            `${selectedTask.id}:snooze`,
+            () => props.onSnooze?.(selectedTask.id),
+          ),
+          onClearRunHistory: () => void runScheduledTaskAction(
+            `${selectedTask.id}:clear-runs`,
+            () => props.onClearRunHistory?.(selectedTask.id),
+          ),
+          onDelete: () => {
+            // The deleted row cannot take focus back from the closing dialog;
+            // the row that takes its place does.
+            focusRowAfterRemovalRef.current = sortedTasks.findIndex(
+              (task) => task.id === selectedTask.id,
+            );
+            void runScheduledTaskAction(
+              `${selectedTask.id}:delete`,
+              () => props.onDelete?.(selectedTask.id),
+            );
+          },
+        }) : undefined}
         actions={
           <>
             <UiButton
@@ -446,15 +440,6 @@ export function ScheduledTaskPanel(props: {
       >
         {taskView === 'tasks' ? (
           <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
-            {/* Selecting a row moves no focus — a mouse user did not ask to
-                leave the list — so nothing else would tell a screen reader
-                that the details opened. This says so, politely, after
-                whatever the activation itself announced. Placement is left
-                unnamed: below the breakpoint the same content is a sheet
-                that announces itself, and this must not contradict it. */}
-            <p className="maka-visually-hidden" role="status" aria-live="polite">
-              {selectedTask ? copy.page.inspectorOpened(selectedTask.title) : ''}
-            </p>
             {normalizedListQuery && (
               <div className="maka-scheduled-task-search-summary" role="status" aria-live="polite">
                 <span>{copy.page.searchMatches(searchMatchedTasks.length)}</span>
@@ -485,7 +470,7 @@ export function ScheduledTaskPanel(props: {
               />)
             ) : (
               /* Selectable, otherwise inert rows: every control that used to
-                 ride the row now lives in the inspector, which is what Astryx
+                 ride the row now lives in the detail dialog, which is what Astryx
                  asks for — no interactive elements inside an interactive
                  list item. The leading StatusDot also fixes the alignment the
                  old hand-held 40px switch placeholder kept getting wrong. */
@@ -547,9 +532,7 @@ export function ScheduledTaskPanel(props: {
                       </Text>
                     ) : undefined}
                     isSelected={selectedTaskId === task.id}
-                    onClick={() => setSelectedTaskId(
-                      selectedTaskId === task.id ? null : task.id,
-                    )}
+                    onClick={() => setSelectedTaskId(task.id)}
                   />
                   );
                 })}
