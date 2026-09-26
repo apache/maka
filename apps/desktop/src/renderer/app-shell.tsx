@@ -1434,6 +1434,14 @@ function AppShellContent({
       if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
       return queued;
     }
+    // The revision lifecycle re-keys the restored quotes onto the branch child
+    // while this send awaits `prepareRevisionSend`, and the re-key empties the
+    // source session's bucket — the same array this render closure holds as
+    // `pendingQuotes`. Snapshot the payload before the gate so the send
+    // carries the quotes the user staged, not what the re-key left behind
+    // (#5109 review, second round).
+    const revisionQuotes =
+      revisionSend && revision && pendingQuotes.length ? [...pendingQuotes] : undefined;
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
       if (slashCommand) {
@@ -1593,7 +1601,7 @@ function AppShellContent({
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+    const quotes = revisionQuotes ?? (pendingQuotes.length ? pendingQuotes : undefined);
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
       targetSessionId: expectedRevisionDraft?.draftSessionId,
@@ -1606,7 +1614,9 @@ function AppShellContent({
     });
     if (ok !== false) {
       clearSubmittedContext(pending);
-      if (quotes) clearQuotes();
+      // A revision's quotes now live under the branch child's bucket; clear
+      // that owner explicitly rather than the stale closure's default key.
+      if (quotes) clearQuotes(expectedRevisionDraft?.draftSessionId);
       settleNewTaskImageNoticeOwner(sessionId);
       if (sessionId) delete retractedWorkspaceReferencesRef.current[sessionId];
     }

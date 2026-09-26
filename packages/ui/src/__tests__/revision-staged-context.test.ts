@@ -163,6 +163,32 @@ describe('revision lifecycle (#5109)', () => {
     assert.ok(staged.cleared.includes('session-1'), 'the source-key plate empties');
   });
 
+  it('keeps the pre-gate quote snapshot equal to the child bucket the send reads', async () => {
+    // The Desktop send captures the staged payload BEFORE awaiting the
+    // revision lifecycle, because the re-key empties the source bucket the
+    // closure's array points at; the replacement send then delivers that
+    // snapshot. Whatever the gate does in between, the snapshot and the child
+    // bucket must agree — or the first replacement silently drops its quote
+    // (#5109 review, second round).
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    const preGateSnapshot = [...(staged.restored.at(-1)?.quotes ?? [])];
+
+    assert.equal(await actions.prepareRevisionSend('edited text'), true);
+
+    assert.deepEqual(
+      staged.restored.at(-1)?.quotes,
+      preGateSnapshot,
+      'the child bucket equals the snapshot',
+    );
+  });
+
   it('refuses to edit a message that carries attachments', () => {
     const h = createEnv({
       messages: [
