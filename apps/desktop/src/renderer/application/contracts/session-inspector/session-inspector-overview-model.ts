@@ -28,6 +28,8 @@ type SessionUsageSummary = UsageSummaryV2 & {
   readonly provenance?: UsageProvenance;
   /** The agent loop's own calls, when the narrower read succeeded (#5691). */
   readonly mainSummary?: SessionUsageSummary;
+  /** The narrower read failed; the blended rate must not stand in for it. */
+  readonly mainSummaryUnavailable?: boolean;
 };
 
 /**
@@ -249,8 +251,12 @@ export function deriveInspectorOverviewModel(
 function usageCacheHitRate(usage: SessionUsageSummary | undefined): number | undefined {
   // Auxiliary calls keep their own prompt prefix, so blending them into the
   // rate reports the main loop's caching as worse than it is (#5691). The
-  // main-only summary is the rate's input; the blended summary is only the
-  // fallback when the narrower read is unavailable.
+  // main-only summary is the rate's input. When that narrower read failed,
+  // show no rate at all: the blended number is about a different set of calls
+  // and presenting it as the main loop's is the same lie in weaker type. The
+  // fallback to the blended summary only serves summaries that never asked
+  // the narrower question.
+  if (usage?.mainSummaryUnavailable && !usage.mainSummary) return undefined;
   const main = usage?.mainSummary ?? usage;
   if (!main || main.totalTokens.input === 0) return undefined;
   if (

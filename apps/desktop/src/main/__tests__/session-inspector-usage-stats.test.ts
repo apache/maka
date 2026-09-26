@@ -383,3 +383,25 @@ test('reads the cache rate from the main loop alone when the main summary is ava
   assert.ok(refined);
   assert.equal(Math.round(refined * 100), 95);
 });
+
+test('shows no cache rate when the main-only read failed rather than blending', () => {
+  // A failed narrow query leaves the blended totals in place. Reporting the
+  // blended 86% as the main loop's rate is the same misreading the main
+  // summary exists to prevent (#5691 review): hide the rate instead.
+  const { cacheHitRate } = deriveInspectorOverviewModel(undefined, {
+    ...usageSummary({
+      totalTokens: {
+        input: 1_100_000,
+        output: 60_300,
+        cacheMiss: 150_000,
+        cacheRead: 950_000,
+        cacheWrite: 0,
+        reasoning: 0,
+        total: 1_160_300,
+      },
+    }),
+    mainSummaryUnavailable: true,
+  });
+
+  assert.equal(cacheHitRate, undefined);
+});

@@ -1329,10 +1329,11 @@ async function loadSessionUsageSummary(
   ])) as [Result<DesktopSessionUsageSummary>, Result<DesktopSessionUsageSummary>];
   if (!summary.ok) return summary;
   // The main-only read refines the cache rate; losing it must not lose the
-  // overview, so a failed auxiliary query just leaves the blended rate.
+  // overview — but it must also not pass the blended rate off as the main
+  // loop's, so the failure is marked and the rate hides itself (#5691).
   return main.ok
     ? { ...summary, data: { ...summary.data, mainSummary: main.data } }
-    : summary;
+    : { ...summary, data: { ...summary.data, mainSummaryUnavailable: true } };
 }
 
 async function updateDailyReviewConfig(
