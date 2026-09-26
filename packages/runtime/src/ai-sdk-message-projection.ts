@@ -55,6 +55,10 @@ import type {
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
+import {
+  openResponsesExtensionReplayCarrierPart,
+  openResponsesExtensionReplayReferenceOptions,
+} from './deepseek-open-responses-extensions.js';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import {
   decodePlaintextResponsesReasoningState,
@@ -174,6 +178,26 @@ function durableApplyPatchReplayFactText(
 }
 
 /**
+ * Pair each replay item with the exchange `buildRuntimeEventReplayTimeline`
+ * already formed. That chronology keys a tool exchange by invocation plus
+ * provider-local id, so a later invocation can reuse a tool call id without
+ * borrowing the earlier call or result.
+ */
+function replayToolExchangesByItem(
+  items: readonly RuntimeEventModelReplayItem[],
+): ReadonlyMap<RuntimeEventModelReplayItem, RuntimeEventReplayToolExchange> {
+  const exchanges = new Map<RuntimeEventModelReplayItem, RuntimeEventReplayToolExchange>();
+  for (const entry of buildRuntimeEventReplayTimeline(items)) {
+    if (entry.kind !== 'assistant_step') continue;
+    for (const exchange of entry.calls) {
+      exchanges.set(exchange.call, exchange);
+      if (exchange.result) exchanges.set(exchange.result, exchange);
+    }
+  }
+  return exchanges;
+}
+
+/**
  * Projects canonical Runtime history and current user input into provider
  * messages. It owns no execution state; its only mutable data is the weak
  * event index attached to the messages it creates.
@@ -185,13 +209,13 @@ export class AiSdkMessageProjection {
 
   canReplayProviderNative(plan: RuntimeEventModelReplayPlan): boolean {
     const support = this.input.modelAdapter.runtimeEventReplaySupport();
+    const exchanges = replayToolExchangesByItem(plan.items);
     for (const item of plan.items) {
       if (item.kind === 'tool_call' && !support.toolCalls) return false;
       if (item.kind === 'tool_result' && !support.toolResults) return false;
       if (
         (item.kind === 'tool_call' || item.kind === 'tool_result') &&
-        item.providerExecuted === true &&
-        !support.providerExecutedTools
+        !this.canReplayProviderExecutedItem(item, exchanges)
       ) {
         return false;
       }
@@ -209,16 +233,34 @@ export class AiSdkMessageProjection {
    */
   dropUnsupportedReplayItems(plan: RuntimeEventModelReplayPlan): RuntimeEventModelReplayPlan {
     const support = this.input.modelAdapter.runtimeEventReplaySupport();
+    const exchanges = replayToolExchangesByItem(plan.items);
     return {
       ...plan,
       items: plan.items.filter((item) => {
         if (item.kind === 'tool_call' || item.kind === 'tool_result') {
           if (!support.toolCalls || !support.toolResults) return false;
-          if (item.providerExecuted === true && !support.providerExecutedTools) return false;
+          if (!this.canReplayProviderExecutedItem(item, exchanges)) return false;
         }
         return true;
       }),
     };
+  }
+
+  private canReplayProviderExecutedItem(
+    item: RuntimeEventModelReplayItem,
+    exchanges: ReadonlyMap<RuntimeEventModelReplayItem, RuntimeEventReplayToolExchange>,
+  ): boolean {
+    if (item.kind !== 'tool_call' && item.kind !== 'tool_result') return true;
+    if (item.providerExecuted !== true) return true;
+    const exchange = exchanges.get(item);
+    const call = exchange?.call ?? (item.kind === 'tool_call' ? item : undefined);
+    const result = exchange?.result ?? (item.kind === 'tool_result' ? item : undefined);
+    return this.input.modelAdapter.canReplayProviderExecutedExchange({
+      providerExecuted: true,
+      providerOptions: call?.providerOptions,
+      toolName: item.toolName,
+      output: result?.output,
+    });
   }
 
   /**
@@ -403,12 +445,29 @@ export class AiSdkMessageProjection {
       // stay after text because their execution begins only after this step.
       for (const { call, result } of exchanges) {
         if (call.providerExecuted !== true) continue;
+        if (
+          !this.input.modelAdapter.canReplayProviderExecutedExchange({
+            providerExecuted: true,
+            providerOptions: call.providerOptions,
+            toolName: call.toolName,
+            output: result?.output,
+          })
+        ) {
+          continue;
+        }
+        const replayCarrier = openResponsesExtensionReplayCarrierPart(call.providerOptions);
+        if (replayCarrier) content.push(replayCarrier);
+        const replayReference = openResponsesExtensionReplayReferenceOptions(call.providerOptions);
         content.push({
           type: 'tool-call',
           toolCallId: call.toolCallId,
           toolName: call.toolName,
           input: call.input,
-          ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+          ...(replayReference !== undefined
+            ? { providerOptions: replayReference }
+            : call.providerOptions !== undefined
+              ? { providerOptions: call.providerOptions }
+              : {}),
           providerExecuted: true,
         });
         if (!result || result.providerExecuted !== true) continue;
@@ -418,6 +477,7 @@ export class AiSdkMessageProjection {
           toolCallId: result.toolCallId,
           toolName: result.toolName,
           output: await materializeReplayToolResult(result, call.toolName),
+          ...(replayReference !== undefined ? { providerOptions: replayReference } : {}),
         });
       }
       if (text && text.content.length > 0) {

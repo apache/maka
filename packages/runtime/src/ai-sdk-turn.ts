@@ -2398,9 +2398,14 @@ export class AiSdkTurn {
         // Usage above still belongs to this physical attempt. Its Runtime owner
         // seals the drained stream; no complete/abort event ends the logical Turn.
         if (this.handoffPaused) return;
+        // `step_limit` means the client tool budget was spent while Maka still
+        // had calls to continue. Open Responses counts a provider-executed
+        // hosted search in `finishReason: tool-calls` even when that step
+        // already contains the final answer (#4107). Those turns settle with
+        // no client call, so they complete as `end_turn`.
         const stopReason =
           this.loopStopReason ??
-          (maxSteps !== undefined && finishReason === 'tool-calls'
+          (maxSteps !== undefined && finishReason === 'tool-calls' && lastCompletedStepHadToolResult
             ? 'step_limit'
             : this.mapFinishReason(finishReason));
         trace.modelStreamCompleted(stopReason);

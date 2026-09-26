@@ -3000,8 +3000,15 @@ describe('AiSdkBackend model history', () => {
               kind: 'function_response',
               id: 'search-1',
               name: 'WebSearch',
-              result: { type: 'web_search_result', query: 'latest Maka' },
-              providerOutput: { type: 'web_search_result', id: 'ws_123' },
+              result: [
+                {
+                  type: 'web_search_result',
+                  url: 'https://maka.example/',
+                  title: 'Maka',
+                  pageAge: '2026-08-04',
+                  encryptedContent: 'encrypted-result-ws_123',
+                },
+              ],
               providerExecuted: true,
               isError: false,
             },
@@ -3158,18 +3165,42 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('falls back to grounded text when Open Responses cannot replay a hosted tool pair', async () => {
-    const model = completionModel();
+  test('synthesizes a DeepSeek hosted tool call when replay metadata is missing', async () => {
+    // History without carrier `providerOptions` takes encodeInputItem's
+    // synthesis path: emit `web_search_call`, drop the tool-result, keep text.
+    let requestBody: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const events = [
+        { type: 'response.created', response: { id: 'response-current' } },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'response-current',
+            object: 'response',
+            created_at: 8,
+            model: 'deepseek-v4-flash',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+      ];
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
     const backend = createBackend({
       connection: {
         slug: 'deepseek',
         providerType: 'deepseek',
         defaultModel: 'deepseek-v4-flash',
       },
-      apiKey: 'deepseek-token',
+      apiKey: 'deepseek-test-token',
       modelId: 'deepseek-v4-flash',
-      modelFactory: () => model,
-      tools: [],
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [buildNativeWebSearchTool({ adapter: 'openai-responses' })],
     });
 
     await drain(
@@ -3231,22 +3262,182 @@ describe('AiSdkBackend model history', () => {
       }),
     );
 
-    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
-    assert.match(JSON.stringify(prompt), /Maka shipped the feature/);
-    assert.equal(JSON.stringify(prompt).includes('tool-call'), false);
-    assert.equal(JSON.stringify(prompt).includes('tool-result'), false);
+    const input = requestBody?.input as Array<Record<string, unknown>> | undefined;
+    const searchCalls = input?.filter((item) => item.type === 'web_search_call');
+    assert.equal(searchCalls?.length, 1, JSON.stringify(input));
+    assert.deepEqual(searchCalls?.[0], {
+      id: 'search-1',
+      type: 'web_search_call',
+      status: 'completed',
+      action: { query: 'latest Maka' },
+    });
+    assert.match(JSON.stringify(input), /Maka shipped the feature/);
+    assert.equal(
+      input?.some(
+        (item) =>
+          item.type === 'function_call_output' ||
+          item.type === 'web_search_result' ||
+          item.type === 'tool-result',
+      ),
+      false,
+      JSON.stringify(input),
+    );
+    assert.equal(JSON.stringify(input).includes('web_search_result'), false);
+  });
+
+  test('drops DeepSeek hosted search when replaying onto deepseek-chat', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const chunk = (delta: unknown, finish_reason: string | null = null) => ({
+        id: 'chat-switch',
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: 'deepseek-chat',
+        choices: [{ index: 0, delta, finish_reason }],
+      });
+      const events = [
+        chunk({ role: 'assistant', content: '' }),
+        chunk({ content: 'ok' }),
+        chunk({}, 'stop'),
+      ];
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-chat',
+      },
+      apiKey: 'deepseek-test-token',
+      modelId: 'deepseek-chat',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+    });
+
+    const events: SessionEvent[] = [];
+    await collectEvents(
+      backend.send({
+        turnId: 'turn-current',
+        text: '',
+        context: [],
+        runtimeContext: deepSeekHostedSearchHistory(),
+        continuation: {
+          sourceInvocationId: 'invocation-source',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-prev',
+          sourceRuntimeEventHighWater: 4,
+        },
+      }),
+      events,
+    );
+
+    assert.equal(
+      events.find((event) => event.type === 'error'),
+      undefined,
+      JSON.stringify(events.find((event) => event.type === 'error')),
+    );
+    const messages = requestBody?.messages as Array<Record<string, unknown>> | undefined;
+    assert.match(JSON.stringify(messages), /Maka shipped the feature/);
+    assert.equal(
+      messages?.some((message) => {
+        const toolCalls = message.tool_calls;
+        return (
+          Array.isArray(toolCalls) &&
+          toolCalls.some((call) => {
+            if (!call || typeof call !== 'object') return false;
+            const fn = (call as { function?: { name?: string } }).function;
+            return fn?.name === 'WebSearch';
+          })
+        );
+      }),
+      false,
+      JSON.stringify(messages),
+    );
+    assert.equal(
+      messages?.some((message) => message.role === 'tool'),
+      false,
+      JSON.stringify(messages),
+    );
+  });
+
+  test('drops DeepSeek hosted search when replaying onto Anthropic web_search', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(anthropicCompletedSse('ok'), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: connection(),
+      apiKey: 'anthropic-test-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [buildNativeWebSearchTool({ adapter: 'anthropic-messages' })],
+    });
+
+    const events: SessionEvent[] = [];
+    await collectEvents(
+      backend.send({
+        turnId: 'turn-current',
+        text: '',
+        context: [],
+        runtimeContext: deepSeekHostedSearchHistory({
+          providerOptions: {
+            deepseek: {
+              openResponsesExtension: {
+                id: 'openai.web_search',
+                item: {
+                  id: 'search-1',
+                  type: 'web_search_call',
+                  status: 'completed',
+                  action: { type: 'search', query: 'latest Maka' },
+                },
+              },
+            },
+          },
+          result: {
+            type: 'web_search_call',
+            status: 'completed',
+            action: { query: 'latest Maka' },
+          },
+        }),
+        continuation: {
+          sourceInvocationId: 'invocation-source',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-prev',
+          sourceRuntimeEventHighWater: 4,
+        },
+      }),
+      events,
+    );
+
+    assert.equal(
+      events.find((event) => event.type === 'error'),
+      undefined,
+      JSON.stringify(events.find((event) => event.type === 'error')),
+    );
+    const wire = JSON.stringify(requestBody);
+    assert.match(wire, /Maka shipped the feature/);
+    assert.equal(wire.includes('server_tool_use'), false, wire);
+    assert.equal(wire.includes('web_search_tool_result'), false, wire);
   });
 
   test('keeps unrelated client tool history when degrading a hosted tool pair', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
-        slug: 'deepseek',
-        providerType: 'deepseek',
-        defaultModel: 'deepseek-v4-flash',
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
       },
       apiKey: '[redacted]',
-      modelId: 'deepseek-v4-flash',
+      modelId: 'qwen3.8-max',
       modelFactory: () => model,
       tools: [],
     });
@@ -8713,6 +8904,113 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(
       (events.at(-1) as Extract<SessionEvent, { type: 'complete' }>).stopReason as string,
       'step_limit',
+    );
+  });
+
+  test('records a hosted-search answer as end_turn when the provider finish reason is tool-calls', async () => {
+    // Open Responses reports `tool-calls` for a provider-executed search that
+    // already includes the final answer. With maxSteps set, that must stay a
+    // successful end_turn rather than step_limit / failed.
+    const appended: StoredMessage[] = [];
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks = (
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search-1',
+                  toolName: 'WebSearch',
+                  input: '{}',
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search-1',
+                  toolName: 'WebSearch',
+                  result: {
+                    action: { type: 'search', queries: ['latest Maka'] },
+                    sources: [{ type: 'url', url: 'https://maka.example/' }],
+                  },
+                  providerExecuted: true,
+                },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Maka shipped the feature.' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-extra' },
+                { type: 'text-delta', id: 'text-extra', delta: 'unexpected continuation' },
+                { type: 'text-end', id: 'text-extra' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+        ) as LanguageModelV4StreamPart[];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createBackend({
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [buildNativeWebSearchTool({ adapter: 'openai-responses' })],
+      maxSteps: 4,
+    });
+
+    const events: SessionEvent[] = [];
+    await collectEvents(
+      backend.send({ turnId: 'turn-hosted-search-answer', text: 'search', context: [] }),
+      events,
+    );
+
+    assert.equal(streamCalls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    const start = events.find((event) => event.type === 'tool_start');
+    assert.equal(start?.type === 'tool_start' ? start.providerExecuted : undefined, true);
+    const result = events.find((event) => event.type === 'tool_result');
+    assert.equal(result?.type === 'tool_result' ? result.providerExecuted : undefined, true);
+    assert.equal(
+      appended.find((message): message is AssistantMessage => message.type === 'assistant')?.text,
+      'Maka shipped the feature.',
+    );
+    assert.equal(events.at(-1)?.type, 'complete');
+    assert.equal(
+      (events.at(-1) as Extract<SessionEvent, { type: 'complete' }>).stopReason,
+      'end_turn',
     );
   });
 
@@ -16692,6 +16990,95 @@ function countingToolLoopModel(toolCallsBeforeStop?: number): {
     },
   });
   return { model, callCount: () => calls };
+}
+
+function deepSeekHostedSearchHistory(input?: {
+  providerOptions?: Record<string, unknown>;
+  result?: unknown;
+}): RuntimeEvent[] {
+  return [
+    runtimeTextEvent({
+      id: 'rt-u-search',
+      turnId: 'turn-prev',
+      role: 'user',
+      author: 'user',
+      text: 'search',
+    }),
+    runtimeEvent({
+      id: 'rt-search-call',
+      turnId: 'turn-prev',
+      role: 'model',
+      author: 'agent',
+      refs: { stepId: 'provider-step' },
+      content: {
+        kind: 'function_call',
+        id: 'search-1',
+        name: 'WebSearch',
+        args: { query: 'latest Maka' },
+        providerExecuted: true,
+        ...(input?.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
+      },
+    }),
+    runtimeEvent({
+      id: 'rt-search-result',
+      turnId: 'turn-prev',
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'search-1',
+        name: 'WebSearch',
+        result: input?.result ?? { type: 'web_search_result', query: 'latest Maka' },
+        providerExecuted: true,
+        isError: false,
+      },
+    }),
+    runtimeEvent({
+      id: 'rt-search-text',
+      turnId: 'turn-prev',
+      role: 'model',
+      author: 'agent',
+      refs: { providerEventId: 'provider-step' },
+      content: { kind: 'text', text: 'Maka shipped the feature.' },
+    }),
+  ];
+}
+
+function anthropicCompletedSse(text: string): string {
+  const send = (event: string, data: unknown) =>
+    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  return [
+    send('message_start', {
+      type: 'message_start',
+      message: {
+        id: 'msg-switch',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-5-20250929',
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 8, output_tokens: 0 },
+      },
+    }),
+    send('content_block_start', {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    }),
+    send('content_block_delta', {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text },
+    }),
+    send('content_block_stop', { type: 'content_block_stop', index: 0 }),
+    send('message_delta', {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn' },
+      usage: { output_tokens: 1 },
+    }),
+    send('message_stop', { type: 'message_stop' }),
+  ].join('');
 }
 
 function runtimeTextEvent(input: {

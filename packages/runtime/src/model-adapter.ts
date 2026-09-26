@@ -84,6 +84,14 @@ import {
 } from './openai-responses-websocket.js';
 import { openAiApplyPatchProviderTool, codexApplyPatchProviderTool } from './openai-apply-patch.js';
 import { TOOL_SEARCH_NAME, TOOL_SEARCH_PROVIDER_NAME } from './tool-availability.js';
+import {
+  attachOpenResponsesExtensionReplayItem,
+  isOpenResponsesExtensionReplayChunk,
+  openResponsesExtensionReplayItem,
+  usesDeepSeekOpenResponsesExtensions,
+} from './deepseek-open-responses-extensions.js';
+import { NATIVE_WEB_SEARCH_TOOL_NAME } from './native-web-search-tool.js';
+import type { ProviderOptions } from './model-protocol.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -167,12 +175,12 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // Verified against @ai-sdk/open-responses@2.0.34: replay preserves
-      // item order and IDs, but a provider-executed result embedded in the
-      // assistant message (Maka's provider-tool chronology) is still dropped,
-      // leaving a dangling function_call on the wire. Fail closed until the
-      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
+      // Open Responses dropped provider-executed pairs until the extension
+      // seam could round-trip them. DeepSeek registers that codec (#4107), so
+      // replay is open for its hosted items; other Open Responses providers
+      // stay fail-closed.
       providerExecutedTools:
+        usesDeepSeekOpenResponsesExtensions(this.input.connection.providerType) ||
         this.runtime.reasoningReplay.kind !== 'responses' ||
         this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
       signedThinking: this.runtime.reasoningReplay.kind === 'anthropic-signed',
@@ -196,6 +204,37 @@ export class ModelAdapter {
                   }
                 : 'none',
     };
+  }
+
+  /**
+   * Whether this target adapter can consume a persisted provider-executed
+   * exchange. `providerExecutedTools` admits DeepSeek hosted pairs on every
+   * DeepSeek wire; chat converters still emit those calls as client
+   * `tool_calls` with no matching `tool` message, and Anthropic coerces an
+   * unrecognized `WebSearch` pair into `server_tool_use` that fails its
+   * output schema. Gate emission on the target recognizing the replay state.
+   */
+  canReplayProviderExecutedExchange(item: ProviderExecutedReplayProbe): boolean {
+    if (item.providerExecuted !== true) return true;
+    if (!this.runtimeEventReplaySupport().providerExecutedTools) return false;
+    const { wire, reasoningReplay } = this.runtime;
+    // Chat wires always pair with `none` or `openai-chat-plaintext` replay.
+    // Those converters emit provider-executed calls as client `tool_calls`.
+    if (wire === 'openai-chat') {
+      return false;
+    }
+    if (isOpenResponsesHostedSearchReplay(item)) {
+      return (
+        usesDeepSeekOpenResponsesExtensions(this.input.connection.providerType) &&
+        wire === 'openai-responses' &&
+        reasoningReplay.kind === 'responses' &&
+        reasoningReplay.contract.adapter === 'open-responses'
+      );
+    }
+    if (item.toolName === NATIVE_WEB_SEARCH_TOOL_NAME && wire === 'anthropic-messages') {
+      return isAnthropicHostedSearchReplay(item);
+    }
+    return true;
   }
 
   resolveModel(): unknown {
@@ -409,16 +448,18 @@ export class ModelAdapter {
       settleAccounting: (outcome: ModelStepOutcome) => Promise<void>;
     },
   ): ModelStreamResult {
-    const openAiChatReasoningTransportState =
-      this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
-        ? this.openAiChatReasoningTransportState
-        : undefined;
     const openAiResponsesTransportState = this.openAiResponsesTransportState;
     const resolvedRuntime = this.runtime;
+    // One map per physical request. AiSdkBackend can run concurrent send()
+    // calls through this adapter; a session-wide map would mix provider-owned
+    // item ids across streams and leak aborted carriers into later turns.
+    const pendingOpenResponsesExtensionReplay = new Map<string, ProviderOptions>();
     let settleOutcome!: (outcome: ModelStepOutcome) => void;
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
     });
+    const translate = (chunk: AiSdkStreamChunk) =>
+      this.translateChunk(chunk, continuation.runtimeToolName, pendingOpenResponsesExtensionReplay);
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
@@ -449,12 +490,7 @@ export class ModelAdapter {
               sawUnfinalizedPlaintextSummary = true;
               continue;
             }
-            for (const event of translateChunk(
-              chunk,
-              openAiChatReasoningTransportState,
-              resolvedRuntime,
-              continuation.runtimeToolName,
-            )) {
+            for (const event of translate(chunk)) {
               if (event.kind === 'error') failure = event.failure;
               yield event;
             }
@@ -465,6 +501,7 @@ export class ModelAdapter {
             yield { kind: 'error', failure };
           }
         } finally {
+          pendingOpenResponsesExtensionReplay.clear();
           if (continuation.abortSignal.aborted) {
             failure = normalizeProviderFailure(continuation.abortSignal.reason);
           }
@@ -571,16 +608,34 @@ export class ModelAdapter {
    * Translate one raw AI SDK stream chunk into zero or more Maka-owned
    * `ModelStreamEvent`s. This is the sole place that parses SDK chunk names
    * (`text-delta` / `reasoning-delta` / `finish-step` / `finish` / `error` / …);
-   * the backend never sees them. Pure and side-effect-free so it is directly
-   * testable through the Maka-owned event contract.
+   * the backend never sees them. Open Responses extension-replay carriers are
+   * merged into the matching provider-executed tool-call so the opaque item
+   * survives RuntimeEvent persistence. The pending-carrier map is owned by one
+   * physical stream (`toModelStreamResult`); callers must not share it.
    */
-  translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
-    return translateChunk(
-      chunk,
-      this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
-        ? this.openAiChatReasoningTransportState
-        : undefined,
-      this.runtime,
+  translateChunk(
+    chunk: AiSdkStreamChunk,
+    runtimeToolName?: (name: string) => string,
+    pendingOpenResponsesExtensionReplay: Map<string, ProviderOptions> = new Map(),
+  ): ModelStreamEvent[] {
+    if (isOpenResponsesExtensionReplayChunk(chunk)) {
+      const providerOptions = providerOptionsFromSdkChunk(chunk);
+      const item = openResponsesExtensionReplayItem(providerOptions);
+      if (providerOptions && item && typeof item.id === 'string') {
+        pendingOpenResponsesExtensionReplay.set(item.id, providerOptions);
+      }
+      return [];
+    }
+    return attachPendingOpenResponsesExtensionReplay(
+      translateChunk(
+        chunk,
+        this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
+          ? this.openAiChatReasoningTransportState
+          : undefined,
+        this.runtime,
+        runtimeToolName,
+      ),
+      pendingOpenResponsesExtensionReplay,
     );
   }
 
@@ -770,6 +825,13 @@ function fixedAnthropicThinkingBudget(
   return type === 'enabled' && typeof budgetTokens === 'number' ? budgetTokens : 0;
 }
 
+export interface ProviderExecutedReplayProbe {
+  providerExecuted?: boolean;
+  providerOptions?: unknown;
+  toolName?: string;
+  output?: unknown;
+}
+
 export interface ModelAdapterRuntimeEventReplaySupport {
   toolCalls: boolean;
   toolResults: boolean;
@@ -810,6 +872,7 @@ function requireResponsesReplayProfile(runtime: ResolvedModelRuntime): string {
 interface AiSdkStreamChunk {
   type: string;
   id?: unknown;
+  kind?: unknown;
   text?: string;
   delta?: string;
   textDelta?: string;
@@ -828,6 +891,7 @@ interface AiSdkStreamChunk {
   error?: unknown;
   /** Provider-specific metadata; carries the Anthropic reasoning signature. */
   providerMetadata?: unknown;
+  providerOptions?: unknown;
 }
 
 /**
@@ -1328,6 +1392,58 @@ function remapProviderToolNamesInText(
   providerToolName: (name: string) => string,
 ): string {
   return text.replace(/\btool_search\b/gu, providerToolName(TOOL_SEARCH_NAME));
+}
+
+function attachPendingOpenResponsesExtensionReplay(
+  events: ModelStreamEvent[],
+  pending: Map<string, ProviderOptions>,
+): ModelStreamEvent[] {
+  if (pending.size === 0) return events;
+  return events.map((event) => {
+    if (event.kind !== 'tool-call' || event.toolCall.providerExecuted !== true) return event;
+    const carrier = pending.get(event.toolCall.toolCallId);
+    if (!carrier) return event;
+    pending.delete(event.toolCall.toolCallId);
+    const providerOptions = attachOpenResponsesExtensionReplayItem(
+      event.toolCall.providerOptions,
+      carrier,
+    );
+    return {
+      ...event,
+      toolCall: {
+        ...event.toolCall,
+        ...(providerOptions !== undefined ? { providerOptions } : {}),
+      },
+    };
+  });
+}
+
+function providerOptionsFromSdkChunk(chunk: AiSdkStreamChunk): ProviderOptions | undefined {
+  const raw = chunk.providerMetadata ?? chunk.providerOptions;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  return raw as ProviderOptions;
+}
+
+function isReplayRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOpenResponsesHostedSearchReplay(item: ProviderExecutedReplayProbe): boolean {
+  if (openResponsesExtensionReplayItem(item.providerOptions)) return true;
+  if (!isReplayRecord(item.output)) return false;
+  return item.output.type === 'web_search_call' || item.output.type === 'openai:web_search_call';
+}
+
+function isAnthropicHostedSearchReplay(item: ProviderExecutedReplayProbe): boolean {
+  if (isReplayRecord(item.providerOptions)) {
+    const anthropic = item.providerOptions.anthropic;
+    if (isReplayRecord(anthropic) && anthropic.type === 'server_tool_use') return true;
+  }
+  if (!Array.isArray(item.output)) return false;
+  return item.output.some((entry) => {
+    if (!isReplayRecord(entry) || entry.type !== 'web_search_result') return false;
+    return typeof entry.url === 'string' || typeof entry.encryptedContent === 'string';
+  });
 }
 
 function parseProviderExecutedToolInput(input: unknown): unknown {

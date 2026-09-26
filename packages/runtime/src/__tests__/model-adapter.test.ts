@@ -20,9 +20,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
+import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
+import { convertArrayToReadableStream, MockLanguageModelV4 } from 'ai/test';
 
 import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
+import { openResponsesExtensionReplayItem } from '../deepseek-open-responses-extensions.js';
 
 describe('ModelAdapter stream and error normalization', () => {
   test('shrinks a provider output limit when the persisted request is near the window', () => {
@@ -278,11 +281,83 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.deepEqual(adapter.runtimeEventReplaySupport(), {
       toolCalls: true,
       toolResults: true,
-      providerExecutedTools: false,
+      providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: false,
       responsesReasoning: 'plaintext-content',
     });
+    assert.equal(
+      adapter.canReplayProviderExecutedExchange({
+        providerExecuted: true,
+        toolName: 'WebSearch',
+        providerOptions: {
+          deepseek: {
+            openResponsesExtension: {
+              id: 'openai.web_search',
+              item: { id: 'ws_1', type: 'web_search_call' },
+            },
+          },
+        },
+      }),
+      true,
+    );
+  });
+
+  test('drops provider-executed hosted search on DeepSeek chat and foreign Anthropic wires', () => {
+    const chat = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-chat',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-chat',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const anthropic = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const deepSeekPair = {
+      providerExecuted: true as const,
+      toolName: 'WebSearch',
+      providerOptions: {
+        deepseek: {
+          openResponsesExtension: {
+            id: 'openai.web_search',
+            item: { id: 'ws_1', type: 'web_search_call', status: 'completed' },
+          },
+        },
+      },
+      output: { type: 'web_search_call', status: 'completed' },
+    };
+    assert.equal(chat.canReplayProviderExecutedExchange(deepSeekPair), false);
+    assert.equal(anthropic.canReplayProviderExecutedExchange(deepSeekPair), false);
+    assert.equal(
+      anthropic.canReplayProviderExecutedExchange({
+        providerExecuted: true,
+        toolName: 'WebSearch',
+        providerOptions: { anthropic: { type: 'server_tool_use' } },
+        output: [
+          {
+            type: 'web_search_result',
+            url: 'https://maka.example/',
+            encryptedContent: 'encrypted-result',
+          },
+        ],
+      }),
+      true,
+    );
   });
 
   test('supports summary-item Responses reasoning replay for Alibaba Token Plan', () => {
@@ -791,6 +866,199 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
+  test('merges Open Responses extension replay carriers onto the matching tool call', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const pending = new Map();
+    const item = {
+      id: 'ws_opaque',
+      type: 'openai:web_search_call',
+      status: 'completed',
+      provider_trace: 'opaque-replay',
+    };
+    assert.deepEqual(
+      adapter.translateChunk(
+        {
+          type: 'custom',
+          kind: 'open-responses.extension-replay',
+          providerMetadata: {
+            deepseek: { openResponsesExtension: { id: 'openai.web_search', item } },
+          },
+        },
+        undefined,
+        pending,
+      ),
+      [],
+    );
+    assert.deepEqual(
+      adapter.translateChunk(
+        {
+          type: 'tool-call',
+          toolCallId: 'ws_opaque',
+          toolName: 'WebSearch',
+          input: '{"type":"search"}',
+          providerExecuted: true,
+          providerMetadata: {
+            deepseek: { openResponsesExtension: { id: 'openai.web_search', itemId: 'ws_opaque' } },
+          },
+        },
+        undefined,
+        pending,
+      ),
+      [
+        {
+          kind: 'tool-call',
+          toolCall: {
+            type: 'tool-call',
+            toolCallId: 'ws_opaque',
+            toolName: 'WebSearch',
+            input: { type: 'search' },
+            providerExecuted: true,
+            providerOptions: {
+              deepseek: {
+                openResponsesExtension: {
+                  id: 'openai.web_search',
+                  itemId: 'ws_opaque',
+                  item,
+                },
+              },
+            },
+          },
+        },
+      ],
+    );
+  });
+
+  test('isolates Open Responses replay carriers across concurrent physical streams', async () => {
+    const adapter = newDeepSeekStreamAdapter();
+    const streamA = controlledLanguageModelStream();
+    const streamB = controlledLanguageModelStream();
+    let activityA = 0;
+    let activityB = 0;
+    const resultA = await startDeepSeekReplayStream(adapter, streamA.model, () => {
+      activityA += 1;
+    });
+    const resultB = await startDeepSeekReplayStream(adapter, streamB.model, () => {
+      activityB += 1;
+    });
+    const collectedA = collectStreamEvents(resultA.events);
+    const collectedB = collectStreamEvents(resultB.events);
+    await Promise.all([streamA.ready, streamB.ready]);
+
+    streamA.enqueue(streamStartPart());
+    streamB.enqueue(streamStartPart());
+    await waitForCondition(() => activityA > 0 && activityB > 0, 'both streams to start');
+
+    const seenA = activityA;
+    streamA.enqueue(extensionReplayCarrier(replayItem('ws_shared', 'trace-a')));
+    await waitForCondition(() => activityA > seenA, 'stream A to ingest carrier A');
+
+    const seenB = activityB;
+    streamB.enqueue(extensionReplayCarrier(replayItem('ws_shared', 'trace-b')));
+    await waitForCondition(() => activityB > seenB, 'stream B to ingest carrier B');
+
+    const afterCarrierA = activityA;
+    streamA.enqueue(extensionReplayToolCall('ws_shared'));
+    await waitForCondition(
+      () =>
+        activityA > afterCarrierA && collectedA.events.some((event) => event.kind === 'tool-call'),
+      'stream A to emit tool-call A',
+    );
+
+    const afterCarrierB = activityB;
+    streamB.enqueue(extensionReplayToolCall('ws_shared'));
+    await waitForCondition(
+      () =>
+        activityB > afterCarrierB && collectedB.events.some((event) => event.kind === 'tool-call'),
+      'stream B to emit tool-call B',
+    );
+
+    streamA.enqueue(streamFinishPart());
+    streamA.close();
+    streamB.enqueue(streamFinishPart());
+    streamB.close();
+    await Promise.all([collectedA.done, collectedB.done, resultA.outcome, resultB.outcome]);
+
+    assert.equal(replayTrace(collectedA.events), 'trace-a', JSON.stringify(collectedA.events));
+    assert.equal(replayTrace(collectedB.events), 'trace-b', JSON.stringify(collectedB.events));
+  });
+
+  test('does not leak an aborted stream replay carrier into a later request', async () => {
+    const adapter = newDeepSeekStreamAdapter();
+    const aborted = new AbortController();
+    const first = controlledLanguageModelStream();
+    let firstActivity = 0;
+    const firstResult = await startDeepSeekReplayStream(
+      adapter,
+      first.model,
+      () => {
+        firstActivity += 1;
+      },
+      aborted.signal,
+    );
+    const firstEvents = collectStreamEvents(firstResult.events);
+    await first.ready;
+
+    first.enqueue(streamStartPart());
+    await waitForCondition(() => firstActivity > 0, 'aborted stream to start');
+    const beforeCarrier = firstActivity;
+    first.enqueue(extensionReplayCarrier(replayItem('ws_stale', 'stale-aborted-trace')));
+    await waitForCondition(() => firstActivity > beforeCarrier, 'aborted stream to ingest carrier');
+    aborted.abort();
+    first.close();
+    await Promise.all([firstEvents.done, firstResult.outcome]);
+
+    const second = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          streamStartPart(),
+          extensionReplayToolCall('ws_stale'),
+          streamFinishPart(),
+        ]),
+      }),
+    });
+    const secondResult = await startDeepSeekReplayStream(adapter, second, () => {});
+    const secondEvents: ModelStreamEvent[] = [];
+    for await (const event of secondResult.events) secondEvents.push(event);
+    await secondResult.outcome;
+
+    assert.equal(replayTrace(secondEvents), undefined, JSON.stringify(secondEvents));
+  });
+
+  test('marks failed provider-executed tool results as errors', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-result',
+        toolCallId: 'ws_failed',
+        toolName: 'WebSearch',
+        providerExecuted: true,
+        isError: true,
+        result: { type: 'web_search_call', status: 'failed' },
+      } as Chunk),
+      [
+        {
+          kind: 'provider-tool-result',
+          toolCallId: 'ws_failed',
+          toolName: 'WebSearch',
+          output: { type: 'web_search_call', status: 'failed' },
+          isError: true,
+        },
+      ],
+    );
+  });
+
   test('captures the Anthropic reasoning signature without emitting an empty thinking event', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
@@ -1139,6 +1407,143 @@ function newAdapter(): ModelAdapter {
     newId: idGenerator(),
     now: monotonicClock(),
   });
+}
+
+function newDeepSeekStreamAdapter(): ModelAdapter {
+  return new ModelAdapter({
+    connection: {
+      slug: 'deepseek',
+      providerType: 'deepseek',
+      defaultModel: 'deepseek-v4-flash',
+    },
+    apiKey: 'deepseek-token',
+    modelId: 'deepseek-v4-flash',
+    modelFactory: () => ({}),
+    newId: idGenerator(),
+    now: monotonicClock(),
+  });
+}
+
+function startDeepSeekReplayStream(
+  adapter: ModelAdapter,
+  model: unknown,
+  onStreamActivity: () => void,
+  abortSignal = new AbortController().signal,
+) {
+  return adapter.startStream({
+    model,
+    messages: [{ role: 'user', content: 'search' }],
+    tools: {},
+    activeTools: [],
+    onStreamActivity,
+    abortSignal,
+    repairToolCall: async () => null,
+  });
+}
+
+function controlledLanguageModelStream(): {
+  model: MockLanguageModelV4;
+  ready: Promise<void>;
+  enqueue: (part: LanguageModelV4StreamPart) => void;
+  close: () => void;
+} {
+  let controller: ReadableStreamDefaultController<LanguageModelV4StreamPart> | undefined;
+  let resolveReady: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+  const stream = new ReadableStream<LanguageModelV4StreamPart>({
+    start(streamController) {
+      controller = streamController;
+      resolveReady?.();
+    },
+  });
+  return {
+    model: new MockLanguageModelV4({
+      doStream: async () => ({ stream }),
+    }),
+    ready,
+    enqueue: (part) => {
+      if (!controller) throw new Error('language model stream is not started');
+      controller.enqueue(part);
+    },
+    close: () => {
+      if (!controller) throw new Error('language model stream is not started');
+      controller.close();
+    },
+  };
+}
+
+function collectStreamEvents(events: AsyncIterable<ModelStreamEvent>): {
+  events: ModelStreamEvent[];
+  done: Promise<void>;
+} {
+  const collected: ModelStreamEvent[] = [];
+  return {
+    events: collected,
+    done: (async () => {
+      for await (const event of events) collected.push(event);
+    })(),
+  };
+}
+
+function replayItem(id: string, providerTrace: string): Record<string, string> {
+  return {
+    id,
+    type: 'openai:web_search_call',
+    status: 'completed',
+    provider_trace: providerTrace,
+  };
+}
+
+function extensionReplayCarrier(item: Record<string, string>): LanguageModelV4StreamPart {
+  return {
+    type: 'custom',
+    kind: 'open-responses.extension-replay',
+    providerMetadata: {
+      deepseek: { openResponsesExtension: { id: 'openai.web_search', item } },
+    },
+  };
+}
+
+function extensionReplayToolCall(id: string): LanguageModelV4StreamPart {
+  return {
+    type: 'tool-call',
+    toolCallId: id,
+    toolName: 'WebSearch',
+    input: '{"type":"search"}',
+    providerExecuted: true,
+    providerMetadata: {
+      deepseek: { openResponsesExtension: { id: 'openai.web_search', itemId: id } },
+    },
+  };
+}
+
+function streamStartPart(): LanguageModelV4StreamPart {
+  return { type: 'stream-start', warnings: [] };
+}
+
+function streamFinishPart(): LanguageModelV4StreamPart {
+  const usage: LanguageModelV4Usage = {
+    inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 0, text: 0, reasoning: 0 },
+  };
+  return { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage };
+}
+
+function replayTrace(events: readonly ModelStreamEvent[]): string | undefined {
+  const call = events.find((event) => event.kind === 'tool-call');
+  if (call?.kind !== 'tool-call') return undefined;
+  const item = openResponsesExtensionReplayItem(call.toolCall.providerOptions);
+  return typeof item?.provider_trace === 'string' ? item.provider_trace : undefined;
+}
+
+async function waitForCondition(check: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 }
 
 function idGenerator(): () => string {

@@ -57,6 +57,11 @@ import {
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { openResponsesUrl } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
+import {
+  createDeepSeekOpenResponsesExtensions,
+  usesDeepSeekOpenResponsesExtensions,
+  wrapFetchForDeepSeekOpenResponsesExtensions,
+} from './deepseek-open-responses-extensions.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
@@ -109,20 +114,33 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     const contract = reasoningReplay.kind === 'responses' ? reasoningReplay.contract : undefined;
     if (contract?.adapter !== 'open-responses') return undefined;
     const finalizeBody = createOpenResponsesCompatibilityFinalizer(contract.compatibility);
+    const deepSeekExtensions = usesDeepSeekOpenResponsesExtensions(connection.providerType);
+    // Discriminator rewrite sits closest to the network so overlays still
+    // see SDK namespaced types. @ai-sdk/open-responses@2.0.44 only accepts
+    // `<namespace>:<type>`; DeepSeek documents bare `web_search` /
+    // `web_search_call`. Keep the wrap even if vercel/ai#19939 ships a
+    // flag-only `allowBareTypes` â€” the parsers still require a `:`.
+    const transportFetch = deepSeekExtensions
+      ? wrapFetchForDeepSeekOpenResponsesExtensions(baseFetch)
+      : baseFetch;
     // Request customization is applied first; provider compatibility is
     // the final authority before network dispatch, so an overlay cannot
     // re-enable storage or violate the provider's tool-choice contract.
-    const responsesFetch = finalizeBody
-      ? createRequestCustomizationFetch(baseFetch, {
-          ...requestCustomization,
-          finalizeBody,
-        })
-      : requestFetch;
+    const responsesFetch =
+      finalizeBody || deepSeekExtensions
+        ? createRequestCustomizationFetch(transportFetch, {
+            ...requestCustomization,
+            ...(finalizeBody ? { finalizeBody } : {}),
+          })
+        : requestFetch;
     return createOpenResponses({
       name: connection.providerType,
       apiKey,
       url: openResponsesUrl(baseURL),
       fetch: responsesFetch,
+      ...(deepSeekExtensions
+        ? { experimental_extensions: createDeepSeekOpenResponsesExtensions() }
+        : {}),
     })(modelId);
   };
 
@@ -566,7 +584,7 @@ function buildThinkingProviderOptions(
       };
     }
     // Anthropic-protocol: effort enum models send `effort`; toggle/budget
-    // models send `thinking.disabled` for off. No budget-token mapping â€” the
+    // models send `thinking.disabled` for off. No budget-token mapping â€?the
     // provider's native effort values pass through unchanged.
     case 'anthropic':
     case 'MiniMax':
@@ -682,9 +700,9 @@ function buildThinkingProviderOptions(
           }
         : {};
     // Every remaining path resolves to one of a handful of wire families.
-    // Keying the fallback on the resolved adapter â€” the same object
+    // Keying the fallback on the resolved adapter â€?the same object
     // `getAIModel` switches on, including per-model models.dev package
-    // overrides â€” keeps declaration and wire in one seam. The variant gate
+    // overrides â€?keeps declaration and wire in one seam. The variant gate
     // above (level is defined only when metadata declares it) is what makes
     // this safe to generalize: undeclared models never reach the wire.
     default:
@@ -752,8 +770,8 @@ function buildFamilyWire(
       // through verbatim, ahead of the cross-provider top-level `reasoning`
       // enum that cannot express DeepSeek's `max` (whose documented mapping
       // sends `xhigh` to high, not max). The SDK resolves providerOptions
-      // under the raw provider `name` â€” no camelCase alias, unlike
-      // openai-compatible â€” so key by the same name getAIModel passes.
+      // under the raw provider `name` â€?no camelCase alias, unlike
+      // openai-compatible â€?so key by the same name getAIModel passes.
       return explicitReasoningEffort
         ? { [connection.providerType]: { reasoningEffort: explicitReasoningEffort } }
         : {};
@@ -834,8 +852,7 @@ function toCamelCase(name: string): string {
 /**
  * The providerOptions key for an openai-compatible model: the camelCase
  * alias of the identity passed to `createOpenAICompatible`. The SDK
- * resolves both spellings â€” known options and passthrough fields alike â€”
- * but flags dashed keys as deprecated (a `type: 'deprecated'` warning on
+ * resolves both spellings â€?known options and passthrough fields alike â€? * but flags dashed keys as deprecated (a `type: 'deprecated'` warning on
  * every doGenerate result), so the camelCase alias is the canonical key.
  *
  * The same alias also selects the SDK's *response* metadata namespace:

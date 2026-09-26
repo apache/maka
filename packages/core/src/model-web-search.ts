@@ -84,9 +84,9 @@ function providerHostedWebSearchAdapter(
         ? { adapter: wire, implemented: true }
         : null;
     case 'deepseek':
-      // @ai-sdk/open-responses currently serializes function tools only.
-      // Mark native search unavailable so routing never hands it a provider
-      // tool that would be silently filtered from the request.
+      // Open Responses codecs for DeepSeek's bare `web_search` wire are
+      // registered (#4107). Product routing stays fail-closed until #3689
+      // enables the hosted-search capability on this adapter.
       return { adapter: 'openai-responses', implemented: false };
     case 'openai':
     case 'xai':
