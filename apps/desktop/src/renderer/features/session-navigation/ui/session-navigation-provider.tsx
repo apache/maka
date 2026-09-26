@@ -46,6 +46,7 @@ import { deriveSessionRail } from '../model/session-rail.js';
 import { sessionMatchesRail } from '../model/session-nav-filter.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
 import {
+  buildSessionMoveTargets,
   projectGroupId,
   ungroupedGroupId,
 } from '../model/session-navigation-groups.js';
@@ -181,27 +182,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     (sessionId: string): readonly SessionMoveTarget[] => {
       const session = rail.sessions.find((candidate) => candidate.id === sessionId);
       if (!session) return [];
-      const targets: SessionMoveTarget[] = props.projectScopes
-        .filter(
-          (scope) =>
-            scope.hostId === session.runtimeHostId &&
-            scope.project.available &&
-            scope.project.archivedAt === undefined,
-        )
-        .map((scope) => ({
-          groupKey: projectGroupId(scope.key),
-          projectId: scope.project.id,
-          name: scope.project.name,
-        }));
-      if (session.projectId) {
-        // The one row that means "leave every project". Its name is the rail's
-        // to say, so none is given here.
-        targets.push({
-          groupKey: ungroupedGroupId(session.runtimeHostId),
-          projectId: null,
-        });
-      }
-      return targets;
+      return buildSessionMoveTargets(props.projectScopes, session);
     },
     [props.projectScopes, rail.sessions],
   );

@@ -1466,9 +1466,16 @@ function SessionItemActions(props: {
   // only while the task is in one.
   const moveTargets = useMemo(() => {
     const currentProjectId = props.session.projectId ?? null;
+    // "Remove from project" exists only while the project the task points at
+    // is one the shell still offers: an id orphaned by a deleted or archived
+    // project has nothing to leave, and its remove-row would render alone in
+    // the submenu (apache/maka#5725).
+    const inVisibleProject =
+      currentProjectId !== null &&
+      props.moveTargets.some((target) => target.projectId === currentProjectId);
     return props.moveTargets
       .filter((target) => target.projectId !== currentProjectId)
-      .filter((target) => target.projectId !== null || currentProjectId !== null)
+      .filter((target) => target.projectId !== null || inVisibleProject)
       .map((target) => ({
         label: target.projectId === null ? copy.moveToNoProject : (target.name ?? ''),
         onClick: () =>

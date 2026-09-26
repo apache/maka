@@ -23,6 +23,7 @@ import {
   createSessionNavigationRowActions,
   type SessionNavigationSessionService,
 } from '../../renderer/features/session-navigation/testing.js';
+import { buildSessionMoveTargets } from '../../renderer/features/session-navigation/testing.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 
 const copy = getShellCopy('en').sessionRowActions;
@@ -112,5 +113,66 @@ describe('moveSessionToProject', () => {
       { title: copy.moveFailedTitle, description: copy.moveFailures.session_busy },
     ]);
     assert.equal(h.refreshes, 0);
+  });
+});
+
+describe('buildSessionMoveTargets', () => {
+  const scope = (projectId: string) => ({
+    key: JSON.stringify(['local-host', projectId]),
+    profileId: 'local',
+    hostId: 'local-host',
+    profileName: 'Local',
+    profileKind: 'local' as const,
+    project: {
+      id: projectId,
+      name: projectId,
+      locations: [{ path: '/repo', isWorktree: false }],
+      available: true,
+    },
+    capabilities: {
+      chooseClientDirectory: true,
+      chooseHostDirectory: false,
+      selectNoProject: true,
+    },
+  });
+  const session = {
+    id: 's1',
+    runtimeHostId: 'local-host',
+    projectId: 'project-a' as string | null,
+  };
+
+  it('offers the visible projects plus the leave row for a task in one', () => {
+    const targets = buildSessionMoveTargets([scope('project-a'), scope('project-b')], session);
+    assert.deepEqual(
+      targets.map((target) => target.projectId),
+      // Every visible project is a destination (the ui list drops the task's
+      // own) plus the leave row.
+      ['project-a', 'project-b', null],
+    );
+  });
+
+  it('offers no leave row when the task points at a project no scope knows', () => {
+    // The project was deleted or archived upstream: the orphaned id names
+    // nothing the rail can show, so a lone "Remove from project" row would
+    // render on a task that already reads project-less (apache/maka#5725).
+    const targets = buildSessionMoveTargets([scope('project-b')], {
+      ...session,
+      projectId: 'deleted-project',
+    });
+    assert.deepEqual(
+      targets.map((target) => target.projectId),
+      ['project-b'],
+    );
+  });
+
+  it('offers no leave row for a project-less task', () => {
+    const targets = buildSessionMoveTargets([scope('project-b')], {
+      ...session,
+      projectId: null,
+    });
+    assert.deepEqual(
+      targets.map((target) => target.projectId),
+      ['project-b'],
+    );
   });
 });

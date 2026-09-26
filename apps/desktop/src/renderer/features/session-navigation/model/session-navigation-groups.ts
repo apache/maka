@@ -38,6 +38,52 @@ export function ungroupedGroupId(hostId: string): string {
   return `${UNGROUPED_KEY}:${hostId}`;
 }
 
+/** One row of a task's "Move to project" menu, shaped for the ui list. */
+export interface SessionMoveTargetOption {
+  readonly groupKey: string;
+  readonly projectId: string | null;
+  readonly name?: string;
+}
+
+/**
+ * Where a task may be re-filed, from the Project scopes the rail can see.
+ *
+ * The "leave every project" row exists only while the project the task
+ * points at is still one of those scopes: a `projectId` left behind by a
+ * deleted, archived, or relocated project names nothing the rail can show,
+ * and its remove-row would render as a lone "Remove from project" entry on
+ * a task that already reads project-less (apache/maka#5725).
+ */
+export function buildSessionMoveTargets(
+  projectScopes: readonly SessionNavigationProjectScope[],
+  session: { runtimeHostId: string; projectId?: string | null },
+): readonly SessionMoveTargetOption[] {
+  const targets: SessionMoveTargetOption[] = projectScopes
+    .filter(
+      (scope) =>
+        scope.hostId === session.runtimeHostId &&
+        scope.project.available &&
+        scope.project.archivedAt === undefined,
+    )
+    .map((scope) => ({
+      groupKey: projectGroupId(scope.key),
+      projectId: scope.project.id,
+      name: scope.project.name,
+    }));
+  if (
+    session.projectId &&
+    targets.some((target) => target.projectId === session.projectId)
+  ) {
+    // The one row that means "leave every project". Its name is the rail's
+    // to say, so none is given here.
+    targets.push({
+      groupKey: ungroupedGroupId(session.runtimeHostId),
+      projectId: null,
+    });
+  }
+  return targets;
+}
+
 function scopedProjectLabel(projectName: string, profileName: string): string {
   return `${projectName} · ${profileName}`;
 }
