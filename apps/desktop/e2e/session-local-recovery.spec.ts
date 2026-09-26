@@ -209,20 +209,15 @@ test('a failed message restores its durable attachment without replacing a newer
     };
   }, resolve('dist/main/session-local-store.js'));
   await page.evaluate(async (id) => {
-    await window.maka.sessions.submitMessage(id, 'current_turn', {
-      messageId: 'e2e-failed-message', text: 'recover this original message',
+    // Match an ordinary composer send: next-turn admission with an immediate
+    // transcript projection, not steering queued above the composer.
+    await window.maka.sessions.submitMessage(id, 'next_turn', {
+      messageId: 'e2e-failed-message', text: 'recover this original message', localDisplayPlacement: 'current_turn',
       attachmentItems: [{ file: new File(['durable recovery bytes'], 'recovery.txt', { type: 'text/plain' }) }],
     });
   }, sessionId);
   await expect(page.getByText('消息未发送', { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('failed-message.png') });
-
-  const canonical = await page.locator('.maka-turn').first().boundingBox();
-  const local = await page.locator('.maka-transient-message').filter({ hasText: 'recover this original message' }).boundingBox();
-  expect(canonical).toBeTruthy();
-  expect(local).toBeTruthy();
-  expect(Math.abs(local!.x - canonical!.x)).toBeLessThan(1);
-  expect(Math.abs(local!.width - canonical!.width)).toBeLessThan(1);
 
   // Hold the authoritative read while the user starts another draft. It must
   // be checked again after IPC.

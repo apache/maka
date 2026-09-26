@@ -773,6 +773,18 @@ export const FailedLocalMessage: Story = {
       expect(metadata).not.toBeNull();
       return metadata!;
     });
+    // Migrated from session-local-recovery.spec.ts: alignment is a browser
+    // layout contract, independent of Electron's durable recovery round trip.
+    await waitFor(() => {
+      const canonical = canvasElement.querySelector<HTMLElement>('.maka-transcript-turn .maka-turn');
+      expect(canonical).not.toBeNull();
+      const canonicalBox = canonical!.getBoundingClientRect();
+      const localBox = failed.getBoundingClientRect();
+      expect(canonicalBox.width).toBeGreaterThan(0);
+      expect(localBox.width).toBeGreaterThan(0);
+      expect(Math.abs(localBox.x - canonicalBox.x)).toBeLessThan(1);
+      expect(Math.abs(localBox.width - canonicalBox.width)).toBeLessThan(1);
+    });
     await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
     settledMetadata.querySelector('button')!.focus();
     await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('1'));
