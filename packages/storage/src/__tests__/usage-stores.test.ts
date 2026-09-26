@@ -485,6 +485,34 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('legacy summary filters LLM rows by call kind', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'main-call', callKind: 'main', inputTokens: 100 }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'title-call', callKind: 'session_title', inputTokens: 100 }),
+      );
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'untagged-call', inputTokens: 100 }));
+
+      const mainOnly = await stores.telemetry.summary({
+        range: 'all',
+        callKinds: ['main'],
+      });
+      assert.equal(mainOnly.totalRequests, 1);
+      assert.equal(mainOnly.totalTokens.input, 100);
+
+      const everything = await stores.telemetry.summary({ range: 'all' });
+      assert.equal(everything.totalRequests, 3);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
   test('legacy summary sums recorded call time over the same rows as its tokens', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);

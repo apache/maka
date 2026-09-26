@@ -1316,11 +1316,24 @@ async function loadSessionUsageSummary(
   sessionId: string,
 ): Promise<Result<DesktopSessionUsageSummary>> {
   const session = await runtimeHostSessionRef(sessionId);
-  return invokeWhenReady(
-    'usage:summary',
-    session.scope,
-    { range: 'all', sessionId: session.sessionId },
-  ) as Promise<Result<DesktopSessionUsageSummary>>;
+  const summaryQuery = { range: 'all' as const, sessionId: session.sessionId };
+  // The overview reads the Session's whole metered spend and, separately, the
+  // agent loop's own calls: auxiliary prompts do not share the main loop's
+  // cached prefix, so a blended rate under-reports it (#5691).
+  const [summary, main] = (await Promise.all([
+    invokeWhenReady('usage:summary', session.scope, summaryQuery),
+    invokeWhenReady('usage:summary', session.scope, {
+      ...summaryQuery,
+      callKinds: ['main'],
+    }),
+  ])) as [Result<DesktopSessionUsageSummary>, Result<DesktopSessionUsageSummary>];
+  if (!summary.ok) return summary;
+  // The main-only read refines the cache rate; losing it must not lose the
+  // overview — but it must also not pass the blended rate off as the main
+  // loop's, so the failure is marked and the rate hides itself (#5691).
+  return main.ok
+    ? { ...summary, data: { ...summary.data, mainSummary: main.data } }
+    : { ...summary, data: { ...summary.data, mainSummaryUnavailable: true } };
 }
 
 async function updateDailyReviewConfig(
