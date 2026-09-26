@@ -482,7 +482,7 @@ async function buildHostAiSdkBackend(
               {
                 name: 'runtime.environment',
                 text: [
-                  "Runtime Host environment for this turn (time is a snapshot, not a live clock; this is the Host's time zone, not necessarily the user's):",
+                  'Runtime Host environment for this turn:',
                   JSON.stringify({
                     cwd: context.cwd,
                     platform: process.platform,
