@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
+  InteractionRequest,
   SessionCatalogProjection,
   SubscriptionFrame,
   WorkspaceTarget,
@@ -41,6 +42,7 @@ type RuntimeHostBotSessionClient = Pick<
   | 'getSession'
   | 'openSession'
   | 'startTurn'
+  | 'answerInteraction'
   | 'updateSessionConfiguration'
 >;
 
@@ -172,6 +174,21 @@ export function createRuntimeHostBotSessionAdapter(
         await session.close().catch(() => undefined);
       }
     },
+
+    async respondToApproval({ sessionId, interactionId, turnId, request, decision }) {
+      const answer = approvalAnswer(request, decision);
+      if (!answer) throw new Error('This Runtime Host Interaction is not an approval request');
+      await deps.client.answerInteraction({ sessionId, interactionId, answer });
+      const session = await deps.client.openSession(sessionId);
+      const completion = collectRuntimeHostBotTurn(session.events, turnId, undefined, true);
+      void completion.catch(() => undefined);
+      try {
+        await session.ready();
+        return await completion;
+      } finally {
+        await session.close().catch(() => undefined);
+      }
+    },
   };
 }
 
@@ -179,6 +196,7 @@ async function collectRuntimeHostBotTurn(
   events: AsyncIterable<SubscriptionFrame>,
   turnId: string,
   onReplySnapshot?: (text: string) => void,
+  waitThroughAnsweredInteraction = false,
 ): Promise<BotSessionTurnResult> {
   const assistantText = new Map<string, string>();
   let latestMessageId: string | undefined;
@@ -211,7 +229,27 @@ async function collectRuntimeHostBotTurn(
     if (frame.kind !== 'subscription.session_projection') continue;
     const turn = frame.snapshot.rootTurn;
     if (!turn || turn.turnId !== turnId) continue;
-    if (turn.status === 'waiting_for_user') return { kind: 'suspended' };
+    if (turn.status === 'waiting_for_user') {
+      const pendingApprovals = frame.snapshot.interactions.pending
+        .filter((interaction) => interaction.turnId === turnId)
+        .filter((interaction) => isBotApprovalRequest(interaction.request))
+        .map(({ interactionId, turnId: pendingTurnId, request }) => ({
+          interactionId,
+          turnId: pendingTurnId,
+          request,
+        }));
+      const pendingForTurn = frame.snapshot.interactions.pending.some(
+        (interaction) => interaction.turnId === turnId,
+      );
+      if (pendingForTurn || !waitThroughAnsweredInteraction) {
+        return pendingApprovals.length > 0
+          ? { kind: 'suspended', pendingApprovals }
+          : { kind: 'suspended' };
+      }
+      // The approved Interaction has settled, but the parked root Turn may
+      // need another projection before it resumes or reaches a terminal state.
+      continue;
+    }
     if (turn.status === 'completed') {
       return {
         kind: 'completed',
@@ -227,6 +265,28 @@ async function collectRuntimeHostBotTurn(
   }
 
   throw new Error('Runtime Host Bot Session subscription ended before the Turn settled');
+}
+
+function isBotApprovalRequest(request: InteractionRequest): boolean {
+  return request.kind === 'permission' ||
+    request.kind === 'sandbox_boundary' ||
+    request.kind === 'client_capability';
+}
+
+function approvalAnswer(
+  request: InteractionRequest,
+  decision: 'allow' | 'deny',
+) {
+  switch (request.kind) {
+    case 'permission':
+      return { kind: 'permission' as const, decision, rememberForTurn: false as const };
+    case 'sandbox_boundary':
+      return { kind: 'sandbox_boundary' as const, decision };
+    case 'client_capability':
+      return { kind: 'client_capability' as const, decision };
+    default:
+      return null;
+  }
 }
 
 function throwUnavailable(error: unknown, sessionId: string): void {
