@@ -22,7 +22,8 @@ import type { AppSettings } from '@maka/core/settings';
 import type { createMainWindowController } from './main-window.js';
 import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 import {
-  type RunNotificationInput,
+  type RunNotificationEvent,
+  deduplicateRunNotifications,
   resolveNotificationContent,
   shouldRaiseRunNotification,
 } from './notifications-policy.js';
@@ -36,8 +37,8 @@ interface NotificationsDeps {
   e2e: boolean;
 }
 
-export function createRunNotifier(deps: NotificationsDeps): (input: RunNotificationInput) => Promise<void> {
-  return async (input) => {
+export function createRunNotifier(deps: NotificationsDeps): (input: RunNotificationEvent) => Promise<void> {
+  return deduplicateRunNotifications(async (input) => {
     const supported = Notification.isSupported();
     // Read the toggle lazily so a mid-session settings change takes
     // effect on the very next turn without any cache invalidation.
@@ -61,5 +62,5 @@ export function createRunNotifier(deps: NotificationsDeps): (input: RunNotificat
     notification.on('click', () => deps.mainWindowController.focus());
     notification.show();
     app.dock?.bounce('informational');
-  };
+  });
 }

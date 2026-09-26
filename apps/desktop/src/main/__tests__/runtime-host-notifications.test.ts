@@ -24,7 +24,7 @@ import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import type { RuntimeHostConnection, RuntimeHostConnectionAvailability } from '@maka/runtime-host/client';
 import type { SessionCatalogChangedFrame } from '@maka/runtime-host/protocol';
 import { DesktopRuntimeHostClient } from '../runtime-host-client.js';
-import type { RunNotificationInput } from '../notifications-policy.js';
+import { deduplicateRunNotifications, type RunNotificationEvent, type RunNotificationInput } from '../notifications-policy.js';
 import { observeRuntimeHostNotifications } from '../runtime-host-notifications.js';
 
 test('notifies for every session through the Host feed without renderer or transcript subscriptions', async (t) => {
@@ -84,13 +84,53 @@ test('shared sessions use the scoped catalog and content-read failures still not
   assert.deepEqual(f.notifications, [{ kind: 'waiting', title: undefined, body: 'Answer?' }]);
 });
 
-function fixture(shared = false, initiallyConnected = true) {
+test('overlapping owner and Guest feeds notify once while distinct events, sessions and Hosts still notify', async (t) => {
+  const notifications: RunNotificationEvent[] = [];
+  const pending = deferred<void>();
+  const notify = deduplicateRunNotifications(async (input) => {
+    notifications.push(input);
+    await pending.promise;
+  });
+  const owner = fixture(false, true, notify);
+  const guest = fixture(true, true, notify);
+  const otherHost = fixture(false, true, notify, 'host-2');
+  t.after(() => {
+    pending.resolve();
+    owner.close();
+    guest.close();
+    otherHost.close();
+  });
+  const frame: SessionCatalogChangedFrame = {
+    kind: 'session.catalog.changed', revision: 1, sessionId: 'shared',
+    attention: { kind: 'waiting', eventId: 'question' },
+  };
+  owner.changed(frame);
+  guest.changed(frame);
+  otherHost.changed(frame);
+  owner.changed({ ...frame, sessionId: 'other-session' });
+  owner.changed({ ...frame, attention: { kind: 'completed', eventId: 'terminal' } });
+  await setImmediate();
+  assert.deepEqual(notifications.map(({ hostEpoch, sessionId, eventId }) => [hostEpoch, sessionId, eventId]), [
+    ['host-1', 'shared', 'question'],
+    ['host-2', 'shared', 'question'],
+    ['host-1', 'other-session', 'question'],
+    ['host-1', 'shared', 'terminal'],
+  ]);
+});
+
+function fixture(
+  shared = false,
+  initiallyConnected = true,
+  notify?: (input: RunNotificationEvent) => Promise<void>,
+  hostEpoch = 'host-1',
+) {
   let listener: ((frame: SessionCatalogChangedFrame) => void) | undefined;
   let availability: ((value: RuntimeHostConnectionAvailability) => void) | undefined;
   const notifications: RunNotificationInput[] = [];
   const errors: unknown[] = [];
   const operations: string[] = [];
   const connection = {
+    hostEpoch,
     reconnecting: true,
     request: async (operation: string, input: { sessionId?: string }) => {
       operations.push(operation);
@@ -108,7 +148,9 @@ function fixture(shared = false, initiallyConnected = true) {
     },
   } as unknown as RuntimeHostConnection;
   const client = new DesktopRuntimeHostClient(connection);
-  const close = observeRuntimeHostNotifications(client, async (input) => { notifications.push(input); }, (error) => errors.push(error), shared);
+  const close = observeRuntimeHostNotifications(client, notify ?? (async ({ kind, title, body }) => {
+    notifications.push({ kind, title, body });
+  }), (error) => errors.push(error), shared);
   return {
     client, close, operations, notifications, errors,
     changed(frame: SessionCatalogChangedFrame) { listener?.(frame); },

@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
-import type { RunNotificationInput } from './notifications-policy.js';
+import type { RunNotificationEvent } from './notifications-policy.js';
 import { observeRuntimeHostNotifications } from './runtime-host-notifications.js';
 import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
@@ -164,7 +164,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeDesktopInteractionTurn: (
     sessionId: string,
   ) => void | Promise<void>;
-  readonly notifyRun?: (input: RunNotificationInput) => Promise<void>;
+  readonly notifyRun?: (input: RunNotificationEvent) => Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly transcriptHistoryBytes?: number;
   readonly renderer?: {

@@ -18,11 +18,11 @@
  */
 
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import type { RunNotificationInput } from './notifications-policy.js';
+import type { RunNotificationEvent } from './notifications-policy.js';
 
 export function observeRuntimeHostNotifications(
-  client: Pick<DesktopRuntimeHostClient, 'request' | 'subscribeSessionCatalogChanges' | 'subscribeConnectionAvailability' | 'getSession' | 'getSharedSession'>,
-  notify: (input: RunNotificationInput) => Promise<void>,
+  client: Pick<DesktopRuntimeHostClient, 'hostEpoch' | 'request' | 'subscribeSessionCatalogChanges' | 'subscribeConnectionAvailability' | 'getSession' | 'getSharedSession'>,
+  notify: (input: RunNotificationEvent) => Promise<void>,
   onError: (error: unknown) => void,
   shared = false,
 ): () => void {
@@ -30,11 +30,15 @@ export function observeRuntimeHostNotifications(
   const unsubscribe = client.subscribeSessionCatalogChanges((frame) => {
     if (!frame.attention || closed) return;
     const attention = frame.attention;
+    const hostEpoch = client.hostEpoch;
     void (shared ? client.getSharedSession() : client.getSession(frame.sessionId))
       .catch(() => null)
       .then((session) => {
         if (closed) return;
         return notify({
+          hostEpoch,
+          sessionId: frame.sessionId,
+          eventId: attention.eventId,
           kind: attention.kind,
           title: session?.name,
           body: attention.body ?? session?.lastMessagePreview,

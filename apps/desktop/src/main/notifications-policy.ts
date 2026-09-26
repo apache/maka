@@ -104,6 +104,26 @@ export interface RunNotificationInput {
   readonly body?: unknown;
 }
 
+export interface RunNotificationEvent extends RunNotificationInput {
+  readonly hostEpoch: string;
+  readonly sessionId: string;
+  readonly eventId: string;
+}
+
+export function deduplicateRunNotifications(
+  notify: (input: RunNotificationEvent) => Promise<void>,
+): (input: RunNotificationEvent) => Promise<void> {
+  const seen = new Set<string>();
+  return async (input) => {
+    const key = JSON.stringify([input.hostEpoch, input.sessionId, input.eventId]);
+    if (seen.has(key)) return;
+    // Owner and shared-session connections can deliver the same Host event.
+    seen.add(key);
+    if (seen.size > 512) seen.delete(seen.values().next().value!);
+    await notify(input);
+  };
+}
+
 // The OS truncates long banners anyway; cap defensively so a runaway
 // reply cannot bloat the payload.
 const MAX_TITLE_CHARS = 80;
