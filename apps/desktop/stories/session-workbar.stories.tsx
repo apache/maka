@@ -354,8 +354,14 @@ const gitReviewSnapshot: GitReviewSnapshot = {
   source: 'branch',
   repositoryRoot: '/Users/reviewer/maka-agent',
   currentBranch: 'feat/git-authoritative-changes',
-  baseBranch: 'main',
-  baseBranchOptions: ['main', 'release/0.1'],
+  baseBranch: 'refs/remotes/origin/main',
+  baseBranchOptions: [
+    { label: 'origin/HEAD', value: 'refs/remotes/origin/HEAD' },
+    { label: 'origin/main', value: 'refs/remotes/origin/main' },
+    { label: 'main', value: 'refs/heads/main' },
+    { label: 'release/0.1', value: 'refs/heads/release/0.1' },
+    { label: 'origin/feature/payments-migration-2026', value: 'refs/remotes/origin/feature/payments-migration-2026' },
+  ],
   revision: 'storybook-git-review',
   additions: gitReviewFiles.reduce((total, file) => total + file.additions, 0),
   deletions: gitReviewFiles.reduce((total, file) => total + file.deletions, 0),
@@ -1267,6 +1273,45 @@ export const ToolPickerAtColumnFloor: Story = {
 export const Changes: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="review" />,
+};
+
+// Real path: 任务工作栏 → 变更 → open the base branch picker in a narrow
+// workbar, search a long branch name, select it, then reopen the comparison menu.
+export const ChangesBaseBranchPicker: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" width={320} />,
+  play: async ({ canvasElement }) => {
+    const picker = await waitFor(() => {
+      const element = canvasElement.querySelector<HTMLElement>('.maka-session-review-base-branch');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    const trigger = within(picker).getByRole('button');
+    await userEvent.click(trigger);
+    const body = within(canvasElement.ownerDocument.body);
+    const listbox = await body.findByRole('listbox');
+    const longName = 'origin/feature/payments-migration-2026';
+    const option = within(listbox).getByRole('option', { name: longName });
+    await waitFor(() => {
+      const surface = picker.querySelector<HTMLElement>('.astryx-popover-surface');
+      expect(surface).not.toBeNull();
+      expect(surface!.getBoundingClientRect().width).toBeGreaterThan(0);
+      expect(surface!.getBoundingClientRect().width).toBeLessThanOrEqual(280);
+      expect(listbox.getBoundingClientRect().height).toBeLessThanOrEqual(288);
+      const text = option.querySelector<HTMLElement>('.astryx-text');
+      expect(text).not.toBeNull();
+      expect(text!.scrollWidth).toBeGreaterThan(text!.clientWidth);
+      expect(getComputedStyle(text!).textOverflow).toBe('ellipsis');
+    });
+    const search = within(picker).getByRole('combobox');
+    await userEvent.type(search, 'payments');
+    await waitFor(() => expect(within(listbox).getAllByRole('option')).toHaveLength(1));
+    await userEvent.click(within(listbox).getByRole('option', { name: longName }));
+    await waitFor(() => expect(trigger).toHaveTextContent(longName));
+    await userEvent.click(trigger);
+    const reopened = await body.findByRole('listbox');
+    expect(within(reopened).getByRole('option', { name: longName })).toHaveAttribute('aria-selected', 'true');
+  },
 };
 
 // Real path: 变更 open, then 浏览器 and 生成文件 opened from [+]. Faces are added to

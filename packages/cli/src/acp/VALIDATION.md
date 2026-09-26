@@ -19,6 +19,84 @@
 
 # ACP validation record
 
+## PR8 integration with PR7 on main — September 26, 2026
+
+Merged official `apache/maka` main at `8351121086e9023315f68b167eab68ec0d06056f`,
+which includes PR7 Artifact/Memory operations. The two conflicts retained both
+families' Session Registry shutdown cleanup and both validation records. The
+root `build:test`, 184 focused ACP Goal/Plan, Artifact/Memory, and Registry tests,
+the full CLI dist suite, lint, format check, and `git diff --check` passed after
+the merge. No new production logic was added to resolve these conflicts.
+
+## PR8 restored Plan replay fix — September 26, 2026
+
+A fresh ACP process can now replay `plan.turn.start` for a live Turn after
+`session/load` or `session/resume`. The existing output observer stays attached;
+the Host validates the original Turn identity and returns its admission result.
+The replay does not take ownership of the restored observer's lifecycle.
+
+Both real SDK/stdio/Host regression cases failed with `registry_closed` before
+the fix and pass after rebuilding. They cover repeated admission replies with
+unchanged Turn/Run/execution identities, Host rejection of a conflicting replay,
+continued output exactly once, one model execution, cancellation, one terminal
+notification, Session close, and clean EOF.
+
+Validation: root build and workspace typecheck passed; full CLI `test:dist`
+passed with 1277 passed, 3 skipped, 0 failed. Root lint, format checking, and
+Desktop/UI knip passed. No Host implementation or wire schema changed.
+
+## PR8 Goal/Plan execution — September 26, 2026
+
+Implementation baseline: official `apache/maka` main at
+`87fc9f69cd11648f31048c1b633bb813aca5f515` (PR6 #5621 included).
+PR7 #5685 was still open when checked. The ACP SDK remains pinned to 1.4.0;
+Host wire schema and compatibility epoch were not changed. The design baseline is
+`docs/architecture/acp-pr8-goal-plan-design.zh-CN.md`.
+
+Six typed extension requests are available: `_maka/goal/query`,
+`_maka/goal/arm`, `_maka/goal/control`, `_maka/plan/query`,
+`_maka/plan/control`, and `_maka/plan/turn/start`. The agent advertises
+`_meta["_maka/goalPlan"]: {version: 1}`. Client
+`_meta["_maka/goalPlanStatus"]: true` enables `_maka/goal/status` and
+`_maka/plan/changed`; `_maka/turnStatus` separately enables the existing
+non-prompt Turn terminal notification. Host decoders, ownership, attachment,
+interaction, Turn observation, transcript and MCP paths are reused.
+
+The real-process tests use the official ACP SDK, stdio child server, real Host,
+local controlled model service, and no external model API key. They prove that
+arm alone invokes no model; a user prompt starts Goal work and Host continuation
+arrives without another prompt; Goal resume starts work without a prompt;
+external Host control updates Goal and Plan notifications; a model submits a
+Plan through `SubmitPlan`; approval and interrupted execution resume each use
+one `plan.turn.start` request; pending `AskUserQuestion` uses ACP elicitation;
+the model advances execution through `update_plan`; terminal status follows
+standard output; a repeated `turnId` does not run the model or add a second
+terminal notification. Seventeen model-generated proposals exercise Plan paging,
+and an external mutation makes an old cursor return `revision_changed`. An
+unowned Session query fails before Host I/O.
+
+Focused operation tests prove a dispatched lost Goal arm/Plan start is not
+resent, retains exact identity and observation, and an explicit Host conflict
+rolls back. Domain observer tests cover coalesced invalidations, an unchanged
+Goal across canonical Plan replacement, stale read rejection, retry after a
+failed initial refresh, and disposal fencing. The existing ACP and Host suites
+cover cancel, close, EOF, subscription recovery, pending permissions/forms,
+and single-consumer barriers. Further PR8-specific race coverage is described
+in the design's remaining verification notes.
+
+| Check | Result |
+| --- | --- |
+| Baseline CLI build and ACP/Registry tests | Passed: 152 tests before implementation. |
+| Root build and typecheck | Passed on the implementation worktree. |
+| ACP-focused dist tests | Passed: 299, 0 failed. |
+| Full CLI dist suite | Passed: 1266 passed, 3 skipped, 0 failed on the final code. |
+| Full Runtime Host dist suite | Passed: 2124 passed, 12 skipped, 0 failed. |
+| Lint, format, ASF headers, CLI notices, diff whitespace | Passed. |
+| Protocol epoch guard against `upstream/main` | Passed: no Host protocol change (epoch 189). |
+
+Desktop Electron E2E, Windows/Linux platform CI, Zed smoke, and real external
+model services were not run locally. No GitHub issue comment, merge or
+deployment was performed in local validation.
 ## PR7 upload-tracking ablation (September 25, 2026)
 
 In an isolated worktree at `76fc0b3b2`, the per-upload `pendingBegins`

@@ -82,6 +82,18 @@ import {
   type SessionRevisionAbandonResult,
   type SessionTurnsQueryInput,
   type SessionTurnsQueryResult,
+  type GoalQueryInput,
+  type GoalQueryResult,
+  type GoalArmInput,
+  type GoalArmResult,
+  type GoalControlInput,
+  type GoalControlResult,
+  type PlanQueryInput,
+  type PlanQueryResult,
+  type PlanControlInput,
+  type PlanControlResult,
+  type PlanTurnStartInput,
+  type PlanTurnStartResult,
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from '../runtime-host-session-channel.js';
 import {
@@ -101,6 +113,16 @@ import { mapAcpPromptContent, publishAcpPromptAttachments } from './prompt-conte
 import { AcpSessionMcp, createAcpMcpConfig, type AcpMcpConnection } from './session-mcp.js';
 import { AcpSessionInteractions, type AcpInteractionClient } from './session-interactions.js';
 import { AcpTurnObservation, AcpAdmittedTurnObservation } from './turn-observation.js';
+import {
+  AcpGoalPlanOperations,
+  type GoalPlanOperationName,
+  type PreparedGoalPlanOperation,
+} from './goal-plan-operations.js';
+import {
+  AcpSessionDomainObservation,
+  type AcpGoalStatus,
+  type AcpPlanChanged,
+} from './session-domain-observation.js';
 
 const ACP_SESSION_CURSOR_MAX_BYTES = 8 * 1024;
 const ADMISSION_QUERY_MAX_ATTEMPTS = 5;
@@ -151,7 +173,8 @@ type AcpSessionRegistryOperation =
   | 'session.turns.query'
   | 'session.branch.create'
   | 'session.revision.create'
-  | 'session.revision.abandon';
+  | 'session.revision.abandon'
+  | GoalPlanOperationName;
 type AcpSessionRegistryLifecycleOperation =
   | 'connect'
   | 'session.close'
@@ -184,6 +207,8 @@ export interface AcpAttachedTurnStatus {
 
 export interface AcpLoadContext extends AcpPromptContext {
   readonly notifyTurnStatus?: (status: AcpAttachedTurnStatus) => Promise<void>;
+  readonly notifyGoalStatus?: (status: AcpGoalStatus) => Promise<void>;
+  readonly notifyPlanChanged?: (status: AcpPlanChanged) => Promise<void>;
 }
 
 export interface AcpSessionRegistryOptions {
@@ -226,12 +251,18 @@ export class AcpSessionRegistry {
   readonly #mcps = new Map<string, AcpSessionMcp>();
   readonly #creationAbort = new AbortController();
   readonly #attachmentInteractions = new Map<string, AcpSessionInteractions>();
+  readonly #domainObservations = new Map<string, AcpSessionDomainObservation>();
+  readonly #goalPlan: AcpGoalPlanOperations;
   readonly #attachments = new Map<string, Promise<RuntimeHostSessionChannel>>();
   readonly #attachmentOpenControllers = new Map<string, AbortController>();
   readonly #attachmentConfigurations = new Map<string, AcpAttachmentConfiguration>();
   readonly #pendingConfigSets = new Map<string, Set<Promise<unknown>>>();
   readonly #attachmentWaiters = new Map<string, Set<object>>();
   readonly #turnObservations = new Map<string, Map<string, AcpTurnObservation>>();
+  readonly #pendingPlanAdmissions = new Map<
+    AcpAdmittedTurnObservation,
+    { users: number; retained: boolean }
+  >();
   readonly #discardedAttachments = new WeakSet<RuntimeHostSessionChannel>();
   readonly #externalObservationContexts = new Map<string, AcpLoadContext>();
   readonly #externalContextLeases = new Map<string, AcpExternalContextLease>();
@@ -258,6 +289,174 @@ export class AcpSessionRegistry {
     this.#connect = options.connect;
     this.#newSessionId = options.newSessionId ?? randomUUID;
     this.#newTurnId = options.newTurnId ?? randomUUID;
+    this.#goalPlan = new AcpGoalPlanOperations({
+      prepare: (sessionId, context, turnId, observe) =>
+        this.#prepareGoalPlan(sessionId, context, turnId, observe),
+      assertCurrent: (sessionId) => {
+        this.#assertOpen('subscription.open');
+        this.#assertOwned(sessionId);
+      },
+      mapError: (error, operation, extra) => requestErrorFromRuntimeHost(error, operation, extra),
+    });
+  }
+
+  goalQuery(input: GoalQueryInput, context: AcpLoadContext): Promise<GoalQueryResult> {
+    return this.#track(this.#goalPlan.goalQuery(input, context));
+  }
+  goalArm(input: GoalArmInput, context: AcpLoadContext): Promise<GoalArmResult> {
+    return this.#track(this.#goalPlan.goalArm(input, context));
+  }
+  goalControl(input: GoalControlInput, context: AcpLoadContext): Promise<GoalControlResult> {
+    return this.#track(this.#goalPlan.goalControl(input, context));
+  }
+  planQuery(input: PlanQueryInput, context: AcpLoadContext): Promise<PlanQueryResult> {
+    return this.#track(this.#goalPlan.planQuery(input, context));
+  }
+  planControl(input: PlanControlInput, context: AcpLoadContext): Promise<PlanControlResult> {
+    return this.#track(this.#goalPlan.planControl(input, context));
+  }
+  planTurnStart(input: PlanTurnStartInput, context: AcpLoadContext): Promise<PlanTurnStartResult> {
+    return this.#track(this.#goalPlan.planTurnStart(input, context));
+  }
+
+  async #prepareGoalPlan(
+    sessionId: string,
+    context: AcpLoadContext,
+    turnId?: string,
+    observe = true,
+  ): Promise<PreparedGoalPlanOperation> {
+    this.#assertOpen('subscription.open');
+    this.#assertOwned(sessionId);
+    context.signal.throwIfAborted();
+    const generation = this.#sessionCloseGenerations.get(sessionId) ?? 0;
+    const connection = await this.#getConnection('subscription.open');
+    this.#assertOwned(sessionId);
+    context.signal.throwIfAborted();
+    if (!observe) return { connection, commit: () => undefined, rollback: () => undefined };
+    const restoreContext = this.#installExternalContext(sessionId, context);
+    const restoreClient = this.#attachmentInteractions
+      .get(sessionId)
+      ?.setClient(context.interactions ?? UNAVAILABLE_INTERACTION_CLIENT);
+    const creatingAttachment = !this.#attachments.has(sessionId);
+    let observation: AcpAdmittedTurnObservation | undefined;
+    let observedReplay = false;
+    let admissionFinished = false;
+    let attachment: RuntimeHostSessionChannel | undefined;
+    const finishAdmission = (retain: boolean, error?: unknown) => {
+      if (!observation || admissionFinished) return;
+      admissionFinished = true;
+      const state = this.#pendingPlanAdmissions.get(observation);
+      if (!state) return;
+      state.retained ||= retain;
+      state.users -= 1;
+      if (state.users > 0) return;
+      this.#pendingPlanAdmissions.delete(observation);
+      if (state.retained) return;
+      observation.failStartRequest(error);
+      observation.dispose();
+      this.#removeTurnObservation(observation);
+      if (error && turnId) attachment?.failTurn(turnId, error);
+    };
+    const rollback = (error?: unknown) => {
+      finishAdmission(false, error);
+      restoreContext.rollback();
+      restoreClient?.rollback();
+      if (
+        creatingAttachment &&
+        !this.#hasAttachmentConsumers(sessionId) &&
+        !this.#turnObservations.get(sessionId)?.size &&
+        !this.#externalObservationContexts.has(sessionId)
+      ) {
+        const task = this.#detachAttachment(sessionId);
+        void task?.then(
+          (channel) => channel.close(),
+          () => undefined,
+        );
+      }
+    };
+    try {
+      const prepared = await this.#prepareExternalObservation(
+        sessionId,
+        context,
+        connection,
+        'subscription.open',
+        turnId,
+      );
+      attachment = prepared.attachment;
+      observation = prepared.observation;
+      observedReplay = prepared.observedReplay ?? false;
+      if (observation) {
+        const state = this.#pendingPlanAdmissions.get(observation) ?? {
+          users: 0,
+          retained: false,
+        };
+        state.users += 1;
+        this.#pendingPlanAdmissions.set(observation, state);
+      }
+      if ((this.#sessionCloseGenerations.get(sessionId) ?? 0) !== generation)
+        throw unknownSessionError();
+      if (context.notifyGoalStatus || context.notifyPlanChanged) {
+        this.#domainObservations.get(sessionId)?.initialize(attachment.snapshot.goal);
+      }
+      return {
+        connection,
+        ...(observedReplay ? { observedReplay } : {}),
+        ...(observation ? { observation } : {}),
+        ...(observation
+          ? { reconcileAdmission: () => this.#queryPromptAdmission(observation!, connection) }
+          : {}),
+        ...(observation
+          ? {
+              cancelObservation: () => {
+                const state = this.#pendingPlanAdmissions.get(observation!);
+                if (state?.users === 1 && !state.retained)
+                  void this.#cancelPrompt(observation!).catch(() => undefined);
+              },
+            }
+          : {}),
+        commit: () => {
+          finishAdmission(true);
+          restoreContext.commit();
+          restoreClient?.commit();
+        },
+        rollback,
+      };
+    } catch (error) {
+      rollback(error);
+      if (error instanceof RequestError) throw error;
+      throw requestErrorFromRuntimeHost(error, 'subscription.open');
+    }
+  }
+
+  /** Shared non-prompt preparation for explicit Turn resume and Plan admission. */
+  async #prepareExternalObservation(
+    sessionId: string,
+    context: AcpLoadContext,
+    connection: AcpSessionRegistryConnection,
+    operation: 'subscription.open' | 'turn.resume.start',
+    turnId?: string,
+  ): Promise<{
+    attachment: RuntimeHostSessionChannel;
+    observation?: AcpAdmittedTurnObservation;
+    observedReplay?: boolean;
+  }> {
+    await this.#mcps.get(sessionId)?.ready(context.signal);
+    const attachment = await this.#ensureAttachment(sessionId, connection, context);
+    context.signal.throwIfAborted();
+    this.#assertOpen(operation);
+    this.#assertOwned(sessionId);
+    if (!turnId) return { attachment };
+    const root = attachment.snapshot.rootTurn;
+    if (root?.turnId === turnId && isRuntimeHostTerminalTurn(root))
+      return { attachment, observedReplay: true };
+    const observation = await this.#adoptTurn(sessionId, turnId, attachment, true);
+    if (!observation) throw registryClosedError(operation);
+    // Load/resume already observes an admitted Host Turn without local admission
+    // bookkeeping. Let the Host validate the replay while preserving that sole
+    // consumer, including when this request is rejected or its result is lost.
+    if (!(observation instanceof AcpAdmittedTurnObservation))
+      return { attachment, observedReplay: true };
+    return { attachment, observation };
   }
 
   async create(params: NewSessionRequest, signal?: AbortSignal): Promise<NewSessionResponse> {
@@ -1119,6 +1318,13 @@ export class AcpSessionRegistry {
       },
     });
     this.#attachmentInteractions.set(sessionId, interactions);
+    const domainObservation = new AcpSessionDomainObservation({
+      sessionId,
+      queryPlan: () => connection.request('plan.query', { kind: 'list_start', sessionId }),
+      goalNotify: () => this.#externalObservationContexts.get(sessionId)?.notifyGoalStatus,
+      planNotify: () => this.#externalObservationContexts.get(sessionId)?.notifyPlanChanged,
+    });
+    this.#domainObservations.set(sessionId, domainObservation);
     task = RuntimeHostSessionChannel.open({
       connection,
       signal: openingController.signal,
@@ -1139,6 +1345,22 @@ export class AcpSessionRegistry {
           });
       },
       onRuntimeResourceChanged: () => undefined,
+      onSessionDomainChanged: (frame) => {
+        if (
+          frame.domain === 'plan' &&
+          this.#externalObservationContexts.get(sessionId)?.notifyPlanChanged
+        )
+          domainObservation.planChanged();
+      },
+      onCanonicalReplacement: (snapshot) => {
+        if (attachment && this.#discardedAttachments.has(attachment)) return;
+        if (
+          this.#externalObservationContexts.get(sessionId)?.notifyPlanChanged ||
+          this.#externalObservationContexts.get(sessionId)?.notifyGoalStatus
+        ) {
+          domainObservation.canonicalReplacement(snapshot.goal);
+        }
+      },
       onSnapshotChanged: (snapshot) => {
         if (attachment && this.#discardedAttachments.has(attachment)) return;
         this.#wakeSession(sessionId);
@@ -1214,7 +1436,7 @@ export class AcpSessionRegistry {
           ?.reconcile()
           .catch(() => undefined);
       },
-      onGoalChanged: () => undefined,
+      onGoalChanged: (goal) => domainObservation.goalChanged(goal),
       onFailed: failAttachment,
       onRecovered: () => {
         for (const active of this.#admittedTurns(sessionId)) {
@@ -1263,9 +1485,18 @@ export class AcpSessionRegistry {
             ? attachedTurnId
             : undefined,
         );
+        if (
+          this.#externalObservationContexts.get(sessionId)?.notifyGoalStatus ||
+          this.#externalObservationContexts.get(sessionId)?.notifyPlanChanged
+        ) {
+          domainObservation.initialize(channel.snapshot.goal);
+        }
         return channel;
       })
       .catch((error: unknown) => {
+        domainObservation.dispose();
+        if (this.#domainObservations.get(sessionId) === domainObservation)
+          this.#domainObservations.delete(sessionId);
         interactions.close();
         if (this.#attachmentInteractions.get(sessionId) === interactions) {
           this.#attachmentInteractions.delete(sessionId);
@@ -1319,6 +1550,8 @@ export class AcpSessionRegistry {
     this.#attachmentOpenControllers.get(sessionId)?.abort();
     this.#attachmentInteractions.get(sessionId)?.close();
     this.#attachmentInteractions.delete(sessionId);
+    this.#domainObservations.get(sessionId)?.dispose();
+    this.#domainObservations.delete(sessionId);
     this.#attachmentConfigurations.delete(sessionId);
     this.#attachments.delete(sessionId);
     return expected;
@@ -1565,14 +1798,16 @@ export class AcpSessionRegistry {
     };
     context.signal.addEventListener('abort', onAbort, { once: true });
     try {
-      await this.#mcps.get(params.sessionId)?.ready(context.signal);
-      attachment = await this.#ensureAttachment(params.sessionId, connection, context);
-      context.signal.throwIfAborted();
-      this.#assertOwned(params.sessionId);
-      const adopted = await this.#adoptTurn(params.sessionId, turnId, attachment, true);
-      if (!(adopted instanceof AcpAdmittedTurnObservation))
-        throw registryClosedError('turn.resume.start');
-      observation = adopted;
+      const prepared = await this.#prepareExternalObservation(
+        params.sessionId,
+        context,
+        connection,
+        'turn.resume.start',
+        turnId,
+      );
+      attachment = prepared.attachment;
+      observation = prepared.observation;
+      if (!observation) throw registryClosedError('turn.resume.start');
       if (context.signal.aborted) onAbort();
       if (observation.cancelled)
         throw RequestError.internalError(
@@ -2000,6 +2235,9 @@ export class AcpSessionRegistry {
       lifetime.throwIfAborted();
       this.#assertOpen('subscription.open');
       this.#assertOwned(params.sessionId);
+      if (context.notifyGoalStatus || context.notifyPlanChanged) {
+        this.#domainObservations.get(params.sessionId)?.initialize(attachment.snapshot.goal);
+      }
       if ((this.#sessionCloseGenerations.get(params.sessionId) ?? 0) !== generation) {
         throw unknownSessionError();
       }
@@ -2317,6 +2555,8 @@ export class AcpSessionRegistry {
   }
 
   async #dispose(): Promise<void> {
+    for (const observer of this.#domainObservations.values()) observer.dispose();
+    this.#domainObservations.clear();
     this.#externalObservationContexts.clear();
     this.#externalContextLeases.clear();
     for (const observations of this.#turnObservations.values()) {
@@ -2377,6 +2617,7 @@ export class AcpSessionRegistry {
       ...this.#inFlightOperations,
       ...configurations.map(({ tail }) => tail),
     ]);
+    this.#pendingPlanAdmissions.clear();
     this.#artifactOperations.clear();
     this.#artifactCleanupTasks.clear();
     this.#artifactUploads.clear();

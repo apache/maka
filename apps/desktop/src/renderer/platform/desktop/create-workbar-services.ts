@@ -24,6 +24,7 @@ import {
   isTerminalShellRunStatus,
 } from '@maka/core/shell-run';
 import type { WorkbarServices } from '../../features/workbar';
+import { createReviewBaseBranchPreferences } from './review-base-branch-preferences.js';
 import { readSettledMessagesFrom } from './session-message-settlement.js';
 import { expectSessionUpdate } from './create-session-settings-services.js';
 
@@ -105,6 +106,7 @@ export function createDesktopWorkbarServices(
   };
 
   return {
+    reviewBaseBranchPreference: createReviewBaseBranchPreferences(),
     popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),

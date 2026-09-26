@@ -26,6 +26,7 @@ import {
   type ClientCapabilities,
 } from '@agentclientprotocol/sdk';
 import { HOST_OPERATION_SPECS } from '@maka/runtime-host/protocol';
+import { goalPlanRouteInput } from './goal-plan-routes.js';
 import type { AcpLoadContext, AcpSessionRegistry } from './session-registry.js';
 
 export interface MakaAcpAgentOptions {
@@ -36,6 +37,12 @@ export interface MakaAcpAgentOptions {
     | 'load'
     | 'resume'
     | 'resumeTurn'
+    | 'goalQuery'
+    | 'goalArm'
+    | 'goalControl'
+    | 'planQuery'
+    | 'planControl'
+    | 'planTurnStart'
     | 'queryCopySource'
     | 'branch'
     | 'createRevision'
@@ -63,6 +70,7 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
         agentCapabilities: {
           loadSession: true,
           sessionCapabilities: { list: {}, resume: {}, close: {} },
+          _meta: { '_maka/goalPlan': { version: 1 } },
         },
         authMethods: [],
         agentInfo: { name: 'maka', title: 'Maka', version: options.version },
@@ -97,6 +105,51 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
       },
       ({ params, signal, client }) =>
         options.sessionRegistry.resumeTurn(
+          params,
+          sessionContext(client, signal, clientCapabilities, true),
+        ),
+    )
+    .onRequest('_maka/goal/query', goalPlanRouteInput('goal.query'), ({ params, signal, client }) =>
+      options.sessionRegistry.goalQuery(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest('_maka/goal/arm', goalPlanRouteInput('goal.arm'), ({ params, signal, client }) =>
+      options.sessionRegistry.goalArm(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest(
+      '_maka/goal/control',
+      goalPlanRouteInput('goal.control'),
+      ({ params, signal, client }) =>
+        options.sessionRegistry.goalControl(
+          params,
+          sessionContext(client, signal, clientCapabilities, true),
+        ),
+    )
+    .onRequest('_maka/plan/query', goalPlanRouteInput('plan.query'), ({ params, signal, client }) =>
+      options.sessionRegistry.planQuery(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest(
+      '_maka/plan/control',
+      goalPlanRouteInput('plan.control'),
+      ({ params, signal, client }) =>
+        options.sessionRegistry.planControl(
+          params,
+          sessionContext(client, signal, clientCapabilities, true),
+        ),
+    )
+    .onRequest(
+      '_maka/plan/turn/start',
+      goalPlanRouteInput('plan.turn.start'),
+      ({ params, signal, client }) =>
+        options.sessionRegistry.planTurnStart(
           params,
           sessionContext(client, signal, clientCapabilities, true),
         ),
@@ -253,6 +306,16 @@ function sessionContext(
           notifyTurnStatus: (
             status: Parameters<NonNullable<AcpLoadContext['notifyTurnStatus']>>[0],
           ) => client.notify('_maka/turn/status', status),
+        }
+      : {}),
+    ...(capabilities._meta?.['_maka/goalPlanStatus'] === true
+      ? {
+          notifyGoalStatus: (
+            status: Parameters<NonNullable<AcpLoadContext['notifyGoalStatus']>>[0],
+          ) => client.notify('_maka/goal/status', status),
+          notifyPlanChanged: (
+            status: Parameters<NonNullable<AcpLoadContext['notifyPlanChanged']>>[0],
+          ) => client.notify('_maka/plan/changed', status),
         }
       : {}),
   };

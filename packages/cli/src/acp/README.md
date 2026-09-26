@@ -63,6 +63,8 @@ or reconnection without waiting for the Host to become available.
 | Tool `permission` | Standard `session/request_permission`. One-shot allow/deny choices are preserved; eligible tool permissions also expose an explicit allow-for-this-Turn choice. Permission cancellation cancels the Turn. |
 | Load/resume | `session/load` replays durable user, assistant, thinking and tool rows before returning; `session/resume` attaches without replay. Both return current configuration and leave the Session attached for prompt. Neither restarts an interrupted Turn. |
 | Explicit interrupted Turn resume | `_maka/turn/resume` queries the Host safety plan and starts only a ready plan. A required MCP tool absent from the current Session binding leaves the plan parked. A parked plan is returned unchanged. A lost dispatched start returns `outcome_unknown` with the exact `turnId`; the adapter never retries that command. |
+| Goal control | `_maka/goal/query`, `_maka/goal/arm`, and `_maka/goal/control` forward Host projections and exact Goal identity, revision, iteration and token budgets. Arm stores a Goal; a normal user prompt begins its first work Turn. Resume can drive background work without another prompt. |
+| Plan control | `_maka/plan/query` returns Host pages and `revision_changed`; `_maka/plan/control` forwards five actions with the caller's operation ID. `_maka/plan/turn/start` performs one Host approval or execution resume admission and returns `{plan, turn}`. Standard Session output and interaction notifications continue; `_maka/turn/status` reports a non-prompt Turn terminal state. |
 | Copy source discovery | `_maka/session/copy-source/query` returns a bounded Host Turn page and `expectedSourceRevision` for an owned Session, so branch/revision parameters can be obtained entirely through ACP. |
 | Branch and revision | `_maka/session/branch/create`, `_maka/session/revision/create`, and `_maka/session/revision/abandon` map to the corresponding Host commands. The source must be owned by this ACP connection. A committed target becomes immediately usable; `retained` keeps its ownership and `abandoned` releases local resources. |
 | Replacing all MCP configuration | Every load/resume applies its complete stdio list through the existing Session MCP manager and publication. An omitted `session/resume.mcpServers` means an empty list. Equivalent normalized configuration reuses the process; changing or clearing it republishes the Session scope. An attached Session rejects a different configuration while the Host reports an active Turn; retry after that Turn settles. |
@@ -171,6 +173,43 @@ Terminal snapshots are retained with their exact Turn's event queue until
 consumption, including when a successor finishes before an output barrier releases
 its observation.
 Ordinary ACP clients can load/resume and prompt without this extension.
+
+## Goal and Plan extension
+
+The agent advertises `initialize.agentCapabilities._meta["_maka/goalPlan"]:
+{ "version": 1 }`. All six requests require Session ownership obtained through
+`session/new`, `session/load`, or `session/resume`. They use the Runtime Host
+input and result shapes and preserve Goal budgets/revisions, Plan store versions,
+entity IDs, operation IDs, and Turn IDs. Plan pages contain at most 16 items;
+carry `storeVersion` and `nextCursor` into `list_continue`, and restart from
+`list_start` after `revision_changed`.
+
+Clients that set `initialize.clientCapabilities._meta["_maka/goalPlanStatus"]:
+true` also receive `_maka/goal/status` with `{sessionId, goal}` and
+`_maka/plan/changed` with `{sessionId, storeVersion, latestProposalId,
+activeExecutionId}`. These are latest-state hints, not an audit log. Query Plan
+for the full proposal, execution, and step projection. A client without the
+notification preference can still use every request. Register notification
+handlers before sending mutations: a Host change can precede its request result.
+
+Both domain notifications use best-effort delivery: a rejected send is logged to
+stderr and is not automatically retried. Without a later domain update or
+canonical replacement, the client may keep an older view; use `_maka/goal/query`
+or `_maka/plan/query` to recover authoritative state. The bounded backoff applies
+only to failed Host reads while refreshing Plan hints, not notification sends.
+
+Successful mutation responses mean Host admission, not task completion. A lost
+dispatched response returns `error.data.code: outcome_unknown` with the original
+Session and available entity/operation/Turn identity. The adapter never resends
+the command. Query the Host before a new user decision; equal Goal condition and
+budget do not identify a prior arm. Host `persistence_failed` remains distinct
+and keeps the observation alive for later authoritative facts.
+
+`goal.control.pause` controls Goal continuation, while `session/cancel` stops
+the current observed Turn. `plan.control.cancel_execution` changes Plan state;
+the Host can reject it with `session_busy` while a root Turn is active. Closing
+the ACP Session releases this connection's resources and does not clear the
+durable Goal or Plan.
 
 The working directory in load/resume must resolve to the Session's Host cwd;
 additional directories are not supported. Missing and archived Sessions are

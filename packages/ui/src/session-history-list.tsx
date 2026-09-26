@@ -1460,21 +1460,17 @@ function SessionItemActions(props: {
     [],
   );
 
-  // Where this task may go, asked of the shell rather than derived here: the
-  // rail holds no project list beyond the rows it draws, and one Host's
-  // projects are not another's. The row that leaves every project is offered
-  // only while the task is in one.
-  const moveTargets = useMemo(() => {
-    const currentProjectId = props.session.projectId ?? null;
-    return props.moveTargets
-      .filter((target) => target.projectId !== currentProjectId)
-      .filter((target) => target.projectId !== null || currentProjectId !== null)
-      .map((target) => ({
+  // The provider resolves project membership and destination eligibility.
+  // An exit remains valid even when the current project cannot receive tasks.
+  const moveTargets = useMemo(
+    () =>
+      props.moveTargets.map((target) => ({
         label: target.projectId === null ? copy.moveToNoProject : (target.name ?? ''),
         onClick: () =>
           runRowAction('move', () => actions.onMoveToProject?.(props.session.id, target.projectId)),
-      }));
-  }, [actions, copy.moveToNoProject, props.moveTargets, props.session.id, props.session.projectId]);
+      })),
+    [actions, copy.moveToNoProject, props.moveTargets, props.session.id],
+  );
 
   function runRowAction(actionId: SessionRowActionId, action: () => void | Promise<void>) {
     if (pendingActionRef.current) return;
