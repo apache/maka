@@ -229,6 +229,7 @@ interface LivePtyShellRun extends LiveShellRunBase {
   rawSequence: number;
   pendingRawData: string;
   rawPublishTimer?: NodeJS.Timeout;
+  privateTerminal?: { collector: PtyScreenCollector; sequence: number; inputOpen: boolean };
 }
 
 type LiveShellRun = LivePipeShellRun | LivePtyShellRun;
@@ -368,6 +369,7 @@ export class ShellRunProcessManager
     if (!live) return this.writeStdinWithoutLive(input, target.shellRunId);
     assertShellRunCaller(live.record, input.caller);
     if (live.mode !== 'pty') throw new Error('WriteStdin requires a PTY background task ref');
+    if (live.privateTerminal?.inputOpen) throw new Error('This terminal is awaiting human input');
     if (live.driverExit) {
       const record = await this.markObserved(await live.finished.join());
       return shellRunContent(
@@ -391,6 +393,7 @@ export class ShellRunProcessManager
     let operationFailed = false;
     let exitBeforeControlCut = false;
     const mutation = (): void => {
+      if (live.privateTerminal?.inputOpen) throw new Error('This terminal is awaiting human input');
       if (input.abortSignal?.aborted) {
         throw abortError('WriteStdin aborted before the control operation was committed');
       }
@@ -403,7 +406,7 @@ export class ShellRunProcessManager
         input.input ??
         (input.actions
           ? encodeTerminalInputActions(input.actions, {
-              ...live.collector.currentInputState(),
+              ...(live.privateTerminal?.collector ?? live.collector).currentInputState(),
               ...(input.size ? { cols: input.size.cols, rows: input.size.rows } : {}),
             })
           : undefined);
@@ -417,6 +420,7 @@ export class ShellRunProcessManager
           resizeChanged = true;
           try {
             live.collector.resize(input.size.cols, input.size.rows);
+            live.privateTerminal?.collector.resize(input.size.cols, input.size.rows);
           } catch (error) {
             operationFailed = true;
             this.handleIntegrityFailure(live, asError(error, 'PTY screen resize failed'));
@@ -626,6 +630,123 @@ export class ShellRunProcessManager
       buffer: live.rawBuffer.slice(-PTY_RAW_REPLAY_CHARS),
       size: live.collector.currentSize(),
     };
+  }
+
+  async preparePtyHandoff(sessionId: string, ref: string, signal: AbortSignal): Promise<void> {
+    const live = this.requirePrivatePtyTarget(sessionId, ref);
+    assertShellRunCaller(live.record, 'model');
+    if (!live.driver.supportsInputFence)
+      throw new Error('Private terminal input is unavailable on this platform');
+    if (live.privateTerminal?.inputOpen) throw new Error('Terminal handoff is already active');
+    if (!live.privateTerminal) {
+      const stack = await loadPtyStack();
+      if (live.driverExit || live.termination)
+        throw new Error('Original terminal is no longer running');
+      const size = live.collector.currentSize();
+      const collector = new PtyScreenCollector({
+        stack,
+        ...size,
+        onProtocolReply: () => {},
+        onDirty: () => {},
+        onFailure: () =>
+          this.handleIntegrityFailure(live, new Error('Private terminal display failed')),
+      });
+      collector.accept(live.rawBuffer);
+      live.privateTerminal = { collector, sequence: 0, inputOpen: true };
+      if (live.rawPublishTimer) clearTimeout(live.rawPublishTimer);
+      live.rawPublishTimer = undefined;
+      live.rawBuffer = '';
+      live.pendingRawData = '';
+      // The public parser never sees a private byte, including delayed echoes.
+      live.collector.accept(
+        '\x1bc[Terminal output is private. Ask the user to review and share an observation.]\r\n',
+      );
+    } else {
+      live.privateTerminal.inputOpen = true;
+    }
+    try {
+      await live.driver.drainInput(signal);
+      await this.persistObservation(live);
+    } catch (error) {
+      live.privateTerminal.inputOpen = false;
+      throw error;
+    }
+  }
+
+  async writePrivatePtyInput(
+    sessionId: string,
+    ref: string,
+    input: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const live = this.requirePrivatePtyTarget(sessionId, ref);
+    if (!live.privateTerminal?.inputOpen)
+      throw new Error('Terminal handoff is not accepting input');
+    validateWriteStdinInput({ sessionId, ref, input });
+    if (signal.aborted) throw new Error('Private input cancelled before delivery');
+    live.driver.write(input);
+    await live.driver.drainInput(signal);
+  }
+
+  async readPrivatePtySnapshot(sessionId: string, ref: string) {
+    const live = this.requirePrivatePtyTarget(sessionId, ref);
+    const terminal = live.privateTerminal;
+    if (!terminal) throw new Error('Terminal has no private display');
+    const sequence = terminal.sequence;
+    const snapshot = await terminal.collector.snapshotAtCut();
+    return {
+      sequence,
+      text: [snapshot.output.scrollback, snapshot.output.screen].filter(Boolean).join('\n'),
+      inputOpen: terminal.inputOpen,
+    };
+  }
+
+  async resumePtyHandoff(sessionId: string, ref: string): Promise<boolean> {
+    const target = parseShellRunResourceRef(ref);
+    const live = target ? this.liveResource(sessionId, target.shellRunId) : undefined;
+    if (!live || live.mode !== 'pty' || live.driverExit || live.termination) return false;
+    if (!live.privateTerminal) return false;
+    await live.driver.drainInput(AbortSignal.timeout(5_000));
+    live.privateTerminal.inputOpen = false;
+    // Discard the authentication screen; later output still remains private.
+    live.privateTerminal.collector.accept('\x1bc');
+    await live.privateTerminal.collector.snapshotAtCut();
+    live.privateTerminal.sequence++;
+    return true;
+  }
+
+  async sharePrivatePtyObservation(
+    sessionId: string,
+    ref: string,
+    sequence: number,
+    text: string,
+  ): Promise<void> {
+    const live = this.requirePrivatePtyTarget(sessionId, ref);
+    if (live.privateTerminal?.inputOpen)
+      throw new Error('Finish private input before sharing a new observation');
+    const snapshot = await this.readPrivatePtySnapshot(sessionId, ref);
+    if (
+      snapshot.sequence !== sequence ||
+      !text ||
+      !snapshot.text.includes(text) ||
+      text.length > 8_000
+    ) {
+      throw new Error('Select a current terminal observation to share');
+    }
+    // Publication requires a separate explicit human review, not Resume.
+    live.collector.accept(
+      `\x1bc[User-reviewed terminal observation]\r\n${text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')}`,
+    );
+    await this.persistObservation(live);
+  }
+
+  private requirePrivatePtyTarget(sessionId: string, ref: string): LivePtyShellRun {
+    const target = parseShellRunResourceRef(ref);
+    const live = target ? this.liveResource(sessionId, target.shellRunId) : undefined;
+    if (!live || live.mode !== 'pty' || live.driverExit || live.termination) {
+      throw new Error('Original terminal is no longer running');
+    }
+    return live;
   }
 
   async recoverOrphanedSession(sessionId: string): Promise<number> {
@@ -856,7 +977,8 @@ export class ShellRunProcessManager
         onProtocolReply: (data) => {
           if (!live || !driver)
             throw new Error('PTY protocol reply arrived before driver admission');
-          if (live.driverExit || live.termination || live.integrityFailure) return;
+          if (live.driverExit || live.termination || live.integrityFailure || live.privateTerminal)
+            return;
           driver.write(data);
         },
         onDirty: () => dispatch((target) => this.scheduleAutomaticFlush(target)),
@@ -1024,6 +1146,11 @@ export class ShellRunProcessManager
 
   private onPtyData(live: LivePtyShellRun, data: string): void {
     if (live.driverExit || live.finalizeOnce) return;
+    if (live.privateTerminal) {
+      live.privateTerminal.collector.accept(data);
+      live.privateTerminal.sequence++;
+      return;
+    }
     // Amortize the tail trim: slicing on every tiny node-pty event copies the
     // whole 16K replay buffer per event.
     live.rawBuffer += data;
@@ -1279,7 +1406,10 @@ export class ShellRunProcessManager
     }
     let cleanupError: Error | undefined;
     try {
-      if (live.mode === 'pty') live.collector.dispose();
+      if (live.mode === 'pty') {
+        live.collector.dispose();
+        live.privateTerminal?.collector.dispose();
+      }
     } catch (error) {
       cleanupError ??= asError(error, 'PTY collector cleanup failed');
     }
@@ -1572,6 +1702,7 @@ export class ShellRunProcessManager
       if (live.mode === 'pty') {
         live.collector.closeDataAdmission();
         live.collector.dispose();
+        live.privateTerminal?.collector.dispose();
       }
     } catch (error) {
       cleanupError ??= asError(error, 'PTY collector startup cleanup failed');

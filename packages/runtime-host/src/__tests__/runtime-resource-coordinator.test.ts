@@ -46,11 +46,183 @@ import {
   type HostRuntimeResourceCoordinatorInput,
 } from '../server/runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import type { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 
 const SESSION_ID = 'session-1';
 const RUNTIME_REF = 'maka://runtime/background-tasks/shell-1';
 
 describe('Host Runtime Resource coordinator', () => {
+  test('a handoff cannot gate or stop a terminal the model is not allowed to read', async () => {
+    const harness = createHarness({
+      humanControl: {
+        preparePtyHandoff: async () => {
+          assert.fail('must validate before preparing');
+        },
+        writePrivatePtyInput: async () => {},
+        readPrivatePtySnapshot: async () => ({ sequence: 0, text: '', inputOpen: false }),
+        resumePtyHandoff: async () => false,
+        sharePrivatePtyObservation: async () => {},
+      },
+      interactionAuthority: () => ({
+        requestTerminalHandoff: async () => {
+          throw new Error('must not request');
+        },
+        closeTerminalHandoff: async () => {},
+      }),
+    });
+    harness.modelReadFailure = new Error('User-owned terminal');
+    await harness.coordinator.handlers['runtime.resource.handoff'](
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('desktop'),
+    );
+    await assert.rejects(
+      harness.coordinator.requestHandoff(RUNTIME_REF, 'Authenticate', {
+        sessionId: SESSION_ID,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        toolCallId: 'tool-1',
+        cwd: '/workspace',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      }),
+      /User-owned/,
+    );
+    assert.equal(harness.stopCount, 0);
+    const lookup = await harness.coordinator.handlers['runtime.resource.handoff'](
+      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection('desktop'),
+    );
+    assert.equal(lookup.ok && lookup.result.status, 'unavailable');
+  });
+
+  test('private handoff fences model writes, deduplicates input and survives controller disconnect', async () => {
+    const published = deferred();
+    const decision = deferred<import('@maka/core/interaction').InteractionCanonicalOutcome>();
+    let request!: Parameters<HostInteractionCoordinator['requestTerminalHandoff']>[0];
+    const inputs: string[] = [];
+    const harness = createHarness({
+      humanControl: {
+        preparePtyHandoff: async () => {},
+        writePrivatePtyInput: async (_session, _ref, input) => {
+          inputs.push(input);
+        },
+        readPrivatePtySnapshot: async () => ({ sequence: 1, text: 'private', inputOpen: true }),
+        resumePtyHandoff: async () => true,
+        sharePrivatePtyObservation: async () => {},
+      },
+      interactionAuthority: () => ({
+        requestTerminalHandoff: async (input) => {
+          request = input;
+          published.resolve();
+          return decision.promise;
+        },
+        closeTerminalHandoff: async () => {
+          await request.apply('cancel');
+          decision.resolve({ kind: 'closure', reason: 'producer_cancelled', committedAt: 1 });
+        },
+      }),
+    });
+    const host = harness.coordinator;
+    const control = host.handlers['runtime.resource.handoff'];
+    assert.equal(host.isHandoffAvailable(SESSION_ID), false);
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('desktop'),
+    );
+    const held = deferred();
+    const release = deferred();
+    const admission = harness.sessionAdmission.run(SESSION_ID, async () => {
+      held.resolve();
+      await release.promise;
+    });
+    await held.promise;
+    const handoff = host.requestHandoff(RUNTIME_REF, 'Authenticate', {
+      sessionId: SESSION_ID,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      cwd: '/workspace',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    });
+    const staleWrite = assert.rejects(
+      host.writeStdin({
+        sessionId: SESSION_ID,
+        ref: RUNTIME_REF,
+        input: 'queued before handoff admission',
+      }),
+      /expired/,
+    );
+    release.resolve();
+    await admission;
+    await staleWrite;
+    await published.promise;
+    const identity = {
+      sessionId: SESSION_ID,
+      requestId: request.requestId,
+      controllerId: 'card-1',
+    };
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), false);
+    assert.equal((await control({ ...identity, action: 'ready' }, connection('desktop'))).ok, true);
+    await assert.rejects(
+      host.writeStdin({ sessionId: SESSION_ID, ref: RUNTIME_REF, input: 'model write' }),
+      /human/,
+    );
+    assert.equal(
+      (
+        await control(
+          { ...identity, action: 'input', sequence: 1, input: 'fixture-password' },
+          connection('desktop'),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await control(
+          { ...identity, action: 'input', sequence: 1, input: 'must-not-replay' },
+          connection('desktop'),
+        )
+      ).ok,
+      true,
+    );
+    assert.deepEqual(inputs, ['fixture-password\r']);
+    host.releaseConnection('desktop');
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), false);
+    assert.equal(
+      (
+        await control(
+          { ...identity, action: 'input', sequence: 2, input: 'stale' },
+          connection('desktop'),
+        )
+      ).ok,
+      false,
+    );
+    await assert.rejects(
+      host.writeStdin({ sessionId: SESSION_ID, ref: RUNTIME_REF, input: 'model write' }),
+      /human/,
+    );
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('reconnected'),
+    );
+    const reattached = { ...identity, controllerId: 'card-2' };
+    await control({ ...reattached, action: 'ready' }, connection('reconnected'));
+    assert.equal(request.canAnswer('resume', 'reconnected', 'card-2'), true);
+    assert.equal(request.canAnswer('resume', 'reconnected', 'card-1'), false);
+    await control(
+      { ...reattached, action: 'input', sequence: 2, input: 'second-factor' },
+      connection('reconnected'),
+    );
+    await request.apply('resume');
+    decision.resolve({ kind: 'terminal_handoff_answer', action: 'resume', committedAt: 2 });
+    assert.equal(JSON.parse(await handoff).outcome, 'resumed');
+    assert.deepEqual(inputs, ['fixture-password\r', 'second-factor\r']);
+    await host.writeStdin({ sessionId: SESSION_ID, ref: RUNTIME_REF, input: 'new model write' });
+    assert.equal(harness.writeCount, 1);
+  });
+
   test('pages one stable bounded projection and rejects stale continuation revisions', async () => {
     const harness = createHarness();
     harness.updates = Array.from({ length: 65 }, (_, index) => resourceUpdate(index));
@@ -869,7 +1041,11 @@ function createHarness(
   options: Partial<
     Pick<
       HostRuntimeResourceCoordinatorInput,
-      'requestDrain' | 'resolveShell' | 'sessionAccessAuthority'
+      | 'requestDrain'
+      | 'resolveShell'
+      | 'sessionAccessAuthority'
+      | 'humanControl'
+      | 'interactionAuthority'
     >
   > = {},
 ) {
@@ -896,6 +1072,7 @@ function createHarness(
     livePty: undefined as ShellRunPtySnapshot | null | undefined,
     inspectCalls: [] as { sessionId: string; ref: string }[],
     inspectFailure: undefined as Error | undefined,
+    modelReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
     lastForegroundInput: undefined as ShellRunBashInput | undefined,
@@ -922,7 +1099,10 @@ function createHarness(
       }
       return state.backgroundResult ?? compactState(0);
     },
-    readRuntimeResource: async () => currentSnapshot,
+    readRuntimeResource: async () => {
+      if (state.modelReadFailure) throw state.modelReadFailure;
+      return currentSnapshot;
+    },
     stopBackgroundTask: async () => {
       state.stopCount += 1;
       return {

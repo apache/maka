@@ -1641,6 +1641,10 @@ export class DesktopRuntimeHostClient {
     return this.request("runtime.resource.controller.control", input);
   }
 
+  controlTerminalHandoff(input: OperationInput<'runtime.resource.handoff'>): Promise<OperationOutput<'runtime.resource.handoff'>> {
+    return this.request('runtime.resource.handoff', input);
+  }
+
   releaseRuntimeResourceController(
     input: OperationInput<"runtime.resource.controller.release">,
   ): Promise<OperationOutput<"runtime.resource.controller.release">> {

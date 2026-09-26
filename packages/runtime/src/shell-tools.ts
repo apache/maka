@@ -486,9 +486,15 @@ export interface WriteStdinInput {
   input?: string;
   actions?: TerminalInputAction[];
   size?: { cols: number; rows: number };
+  handoff?: { message: string };
 }
 
-export function createWriteStdinSchemas(): {
+export interface TerminalHandoffToolSupport {
+  available(sessionId: string): boolean;
+  request(ref: string, message: string, context: MakaToolContext): Promise<string>;
+}
+
+export function createWriteStdinSchemas(handoffAvailable = false): {
   providerParameters: z.ZodTypeAny;
   strictParameters: z.ZodType<WriteStdinInput, unknown>;
 } {
@@ -507,6 +513,12 @@ export function createWriteStdinSchemas(): {
     normalizeProviderWriteStdinInput,
     z
       .object({
+        handoff: handoffAvailable
+          ? z
+              .object({ message: z.string().min(1).max(512) })
+              .strict()
+              .optional()
+          : z.never().optional(),
         ref: z
           .string()
           .max(MAX_SHELL_RUN_RESOURCE_REF_CHARS)
@@ -535,12 +547,25 @@ export function createWriteStdinSchemas(): {
       })
       .refine(
         (value) =>
-          value.input !== undefined || value.actions !== undefined || value.size !== undefined,
+          value.input !== undefined ||
+          value.actions !== undefined ||
+          value.size !== undefined ||
+          ('handoff' in value && value.handoff !== undefined),
         {
           message: 'input, actions, and/or size is required',
         },
       )
       .superRefine((value, context) => {
+        if (
+          'handoff' in value &&
+          value.handoff !== undefined &&
+          (value.input !== undefined || value.actions !== undefined || value.size !== undefined)
+        ) {
+          context.addIssue({
+            code: 'custom',
+            message: 'handoff cannot include terminal input or size',
+          });
+        }
         if (!value.actions) return;
         try {
           if (encodedTerminalInputActionsByteLength(value.actions) > MAX_WRITE_STDIN_INPUT_BYTES) {
@@ -560,46 +585,73 @@ export function createWriteStdinSchemas(): {
       type: z.enum(['text', 'key', 'mouse']).describe('Action kind'),
       text: z
         .string()
-        .describe('Visible text for a text action; omit it for a key action')
+        .describe('Visible text for a text action; use null for other action kinds')
+        .nullable()
         .optional(),
       key: z
         .string()
         .describe(
-          `Named key (${TERMINAL_INPUT_NAMED_KEYS.join(', ')}) or one printable ASCII character for a key action; omit it for a text action`,
+          `Named key (${TERMINAL_INPUT_NAMED_KEYS.join(', ')}) or one printable ASCII character for a key action; use null for other action kinds`,
         )
+        .nullable()
         .optional(),
       event: z
         .enum(TERMINAL_MOUSE_EVENTS)
-        .describe('Mouse event; omit it for text and key actions')
+        .describe('Mouse event; use null for text and key actions')
+        .nullable()
         .optional(),
       x: z
         .number()
         .int()
         .min(0)
-        .describe('Zero-based terminal cell column for a mouse action')
+        .describe('Zero-based terminal cell column for a mouse action; otherwise null')
+        .nullable()
         .optional(),
       y: z
         .number()
         .int()
         .min(0)
-        .describe('Zero-based terminal cell row for a mouse action')
+        .describe('Zero-based terminal cell row for a mouse action; otherwise null')
+        .nullable()
         .optional(),
       button: z
         .enum(TERMINAL_MOUSE_BUTTONS)
-        .describe('Mouse button; required for click, press, and release')
+        .describe('Mouse button; required for click, press, and release; otherwise null')
+        .nullable()
         .optional(),
       direction: z
         .enum(TERMINAL_MOUSE_SCROLL_DIRECTIONS)
-        .describe('Scroll direction; required only for scroll')
+        .describe('Scroll direction; required only for scroll; otherwise null')
+        .nullable()
         .optional(),
       modifiers: z
         .array(z.enum(TERMINAL_INPUT_MODIFIERS))
         .describe('Optional unique modifiers for a key or mouse action')
+        .nullable()
         .optional(),
     })
     .strict();
   const providerParameters = z
     .object({
+      ...(handoffAvailable
+        ? {
+            handoff: z
+              .object({
+                message: z
+                  .string()
+                  .max(512)
+                  .describe(
+                    'Explain the purpose and target of the human terminal handoff; never include a password',
+                  ),
+              })
+              .strict()
+              .nullable()
+              .optional()
+              .describe(
+                'Request human input only. Use null for ordinary terminal actions or resizing; never combine a handoff with actions or size.',
+              ),
+          }
+        : {}),
       ref: z
         .string()
         .max(MAX_SHELL_RUN_RESOURCE_REF_CHARS)
@@ -608,15 +660,17 @@ export function createWriteStdinSchemas(): {
         .array(providerAction)
         .max(MAX_WRITE_STDIN_ACTIONS)
         .describe(
-          'Ordered terminal input actions. Text uses type and text. Key uses type, key, and optional modifiers. Mouse uses type, event, zero-based x/y, event-specific button or direction, and optional modifiers. Omit it for a resize-only call.',
+          'Ordered terminal input actions. Text uses type and text. Key uses type, key, and optional modifiers. Mouse uses type, event, zero-based x/y, event-specific button or direction, and optional modifiers. Use null for a handoff or resize-only call.',
         )
+        .nullable()
         .optional(),
       size: z
         .object({
-          cols: z.number().describe('Terminal columns').optional(),
-          rows: z.number().describe('Terminal rows').optional(),
+          cols: z.number().describe('Terminal columns').nullable().optional(),
+          rows: z.number().describe('Terminal rows').nullable().optional(),
         })
         .strict()
+        .nullable()
         .optional(),
     })
     .strict()
@@ -624,8 +678,11 @@ export function createWriteStdinSchemas(): {
   return { providerParameters, strictParameters };
 }
 
-export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
-  const { providerParameters, strictParameters } = createWriteStdinSchemas();
+export function buildWriteStdinTool(
+  ptyControls: PtyControlWriter,
+  handoff?: TerminalHandoffToolSupport,
+): MakaTool {
+  const { providerParameters, strictParameters } = createWriteStdinSchemas(Boolean(handoff));
   const providerSchema = zodSchema(providerParameters);
   const parameters = jsonSchema(async () => await providerSchema.jsonSchema, {
     validate: async (value) => {
@@ -640,6 +697,9 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
     name: 'WriteStdin',
     activityKind: 'command',
     description:
+      (handoff
+        ? 'For interactive login, passwords, or other human terminal input, use only {ref, handoff:{message}} to reveal this exact terminal and wait for explicit human Resume. Never put credentials in tool arguments. Resume is not proof of authentication. Output remains private unless the user explicitly reviews and shares a new observation. '
+        : '') +
       'Send an ordered sequence of text, key, and mouse actions to a background PTY and/or resize it, then return the terminal state at the next parser cut. ' +
       `Named keys are ${TERMINAL_INPUT_NAMED_KEYS.join(', ')}. Use a printable ASCII key with ctrl or alt for chords such as Ctrl-B; use text for ordinary typing. ` +
       'Mouse coordinates are zero-based terminal cells and work only while the application has enabled SGR cell mouse reporting. ' +
@@ -649,7 +709,12 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
     parameters,
     permissionArgs: (input) => parseInput(input),
     impl: (input, ctx) => {
-      const { ref, input: rawInput, actions, size } = parseInput(input);
+      const { ref, input: rawInput, actions, size, handoff: requestedHandoff } = parseInput(input);
+      if (requestedHandoff) {
+        if (!handoff?.available(ctx.sessionId))
+          throw new Error('Interactive terminal surface is no longer available');
+        return handoff.request(ref, requestedHandoff.message, ctx);
+      }
       return ptyControls.writeStdin({
         sessionId: ctx.sessionId,
         ref,
@@ -665,6 +730,7 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
 function normalizeProviderWriteStdinInput(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const normalized = { ...(value as Record<string, unknown>) };
+  if (normalized.handoff === null) delete normalized.handoff;
   if (normalized.actions === null || isEmptyArray(normalized.actions)) {
     delete normalized.actions;
   } else if (Array.isArray(normalized.actions)) {

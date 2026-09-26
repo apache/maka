@@ -186,7 +186,7 @@ export function useWorkbarController(
     viteEnv?.VITE_MAKA_WORK_BOARD_START_TASK === '1' &&
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
-  const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
+  const { browser, sideChat, terminal, workBoard, review } = useWorkbarServices();
   const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
@@ -495,6 +495,30 @@ export function useWorkbarController(
     },
     [layout.setBottomPanelOpen, layout.setWorkbarCollapsed],
   );
+
+  useEffect(() => {
+    if (!activeSessionId || !terminal.handoff || workspace !== 'session') return;
+    let disposed = false;
+    const advertise = () => {
+      if (!disposed) void terminal.handoff!({ action: 'surface', sessionId: activeSessionId, available: true }).catch(() => {});
+    };
+    advertise();
+    const unsubscribeResync = terminal.subscribeResync((event) => {
+      if (event.sessionId === activeSessionId) advertise();
+    });
+    const unsubscribe = review.subscribeSessionEvents(activeSessionId, (event) => {
+      if (event.type !== 'terminal_handoff_request') return;
+      layout.openDynamicWorkbarTab({ id: terminalSessionWorkbarTabId(event.ref), kind: 'terminal',
+        resourceRef: event.ref, ownerSessionId: activeSessionId, ordinal: reserveOrdinal('terminal') }, 'right');
+      revealPlacement('right');
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      unsubscribeResync();
+      void terminal.handoff!({ action: 'surface', sessionId: activeSessionId, available: false }).catch(() => {});
+    };
+  }, [activeSessionId, workspace, terminal, review, layout.openDynamicWorkbarTab, reserveOrdinal, revealPlacement]);
 
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {

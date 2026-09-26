@@ -28,7 +28,9 @@ import {
   decodeSessionInteractionProjection,
   HOST_OPERATION_SPECS,
   INTERACTION_MAX_PENDING_PER_SESSION,
+  decodeRuntimeResourceHandoffInput,
 } from '../protocol/index.js';
+import { decodeInteractionAnswer } from '@maka/core/interaction';
 import {
   answerOutcome,
   projectInteractionRecord,
@@ -36,6 +38,40 @@ import {
 } from '../server/interaction-projection.js';
 
 describe('Runtime Host Interaction protocol', () => {
+  test('private terminal bytes use nonjournalled control and cannot be stored in an Interaction answer', () => {
+    assert.equal(HOST_OPERATION_SPECS['runtime.resource.handoff'].mode, 'control');
+    const input = {
+      action: 'input',
+      sessionId: 'session-1',
+      requestId: 'request-1',
+      controllerId: 'card-1',
+      sequence: 1,
+      input: 'synthetic-private-value',
+    };
+    assert.deepEqual(decodeRuntimeResourceHandoffInput(input), input);
+    assert.throws(() =>
+      decodeRuntimeResourceHandoffInput({ ...input, input: 'x'.repeat(32 * 1024 + 1) }),
+    );
+    for (const field of ['input', 'password', 'values', 'text']) {
+      assert.throws(() =>
+        decodeInteractionAnswer({
+          kind: 'terminal_handoff',
+          action: 'resume',
+          controllerId: 'card-1',
+          [field]: 'synthetic-private-value',
+        }),
+      );
+    }
+    assert.deepEqual(
+      decodeInteractionAnswer({
+        kind: 'terminal_handoff',
+        action: 'resume',
+        controllerId: 'card-1',
+      }),
+      { kind: 'terminal_handoff', action: 'resume', controllerId: 'card-1' },
+    );
+  });
+
   test('decodes a closed snapshot and rejects extra fields', () => {
     const closed = {
       ...snapshotBase('interaction-1'),

@@ -3009,6 +3009,12 @@ const makaBridge = {
     },
   },
   shellRuns: {
+    handoff(input: import('@maka/runtime-host/protocol').RuntimeResourceHandoffInput): Promise<import('@maka/runtime-host/protocol').RuntimeResourceHandoffResult> {
+      return invokeSessionInput('shell-runs:handoff', input);
+    },
+    answerHandoff(input: { sessionId: string; requestId: string; action: 'resume' | 'cancel' }): Promise<void> {
+      return invokeSessionInput('shell-runs:handoff-answer', input);
+    },
     async recover(sessionId: string) {
       const session = await runtimeHostSessionRef(sessionId);
       const result = await invokeWhenReady('shell-runs:recover', session.scope, session.sessionId) as

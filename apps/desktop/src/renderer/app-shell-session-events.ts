@@ -202,10 +202,6 @@ export function createAppShellSessionEventHandlers(options: {
     displayBatch.displayPendingSessions.delete(sessionId);
   }
 
-  function canBatchDisplayEvents(sessionId: string): boolean {
-    return !displayBatch.displayPendingSessions.has(sessionId);
-  }
-
   function updateLiveTurn(sessionId: string, events: readonly SessionEvent[]): void {
     setLiveTurnBySession((current) => replaceLiveTurns(current, new Map([[sessionId, events]])));
   }
@@ -223,7 +219,7 @@ export function createAppShellSessionEventHandlers(options: {
     });
   }
 
-  async function settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void> {
+  function settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void> {
     return handoffAssistantStreaming(sessionId, messageId, true);
   }
 
@@ -282,7 +278,7 @@ export function createAppShellSessionEventHandlers(options: {
     if (
       scheduleFrame
       && activeIdRef.current === sessionId
-      && canBatchDisplayEvents(sessionId)
+      && !displayBatch.displayPendingSessions.has(sessionId)
       && (
         event.type === 'text_delta'
         || event.type === 'thinking_delta'
@@ -344,6 +340,7 @@ export function createAppShellSessionEventHandlers(options: {
       case 'client_capability_request':
       case 'user_question_request':
       case 'form_request':
+      case 'terminal_handoff_request':
         onInteractionChanged?.(sessionId);
         notifyRunEnded?.({
           kind: 'waiting',
@@ -357,6 +354,7 @@ export function createAppShellSessionEventHandlers(options: {
       case 'user_question_answer_ack':
       case 'client_capability_decision_ack':
       case 'form_answer_ack':
+      case 'terminal_handoff_answer_ack':
         onInteractionChanged?.(sessionId);
         break;
       case 'sandbox_boundary_decision_ack':

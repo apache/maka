@@ -46,6 +46,7 @@ import { clientCapabilityEntityId } from "@maka/runtime-host/client-capability-e
 import { toJSONSchema, z } from "zod";
 import { withBrowserOriginAdmission } from './browser/browser-origin-admission.js';
 import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
+import { hasPrivateTerminalSurface, trackDesktopCapture } from './private-terminal-surfaces.js';
 
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";
@@ -218,6 +219,10 @@ export function createDesktopNativeCapabilityProvider(
       }
       const binding = bindings.get(bindingKey(frame));
       if (!binding) throw new Error("Desktop native capability is not offered");
+      const capturesDesktop = frame.offerId === COMPUTER_USE_OFFER_ID || binding.tool.categoryHint === 'computer_use';
+      if (hasPrivateTerminalSurface() && capturesDesktop) {
+        throw new Error('Desktop capture and computer use are unavailable while a private terminal is visible. Hide the private terminal before continuing.');
+      }
 
       const invocation = new AbortController();
       const task = invokeNativeTool(
@@ -238,7 +243,7 @@ export function createDesktopNativeCapabilityProvider(
         settled,
       });
       void settled.finally(() => activeInvocations.delete(invocation));
-      return task;
+      return capturesDesktop ? trackDesktopCapture(task) : task;
     },
     callService: (frame, options) => {
       if (closed)

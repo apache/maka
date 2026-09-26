@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import type { ShellRunSnapshotResult, ShellRunUpdate, ToolResultContent } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
@@ -25,6 +25,7 @@ import { shellRunStateProjection } from '@maka/core/shell-run-result';
 import {
   type BackgroundTaskStopper,
   type PtyControlWriter,
+  type PtyHandoffController,
   type RuntimeResourceReader,
   type ShellRunBashInput,
   type ShellRunPtySnapshot,
@@ -54,7 +55,11 @@ import {
   type RuntimeResourceRevision,
   type RuntimeResourceStopInput,
   type RuntimeResourceStartInput,
+  type RuntimeResourceHandoffInput,
+  type RuntimeResourceHandoffResult,
 } from '../protocol/index.js';
+import type { HostInteractionCoordinator } from './interaction-coordinator.js';
+import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type {
   ConnectionContext,
@@ -95,6 +100,11 @@ interface RuntimeResourceManager
 }
 
 export interface HostRuntimeResourceCoordinatorInput {
+  readonly humanControl?: PtyHandoffController;
+  readonly interactionAuthority?: () => Pick<
+    HostInteractionCoordinator,
+    'requestTerminalHandoff' | 'closeTerminalHandoff'
+  >;
   readonly manager: RuntimeResourceManager;
   readonly sessions: RuntimeResourceSessionReader;
   readonly sessionHeaders: RuntimeResourceHeaderReader;
@@ -127,11 +137,26 @@ interface ControlReplay {
   readonly result: ReturnType<typeof decodeRuntimeResourceControllerControlResult>;
 }
 
+interface TerminalHandoffState {
+  readonly message: string;
+  command: string;
+  readonly sessionId: string;
+  readonly ref: string;
+  readonly requestId: string;
+  phase: RuntimeResourceHandoffResult['phase'];
+  connectionId?: string;
+  controllerId?: string;
+  nextSequence: number;
+  lastReceipt?: { sequence: number; status: 'written' | 'outcome_unknown' };
+  readonly lifetime: AbortController;
+}
+
 /** Owns Host Shell/PTY tools plus the connection-scoped Client controller fence. */
 export class HostRuntimeResourceCoordinator
   implements ShellRunLauncher, RuntimeResourceReader, BackgroundTaskStopper, PtyControlWriter
 {
   readonly handlers: RuntimeResourceOperationHandlerMap = {
+    'runtime.resource.handoff': (input, context) => this.#handoffControl(input, context),
     'runtime.resource.query': (input, context) => this.#query(input, context),
     'runtime.resource.start': (input) => this.#start(input),
     'runtime.resource.controller.acquire': (input, context) => this.#acquire(input, context),
@@ -155,10 +180,17 @@ export class HostRuntimeResourceCoordinator
   readonly #controllers = new Map<string, ControllerState>();
   readonly #controllerResources = new Map<string, string>();
   readonly #controlReplays = new Map<string, ControlReplay>();
+  readonly #handoffs = new Map<string, TerminalHandoffState>();
+  readonly #inputEpochs = new Map<string, number>();
+  readonly #humanSurfaces = new Map<string, string>();
+  readonly #humanControl: PtyHandoffController | undefined;
+  readonly #interactionAuthority: HostRuntimeResourceCoordinatorInput['interactionAuthority'];
   #draining = false;
   #termination: Promise<void> | undefined;
 
   constructor(input: HostRuntimeResourceCoordinatorInput) {
+    this.#humanControl = input.humanControl;
+    this.#interactionAuthority = input.interactionAuthority;
     this.#manager = input.manager;
     this.#sessions = input.sessions;
     this.#sessionHeaders = input.sessionHeaders;
@@ -245,8 +277,18 @@ export class HostRuntimeResourceCoordinator
   }
 
   writeStdin(input: ShellRunWriteInput): ReturnType<PtyControlWriter['writeStdin']> {
+    const key = resourceKey(input.sessionId, input.ref);
+    const epoch = this.#inputEpochs.get(key) ?? 0;
+    if (
+      this.#handoffs.get(key)?.phase === 'human' ||
+      this.#handoffs.get(key)?.phase === 'waiting'
+    ) {
+      return Promise.reject(new Error('This terminal is awaiting explicit human completion'));
+    }
     return this.#sessionAdmission.run(input.sessionId, () =>
       this.#resourceQueue.run(resourceKey(input.sessionId, input.ref), async () => {
+        if ((this.#inputEpochs.get(key) ?? 0) !== epoch)
+          throw new Error('Terminal input expired across a human handoff');
         if (this.#controllers.has(resourceKey(input.sessionId, input.ref))) {
           throw new Error('This PTY is controlled by a connected Client');
         }
@@ -257,14 +299,311 @@ export class HostRuntimeResourceCoordinator
     );
   }
 
+  isHandoffAvailable(sessionId: string): boolean {
+    return (
+      !this.#draining &&
+      process.platform !== 'win32' &&
+      Boolean(
+        this.#humanControl && this.#interactionAuthority && this.#humanSurfaces.has(sessionId),
+      )
+    );
+  }
+
+  async requestHandoff(ref: string, message: string, ctx: MakaToolContext): Promise<string> {
+    if (!this.isHandoffAvailable(ctx.sessionId) || !ctx.runId) {
+      throw new Error(
+        'Interactive terminal handoff is unavailable. Open this task in a connected Desktop window.',
+      );
+    }
+    const key = resourceKey(ctx.sessionId, ref);
+    const state: TerminalHandoffState = {
+      message,
+      command: '',
+      sessionId: ctx.sessionId,
+      ref,
+      requestId: randomUUID(),
+      phase: 'waiting',
+      nextSequence: 1,
+      lifetime: new AbortController(),
+    };
+    await this.#sessionAdmission.run(ctx.sessionId, async () => {
+      await this.#assertActiveSession(ctx.sessionId);
+      // Validate model visibility before installing a fence or any failure cleanup.
+      // Client inspection alone also accepts user-owned terminals.
+      await this.#manager.readRuntimeResource(ctx.sessionId, ref, ctx.abortSignal);
+      const previous = this.#handoffs.get(key);
+      if (previous && previous.phase !== 'resumed' && previous.phase !== 'closed')
+        throw new Error('Terminal handoff is already pending');
+      const resource = await this.#manager.inspectResource(ctx.sessionId, ref);
+      state.command = Array.from(resource.cmd).slice(0, 1_024).join('');
+      if (resource.mode !== 'pty' || !isActiveShellRunStatus(resource.status))
+        throw new Error('Handoff requires the original live PTY');
+      const controller = this.#controllers.get(key);
+      if (controller && controller.connectionId !== this.#humanSurfaces.get(ctx.sessionId))
+        throw new Error('Terminal is controlled by another client');
+      this.#inputEpochs.set(key, (this.#inputEpochs.get(key) ?? 0) + 1);
+      this.#releaseController(key);
+      this.#handoffs.set(key, state);
+    });
+    const authority = this.#interactionAuthority!();
+    const abort = () => {
+      state.lifetime.abort();
+      void authority
+        .closeTerminalHandoff(ctx.sessionId, state.requestId)
+        .catch(() => this.#requestDrain());
+    };
+    ctx.abortSignal.addEventListener('abort', abort, { once: true });
+    // Bound only readiness, never the time a person needs to authenticate.
+    const readyDeadline = setTimeout(() => {
+      if (state.phase === 'waiting') abort();
+    }, 30_000);
+    readyDeadline.unref();
+    try {
+      const signal = AbortSignal.any([
+        ctx.abortSignal,
+        state.lifetime.signal,
+        AbortSignal.timeout(5_000),
+      ]);
+      await this.#resourceQueue.run(key, () =>
+        this.#humanControl!.preparePtyHandoff(ctx.sessionId, ref, signal),
+      );
+      if (!this.isHandoffAvailable(ctx.sessionId) || ctx.abortSignal.aborted)
+        throw new Error('Interactive terminal surface disappeared before handoff');
+      const outcome = await authority.requestTerminalHandoff({
+        signal: state.lifetime.signal,
+        sessionId: ctx.sessionId,
+        runId: ctx.runId,
+        turnId: ctx.turnId,
+        requestId: state.requestId,
+        request: { kind: 'terminal_handoff', toolUseId: ctx.toolCallId, ref, message },
+        canAnswer: (action, connectionId, controllerId) =>
+          action === 'cancel' ||
+          (state.phase === 'human' &&
+            state.connectionId === connectionId &&
+            state.controllerId === controllerId &&
+            state.lastReceipt?.status !== 'outcome_unknown'),
+        apply: async (action) => {
+          await this.#resourceQueue.run(key, async () => {
+            if (this.#handoffs.get(key) !== state || state.phase === 'closed') return;
+            if (action === 'resume') {
+              // A child can exit while its final input fence is draining. That
+              // closes this handoff; it is not an Interaction-store failure.
+              const live = await this.#humanControl!.resumePtyHandoff(ctx.sessionId, ref).catch(
+                () => false,
+              );
+              state.phase = live ? 'resumed' : 'closed';
+              this.#inputEpochs.set(key, (this.#inputEpochs.get(key) ?? 0) + 1);
+              if (!live) {
+                state.lifetime.abort();
+                await this.#manager.stopBackgroundTask(
+                  ctx.sessionId,
+                  ref,
+                  new AbortController().signal,
+                  'model',
+                );
+              }
+            } else {
+              state.phase = 'closed';
+              state.lifetime.abort();
+              await this.#manager.stopBackgroundTask(
+                ctx.sessionId,
+                ref,
+                new AbortController().signal,
+                'client',
+              );
+            }
+          });
+        },
+      });
+      return JSON.stringify({
+        ref,
+        outcome:
+          outcome.kind === 'terminal_handoff_answer' &&
+          outcome.action === 'resume' &&
+          state.phase === 'resumed'
+            ? 'resumed'
+            : 'closed',
+        outputVisibility: 'private',
+        instruction:
+          state.phase === 'resumed'
+            ? 'The user explicitly pressed Resume. You control this same terminal again and may execute the next requested command under existing permissions. Do not wait for a second Resume. This does not prove authentication succeeded. Output stays private; ask the user to review and share a new observation before relying on it. After the user shares, use Read on this ref to retrieve the published observation.'
+            : 'The handoff closed without returning control. Do not retry credentials or recreate the original terminal.',
+      });
+    } catch (error) {
+      state.phase = 'closed';
+      state.lifetime.abort();
+      // Failure after admission must not leave a secretly writable half-handoff.
+      await this.#manager
+        .stopBackgroundTask(ctx.sessionId, ref, new AbortController().signal, 'model')
+        .catch(() => {});
+      throw error;
+    } finally {
+      clearTimeout(readyDeadline);
+      ctx.abortSignal.removeEventListener('abort', abort);
+    }
+  }
+
+  async #handoffControl(
+    input: RuntimeResourceHandoffInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'runtime.resource.handoff'>> {
+    try {
+      const failure = await this.#mutableSessionFailure(input.sessionId);
+      if (failure) return mutationFailure('runtime.resource.handoff', failure);
+      if (input.action === 'lookup') {
+        const handoff = this.#handoffs.get(resourceKey(input.sessionId, input.ref));
+        return {
+          ok: true,
+          result: {
+            status: handoff ? 'available' : 'unavailable',
+            phase: handoff?.phase ?? 'closed',
+            nextSequence: handoff?.nextSequence ?? 1,
+            ...(handoff
+              ? {
+                  request: {
+                    requestId: handoff.requestId,
+                    ref: handoff.ref,
+                    message: handoff.message,
+                    command: handoff.command,
+                  },
+                }
+              : {}),
+          },
+        };
+      }
+      if (input.action === 'surface') {
+        if (input.available) this.#humanSurfaces.set(input.sessionId, context.connectionId);
+        else if (this.#humanSurfaces.get(input.sessionId) === context.connectionId)
+          this.#humanSurfaces.delete(input.sessionId);
+        return {
+          ok: true,
+          result: {
+            status: this.isHandoffAvailable(input.sessionId) ? 'available' : 'unavailable',
+            phase: 'waiting',
+            nextSequence: 1,
+          },
+        };
+      }
+      const state = [...this.#handoffs.values()].find(
+        (entry) => entry.sessionId === input.sessionId && entry.requestId === input.requestId,
+      );
+      if (!state || !this.#humanControl || state.phase === 'closed')
+        throw new Error('Original terminal handoff is no longer live');
+      return await this.#resourceQueue.run(resourceKey(state.sessionId, state.ref), async () => {
+        const result = (
+          status: RuntimeResourceHandoffResult['status'],
+        ): RuntimeResourceHandoffResult => ({
+          status: state.lastReceipt?.status === 'outcome_unknown' ? 'outcome_unknown' : status,
+          phase: state.phase,
+          nextSequence: state.nextSequence,
+        });
+        if (input.action === 'ready') {
+          if (this.#humanSurfaces.get(input.sessionId) !== context.connectionId)
+            throw new Error('No interactive terminal surface on this connection');
+          // A renderer reload keeps the Desktop's authenticated Host connection.
+          // Reclaiming from that connection fences the old card identity.
+          if (state.connectionId && state.connectionId !== context.connectionId)
+            throw new Error('Terminal handoff belongs to another controller');
+          state.connectionId = context.connectionId;
+          state.controllerId = input.controllerId;
+          if (state.phase === 'waiting') state.phase = 'human';
+          return { ok: true as const, result: result('ready') };
+        }
+        if (
+          state.connectionId !== context.connectionId ||
+          state.controllerId !== input.controllerId
+        )
+          throw new Error('Terminal handoff controller expired');
+        if (input.action === 'release') {
+          delete state.connectionId;
+          delete state.controllerId;
+          return { ok: true as const, result: result('observed') };
+        }
+        if (input.action === 'observe') {
+          const display = await this.#humanControl!.readPrivatePtySnapshot(
+            state.sessionId,
+            state.ref,
+          );
+          return {
+            ok: true as const,
+            result: {
+              ...result('observed'),
+              display: { ...display, text: Array.from(display.text).slice(-12_000).join('') },
+            },
+          };
+        }
+        if (input.action === 'share') {
+          if (state.phase !== 'resumed') throw new Error('Resume before sharing a new observation');
+          await this.#humanControl!.sharePrivatePtyObservation(
+            state.sessionId,
+            state.ref,
+            input.sequence,
+            input.text,
+          );
+          return { ok: true as const, result: result('shared') };
+        }
+        if (input.action !== 'input' || state.phase !== 'human')
+          throw new Error('Terminal is not accepting private input');
+        if (state.lastReceipt?.sequence === input.sequence)
+          return { ok: true as const, result: result(state.lastReceipt.status) };
+        if (state.lastReceipt?.status === 'outcome_unknown')
+          throw new Error('Resolve unknown input delivery by stopping this terminal');
+        if (input.sequence !== state.nextSequence)
+          throw new Error('Private input sequence expired');
+        if (!input.input || /[\x00-\x1f\x7f]/.test(input.input))
+          throw new Error('Enter one line without embedded control characters');
+        state.nextSequence++;
+        state.lastReceipt = { sequence: input.sequence, status: 'outcome_unknown' };
+        try {
+          await this.#humanControl!.writePrivatePtyInput(
+            state.sessionId,
+            state.ref,
+            `${input.input}\r`,
+            AbortSignal.any([state.lifetime.signal, AbortSignal.timeout(5_000)]),
+          );
+          state.lastReceipt.status = 'written';
+        } catch {
+          // Never echo input, retry it, or call a partial delivery "not sent".
+        }
+        return { ok: true as const, result: result(state.lastReceipt.status) };
+      });
+    } catch {
+      return mutationFailure('runtime.resource.handoff', {
+        code: 'operation_conflict',
+        message:
+          'Terminal handoff is unavailable, stale, or no longer accepts this operation. Reconnect to the original task and inspect its live terminal.',
+      });
+    }
+  }
+
   observeShellRunUpdate(update: ShellRunUpdate): void {
     if (!isActiveShellRunStatus(update.result.status)) {
+      const key = resourceKey(update.sessionId, update.result.ref);
+      this.#inputEpochs.delete(key);
+      const handoff = this.#handoffs.get(key);
+      if (handoff) {
+        handoff.phase = 'closed';
+        handoff.lifetime.abort();
+        this.#handoffs.delete(key);
+        void this.#interactionAuthority?.()
+          .closeTerminalHandoff(handoff.sessionId, handoff.requestId)
+          .catch(() => this.#requestDrain());
+      }
       this.#releaseController(resourceKey(update.sessionId, update.result.ref));
     }
     this.#onProjectionChanged(update);
   }
 
   releaseConnection(connectionId: string): void {
+    for (const [sessionId, connection] of this.#humanSurfaces) {
+      if (connection === connectionId) this.#humanSurfaces.delete(sessionId);
+    }
+    for (const handoff of this.#handoffs.values()) {
+      if (handoff.connectionId === connectionId) {
+        delete handoff.connectionId;
+        delete handoff.controllerId;
+      }
+    }
     for (const [key, controller] of this.#controllers) {
       if (controller.connectionId === connectionId) this.#releaseController(key);
     }
@@ -276,6 +615,8 @@ export class HostRuntimeResourceCoordinator
   beginDrain(): void {
     if (this.#draining) return;
     this.#draining = true;
+    for (const handoff of this.#handoffs.values()) handoff.lifetime.abort();
+    this.#humanSurfaces.clear();
     this.#controllers.clear();
     this.#controllerResources.clear();
     this.#controlReplays.clear();
@@ -536,6 +877,11 @@ export class HostRuntimeResourceCoordinator
             });
           }
           const key = resourceKey(input.sessionId, input.ref);
+          if (this.#handoffs.has(key))
+            return mutationFailure('runtime.resource.controller.acquire', {
+              code: 'operation_conflict',
+              message: 'Use this terminal’s private handoff surface',
+            });
           const identity = controllerIdentity(context.connectionId, input.controllerId);
           const claimedResource = this.#controllerResources.get(identity);
           if (claimedResource && claimedResource !== key) {
@@ -592,6 +938,11 @@ export class HostRuntimeResourceCoordinator
     return this.#sessionAdmission.run(input.sessionId, () =>
       this.#resourceQueue.run(resourceKey(input.sessionId, input.ref), async () => {
         const key = resourceKey(input.sessionId, input.ref);
+        if (this.#handoffs.has(key))
+          return mutationFailure('runtime.resource.controller.control', {
+            code: 'operation_conflict',
+            message: 'Use this terminal’s private handoff surface',
+          });
         const digest = controlDigest(input.control);
         const replay = this.#controlReplays.get(controlReplayKey(context.connectionId, input));
         if (replay && replay.sequence === input.sequence) {
