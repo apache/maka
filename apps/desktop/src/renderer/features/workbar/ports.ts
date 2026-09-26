@@ -74,6 +74,8 @@ export interface WorkbarReviewService {
 }
 
 export interface WorkbarTerminalService {
+  handoff?(input: import('@maka/runtime-host/protocol').RuntimeResourceHandoffInput): Promise<import('@maka/runtime-host/protocol').RuntimeResourceHandoffResult>;
+  answerHandoff?(input: { sessionId: string; requestId: string; controllerId: string; action: 'resume' | 'cancel' }): Promise<void>;
   /** Live, locally owned manual terminals; excludes model tools and inherited resources. */
   recover(sessionId: string): Promise<import('../../../shared/runtime-host-identity.js').TerminalRecovery>;
   subscribeCloseChanges(handler: (change: import('../../../shared/runtime-host-identity.js').TerminalCloseChange) => void): WorkbarUnsubscribe;

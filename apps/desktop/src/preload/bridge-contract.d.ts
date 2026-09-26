@@ -1510,6 +1510,8 @@ export interface MakaBridge {
     restore(projectId: string, host?: DesktopRuntimeHostRef): Promise<ProjectRecord>;
   };
   shellRuns: {
+    handoff(input: import('@maka/runtime-host/protocol').RuntimeResourceHandoffInput): Promise<import('@maka/runtime-host/protocol').RuntimeResourceHandoffResult>;
+    answerHandoff(input: { sessionId: string; requestId: string; controllerId: string; action: 'resume' | 'cancel' }): Promise<void>;
     recover(sessionId: string): Promise<import('../shared/runtime-host-identity.js').TerminalRecovery>;
     subscribeCloseChanges(handler: (change: import('../shared/runtime-host-identity.js').TerminalCloseChange) => void): () => void;
     list(sessionId: string): Promise<ShellRunUpdate[]>;

@@ -21,7 +21,8 @@ import { randomUUID } from 'node:crypto';
 import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '@maka/core/shell-run';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
-import type { SessionDomainChange } from '@maka/runtime-host/protocol';
+import { decodeRuntimeResourceHandoffInput, type SessionDomainChange } from '@maka/runtime-host/protocol';
+import { setPrivateTerminalSurface, clearPrivateTerminalSurfaces, drainDesktopCaptures } from './private-terminal-surfaces.js';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   handleReconnectableRead,
@@ -39,7 +40,7 @@ export type RuntimeHostShellRunsClient = Pick<
   | 'releaseRuntimeResourceController'
   | 'startRuntimeResource'
   | 'stopRuntimeResource'
->;
+> & Partial<Pick<DesktopRuntimeHostClient, 'controlTerminalHandoff' | 'answerInteraction'>>;
 
 export type RuntimeHostShellRunQueriesClient = Pick<
   DesktopRuntimeHostClient,
@@ -98,6 +99,34 @@ export function registerRuntimeHostShellRunsIpc(
     newId,
     deps.sessionObserver,
   );
+  // Private controls deliberately bypass reconnectable reads and command journals.
+  // A transport failure must never replay a user's input.
+  const privateWindows = new Set<number>();
+  ipcMain.handle('shell-runs:handoff', async (event, value: unknown) => {
+    if (!deps.client.controlTerminalHandoff) throw new Error('Terminal handoff is unavailable');
+    const input = decodeRuntimeResourceHandoffInput(value);
+    const sender = event.sender as import('electron').WebContents;
+    if (input.action === 'ready') {
+      setPrivateTerminalSurface(sender.id, input.controllerId, true);
+      if (!privateWindows.has(sender.id)) {
+        privateWindows.add(sender.id);
+        sender.once('destroyed', () => { privateWindows.delete(sender.id); clearPrivateTerminalSurfaces(sender.id); });
+        // Clear after navigation commits, when the old private document is gone.
+        // Starting navigation (or a renderer crash) can leave its pixels visible.
+        sender.on('did-navigate', () => clearPrivateTerminalSurfaces(sender.id));
+      }
+      await drainDesktopCaptures();
+    }
+    if (input.action === 'release') setPrivateTerminalSurface(sender.id, input.controllerId, false);
+    return deps.client.controlTerminalHandoff(input);
+  });
+  ipcMain.handle('shell-runs:handoff-answer', async (_event, value: unknown) => {
+    if (!deps.client.answerInteraction || !value || typeof value !== 'object') throw new Error('Terminal handoff is unavailable');
+    const input = value as { sessionId?: unknown; requestId?: unknown; controllerId?: unknown; action?: unknown };
+    if (input.action !== 'resume' && input.action !== 'cancel') throw new Error('Invalid terminal handoff decision');
+    await deps.client.answerInteraction({ sessionId: requiredId(input.sessionId, 'Session'),
+      interactionId: requiredId(input.requestId, 'Request'), answer: { kind: 'terminal_handoff', action: input.action, controllerId: requiredId(input.controllerId, 'Controller') } });
+  });
   ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
     const normalizedSessionId = requiredId(sessionId, 'Session');
     const launchId = `${DESKTOP_TERMINAL_LAUNCH_PREFIX}${newId()}`;
@@ -135,7 +164,10 @@ export function registerRuntimeHostShellRunsIpc(
     return closes.stop(input, () => controllers.stop(input));
   });
 
-  return { close: () => controllers.close() };
+  return { close: async () => {
+    for (const id of privateWindows) clearPrivateTerminalSurfaces(id);
+    await controllers.close();
+  } };
 }
 
 async function refreshRuntimeResources(

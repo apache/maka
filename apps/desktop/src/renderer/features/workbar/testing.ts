@@ -53,6 +53,8 @@ export {
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
+export * from './tools/terminal/terminal-handoff-feedback.js';
+export { TerminalHandoffPanel } from './tools/terminal/terminal-handoff-panel.js';
 export * from '../../application/contracts/session-inspector/use-session-trace.js';
 export * from './controller/use-workbar-controller.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';

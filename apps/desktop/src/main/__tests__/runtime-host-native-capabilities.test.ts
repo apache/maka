@@ -35,12 +35,40 @@ import { buildManagedArtifactPreviewTools } from '../managed-artifact-preview-to
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
+import { clearPrivateTerminalSurfaces, drainDesktopCaptures, setPrivateTerminalSurface } from '../private-terminal-surfaces.js';
 
 function jsonSchema(schema: Record<string, unknown>): {
   jsonSchema: Record<string, unknown>;
 } {
   return { jsonSchema: schema };
 }
+
+test('private terminal visibility fences new computer calls and waits for in-flight capture', async () => {
+  let finish!: () => void;
+  const barrier = new Promise<void>((resolve) => { finish = resolve; });
+  let calls = 0;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [], resolveBrowserUrl: () => 'https://example.com/', releaseBrowserSession() {},
+    computerUseTools: computerTools(async () => { calls++; await barrier; return { text: 'captured before private input' }; }),
+    releaseDesktopInteractionSession() {},
+  });
+  try {
+    const active = call(provider, computerFrame());
+    setPrivateTerminalSurface(5309, 'private-card', true);
+    let drained = false;
+    const drain = drainDesktopCaptures().then(() => { drained = true; });
+    await Promise.resolve();
+    assert.equal(drained, false);
+    await assert.rejects(call(provider, computerFrame()), /private terminal/);
+    finish();
+    await active;
+    await drain;
+    assert.equal(calls, 1);
+    clearPrivateTerminalSurfaces(5309);
+    await call(provider, computerFrame());
+    assert.equal(calls, 2);
+  } finally { finish(); clearPrivateTerminalSurfaces(5309); }
+});
 
 test('Artifact preview is discoverable and admitted without a pre-existing browser origin', async () => {
   let invoked = false;

@@ -658,6 +658,8 @@ export type SessionEvent =
   | UserQuestionAnswerAckEvent
   | FormRequestEvent
   | FormAnswerAckEvent
+  | TerminalHandoffRequestEvent
+  | TerminalHandoffAnswerAckEvent
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
@@ -1135,6 +1137,20 @@ export interface FormRequestEvent extends BaseEvent {
   fields: readonly InteractionFormField[];
 }
 
+export interface TerminalHandoffRequestEvent extends BaseEvent {
+  type: 'terminal_handoff_request';
+  requestId: string;
+  toolUseId: string;
+  ref: string;
+  message: string;
+}
+
+export interface TerminalHandoffAnswerAckEvent extends BaseEvent {
+  type: 'terminal_handoff_answer_ack';
+  requestId: string;
+  toolUseId: string;
+}
+
 export interface SandboxBoundaryRequestEvent extends BaseEvent {
   type: 'sandbox_boundary_request';
   requestId: string;
@@ -1157,6 +1173,7 @@ export interface ClientCapabilityRequestEvent extends BaseEvent {
  * live event can rehydrate the prompt instead of stranding the run.
  */
 export type ActiveInteractionRequestEvent =
+  | TerminalHandoffRequestEvent
   | SandboxBoundaryRequestEvent
   | UserQuestionRequestEvent
   | FormRequestEvent

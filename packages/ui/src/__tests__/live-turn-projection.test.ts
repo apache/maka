@@ -32,6 +32,19 @@ import { materializeTurns, overlayLiveTurn, type ToolActivityItem } from '../mat
 import { redactSecrets } from '../redact.js';
 import { getConversationCopy } from '../conversation-copy.js';
 
+it('a pending terminal handoff restores its waiting tool after reload without replaying private input', () => {
+  const request = { type: 'terminal_handoff_request' as const, id: 'request-event', turnId: 'turn-1', ts: 2,
+    requestId: 'request-1', toolUseId: 'tool-1', ref: 'maka://runtime/background-tasks/terminal-1', message: 'Authenticate' };
+  const live = applyLiveTurnEvent(undefined, request)!;
+  const messages: StoredMessage[] = [{ type: 'tool_call', id: 'tool-1', turnId: 'turn-1', ts: 1,
+    toolName: 'WriteStdin', args: { ref: request.ref, handoff: { message: 'Authenticate' } } }];
+  const restored = overlayLiveTurn(materializeTurns(messages, 'en'), live, 'en');
+  assert.equal(restored[0]?.tools[0]?.status, 'running');
+  assert.deepEqual(restored[0]?.tools[0]?.args, { ref: request.ref });
+  const ended = applyLiveTurnEvent(live, { type: 'complete', id: 'end', turnId: 'turn-1', ts: 3, stopReason: 'end_turn' })!;
+  assert.equal(applyLiveTurnEvent(ended, request), ended);
+});
+
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries
 // `unconfirmed` until the authority says something about THAT turn, which is

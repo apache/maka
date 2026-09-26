@@ -1829,6 +1829,98 @@ describe('builtin Bash streaming output', () => {
     );
   });
 
+  test('WriteStdin handoff is discoverable only with support and excludes ordinary input', async () => {
+    const ptyControls = {
+      writeStdin: () => Promise.reject(new Error('not used')),
+    } satisfies PtyControlWriter;
+    const options = {
+      ptyControls,
+      terminalHandoff: { available: () => true, request: async () => 'resumed' },
+    };
+    const enabled = buildBuiltinTools(options).find((tool) => tool.name === 'WriteStdin')!;
+    const disabled = buildBuiltinTools({ ptyControls }).find((tool) => tool.name === 'WriteStdin')!;
+    const shellRuns = {
+      runForegroundBash: async () => {
+        throw new Error('not used');
+      },
+      runBackgroundBash: async () => {
+        throw new Error('not used');
+      },
+    };
+    const shellWithSurface = buildBuiltinTools({ ...options, shellRuns }).find(
+      (tool) => tool.name === 'Bash',
+    )!;
+    const shellWithoutSurface = buildBuiltinTools({ shellRuns }).find(
+      (tool) => tool.name === 'Bash',
+    )!;
+    assert.match(shellWithSurface.description, /discover WriteStdin via tool_search/);
+    assert.doesNotMatch(shellWithoutSurface.description, /private input card/);
+    type Parameters = {
+      jsonSchema: PromiseLike<{ properties: Record<string, unknown> }>;
+      validate(value: unknown): PromiseLike<{ success: boolean }>;
+    };
+    const schema = enabled.parameters as Parameters;
+    assert.ok((await schema.jsonSchema).properties.handoff);
+    assert.equal(
+      (await (disabled.parameters as Parameters).jsonSchema).properties.handoff,
+      undefined,
+    );
+    const ref = shellRunResourceRef('shell-run-1');
+    assert.equal(
+      (
+        await schema.validate({
+          ref,
+          handoff: { message: 'Authenticate' },
+          actions: null,
+          size: null,
+        })
+      ).success,
+      true,
+    );
+    assert.equal(
+      (
+        await schema.validate({
+          ref,
+          handoff: { message: 'Authenticate' },
+          actions: [{ type: 'key', key: 'enter' }],
+        })
+      ).success,
+      false,
+    );
+    assert.equal(
+      (
+        await schema.validate({
+          ref,
+          handoff: null,
+          actions: [
+            {
+              type: 'text',
+              text: 'pwd',
+              key: null,
+              button: null,
+              event: null,
+              x: null,
+              y: null,
+              direction: null,
+              modifiers: null,
+            },
+          ],
+          size: null,
+        })
+      ).success,
+      true,
+    );
+    assert.equal(
+      (
+        await (disabled.parameters as Parameters).validate({
+          ref,
+          handoff: { message: 'Authenticate' },
+        })
+      ).success,
+      false,
+    );
+  });
+
   test('preserves Bash failure contract when the executor reports non-zero exit', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-executor-'));
     const bash = buildBuiltinTools({

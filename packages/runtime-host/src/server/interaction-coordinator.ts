@@ -38,6 +38,8 @@ import {
   type InteractionClosureReason,
   type InteractionFormRequest,
   type InteractionFormResult,
+  decodeInteractionRequest,
+  type InteractionTerminalHandoffRequest,
 } from '@maka/core/interaction';
 import type {
   SandboxBoundaryRequest,
@@ -84,7 +86,7 @@ import {
   runtimeQuestionOutcome,
   runtimeFormOutcome,
 } from './interaction-projection.js';
-import type { InteractionOperationHandlerMap } from './operation-dispatcher.js';
+import type { InteractionOperationHandlerMap, ConnectionContext } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionPresenceReader } from './session-presence.js';
 
@@ -165,9 +167,27 @@ interface LiveClientCapabilityEntry extends LiveEntryBase {
   readonly reject: (error: unknown) => void;
 }
 
-type LiveStoredEntry = LiveQuestionEntry | LiveFormEntry | LiveClientCapabilityEntry;
+interface LiveTerminalHandoffEntry extends LiveEntryBase {
+  readonly kind: 'terminal_handoff';
+  readonly request: StoredInteractionRequest;
+  readonly apply: (action: 'resume' | 'cancel') => Promise<void>;
+  readonly canAnswer: (
+    action: 'resume' | 'cancel',
+    connectionId: string,
+    controllerId: string,
+  ) => boolean;
+  readonly resolve: (outcome: InteractionCanonicalOutcome) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+type LiveStoredEntry =
+  | LiveQuestionEntry
+  | LiveFormEntry
+  | LiveClientCapabilityEntry
+  | LiveTerminalHandoffEntry;
 type LiveEntry = LiveStoredEntry | LiveSandboxBoundaryEntry;
 type LiveStoredCandidate =
+  | Omit<LiveTerminalHandoffEntry, 'run' | 'phase'>
   | Omit<LiveQuestionEntry, 'run' | 'phase'>
   | Omit<LiveFormEntry, 'run' | 'phase'>
   | Omit<LiveClientCapabilityEntry, 'run' | 'phase'>;
@@ -215,7 +235,7 @@ export class ClientCapabilityApprovalClosedError extends Error {
 export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly handlers: InteractionOperationHandlerMap = {
     'interaction.query': (input) => this.#query(input.sessionId, input.interactionId),
-    'interaction.answer': (input) => this.#answer(input),
+    'interaction.answer': (input, context) => this.#answer(input, context),
   };
 
   readonly #store: InteractiveInteractionStoreWriterFacade;
@@ -288,6 +308,81 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   }
 
   /** Host tools share Runtime's durable interaction lifecycle without rebinding its Run. */
+  async requestTerminalHandoff(
+    input: RuntimeInteractionRunIdentity & {
+      signal?: AbortSignal;
+      requestId: string;
+      request: InteractionTerminalHandoffRequest;
+      apply: (action: 'resume' | 'cancel') => Promise<void>;
+      canAnswer: (
+        action: 'resume' | 'cancel',
+        connectionId: string,
+        controllerId: string,
+      ) => boolean;
+    },
+  ): Promise<InteractionCanonicalOutcome> {
+    this.#throwIfPoisoned();
+    const run = this.#runs.get(runKey(input));
+    if (!run || !run.bound || run.released) {
+      throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'invalid_request');
+    }
+    this.#assertRunOpen(run, input.requestId);
+    // A persisted request is never permission to recreate a lost PTY.
+    if (await this.#readInteraction(input.requestId)) {
+      throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'request_settled');
+    }
+    const request = decodeInteractionRequest(input.request);
+    let resolve!: (outcome: InteractionCanonicalOutcome) => void;
+    let reject!: (error: unknown) => void;
+    const result = observed(
+      new Promise<InteractionCanonicalOutcome>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      }),
+    );
+    const abort = () => {
+      void this.closeTerminalHandoff(input.sessionId, input.requestId).catch(reject);
+    };
+    input.signal?.addEventListener('abort', abort, { once: true });
+    try {
+      await this.#accept(run, {
+        kind: 'terminal_handoff',
+        request: {
+          ...runIdentity(run),
+          requestId: input.requestId,
+          createdAt: this.#now(),
+          request,
+        },
+        apply: input.apply,
+        canAnswer: input.canAnswer,
+        resolve,
+        reject,
+      });
+      if (input.signal?.aborted) abort();
+      return await result;
+    } catch (error) {
+      reject(error);
+      throw error;
+    } finally {
+      input.signal?.removeEventListener('abort', abort);
+    }
+  }
+
+  async closeTerminalHandoff(sessionId: string, requestId: string): Promise<void> {
+    await this.#sessionAdmission.enqueueDetached(sessionId, async (admission) => {
+      const entry = this.#live.get(requestId);
+      if (!entry || entry.kind !== 'terminal_handoff' || entry.request.sessionId !== sessionId)
+        return;
+      const outcome = await this.#commitOutcome(entry.request, {
+        kind: 'closure',
+        reason: 'producer_cancelled',
+        committedAt: this.#now(),
+      });
+      await this.#refreshCanonicalContinuity(sessionId, admission);
+      await this.#applyAndDelete(entry, outcome);
+    });
+  }
+
   async requestForm(input: HostFormInput): Promise<HostFormResult> {
     this.#throwIfPoisoned();
     const run = this.#runs.get(runKey(input));
@@ -884,6 +979,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
 
   #answer(
     input: InteractionAnswerInput,
+    context: ConnectionContext,
   ): ReturnType<InteractionOperationHandlerMap['interaction.answer']> {
     return observed(
       (async () => {
@@ -896,6 +992,22 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
           const record = await this.#readInteraction(input.interactionId);
           if (record) {
             if (record.request.sessionId !== input.sessionId) return interactionNotFound();
+            if (!record.outcome && input.answer.kind === 'terminal_handoff') {
+              const entry = this.#live.get(input.interactionId);
+              if (
+                !entry ||
+                entry.kind !== 'terminal_handoff' ||
+                !entry.canAnswer(
+                  input.answer.action,
+                  context.connectionId,
+                  input.answer.controllerId,
+                )
+              ) {
+                return operationConflict(
+                  'Terminal handoff is not ready or this controller has expired',
+                );
+              }
+            }
             return record.request.request.kind === 'client_capability'
               ? this.#answerClientCapability(record, input.answer, admission)
               : this.#answerStoredInteraction(record, input.answer, admission);
@@ -984,7 +1096,9 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     }
     if (record.outcome) return answerOutcome(recordWithOutcome(record), answer);
     if (
-      (record.request.request.kind !== 'question' && record.request.request.kind !== 'form') ||
+      (record.request.request.kind !== 'question' &&
+        record.request.request.kind !== 'form' &&
+        record.request.request.kind !== 'terminal_handoff') ||
       record.request.request.kind !== answer.kind
     ) {
       return operationConflict('Interaction answer does not match the pending request');
@@ -994,11 +1108,17 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     }
     const entry = this.#requireLiveStored(record.request);
     const candidate =
-      answer.kind === 'question'
-        ? questionCanonicalOutcome(answer, this.#now())
-        : answer.kind === 'form'
-          ? formCanonicalOutcome(answer, this.#now())
-          : undefined;
+      answer.kind === 'terminal_handoff'
+        ? {
+            kind: 'terminal_handoff_answer' as const,
+            action: answer.action,
+            committedAt: this.#now(),
+          }
+        : answer.kind === 'question'
+          ? questionCanonicalOutcome(answer, this.#now())
+          : answer.kind === 'form'
+            ? formCanonicalOutcome(answer, this.#now())
+            : undefined;
     if (!candidate) {
       return operationConflict('Interaction answer does not match the pending request');
     }
@@ -1101,7 +1221,10 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
 
   async #commitAnswer(
     entry: LiveStoredEntry,
-    candidate: Extract<InteractionCanonicalOutcome, { kind: 'question_answer' | 'form_answer' }>,
+    candidate: Extract<
+      InteractionCanonicalOutcome,
+      { kind: 'question_answer' | 'form_answer' | 'terminal_handoff_answer' }
+    >,
     admission: SessionAdmissionLease,
   ): Promise<StoredInteractionOutcome> {
     const target = await this.#commitOutcome(entry.request, candidate);
@@ -1229,7 +1352,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         [...this.#live.values()]
           .filter((entry) => entry.run === run && entry.phase === 'live')
           .map((entry) =>
-            entry.kind === 'client_capability'
+            entry.kind === 'client_capability' || entry.kind === 'terminal_handoff'
               ? Promise.resolve()
               : entry.continuation.waitForPublication(),
           ),
@@ -1573,6 +1696,19 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
           `Live Interaction identity changed for ${entry.request.requestId}`,
         ),
       );
+    }
+    if (entry.kind === 'terminal_handoff') {
+      try {
+        await entry.apply(
+          outcome.outcome.kind === 'terminal_handoff_answer' ? outcome.outcome.action : 'cancel',
+        );
+        this.#live.delete(entry.request.requestId);
+        entry.resolve(outcome.outcome);
+      } catch (error) {
+        entry.reject(error);
+        throw this.#poison(error);
+      }
+      return;
     }
     if (entry.kind === 'client_capability') {
       this.#live.delete(entry.request.requestId);

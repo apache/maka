@@ -538,6 +538,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
     );
     runtimeResources = new HostRuntimeResourceCoordinator({
+      humanControl: shellRuns,
+      interactionAuthority: () => interactions,
       manager: shellRuns,
       sessions: {
         listShellRunUpdates: (sessionId) =>
@@ -576,6 +578,14 @@ export async function createExecutionRuntimeHostComposition(
       attachmentResources,
       backgroundTasks: runtimeResources,
       ptyControls: runtimeResources,
+      terminalHandoff: {
+        available: (sessionId: string) => runtimeResources!.isHandoffAvailable(sessionId),
+        request: (
+          ref: string,
+          message: string,
+          invocation: import('@maka/runtime/tool-runtime').MakaToolContext,
+        ) => runtimeResources!.requestHandoff(ref, message, invocation),
+      },
       ...(openedContextOffloadStore
         ? {
             snapshotImage: async (input: {

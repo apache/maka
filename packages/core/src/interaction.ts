@@ -173,6 +173,26 @@ export interface InteractionFormRequest {
   readonly fields: readonly InteractionFormField[];
 }
 
+/** Input bytes travel over the private resource control channel, never an answer. */
+export interface InteractionTerminalHandoffRequest {
+  readonly kind: 'terminal_handoff';
+  readonly toolUseId: string;
+  readonly ref: string;
+  readonly message: string;
+}
+
+export interface InteractionTerminalHandoffAnswer {
+  readonly kind: 'terminal_handoff';
+  readonly action: 'resume' | 'cancel';
+  readonly controllerId: string;
+}
+
+export interface InteractionCanonicalTerminalHandoffOutcome {
+  readonly kind: 'terminal_handoff_answer';
+  readonly action: 'resume' | 'cancel';
+  readonly committedAt: number;
+}
+
 export interface InteractionSandboxBoundaryRequest {
   readonly kind: 'sandbox_boundary';
   readonly expansion: SandboxBoundaryExpansion;
@@ -186,6 +206,7 @@ export interface InteractionClientCapabilityRequest {
 }
 
 export type InteractionRequest =
+  | InteractionTerminalHandoffRequest
   | InteractionPermissionRequest
   | InteractionQuestionRequest
   | InteractionFormRequest
@@ -229,6 +250,7 @@ export interface InteractionClientCapabilityAnswer {
 }
 
 export type InteractionAnswer =
+  | InteractionTerminalHandoffAnswer
   | InteractionPermissionAnswer
   | InteractionQuestionAnswer
   | InteractionFormAnswer
@@ -282,6 +304,7 @@ export interface InteractionCanonicalClosureOutcome {
 }
 
 export type InteractionCanonicalOutcome =
+  | InteractionCanonicalTerminalHandoffOutcome
   | InteractionCanonicalPermissionOutcome
   | InteractionCanonicalQuestionOutcome
   | InteractionCanonicalFormOutcome
@@ -312,6 +335,19 @@ const FORM_REQUEST_SHAPE = defineObjectShape<InteractionFormRequest>()(
   ['kind', 'toolUseId', 'message', 'requester', 'fields'],
   [],
 );
+const TERMINAL_HANDOFF_REQUEST_SHAPE = defineObjectShape<InteractionTerminalHandoffRequest>()(
+  ['kind', 'toolUseId', 'ref', 'message'],
+  [],
+);
+const TERMINAL_HANDOFF_ANSWER_SHAPE = defineObjectShape<InteractionTerminalHandoffAnswer>()(
+  ['kind', 'action', 'controllerId'],
+  [],
+);
+const TERMINAL_HANDOFF_OUTCOME_SHAPE =
+  defineObjectShape<InteractionCanonicalTerminalHandoffOutcome>()(
+    ['kind', 'action', 'committedAt'],
+    [],
+  );
 const SANDBOX_BOUNDARY_REQUEST_SHAPE = defineObjectShape<InteractionSandboxBoundaryRequest>()(
   ['kind', 'expansion', 'justification'],
   [],
@@ -430,6 +466,14 @@ export function decodeInteractionRequest(value: unknown): InteractionRequest {
         INTERACTION_MAX_QUESTIONS,
       ).map(decodeQuestion),
     };
+  } else if (record.kind === 'terminal_handoff') {
+    exact(record, TERMINAL_HANDOFF_REQUEST_SHAPE, 'terminal handoff request');
+    request = {
+      kind: 'terminal_handoff',
+      toolUseId: boundedString(record.toolUseId, 'toolUseId', INTERACTION_ID_MAX_BYTES),
+      ref: boundedString(record.ref, 'terminal ref', INTERACTION_ID_MAX_BYTES),
+      message: boundedString(record.message, 'handoff message', INTERACTION_FORM_MESSAGE_MAX_BYTES),
+    };
   } else if (record.kind === 'form') {
     exact(record, FORM_REQUEST_SHAPE, 'form request');
     const fields = plainArray(record.fields, 'form fields', 0, INTERACTION_FORM_MAX_FIELDS).map(
@@ -488,6 +532,13 @@ export function decodeInteractionAnswer(value: unknown): InteractionAnswer {
       decision === 'deny'
         ? { kind: 'permission', decision, rememberForTurn: false }
         : { kind: 'permission', decision, rememberForTurn };
+  } else if (record.kind === 'terminal_handoff') {
+    exact(record, TERMINAL_HANDOFF_ANSWER_SHAPE, 'terminal handoff answer');
+    answer = {
+      kind: 'terminal_handoff',
+      action: oneOf(record.action, ['resume', 'cancel'] as const, 'action'),
+      controllerId: boundedString(record.controllerId, 'controllerId', 256),
+    };
   } else if (record.kind === 'question') {
     exact(record, QUESTION_ANSWER_SHAPE, 'question answer');
     answer = { kind: 'question', answers: decodeAnswers(record.answers) };
@@ -578,6 +629,13 @@ export function decodeInteractionCanonicalOutcome(value: unknown): InteractionCa
       decision === 'deny'
         ? { ...common, decision, rememberForTurn: false }
         : { ...common, decision, rememberForTurn };
+  } else if (record.kind === 'terminal_handoff_answer') {
+    exact(record, TERMINAL_HANDOFF_OUTCOME_SHAPE, 'terminal handoff outcome');
+    outcome = {
+      kind: 'terminal_handoff_answer',
+      action: oneOf(record.action, ['resume', 'cancel'] as const, 'action'),
+      committedAt: safeInteger(record.committedAt, 'committedAt', false),
+    };
   } else if (record.kind === 'question_answer') {
     exact(record, QUESTION_OUTCOME_SHAPE, 'question outcome');
     outcome = {
@@ -815,11 +873,13 @@ export function interactionOutcomeMatchesRequestKind(
       ? outcome.kind === 'permission_answer'
       : request.kind === 'question'
         ? outcome.kind === 'question_answer'
-        : request.kind === 'form'
-          ? outcome.kind === 'form_answer'
-          : request.kind === 'sandbox_boundary'
-            ? outcome.kind === 'sandbox_boundary_decision'
-            : outcome.kind === 'client_capability_decision')
+        : request.kind === 'terminal_handoff'
+          ? outcome.kind === 'terminal_handoff_answer'
+          : request.kind === 'form'
+            ? outcome.kind === 'form_answer'
+            : request.kind === 'sandbox_boundary'
+              ? outcome.kind === 'sandbox_boundary_decision'
+              : outcome.kind === 'client_capability_decision')
   );
 }
 
@@ -848,6 +908,7 @@ export function isInteractionAnswerValidForRequest(
   answer: InteractionAnswer,
 ): boolean {
   if (!interactionAnswerMatchesRequestKind(request, answer)) return false;
+  if (answer.kind === 'terminal_handoff') return request.kind === 'terminal_handoff';
   if (answer.kind === 'question') {
     return (
       request.kind === 'question' &&
@@ -867,6 +928,7 @@ export function isInteractionCanonicalOutcomeValidForRequest(
   outcome: InteractionCanonicalOutcome,
 ): boolean {
   if (!interactionOutcomeMatchesRequestKind(request, outcome)) return false;
+  if (outcome.kind === 'terminal_handoff_answer') return request.kind === 'terminal_handoff';
   if (outcome.kind === 'closure')
     return (
       request.kind === 'permission' ||
@@ -904,6 +966,9 @@ export function interactionCanonicalOutcomesEquivalent(
   right: InteractionCanonicalOutcome,
 ): boolean {
   if (left.kind !== right.kind) return false;
+  if (left.kind === 'terminal_handoff_answer' && right.kind === 'terminal_handoff_answer') {
+    return left.action === right.action;
+  }
   if (left.kind === 'permission_answer' && right.kind === 'permission_answer')
     return left.decision === right.decision && left.rememberForTurn === right.rememberForTurn;
   if (left.kind === 'question_answer' && right.kind === 'question_answer')

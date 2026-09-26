@@ -32,6 +32,8 @@ import { suppressTerminalQueryReplies } from './session-terminal-query';
 import { scheduleTerminalFrame } from './session-terminal-frame';
 import { useWorkbarServices } from '../../services-context.js';
 import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme';
+import { TerminalHandoffPanel } from './terminal-handoff-panel.js';
+import type { RuntimeResourceHandoffResult } from '@maka/runtime-host/protocol';
 
 function terminalTheme(element: HTMLElement) {
   const styles = getComputedStyle(element);
@@ -47,6 +49,39 @@ function terminalTheme(element: HTMLElement) {
 }
 
 export function SessionTerminalPanel(props: {
+  sessionId: string;
+  terminalRef: string | null;
+  active: boolean;
+}) {
+  const { terminal } = useWorkbarServices();
+  const [handoff, setHandoff] = useState<RuntimeResourceHandoffResult['request']>();
+  const [checked, setChecked] = useState(!terminal.handoff);
+  useEffect(() => {
+    if (!terminal.handoff || !props.terminalRef) { setChecked(true); return; }
+    let disposed = false;
+    setChecked(false);
+    setHandoff(undefined);
+    const refresh = async () => {
+      try {
+        const result = await terminal.handoff!({ action: 'lookup', sessionId: props.sessionId, ref: props.terminalRef! });
+        if (!disposed) { setHandoff(result.request); setChecked(true); }
+      } catch { if (!disposed) setChecked(true); }
+    };
+    void refresh();
+    const unsubscribe = terminal.subscribeUpdates((update) => {
+      if (update.sessionId === props.sessionId && update.result.ref === props.terminalRef) void refresh();
+    });
+    const unsubscribeResync = terminal.subscribeResync(({ sessionId }) => {
+      if (sessionId === props.sessionId) void refresh();
+    });
+    return () => { disposed = true; unsubscribe(); unsubscribeResync(); };
+  }, [terminal, props.sessionId, props.terminalRef]);
+  if (handoff) return <TerminalHandoffPanel key={handoff.requestId} sessionId={props.sessionId} request={handoff} active={props.active} />;
+  if (!checked) return <div className="maka-session-terminal-panel" aria-busy="true" />;
+  return <StandardSessionTerminalPanel {...props} />;
+}
+
+function StandardSessionTerminalPanel(props: {
   sessionId: string;
   terminalRef: string | null;
   active: boolean;

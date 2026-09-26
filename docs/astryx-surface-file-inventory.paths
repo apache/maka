@@ -93,6 +93,7 @@ apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-pr
 apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx
+apps/desktop/src/renderer/features/workbar/tools/terminal/terminal-handoff-panel.tsx
 apps/desktop/src/renderer/features/workbar/ui/recent-turn-overlay.tsx
 apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx

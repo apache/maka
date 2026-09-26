@@ -452,7 +452,18 @@ export function createInteractiveRunComposerFactory(
           ? { toolProfile: backendContext.header.toolProfile }
           : {}),
         ...(clientCapabilities ? { clientCapabilities } : {}),
-        ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
+        ...(input.builtinTools
+          ? {
+              builtinTools: {
+                ...input.builtinTools,
+                terminalHandoff: input.builtinTools.terminalHandoff?.available(
+                  backendContext.sessionId,
+                )
+                  ? input.builtinTools.terminalHandoff
+                  : undefined,
+              },
+            }
+          : {}),
         ...(hostTools.length > 0 ? { hostTools } : {}),
         ...(input.resolvePluginTools && !backendContext.tools
           ? {

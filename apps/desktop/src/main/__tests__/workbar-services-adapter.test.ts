@@ -80,7 +80,7 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
-  it('recovers only live local desktop PTYs from the Host inventory and updates', async () => {
+  it('recovers live local desktop PTYs and handed-off model PTYs, excluding inherited resources', async () => {
     const { bridge } = createBridgeRecorder();
     const manual = {
       sessionId: 's', ownership: { kind: 'local' },
@@ -89,23 +89,26 @@ describe('createDesktopWorkbarServices', () => {
     } as ShellRunUpdate;
     const updates = [
       manual,
-      { ...manual, sourceTurnId: 'agent-turn' },
+      { ...manual, sourceTurnId: 'agent-turn', result: { ...manual.result, ref: 'agent' } },
       { ...manual, result: { ...manual.result, mode: 'pipes' } },
       { ...manual, result: { ...manual.result, status: 'completed' } },
       { ...manual, ownership: { kind: 'source_unavailable', sourceSessionId: 'source' } },
+      { ...manual, sourceTurnId: 'agent-turn', result: { ...manual.result, ref: 'agent-handoff' } },
     ] as ShellRunUpdate[];
     let listener: ((update: ShellRunUpdate) => void) | undefined;
     bridge.shellRuns = {
       ...bridge.shellRuns,
       recover: async () => ({ resources: updates, closes: [] }),
+      handoff: async (input) => ({ status: 'available', nextSequence: 1, phase: 'human',
+        ...(input.action === 'lookup' && input.ref === 'agent-handoff' ? { request: { requestId: 'request', ref: input.ref, message: 'Authenticate', command: 'ssh fixture' } } : {}) }),
       subscribeUpdates: (handler) => { listener = handler; return () => { listener = undefined; }; },
     };
     const services = createDesktopWorkbarServices(bridge);
-    assert.deepEqual(await services.terminal.recover('s'), { resources: [manual], closes: [] });
+    assert.deepEqual(await services.terminal.recover('s'), { resources: [manual, updates[5]], closes: [] });
     const received: ShellRunUpdate[] = [];
     const dispose = services.terminal.subscribeUpdates((update) => received.push(update));
     for (const update of updates) listener?.(update);
-    assert.deepEqual(received, [manual, updates[3]]);
+    assert.deepEqual(received, [manual, updates[1], updates[3], updates[5]]);
     dispose();
     assert.equal(listener, undefined);
   });

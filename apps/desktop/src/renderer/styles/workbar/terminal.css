@@ -28,6 +28,27 @@
   background: var(--agents-content-area-bg);
 }
 
+.maka-terminal-handoff {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  color: var(--foreground);
+}
+
+.maka-terminal-handoff header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.maka-terminal-handoff header code { overflow-wrap: anywhere; }
+.maka-terminal-handoff p { margin: 0; font-size: var(--font-size-sm, 12px); }
+.maka-terminal-handoff footer { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.maka-terminal-handoff-screen { flex: 1; min-height: 80px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: var(--space-2); background: var(--agents-content-area-bg); font-family: ui-monospace, monospace; font-size: 12px; }
+
 .maka-session-terminal-panel > .astryx-banner {
   flex: none;
   margin: var(--space-2);

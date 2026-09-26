@@ -563,6 +563,16 @@ export function projectRuntimeHostInteractionRequest(
       },
     ];
   }
+  if (interaction.request.kind === 'terminal_handoff') {
+    return [
+      {
+        type: 'terminal_handoff_request',
+        ...base,
+        ref: interaction.request.ref,
+        message: interaction.request.message,
+      },
+    ];
+  }
   if (interaction.request.kind === 'form') {
     return [
       {
