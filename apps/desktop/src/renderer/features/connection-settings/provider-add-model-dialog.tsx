@@ -118,6 +118,7 @@ export function AddModelDialog(props: {
         copy={copy}
         modelId={trimmedId}
         customDefaultApiProtocol={props.defaultApiProtocol}
+        providerType={props.providerType}
         declared={profile}
         limitsConflict={limitsConflict}
         onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
