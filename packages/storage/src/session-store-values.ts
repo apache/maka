@@ -44,8 +44,11 @@ import { isOrchestrationMode } from '@maka/core/orchestration';
 import { decodePersistedPermissionMode, isPermissionMode } from '@maka/core/permission';
 import type { PersistedValue } from '@maka/core/persisted-value';
 import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
-import type { CreateSessionInput } from '@maka/core/runtime-inputs';
-import { assertSafeSessionId, isSafeSessionId } from './session-store-contract.js';
+import {
+  assertSafeSessionId,
+  isSafeSessionId,
+  type StableSessionCreateInput,
+} from './session-store-contract.js';
 
 export function assertCoordinationIdentityPairing(
   sessionId: string,
@@ -58,7 +61,7 @@ export function assertCoordinationIdentityPairing(
 
 export function buildSessionHeader(
   workspaceRoot: string,
-  input: CreateSessionInput & { readonly role?: SessionRole },
+  input: StableSessionCreateInput,
   sessionId: string = randomUUID(),
   conversationCopy?: SessionConversationCopy,
 ): SessionHeader {
@@ -83,6 +86,7 @@ export function buildSessionHeader(
     createdAt: now,
     name,
     titleIsManual: false,
+    ...(input.branchNameOrigin ? { branchNameOrigin: input.branchNameOrigin } : {}),
     isFlagged: false,
     labels: input.labels ?? [],
     isArchived: false,
@@ -141,6 +145,11 @@ function normalizeRequiredSessionName(name: string): string {
   return normalized.value;
 }
 
+function isCanonicalSessionName(value: unknown): value is string {
+  const normalized = normalizeUserSessionName(value);
+  return normalized.ok && normalized.value === value;
+}
+
 /** Validate and normalize a current SessionHeader before canonical persistence. */
 export function normalizeSessionHeader(
   header: SessionHeader,
@@ -158,6 +167,11 @@ export function normalizeSessionHeader(
     (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
     typeof header.name === 'string' &&
     typeof header.titleIsManual === 'boolean' &&
+    (header.branchNameOrigin === undefined ||
+      (header.branchNameOrigin !== null &&
+        typeof header.branchNameOrigin === 'object' &&
+        isCanonicalSessionName(header.branchNameOrigin.base) &&
+        isCanonicalSessionName(header.branchNameOrigin.name))) &&
     typeof header.isFlagged === 'boolean' &&
     Array.isArray(header.labels) &&
     header.labels.every((label) => typeof label === 'string') &&
