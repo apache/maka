@@ -59,10 +59,13 @@ import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   projectSessionCatalogSummary,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostResources,
   readRuntimeHostSessions,
+  RuntimeHostSessionCatalogRevisionChangedError,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
+  type RuntimeHostSessionCatalogPageCursor,
 } from '@maka/runtime-host/client';
 import {
   InteractionPendingSnapshot,
@@ -95,6 +98,7 @@ import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
   MakaSessionDriver,
+  MakaSessionListOptions,
   MakaSessionMoveResult,
   MakaSessionRewindResult,
   MakaSessionSwitchOptions,
@@ -170,6 +174,7 @@ type RuntimeHostSessionDriverConnection = Pick<
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionRequest): Promise<SessionSummary>;
+  getSessionSummary(sessionId: string): Promise<SessionSummary | undefined>;
   readMessages(): Promise<StoredMessage[]>;
   getWorkspaceTarget(): WorkspaceTarget | undefined;
   resumeLatest(): AsyncIterable<SessionEvent>;
@@ -319,8 +324,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return projectSessionCatalogSummary(session);
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
-    const sessions = (await readRuntimeHostSessions(this.#connection))
+  async listSessions(options: MakaSessionListOptions = {}): Promise<SessionSummary[]> {
+    const sessions = (
+      await (options.cwd !== undefined
+        ? this.#readBoundedSessionCatalog(options.limit, options.cwd)
+        : options.limit === undefined
+          ? readRuntimeHostSessions(this.#connection)
+          : this.#readBoundedSessionCatalog(options.limit))
+    )
       .flatMap(representableSession)
       .filter((session) => !isSideConversationSession(session.labels))
       .map(projectSessionCatalogSummary);
@@ -336,8 +347,70 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .map(({ session }) => session);
   }
 
-  getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
+  async getSessionSummary(sessionId: string): Promise<SessionSummary | undefined> {
+    const projection = await getRuntimeHostSession(this.#connection, sessionId);
+    if (!projection) return undefined;
+    const [session] = representableSession(projection);
+    return session ? projectSessionCatalogSummary(session) : undefined;
+  }
+
+  async #readBoundedSessionCatalog(
+    limit: number | undefined,
+    cwd?: string,
+  ): Promise<SessionCatalogItem[]> {
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+      throw new Error(`Session catalog limit must be a non-negative safe integer: ${limit}`);
+    }
+    if (limit === 0) return [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const sessions: SessionCatalogItem[] = [];
+        const cursors = new Set<string>();
+        let cursor: RuntimeHostSessionCatalogPageCursor | undefined;
+        let hasMore = true;
+        while (hasMore) {
+          const page = await readRuntimeHostSessionCatalogPage(this.#connection, cursor);
+          for (const item of page.sessions) {
+            if (
+              cwd === undefined ||
+              representableSession(item).some((session) => session.workspace.hostCwd === cwd)
+            ) {
+              sessions.push(item);
+              if (limit !== undefined && sessions.length >= limit) break;
+            }
+          }
+          if (!page.nextCursor || (limit !== undefined && sessions.length >= limit)) {
+            hasMore = false;
+            break;
+          }
+          cursor = page.nextCursor;
+          if (cursors.has(cursor.cursor)) {
+            throw new Error('Runtime Host Session catalog returned a repeated cursor');
+          }
+          cursors.add(cursor.cursor);
+        }
+        return sessions;
+      } catch (error) {
+        if (!(error instanceof RuntimeHostSessionCatalogRevisionChangedError) || attempt === 2) {
+          throw error;
+        }
+      }
+    }
+    throw new Error('Runtime Host Session catalog could not be read consistently');
+  }
+
+  async getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
     return inspectRuntimeHostSessionResumeAvailability(session, this.#executionLocation);
+  }
+
+  async getSessionResumeCandidateAvailability(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    if (!session.cwd) return { available: false, reason: 'Missing working directory' };
+    const plan = await this.#request('turn.resume.query', { sessionId: session.id });
+    return plan.disposition === 'ready'
+      ? { available: true }
+      : { available: false, reason: plan.reason };
   }
 
   async preparePrompt(
@@ -1833,9 +1906,8 @@ function inspectRuntimeHostSessionResumeAvailability(
   if (!summary.cwd) {
     return Promise.resolve({ available: false, reason: 'Missing working directory' });
   }
-  return location.kind === 'host'
-    ? Promise.resolve({ available: true })
-    : inspectSessionResumeAvailability(summary);
+  if (location.kind !== 'host') return inspectSessionResumeAvailability(summary);
+  return Promise.resolve({ available: true });
 }
 
 async function assertSessionResumeAvailable(

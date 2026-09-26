@@ -80,6 +80,9 @@ interface TuiPickerCopy {
   readonly sessionScopeAll: string;
   readonly sessionSearchHint: string;
   readonly noMatchingSessions: string;
+  readonly resumeAvailabilityNotice: string;
+  readonly resumeStartingNotice: string;
+  readonly resumeUnavailableNotice: string;
   readonly selectPickerHint: string;
   readonly providerConfigured: string;
   readonly addAccount: string;

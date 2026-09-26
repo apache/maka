@@ -66,6 +66,67 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('fills a current-workspace session limit across global catalog pages', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 201 }, (_, index) => {
+      const cwd = index === 200 ? '/repo' : `/other-${index}`;
+      return sessionProjection({
+        id: `session-${index}`,
+        workspace: { target: { kind: 'host_path', path: cwd }, hostCwd: cwd },
+      });
+    });
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = Math.min(offset + 32, catalogSessions.length);
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    const sessions = await driver.listSessions({ limit: 200, cwd: '/repo' });
+
+    assert.deepEqual(
+      sessions.map(({ id }) => id),
+      ['session-200'],
+    );
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      7,
+    );
+  });
+
+  test('looks up an attached Session summary by ID', async () => {
+    const connection = new FakeConnection([]);
+    const attached = sessionProjection({ id: 'attached-session' });
+    connection.sessionQueries.push(attached);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    assert.deepEqual(
+      await driver.getSessionSummary('attached-session'),
+      projectSessionCatalogSummary(attached),
+    );
+    assert.deepEqual(connection.requests, [
+      {
+        operation: 'session.catalog.query',
+        input: { kind: 'get', sessionId: 'attached-session' },
+      },
+    ]);
+  });
+
   test('maps authoritative live Turn ids into Session summaries', () => {
     assert.deepEqual(
       projectSessionCatalogSummary(
@@ -2833,6 +2894,7 @@ describe('Runtime Host Maka Session driver', () => {
 class FakeConnection {
   readonly requests: Array<{ operation: string; input: unknown }> = [];
   readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
+  readonly sessionCatalogPages: Array<OperationOutput<'session.catalog.query'>> = [];
   openedSubscriptions = 0;
   interactionQuery: unknown;
   runtimeResourceQuery: unknown;
@@ -2901,6 +2963,13 @@ class FakeConnection {
     this.requests.push({ operation, input });
     const held = this.heldOperations.get(operation);
     if (held) await held;
+    if (
+      operation === 'session.catalog.query' &&
+      (input as OperationInput<'session.catalog.query'>).kind !== 'get' &&
+      this.sessionCatalogPages.length > 0
+    ) {
+      return this.sessionCatalogPages.shift() as OperationOutput<K>;
+    }
     if (operation === 'session.workspace.relocate') {
       const workspace = (input as OperationInput<'session.workspace.relocate'>).workspace;
       if (workspace.kind !== 'host_path') throw new Error('Expected Host-path workspace');
@@ -2953,6 +3022,15 @@ class FakeConnection {
       return {
         sessionId: (input as OperationInput<'goal.query'>).sessionId,
         goal: this.goalQueryResults.shift() ?? null,
+      } as OperationOutput<K>;
+    }
+    if (operation === 'turn.resume.query') {
+      return {
+        sessionId: (input as OperationInput<'turn.resume.query'>).sessionId,
+        disposition: 'ready',
+        sourceRunId: 'source-run-1',
+        sourceTurnId: 'source-turn-1',
+        sourceRuntimeEventHighWater: 1,
       } as OperationOutput<K>;
     }
     if (operation === 'session.configuration.update') {
