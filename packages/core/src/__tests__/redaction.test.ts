@@ -246,6 +246,84 @@ describe('redactSecrets', () => {
     );
   });
 
+  test('masks sensitive assignments nested in a harmless assignment value', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'Config excerpt: password=FAKE-not-a-real-password-000',
+        'Config excerpt: password=[redacted]',
+      ],
+      ['note: token=FAKE-token-value', 'note: token=[redacted]'],
+      ['summary=api_key: FAKE-api-key-value', 'summary=api_key: [redacted]'],
+      ['user=alice;password=FAKE-password', 'user=alice;password=[redacted]'],
+      ['excerpt: "client_secret=FAKE-secret" done', 'excerpt: "client_secret=[redacted]" done'],
+      ['a=b:c=password=FAKE-password', 'a=b:c=password=[redacted]'],
+      ['flags: --password=FAKE-password', 'flags: --password=[redacted]'],
+      ['note: password=token=FAKE-token', 'note: password=[redacted]'],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+      assert.equal(redactSecrets(expected), expected);
+    }
+  });
+
+  test('keeps harmless assignment values without a nested sensitive assignment', () => {
+    for (const text of [
+      'excerpt: plain text',
+      'ratio=1:2',
+      'time=12:30:00 mode=a:b=c',
+      'url=https://example.com/docs:intro?page=2',
+      'note: cache-key=cached-result issue_key=ISSUE-1359',
+    ]) {
+      assert.equal(redactSecrets(text), text);
+    }
+  });
+
+  test('leaves a sensitive key without a value unchanged', () => {
+    for (const text of [
+      'password=',
+      'note: token: ',
+      'excerpt: api_key="',
+      'password=\nnext line',
+    ]) {
+      assert.equal(redactSecrets(text), text);
+    }
+  });
+
+  test('masks the assignment that a sensitive key without a value takes as its value', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'env: API_TOKEN= DB_PASSWORD="FAKE-not-a-real-password-000"',
+        'env: API_TOKEN= [redacted]"[redacted]"',
+      ],
+      [
+        "Usage: --token= --password='FAKE-not-a-real-password-000'",
+        "Usage: --token= [redacted]'[redacted]'",
+      ],
+      ['note: password: token: FAKE-not-a-real-token-000', 'note: password: [redacted] [redacted]'],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+      assert.equal(redactSecrets(expected), expected);
+    }
+  });
+
+  test('scans long harmless assignment values in bounded time', () => {
+    const started = Date.now();
+    for (const text of [
+      `note: ${'a:'.repeat(100_000)}`,
+      `data=${'a-'.repeat(100_000)}`,
+      `blob=${'Z'.repeat(200_000)}==`,
+      'a-'.repeat(100_000),
+    ]) {
+      assert.equal(redactSecrets(text), text);
+    }
+    const elapsed = Date.now() - started;
+    // Rescanning the rest of the value per nested key or per hyphen, retrying a
+    // key at every hyphen of a bare run, or splitting a long uppercase key with
+    // backtracking takes seconds to tens of seconds.
+    assert.ok(elapsed < 5_000, `scanned in ${elapsed}ms, which must not rescan the value`);
+  });
+
   test('preserves own __proto__ data properties while redacting serialized JSON', () => {
     const redacted = JSON.parse(
       redactSecrets(
