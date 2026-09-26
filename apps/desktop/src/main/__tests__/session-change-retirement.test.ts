@@ -30,6 +30,7 @@ import {
   type DesktopSessionSummary,
 } from '../../renderer/application/contracts/session-catalog/catalog-row-watch.js';
 import { createSessionWorkspaceActions } from '../../renderer/session-workspace-actions.js';
+import { createSessionPatchDrain } from '../../renderer/platform/desktop/session-catalog-sync.js';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 
 function row(id: string): DesktopSessionSummary {
@@ -87,13 +88,14 @@ function harness(
       catalog.commitSessions(next);
       return Promise.resolve(next as SessionSummary[]);
     },
-    // Mirrors the production drain: the committed catalog is updated before the
-    // row read resolves, so a resolved promise means sessionsRef is current.
-    refreshChangedSession: (sessionId: string) => {
-      const next = source[sessionId] ?? null;
-      catalog.commitPatch(sessionId, next);
-      return Promise.resolve(next);
-    },
+    refreshChangedSession: createSessionPatchDrain({
+      normalize: (session) => session,
+      commitPatch: catalog.commitPatch,
+      onReadFailure: () => {},
+    }, { sessions: { get: async (id) => {
+      if (!(id in source)) throw new Error('read failed');
+      return source[id];
+    } } }).request,
     setSessionEventHealthBySession: () => {},
     notifyModelRebound: () => {},
     toastApi: {
@@ -156,7 +158,6 @@ describe('session retirement sweep', () => {
       [row('viewer'), row('background')],
       {},
     );
-    options.refreshChangedSession = () => Promise.resolve(null);
     handleSessionChangedEvent(
       { reason: 'status-change', sessionId: 'viewer', ts: 1 },
       options,

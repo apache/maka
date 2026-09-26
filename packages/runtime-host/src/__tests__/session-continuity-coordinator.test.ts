@@ -457,10 +457,16 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   let projection = canonical({
     rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
   });
+  const attention: unknown[] = [];
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => projection,
     new SessionAdmissionGate(),
+    () => undefined,
+    undefined,
+    (sessionId, event) => {
+      if (event) attention.push({ sessionId, ...event });
+    },
   );
   const sink = new RecordingSink();
   const connection = attachTestConnection(coordinator, 'connection-1', sink);
@@ -490,7 +496,51 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
     assert.equal(frame.snapshot.projectionRevision, 2);
     assert.equal(frame.snapshot.rootTurn?.status, 'completed');
   }
+  assert.deepEqual(attention, [
+    {
+      sessionId: SESSION_ID,
+      kind: 'completed',
+      eventId: 'event-terminal',
+    },
+  ]);
   coordinator.close();
+});
+
+test('silent successful Turns and cancellations do not notify, but failures still do', async () => {
+  for (const status of ['completed', 'cancelled', 'failed'] as const) {
+    let projection = canonical();
+    const attention: unknown[] = [];
+    const coordinator = new SessionContinuityCoordinator(
+      HOST_EPOCH,
+      async () => projection,
+      new SessionAdmissionGate(),
+      () => undefined,
+      undefined,
+      (_sessionId, event) => {
+        if (event) attention.push(event);
+      },
+    );
+    await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
+    projection = canonical({
+      rootTurn: {
+        sessionId: SESSION_ID,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        terminalEventId: 'terminal',
+        ...(status === 'failed'
+          ? { status, failureClass: 'provider', failureMessage: 'Unavailable' }
+          : status === 'cancelled'
+            ? { status, abortSource: 'user' }
+            : { status }),
+      },
+    });
+    await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1', undefined, false);
+    assert.deepEqual(
+      attention,
+      status === 'failed' ? [{ kind: 'errored', eventId: 'terminal', body: 'Unavailable' }] : [],
+    );
+    coordinator.close();
+  }
 });
 
 test('detached canonical refreshes coalesce before Store I/O', async () => {

@@ -161,7 +161,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   refreshProjects: () => Promise<unknown>;
   refreshShellSettings: () => Promise<void>;
   refreshSessions: () => Promise<SessionSummary[]>;
-  refreshChangedSession: (sessionId: string) => Promise<SessionSummary | null>;
+  refreshChangedSession: (sessionId: string) => Promise<void>;
   rendererMountedRef: RefBox<boolean>;
   retireSession: (sessionId: string) => void;
   retiredSessionIds(sessions: readonly { id: string }[]): string[];

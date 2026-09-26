@@ -1717,16 +1717,9 @@ function AppShellContent({
       contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
     toastApi,
-    notifyRunEnded: ({ kind, sessionId, body }) => {
-      if (kind === 'completed' && activeIdRef.current === sessionId)
+    onTurnCompleted: (sessionId) => {
+      if (activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
-      // The live reply text is usually handed to the transcript before
-      // `complete` arrives; the Host commits the row's reply preview first.
-      // Best-effort: swallow any failure so a missed banner never surfaces
-      // as an unhandled promise rejection.
-      refreshChangedSession(sessionId)
-        .then((session) => window.maka.notifications.runEnded({ kind, title: session?.name, body: body ?? session?.lastMessagePreview }))
-        .catch(() => undefined);
     },
   });
 

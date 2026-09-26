@@ -3278,6 +3278,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         active.turnId,
         active.runId,
         lease,
+        active.descriptor.kind !== 'context_compact',
       );
       if (batch.sources.length === 0) {
         this.messages.completeIdle(batch);
