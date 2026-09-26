@@ -20,9 +20,9 @@
 use super::*;
 use pulldown_cmark::Alignment;
 
-struct Cell<'a> {
-    events: Vec<(Event<'a>, Range<usize>)>,
-    source: usize,
+pub(super) struct Cell<'a> {
+    pub(super) events: Vec<(Event<'a>, Range<usize>)>,
+    pub(super) source: usize,
 }
 
 pub(super) fn render<'a>(
@@ -70,6 +70,9 @@ pub(super) fn render<'a>(
     }
     if rows.is_empty() || rows.iter().any(|row| row.len() != columns) {
         return Err("Invalid table geometry");
+    }
+    if writer.recording.is_some() {
+        return prepared::tables::prepare(writer, source, rows, alignments, ascii);
     }
     writer.boundary()?;
     let indent = writer.indent.min(writer.width.saturating_sub(1));
@@ -137,6 +140,9 @@ fn append(writer: &mut Writer, mut line: VisualLine, indent: usize) -> Result<()
         return Err("Transcript layout exceeds local capacity");
     }
     writer.bytes += bytes;
+    writer.rows += 1;
+    writer.last_source = line.source;
+    writer.last_nonempty = !line.line.spans.is_empty();
     writer.lines.push(line);
     Ok(())
 }
@@ -217,64 +223,17 @@ fn grid(
             .max()
             .unwrap_or(1);
         for y in 0..height {
-            let mut line = Line::default();
-            let mut mapping = vec![];
-            let mut display = 0;
-            let mut position = None;
-            for (column, (layout, width)) in layouts.iter().zip(&widths).enumerate() {
-                if column > 0 {
-                    line.spans.push(Span::styled(
-                        if ascii { " | " } else { " │ " },
-                        Style::default().fg(writer.colors.subtle),
-                    ));
-                    display += if ascii { " | " } else { " │ " }.len();
-                }
-                let content = layout.lines.get(y);
-                if let Some(content) = content {
-                    position.get_or_insert(content.source);
-                }
-                let used = content.map_or(0, |line| line.line.width());
-                let padding = width.saturating_sub(used);
-                let before = match align[column] {
-                    Alignment::Right => padding,
-                    Alignment::Center => padding / 2,
-                    _ => 0,
-                };
-                line.spans.push(Span::raw(" ".repeat(before)));
-                display += before;
-                if let Some(content) = content {
-                    mapping.extend(content.mapping.iter().cloned().map(|mut span| {
-                        span.display.start += display;
-                        span.display.end += display;
-                        span
-                    }));
-                    display += content
-                        .line
-                        .spans
-                        .iter()
-                        .map(|span| span.content.len())
-                        .sum::<usize>();
-                    line.spans
-                        .extend(content.line.spans.iter().cloned().map(|span| {
-                            if row_index == 0 {
-                                span.patch_style(Style::default().add_modifier(Modifier::BOLD))
-                            } else {
-                                span
-                            }
-                        }));
-                }
-                line.spans.push(Span::raw(" ".repeat(padding - before)));
-                display += padding - before;
-            }
-            append(
-                writer,
-                VisualLine {
-                    line,
-                    source: position.unwrap_or(row[0].source),
-                    mapping,
-                },
-                indent,
-            )?;
+            let contents: Vec<_> = layouts.iter().map(|layout| layout.lines.get(y)).collect();
+            let line = grid_line(
+                &contents,
+                &widths,
+                align,
+                row_index == 0,
+                row[0].source,
+                ascii,
+                writer.colors,
+            );
+            append(writer, line, indent)?;
         }
         if row_index == 0 {
             let line = widths
@@ -295,6 +254,72 @@ fn grid(
     }
     Ok(())
 }
+pub(super) fn grid_line(
+    contents: &[Option<&VisualLine>],
+    widths: &[usize],
+    align: &[Alignment],
+    header: bool,
+    fallback: usize,
+    ascii: bool,
+    colors: crate::theme::Palette,
+) -> VisualLine {
+    let mut line = Line::default();
+    let mut mapping = vec![];
+    let mut display = 0;
+    let mut position = None;
+    for (column, (layout, width)) in contents.iter().zip(widths).enumerate() {
+        if column > 0 {
+            line.spans.push(Span::styled(
+                if ascii { " | " } else { " │ " },
+                Style::default().fg(colors.subtle),
+            ));
+            display += if ascii { " | " } else { " │ " }.len();
+        }
+        let content = *layout;
+        if let Some(content) = content {
+            position.get_or_insert(content.source);
+        }
+        let used = content.map_or(0, |line| line.line.width());
+        let padding = width.saturating_sub(used);
+        let before = match align[column] {
+            Alignment::Right => padding,
+            Alignment::Center => padding / 2,
+            _ => 0,
+        };
+        line.spans.push(Span::raw(" ".repeat(before)));
+        display += before;
+        if let Some(content) = content {
+            mapping.extend(content.mapping.iter().cloned().map(|mut span| {
+                span.display.start += display;
+                span.display.end += display;
+                span
+            }));
+            display += content
+                .line
+                .spans
+                .iter()
+                .map(|span| span.content.len())
+                .sum::<usize>();
+            line.spans
+                .extend(content.line.spans.iter().cloned().map(|span| {
+                    if header {
+                        span.patch_style(Style::default().add_modifier(Modifier::BOLD))
+                    } else {
+                        span
+                    }
+                }));
+        }
+        line.spans.push(Span::raw(" ".repeat(padding - before)));
+        display += padding - before;
+    }
+
+    VisualLine {
+        line,
+        source: position.unwrap_or(fallback),
+        mapping,
+    }
+}
+
 fn stacked(
     writer: &mut Writer,
     source: &str,

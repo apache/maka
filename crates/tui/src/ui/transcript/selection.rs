@@ -25,7 +25,10 @@ use unicode_width::UnicodeWidthStr;
 
 pub const MAX_COPY_BYTES: usize = crate::terminal::MAX_CLIPBOARD_BYTES;
 mod keyboard;
-mod rebase;
+#[cfg(test)]
+mod loading;
+pub(super) mod rebase;
+mod resolve;
 use keyboard::{Caret, Extent};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyMode {
@@ -75,18 +78,45 @@ pub struct Selection {
     too_large: bool,
     area: Option<Rect>,
     extent: Option<Extent>,
+    pending: Option<resolve::Resolution>,
+    error: Option<&'static str>,
+    validating: bool,
+    keys: std::collections::VecDeque<crossterm::event::KeyCode>,
+    movement: Option<keyboard::Pending>,
+    loading: Option<MessageKey>,
 }
 impl Selection {
+    pub(super) fn geometry_key(&self) -> Option<&MessageKey> {
+        (!self.keys.is_empty())
+            .then_some(self.loading.as_ref())
+            .flatten()
+    }
+    pub(super) fn preparing_geometry(&self) -> bool {
+        !self.keys.is_empty()
+    }
+
     pub(super) fn retained_bytes(&self) -> usize {
         self.ranges
             .iter()
             .map(|segment| segment.text.len() + segment.key.bytes())
             .sum::<usize>()
+            + self.loading.as_ref().map_or(0, MessageKey::bytes)
+            + self
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.key.as_ref())
+                .map_or(0, MessageKey::bytes)
+            + self
+                .movement
+                .as_ref()
+                .map_or(0, keyboard::Pending::retained_bytes)
+            + self.keys.capacity() * std::mem::size_of::<crossterm::event::KeyCode>()
             + self.extent.as_ref().map_or(0, |extent| {
                 extent.anchor.key.bytes() + extent.head.key.bytes()
             })
     }
     pub(super) fn suspend(&mut self) {
+        self.validating = self.has_caret() || self.active();
         self.invalidate_geometry();
         self.rows = Vec::new();
     }
@@ -98,6 +128,9 @@ impl Selection {
     }
     pub fn active(&self) -> bool {
         !self.ranges.is_empty()
+            || self.pending.is_some()
+            || self.error.is_some()
+            || !self.keys.is_empty()
     }
     pub fn has_caret(&self) -> bool {
         self.extent.is_some()
@@ -107,6 +140,12 @@ impl Selection {
         self.drag = None;
         self.too_large = false;
         self.extent = None;
+        self.pending = None;
+        self.error = None;
+        self.validating = false;
+        self.keys.clear();
+        self.movement = None;
+        self.loading = None;
     }
     pub fn begin_frame(&mut self) {
         self.rows.clear();
@@ -116,6 +155,8 @@ impl Selection {
     pub fn invalidate_geometry(&mut self) {
         self.begin_frame();
         self.drag = None;
+        self.movement = None;
+        self.loading = None;
         if let Some(extent) = &mut self.extent {
             extent.column = None;
         }
@@ -156,30 +197,31 @@ impl Transcript {
     pub(super) fn selection_geometry(&mut self, area: Rect) {
         self.text_selection.area = Some(area);
         self.text_selection.rows.clear();
-        let first = self
-            .starts
-            .partition_point(|start| *start <= self.top)
-            .saturating_sub(1);
+        if self.starts.len() != self.order.len() {
+            return;
+        }
+        let first = self.starts.at(self.top);
         for index in first..self.order.len() {
-            let start = self.starts[index];
+            let start = self.starts.start(index);
             if start >= self.top + usize::from(area.height) {
                 break;
             }
             let key = &self.order[index];
             let block = &self.blocks[key];
-            if area.width <= 2 + block.indent || block.kind == Kind::Timing {
+            if area.width <= 2 + block.indent
+                || block.kind == Kind::Timing
+                || !block.visual_current()
+            {
                 continue;
             }
-            let Some(layout) = &block.layout else {
-                continue;
-            };
-            let offset = self.top.saturating_sub(start);
-            let end = layout
-                .lines
-                .len()
+            let offset = self.top.saturating_sub(start).max(block.visual_origin());
+            let end = (block.visual_origin() + block.visual_lines().len())
                 .min(self.top + usize::from(area.height) - start);
             for row in offset..end {
-                if layout.lines[row].mapping.is_empty() {
+                if block
+                    .visual_line(row)
+                    .is_none_or(|line| line.mapping.is_empty())
+                {
                     continue;
                 }
                 self.text_selection.rows.push(Row {
@@ -208,6 +250,7 @@ impl Transcript {
         .then(|| deadline.saturating_duration_since(now))
     }
     pub fn selection_scroll(&mut self, now: Instant) -> bool {
+        let _work = frame_work::begin();
         if self.selection_wait(now) != Some(Duration::ZERO) {
             return false;
         }
@@ -240,13 +283,7 @@ impl Transcript {
             .iter()
             .filter(|line| clamp || line.area.y == row)
             .min_by_key(|line| line.area.y.abs_diff(row))?;
-        let visual = self
-            .blocks
-            .get(&visible.key)?
-            .layout
-            .as_ref()?
-            .lines
-            .get(visible.index)?;
+        let visual = self.blocks.get(&visible.key)?.visual_line(visible.index)?;
         let text = visual.line.to_string();
         let column = if clamp {
             column
@@ -297,6 +334,9 @@ impl Transcript {
         clamp.then_some(nearest).flatten()
     }
     fn select_text(&mut self, anchor: &Point, head: &Point) {
+        self.text_selection.keys.clear();
+        self.text_selection.movement = None;
+        self.text_selection.loading = None;
         let Some(a) = self.order.iter().position(|key| key == &anchor.key) else {
             return;
         };
@@ -326,56 +366,6 @@ impl Transcript {
             column: None,
         });
     }
-    fn select_extent(&mut self, extent: Extent) {
-        let Some(a) = self.order.iter().position(|key| key == &extent.anchor.key) else {
-            return;
-        };
-        let Some(b) = self.order.iter().position(|key| key == &extent.head.key) else {
-            return;
-        };
-        let (first, last, start, end) = if (a, extent.anchor.offset) <= (b, extent.head.offset) {
-            (a, b, extent.anchor.offset, extent.head.offset)
-        } else {
-            (b, a, extent.head.offset, extent.anchor.offset)
-        };
-        self.text_selection.extent = Some(extent);
-        self.text_selection.ranges.clear();
-        self.text_selection.too_large = false;
-        let mut bytes = 0;
-        for (index, key) in self.order.iter().enumerate().take(last + 1).skip(first) {
-            let Some(layout) = self.blocks[key].layout.as_ref() else {
-                continue;
-            };
-            let range = (if index == first { start } else { 0 })..(if index == last {
-                end
-            } else {
-                layout.text.len()
-            });
-            let Some(text) = layout
-                .text
-                .get(range.clone())
-                .filter(|text| !text.is_empty())
-            else {
-                continue;
-            };
-            bytes += text.len()
-                + if self.text_selection.ranges.is_empty() {
-                    0
-                } else {
-                    2
-                };
-            self.text_selection.too_large |= bytes > MAX_COPY_BYTES;
-            self.text_selection.ranges.push(Segment {
-                key: key.clone(),
-                range,
-                text: if self.text_selection.too_large {
-                    String::new()
-                } else {
-                    text.into()
-                },
-            });
-        }
-    }
     /// None means this event belongs to another control. A plain click on a card is
     /// delayed until release, so dragging its text cannot accidentally fold it.
     pub fn text_mouse(
@@ -383,6 +373,7 @@ impl Transcript {
         mouse: MouseEvent,
         click: Option<Effect>,
     ) -> Option<Option<Effect>> {
+        let _work = frame_work::begin();
         if !self.text_selection.dragging()
             && self
                 .text_selection
@@ -460,39 +451,20 @@ impl Transcript {
             _ => None,
         }
     }
-    pub(super) fn validate_text_selection(&mut self) {
-        let invalid_caret = self.text_selection.extent.as_ref().is_some_and(|extent| {
-            [&extent.anchor, &extent.head].into_iter().any(|caret| {
-                !self.order.contains(&caret.key)
-                    || self
-                        .blocks
-                        .get(&caret.key)
-                        .and_then(|block| block.layout.as_ref())
-                        .is_none_or(|layout| !layout.text.is_char_boundary(caret.offset))
-            })
-        });
-        if invalid_caret
-            || self.text_selection.ranges.iter().any(|segment| {
-                !self.order.contains(&segment.key)
-                    || self
-                        .blocks
-                        .get(&segment.key)
-                        .and_then(|block| block.layout.as_ref())
-                        .is_none_or(|layout| {
-                            layout.text.get(segment.range.clone()).is_none_or(|text| {
-                                !self.text_selection.too_large && text != segment.text
-                            })
-                        })
-            })
-        {
-            self.text_selection.clear();
-        }
-    }
     pub fn copy_text(&self, mode: CopyMode, ascii: bool) -> Result<String, &'static str> {
         let text = match mode {
             CopyMode::Selection => {
                 if self.text_selection.too_large {
                     return Err("chat-copy-too-large");
+                }
+                if let Some(error) = self.text_selection.error {
+                    return Err(error);
+                }
+                if self.text_selection.pending.is_some()
+                    || self.text_selection.validating
+                    || !self.text_selection.keys.is_empty()
+                {
+                    return Err("chat-copy-pending");
                 }
                 if !self.text_selection.active() {
                     return Err("chat-copy-empty");
@@ -512,14 +484,26 @@ impl Transcript {
                         return Err("chat-copy-too-large");
                     }
                     block.text.clone()
-                } else if block.kind.markdown() {
-                    layout::markdown(&block.text, 120, ascii)
-                        .map_err(|_| "chat-copy-too-large")?
-                        .text
+                } else if let Some(text) = block.message_text() {
+                    if text.len() > MAX_COPY_BYTES {
+                        return Err("chat-copy-too-large");
+                    }
+                    text.to_owned()
+                } else if block.text.len() > MAX_COPY_BYTES {
+                    return Err("chat-copy-pending");
                 } else {
-                    layout::diff::render(&block.text, &block.changes, 120, ascii)
-                        .map_err(|_| "chat-copy-too-large")?
-                        .text
+                    let document = if block.kind.markdown() {
+                        layout::prepared::Document::markdown(&block.text, ascii, self.colors)
+                    } else {
+                        layout::prepared::Document::diff(
+                            &block.text,
+                            &block.changes,
+                            ascii,
+                            self.colors,
+                        )
+                    }
+                    .map_err(|_| "chat-copy-unavailable")?;
+                    document.text().to_owned()
                 }
             }
         };
@@ -546,7 +530,18 @@ mod tests {
         I18n::new(LocalePreference::Explicit(Locale::En), Locale::En)
     }
     fn draw(view: &mut Transcript, width: u16) {
-        draw_at(view, width, 60);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            draw_at(view, width, 60);
+            if view.motion_wait().is_none() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "transcript preparation must make progress"
+            );
+            std::thread::yield_now();
+        }
     }
     fn draw_at(view: &mut Transcript, width: u16, height: u16) {
         Terminal::new(TestBackend::new(width, height))
@@ -561,7 +556,7 @@ mod tests {
             if &row.key != key {
                 continue;
             }
-            let visual = &view.blocks[key].layout.as_ref().unwrap().lines[row.index];
+            let visual = view.blocks[key].visual_line(row.index).unwrap();
             for span in &visual.mapping {
                 if span.logical.contains(&offset) {
                     let byte = span.display.start
@@ -600,6 +595,66 @@ mod tests {
             view.text_mouse(mouse(MouseEventKind::Up(MouseButton::Left), end), None),
             Some(None)
         ));
+    }
+
+    #[test]
+    fn held_drag_copies_intermediate_messages_after_wheel_eviction() {
+        let rows: BTreeMap<_, _> = (0..100)
+            .map(|index| {
+                (
+                    index,
+                    json!({
+                        "id":format!("m{index}"),"turnId":"turn","type":"assistant",
+                        "text":format!("item {index:03} 中文 🦀")
+                    }),
+                )
+            })
+            .collect();
+        let mut view = Transcript::default();
+        view.sync(&rows, &[], 0, &locale(), false);
+        view.focused = true;
+        view.first();
+        draw_at(&mut view, 50, 8);
+        let first = MessageKey::durable(&rows[&0]);
+        let start = position(&view, &first, 0);
+        view.text_mouse(mouse(MouseEventKind::Down(MouseButton::Left), start), None);
+        for _ in 0..30 {
+            view.scroll(false, 3);
+            draw_at(&mut view, 50, 8);
+        }
+        assert!(
+            view.blocks[&MessageKey::durable(&rows[&10])]
+                .layout
+                .is_none()
+        );
+        let last = view.text_selection.rows.last().unwrap().key.clone();
+        let last_index = last
+            .message()
+            .strip_prefix('m')
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let text = rows[&last_index]["text"].as_str().unwrap();
+        let end = position(&view, &last, text.len() - '🦀'.len_utf8());
+        view.text_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), end), None);
+        let expected = (0..=last_index)
+            .map(|index| rows[&index]["text"].as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_eq!(
+            view.copy_text(CopyMode::Selection, false).unwrap(),
+            expected
+        );
+        draw_at(&mut view, 50, 8);
+        assert!(
+            view.blocks[&MessageKey::durable(&rows[&10])]
+                .layout
+                .is_none()
+        );
+        assert_eq!(
+            view.copy_text(CopyMode::Selection, false).unwrap(),
+            expected
+        );
     }
 
     #[test]

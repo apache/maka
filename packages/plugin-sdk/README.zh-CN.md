@@ -160,7 +160,7 @@ Remote 回调可以抛出携带 `RemoteFailure.code` 的 `Error`。`outcome_unkn
 
 Host 插件通过 `ctx.tui.app(name, { entry, backend, resources? }, descriptor, options?)` 注册 TUI 应用。entry 指向同包内不可变、预构建且不含 import 或顶层 await 的 ESM 文件；不支持旧式内联 UI handlers，普通 Remote method/stream 也不能声明 `terminalView`。descriptor 选择 `page`、`panel`、`status`、`settings` 或命名 `slot`，上下文为 `application` 或 `session`；视图通过 `tui.slot(...)` 组合其他插件的贡献。
 
-UI entry 默认导出 `({ tui }) => ({ read, submit, recover? })` factory，每个稳定 document 在独立 VM 中仅初始化一次。factory 只收到纯节点与字段 builders；数据源创建、storage、services 与 jobs 留在原业务激活中。`read(route, cx)` 返回用 `tui` 构造的 View v7 内容，包括列、行、分栏、标签、文本、Markdown、控件和字段，SDK 自动添加版本。稳定的同级 key 保留焦点与编辑状态；`cx.t(en, zhCN, zhTW)` 选择当前语言。外壳负责布局、本地输入、滚动、确认与草稿恢复；插件使用语义颜色，不输出终端转义序列。
+UI entry 默认导出 `({ tui }) => ({ read, submit, recover? })` factory，每个稳定 document 在独立 VM 中仅初始化一次。factory 只收到纯节点与字段 builders；数据源创建、storage、services 与 jobs 留在原业务激活中。`read(route, cx)` 返回用 `tui` 构造的 View v8 内容，包括列、行、分栏、标签、文本、Markdown、控件和字段，SDK 自动添加版本。稳定的同级 key 保留焦点与编辑状态；`cx.t(en, zhCN, zhTW)` 选择当前语言。外壳负责布局、本地输入、滚动、确认与草稿恢复；插件使用语义颜色，不输出终端转义序列。
 
 Host 按需创建页面 VM，不按页面数量设置准入上限。每个 VM 的 JavaScript 堆上限为 128 MiB，同步执行片段上限为 200 ms。这是执行预算，不是进程总内存限制或恶意代码沙箱。隐藏草稿不占 VM；已准入写入保留原执行 owner 直到结算。页面失效后停止观察，保留最后有效视图及已加载的 transcript 供本地阅读；重新绑定需要显式操作，不重放结果未知的写入。页面故障不会重启插件的业务激活或其他页面 VM。
 
@@ -171,6 +171,8 @@ Host 按需创建页面 VM，不按页面数量设置准入上限。每个 VM �
 标签组和由 item 组成的列各占一个 Tab 停靠点，方向键在组内移动，重新进入时恢复上次焦点。列表列可包含文本、Markdown、代码、分隔线和进度；字段与按钮放在列表外，保持逐个 Tab 可达。仅移动焦点不会提交动作或进入插件路由。
 
 `cx` 仅提供 `locale`、`t`、`signal` 与 `backend()`。无参数 backend 每次调用最多执行一次，将该次完整原始 Read、Submit 或 Recover 请求及 caller 转交本应用的私有 `backend(request, { locale, t, caller })`；初始化没有 backend 权限。Read 返回有大小限制的 JSON model 供 UI 渲染。backend 保留原 Host 权限，并继续负责业务策略检查。
+
+当已接受的操作需要保留当前 document 及其流（例如启动或取消登录），backend 可从 Submit 返回 `{ kind: 'updated' }`。外壳结算本次提交并在同一 document 重新读取当前路由；已提交字段重置，未提交的本地草稿保留，必要时进入现有冲突复核。回执只确认操作已接受，不代表后台任务已完成。`{ kind: 'applied', route }` 仍结束旧表单并打开新 document。Recover 不能返回 `updated`：应通过持久 `applied` 回执结算旧操作，由新页面明确说明哪些临时状态需要重新检查。
 
 `submit({ route, revision, action, fields, grant }, cx)` 通常直接返回 `cx.backend()`，`recover(route, cx)` 同理。Submit/Recover 的结果由有效 backend 回执决定，即使 UI 随后失败也不能丢失；UI 不能伪造或替换该回执。使用 revision 做存储 CAS，并在 Host 检查领域权限。只有 `recover(route, cx)` 能查询持久结果时才声明 action 的 `recovery` 路由；外壳不会盲目重放结果未知的写入。
 
@@ -229,3 +231,12 @@ SDK 按 caller、document 与 reader mount 分别管理快照、游标与取消�
 `ctx.modelAdapters.register(name, open)` 注册协议适配器。`open('request' | 'conversation')` 返回 `stream(request, context)` 和可选的 `confirm(history)`。Rust 使用 `maka_plugins::model::ProviderAdapter`，共享类型化事件、HTTP 与 WebSocket 契约。模型 override 的 `adapter` 指定贡献名称；默认名称为 `responses`、`chat-completions`、`anthropic-messages`。
 
 Host 每逻辑步骤冻结注册，解析凭据，负责准入、取消、预算和规范日志结算。适配器会取得已解析秘密，不应记录请求或凭据；它负责协议编解码、带背压的事件输出和重试安全分类。HTTP body 随调用结束，socket 随适配器会话结束；下次调用通过新的 transport 操作已有 socket。路由身份变化使连接缓存失效。显式选择缺失或退休时失败，不暗中切换实现。
+
+`collection(key, { groups, items, filter, movement })` 通过公共内核提供本地筛选和
+卡片移动。条目包含稳定的 `key`、`group`、`title`，以及可选的 `summary` 和普通
+`panel` 子树；点击或 Enter 只打开所选条目的详情，隐藏详情不会启动 document。
+Space 拾取条目，方向键预览位置，Enter 提交，Escape 取消。
+`movement` 指定既有 action 和三个不同的隐藏单行 Text 字段：`item_field`、
+`group_field`、`before_field`，每个字段容纳 128 字节；空 before 表示追加。
+提交沿用既有 revision、CAS 与回执流程；输入、焦点和拖动预览不调用后端。
+独立编辑详情应使用独立 slot 贡献，保留各自的草稿和未知写入。需要 View 版本 8。

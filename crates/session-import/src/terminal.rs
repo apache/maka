@@ -27,6 +27,7 @@ use futures_util::future::BoxFuture;
 use maka_plugins::{
     contributions::Staged,
     remote::{Caller, Error, Method, key},
+    session::import::{ImportState, Receipt},
     terminal_ui::{
         Context, Descriptor, Placement, Text, VERSION,
         app::{self, App, Cx, Submission, Words},
@@ -130,6 +131,11 @@ struct Copied {
 #[derive(Deserialize)]
 struct Copies {
     copies: Vec<Copy>,
+    next: Option<uuid::Uuid>,
+}
+#[derive(Deserialize)]
+struct Detail {
+    copy: Option<Copy>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,7 +144,14 @@ struct Copy {
     source_name: String,
     title: String,
     records: usize,
-    receipt: Option<Value>,
+    receipt: Option<Receipt>,
+}
+impl Copy {
+    fn state(&self) -> ImportState {
+        self.receipt
+            .as_ref()
+            .map_or(ImportState::Collecting, |receipt| receipt.progress.state)
+    }
 }
 #[derive(Deserialize)]
 struct Modeled {
@@ -147,6 +160,7 @@ struct Modeled {
 #[derive(Deserialize)]
 struct Choices {
     models: Vec<Choice>,
+    complete: bool,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +198,11 @@ enum Route {
     Import {
         source: uuid::Uuid,
         entry: Entry,
+        #[serde(default)]
+        models: ModelQuery,
+    },
+    Copies {
+        after: Option<uuid::Uuid>,
     },
     Edit {
         source: Option<uuid::Uuid>,
@@ -192,6 +211,18 @@ enum Route {
         operation: uuid::Uuid,
     },
 }
+
+#[derive(Default, Deserialize, Serialize)]
+struct ModelQuery {
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    page: usize,
+    destination: Option<String>,
+    sandbox: Option<String>,
+}
+
+const MODEL_PAGE: usize = 32;
 
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Provider(error.to_string())
@@ -243,7 +274,7 @@ impl App for Importing {
                 let copies: Copied = this
                     .call(json!({"kind":"copies","after":null}), &cx.caller)
                     .await?;
-                return Ok(home(words, &sources, &copies.page.copies));
+                return Ok(home(words, &sources, &copies.page));
             }
             match serde_json::from_value::<Route>(route)
                 .map_err(|error| Error::Invalid(error.to_string()))?
@@ -273,16 +304,30 @@ impl App for Importing {
                     };
                     Ok(browse(words, &sources, found, &text, catalog.as_ref()))
                 }
-                Route::Import { source, entry } => {
-                    let models: Modeled = this
-                        .call(json!({"kind":"models","query":{"query":""}}), &cx.caller)
+                Route::Copies { after } => {
+                    let copies: Copied = this
+                        .call(json!({"kind":"copies","after":after}), &cx.caller)
+                        .await?;
+                    Ok(home(words, &sources, &copies.page))
+                }
+                Route::Import {
+                    source,
+                    entry,
+                    models,
+                } => {
+                    let choices: Modeled = this
+                        .call(
+                            json!({"kind":"models","query":{"query":models.query}}),
+                            &cx.caller,
+                        )
                         .await?;
                     Ok(import(
                         words,
                         &sources,
                         source,
                         &entry,
-                        &models.choices.models,
+                        &models,
+                        &choices.choices,
                     ))
                 }
                 Route::Edit { source } => {
@@ -296,15 +341,10 @@ impl App for Importing {
                     Ok(edit(words, &sources, found))
                 }
                 Route::Copy { operation } => {
-                    let copies: Copied = this
-                        .call(json!({"kind":"copies","after":null}), &cx.caller)
+                    let detail: Detail = this
+                        .call(json!({"kind":"copy","operationId":operation}), &cx.caller)
                         .await?;
-                    let copy = copies
-                        .page
-                        .copies
-                        .iter()
-                        .find(|copy| copy.operation_id == operation);
-                    Ok(settle(words, &sources, copy))
+                    Ok(settle(words, &sources, detail.copy.as_ref()))
                 }
             }
         })
@@ -322,7 +362,37 @@ impl App for Importing {
                 ("search", Some(Route::Browse { source, .. })) => Ok(Reply::Applied {
                     route: json!({"kind":"browse","source":source,"text":submission.text("text")?.trim(),"cursor":null}),
                 }),
-                ("import", Some(Route::Import { source, entry })) => {
+                (
+                    action @ ("search-models" | "models-next" | "models-previous"),
+                    Some(Route::Import {
+                        source,
+                        entry,
+                        mut models,
+                    }),
+                ) => {
+                    models.destination = Some(submission.text("destination")?.to_owned());
+                    models.sandbox = Some(submission.text("sandbox")?.to_owned());
+                    let query = submission.text("query")?.trim().to_owned();
+                    if action == "search-models" || query != models.query {
+                        models.query = query;
+                        models.page = 0;
+                    } else if action == "models-next" {
+                        models.page = models.page.saturating_add(1);
+                    } else {
+                        models.page = models.page.saturating_sub(1);
+                    }
+                    Ok(Reply::Applied {
+                        route: json!({"kind":"import","source":source,"entry":entry,"models":models}),
+                    })
+                }
+                (
+                    "import",
+                    Some(Route::Import {
+                        source,
+                        entry,
+                        models,
+                    }),
+                ) => {
                     let destination = submission.text("destination")?.trim().to_owned();
                     if destination.is_empty() {
                         return Ok(Reply::Rejected {
@@ -334,7 +404,10 @@ impl App for Importing {
                         });
                     }
                     let models: Modeled = this
-                        .call(json!({"kind":"models","query":{"query":""}}), &cx.caller)
+                        .call(
+                            json!({"kind":"models","query":{"query":models.query}}),
+                            &cx.caller,
+                        )
                         .await?;
                     let choice = submission.text("model")?;
                     let Some(model) = models
@@ -462,7 +535,7 @@ fn view_of(
     }
 }
 
-fn home(words: &Words, sources: &Sources, copies: &[Copy]) -> View {
+fn home(words: &Words, sources: &Sources, copies: &Copies) -> View {
     let mut children = vec![text(
         "intro",
         words.t(
@@ -499,31 +572,27 @@ fn home(words: &Words, sources: &Sources, copies: &[Copy]) -> View {
         .into(),
     );
     children.push(stack("sources", rows));
-    if !copies.is_empty() {
+    if !copies.copies.is_empty() {
         let items: Vec<Node> = copies
+            .copies
             .iter()
-            .take(8)
             .map(|copy| {
-                let settled = copy.receipt.is_some();
+                let state = copy.state();
                 let item = link(
                     format!("copy-{}", copy.operation_id),
                     clean(&copy.title),
                     json!({"kind":"copy","operation":copy.operation_id}),
                 )
                 .detail(clean(&copy.source_name))
-                .meta(if settled {
-                    words.t(
-                        &format!("{} records", copy.records),
-                        &format!("{} 条记录", copy.records),
-                        &format!("{} 筆記錄", copy.records),
-                    )
-                } else {
-                    words.t("Not finished", "未完成", "未完成")
+                .meta(match state {
+                    ImportState::Published => words.t("Imported", "已导入", "已匯入"),
+                    ImportState::Abandoned => words.t("Abandoned", "已放弃", "已放棄"),
+                    ImportState::Collecting => words.t("Not finished", "未完成", "未完成"),
                 });
-                if settled {
-                    item.into()
-                } else {
+                if state == ImportState::Collecting {
                     item.tone(Tone::Warning).into()
+                } else {
+                    item.into()
                 }
             })
             .collect();
@@ -531,12 +600,22 @@ fn home(words: &Words, sources: &Sources, copies: &[Copy]) -> View {
             "copies",
             std::iter::once(text(
                 "title",
-                words.t("Imported", "已导入", "已匯入"),
+                words.t("Import history", "导入记录", "匯入記錄"),
                 Tone::Subtle,
             ))
             .chain(items)
             .collect(),
         ));
+    }
+    if let Some(after) = copies.next {
+        children.push(
+            link(
+                "more-copies",
+                words.t("More imports", "更多导入记录", "更多匯入記錄"),
+                json!({"kind":"copies","after":after}),
+            )
+            .into(),
+        );
     }
     view_of(
         words.t("Conversation import", "导入对话", "匯入對話"),
@@ -652,21 +731,30 @@ fn import(
     sources: &Sources,
     _source: uuid::Uuid,
     entry: &Entry,
-    models: &[Choice],
+    query: &ModelQuery,
+    choices: &Choices,
 ) -> View {
-    let default = models
-        .iter()
-        .find(|model| model.is_default)
-        .or_else(|| models.first());
+    // Put the configured default on the first page without dropping any choices.
+    let mut models: Vec<_> = choices.models.iter().collect();
+    models.sort_by_key(|model| !model.is_default);
+    let page = query.page.min(models.len().saturating_sub(1) / MODEL_PAGE);
+    let visible = &models[page * MODEL_PAGE..models.len().min((page + 1) * MODEL_PAGE)];
+    let default = visible.first();
     let mut fields = vec![
+        view::build::line("query", clean(&query.query), 512),
         view::build::line(
             "destination",
-            entry.cwd.as_deref().map(clean).unwrap_or_default(),
+            query
+                .destination
+                .as_deref()
+                .or(entry.cwd.as_deref())
+                .map(clean)
+                .unwrap_or_default(),
             4096,
         ),
         choice(
             "sandbox",
-            "read-only",
+            query.sandbox.as_deref().unwrap_or("read-only"),
             vec![
                 ("read-only".into(), words.t("Read only", "只读", "唯讀")),
                 (
@@ -682,15 +770,34 @@ fn import(
         words.t("Folder", "目录", "目錄"),
     )];
     let mut sent = vec!["destination".to_owned(), "sandbox".to_owned()];
-    let mut children = vec![heading("title", clean(&entry.title))];
+    let mut children = vec![
+        heading("title", clean(&entry.title)),
+        stack(
+            "model-search",
+            vec![
+                input("query", "query", words.t("Find", "查找", "尋找")),
+                button("search-models", "search-models", Role::Normal),
+            ],
+        ),
+    ];
+    if !choices.complete {
+        children.push(text(
+            "incomplete",
+            words.t(
+                "More models are available. Refine your search.",
+                "还有更多模型，请缩小搜索范围。",
+                "還有更多模型，請縮小搜尋範圍。",
+            ),
+            Tone::Muted,
+        ));
+    }
     match default {
         Some(default) => {
             fields.push(choice(
                 "model",
                 default.id(),
-                models
+                visible
                     .iter()
-                    .take(32)
                     .map(|model| {
                         (
                             model.id(),
@@ -708,9 +815,9 @@ fn import(
         None => children.push(text(
             "no-models",
             words.t(
-                "Add a model connection before importing.",
-                "导入前请先添加模型连接。",
-                "匯入前請先新增模型連線。",
+                "No matching models. Change the search or add a model connection.",
+                "没有匹配的模型，请更改搜索或添加模型连接。",
+                "沒有符合的模型，請變更搜尋或新增模型連線。",
             ),
             Tone::Warning,
         )),
@@ -721,7 +828,32 @@ fn import(
         words.t("Access", "权限", "權限"),
     ));
     children.push(stack("form", form));
-    let mut actions = vec![];
+    let navigation = |id, label| Action {
+        fields: vec!["query".into(), "destination".into(), "sandbox".into()],
+        ..view::build::action(id, label)
+    };
+    let mut actions = vec![navigation(
+        "search-models",
+        words.t("Search models", "搜索模型", "搜尋模型"),
+    )];
+    let mut pages = vec![];
+    if page > 0 {
+        actions.push(navigation(
+            "models-previous",
+            words.t("Previous models", "上一页模型", "上一頁模型"),
+        ));
+        pages.push(button("models-previous", "models-previous", Role::Normal));
+    }
+    if (page + 1) * MODEL_PAGE < models.len() {
+        actions.push(navigation(
+            "models-next",
+            words.t("More models", "更多模型", "更多模型"),
+        ));
+        pages.push(button("models-next", "models-next", Role::Normal));
+    }
+    if !pages.is_empty() {
+        children.push(row("model-pages", pages));
+    }
     if default.is_some() {
         actions.push(Action {
             fields: sent,
@@ -832,23 +964,49 @@ fn settle(words: &Words, sources: &Sources, copy: Option<&Copy>) -> View {
         text("source", clean(&copy.source_name), Tone::Muted),
     ];
     let mut actions = vec![];
-    if copy.receipt.is_some() {
+    if let Some(receipt) = &copy.receipt
+        && receipt.progress.state == ImportState::Published
+    {
         children.push(text(
             "done",
             words.t(
-                &format!("Imported {} records.", copy.records),
-                &format!("已导入 {} 条记录。", copy.records),
-                &format!("已匯入 {} 筆記錄。", copy.records),
+                &format!("Imported {} records.", receipt.progress.records),
+                &format!("已导入 {} 条记录。", receipt.progress.records),
+                &format!("已匯入 {} 筆記錄。", receipt.progress.records),
             ),
             Tone::Success,
+        ));
+        children.push(Node::Item {
+            key: "session".into(),
+            title: words.t("Open session", "打开会话", "開啟工作階段"),
+            detail: String::new(),
+            meta: String::new(),
+            tone: Tone::Accent,
+            current: false,
+            target: view::Target::Session {
+                session: receipt.session_id.clone(),
+            },
+        });
+    } else if copy.state() == ImportState::Abandoned {
+        children.push(text(
+            "abandoned",
+            words.t(
+                "This import was abandoned. No session was published.",
+                "这次导入已放弃，未发布会话。",
+                "這次匯入已放棄，未發布工作階段。",
+            ),
+            Tone::Muted,
         ));
     } else {
         children.push(text(
             "pending",
             words.t(
-                "This import was prepared but not finished.",
-                "这次导入已准备但尚未完成。",
-                "這次匯入已準備但尚未完成。",
+                &format!(
+                    "This import was prepared but not finished ({} records).",
+                    copy.records
+                ),
+                &format!("这次导入已准备但尚未完成（{} 条记录）。", copy.records),
+                &format!("這次匯入已準備但尚未完成（{} 筆記錄）。", copy.records),
             ),
             Tone::Warning,
         ));
@@ -908,13 +1066,16 @@ mod tests {
     fn every_step_of_an_import_is_a_valid_view() {
         let words = Words::new("en");
         let sources = sources();
-        let copies = vec![Copy {
-            operation_id: uuid::Uuid::new_v4(),
-            source_name: "Codex".into(),
-            title: "Refactor".into(),
-            records: 12,
-            receipt: None,
-        }];
+        let copies = Copies {
+            copies: vec![Copy {
+                operation_id: uuid::Uuid::new_v4(),
+                source_name: "Codex".into(),
+                title: "Refactor".into(),
+                records: 12,
+                receipt: None,
+            }],
+            next: Some(uuid::Uuid::new_v4()),
+        };
         home(&words, &sources, &copies).validate().unwrap();
         let entry = Entry {
             id: "abc".into(),
@@ -938,18 +1099,94 @@ mod tests {
             default_thinking_level: None,
             is_default: true,
         };
-        let view = import(&words, &sources, source.unwrap().id, &entry, &[model]);
+        let models = Choices {
+            models: vec![model],
+            complete: true,
+        };
+        let view = import(
+            &words,
+            &sources,
+            source.unwrap().id,
+            &entry,
+            &ModelQuery::default(),
+            &models,
+        );
         view.validate().unwrap();
         assert_eq!(
             view.field("model").map(|field| &field.id),
             Some(&"model".to_owned())
         );
-        import(&words, &sources, source.unwrap().id, &entry, &[])
-            .validate()
-            .unwrap();
+        import(
+            &words,
+            &sources,
+            source.unwrap().id,
+            &entry,
+            &ModelQuery::default(),
+            &Choices {
+                models: vec![],
+                complete: true,
+            },
+        )
+        .validate()
+        .unwrap();
         edit(&words, &sources, source).validate().unwrap();
-        let view = settle(&words, &sources, copies.first());
+        let view = settle(&words, &sources, copies.copies.first());
         view.validate().unwrap();
         assert!(view.action("abandon").unwrap().confirm.is_some());
+    }
+
+    #[test]
+    fn model_pages_admit_late_defaults_and_all_discovered_choices_in_each_locale() {
+        let sources = sources();
+        let source = sources.configuration.sources[0].id;
+        let entry = Entry {
+            id: "entry".into(),
+            path: "sessions/entry.jsonl".into(),
+            title: "Import".into(),
+            cwd: None,
+            archived: false,
+        };
+        let choices = Choices {
+            models: (0..50)
+                .map(|index| Choice {
+                    model: json!({"connectionSlug":"fixture","model":format!("model-{index:02}")}),
+                    display_name: format!("Model {index:02}"),
+                    connection_name: "Fixture".into(),
+                    default_thinking_level: None,
+                    is_default: index == 40,
+                })
+                .collect(),
+            complete: false,
+        };
+        for locale in ["en", "zh-CN", "zh-TW"] {
+            let mut admitted = std::collections::BTreeSet::new();
+            for page in 0..2 {
+                let query = ModelQuery {
+                    page,
+                    destination: Some("/chosen".into()),
+                    ..Default::default()
+                };
+                let view = import(
+                    &Words::new(locale),
+                    &sources,
+                    source,
+                    &entry,
+                    &query,
+                    &choices,
+                );
+                view.validate().unwrap();
+                let view::Control::Choice { value, options } =
+                    &view.field("model").unwrap().control
+                else {
+                    panic!("model choices")
+                };
+                if page == 0 {
+                    assert_eq!(value, "fixture:model-40");
+                }
+                admitted.extend(options.iter().map(|option| option.value.clone()));
+                assert!(view.action("search-models").is_some());
+            }
+            assert_eq!(admitted.len(), 50);
+        }
     }
 }

@@ -86,7 +86,7 @@ pub(super) fn input<M: Clone>(
 ) -> Option<bool> {
     let ascii = app.chrome.ascii;
     let apps = &mut app.apps;
-    if surface.captures() || surface.dragging_split() {
+    if surface.captures() || surface.dragging_split() || surface.dragging_collection() {
         return None;
     }
     if let Some(redraw) =

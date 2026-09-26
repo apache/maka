@@ -22,7 +22,7 @@ import test from 'node:test';
 import { presenter } from './terminal-presenter-harness.mjs';
 import { block, fixture, logicalPage, mount, size } from './terminal-transcript-harness.mjs';
 
-test('v7 builders and immutable document snapshots with contiguous semantic changes', async () => {
+test('v8 builders and immutable document snapshots with contiguous semantic changes', async () => {
   const original = block('first', '你好');
   const f = await fixture({ blocks: [original] });
   original.content.text = 'caller changed its input';
@@ -32,7 +32,7 @@ test('v7 builders and immutable document snapshots with contiguous semantic chan
       revision: '1',
       root: f.tui.transcript('body', f.store.resource),
     }).version,
-    7,
+    8,
   );
   const handle = await f.open();
   assert.deepEqual(await f.next(handle), { kind: 'ready', fence: 0 });
@@ -212,7 +212,7 @@ test('the external Board fixture exposes paged activity without token-driven Vie
   );
   const f = await fixture({}, activate);
   const descriptor = f.registrations.find((entry) => entry.name === 'board').terminalView;
-  assert.equal(descriptor.version, 7);
+  assert.equal(descriptor.version, 8);
   const { default: ui } = await import(
     '../../../crates/cli/tests/fixtures/board-plugin/board-ui.mjs'
   );
@@ -222,7 +222,7 @@ test('the external Board fixture exposes paged activity without token-driven Vie
     return result.value;
   });
   const view = await p.invoke({ kind: 'read', route: { activity: true }, locale: 'en' });
-  assert.equal(view.view.version, 7);
+  assert.equal(view.view.version, 8);
   const resource = view.view.root.children.find((node) => node.kind === 'transcript').resource;
   assert.equal(resource.id, 'board-activity');
   const opened = await f.invoke(resource.stream, {

@@ -264,10 +264,16 @@ impl Transcript {
             return;
         };
         if let Some(block) = self.blocks.get_mut(&found.key) {
+            if block.folded {
+                block.semantic = None;
+                block.dirty = true;
+            }
             block.folded = false;
             block.layout = None;
         }
         self.arrange_groups();
+        self.row_request = None;
+        self.anchor_row = None;
         self.selected = None;
         self.anchor = Some(Anchor {
             key: found.key,

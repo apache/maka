@@ -24,6 +24,8 @@ use std::path::Path;
 
 mod conversations;
 mod external;
+mod graph;
+mod import_recovery;
 mod settings;
 mod todo;
 

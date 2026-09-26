@@ -543,7 +543,7 @@ fn assignment(
     let (label, tone, group) = state(words, feedback.map(|item| item.state.as_str()));
     let mut children = vec![
         heading("title", view::build::clean(&summary.title, false)),
-        spans("state", vec![("● ".into(), tone), (label, tone)]),
+        text("state", label, tone),
     ];
     if let Some(preview) = feedback.and_then(|item| item.result_preview.as_deref()) {
         children.push(stack(
@@ -694,6 +694,49 @@ mod tests {
             control: None,
         };
         serde_json::from_value(serde_json::to_value(domain).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn localized_assignment_states_need_no_glyph_and_preserve_user_content() {
+        let mut summary = summary("a");
+        summary.title = "任务 ● 😀".into();
+        for (state, labels, tone) in [
+            ("running", ["Running", "运行中", "執行中"], Tone::Accent),
+            ("accepted", ["Queued", "排队中", "排隊中"], Tone::Muted),
+            (
+                "recovering",
+                ["Checking", "核对中", "核對中"],
+                Tone::Warning,
+            ),
+            (
+                "waiting_for_user",
+                ["Needs you", "需要你", "需要你"],
+                Tone::Warning,
+            ),
+            ("failed", ["Failed", "失败", "失敗"], Tone::Error),
+            ("completed", ["Done", "完成", "完成"], Tone::Success),
+            ("aborted", ["Stopped", "已停止", "已停止"], Tone::Muted),
+            ("unknown", ["Unknown", "未知", "未知"], Tone::Subtle),
+        ] {
+            let feedback = Feedback {
+                id: "a".into(),
+                state: state.into(),
+                result_preview: Some("结果 ● ✓ 😀".into()),
+            };
+            for (locale, label) in ["en", "zh-CN", "zh-TW"].into_iter().zip(labels) {
+                let detail = assignment(&Words::new(locale), "a", Some(&summary), Some(&feedback));
+                detail.validate().unwrap();
+                let Node::Text { spans, .. } = detail.root.children()[1] else {
+                    panic!("assignment state");
+                };
+                assert_eq!(spans.len(), 1);
+                assert_eq!(spans[0].text, label);
+                assert_eq!(spans[0].tone, tone);
+                let encoded = serde_json::to_string(&detail).unwrap();
+                assert!(encoded.contains("任务 ● 😀"));
+                assert!(encoded.contains("结果 ● ✓ 😀"));
+            }
+        }
     }
 
     #[test]

@@ -41,6 +41,13 @@ const CONTENT: &str = "app/body/frame/content";
 /// Views read best up to this width; wider terminals keep the margin.
 const READING: u16 = 120;
 
+#[cfg(test)]
+mod collection_tests;
+#[cfg(test)]
+mod readiness_tests;
+#[cfg(test)]
+mod split_reader_tests;
+
 fn context(app: &App) -> ui::Context {
     ui::Context {
         colors: app.theme.colors(),
@@ -53,6 +60,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, key: &Key) {
     app.apps.invalidate_geometry();
     let area = area.inner(Margin::new(1, 1));
     let instance = app.apps.open(key);
+    instance.surface.use_region("app/body/frame");
     if area.width < 12 || area.height < 4 {
         instance.surface.invalidate();
         instance.wells.clear();
@@ -60,7 +68,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, key: &Key) {
     }
     // The scrollbar keeps the body's last column.
     let width = area.width.saturating_sub(1).min(READING);
-    let (tree, wells) = page(app, key, width);
+    let (mut tree, mut parts) = page(app, key, width, area.height);
+    if app.sync_page_reading(key, std::mem::take(&mut parts.scopes)) {
+        (tree, parts) = page(app, key, width, area.height);
+    }
+    let wells = parts.wells;
     let context = context(app);
     let Some(instance) = app.apps.instances.get_mut(key) else {
         return;
@@ -97,22 +109,23 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, key: &Key) {
     }
 }
 
-fn page(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
+fn page(app: &App, key: &Key, width: u16, height: u16) -> (Node<Message>, tree::Parts) {
     let Some(instance) = app.apps.instances.get(key) else {
-        return (Node::column("app", vec![]), vec![]);
+        return (Node::column("app", vec![]), tree::Parts::default());
     };
     let message = |command: Command| Message::Instance(key.clone(), command);
     let mut rows = vec![];
     rows.extend(bar(app, key, width));
     rows.extend(notice(app, key, width));
-    let (content, wells) = if instance.review.is_some() {
-        (super::drafts::nodes(app, key), vec![])
+    let (content, parts) = if instance.review.is_some() {
+        (super::drafts::nodes(app, key), tree::Parts::default())
     } else if let Some(view) = &instance.view {
         let offered = |intent: &Intent| instance.offered(intent);
         let slots = |name: &str, wire: &str, path: &str, width: u16| {
             fill(app, key, name, wire, path, width, instance.surface.splits())
         };
         let env = tree::Env {
+            collections: &instance.collections,
             readers: &app.apps.readers,
             splits: instance.surface.splits(),
             resources_live: instance.live.is_some() && !instance.blocked,
@@ -125,8 +138,8 @@ fn page(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
             slots: &slots,
         };
         let wrap = |intent| message(Command::View(intent));
-        let (node, wells) = tree::build(view, &env, CONTENT, width, &wrap);
-        (vec![node], wells)
+        let (node, parts) = tree::build(view, &env, CONTENT, width, &wrap);
+        (vec![node], parts)
     } else {
         let text = if instance.entry.is_none() && app.apps.loaded {
             ("extensions-unavailable", Tone::Warning)
@@ -137,25 +150,28 @@ fn page(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
         };
         let node = (!text.0.is_empty())
             .then(|| Node::text("status", vec![(app.i18n.text(text.0), text.1)]));
-        (node.into_iter().collect(), vec![])
+        (node.into_iter().collect(), tree::Parts::default())
     };
     let frame = Node::row(
         "frame",
         vec![Node::column("content", content).size(Size::Fixed(width))],
     )
     .size(Size::Fill);
-    rows.push(
-        if instance
-            .view
-            .as_ref()
-            .is_some_and(|view| tree::has_transcript(&view.root))
-        {
-            Node::column("body", vec![frame]).size(Size::Fill)
-        } else {
-            Node::scroll("body", frame)
-        },
-    );
-    (Node::column("app", rows).gap(1), wells)
+    let fills = frame.has_transcript() && {
+        let chrome = rows
+            .iter()
+            .map(|row| row.required_height(width))
+            .fold(rows.len() as u16, u16::saturating_add);
+        // Active readers share the viewport only when ordinary content fits.
+        // Inner scroll regions contribute bounded height, not their full lists.
+        frame.required_height(width) <= height.saturating_sub(chrome)
+    };
+    rows.push(if fills {
+        Node::column("body", vec![frame]).size(Size::Fill)
+    } else {
+        Node::scroll("body", frame)
+    });
+    (Node::column("app", rows).gap(1), parts)
 }
 
 /// Back within the view, named after where it goes, and the page's
@@ -305,6 +321,7 @@ impl App {
                 && keyboard
                 && !instance.surface.captures()
                 && !instance.surface.dragging_split()
+                && !instance.surface.dragging_collection()
             {
                 let command = if instance.review.is_some() {
                     Command::CancelDraft
@@ -546,14 +563,37 @@ pub(crate) fn pane(
     path: &str,
     width: u16,
     splits: &ui::Splits,
-) -> (Vec<Node<Message>>, Vec<tree::Well>) {
+) -> (Vec<Node<Message>>, tree::Parts) {
     let Some(instance) = app.apps.instances.get(key) else {
-        return (vec![], vec![]);
+        return (vec![], tree::Parts::default());
+    };
+    let mut parts = tree::Parts {
+        scopes: vec![super::reading::Scope {
+            key: key.clone(),
+            epoch: instance.reading_epoch,
+            path: path.into(),
+        }],
+        ..tree::Parts::default()
     };
     let mut children: Vec<_> = notice(app, key, width).into_iter().collect();
+    if instance.view.is_some() {
+        // Retained panes need the same pending indication as top-level pages.
+        // Reserve its row when idle too, so background reads never move controls.
+        let loading = if instance.busy || instance.pending.is_some() {
+            app.i18n.text("extensions-loading")
+        } else {
+            String::new()
+        };
+        children.insert(
+            0,
+            Node::text("load-state", vec![(loading, Tone::Subtle)])
+                .clip()
+                .size(Size::Fixed(1)),
+        );
+    }
     if instance.review.is_some() {
         children.push(Node::column("content", super::drafts::nodes(app, key)));
-        return (children, vec![]);
+        return (children, parts);
     }
     let Some(view) = &instance.view else {
         let text = if instance.entry.is_none() && app.apps.loaded {
@@ -561,16 +601,17 @@ pub(crate) fn pane(
         } else if instance.busy || instance.pending.is_some() || instance.entry.is_none() {
             ("extensions-loading", Tone::Subtle)
         } else {
-            return (children, vec![]);
+            return (children, parts);
         };
         children.push(Node::text("status", vec![(app.i18n.text(text.0), text.1)]));
-        return (children, vec![]);
+        return (children, parts);
     };
     let offered = |intent: &Intent| instance.offered(intent);
     let slots = |name: &str, wire: &str, path: &str, width: u16| {
         fill(app, key, name, wire, path, width, splits)
     };
     let env = tree::Env {
+        collections: &instance.collections,
         readers: &app.apps.readers,
         splits,
         resources_live: instance.live.is_some() && !instance.blocked,
@@ -583,9 +624,15 @@ pub(crate) fn pane(
         slots: &slots,
     };
     let wrap = |intent| Message::Instance(key.clone(), Command::View(intent));
-    let (view, wells) = tree::build(view, &env, &format!("{path}/content"), width, &wrap);
-    children.push(Node::column("content", vec![view]));
-    (children, wells)
+    let (view, found) = tree::build(view, &env, &format!("{path}/content"), width, &wrap);
+    parts.extend(found);
+    let expands = view.has_transcript();
+    children.push(Node::column("content", vec![view]).size(if expands {
+        Size::Fill
+    } else {
+        Size::Content
+    }));
+    (children, parts)
 }
 
 /// The views filling one slot of `host`'s view, each behind a quiet edge
@@ -598,10 +645,10 @@ fn fill(
     path: &str,
     width: u16,
     splits: &ui::Splits,
-) -> (Vec<Node<Message>>, Vec<tree::Well>) {
+) -> (Vec<Node<Message>>, tree::Parts) {
     let locale = app.i18n.locale().id();
     let mut nodes = vec![];
-    let mut wells = vec![];
+    let mut parts = tree::Parts::default();
     for key in app
         .apps
         .fillers(host, name, wire, app.navigation.location())
@@ -620,17 +667,20 @@ fn fill(
             )
             .clip(),
         );
-        wells.extend(found);
-        nodes.push(
-            Node::row(
-                node,
-                vec![
-                    Node::rule("edge"),
-                    Node::column("body", children).gap(1).size(Size::Fill),
-                ],
-            )
-            .gap(1),
-        );
+        parts.extend(found);
+        let node = Node::row(
+            node,
+            vec![
+                Node::rule("edge"),
+                Node::column("body", children).gap(1).size(Size::Fill),
+            ],
+        )
+        .gap(1);
+        nodes.push(if node.has_transcript() {
+            node.size(Size::Fill)
+        } else {
+            node
+        });
     }
-    (nodes, wells)
+    (nodes, parts)
 }

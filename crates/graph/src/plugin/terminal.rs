@@ -23,7 +23,10 @@
 //! own Remote methods, so authorization and paging work as they do for
 //! any client.
 
-use super::remote::{Action as Call, Service};
+use super::{
+    read::Cursor,
+    remote::{Action as Call, Service},
+};
 use futures_util::future::BoxFuture;
 use maka_plugins::{
     contributions::Staged,
@@ -155,6 +158,7 @@ struct Graph {
     finished: bool,
     work: Vec<Work>,
     total_work: usize,
+    next_after: Option<Cursor>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -179,6 +183,8 @@ struct Detailed {
 #[serde(rename_all = "camelCase")]
 struct Detail {
     instruction: String,
+    offset: usize,
+    total_bytes: usize,
     next_offset: Option<usize>,
 }
 #[derive(Deserialize)]
@@ -189,6 +195,8 @@ struct Resulted {
 #[serde(rename_all = "camelCase")]
 struct Page {
     text: String,
+    offset: usize,
+    total_bytes: usize,
     next_offset: Option<usize>,
 }
 
@@ -209,34 +217,52 @@ struct Graphs {
 enum Route {
     Graph {
         graph: String,
+        after: Option<Cursor>,
     },
     Earlier {
         before: Option<u64>,
     },
-    Work {
-        graph: String,
-        work: String,
-        result: Option<String>,
-    },
+    Work(Reading),
+}
+
+#[derive(Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct Reading {
+    graph: String,
+    work: String,
+    result: Option<String>,
+    after: Option<Cursor>,
+    #[serde(default)]
+    instruction_offset: usize,
+    #[serde(default)]
+    result_offset: usize,
+}
+
+impl Reading {
+    fn route(&self) -> Value {
+        let mut route = serde_json::to_value(self).expect("Graph reading route");
+        route["kind"] = json!("work");
+        route
+    }
 }
 
 /// Work done, running, and every other state, in words and tone.
-fn state(words: &Words, work: &Work) -> (String, Tone, &'static str) {
+fn state(words: &Words, work: &Work) -> (String, Tone) {
     let state = work
         .execution
         .as_ref()
         .map_or(work.status.as_str(), |execution| execution.state.as_str());
-    let (en, zh_cn, zh_tw, tone, glyph) = match state {
-        "completed" => ("Done", "完成", "完成", Tone::Success, "✓"),
-        "running" => ("Running", "运行中", "執行中", Tone::Accent, "◐"),
-        "waiting" => ("Waiting", "等待", "等待", Tone::Warning, "◇"),
-        "blocked" => ("Blocked", "受阻", "受阻", Tone::Error, "!"),
-        "failed" => ("Failed", "失败", "失敗", Tone::Error, "×"),
-        "cancelled" | "stopped" => ("Stopped", "已停止", "已停止", Tone::Muted, "–"),
-        "superseded" => ("Replaced", "已替换", "已替換", Tone::Muted, "–"),
-        _ => ("Queued", "排队中", "排隊中", Tone::Subtle, "○"),
+    let (en, zh_cn, zh_tw, tone) = match state {
+        "completed" => ("Done", "完成", "完成", Tone::Success),
+        "running" => ("Running", "运行中", "執行中", Tone::Accent),
+        "waiting" => ("Waiting", "等待", "等待", Tone::Warning),
+        "blocked" => ("Blocked", "受阻", "受阻", Tone::Error),
+        "failed" => ("Failed", "失败", "失敗", Tone::Error),
+        "cancelled" | "stopped" => ("Stopped", "已停止", "已停止", Tone::Muted),
+        "superseded" => ("Replaced", "已替换", "已替換", Tone::Muted),
+        _ => ("Queued", "排队中", "排隊中", Tone::Subtle),
     };
-    (words.t(en, zh_cn, zh_tw), tone, glyph)
+    (words.t(en, zh_cn, zh_tw), tone)
 }
 fn done(graph: &Graph) -> usize {
     graph
@@ -288,15 +314,23 @@ impl Graphs {
             .and_then(|current| epochs.epochs.iter().find(|epoch| epoch.epoch == current))
             .or_else(|| epochs.epochs.first());
         let graph = match current {
-            Some(epoch) => self.graph(caller, &epoch.graph_id).await?,
+            Some(epoch) => self.graph(caller, &epoch.graph_id, None).await?,
             None => None,
         };
         Ok((epochs, graph))
     }
-    async fn graph(&self, caller: &Caller, id: &str) -> Result<Option<Graph>, Error> {
+    async fn graph(
+        &self,
+        caller: &Caller,
+        id: &str,
+        after: Option<&Cursor>,
+    ) -> Result<Option<Graph>, Error> {
         let snapshot: Snapshot = decode(
-            self.query(caller, json!({"kind":"snapshot","graphId":id}))
-                .await?,
+            self.query(
+                caller,
+                json!({"kind":"snapshot","graphId":id,"after":after}),
+            )
+            .await?,
         )?;
         Ok(snapshot.graph)
     }
@@ -331,12 +365,18 @@ impl App for Graphs {
                     words,
                     graph.as_ref(),
                     epochs.epochs.len() > 1 || epochs.next_before.is_some(),
+                    None,
                 ));
             }
             match serde_json::from_value::<Route>(route).map_err(invalid)? {
-                Route::Graph { graph } => {
-                    let graph = this.graph(&cx.caller, &graph).await?;
-                    Ok(panel(words, graph.as_ref(), false))
+                Route::Graph { graph, after } => {
+                    let snapshot = match this.graph(&cx.caller, &graph, after.as_ref()).await {
+                        Err(Error::Invalid(_)) if after.is_some() => {
+                            return Ok(restart(words, &graph));
+                        }
+                        result => result?,
+                    };
+                    Ok(panel(words, snapshot.as_ref(), false, after.as_ref()))
                 }
                 Route::Earlier { before } => {
                     let epochs: Epochs = decode(
@@ -345,32 +385,44 @@ impl App for Graphs {
                     )?;
                     Ok(earlier(words, &epochs))
                 }
-                Route::Work {
-                    graph,
-                    work,
-                    result,
-                } => {
+                Route::Work(mut reading) => {
+                    let snapshot = match this
+                        .graph(&cx.caller, &reading.graph, reading.after.as_ref())
+                        .await
+                    {
+                        Err(Error::Invalid(_)) if reading.after.is_some() => {
+                            return Ok(restart(words, &reading.graph));
+                        }
+                        result => result?,
+                    };
+                    let item = snapshot.as_ref().and_then(|snapshot| {
+                        snapshot
+                            .work
+                            .iter()
+                            .find(|item| item.work_id == reading.work)
+                    });
+                    if item.is_none() {
+                        return Ok(restart(words, &reading.graph));
+                    }
                     let detail: Detailed = decode(
                         this.query(
                             &cx.caller,
-                            json!({"kind":"work","graphId":graph,"workId":work}),
+                            json!({"kind":"work","graphId":reading.graph,"workId":reading.work,
+                                "offset":reading.instruction_offset}),
                         )
                         .await?,
                     )?;
-                    let snapshot = this.graph(&cx.caller, &graph).await?;
-                    let item = snapshot.as_ref().and_then(|snapshot| {
-                        snapshot.work.iter().find(|item| item.work_id == work)
-                    });
-                    let record = result.or_else(|| {
+                    reading.result = reading.result.or_else(|| {
                         item.and_then(|item| item.execution.as_ref())
                             .and_then(|execution| execution.result_record_id.clone())
                     });
-                    let answer = match record {
+                    let answer = match &reading.result {
                         Some(record) => {
                             let page: Resulted = decode(
                                 this.query(
                                     &cx.caller,
-                                    json!({"kind":"result","graphId":graph,"workId":work,"recordId":record}),
+                                    json!({"kind":"result","graphId":reading.graph,"workId":reading.work,
+                                        "recordId":record,"offset":reading.result_offset}),
                                 )
                                 .await?,
                             )?;
@@ -380,6 +432,7 @@ impl App for Graphs {
                     };
                     Ok(detail_view(
                         words,
+                        &reading,
                         item,
                         detail.work.as_ref(),
                         answer.as_ref(),
@@ -468,7 +521,7 @@ fn ask(words: &Words) -> View {
 }
 
 /// One graph: how far it has come, what it is doing, and every piece of work.
-fn panel(words: &Words, graph: Option<&Graph>, earlier: bool) -> View {
+fn panel(words: &Words, graph: Option<&Graph>, earlier: bool, after: Option<&Cursor>) -> View {
     let Some(graph) = graph else {
         let mut children = vec![text(
             "empty",
@@ -491,13 +544,14 @@ fn panel(words: &Words, graph: Option<&Graph>, earlier: bool) -> View {
         }
         return view(words, "none:0".into(), vec![], column("root", children));
     };
-    let (finished, total) = (done(graph), graph.total_work.max(graph.work.len()));
+    let (finished, total) = (done(graph), graph.work.len());
+    let paged = after.is_some() || graph.next_after.is_some();
     let mode = if graph.epoch.mode == "swarm" {
         words.t("Swarm", "蜂群", "蜂群")
     } else {
         words.t("Graph", "图", "圖")
     };
-    let state = if graph.finished {
+    let graph_state = if graph.finished {
         (words.t("Finished", "已结束", "已結束"), Tone::Success)
     } else if graph.stop_requested {
         (words.t("Stopping", "正在停止", "正在停止"), Tone::Warning)
@@ -510,29 +564,59 @@ fn panel(words: &Words, graph: Option<&Graph>, earlier: bool) -> View {
             vec![
                 (format!("{mode} #{}", graph.epoch.epoch), Tone::Strong),
                 ("  ·  ".into(), Tone::Subtle),
-                (state.0, state.1),
+                (graph_state.0, graph_state.1),
             ],
         ),
         progress(
             "progress",
             finished as u64,
             total.max(1) as u64,
-            words.t(
-                &format!("{finished} of {total}"),
-                &format!("{finished}/{total}"),
-                &format!("{finished}/{total}"),
-            ),
+            if paged {
+                words.t(
+                    &format!("Page {finished}/{total}"),
+                    &format!("本页 {finished}/{total}"),
+                    &format!("本頁 {finished}/{total}"),
+                )
+            } else {
+                words.t(
+                    &format!("{finished} of {total}"),
+                    &format!("{finished}/{total}"),
+                    &format!("{finished}/{total}"),
+                )
+            },
         ),
     ];
+    if paged {
+        children.push(text(
+            "total",
+            words.t(
+                &format!("{} work items", graph.total_work),
+                &format!("共 {} 项工作", graph.total_work),
+                &format!("共 {} 項工作", graph.total_work),
+            ),
+            Tone::Muted,
+        ));
+    }
     let items: Vec<Node> = graph
         .work
         .iter()
         .map(|work| {
-            let (label, tone, glyph) = state_of(words, work);
+            let (label, tone) = state(words, work);
             link(
                 format!("work-{}", work.work_id).replace('/', ":"),
-                format!("{glyph} {}", first_line(&work.instruction)),
-                json!({"kind":"work","graph":graph.epoch.graph_id,"work":work.work_id,"result":null}),
+                first_line(&work.instruction),
+                Reading {
+                    graph: graph.epoch.graph_id.clone(),
+                    work: work.work_id.clone(),
+                    result: work
+                        .execution
+                        .as_ref()
+                        .and_then(|execution| execution.result_record_id.clone()),
+                    after: after.cloned(),
+                    instruction_offset: 0,
+                    result_offset: 0,
+                }
+                .route(),
             )
             .meta(label)
             .tone(tone)
@@ -542,16 +626,25 @@ fn panel(words: &Words, graph: Option<&Graph>, earlier: bool) -> View {
     if !items.is_empty() {
         children.push(scroll("work", 16, stack("list", items)));
     }
-    if graph.work.len() < graph.total_work {
-        children.push(text(
-            "more",
-            words.t(
-                &format!("{} more not shown", graph.total_work - graph.work.len()),
-                &format!("另有 {} 项未显示", graph.total_work - graph.work.len()),
-                &format!("另有 {} 項未顯示", graph.total_work - graph.work.len()),
-            ),
-            Tone::Subtle,
-        ));
+    if let Some(next) = &graph.next_after {
+        children.push(
+            link(
+                "next",
+                words.t("Next work items", "下一页工作", "下一頁工作"),
+                json!({"kind":"graph","graph":graph.epoch.graph_id,"after":next}),
+            )
+            .into(),
+        );
+    }
+    if after.is_some() {
+        children.push(
+            link(
+                "first",
+                words.t("First work items", "第一页工作", "第一頁工作"),
+                json!({"kind":"graph","graph":graph.epoch.graph_id}),
+            )
+            .into(),
+        );
     }
     let mut actions = vec![];
     if !graph.finished && !graph.stop_requested {
@@ -590,10 +683,6 @@ fn panel(words: &Words, graph: Option<&Graph>, earlier: bool) -> View {
     )
 }
 
-fn state_of(words: &Words, work: &Work) -> (String, Tone, &'static str) {
-    state(words, work)
-}
-
 /// While a graph works: how far it has come.
 fn line(words: &Words, graph: Option<&Graph>) -> View {
     let children = match graph.filter(|graph| !graph.finished) {
@@ -610,16 +699,47 @@ fn line(words: &Words, graph: Option<&Graph>) -> View {
             vec![
                 text(
                     "count",
-                    format!("{}/{}", done(graph), graph.total_work.max(graph.work.len())),
+                    if graph.next_after.is_some() {
+                        words.t(
+                            &format!(
+                                "{}/{} shown · {} total",
+                                done(graph),
+                                graph.work.len(),
+                                graph.total_work
+                            ),
+                            &format!(
+                                "本页 {}/{} · 共 {} 项",
+                                done(graph),
+                                graph.work.len(),
+                                graph.total_work
+                            ),
+                            &format!(
+                                "本頁 {}/{} · 共 {} 項",
+                                done(graph),
+                                graph.work.len(),
+                                graph.total_work
+                            ),
+                        )
+                    } else {
+                        format!("{}/{}", done(graph), graph.work.len())
+                    },
                     Tone::Muted,
                 ),
                 text(
                     "running",
-                    words.t(
-                        &format!("{running} running"),
-                        &format!("{running} 个运行中"),
-                        &format!("{running} 個執行中"),
-                    ),
+                    if graph.next_after.is_some() {
+                        words.t(
+                            &format!("{running} shown running"),
+                            &format!("本页 {running} 个运行中"),
+                            &format!("本頁 {running} 個執行中"),
+                        )
+                    } else {
+                        words.t(
+                            &format!("{running} running"),
+                            &format!("{running} 个运行中"),
+                            &format!("{running} 個執行中"),
+                        )
+                    },
                     Tone::Accent,
                 ),
             ]
@@ -668,17 +788,15 @@ fn earlier(words: &Words, epochs: &Epochs) -> View {
 
 fn detail_view(
     words: &Words,
+    reading: &Reading,
     work: Option<&Work>,
     detail: Option<&Detail>,
     answer: Option<&Page>,
 ) -> View {
     let mut children = vec![];
     if let Some(work) = work {
-        let (label, tone, glyph) = state_of(words, work);
-        children.push(spans(
-            "state",
-            vec![(format!("{glyph} "), tone), (label, tone)],
-        ));
+        let (label, tone) = state(words, work);
+        children.push(text("state", label, tone));
         if let Some(execution) = &work.execution {
             children.push(Node::Item {
                 key: "session".into(),
@@ -698,48 +816,50 @@ fn detail_view(
         }
     }
     if let Some(detail) = detail {
-        children.push(stack(
-            "instruction",
-            vec![
-                text(
-                    "label",
-                    words.t("Instruction", "指令", "指令"),
-                    Tone::Subtle,
-                ),
-                markdown("text", clean(&detail.instruction, true)),
-            ],
-        ));
-        if detail.next_offset.is_some() {
-            children.push(text(
-                "cut",
-                words.t(
-                    "Instruction continues beyond this view.",
-                    "指令未完整显示。",
-                    "指令未完整顯示。",
-                ),
+        let mut instruction = vec![
+            text(
+                "label",
+                words.t("Instruction", "指令", "指令"),
                 Tone::Subtle,
-            ));
-        }
+            ),
+            markdown("text", clean(&detail.instruction, true)),
+        ];
+        instruction.extend(page_links(
+            words,
+            reading,
+            false,
+            detail.offset,
+            detail.instruction.len(),
+            detail.total_bytes,
+            detail.next_offset,
+        ));
+        children.push(stack("instruction", instruction));
+    } else {
+        children.push(text(
+            "missing",
+            words.t(
+                "Work is no longer available.",
+                "工作已不可用。",
+                "工作已無法使用。",
+            ),
+            Tone::Muted,
+        ));
     }
     if let Some(answer) = answer {
-        children.push(stack(
-            "answer",
-            vec![
-                text("label", words.t("Result", "结果", "結果"), Tone::Subtle),
-                markdown("text", clean(&answer.text, true)),
-            ],
+        let mut result = vec![
+            text("label", words.t("Result", "结果", "結果"), Tone::Subtle),
+            markdown("text", clean(&answer.text, true)),
+        ];
+        result.extend(page_links(
+            words,
+            reading,
+            true,
+            answer.offset,
+            answer.text.len(),
+            answer.total_bytes,
+            answer.next_offset,
         ));
-        if answer.next_offset.is_some() {
-            children.push(text(
-                "cut",
-                words.t(
-                    "Result continues beyond this view.",
-                    "结果未完整显示。",
-                    "結果未完整顯示。",
-                ),
-                Tone::Subtle,
-            ));
-        }
+        children.push(stack("answer", result));
     } else if work.is_some() {
         children.push(text(
             "pending",
@@ -752,6 +872,90 @@ fn detail_view(
         "work".into(),
         vec![],
         scroll("root", 40, column("body", children)),
+    )
+}
+
+/// Back navigation restores the preceding route; these links retain only the
+/// current offsets, never a growing copy of all visited pages or their text.
+fn page_links(
+    words: &Words,
+    reading: &Reading,
+    result: bool,
+    offset: usize,
+    length: usize,
+    total: usize,
+    next: Option<usize>,
+) -> Vec<Node> {
+    if offset == 0 && next.is_none() {
+        return vec![];
+    }
+    let mut links = vec![text(
+        "range",
+        words.t(
+            &format!("Bytes {offset}–{} of {total}", offset + length),
+            &format!("字节 {offset}–{}，共 {total}", offset + length),
+            &format!("位元組 {offset}–{}，共 {total}", offset + length),
+        ),
+        Tone::Subtle,
+    )];
+    for (key, target, label) in [
+        (
+            "next",
+            next,
+            if result {
+                words.t("Next result page", "下一页结果", "下一頁結果")
+            } else {
+                words.t("Next instruction page", "下一页指令", "下一頁指令")
+            },
+        ),
+        (
+            "first",
+            (offset > 0).then_some(0),
+            if result {
+                words.t("Result from start", "从头阅读结果", "從頭閱讀結果")
+            } else {
+                words.t("Instruction from start", "从头阅读指令", "從頭閱讀指令")
+            },
+        ),
+    ] {
+        if let Some(target) = target {
+            let mut page = reading.clone();
+            if result {
+                page.result_offset = target;
+            } else {
+                page.instruction_offset = target;
+            }
+            links.push(link(key, label, page.route()).into());
+        }
+    }
+    links
+}
+
+fn restart(words: &Words, graph: &str) -> View {
+    view(
+        words,
+        "changed".into(),
+        vec![],
+        column(
+            "root",
+            vec![
+                text(
+                    "changed",
+                    words.t(
+                        "This work page changed. Reopen the graph to read its current work items.",
+                        "工作页已变化。请重新打开图以查看当前工作。",
+                        "工作頁已變更。請重新開啟圖以查看目前工作。",
+                    ),
+                    Tone::Muted,
+                ),
+                link(
+                    "restart",
+                    words.t("Reopen graph", "重新打开图", "重新開啟圖"),
+                    json!({"kind":"graph","graph":graph}),
+                )
+                .into(),
+            ],
+        ),
     )
 }
 
@@ -1035,18 +1239,19 @@ mod tests {
         Graph {
             epoch: Epoch {
                 epoch: 3,
-                graph_id: "g".into(),
+                graph_id: "agent_graph_fixture".into(),
                 mode: "graph".into(),
             },
             revision: 5,
             stop_requested: false,
             finished: false,
             total_work: states.len(),
+            next_after: None,
             work: states
                 .iter()
                 .enumerate()
                 .map(|(index, state)| Work {
-                    work_id: format!("w{index}"),
+                    work_id: format!("graph_work_{index}"),
                     instruction: format!("Step {index}\nmore detail"),
                     status: "requested".into(),
                     execution: Some(Execution {
@@ -1060,10 +1265,74 @@ mod tests {
     }
 
     #[test]
+    fn localized_work_states_need_no_glyph_and_preserve_instructions() {
+        let instruction = "指令 ✓ ◐ ◇ × ○ 😀";
+        for (state, labels, tone) in [
+            ("completed", ["Done", "完成", "完成"], Tone::Success),
+            ("running", ["Running", "运行中", "執行中"], Tone::Accent),
+            ("waiting", ["Waiting", "等待", "等待"], Tone::Warning),
+            ("blocked", ["Blocked", "受阻", "受阻"], Tone::Error),
+            ("failed", ["Failed", "失败", "失敗"], Tone::Error),
+            ("cancelled", ["Stopped", "已停止", "已停止"], Tone::Muted),
+            ("superseded", ["Replaced", "已替换", "已替換"], Tone::Muted),
+            ("requested", ["Queued", "排队中", "排隊中"], Tone::Subtle),
+        ] {
+            let mut working = graph(&[state]);
+            working.work[0].instruction = instruction.into();
+            let reading = Reading {
+                graph: working.epoch.graph_id.clone(),
+                work: working.work[0].work_id.clone(),
+                result: None,
+                after: None,
+                instruction_offset: 0,
+                result_offset: 0,
+            };
+            let detail = Detail {
+                instruction: instruction.into(),
+                offset: 0,
+                total_bytes: instruction.len(),
+                next_offset: None,
+            };
+            for (locale, label) in ["en", "zh-CN", "zh-TW"].into_iter().zip(labels) {
+                let words = Words::new(locale);
+                let view = panel(&words, Some(&working), false, None);
+                view.validate().unwrap();
+                let list = view
+                    .root
+                    .children()
+                    .into_iter()
+                    .find(|node| node.key() == "work")
+                    .unwrap();
+                let Node::Item {
+                    title,
+                    meta,
+                    tone: item_tone,
+                    ..
+                } = list.children()[0].children()[0]
+                else {
+                    panic!("graph work item");
+                };
+                assert_eq!(title, instruction);
+                assert_eq!(meta, label);
+                assert_eq!(*item_tone, tone);
+                let view = detail_view(&words, &reading, working.work.first(), Some(&detail), None);
+                view.validate().unwrap();
+                let Node::Text { spans, .. } = view.root.children()[0].children()[0] else {
+                    panic!("graph work state");
+                };
+                assert_eq!(spans.len(), 1);
+                assert_eq!(spans[0].text, label);
+                assert_eq!(spans[0].tone, tone);
+                assert!(serde_json::to_string(&view).unwrap().contains(instruction));
+            }
+        }
+    }
+
+    #[test]
     fn a_running_graph_lists_its_work_and_asks_before_stopping() {
         let words = Words::new("en");
         let working = graph(&["completed", "running", "requested"]);
-        let view = panel(&words, Some(&working), true);
+        let view = panel(&words, Some(&working), true, None);
         view.validate().unwrap();
         let text = serde_json::to_string(&view).unwrap();
         assert!(
@@ -1084,11 +1353,110 @@ mod tests {
                 .unwrap()
                 .contains("1 running")
         );
-        panel(&words, None, false).validate().unwrap();
+        panel(&words, None, false, None).validate().unwrap();
         ask(&words).validate().unwrap();
-        detail_view(&words, working.work.first(), None, None)
+        let reading = Reading {
+            graph: "agent_graph_fixture".into(),
+            work: "graph_work_0".into(),
+            result: None,
+            after: None,
+            instruction_offset: 0,
+            result_offset: 0,
+        };
+        detail_view(&words, &reading, working.work.first(), None, None)
             .validate()
             .unwrap();
+    }
+
+    #[test]
+    fn work_and_text_pages_keep_exact_identity_and_independent_byte_cursors() {
+        let cursor: Cursor = decode(json!({"revision":5,"workId":"graph_work_15"})).unwrap();
+        let mut working = graph(&["completed"; 16]);
+        working.total_work = 17;
+        working.next_after = Some(cursor.clone());
+        let reading = Reading {
+            graph: "agent_graph_full_identity".into(),
+            work: "graph_work_full_identity".into(),
+            result: Some("full-result-identity".into()),
+            after: Some(cursor),
+            instruction_offset: 0,
+            result_offset: 0,
+        };
+        fn route(node: &Node, key: &str) -> Option<Value> {
+            if node.key() == key
+                && let Node::Item {
+                    target: view::Target::Route { route },
+                    ..
+                } = node
+            {
+                return Some(route.clone());
+            }
+            node.children()
+                .into_iter()
+                .find_map(|child| route(child, key))
+        }
+        for locale in ["en", "zh-CN", "zh-TW"] {
+            let words = Words::new(locale);
+            let page = panel(&words, Some(&working), false, None);
+            page.validate().unwrap();
+            let next = route(&page.root, "next").unwrap();
+            assert_eq!(next["after"]["workId"], "graph_work_15");
+            assert!(matches!(
+                decode::<Route>(next).unwrap(),
+                Route::Graph { after: Some(_), .. }
+            ));
+            line(&words, Some(&working)).validate().unwrap();
+            let detail = Detail {
+                instruction: "中".repeat(2730),
+                offset: 0,
+                total_bytes: 20000,
+                next_offset: Some(8190),
+            };
+            let answer = Page {
+                text: "😀".repeat(1024),
+                offset: 0,
+                total_bytes: 12000,
+                next_offset: Some(4096),
+            };
+            let page = detail_view(
+                &words,
+                &reading,
+                working.work.first(),
+                Some(&detail),
+                Some(&answer),
+            );
+            page.validate().unwrap(); // Both sections have next links with distinct full node paths.
+            let body = page.root.children()[0];
+            for (section, changed, expected) in [
+                ("instruction", "instruction_offset", 8190),
+                ("answer", "result_offset", 4096),
+            ] {
+                let section = body
+                    .children()
+                    .into_iter()
+                    .find(|node| node.key() == section)
+                    .unwrap();
+                let next = route(section, "next").unwrap();
+                assert_eq!(next[changed], expected);
+                assert_eq!(
+                    next[if changed == "instruction_offset" {
+                        "result_offset"
+                    } else {
+                        "instruction_offset"
+                    }],
+                    0
+                );
+                assert_eq!(next["graph"], reading.graph);
+                assert_eq!(next["work"], reading.work);
+                assert_eq!(next["result"], json!(reading.result));
+                assert_eq!(next["after"], reading.route()["after"]);
+                assert!(matches!(decode::<Route>(next).unwrap(), Route::Work(_)));
+            }
+            restart(&words, &reading.graph).validate().unwrap();
+        }
+        let encoded =
+            serde_json::to_string(&panel(&Words::new("en"), Some(&working), false, None)).unwrap();
+        assert!(encoded.contains("Page 16/16") && encoded.contains("17 work items"));
     }
 
     #[test]

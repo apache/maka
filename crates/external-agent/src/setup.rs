@@ -51,11 +51,13 @@ pub(crate) struct Provider {
 enum Input {
     Check {
         agent_id: String,
+        expected_revision: Option<u64>,
         #[schemars(with = "String")]
         operation_id: Uuid,
     },
     Authenticate {
         agent_id: String,
+        expected_revision: Option<u64>,
         method_id: String,
         #[schemars(with = "String")]
         operation_id: Uuid,
@@ -169,13 +171,31 @@ async fn work(
         return Err(Error::Cancelled);
     }
     let (title, agent) = match &input {
-        Input::Check { agent_id, .. } => (
+        Input::Check {
+            agent_id,
+            expected_revision,
+            ..
+        } => (
             "Check external agent",
-            Some(manager.agent(agent_id).await.map_err(Error::Invalid)?),
+            Some(
+                manager
+                    .agent_at_revision(agent_id, *expected_revision)
+                    .await
+                    .map_err(Error::Invalid)?,
+            ),
         ),
-        Input::Authenticate { agent_id, .. } => (
+        Input::Authenticate {
+            agent_id,
+            expected_revision,
+            ..
+        } => (
             "Authenticate external agent",
-            Some(manager.agent(agent_id).await.map_err(Error::Invalid)?),
+            Some(
+                manager
+                    .agent_at_revision(agent_id, *expected_revision)
+                    .await
+                    .map_err(Error::Invalid)?,
+            ),
         ),
         Input::InstallAntigravity { .. } => ("Download and install Antigravity from Google", None),
     };

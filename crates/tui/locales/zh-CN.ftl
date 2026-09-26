@@ -426,6 +426,8 @@ file-copy-path = 复制文件路径
 chat-copy-failed = 无法发送复制请求
 chat-copy-too-large = 复制上限为 64 KiB · 请缩小选区
 chat-copy-empty = 请先选择文字或消息
+chat-copy-pending = 所选文本仍在准备中，请稍后重试复制。
+chat-copy-unavailable = 无法准备要复制的文本。
 chat-selection-help = Ctrl+C 复制 · Esc 清除选区
 
 session-rename = 重命名会话

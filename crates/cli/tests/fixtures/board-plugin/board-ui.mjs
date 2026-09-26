@@ -19,7 +19,7 @@
 
 /** @typedef {'todo' | 'doing' | 'done'} Column */
 /** @typedef {{id: string, title: string, column: Column, note: string}} Card */
-/** @typedef {{revision: number | null, cards: Card[], activity: import('../../../../../packages/plugin-sdk/src/host.js').TranscriptResource | null}} Model */
+/** @typedef {{revision: number | null, cards: Card[], panel: 'board' | 'card' | 'create', operation: string, activity: import('../../../../../packages/plugin-sdk/src/host.js').TranscriptResource | null}} Model */
 
 /** @type {import('../../../../../packages/plugin-sdk/src/host.js').TerminalPageFactory<Model>} */
 export default ({ tui }) => {
@@ -47,15 +47,29 @@ export default ({ tui }) => {
           ]),
         };
       }
-      const { revision, cards } = model;
+      const { revision, cards, panel, operation } = model;
+      if (panel === 'create') {
+        return {
+          title: cx.t('New card', '新卡片', '新卡片'),
+          revision: String(revision ?? 0),
+          fields: [
+            tui.line('new', '', 200, { placeholder: cx.t('A new card', '新卡片', '新卡片') }),
+          ],
+          actions: [tui.action('add', cx.t('Add', '添加', '新增'), { fields: ['new'] })],
+          root: tui.row('root', [
+            tui.input('new', 'new', cx.t('Card', '卡片', '卡片')),
+            tui.button('add', 'add', 'primary'),
+          ]),
+        };
+      }
       const stamp = String(revision ?? 0);
       const card =
+        panel === 'card' &&
         route &&
         typeof route === 'object' &&
-        'card' in route &&
-        cards.find((item) => item.id === route.card);
+        'cardId' in route &&
+        cards.find((item) => item.id === route.cardId);
       if (card) {
-        const index = columns.indexOf(card.column);
         const actions = [
           tui.action('save', cx.t('Save', '保存', '儲存'), { fields: ['title', 'note'] }),
           tui.action('delete', cx.t('Delete', '删除', '刪除'), {
@@ -71,14 +85,6 @@ export default ({ tui }) => {
           }),
         ];
         const buttons = [tui.button('save', 'save', 'primary')];
-        if (index > 0) {
-          actions.push(tui.action('left', cx.t('Move back', '后退一列', '後退一欄')));
-          buttons.push(tui.button('left', 'left'));
-        }
-        if (index < 2) {
-          actions.push(tui.action('right', cx.t('Move on', '前进一列', '前進一欄')));
-          buttons.push(tui.button('right', 'right'));
-        }
         buttons.push(tui.button('delete', 'delete', 'destructive'));
         return {
           title: card.title,
@@ -96,46 +102,67 @@ export default ({ tui }) => {
           ]),
         };
       }
-      const lanes = columns.map((column) =>
-        tui.column(
-          column,
-          [
-            tui.spans('title', [
-              [cx.t(...titles[column]), 'strong'],
-              [`  ${cards.filter((item) => item.column === column).length}`, 'subtle'],
-            ]),
-            ...cards
-              .filter((item) => item.column === column)
-              .map((item) =>
-                tui.link(
-                  `card-${item.id}`,
-                  item.title,
-                  { card: item.id },
-                  item.note ? { detail: item.note } : {},
-                ),
-              ),
-          ],
-          0,
-        ),
-      );
+      if (panel === 'card') {
+        return {
+          title: cx.t('Card details', '卡片详情', '卡片詳情'),
+          revision: stamp,
+          root: tui.text(
+            'gone',
+            cx.t(
+              'This card is no longer on the board.',
+              '这张卡片已不在看板中。',
+              '這張卡片已不在看板中。',
+            ),
+            'muted',
+          ),
+        };
+      }
       return {
         title: cx.t('Board', '看板', '看板'),
         revision: stamp,
-        fields: [tui.line('new', '', 200, { placeholder: cx.t('A new card', '新卡片', '新卡片') })],
-        actions: [tui.action('add', cx.t('Add', '添加', '新增'), { fields: ['new'] })],
-        root: tui.column('root', [
-          tui.split('lanes', 34, lanes[0], tui.row('remaining', lanes.slice(1))),
-          tui.rule('divider'),
-          tui.row('adding', [
-            tui.input('new', 'new', cx.t('Card', '卡片', '卡片')),
-            tui.button('add', 'add', 'primary'),
-          ]),
-          tui.link('activity', cx.t('Board activity', '看板活动', '看板活動'), {
-            activity: true,
+        fields: [
+          tui.line('item', '', 128),
+          tui.line('group', '', 128),
+          tui.line('before', '', 128),
+          tui.line('operation', operation, 128),
+        ],
+        actions: [
+          tui.action('move', cx.t('Move card', '移动卡片', '移動卡片'), {
+            fields: ['item', 'group', 'before', 'operation'],
+            recovery: { operation },
           }),
+        ],
+        root: tui.column('root', [
+          tui.collection('cards', {
+            groups: columns.map((column) => ({
+              key: column,
+              label: `${cx.t(...titles[column])}  ${cards.filter((item) => item.column === column).length}`,
+            })),
+            items: cards.map((item) => ({
+              key: item.id,
+              group: item.column,
+              title: item.title,
+              summary: Array.from(item.note.replace(/\s+/gu, ' ')).slice(0, 200).join(''),
+              panel: tui.slot('detail', 'board.card', { boardId: 'board', cardId: item.id }),
+            })),
+            filter: {
+              label: cx.t('Filter', '筛选', '篩選'),
+              placeholder: cx.t('Filter cards', '筛选卡片', '篩選卡片'),
+            },
+            ratio: 60,
+            movement: {
+              action: 'move',
+              item_field: 'item',
+              group_field: 'group',
+              before_field: 'before',
+            },
+          }),
+          tui.slot('create', 'board.create'),
+          tui.link('activity', cx.t('Board activity', '看板活动', '看板活動'), { activity: true }),
         ]),
       };
     },
     submit: (_submission, cx) => cx.backend(),
+    recover: (_route, cx) => cx.backend(),
   };
 };

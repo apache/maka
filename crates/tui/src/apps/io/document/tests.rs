@@ -141,5 +141,6 @@ fn background_write_pins_execution_until_receipt_but_drafts_do_not() {
 }
 
 mod applied;
+mod updated;
 
 mod retained;

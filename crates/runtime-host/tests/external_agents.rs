@@ -771,6 +771,9 @@ async fn acp_setup_stream_authenticates_filters_urls_and_closes_cancelled_proces
         let terminal = json!({"packageId":"acceptance.acp-package","method":"terminal"});
         let terminal_target = success(running.peer.rpc("plugin.remote",
             json!({"kind":"bind","binding":terminal})).await)["target"].clone();
+        let changes = json!({"packageId":"acceptance.acp-package","method":"terminal-changes"});
+        let changes_target = success(running.peer.rpc("plugin.remote", json!({"kind":"bind","binding":changes})).await)["target"].clone();
+        let changes_stream = success(running.peer.rpc("plugin.remote", json!({"kind":"open","binding":changes,"target":changes_target,"document":document,"input":null})).await)["stream"].clone();
         let view = success(running.peer.rpc("plugin.remote", json!({
             "kind":"call","binding":terminal,"target":terminal_target,"document":document,
             "input":{"kind":"read","route":{"agent":"test.acp"},"locale":"en"}
@@ -780,8 +783,14 @@ async fn acp_setup_stream_authenticates_filters_urls_and_closes_cancelled_proces
             "input":{"kind":"submit","route":{"agent":"test.acp"},"revision":view["revision"],
                 "action":"check","fields":{},"locale":"en"}
         })).await)["value"].clone();
-        assert_eq!(checked["kind"], "applied", "{checked}");
-        assert!(checked["route"]["checked"].as_str().is_some_and(|text| !text.is_empty()));
+        assert_eq!(checked["kind"], "updated", "{checked}");
+        let readback = success(running.peer.rpc("plugin.remote", json!({
+            "kind":"call","binding":terminal,"target":terminal_target,"document":document,
+            "input":{"kind":"read","route":{"agent":"test.acp"},"locale":"en"}
+        })).await)["value"].clone();
+        assert!(readback.to_string().contains("It answered:"));
+        assert!(readback.to_string().contains("Sign-in method"));
+        success(running.peer.rpc("plugin.remote", json!({"kind":"close","document":document,"stream":changes_stream})).await);
         let mut process = fixture.process().await;
         process_closed(&mut process).await;
         success(running.peer.rpc("plugin.remote", json!({"kind":"close_document","document":document})).await);

@@ -23,20 +23,20 @@ use crate::pages::chat::presentation::prompt_content as content;
 use unicode_width::UnicodeWidthStr;
 
 /// Three-line prompt previews, following grok-build's user-message hierarchy.
+#[cfg(test)]
 pub(super) fn preview(text: &str, width: u16, ascii: bool) -> Result<(Layout, bool), &'static str> {
-    // Attachment-only inputs can leave empty separators at the start of a batched turn.
-    // Spend preview rows on content, preserving indentation and full-message source offsets.
-    let start: usize = text
-        .split_inclusive('\n')
-        .take_while(|line| line.trim().is_empty())
-        .map(str::len)
-        .sum();
+    preview_from(text, width, ascii, &block::source_shape(text).1)
+}
+pub(super) fn preview_from(
+    text: &str,
+    width: u16,
+    ascii: bool,
+    shape: &block::Preview,
+) -> Result<(Layout, bool), &'static str> {
+    let start = shape.start;
     let text = &text[start..];
     // Enough for four wrapped lines, without laying out an entire pasted document.
-    let prefix: String = text
-        .graphemes(true)
-        .take(usize::from(width) * 4 + 32)
-        .collect();
+    let prefix = block::preview_text(text, usize::from(width) * 4 + 32);
     let mut layout = layout::plain(&prefix, width)?;
     for line in &mut layout.lines {
         line.source += start;
@@ -50,7 +50,7 @@ pub(super) fn preview(text: &str, width: u16, ascii: bool) -> Result<(Layout, bo
         .iter()
         .skip(3)
         .any(|line| !line.line.to_string().trim().is_empty())
-        || !text[prefix.len()..].trim().is_empty();
+        || start + prefix.len() < shape.end;
     if !expandable {
         layout.lines.truncate(3);
         return Ok((layout, false));

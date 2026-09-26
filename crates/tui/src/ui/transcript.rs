@@ -35,10 +35,17 @@ use std::collections::{HashMap, HashSet};
 pub use timing::{Outcome, Timing};
 use unicode_segmentation::UnicodeSegmentation;
 
+mod block;
+mod block_layout;
+pub(crate) mod frame_work;
 mod groups;
+mod index;
+mod large;
+mod materialize;
 mod navigation;
 #[cfg(test)]
 mod performance;
+mod preparation;
 mod prompt;
 pub mod reading;
 mod reveal;
@@ -47,6 +54,9 @@ pub mod search;
 pub mod selection;
 mod time;
 mod timing;
+mod viewport;
+#[cfg(test)]
+mod window_tests;
 
 #[derive(
     Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -186,6 +196,13 @@ struct Block {
     folded: bool,
     expandable: bool,
     layout: Option<Layout>,
+    semantic: Option<std::sync::Arc<str>>,
+    large: Option<large::State>,
+    layout_epoch: u64,
+    measured_rows: Option<usize>,
+    source_lines: usize,
+    preview: block::Preview,
+    previous_frame: Option<block::PreviewFrame>,
     /// Layout row carrying the glyph, hits and timestamp; padding rows precede it.
     header: usize,
     dirty: bool,
@@ -208,6 +225,7 @@ pub struct Transcript {
     /// Deferred source reconciliation and painting can change saved bookmarks
     /// after the input/notification that requested the frame has completed.
     reading_changes: u64,
+    painted_frame: Option<u64>,
     scrollbar: scrollbar::Scrollbar,
     timings: HashMap<String, timing::Timing>,
     #[cfg(test)]
@@ -222,12 +240,19 @@ pub struct Transcript {
     source_order: Vec<MessageKey>,
     groups: HashMap<MessageKey, Vec<MessageKey>>,
     membership: HashMap<MessageKey, MessageKey>,
-    starts: Vec<usize>,
+    starts: index::Rows,
+    indexes: HashMap<MessageKey, usize>,
+    cached: HashSet<MessageKey>,
+    pending_layouts: HashSet<MessageKey>,
+    layout_epoch: u64,
+    layout_ascii: bool,
     total: usize,
     width: u16,
     height: usize,
     top: usize,
     anchor: Option<Anchor>,
+    row_request: Option<(MessageKey, usize)>,
+    anchor_row: Option<(Anchor, usize, u64)>,
     pub unseen: bool,
     pub trace: bool,
     pub colors: crate::theme::Palette,
@@ -257,6 +282,23 @@ impl Transcript {
         self.reading_changes
     }
 
+    /// Unpainted readers release CPU-lane reservations, including unread completions.
+    pub(crate) fn finish_layout_frame(&mut self) {
+        if self.painted_frame != Some(frame_work::id()) {
+            self.cancel_preparation();
+        }
+    }
+    fn cancel_preparation(&mut self) {
+        for key in &self.cached {
+            if let Some(state) = self
+                .blocks
+                .get_mut(key)
+                .and_then(|block| block.large.as_mut())
+            {
+                state.cancel_preparation();
+            }
+        }
+    }
     /// Call before reconciliation and drawing, using the shell's motion policy.
     pub fn motion(&mut self, now: Option<std::time::Instant>) {
         self.motion = now;
@@ -277,9 +319,7 @@ impl Transcript {
             .map(|file| file.path.as_str())
     }
     pub fn invalidate(&mut self) {
-        for block in self.blocks.values_mut() {
-            block.layout = None;
-        }
+        self.layout_epoch = self.layout_epoch.wrapping_add(1);
     }
     pub fn invalidate_labels(&mut self) {
         // Localized summaries must be projected again, but manual folds and anchors survive.
@@ -319,15 +359,14 @@ impl Transcript {
         self.unseen |= !self.following();
     }
     pub fn latest(&mut self) {
+        self.row_request = None;
+        self.anchor_row = None;
         self.anchor = None;
         self.unseen = false;
         self.selected = None;
     }
     pub fn first_visible(&self) -> Option<MessageKey> {
-        let first = self
-            .starts
-            .partition_point(|start| *start <= self.top)
-            .saturating_sub(1);
+        let first = self.starts.at(self.top);
         self.order
             .iter()
             .skip(first)
@@ -354,6 +393,7 @@ impl Transcript {
         }
     }
     pub fn toggle(&mut self, key: &MessageKey) {
+        self.row_request = None;
         // Folding is a reading action: keep this message on screen, rather than chase the tail.
         if let Some(block) = self
             .blocks
@@ -363,14 +403,15 @@ impl Transcript {
             // The header keeps its text across folding; anchor that, not the
             // block start, which may be a padding row without source text.
             let source = block
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.lines.get(block.header))
+                .visual_line(block.header)
                 .and_then(|line| line.mapping.first())
                 .map_or(0, |span| span.source.start);
             let header = block.header;
             block.folded = !block.folded;
+            block.previous_frame = None;
             block.layout = None;
+            block.semantic = None;
+            block.dirty = true;
             self.anchor = Some(Anchor {
                 key: key.clone(),
                 source,
@@ -378,8 +419,10 @@ impl Transcript {
                     .order
                     .iter()
                     .position(|candidate| candidate == key)
-                    .and_then(|index| self.starts.get(index))
-                    .map_or(0, |start| (start + header).saturating_sub(self.top)),
+                    .filter(|index| *index < self.starts.len())
+                    .map_or(0, |index| {
+                        (self.starts.start(index) + header).saturating_sub(self.top)
+                    }),
             });
         }
         self.arrange_groups();
@@ -396,32 +439,72 @@ impl Transcript {
             self.latest();
         } else {
             self.anchor = self.position(self.top);
+            let index = self.starts.at(self.top);
+            if let Some(key) = self.order.get(index) {
+                let row = self.top.saturating_sub(self.starts.start(index));
+                self.row_request = (self.blocks[key].windowed()
+                    && self.blocks[key].visual_current()
+                    && self.blocks[key].visual_line(row).is_none())
+                .then(|| (key.clone(), row));
+            }
         }
     }
     /// Anchor a screen row to the first source-bearing line at or below it.
     /// Blank, padding and gap rows have no identity of their own; snapping
     /// them to the text above made line-by-line scrolling skip or stall.
-    fn position(&self, row: usize) -> Option<Anchor> {
+    fn position(&mut self, row: usize) -> Option<Anchor> {
+        let anchor = self.position_at(row)?;
+        if let Some(&index) = self.indexes.get(&anchor.key) {
+            let local = row
+                .saturating_add(anchor.screen_row)
+                .saturating_sub(self.starts.start(index));
+            self.anchor_row = self.blocks[&anchor.key]
+                .visual_line(local)
+                .filter(|line| {
+                    self.blocks[&anchor.key].visual_current() && !line.mapping.is_empty()
+                })
+                .map(|_| (anchor.clone(), local, self.layout_epoch));
+        }
+        Some(anchor)
+    }
+    fn position_at(&self, row: usize) -> Option<Anchor> {
         if self.starts.len() != self.order.len() {
             return None;
         }
-        let index = self
-            .starts
-            .partition_point(|start| *start <= row)
-            .saturating_sub(1);
+        let index = self.starts.at(row);
+        let key = self.order.get(index)?;
+        let block = self.blocks.get(key)?;
+        if block.visual_lines().is_empty() {
+            let offset = row.saturating_sub(self.starts.start(index));
+            let mut source =
+                block.text.len().saturating_mul(offset) / self.starts.height(index).max(1);
+            while !block.text.is_char_boundary(source) {
+                source = source.saturating_sub(1);
+            }
+            source = block.text[..source]
+                .rfind('\n')
+                .map_or(0, |newline| newline + 1);
+            return Some(Anchor {
+                key: key.clone(),
+                source,
+                screen_row: 0,
+            });
+        }
         let below = (index..self.order.len()).find_map(|index| {
             let key = &self.order[index];
-            let start = self.starts[index];
-            let lines = &self.blocks.get(key)?.layout.as_ref()?.lines;
+            let start = self.starts.start(index);
+            let block = self.blocks.get(key)?;
+            let origin = block.visual_origin();
+            let lines = block.visual_lines();
             let (line, span) = lines
                 .iter()
                 .enumerate()
-                .skip(row.saturating_sub(start))
+                .skip(row.saturating_sub(start + origin))
                 .find_map(|(line, visual)| Some((line, visual.mapping.first()?)))?;
             Some(Anchor {
                 key: key.clone(),
                 source: span.source.start,
-                screen_row: start + line - row,
+                screen_row: start + origin + line - row,
             })
         });
         if below.is_some() {
@@ -429,11 +512,9 @@ impl Transcript {
         }
         let key = self.order.get(index)?;
         let block = self.blocks.get(key)?;
-        let layout = block.layout.as_ref()?;
-        let line = layout
-            .lines
-            .get(row.saturating_sub(self.starts[index]))
-            .or_else(|| layout.lines.last())?;
+        let line = block
+            .visual_line(row.saturating_sub(self.starts.start(index)))
+            .or_else(|| block.visual_lines().last())?;
         Some(Anchor {
             key: key.clone(),
             source: line.source,
@@ -468,6 +549,20 @@ impl Transcript {
                 block.file = file;
                 block.emphasis = emphasis;
                 if block.kind != kind || block.text != text || block.changes != changes {
+                    if live
+                        && kind.markdown()
+                        && block.kind == kind
+                        && !block.folded
+                        && text.starts_with(&block.text)
+                        && text.len() > large::INLINE_BYTES
+                    {
+                        // Keep the prior display while the new revision prepares; only current geometry owns input.
+                        if block.previous_frame.is_none() {
+                            block.previous_frame = block::PreviewFrame::capture(block);
+                        }
+                    } else {
+                        block.previous_frame = None;
+                    }
                     if block.kind != kind || !text.starts_with(&block.text) {
                         // Keep the old logical text until selection has been rebased.
                         block.markdown = Default::default();
@@ -478,6 +573,18 @@ impl Transcript {
                             .append(block.text.len()..text.len(), self.motion);
                     }
                     block.dirty = true;
+                    block.large = None;
+                    if !self.text_selection.references(&key) {
+                        block.semantic = None;
+                    }
+                    (block.source_lines, block.preview) = block::source_shape(&text);
+                    if self
+                        .anchor_row
+                        .as_ref()
+                        .is_some_and(|(anchor, _, _)| anchor.key == key)
+                    {
+                        self.anchor_row = None;
+                    }
                     block.text = text;
                     block.changes = changes;
                 }
@@ -501,6 +608,7 @@ impl Transcript {
                 if kind.markdown() && (self.live_update || matches!(revision, Revision::Live(_))) {
                     reveal.append(0..text.len(), self.motion);
                 }
+                let (source_lines, preview) = block::source_shape(&text);
                 self.blocks.insert(
                     key.clone(),
                     Block {
@@ -509,6 +617,9 @@ impl Transcript {
                         time_date: None,
                         revision,
                         kind,
+                        source_lines,
+                        preview,
+                        previous_frame: None,
                         text,
                         changes,
                         file,
@@ -516,6 +627,10 @@ impl Transcript {
                         folded: kind.folded(),
                         expandable: true,
                         layout: None,
+                        semantic: None,
+                        large: None,
+                        layout_epoch: self.layout_epoch,
+                        measured_rows: None,
                         header: 0,
                         dirty: false,
                         markdown: Default::default(),
@@ -610,164 +725,14 @@ impl Transcript {
             self.top = 0;
         }
     }
-    fn layout(&mut self, width: u16, ascii: bool, padded: bool) -> Result<(), &'static str> {
-        if self.width != width || self.layout_colors != self.colors || self.layout_padded != padded
-        {
-            self.invalidate();
-            self.width = width;
-            self.layout_colors = self.colors;
-            self.layout_padded = padded;
-        }
-        self.starts.clear();
-        self.total = 0;
-        let mut bytes = 0;
-        for (index, key) in self.order.iter().enumerate() {
-            let next = self.order.get(index + 1).map(|key| self.blocks[key].kind);
-            let block = self.blocks.get_mut(key).expect("indexed block");
-            if block.dirty || block.layout.is_none() {
-                let selected_text = self
-                    .text_selection
-                    .references(key)
-                    .then(|| block.layout.as_ref().map(|layout| layout.text.clone()))
-                    .flatten();
-                let time_width = if width >= 60 {
-                    block.time.as_ref().map_or(0, |time| time.len() as u16 + 2)
-                } else {
-                    0
-                };
-                let body_width = width.saturating_sub(2 + block.indent + time_width).max(1);
-                block.layout = Some(if block.folded && block.kind == Kind::User {
-                    let (layout, expandable) = prompt::preview(&block.text, body_width, ascii)?;
-                    block.expandable = expandable;
-                    layout
-                } else if block.folded {
-                    let preview_width = body_width;
-                    let mut nonempty = block.text.lines().filter(|line| !line.trim().is_empty());
-                    let preview = nonempty.next().unwrap_or("");
-                    let more_lines = nonempty.next().is_some();
-                    let preview_start = block.text.find(preview).unwrap_or(0);
-                    let first_len = preview.len();
-                    // Inspect a bounded first-line preview, including Markdown
-                    // syntax, to distinguish real omitted content from decoration.
-                    let preview: String = preview
-                        .graphemes(true)
-                        .take(usize::from(preview_width) * 4 + 32)
-                        .collect();
-                    let mut layout = if block.kind.markdown() {
-                        layout::markdown(&preview, preview_width, ascii)?
-                    } else {
-                        layout::plain(&preview, preview_width)?
-                    };
-                    block.expandable = block.kind.group()
-                        || more_lines
-                        || preview.len() < first_len
-                        || layout
-                            .lines
-                            .iter()
-                            .skip(1)
-                            .any(|line| !line.line.to_string().trim().is_empty());
-                    let clipped = layout.lines.len() > 1;
-                    layout.lines.truncate(1);
-                    // Whole-word wrapping can drop a word from a one-row preview;
-                    // mark it rather than end on a silently shortened sentence.
-                    let line = &mut layout.lines[0].line;
-                    if clipped && line.width() < usize::from(preview_width) {
-                        line.spans.push(Span::raw(if ascii { "." } else { "…" }));
-                    }
-                    let end = layout.lines[0]
-                        .mapping
-                        .iter()
-                        .map(|span| span.logical.end)
-                        .max()
-                        .unwrap_or(0);
-                    layout.text.truncate(end);
-                    for line in &mut layout.lines {
-                        line.source += preview_start;
-                        for span in &mut line.mapping {
-                            span.source.start += preview_start;
-                            span.source.end += preview_start;
-                        }
-                    }
-                    layout
-                } else if block.kind.markdown() {
-                    block.markdown.render(
-                        &block.text,
-                        body_width,
-                        ascii,
-                        block.layout.take(),
-                        self.colors,
-                    )?
-                } else {
-                    layout::diff::render_colored(
-                        &block.text,
-                        &block.changes,
-                        body_width,
-                        ascii,
-                        self.colors,
-                    )?
-                });
-                if !block.folded {
-                    block.expandable = block.kind.group()
-                        || block
-                            .layout
-                            .as_ref()
-                            .unwrap()
-                            .lines
-                            .iter()
-                            .skip(if block.kind == Kind::User { 3 } else { 1 })
-                            .any(|line| !line.line.to_string().trim().is_empty());
-                }
-                if block.kind == Kind::Timing {
-                    let layout = block.layout.as_mut().unwrap();
-                    layout.text.clear();
-                    for line in &mut layout.lines {
-                        line.mapping.clear();
-                    }
-                }
-                block.header = 0;
-                if block.kind == Kind::User && padded {
-                    // Band padding rows carry no source text, so selection,
-                    // search and copy skip them like any other decoration.
-                    let lines = &mut block.layout.as_mut().unwrap().lines;
-                    let pad = |source| layout::VisualLine {
-                        line: Line::default(),
-                        source,
-                        mapping: vec![],
-                    };
-                    let (first, last) = (lines[0].source, lines[lines.len() - 1].source);
-                    lines.insert(0, pad(first));
-                    lines.push(pad(last));
-                    block.header = 1;
-                }
-                if let Some(previous) = selected_text {
-                    self.text_selection.rebase(
-                        key,
-                        &previous,
-                        &block.layout.as_ref().unwrap().text,
-                    );
-                }
-                block.dirty = false;
-                #[cfg(test)]
-                {
-                    self.builds += 1;
-                }
-            }
-            let layout = block.layout.as_ref().unwrap();
-            self.starts.push(self.total);
-            self.total += layout.lines.len() + usize::from(gap_after(block, next));
-            bytes += layout.bytes + block.markdown.syntax_bytes();
-            if self.total > layout::MAX_LINES || bytes > layout::MAX_BYTES {
-                return Err("Transcript layout exceeds local capacity");
-            }
-        }
-        Ok(())
-    }
     pub fn draw(
         &mut self,
         frame: &mut Frame<'_>,
         area: Rect,
         ascii: bool,
     ) -> Result<Vec<Hit>, &'static str> {
+        let _work = frame_work::begin();
+        self.painted_frame = Some(frame_work::id());
         self.motion_wait = None;
         let outer = area;
         let area = Rect {
@@ -777,96 +742,42 @@ impl Transcript {
             ..area
         };
         self.update_timings(ascii, chrono::Utc::now().timestamp_millis());
+        if area.is_empty() {
+            self.cancel_preparation();
+            self.height = 0;
+            return Ok(vec![]);
+        }
         // Short viewports spend rows on content rather than band padding.
         #[cfg(test)]
         let layout_started = self.measurement.map(|_| std::time::Instant::now());
-        self.layout(
+        #[cfg(test)]
+        if let Some(stats) = &mut self.measurement {
+            *stats = Default::default();
+        }
+        self.layout_viewport(
             area.width,
             ascii,
             !self.colors.terminal && area.height >= 12,
+            usize::from(area.height),
         )?;
         #[cfg(test)]
         let after_layout = layout_started.map(|start| {
             let now = std::time::Instant::now();
             let stats = self.measurement.as_mut().unwrap();
             stats.layout_ns = now.duration_since(start).as_nanos();
-            stats.visited_blocks = self.starts.len();
             now
         });
-        self.validate_text_selection();
         self.text_selection.begin_frame();
-        self.height = usize::from(area.height);
-        let bottom = self.total.saturating_sub(self.height);
-        self.top = if let Some(anchor) = &self.anchor {
-            self.order
-                .iter()
-                .position(|key| *key == anchor.key)
-                .map_or(self.top, |index| {
-                    let layout = self.blocks[&anchor.key].layout.as_ref().unwrap();
-                    let line = layout
-                        .lines
-                        .iter()
-                        .position(|line| {
-                            line.mapping
-                                .iter()
-                                .any(|span| span.source.contains(&anchor.source))
-                        })
-                        .or_else(|| {
-                            layout
-                                .lines
-                                .iter()
-                                .rposition(|line| line.source <= anchor.source)
-                        })
-                        .unwrap_or(0);
-                    let screen_row = if anchor.screen_row < self.height {
-                        anchor.screen_row
-                    } else {
-                        // A resize must not preserve an off-screen target row.
-                        self.height / 3
-                    };
-                    (self.starts[index] + line).saturating_sub(screen_row)
-                })
-                .min(bottom)
-        } else {
-            bottom
-        };
-        if self.focused
-            && let Some(key) = &self.selected
-            && let Some(index) = self.order.iter().position(|candidate| candidate == key)
-        {
-            let start = self.starts[index];
-            let top = if start < self.top {
-                start
-            } else if start >= self.top + self.height {
-                start.saturating_sub(self.height.saturating_sub(1))
-            } else {
-                self.top
-            }
-            .min(bottom);
-            if top != self.top {
-                self.top = top;
-                let anchor = self.position(top);
-                if self.anchor != anchor {
-                    self.reading_changes = self.reading_changes.wrapping_add(1);
-                    self.anchor = anchor;
-                }
-            }
-        }
         self.selection_geometry(area);
         let mut lines = Vec::with_capacity(self.height);
         let selected = self.focused.then(|| self.selection()).flatten();
         let mut hits = vec![];
-        let first = self
-            .starts
-            .partition_point(|start| *start <= self.top)
-            .saturating_sub(1);
+        let first = self.starts.at(self.top);
         for index in first..self.order.len() {
             let key = &self.order[index];
             let block = &self.blocks[key];
-            let layout = block.layout.as_ref().unwrap();
-            let offset = self.top.saturating_sub(self.starts[index]);
-            let next = self.order.get(index + 1).map(|key| self.blocks[key].kind);
-            let height = layout.lines.len() + usize::from(gap_after(block, next));
+            let offset = self.top.saturating_sub(self.starts.start(index));
+            let height = self.starts.height(index);
             let focused = selected.as_ref() == Some(key);
             let gutter = 2 + block.indent;
             for row in offset..height {
@@ -874,17 +785,30 @@ impl Transcript {
                     break;
                 }
                 let y = area.y + lines.len() as u16;
-                let visual = layout.lines.get(row);
-                if let Some((x, color)) = visual.and(self.fill(block, row)) {
+                let visual = block.visual_line(row);
+                if let Some((x, color)) = (row < block.rows())
+                    .then(|| self.fill(block, row))
+                    .flatten()
+                {
                     let x = area.x + x.min(area.width);
                     frame.render_widget(
                         ratatui::widgets::Block::default().style(Style::default().bg(color)),
                         Rect::new(x, y, area.right() - x, 1),
                     );
                 }
-                let mut line = visual.map_or_else(Line::default, |visual| {
-                    self.styled(block, key, row, visual.line.clone())
-                });
+                let mut line = visual.map_or_else(
+                    || {
+                        if block.windowed() && block.visual_lines().is_empty() && row == offset {
+                            Line::styled(
+                                if ascii { "..." } else { "…" },
+                                Style::default().fg(self.colors.subtle),
+                            )
+                        } else {
+                            Line::default()
+                        }
+                    },
+                    |visual| self.styled(block, key, row, visual.line.clone()),
+                );
                 if let Some(visual) = visual
                     && let Some(wait) =
                         block
@@ -893,12 +817,15 @@ impl Transcript {
                 {
                     self.motion_wait = Some(self.motion_wait.map_or(wait, |old| old.min(wait)));
                 }
-                if let Some(search) = &self.search
+                if block.visual_current()
+                    && let Some(search) = &self.search
                     && let Some(visual) = visual
                 {
                     search.highlight(key, visual, &mut line, self.colors);
                 }
-                if let Some(visual) = visual {
+                if block.visual_current()
+                    && let Some(visual) = visual
+                {
                     self.text_selection
                         .paint(key, visual, &mut line, self.colors);
                 }
@@ -907,16 +834,17 @@ impl Transcript {
                         line =
                             line.patch_style(Style::default().add_modifier(Modifier::UNDERLINED));
                     }
-                    if let Some(bytes) =
-                        visual
-                            .zip(block.emphasis.as_ref())
-                            .and_then(|(visual, emphasis)| {
-                                visual
-                                    .mapping
-                                    .iter()
-                                    .filter_map(|span| span.intersection(emphasis))
-                                    .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
-                            })
+                    if block.visual_current()
+                        && let Some(bytes) =
+                            visual
+                                .zip(block.emphasis.as_ref())
+                                .and_then(|(visual, emphasis)| {
+                                    visual
+                                        .mapping
+                                        .iter()
+                                        .filter_map(|span| span.intersection(emphasis))
+                                        .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
+                                })
                     {
                         crate::files::restyle(
                             &mut line,
@@ -930,7 +858,8 @@ impl Transcript {
                             effect: Effect::Disclosure(key.clone()),
                         });
                     }
-                    if let Some(file) = &block.file
+                    if block.visual_current()
+                        && let Some(file) = &block.file
                         && let Some(visual) = visual
                         && let Some(bytes) = visual
                             .mapping
@@ -1066,7 +995,7 @@ impl Transcript {
         ascii: bool,
     ) -> Span<'static> {
         let indent = " ".repeat(usize::from(block.indent));
-        let lines = block.layout.as_ref().map_or(0, |layout| layout.lines.len());
+        let lines = block.rows();
         let problem = match block.kind {
             Kind::Tool(state) if state.problem() => Some(state.color(self.colors)),
             Kind::Failure => Some(self.colors.error),
@@ -1361,10 +1290,14 @@ mod tests {
             .collect();
         view.sync(&rows, &[], 0, &i18n, false);
         draw(&mut view, 40, 8);
-        assert_eq!(view.builds, 20);
+        assert!(
+            view.builds < rows.len(),
+            "offscreen history is not laid out"
+        );
         view.scroll(true, 12);
         let expected = view.anchor.clone().unwrap();
         let before = draw(&mut view, 40, 8);
+        let builds = view.builds;
         let stream_id = SessionAssistantStreamIdentity {
             kind: AssistantStreamKind::Text,
             turn_id: "turn".into(),
@@ -1377,18 +1310,18 @@ mod tests {
         view.sync(&rows, &live, 1, &i18n, false);
         assert_eq!(draw(&mut view, 40, 8), before);
         assert_eq!(
-            view.builds, 21,
-            "streaming must not re-layout completed history"
+            view.builds, builds,
+            "offscreen streaming must not lay out the new tail or completed history"
         );
         assert!(view.unseen && !view.following());
         live[0].1.text.push_str("\n\nmore output");
         view.sync(&rows, &live, 2, &i18n, false);
         assert_eq!(draw(&mut view, 40, 8), before);
-        assert_eq!(view.builds, 22);
+        assert_eq!(view.builds, builds);
         rows.insert(0, message("older", &"previous page\n".repeat(30)));
         view.sync(&rows, &live, 2, &i18n, false);
         assert_eq!(draw(&mut view, 40, 8), before);
-        assert_eq!(view.builds, 23);
+        assert_eq!(view.builds, builds);
         draw(&mut view, 25, 9);
         let actual = view.position(view.top).unwrap();
         assert_eq!(actual.key, expected.key);
@@ -1855,11 +1788,11 @@ mod tests {
         replay = Transcript::default();
         replay.sync(&long, &[], 0, &i18n, false);
         draw(&mut replay, 80, 12);
-        let before = replay.starts[1] - replay.top;
+        let before = replay.starts.start(1) - replay.top;
         replay.toggle(&b);
         draw(&mut replay, 80, 12);
         assert_eq!(
-            replay.starts[1] - replay.top,
+            replay.starts.start(1) - replay.top,
             before,
             "opening details grows below its header without jumping it to the top"
         );
@@ -1922,7 +1855,7 @@ mod tests {
             view.blocks.get_mut(&user).unwrap().expandable = true;
             let header = |view: &Transcript| {
                 let index = view.order.iter().position(|key| *key == user).unwrap();
-                view.starts[index] + view.blocks[&user].header - view.top
+                view.starts.start(index) + view.blocks[&user].header - view.top
             };
             draw(&mut view, 40, 14);
             let before = header(&view);

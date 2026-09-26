@@ -118,46 +118,118 @@ fn a_javascript_plugin_installed_at_runtime_brings_its_own_app_into_the_running_
             && !screen.contains("To do  0  Doing")
             && screen.contains("A new card")
     });
-    let stats = runtime.block_on(remote(&client, "activity-stats", Value::Null));
-    let locate = |screen: &str| {
-        screen
-            .lines()
-            .enumerate()
-            .find_map(|(row, line)| {
-                let doing = line.find("Doing  0")?;
-                let divider = line[..doing].rfind('│')?;
-                Some((row, line[..divider].width(), line[..doing].width()))
-            })
-            .unwrap()
-    };
-    let (row, divider, doing) = locate(&tui.screen.snapshot().unwrap().screen);
-    tui.send(
-        format!(
-            "\x1b[<0;{};{}M\x1b[<32;{};{}M\x1b[<0;{};{}m",
-            divider + 1,
-            row + 1,
-            divider + 13,
-            row + 1,
-            divider + 13,
-            row + 1
-        )
-        .as_bytes(),
-    );
-    tui.wait_until(|screen| locate(screen).2 > doing + 8);
-    assert_eq!(
-        runtime.block_on(remote(&client, "activity-stats", Value::Null)),
-        stats,
-        "local split dragging neither reads the view nor mutates its source"
-    );
     tui.click_page_text("A new card");
     tui.send(b"\x1b[200~Write the tests\x1b[201~");
     tui.wait_for("Write the tests");
     tui.click_page_text("Add");
-    tui.wait_until(|screen| screen.contains("To do  1") && screen.contains("A new card"));
-    tui.click_page_text("Write the tests");
-    tui.wait_for("Move on");
-    tui.click_page_text("Move on");
+    // The parent's new card and the child's reset editor may paint before the
+    // creation form finishes its readback. Begin local-RPC measurement only
+    // after both the acknowledged action and its settled form are visible.
+    tui.wait_until(|screen| {
+        screen.contains("To do  1")
+            && screen.contains("Write the tests")
+            && screen.contains("A new card")
+            && screen.contains("✓ Add")
+            && !screen.contains("Loading…")
+    });
+    let position = |screen: &str, text: &str| {
+        screen
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| line.find(text).map(|at| (row, line[..at].width())))
+            .unwrap()
+    };
+    let screen = tui.screen.snapshot().unwrap().screen;
+    let (card_row, card_col) = position(&screen, "Write the tests");
+    let (lane_row, lane_col) = position(&screen, "Doing  0");
+    let stats = runtime.block_on(remote(&client, "activity-stats", Value::Null));
+    let preview = format!(
+        "\x1b[<0;{};{}M\x1b[<32;{};{}M",
+        card_col + 1,
+        card_row + 1,
+        lane_col + 1,
+        lane_row + 1
+    );
+    tui.send(preview.as_bytes());
+    tui.wait_until(|screen| position(screen, "Write the tests").1 >= lane_col);
+    assert_eq!(
+        runtime.block_on(remote(&client, "activity-stats", Value::Null)),
+        stats,
+        "card preview makes no Host read or write"
+    );
+    tui.send(b"\x1b");
+    tui.wait_until(|screen| position(screen, "Write the tests").1 < lane_col);
+    assert_eq!(
+        runtime.block_on(remote(&client, "activity-stats", Value::Null)),
+        stats
+    );
+    tui.send(preview.as_bytes());
+    tui.send(format!("\x1b[<0;{};{}m", lane_col + 1, lane_row + 1).as_bytes());
     tui.wait_until(|screen| screen.contains("To do  0") && screen.contains("Doing  1"));
+    let moved = runtime.block_on(remote(&client, "cards", Value::Null));
+    assert_eq!(moved[0]["column"], "doing");
+    assert_eq!(
+        runtime.block_on(remote(&client, "activity-stats", Value::Null))["viewWrites"].as_u64(),
+        stats["viewWrites"].as_u64().map(|writes| writes + 1)
+    );
+    // Receipt completion must reach disk without a later input or clean quit.
+    let checkpoint = directory
+        .path()
+        .join("tui-state")
+        .join(&client.identity.root_id)
+        .join("default/state.json");
+    tui.wait_until(|_| {
+        let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+        assert_eq!(saved["root"], client.identity.root_id);
+        assert_eq!(saved["version"], 23);
+        !saved["apps"].as_array().unwrap().iter().any(|page| {
+            page["key"]["package"] == "example.board"
+                && page["key"]["method"] == "board"
+                && page["key"]["within"].is_null()
+                && page["key"]["route"].is_null()
+                && page["pending"]["input"]["kind"] == "submit"
+        })
+    });
+    assert_eq!(
+        runtime.block_on(remote(&client, "activity-stats", Value::Null))["viewWrites"].as_u64(),
+        stats["viewWrites"].as_u64().map(|writes| writes + 1),
+        "persisting the receipt must not repeat the mutation"
+    );
+    click_card(&mut tui, "Write the tests");
+    tui.wait_for("Save");
+    tui.click_page_text("Note");
+    tui.send(b"\x1b[200~Saved from detail\x1b[201~");
+    tui.click_page_text("Save");
+    tui.wait_until(|screen| screen.matches("Saved from detail").count() >= 2);
+    let saved = runtime.block_on(remote(&client, "cards", Value::Null));
+    assert_eq!(saved[0]["note"], "Saved from detail");
+    assert!(
+        tui.screen.snapshot().unwrap().screen.contains("A new card"),
+        "saving a detail must not edit the independent creation form"
+    );
+    click_card(&mut tui, "Write the tests");
+    tui.send(b" \x1b[C\r");
+    tui.wait_for("Done  1");
+    assert_eq!(
+        runtime.block_on(remote(&client, "cards", Value::Null))[0]["column"],
+        "done"
+    );
+    // Parent readback must also restore the selected clean detail's observation.
+    // Do not refresh or reselect it: its own displayed lane proves current data.
+    tui.wait_until(|screen| detail_has_lane(screen, "Done") && !screen.contains("Loading…"));
+    tui.click_page_text("Note");
+    tui.send(b"\x01\x1b[200~Fresh detail note\x1b[201~");
+    tui.click_last_text("Save");
+    tui.wait_until(|screen| {
+        screen.matches("Fresh detail note").count() >= 2 && !screen.contains("Loading…")
+    });
+    assert_eq!(
+        runtime.block_on(remote(&client, "cards", Value::Null))[0]["note"],
+        "Fresh detail note"
+    );
+    click_card(&mut tui, "Write the tests");
+    tui.send(b" \x1b[D\r");
+    tui.wait_for("Doing  1");
 
     // Another writer adds a card; the open board redraws without a keystroke.
     let count = runtime.block_on(remote(&client, "add", json!("From elsewhere")));
@@ -177,6 +249,8 @@ fn a_javascript_plugin_installed_at_runtime_brings_its_own_app_into_the_running_
             && screen.contains("Doing  1")
             && !screen.contains("This app is no longer available.")
     });
+    // A clean child must resume its actual form after the hidden reactivation.
+    tui.wait_for("A new card");
     // The replacement activation has its own stream and the durable board.
     assert_eq!(
         runtime.block_on(remote(&client, "add", json!("After restart"))),
@@ -207,6 +281,39 @@ fn a_javascript_plugin_installed_at_runtime_brings_its_own_app_into_the_running_
         ]
     );
     client.disconnect();
+}
+
+/// A lane heading in the detail uses the same column as its Title field. The
+/// collection's lane counts are elsewhere and cannot satisfy this readback check.
+fn detail_has_lane(screen: &str, lane: &str) -> bool {
+    let Some(column) = screen
+        .lines()
+        .find_map(|line| line.find("Title").map(|byte| line[..byte].width()))
+    else {
+        return false;
+    };
+    screen.lines().any(|line| {
+        line.char_indices()
+            .find(|(byte, _)| line[..*byte].width() == column)
+            .is_some_and(|(byte, _)| line[byte..].trim() == lane)
+    })
+}
+
+/// The selected detail repeats a card's title above the collection row. Hit the
+/// collection's leftmost occurrence, never the noninteractive detail heading.
+fn click_card(tui: &mut Pty, title: &str) {
+    let snapshot = tui.screen.snapshot().unwrap();
+    let (row, col) = snapshot
+        .screen
+        .lines()
+        .enumerate()
+        .flat_map(|(row, line)| {
+            line.match_indices(title)
+                .map(move |(byte, _)| (row, line[..byte].width()))
+        })
+        .min_by_key(|(_, col)| *col)
+        .unwrap_or_else(|| panic!("No collection card {title:?}\n{}", snapshot.screen));
+    tui.click_at(row, col);
 }
 
 async fn toggle(client: &maka_client::Client, disabled: bool) {

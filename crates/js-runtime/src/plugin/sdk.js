@@ -953,7 +953,7 @@
         if (!Array.isArray(resources)) throw new TypeError('Invalid terminal app resources');
         return register(
           'terminal_app',
-          { ...options, name, entry, resources, terminalView: { ...descriptor, version: 7 } },
+          { ...options, name, entry, resources, terminalView: { ...descriptor, version: 8 } },
           (input, caller) =>
             remoteResult(() => {
               const locale = input?.locale ?? 'en';

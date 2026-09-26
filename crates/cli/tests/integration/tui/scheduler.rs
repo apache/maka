@@ -110,7 +110,12 @@ fn scheduler_form_edits_multiline_and_fences_stale_writes_without_running_a_mode
     let paused = runtime.block_on(remote(&client, "request", query()));
     assert_eq!(paused["task"]["status"], "paused");
     tui.click_text("Resume");
-    tui.wait_for("Pause");
+    tui.wait_until(|screen| {
+        screen.contains("Active  ")
+            && screen.split_whitespace().any(|word| word == "Pause")
+            && !screen.contains("Resume")
+            && !screen.contains("Loading…")
+    });
     tui.click_text("Interval");
     tui.wait_for("Every (seconds)");
     tui.click_text("Every (seconds)");

@@ -35,6 +35,10 @@ pub enum Intent {
     Navigate(Value),
     /// Submit a declared action with its fields.
     Submit(String),
+    /// A local selection changed; mount only its selected detail.
+    Select(String),
+    /// Take the collection's one-shot typed movement and submit its binding.
+    Move(String),
     Toggle(String),
     Pick(String, String),
     /// Return in a one-line text field: the field's default action.
@@ -56,9 +60,24 @@ pub(crate) struct Well {
     pub secret: bool,
 }
 
+/// Derived from the active native tree, including contributors without fields.
+#[derive(Default)]
+pub(crate) struct Parts {
+    pub wells: Vec<Well>,
+    pub scopes: Vec<super::reading::Scope>,
+}
+
+impl Parts {
+    pub fn extend(&mut self, other: Self) {
+        self.wells.extend(other.wells);
+        self.scopes.extend(other.scopes);
+    }
+}
+
 pub(crate) struct Env<'a, M> {
     pub readers: &'a super::transcript::Readers,
     pub splits: &'a ui::Splits,
+    pub collections: &'a ui::Collections,
     pub resources_live: bool,
     pub i18n: &'a crate::i18n::I18n,
     pub key: &'a super::Key,
@@ -74,11 +93,11 @@ pub(crate) struct Env<'a, M> {
     pub slots: &'a Slots<'a, M>,
 }
 
-pub(crate) type Slots<'a, M> = dyn Fn(&str, &str, &str, u16) -> (Vec<Node<M>>, Vec<Well>) + 'a;
+pub(crate) type Slots<'a, M> = dyn Fn(&str, &str, &str, u16) -> (Vec<Node<M>>, Parts) + 'a;
 
 /// Fills no slot, for places a view shows only in part.
-pub(crate) fn unfilled<M>(_: &str, _: &str, _: &str, _: u16) -> (Vec<Node<M>>, Vec<Well>) {
-    (vec![], vec![])
+pub(crate) fn unfilled<M>(_: &str, _: &str, _: &str, _: u16) -> (Vec<Node<M>>, Parts) {
+    (vec![], Parts::default())
 }
 
 /// Below this width a split stacks its panes.
@@ -87,13 +106,13 @@ const SPLIT: u16 = 72;
 pub(crate) const AREA_ROWS: u16 = 3;
 
 /// The view's root under `parent` (the kernel path of its container).
-pub(crate) fn build<M>(
+pub(crate) fn build<M: Clone>(
     view: &View,
     env: &Env<'_, M>,
     parent: &str,
     width: u16,
     wrap: &dyn Fn(Intent) -> M,
-) -> (Node<M>, Vec<Well>) {
+) -> (Node<M>, Parts) {
     let widest = inputs(&view.root)
         .into_iter()
         .map(|label| label.width())
@@ -104,11 +123,11 @@ pub(crate) fn build<M>(
         wrap,
         wire: vec![],
         label_width: widest.map_or(0, |widest| (widest as u16 + 2).min(width * 2 / 5)),
-        wells: vec![],
+        parts: Parts::default(),
     };
     let path = format!("{parent}/{}", view.root.key());
     let node = builder.node(&view.root, path, width, Axis::Column);
-    (node, builder.wells)
+    (node, builder.parts)
 }
 
 /// The label an Input gives a field, for review screens.
@@ -178,21 +197,104 @@ pub(crate) fn blank(view: &View) -> bool {
 
 /// Every slot a view declares: its path in the view, name and context.
 pub(crate) fn slots(view: &View) -> Vec<(String, String, Value)> {
-    fn walk(node: &wire::Node, path: String, out: &mut Vec<(String, String, Value)>) {
-        let path = if path.is_empty() {
-            node.key().to_owned()
+    collect_slots(view, None)
+}
+
+pub(crate) fn active_slots(
+    view: &View,
+    collections: &ui::Collections,
+) -> Vec<(String, String, Value)> {
+    collect_slots(view, Some(collections))
+}
+
+pub(crate) fn collection_paths(view: &View) -> Vec<String> {
+    fn walk(node: &wire::Node, path: String, paths: &mut Vec<String>) {
+        if let wire::Node::Collection { items, .. } = node {
+            paths.push(path.clone());
+            for item in items {
+                if let Some(panel) = &item.panel {
+                    walk(panel, format!("{path}/{}/{}", item.key, panel.key()), paths);
+                }
+            }
         } else {
-            format!("{path}/{}", node.key())
-        };
+            for child in node.children() {
+                walk(child, format!("{path}/{}", child.key()), paths);
+            }
+        }
+    }
+    let mut paths = vec![];
+    walk(&view.root, view.root.key().into(), &mut paths);
+    paths
+}
+
+pub(super) fn collection(
+    collections: &ui::Collections,
+    path: &str,
+    node: &wire::Node,
+) -> ui::collection::Collection {
+    let wire::Node::Collection {
+        groups,
+        items,
+        initial,
+        ..
+    } = node
+    else {
+        unreachable!()
+    };
+    let state = collections.get(path);
+    state.model(
+        groups.iter().map(|group| group.key.clone()).collect(),
+        items
+            .iter()
+            .map(|item| ui::collection::Entry {
+                key: item.key.clone(),
+                group: item.group.clone(),
+                title: item.title.clone(),
+                summary: item.summary.clone(),
+            })
+            .collect(),
+        initial.as_deref(),
+    );
+    state
+}
+
+fn collect_slots(
+    view: &View,
+    collections: Option<&ui::Collections>,
+) -> Vec<(String, String, Value)> {
+    fn walk(
+        node: &wire::Node,
+        path: String,
+        collections: Option<&ui::Collections>,
+        out: &mut Vec<(String, String, Value)>,
+    ) {
         if let wire::Node::Slot { name, context, .. } = node {
             out.push((path.clone(), name.clone(), context.clone()));
         }
-        for child in node.children() {
-            walk(child, path.clone(), out);
+        if let wire::Node::Collection { items, .. } = node {
+            let selected =
+                collections.and_then(|collections| collection(collections, &path, node).selected());
+            for item in items {
+                if collections.is_some() && selected.as_ref() != Some(&item.key) {
+                    continue;
+                }
+                if let Some(panel) = &item.panel {
+                    walk(
+                        panel,
+                        format!("{path}/{}/{}", item.key, panel.key()),
+                        collections,
+                        out,
+                    );
+                }
+            }
+        } else {
+            for child in node.children() {
+                walk(child, format!("{path}/{}", child.key()), collections, out);
+            }
         }
     }
     let mut out = vec![];
-    walk(&view.root, String::new(), &mut out);
+    walk(&view.root, view.root.key().into(), collections, &mut out);
     out
 }
 
@@ -236,10 +338,10 @@ struct Builder<'a, M> {
     /// Keys from the root to the node being built: its path in the view.
     wire: Vec<String>,
     label_width: u16,
-    wells: Vec<Well>,
+    parts: Parts,
 }
 
-impl<M> Builder<'_, M> {
+impl<M: Clone> Builder<'_, M> {
     fn offer(&self, intent: Intent) -> (M, bool) {
         let enabled = (self.env.offered)(&intent);
         ((self.wrap)(intent), enabled)
@@ -255,8 +357,8 @@ impl<M> Builder<'_, M> {
     fn place(&mut self, node: &wire::Node, path: String, width: u16, parent: Axis) -> Node<M> {
         let key = node.key().to_owned();
         match node {
+            wire::Node::Collection { .. } => self.collection(node, path, width),
             wire::Node::Column { gap, children, .. } => {
-                let expands = has_transcript(node);
                 // Item-only collections are lists. Decorative headings may
                 // sit among them; inputs and actions keep separate Tab stops.
                 let list = children
@@ -281,7 +383,11 @@ impl<M> Builder<'_, M> {
                     })
                     .collect();
                 let node = Node::column(key, children).gap(u16::from(*gap));
-                let node = if expands { node.size(Size::Fill) } else { node };
+                let node = if node.has_transcript() {
+                    node.size(Size::Fill)
+                } else {
+                    node
+                };
                 if list { node.focus_group() } else { node }
             }
             wire::Node::Boundary {
@@ -292,7 +398,6 @@ impl<M> Builder<'_, M> {
                 activity,
                 ..
             } => {
-                let expands = has_transcript(node);
                 let child = self.node(
                     body,
                     format!("{path}/{}", body.key()),
@@ -317,7 +422,7 @@ impl<M> Builder<'_, M> {
                         Axis::Row,
                     ));
                 }
-                if expands {
+                if boundary.has_transcript() {
                     boundary.size(Size::Fill)
                 } else {
                     boundary
@@ -328,8 +433,8 @@ impl<M> Builder<'_, M> {
             wire::Node::Rule { .. } => Node::rule(key),
             wire::Node::Scroll { rows, child, .. } => {
                 let inner = format!("{path}/{}", child.key());
-                let focusable = !interactive(child);
                 let child = self.node(child, inner, width.saturating_sub(1), Axis::Column);
+                let focusable = !child.interactive();
                 let node = Node::scroll(key, child).size(Size::Upto(*rows));
                 // A region of reading takes focus itself so the keyboard
                 // can scroll it; one with controls scrolls to its focus.
@@ -440,9 +545,14 @@ impl<M> Builder<'_, M> {
             }
             // An unfilled slot takes no room.
             wire::Node::Slot { name, .. } => {
-                let (fillers, wells) = (self.env.slots)(name, &self.wire.join("/"), &path, width);
-                self.wells.extend(wells);
-                Node::column(key, fillers).gap(1)
+                let (fillers, parts) = (self.env.slots)(name, &self.wire.join("/"), &path, width);
+                self.parts.extend(parts);
+                let node = Node::column(key, fillers).gap(1);
+                if node.has_transcript() {
+                    node.size(Size::Fill)
+                } else {
+                    node
+                }
             }
         }
     }
@@ -481,6 +591,7 @@ impl<M> Builder<'_, M> {
             .iter()
             .map(ui::natural_width)
             .fold(gaps, u16::saturating_add);
+        let expands = nodes.iter().any(Node::has_transcript);
         let fill = stretch || natural > width;
         let nodes = nodes
             .into_iter()
@@ -494,11 +605,107 @@ impl<M> Builder<'_, M> {
             })
             .collect();
         let node = Node::row(key, nodes).gap(gap);
-        if children.iter().any(has_transcript) {
-            node.size(Size::Fill)
+        if expands { node.size(Size::Fill) } else { node }
+    }
+
+    fn collection(&mut self, node: &wire::Node, path: String, width: u16) -> Node<M> {
+        let wire::Node::Collection {
+            key,
+            groups,
+            items,
+            filter,
+            ratio,
+            movement,
+            ..
+        } = node
+        else {
+            unreachable!()
+        };
+        let wire_path = self.wire.join("/");
+        let state = collection(self.env.collections, &wire_path, node);
+        let selected = state.selected();
+        let panel = selected
+            .as_ref()
+            .and_then(|id| items.iter().find(|item| &item.key == id))
+            .filter(|item| item.panel.is_some());
+        let ratio = self.env.splits.ratio(&format!("{path}/divider"), *ratio);
+        let wide = width >= SPLIT && panel.is_some();
+        let leading = if wide {
+            width.saturating_sub(3) * u16::from(ratio) / 100
         } else {
-            node
+            width
+        };
+        let content = panel.map(|item| {
+            let panel = item.panel.as_deref().unwrap();
+            self.wire.push(item.key.clone());
+            let content = self.node(
+                panel,
+                format!("{path}/trailing/{}/{}", item.key, panel.key()),
+                if wide {
+                    width.saturating_sub(3 + leading)
+                } else {
+                    width
+                },
+                Axis::Column,
+            );
+            self.wire.pop();
+            Node::column(item.key.clone(), vec![content])
+        });
+        let expands = content.as_ref().is_some_and(Node::has_transcript);
+        let select = (self.wrap)(Intent::Select(wire_path.clone()));
+        let commit = movement
+            .as_ref()
+            .filter(|binding| (self.env.offered)(&Intent::Submit(binding.action.clone())))
+            .map(|_| (self.wrap)(Intent::Move(wire_path)));
+        let labels: Vec<_> = groups
+            .iter()
+            .map(|group| (group.key.clone(), group.label.clone()))
+            .collect();
+        let list = state.node(
+            "list",
+            &labels,
+            filter
+                .as_ref()
+                .map(|filter| (filter.label.as_str(), filter.placeholder.as_str())),
+            select,
+            commit,
+            leading.saturating_sub(u16::from(expands)),
+        );
+        // Keep the card/filter paths stable when a selected reader needs its
+        // own viewport. The list scrolls independently in either orientation.
+        let list = if expands {
+            Node::scroll("leading", list)
+        } else {
+            Node::column("leading", vec![list])
+        };
+        let mut children = vec![list.size(if wide {
+            Size::Fixed(leading)
+        } else if expands {
+            Size::Fill
+        } else {
+            Size::Content
+        })];
+        if let Some(content) = content {
+            let content = if expands {
+                content.size(Size::Fill)
+            } else {
+                content
+            };
+            children.push(Node::rule("divider").on(On::Resize { ratio }).enabled(wide));
+            children.push(
+                Node::column("trailing", vec![content]).size(if wide || expands {
+                    Size::Fill
+                } else {
+                    Size::Content
+                }),
+            );
         }
+        let node = if wide {
+            Node::row(key.clone(), children).gap(1)
+        } else {
+            Node::column(key.clone(), children).gap(1)
+        };
+        if expands { node.size(Size::Fill) } else { node }
     }
 
     fn split(
@@ -510,7 +717,6 @@ impl<M> Builder<'_, M> {
         right: &wire::Node,
         width: u16,
     ) -> Node<M> {
-        let expands = has_transcript(left) || has_transcript(right);
         let ratio = self.env.splits.ratio(&format!("{path}/divider"), ratio);
         // Both layouts keep the same paths, so focus survives a resize
         // across the breakpoint.
@@ -518,44 +724,51 @@ impl<M> Builder<'_, M> {
             format!("{path}/leading/{}", left.key()),
             format!("{path}/trailing/{}", right.key()),
         );
-        if width < SPLIT {
-            let left = self.node(left, left_path, width, Axis::Column);
-            let right = self.node(right, right_path, width, Axis::Column);
-            let node = Node::column(
-                key,
-                vec![
-                    Node::column("leading", vec![left]).size(if expands {
-                        Size::Fill
-                    } else {
-                        Size::Content
-                    }),
-                    Node::rule("divider")
-                        .on(On::Resize { ratio })
-                        .enabled(false),
-                    Node::column("trailing", vec![right]).size(if expands {
-                        Size::Fill
-                    } else {
-                        Size::Content
-                    }),
-                ],
-            )
-            .gap(1);
-            return if expands { node.size(Size::Fill) } else { node };
-        }
-        let leading = width.saturating_sub(3) * u16::from(ratio) / 100;
-        let trailing = width.saturating_sub(3 + leading);
+        let wide = width >= SPLIT;
+        let leading = if wide {
+            width.saturating_sub(3) * u16::from(ratio) / 100
+        } else {
+            width
+        };
+        let trailing = if wide {
+            width.saturating_sub(3 + leading)
+        } else {
+            width
+        };
         let left = self.node(left, left_path, leading, Axis::Column);
         let right = self.node(right, right_path, trailing, Axis::Column);
-        let node = Node::row(
-            key,
-            vec![
-                Node::column("leading", vec![left]).size(Size::Fixed(leading)),
-                Node::rule("divider")
-                    .on(On::Resize { ratio })
-                    .hint(self.env.i18n.text("extensions-split-hint")),
-                Node::column("trailing", vec![right]).size(Size::Fill),
-            ],
-        )
+        let expands = left.has_transcript() || right.has_transcript();
+        let pane = |key: &'static str, child: Node<M>| {
+            if expands
+                && !child.has_transcript()
+                && !matches!(child.size, Size::Fixed(_) | Size::Upto(_))
+            {
+                // The reader owns the shared viewport height. Its ordinary
+                // peer must scroll independently, retaining its existing path.
+                Node::scroll(key, child)
+            } else {
+                Node::column(key, vec![child]).size(if expands {
+                    Size::Fill
+                } else {
+                    Size::Content
+                })
+            }
+        };
+        let left = pane("leading", left);
+        let right = pane("trailing", right);
+        let divider = Node::rule("divider").on(On::Resize { ratio }).enabled(wide);
+        let node = if wide {
+            Node::row(
+                key,
+                vec![
+                    left.size(Size::Fixed(leading)),
+                    divider.hint(self.env.i18n.text("extensions-split-hint")),
+                    right.size(Size::Fill),
+                ],
+            )
+        } else {
+            Node::column(key, vec![left, divider, right])
+        }
         .gap(1);
         if expands { node.size(Size::Fill) } else { node }
     }
@@ -671,7 +884,7 @@ impl<M> Builder<'_, M> {
                 secret,
                 ..
             } => {
-                self.wells.push(Well {
+                self.parts.wells.push(Well {
                     key: self.env.key.clone(),
                     field: field.to_owned(),
                     path,
@@ -729,11 +942,6 @@ impl<M> Builder<'_, M> {
     }
 }
 
-/// Whether a node takes whatever width it is given rather than its content's.
-pub(super) fn has_transcript(node: &wire::Node) -> bool {
-    matches!(node, wire::Node::Transcript { .. }) || node.children().into_iter().any(has_transcript)
-}
-
 fn stretchy(node: &wire::Node) -> bool {
     matches!(
         node,
@@ -747,17 +955,6 @@ fn stretchy(node: &wire::Node) -> bool {
             | wire::Node::Code { .. }
             | wire::Node::Item { .. }
     ) || node.children().into_iter().any(stretchy)
-}
-
-fn interactive(node: &wire::Node) -> bool {
-    matches!(
-        node,
-        wire::Node::Item { .. }
-            | wire::Node::Button { .. }
-            | wire::Node::Input { .. }
-            | wire::Node::Transcript { .. }
-            | wire::Node::Tabs { .. }
-    ) || node.children().into_iter().any(interactive)
 }
 
 fn tone(tone: wire::Tone) -> Tone {

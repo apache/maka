@@ -33,7 +33,7 @@ test('private backend registration rejects inline handlers and captures exact me
     for (const kind of ['method', 'stream']) {
       await assert.rejects(
         remote[kind](`legacy-${kind}`, () => null, {
-          terminalView: { ...descriptor, version: 7 },
+          terminalView: { ...descriptor, version: 8 },
         }),
         /terminalView; use tui\.app/,
       );
@@ -57,7 +57,7 @@ test('private backend registration rejects inline handlers and captures exact me
   const definition = f.registrations.find(({ name }) => name === 'app');
   assert.equal(definition.kind, 'terminal_app');
   assert.equal(definition.entry, 'app-ui.mjs');
-  assert.equal(definition.terminalView.version, 7);
+  assert.equal(definition.terminalView.version, 8);
   assert.equal(definition.access, 'host_paths');
   assert.deepEqual(plain(definition.resources), [plain(f.store.resource)]);
   assert.equal(f.registrations.filter(({ name }) => name === 'app').length, 1);
@@ -107,7 +107,7 @@ test('one factory supplies only shared pure builders and invocation-scoped backe
   );
   assert.equal(factories, 0);
   const caller = { document: 'original' };
-  assert.equal((await p.invoke(read, caller)).view.version, 7);
+  assert.equal((await p.invoke(read, caller)).view.version, 8);
   assert.deepEqual(received[0], { input: read, caller });
   assert.throws(() => retained.backend(), /retired/);
   assert.equal(retained.signal.aborted, true);
@@ -188,4 +188,42 @@ test('the Module cancel hook addresses the exact invocation signal', async () =>
   await assert.rejects(pending, /cancelled/);
   assert.equal((await p.invoke(read)).kind, 'view');
   assert.equal(calls, 1);
+});
+
+test('updated is an in-place backend receipt and preserves one presenter factory', async () => {
+  let factories = 0;
+  const p = presenter(
+    ({ tui }) => {
+      factories++;
+      let accepted = 0;
+      return {
+        read: () => ({
+          title: 'Stateful',
+          revision: String(accepted),
+          root: tui.text('status', String(accepted)),
+        }),
+        async submit(_input, cx) {
+          const receipt = await cx.backend();
+          if (receipt.kind === 'updated') accepted++;
+          return receipt;
+        },
+      };
+    },
+    () => ({ kind: 'updated' }),
+  );
+  assert.equal((await p.invoke(read)).view.revision, '0');
+  assert.deepEqual(
+    await p.invoke({
+      kind: 'submit',
+      route: read.route,
+      revision: '0',
+      action: 'start',
+      fields: {},
+      grant: null,
+      locale: 'en',
+    }),
+    { kind: 'updated' },
+  );
+  assert.equal((await p.invoke(read)).view.revision, '1');
+  assert.equal(factories, 1);
 });

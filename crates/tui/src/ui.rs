@@ -21,6 +21,7 @@
 //! frame; the kernel owns layout, hit testing, hover, keyboard focus, scroll
 //! and popovers, so pages neither draw cells nor route raw input themselves.
 mod boundary;
+pub mod collection;
 mod layout;
 mod node;
 mod sheet;
@@ -28,6 +29,7 @@ mod surface;
 pub mod transcript;
 
 pub use boundary::{Activity, Emphasis};
+pub use collection::Collections;
 /// A node's width at its natural size, before any sharing.
 pub(crate) use layout::width as natural_width;
 pub use node::{Align, Choice, Node, On, Role, Size, Tone};

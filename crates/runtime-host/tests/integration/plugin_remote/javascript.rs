@@ -311,7 +311,7 @@ async fn scenario(vm: &str) {
     )
     .await;
     assert_eq!(view["value"]["kind"], "view");
-    assert_eq!(view["value"]["view"]["version"], 7);
+    assert_eq!(view["value"]["view"]["version"], 8);
     assert_eq!(
         view["value"]["view"]["root"]["spans"][0]["text"],
         "from view"

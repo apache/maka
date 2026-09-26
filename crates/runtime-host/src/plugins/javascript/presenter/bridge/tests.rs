@@ -29,6 +29,7 @@ impl Method for BackendCalls {
             Ok(match input["kind"].as_str() {
                 Some("read") if input["route"] == "large" => json!("x".repeat(64 * 1024)),
                 Some("read") => json!({"original":input}),
+                _ if input["route"] == "updated" => json!({"kind":"updated"}),
                 _ => json!({"kind":"applied","route":input["route"]}),
             })
         })
@@ -124,6 +125,38 @@ async fn backend_read_model_is_bounded_and_cancelled_tickets_never_dispatch() {
     cx.cancellation.cancel();
     assert!(backend(&bridge, &next.id).await.is_err());
     assert_eq!(calls.0.lock().unwrap().len(), 1);
+    bridge.cancel();
+    bridge.drained().await.unwrap();
+}
+
+#[tokio::test]
+async fn updated_receipts_are_authoritative_for_submit_only() {
+    let calls = Arc::new(BackendCalls(Mutex::default()));
+    let bridge = Arc::new(PageBridge::new(calls));
+    let input = json!({"kind":"submit","route":"updated","revision":"r1","action":"start","fields":{},"locale":"en"});
+    let guard = bridge.enter(&input, caller(uuid::Uuid::new_v4())).unwrap();
+    assert!(
+        guard.resolve(Ok(json!({"kind":"updated"}))).is_err(),
+        "UI cannot fabricate a receipt"
+    );
+    assert_eq!(
+        backend(&bridge, &guard.id).await.unwrap(),
+        json!({"kind":"updated"})
+    );
+    assert_eq!(
+        guard.resolve(Err(Error::Cancelled)).unwrap(),
+        json!({"kind":"updated"})
+    );
+    for kind in ["read", "recover"] {
+        let input = json!({"kind":kind,"route":"updated","locale":"en"});
+        let guard = bridge.enter(&input, caller(uuid::Uuid::new_v4())).unwrap();
+        if kind == "read" {
+            assert!(guard.resolve(Ok(json!({"kind":"updated"}))).is_err());
+        } else {
+            assert!(backend(&bridge, &guard.id).await.is_err());
+            assert!(guard.outcome().is_none());
+        }
+    }
     bridge.cancel();
     bridge.drained().await.unwrap();
 }

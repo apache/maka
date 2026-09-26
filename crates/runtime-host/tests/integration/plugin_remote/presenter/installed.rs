@@ -179,3 +179,79 @@ async fn installed_presenter_preserves_backend_receipts_and_private_read_authori
         scene.close().await;
     }).await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn installed_updated_receipt_keeps_document_state_and_survives_ui_retirement() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut scene = Scene::new().await;
+        let (binding, target) = bind(&mut scene.peer, "page").await;
+        let doc = document(&mut scene.peer).await;
+        let before = model(
+            rpc(
+                &mut scene.peer,
+                call(&binding, &target, &doc, read(Value::Null)),
+            )
+            .await,
+        );
+        assert_eq!(before["reads"], 1);
+        assert_eq!(before["updates"], 0);
+        let input = submit("in-place", "updated");
+        assert_eq!(
+            rpc(&mut scene.peer, call(&binding, &target, &doc, input)).await["value"],
+            json!({"kind":"updated"})
+        );
+        let after = model(
+            rpc(
+                &mut scene.peer,
+                call(&binding, &target, &doc, read(Value::Null)),
+            )
+            .await,
+        );
+        assert_eq!(after["reads"], 2);
+        assert_eq!(after["updates"], 1);
+        assert_eq!(after["factories"], 1);
+        let sibling = document(&mut scene.peer).await;
+        let independent = model(
+            rpc(
+                &mut scene.peer,
+                call(&binding, &target, &sibling, read(Value::Null)),
+            )
+            .await,
+        );
+        assert_eq!(independent["updates"], 0);
+        let input = submit("in-place-fault", "updated-after-loop");
+        assert_eq!(
+            rpc(&mut scene.peer, call(&binding, &target, &doc, input)).await["value"],
+            json!({"kind":"updated"})
+        );
+        assert_eq!(
+            scene
+                .peer
+                .rpc(
+                    "plugin.remote",
+                    call(&binding, &target, &doc, read(Value::Null))
+                )
+                .await["ok"],
+            false
+        );
+        rpc(
+            &mut scene.peer,
+            json!({"kind":"close_document","document":doc}),
+        )
+        .await;
+        // A new page cannot claim the retired page's transient operation was restored.
+        let recovery = json!({"kind":"recover","route":{"operation":"in-place"},"locale":"en"});
+        assert_eq!(
+            rpc(&mut scene.peer, call(&binding, &target, &sibling, recovery)).await["value"],
+            json!({"kind":"unrecorded"})
+        );
+        rpc(
+            &mut scene.peer,
+            json!({"kind":"close_document","document":sibling}),
+        )
+        .await;
+        scene.close().await;
+    })
+    .await
+    .unwrap();
+}

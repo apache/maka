@@ -77,7 +77,7 @@ impl App {
                 waiting.push(host);
                 continue;
             };
-            let slots = super::tree::slots(view);
+            let slots = super::tree::active_slots(view, &self.apps.instances[&host].collections);
             for (wire, name, _) in slots {
                 for (key, _) in self.apps.filling(&host, &name, &wire) {
                     let selected = location.mount(key);
@@ -87,8 +87,23 @@ impl App {
                 }
             }
         }
+        let retained: Vec<_> = self
+            .apps
+            .instances
+            .iter()
+            .filter(|(_, instance)| instance.keeps())
+            .map(|(key, _)| key)
+            .collect();
         location.embedded.retain(|key| {
-            wanted.contains(key) || waiting.iter().any(|parent| key.descends_from(parent))
+            wanted.contains(key)
+                || waiting.iter().any(|parent| key.descends_from(parent))
+                || key.within.is_some()
+                    && wanted.iter().any(|parent| key.descends_from(parent))
+                    && self.apps.entry(key).is_some()
+                    && self.apps.slot_current(key)
+                    && retained
+                        .iter()
+                        .any(|saved| *saved == key || saved.descends_from(key))
         });
         // Parent-first order also makes a checkpoint independently verifiable.
         location.embedded.sort_by_key(Key::depth);
@@ -124,6 +139,11 @@ impl App {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod inventory;
+#[cfg(test)]
+mod retirement;
 
 #[cfg(test)]
 mod tests {

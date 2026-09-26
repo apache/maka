@@ -33,7 +33,9 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
+mod collection;
 pub(super) mod reader;
+mod reading;
 
 /// Local split preferences, keyed by the same complete paths as focus.
 #[derive(Default)]
@@ -126,6 +128,11 @@ struct Chooser {
     first: usize,
 }
 
+struct FocusStart {
+    prefix: String,
+    reveal: bool,
+}
+
 pub struct Surface<M> {
     focus: Option<String>,
     /// Ordinal of the focus among enabled stops, kept for continuity when
@@ -136,12 +143,15 @@ pub struct Surface<M> {
     hover: Option<String>,
     popover: Option<Popover>,
     offsets: HashMap<String, u16>,
+    /// Native prefix used by this contribution's state, including while parked.
+    reading_prefix: Option<String>,
     /// The scroller whose thumb the pointer is dragging.
     drag: Option<String>,
     splits: Splits,
     split_drag: Option<String>,
+    collection_drag: Option<collection::Drag<M>>,
     /// Where focus lands first, by path prefix, once such a stop exists.
-    start: Option<String>,
+    start: Option<FocusStart>,
     committed: Option<Committed<M>>,
     /// Survives hit-geometry invalidation, so resize can keep a previously
     /// visible focus in view without undoing the reader's manual scrolling.
@@ -157,9 +167,11 @@ impl<M> Default for Surface<M> {
             hover: None,
             popover: None,
             offsets: HashMap::new(),
+            reading_prefix: None,
             drag: None,
             splits: Splits::default(),
             split_drag: None,
+            collection_drag: None,
             start: None,
             committed: None,
             last_layout: None,
@@ -193,11 +205,14 @@ impl<M: Clone> Surface<M> {
         context: Context,
         mut motion: Option<&mut crate::motion::Motion>,
     ) {
+        if self.last_layout.is_some_and(|(before, _)| before != area) {
+            self.cancel_collection();
+        }
         let reveal = context.focused
             && (self
                 .last_layout
                 .is_some_and(|(before, visible)| before != area && visible)
-                || self.focus.is_none() && self.start.is_some());
+                || self.focus.is_none() && self.start.as_ref().is_some_and(|start| start.reveal));
         // A reflow may need one corrective placement after its new geometry
         // is known. Ordinary frames neither copy the tree nor move the viewport.
         let retry = reveal.then(|| tree.clone());
@@ -233,7 +248,7 @@ impl<M: Clone> Surface<M> {
         }) {
             self.split_drag = None;
         }
-        let stops: Vec<_> = items.iter().filter(|item| item.enabled).collect();
+        let stops: Vec<_> = items.iter().filter(|item| item.focusable()).collect();
         match stops
             .iter()
             .position(|item| Some(&item.id) == self.focus.as_ref())
@@ -242,7 +257,10 @@ impl<M: Clone> Surface<M> {
             // A fresh page waits for its content rather than settling on
             // the chrome above it.
             None if self.focus.is_none() && self.start.is_some() => {
-                let start = self.start.as_deref().unwrap_or_default();
+                let start = self
+                    .start
+                    .as_ref()
+                    .map_or("", |start| start.prefix.as_str());
                 if let Some(index) = stops.iter().position(|item| item.id.starts_with(start)) {
                     let index = stops[index]
                         .tab_group
@@ -322,6 +340,23 @@ impl<M: Clone> Surface<M> {
                 continue;
             };
             frame.buffer_mut().set_style(item.rect, style);
+        }
+        for item in &items {
+            if let On::Collection(crate::ui::collection::Control::Query {
+                state,
+                label,
+                placeholder,
+            }) = &item.on
+            {
+                state.paint_query(
+                    frame,
+                    item.rect,
+                    context.focused && self.focus.as_ref() == Some(&item.id),
+                    context.colors,
+                    label,
+                    placeholder,
+                );
+            }
         }
         let popover = self.draw_popover(frame, area, &items, &context);
         self.committed = Some(Committed {
@@ -454,12 +489,18 @@ impl<M: Clone> Surface<M> {
         &self.splits
     }
 
+    pub fn dragging_collection(&self) -> bool {
+        self.collection_drag.is_some()
+    }
+
     pub fn dragging_split(&self) -> bool {
         self.split_drag.is_some()
     }
 
     pub fn captures_event(&self, event: &Event) -> bool {
-        self.captures() || self.dragging_split() && matches!(event, Event::Mouse(_))
+        self.captures()
+            || self.dragging_collection()
+            || self.dragging_split() && matches!(event, Event::Mouse(_))
     }
 
     /// Footer hint of the pointed-at or keyboard-focused control.
@@ -561,13 +602,19 @@ impl<M: Clone> Surface<M> {
     /// Until focus is placed, it lands on the first stop under `prefix`
     /// as soon as one is drawn: a page's content, not its toolbar.
     pub fn start_at(&mut self, prefix: impl Into<String>) {
-        self.start = Some(prefix.into());
+        self.start = Some(FocusStart {
+            prefix: prefix.into(),
+            reveal: true,
+        });
     }
 
     /// Focus moves to the first stop under `prefix` once one is drawn.
     pub fn focus_within(&mut self, prefix: impl Into<String>) {
         self.focus = None;
-        self.start = Some(prefix.into());
+        self.start = Some(FocusStart {
+            prefix: prefix.into(),
+            reveal: true,
+        });
     }
 
     /// Keyboard focus arrives from outside the page (Tab from navigation).
@@ -591,6 +638,9 @@ impl<M: Clone> Surface<M> {
     /// A shell overlay drawn over this surface hides these cells from the
     /// pointer; the keyboard still reaches every item.
     pub fn occlude(&mut self, rect: Rect) {
+        if !rect.is_empty() {
+            self.cancel_collection();
+        }
         if let Some(committed) = &mut self.committed {
             for placed in &mut committed.transcripts {
                 if !placed.area.intersection(rect).is_empty() {
@@ -617,6 +667,7 @@ impl<M: Clone> Surface<M> {
 
     /// Drop presented geometry; nothing is clickable until the next draw.
     pub fn invalidate(&mut self) {
+        self.cancel_collection();
         self.committed = None;
         self.hover = None;
         self.drag = None;
@@ -624,6 +675,9 @@ impl<M: Clone> Surface<M> {
     }
 
     pub fn input(&mut self, event: &Event) -> Outcome<M> {
+        if let Some(outcome) = self.collection_input(event) {
+            return outcome;
+        }
         match event {
             Event::Resize(_, _) => {
                 self.invalidate();
@@ -790,7 +844,7 @@ impl<M: Clone> Surface<M> {
                     // Clicking into a field or a viewer places focus; only
                     // Enter submits.
                     On::Activate(_) if item.slot => Outcome::handled(true),
-                    On::Scroll | On::Transcript => Outcome::handled(true),
+                    On::Scroll | On::Transcript | On::Collection(_) => Outcome::handled(true),
                     On::Activate(message) => Outcome::emit(message.clone()),
                     On::Choose { current, .. } => {
                         self.popover = Some(Popover {
@@ -849,7 +903,11 @@ impl<M: Clone> Surface<M> {
                 On::Choose { choices, .. } => {
                     choices.get(index).map(|choice| choice.action.clone())
                 }
-                On::Activate(_) | On::Scroll | On::Transcript | On::Resize { .. } => None,
+                On::Activate(_)
+                | On::Scroll
+                | On::Transcript
+                | On::Resize { .. }
+                | On::Collection(_) => None,
             });
         match message {
             Some(message) => Outcome::emit(message),
@@ -876,7 +934,7 @@ impl<M: Clone> Surface<M> {
         };
         // Indices into the committed items of every enabled focus stop.
         let stops: Vec<usize> = (0..committed.items.len())
-            .filter(|index| committed.items[*index].enabled)
+            .filter(|index| committed.items[*index].focusable())
             .collect();
         let item = |index: usize| &committed.items[index];
         let current = stops
@@ -999,7 +1057,9 @@ impl<M: Clone> Surface<M> {
                         });
                         Outcome::handled(true)
                     }
-                    On::Scroll | On::Transcript | On::Resize { .. } => Outcome::handled(false),
+                    On::Scroll | On::Transcript | On::Resize { .. } | On::Collection(_) => {
+                        Outcome::handled(false)
+                    }
                 };
             }
             (
@@ -1039,7 +1099,7 @@ impl<M: Clone> Surface<M> {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.enabled)
+            .filter(|(_, item)| item.focusable())
         {
             if let Some(group) = item.tab_group {
                 if let Some(at) = groups.get(&group).copied() {
@@ -1145,7 +1205,11 @@ impl<M: Clone> Surface<M> {
             .and_then(|committed| committed.items.iter().find(|item| item.id == popover.owner))
             .map_or(0, |item| match &item.on {
                 On::Choose { choices, .. } => choices.len(),
-                On::Activate(_) | On::Scroll | On::Transcript | On::Resize { .. } => 0,
+                On::Activate(_)
+                | On::Scroll
+                | On::Transcript
+                | On::Resize { .. }
+                | On::Collection(_) => 0,
             });
         match code {
             KeyCode::Up => {
@@ -1220,7 +1284,7 @@ impl<M: Clone> Surface<M> {
             && let Some(index) = committed
                 .items
                 .iter()
-                .filter(|item| item.enabled)
+                .filter(|item| item.focusable())
                 .position(|item| item.id == id)
         {
             self.focus_index = index;

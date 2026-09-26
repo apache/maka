@@ -21,6 +21,10 @@
 //! can hand work to, each with how it starts, and a check that it answers.
 //! The endpoint requires Host path access, as the management it wraps does.
 
+mod auth;
+mod sign_in;
+mod url;
+
 use super::Management;
 use futures_util::future::BoxFuture;
 use maka_plugins::{
@@ -42,12 +46,26 @@ pub(super) fn publish(
     package: &str,
     staged: &mut Staged,
 ) -> Result<(), String> {
+    let pages = auth::Pages::default();
+    url::publish(pages.clone(), package, staged)?;
+    staged
+        .insert(
+            remote::key(package, "terminal-changes").map_err(|error| error.to_string())?,
+            remote::Endpoint::standalone(remote::Handler::Stream(pages.provider(setup.clone())))
+                .requiring_host_paths(),
+        )
+        .map_err(|error| error.to_string())?;
     let endpoint = app::endpoint(
-        Agents { management, setup },
+        Agents {
+            management,
+            setup,
+            pages,
+        },
         Descriptor::new(
             Text::localized("External agents", "外部代理", "外部代理"),
             Context::Application,
         )
+        .changes("terminal-changes")
         .placement(Placement::Settings)
         .icon("⇆", "X")
         .order(37),
@@ -62,9 +80,11 @@ pub(super) fn publish(
         .map_err(|error| error.to_string())
 }
 
+#[derive(Clone)]
 struct Agents {
     management: Arc<Management>,
     setup: Arc<crate::setup::Provider>,
+    pages: auth::Pages,
 }
 
 #[derive(Deserialize)]
@@ -97,12 +117,12 @@ impl Agents {
     }
     /// Runs a check to its first answer: whether the agent starts and speaks,
     /// and how it can sign in.
-    async fn check(&self, id: &str, caller: Caller) -> Result<String, Error> {
+    async fn check(&self, id: &str, revision: Option<u64>, caller: Caller) -> Result<(), Error> {
         let stream = self
             .setup
             .open(
-                json!({"kind":"check","agentId":id,"operationId":uuid::Uuid::new_v4()}),
-                caller,
+                json!({"kind":"check","agentId":id,"operationId":uuid::Uuid::new_v4(),"expectedRevision":revision}),
+                caller.clone(),
             )
             .await?;
         let answer = tokio::time::timeout(Duration::from_secs(90), async {
@@ -111,7 +131,7 @@ impl Agents {
                     Some(item)
                         if item.get("kind").and_then(Value::as_str) == Some("initialized") =>
                     {
-                        return Ok::<_, Error>(summary(&item));
+                        return Ok::<_, Error>(item);
                     }
                     Some(_) => continue,
                     None => {
@@ -123,7 +143,21 @@ impl Agents {
         .await;
         stream.cancel();
         stream.close().await?;
-        answer.map_err(|_| Error::Provider("The agent did not answer in time".into()))?
+        let item =
+            answer.map_err(|_| Error::Provider("The agent did not answer in time".into()))??;
+        let revision = revision.ok_or_else(|| Error::Invalid("Save the agent first".into()))?;
+        let checked = sign_in::Checked {
+            id: uuid::Uuid::new_v4(),
+            agent: id.to_owned(),
+            revision,
+            methods: sign_in::offered(&item),
+            summary: summary(&item),
+            start: 0,
+        };
+        if !self.pages.remember(&caller, checked) {
+            return Err(Error::Cancelled);
+        }
+        Ok(())
     }
 }
 
@@ -165,33 +199,74 @@ fn stamp(configuration: &Configuration) -> String {
 
 impl App for Agents {
     fn read(&self, route: Value, cx: Cx) -> BoxFuture<'static, Result<View, Error>> {
-        let this = Agents {
-            management: self.management.clone(),
-            setup: self.setup.clone(),
-        };
+        let this = self.clone();
         Box::pin(async move {
             let configuration = this.read(&cx.caller).await?;
             let words = &cx.words;
+            if let Some(attempt) = this.pages.snapshot(&cx.caller)
+                && attempt.active()
+                && route["agent"].as_str() != Some(attempt.agent.as_str())
+            {
+                this.pages.cancel(&cx.caller, attempt.id)?;
+            }
             match route.get("agent") {
                 None => Ok(list(words, &configuration)),
                 Some(id) => {
                     let agent = id
                         .as_str()
                         .and_then(|id| configuration.agents.iter().find(|agent| agent.id == id));
-                    let checked = route.get("checked").and_then(Value::as_str).map(clean);
-                    Ok(editor(words, &configuration, agent, checked.as_deref()))
+                    let checked = this.pages.checked(&cx.caller).filter(|checked| {
+                        route["agent"] == checked.agent
+                            && configuration.revision == Some(checked.revision)
+                    });
+                    let mut view = editor(
+                        words,
+                        &configuration,
+                        agent,
+                        checked.as_ref().map(|checked| checked.summary.as_str()),
+                    );
+                    if !this.pages.connected(&cx.caller) {
+                        for action in &mut view.actions {
+                            if action.id == "check" {
+                                action.enabled = false;
+                                action.label = words.t("Connecting…", "正在连接…", "正在連線…");
+                            }
+                        }
+                    }
+                    sign_in::append(
+                        &mut view,
+                        &route,
+                        &configuration,
+                        checked,
+                        this.pages.snapshot(&cx.caller),
+                        words,
+                    );
+                    Ok(view)
                 }
             }
         })
     }
 
     fn submit(&self, submission: Submission, cx: Cx) -> BoxFuture<'static, Result<Reply, Error>> {
-        let this = Agents {
-            management: self.management.clone(),
-            setup: self.setup.clone(),
-        };
+        let this = self.clone();
         Box::pin(async move {
             let configuration = this.read(&cx.caller).await?;
+            if submission.action.starts_with("cancel-authentication-") {
+                return sign_in::cancel(&this.pages, submission, &cx);
+            }
+            if this
+                .pages
+                .snapshot(&cx.caller)
+                .is_some_and(|attempt| attempt.active())
+            {
+                return Ok(Reply::Rejected {
+                    message: cx.t(
+                        "Cancel the current sign-in first.",
+                        "请先取消当前登录。",
+                        "請先取消目前登入。",
+                    ),
+                });
+            }
             if stamp(&configuration) != submission.revision {
                 return Ok(Reply::Conflict);
             }
@@ -206,6 +281,12 @@ impl App for Agents {
                 }),
                 error => Err(error),
             };
+            if submission.action.starts_with("auth-page-") {
+                return sign_in::page(&this.pages, submission, &cx);
+            }
+            if submission.action.starts_with("authenticate-") {
+                return sign_in::begin(&this.pages, &configuration, submission, &cx);
+            }
             let mut agents = configuration.agents;
             match submission.action.as_str() {
                 "reconcile" => {
@@ -220,10 +301,8 @@ impl App for Agents {
                 }
                 "check" => {
                     let id = original.ok_or_else(|| Error::Invalid("No agent".into()))?;
-                    return match this.check(&id, cx.caller).await {
-                        Ok(checked) => Ok(Reply::Applied {
-                            route: json!({"agent": id, "checked": checked}),
-                        }),
+                    return match this.check(&id, configuration.revision, cx.caller).await {
+                        Ok(()) => Ok(Reply::Updated {}),
                         Err(error) => rejected(error),
                     };
                 }
@@ -402,7 +481,9 @@ fn editor(
         form.push(input(id, id, words.t(en, zh_cn, zh_tw)));
         sent.push(id.into());
     }
-    let mut children = vec![text(
+    let mut children = vec![link(
+        "all-agents", words.t("All agents", "所有代理", "所有代理"), Value::Null,
+    ).into(), text(
         "hint",
         words.t(
             "One argument per line, and NAME=value per line for the environment. Sign-in secrets stay in the agent's own login.",
@@ -468,6 +549,83 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sign_in_view_requires_explicit_selection_and_fences_configuration() {
+        let configuration = Configuration {
+            revision: Some(4),
+            agents: vec![],
+            activation_error: None,
+        };
+        let mut checked = sign_in::Checked {
+            id: uuid::Uuid::new_v4(),
+            agent: "fixture".into(),
+            revision: 4,
+            methods: json!([{"id":"urn:login/browser method","name":"Browser","type":"agent"}]),
+            summary: "fixture 1".into(),
+            start: 0,
+        };
+        let route = json!({"agent":"fixture"});
+        for locale in ["en", "zh-CN", "zh-TW"] {
+            let words = Words::new(locale);
+            let mut view = editor(&words, &configuration, None, Some("fixture 1"));
+            sign_in::append(
+                &mut view,
+                &route,
+                &configuration,
+                Some(checked.clone()),
+                None,
+                &words,
+            );
+            view.validate().unwrap();
+            assert!(
+                view.action(&format!("authenticate-{}", checked.id))
+                    .unwrap()
+                    .recovery
+                    .is_none()
+            );
+            assert!(matches!(&view.field("auth-method").unwrap().control,
+                view::Control::Choice { value, options } if value == "choose" && options[1].value == "method-0"));
+        }
+        // Protocol choice pages are bounded, while all offered methods remain reachable.
+        checked.methods = json!(
+            (0..70)
+                .map(
+                    |index| json!({"id":format!("method {index}"),"name":format!("Method {index}")})
+                )
+                .collect::<Vec<_>>()
+        );
+        for page in [0, 31, 62] {
+            checked.start = page;
+            Reply::Updated {}.validate().unwrap();
+            let words = Words::new("en");
+            let mut view = editor(&words, &configuration, None, None);
+            sign_in::append(
+                &mut view,
+                &route,
+                &configuration,
+                Some(checked.clone()),
+                None,
+                &words,
+            );
+            view.validate().unwrap();
+        }
+        checked.revision = 3;
+        let words = Words::new("en");
+        let mut view = editor(&words, &configuration, None, None);
+        sign_in::append(
+            &mut view,
+            &route,
+            &configuration,
+            Some(checked.clone()),
+            None,
+            &words,
+        );
+        assert!(
+            view.action(&format!("authenticate-{}", checked.id))
+                .is_none()
+        );
+    }
+
+    #[test]
     fn agents_edit_their_launch_and_a_check_reports_who_answered() {
         let words = Words::new("en");
         let configuration = Configuration {
@@ -491,6 +649,12 @@ mod tests {
             Some("Codex 1.0 · ChatGPT"),
         );
         edit.validate().unwrap();
+        let Node::Column { children, .. } = &edit.root else {
+            panic!("agent editor column");
+        };
+        assert!(
+            matches!(children.first(), Some(Node::Item { target: view::Target::Route { route }, .. }) if route.is_null())
+        );
         assert!(edit.action("remove").unwrap().confirm.is_some());
         assert!(serde_json::to_string(&edit).unwrap().contains("LOG=info"));
         editor(&words, &configuration, None, None)

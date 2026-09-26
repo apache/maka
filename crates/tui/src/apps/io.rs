@@ -224,7 +224,7 @@ async fn call_document(
             Reply::Applied { .. } | Reply::Unrecorded | Reply::Conflict | Reply::Rejected { .. }
         ) | (
             Input::Submit { .. },
-            Reply::Applied { .. } | Reply::Conflict | Reply::Rejected { .. }
+            Reply::Updated {} | Reply::Applied { .. } | Reply::Conflict | Reply::Rejected { .. }
         )
     ) || matches!(
         (input, &reply),

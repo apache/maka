@@ -426,6 +426,8 @@ file-copy-path = Copy file path
 chat-copy-failed = Could not send copy request
 chat-copy-too-large = Copy is limited to 64 KiB · Select less text
 chat-copy-empty = Select text or a message to copy
+chat-copy-pending = The selected text is still being prepared. Try copying again shortly.
+chat-copy-unavailable = The text could not be prepared for copying.
 chat-selection-help = Ctrl+C Copy · Esc Clear selection
 
 session-rename = Rename session

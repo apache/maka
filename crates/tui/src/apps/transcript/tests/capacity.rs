@@ -89,9 +89,25 @@ fn more_than_thirty_two_readers_have_distinct_exact_tokens_and_content() {
                 content(index)
             );
         }
-        let screen = draw(&mut app, 140, 512);
+        let mut screen = draw(&mut app, 140, 512);
+        instance_mut(&mut app)
+            .surface
+            .move_focus(format!("app/body/frame/content/{}", path(0)));
         for index in 0..count {
+            let target = format!("app/body/frame/content/{}", path(index));
+            assert_eq!(
+                instance_mut(&mut app).surface.focused(),
+                Some(target.as_str())
+            );
+            // Reader admission is independent of viewport capacity. Tab must
+            // reveal every reader when their intrinsic heights need scrolling.
+            if !screen.contains(&content(index)) {
+                screen = draw(&mut app, 140, 512);
+            }
             assert!(screen.contains(&content(index)), "reader {index}: {screen}");
+            if index + 1 < count {
+                app.input(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+            }
         }
         assert_eq!(
             app.apps_transcript_mounts(),

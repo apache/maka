@@ -25,6 +25,7 @@
 //! consent and recovery from a write whose outcome is unknown.
 
 mod admission;
+mod collection;
 mod consent;
 mod drafts;
 mod instance;
@@ -33,6 +34,9 @@ mod key;
 mod mount;
 pub(crate) mod page;
 pub(crate) mod panels;
+mod reading;
+#[cfg(test)]
+mod reading_tests;
 mod region;
 mod saved;
 mod transcript;
@@ -45,7 +49,7 @@ pub type Key = ViewAddress;
 pub use saved::Checkpoint;
 pub(crate) use saved::MAX_BYTES as CHECKPOINT_MAX_BYTES;
 pub use tree::Intent;
-pub(crate) use tree::Well;
+pub(crate) use tree::{Parts, Well};
 
 use crate::{
     app::{Action, App, ConnectionState},
@@ -141,9 +145,8 @@ pub(super) enum Work {
     },
 }
 
-/// The directory is read in pages of this size, up to this many entries.
+/// The directory is read in pages of this size.
 const PAGE: usize = 16;
-const ENTRIES: usize = 256;
 /// Clean instances beyond this many are closed, least recently used first.
 const INSTANCES: usize = 32;
 
@@ -175,11 +178,13 @@ pub struct Apps {
     /// frame had room to show it.
     pub inspector: ui::Surface<Message>,
     pub(super) inspector_wells: Vec<tree::Well>,
+    inspector_scopes: Vec<reading::Scope>,
     pub inspector_visible: bool,
     /// Where the last frame drew the inspector, for the pointer.
     pub(super) inspector_area: Option<ratatui::layout::Rect>,
     /// Where the settings page drew plugin panes' fields.
     pub(super) settings_wells: Vec<tree::Well>,
+    settings_scopes: Vec<reading::Scope>,
     /// The status line above a session's composer.
     pub status: ui::Surface<Message>,
 }
@@ -271,7 +276,10 @@ impl Apps {
     pub(crate) fn enter(&mut self, key: &Key) {
         self.open(key);
         let instance = self.instances.get_mut(key).unwrap();
-        if instance.idle() && !instance.keeps() {
+        if instance.idle()
+            && (!instance.keeps()
+                || instance.updated && !instance.blocked && instance.unresolved.is_none())
+        {
             if instance.live.as_ref() != instance.entry.as_ref().map(|entry| &entry.target) {
                 instance.pending = instance.entry.clone().map(|entry| Work::Rebind {
                     entry: Box::new(entry),
@@ -677,6 +685,17 @@ impl App {
                 instance.message = Some(Notice::Local("extensions-unrecorded"));
             }
             Ok(Output::Reply(Reply::View { view })) => {
+                if std::mem::take(&mut instance.updated) && instance.dirty() {
+                    instance.result = None;
+                    let Some(entry) = instance.entry.clone() else {
+                        return;
+                    };
+                    if instance.reload_draft(entry, view) {
+                        self.accept_app_draft(&key);
+                    }
+                    self.mount_app_views();
+                    return;
+                }
                 instance.install(view);
                 if instance.result.as_ref() == Some(&key) {
                     instance.result = None;
@@ -712,6 +731,27 @@ impl App {
                 } else {
                     instance.blocked = true;
                     instance.message = Some(Notice::Local("extensions-failed"));
+                }
+            }
+            Ok(Output::Reply(Reply::Updated {})) => {
+                // A receipt settles the write even if its document has since failed.
+                // Unlike Applied it never resurrects or replaces that execution.
+                if let Work::Call { input, .. } | Work::Authorize { input, .. } = &request.work {
+                    instance.settle_updated_fields(input);
+                    instance.applied = match input {
+                        Input::Submit { action, .. } => Some(action.clone()),
+                        _ => None,
+                    };
+                }
+                instance.unresolved = None;
+                instance.unrecorded = false;
+                instance.blocked = false;
+                instance.result = (!instance.dirty()).then(|| key.clone());
+                instance.updated = instance.live.is_some();
+                instance.message = Some(Notice::Local("extensions-result-ready"));
+                if visible && instance.live.is_some() {
+                    instance.message = None;
+                    instance.read(&locale);
                 }
             }
             Ok(Output::Reply(Reply::Applied { route })) => {
@@ -814,12 +854,11 @@ impl App {
         let mut loading = apps.loading.take().unwrap_or_default();
         loading.extend(page.items);
         match page.next_cursor {
-            Some(cursor) if loading.len() < ENTRIES => {
+            Some(cursor) => {
                 apps.loading = Some(loading);
                 apps.due = Some(Some(cursor));
             }
-            _ => {
-                loading.truncate(ENTRIES);
+            None => {
                 apps.directory = loading;
                 apps.loaded = true;
                 apps.failed = false;
@@ -841,7 +880,14 @@ impl App {
             return location.route == Route::App(key.clone());
         }
         if let Some(within) = &key.within {
-            return self.apps.slot_current(key) && self.app_selected(&within.0);
+            let active = self.apps.instances.get(&within.0).is_some_and(|parent| {
+                parent.view.as_ref().is_some_and(|view| {
+                    tree::active_slots(view, &parent.collections)
+                        .iter()
+                        .any(|(path, _, _)| *path == within.1)
+                })
+            });
+            return active && self.apps.slot_current(key) && self.app_selected(&within.0);
         }
         match &key.placement {
             Placement::Page => location.route == Route::App(key.clone()),
@@ -1064,6 +1110,15 @@ impl App {
         }
     }
     pub fn apps_action(&mut self, message: Message) -> Option<Action> {
+        if let Message::Instance(key, Command::View(Intent::Move(path))) = &message {
+            return self.move_collection(key.clone(), path.clone());
+        }
+        if let Message::Instance(_, Command::View(Intent::Select(_))) = &message {
+            if self.apps_enabled(&message) {
+                self.mount_app_views();
+            }
+            return None;
+        }
         if !self.apps_enabled(&message) {
             return None;
         }
@@ -1228,7 +1283,8 @@ impl App {
                     instance.read(&locale);
                 }
             }
-            Command::View(Intent::Navigate(_)) | Command::Back => unreachable!(),
+            Command::View(Intent::Navigate(_) | Intent::Move(_) | Intent::Select(_))
+            | Command::Back => unreachable!(),
             Command::View(Intent::Open(session)) => {
                 return self.apply(Action::Visit(Route::Session(session)));
             }

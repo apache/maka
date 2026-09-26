@@ -57,6 +57,7 @@ impl Transcript {
     }
 
     pub fn select(&mut self, key: MessageKey) {
+        self.row_request = None;
         self.text_selection.clear();
         self.mouse_selected = false;
         let Some(index) = self.order.iter().position(|candidate| candidate == &key) else {
@@ -68,7 +69,8 @@ impl Transcript {
         self.selected = Some(key);
         // Move only far enough to reveal the header. Choosing a message is a
         // reading action even when the entire short conversation fits onscreen.
-        if let Some(&start) = self.starts.get(index) {
+        if index < self.starts.len() {
+            let start = self.starts.start(index);
             let top = if start < self.top {
                 start
             } else if start >= self.top + self.height {
@@ -241,7 +243,9 @@ mod tests {
             .iter()
             .position(|key| key == &first)
             .unwrap();
-        assert!((app.chat.view.top..app.chat.view.top + 6).contains(&app.chat.view.starts[index]));
+        assert!(
+            (app.chat.view.top..app.chat.view.top + 6).contains(&app.chat.view.starts.start(index))
+        );
         frame(&mut app);
         key(&mut app, KeyCode::Left);
         assert!(app.chat.view.folded(&first));

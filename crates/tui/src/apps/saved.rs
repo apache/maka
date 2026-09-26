@@ -175,7 +175,10 @@ impl Instance {
         key: &Key,
         frozen: Option<&Pending>,
     ) -> Option<Checkpoint> {
-        if let Some(result) = &self.result {
+        // In-place readback may still have locally editable, unsubmitted fields.
+        if let Some(result) = &self.result
+            && !self.updated
+        {
             return Some(Checkpoint {
                 root: root.into(),
                 key: key.clone(),

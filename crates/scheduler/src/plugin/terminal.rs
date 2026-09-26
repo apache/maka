@@ -81,7 +81,7 @@ impl Method for View {
             let _lease = service.context.admit().map_err(|_| Error::Retired)?;
             let reply = match request {
                 Request::Recover { route, .. } => create::recover(&service, route).await?,
-                Request::Read { route, .. } => read(&service, decode(route)?)?,
+                Request::Read { route, .. } => read(&service, decode(route)?, &locale)?,
                 Request::Submit {
                     route,
                     revision,
@@ -208,7 +208,7 @@ fn decode(value: Value) -> Result<Route, Error> {
     }
     Ok(route)
 }
-fn read(service: &Service, route: Route) -> Result<Reply, Error> {
+fn read(service: &Service, route: Route, locale: &str) -> Result<Reply, Error> {
     if let Some(creation) = route.creation {
         return create::read(service, creation);
     }
@@ -222,7 +222,7 @@ fn read(service: &Service, route: Route) -> Result<Reply, Error> {
                 page: if route.timing {
                     timing::page(&task, revision, &timezone)?
                 } else {
-                    detail(*task, revision)
+                    detail(*task, revision, locale)
                 },
             }),
             QueryResult::Task { task: None, .. } => Ok(Reply::Rejected {
@@ -256,7 +256,11 @@ fn read(service: &Service, route: Route) -> Result<Reply, Error> {
                 page.rows.push(Row {
                     id: task.id.clone(),
                     title: Text::plain(display(&task.title, 256, false)),
-                    description: format!("{}  {}", status(task.status), instant(task.next_fire_at)),
+                    description: format!(
+                        "{}  {}",
+                        status(task.status).resolve(locale),
+                        instant(task.next_fire_at)
+                    ),
                     route: serde_json::to_value(Route {
                         task: Some(task.id.clone()),
                         ..Route::default()
@@ -293,7 +297,7 @@ fn read(service: &Service, route: Route) -> Result<Reply, Error> {
         _ => Err(invalid("Expected scheduled-task page")),
     }
 }
-fn detail(task: Task, revision: u64) -> Page {
+fn detail(task: Task, revision: u64, locale: &str) -> Page {
     let mut page = empty(Text::plain(display(&task.title, 256, false)), revision);
     page.rows.push(Row {
         id: "schedule".into(),
@@ -306,7 +310,11 @@ fn detail(task: Task, revision: u64) -> Page {
         })
         .expect("task route"),
     });
-    page.body = format!("{}  {}", status(task.status), instant(task.next_fire_at));
+    page.body = format!(
+        "{}  {}",
+        status(task.status).resolve(locale),
+        instant(task.next_fire_at)
+    );
     let Intent::Text { body } = task.intent;
     // Never save a sanitized or truncated field over the original task content.
     let editable = matches!(task.status, Status::Active | Status::Paused)
@@ -463,12 +471,12 @@ fn mutation(
         _ => Err(invalid("Unknown scheduled-task action or fields")),
     }
 }
-fn status(value: Status) -> &'static str {
+fn status(value: Status) -> Text {
     match value {
-        Status::Active => "▶",
-        Status::Paused => "Ⅱ",
-        Status::Completed => "✓",
-        Status::Expired => "—",
+        Status::Active => Text::localized("Active", "进行中", "進行中"),
+        Status::Paused => Text::localized("Paused", "已暂停", "已暫停"),
+        Status::Completed => Text::localized("Completed", "已完成", "已完成"),
+        Status::Expired => Text::localized("Expired", "已过期", "已過期"),
     }
 }
 fn instant(value: Option<i64>) -> String {
@@ -511,6 +519,46 @@ mod tests {
     };
 
     #[test]
+    fn task_states_are_localized_words_and_user_symbols_are_preserved() {
+        let mut task = Plan::create(
+            "one".into(),
+            Create {
+                title: "任务 ▶ Ⅱ ✓ — 😀".into(),
+                intent_body: "提醒 ▶ Ⅱ ✓ — 😀".into(),
+                schedule: Schedule::Once { run_at: 10_000 },
+                effect: Effect::Notify(Notification::Local),
+                max_fires: None,
+                expires_at: None,
+            },
+            Creator::User,
+            "UTC".into(),
+            1000,
+        )
+        .unwrap()
+        .task;
+        for (state, labels) in [
+            (Status::Active, ["Active", "进行中", "進行中"]),
+            (Status::Paused, ["Paused", "已暂停", "已暫停"]),
+            (Status::Completed, ["Completed", "已完成", "已完成"]),
+            (Status::Expired, ["Expired", "已过期", "已過期"]),
+        ] {
+            task.status = state;
+            for (locale, label) in ["en", "zh-CN", "zh-TW"].into_iter().zip(labels) {
+                let page = detail(task.clone(), 42, locale);
+                assert!(page.body.starts_with(&format!("{label}  ")));
+                let view = page.view(locale);
+                view.validate().unwrap();
+                assert_eq!(view.title, "任务 ▶ Ⅱ ✓ — 😀");
+                assert!(
+                    serde_json::to_string(&view)
+                        .unwrap()
+                        .contains("提醒 ▶ Ⅱ ✓ — 😀")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn unrepresentable_content_is_read_only_never_a_truncated_edit() {
         for body in [
             "界".repeat(8000),
@@ -533,7 +581,7 @@ mod tests {
             )
             .unwrap()
             .task;
-            let page = detail(task, 42);
+            let page = detail(task, 42, "en");
             page.clone().view("en").validate().unwrap();
             let editable = body == "ordinary\ntext";
             assert_eq!(

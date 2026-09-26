@@ -56,13 +56,27 @@ cx.backend({ kind: 'submit' });
 // @ts-expect-error Inline page handlers are unsupported.
 host.tui.app('old', { read() {} }, { title: { fallback: 'Old' }, context: 'application' });
 // @ts-expect-error Generic Remote methods cannot publish terminal views.
-host.remote.method('old', () => null, { terminalView: { version: 7 } });
+host.remote.method('old', () => null, { terminalView: { version: 8 } });
 const stream = { next: () => ({ done: true as const, value: undefined }), cancel() {}, close() {} };
 // @ts-expect-error Generic Remote streams cannot publish terminal views.
-host.remote.stream('old', () => stream, { terminalView: { version: 7 } });
+host.remote.stream('old', () => stream, { terminalView: { version: 8 } });
 // @ts-expect-error Every reader open requires a mount UUID.
 const opened: TranscriptOpen = { resource: 'r', route: null, locale: 'en' };
 // @ts-expect-error Every page read requires the original mount UUID.
 const read: TranscriptRead = { resource: 'r', fence: 0, direction: 'tail' };
 void opened;
 void read;
+
+const stateful: TerminalPageFactory = ({ tui }) => ({
+  read: () => ({ title: 'Stateful', revision: '1', root: tui.rule('body') }),
+  submit: () => ({ kind: 'updated' }),
+  recover: () => ({ kind: 'applied', route: null }),
+});
+void stateful;
+const invalidRecovery: TerminalPageFactory = ({ tui }) => ({
+  read: () => ({ title: 'Stateful', revision: '1', root: tui.rule('body') }),
+  submit: () => ({ kind: 'updated' }),
+  // @ts-expect-error Recovery cannot preserve a document that no longer exists.
+  recover: () => ({ kind: 'updated' }),
+});
+void invalidRecovery;

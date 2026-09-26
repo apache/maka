@@ -25,7 +25,7 @@
     return en;
   };
   const view = ({ title, revision, fields = [], actions = [], root }) => ({
-    version: 7,
+    version: 8,
     title,
     revision: String(revision),
     fields,
@@ -45,6 +45,7 @@
     spans: [{ text: String(value), tone }],
   });
   const builders = Object.freeze({
+    collection: (key, options) => ({ kind: 'collection', key, ...options }),
     transcript: (key, resource) => ({ kind: 'transcript', key, resource }),
     view,
     column: (key, children, gap = 1) => ({ kind: 'column', key, gap, children }),

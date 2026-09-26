@@ -66,6 +66,8 @@ export default async function activate(ctx) {
     }
     const operation = request.route.operation;
     if (request.kind === 'recover') return receipts.get(operation) ?? { kind: 'unrecorded' };
+    if (request.action === 'updated' || request.action === 'updated-after-loop')
+      return { kind: 'updated' };
     if (request.action === 'rejected') return { kind: 'rejected', message: 'Backend rejected' };
     const receipt = { kind: 'applied', route: { operation } };
     await ctx.storage.batch([
@@ -90,7 +92,7 @@ export default async function activate(ctx) {
   await ctx.remote.method('register-inline', async () => {
     try {
       await ctx.remote.method('inline', () => null, {
-        terminalView: { version: 7, title: { fallback: 'Inline' }, context: 'application' },
+        terminalView: { version: 8, title: { fallback: 'Inline' }, context: 'application' },
       });
       return false;
     } catch {

@@ -215,9 +215,63 @@ pub struct Tab {
     pub route: Value,
 }
 
+/// One ordered destination in a locally interactive collection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionGroup {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionItem {
+    pub key: String,
+    pub group: String,
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    /// Only the explicitly selected panel is mounted. Its identity includes
+    /// this item's key, never its position or destination group.
+    #[serde(default)]
+    pub panel: Option<Box<Node>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionFilter {
+    pub label: String,
+    #[serde(default)]
+    pub placeholder: String,
+}
+
+/// Binds a closed movement operation to existing action fields. An empty
+/// `before_field` value appends; otherwise it names an item in the target group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionMovement {
+    pub action: String,
+    pub item_field: String,
+    pub group_field: String,
+    pub before_field: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Node {
+    Collection {
+        key: String,
+        groups: Vec<CollectionGroup>,
+        items: Vec<CollectionItem>,
+        #[serde(default)]
+        filter: Option<CollectionFilter>,
+        #[serde(default)]
+        initial: Option<String>,
+        #[serde(default = "half")]
+        ratio: u8,
+        #[serde(default)]
+        movement: Option<Box<CollectionMovement>>,
+    },
     Column {
         key: String,
         #[serde(default)]
@@ -342,6 +396,7 @@ impl Node {
     pub fn key(&self) -> &str {
         match self {
             Self::Column { key, .. }
+            | Self::Collection { key, .. }
             | Self::Row { key, .. }
             | Self::Boundary { key, .. }
             | Self::Text { key, .. }
@@ -370,6 +425,10 @@ impl Node {
                 children
             }
             Self::Split { left, right, .. } => vec![left, right],
+            Self::Collection { items, .. } => items
+                .iter()
+                .filter_map(|item| item.panel.as_deref())
+                .collect(),
             _ => vec![],
         }
     }
@@ -409,6 +468,10 @@ pub enum Reply {
     Applied {
         route: Value,
     },
+    /// Submit receipt: keep this document and read its current route again.
+    /// This confirms the action, not the following read or a background result.
+    /// Recovery must use Applied; a new document cannot restore transient state.
+    Updated {},
     Conflict,
     Rejected {
         message: String,
@@ -507,6 +570,8 @@ struct Walk<'a> {
     nodes: usize,
     inputs: BTreeSet<&'a str>,
     actions: BTreeSet<&'a str>,
+    movements: BTreeSet<&'a str>,
+    movement_fields: BTreeSet<&'a str>,
 }
 
 impl View {
@@ -585,6 +650,9 @@ impl View {
         }
         let mut walk = Walk::default();
         self.node(&self.root, 0, false, &fields, &actions, &mut walk)?;
+        if !walk.inputs.is_disjoint(&walk.movement_fields) {
+            return Err(invalid());
+        }
         bounded(self, MAX_BYTES - 64)
     }
 
@@ -611,6 +679,83 @@ impl View {
             return Err(invalid());
         }
         match node {
+            Node::Collection {
+                groups,
+                items,
+                filter,
+                initial,
+                ratio,
+                movement,
+                ..
+            } => {
+                if groups.is_empty() || !(20..=80).contains(ratio) {
+                    return Err(invalid());
+                }
+                walk.nodes = walk.nodes.saturating_add(groups.len());
+                if walk.nodes > MAX_NODES {
+                    return Err(invalid());
+                }
+                let mut group_keys = BTreeSet::new();
+                for group in groups {
+                    key(&group.key)?;
+                    label(&group.label)?;
+                    if !group_keys.insert(group.key.as_str()) {
+                        return Err(invalid());
+                    }
+                }
+                let mut item_keys = BTreeSet::new();
+                for item in items {
+                    walk.nodes += 1;
+                    if walk.nodes > MAX_NODES {
+                        return Err(invalid());
+                    }
+                    key(&item.key)?;
+                    label(&item.title)?;
+                    prose(&item.summary, 1024, false)?;
+                    if !item_keys.insert(item.key.as_str())
+                        || !group_keys.contains(item.group.as_str())
+                    {
+                        return Err(invalid());
+                    }
+                    if let Some(panel) = &item.panel {
+                        self.node(panel, depth + 2, false, fields, actions, walk)?;
+                    }
+                }
+                if initial
+                    .as_ref()
+                    .is_some_and(|id| !item_keys.contains(id.as_str()))
+                {
+                    return Err(invalid());
+                }
+                if let Some(filter) = filter {
+                    label(&filter.label)?;
+                    prose(&filter.placeholder, 256, false)?;
+                }
+                if let Some(movement) = movement {
+                    let action = self.action(&movement.action).ok_or_else(invalid)?;
+                    if !walk.movements.insert(&movement.action) {
+                        return Err(invalid());
+                    }
+                    let mut bound = BTreeSet::new();
+                    for id in [
+                        &movement.item_field,
+                        &movement.group_field,
+                        &movement.before_field,
+                    ] {
+                        let field = self.field(id).ok_or_else(invalid)?;
+                        if !walk.movement_fields.insert(id) {
+                            return Err(invalid());
+                        }
+                        if !bound.insert(id)
+                            || !action.fields.contains(id)
+                            || !matches!(field.control, Control::Text { multiline: false, secret: false, max_bytes, .. } if max_bytes >= 128)
+                        {
+                            return Err(invalid());
+                        }
+                    }
+                }
+                return Ok(());
+            }
             Node::Boundary {
                 body,
                 bottom,
@@ -759,6 +904,65 @@ impl View {
         self.actions.iter().find(|action| action.id == id)
     }
 
+    /// Lookup by the stable wire path, including collection item ancestors.
+    pub fn node_at(&self, path: &str) -> Option<&Node> {
+        fn find<'a>(node: &'a Node, path: &[&str]) -> Option<&'a Node> {
+            if path.first().copied() != Some(node.key()) {
+                return None;
+            }
+            if path.len() == 1 {
+                return Some(node);
+            }
+            if let Node::Collection { items, .. } = node {
+                let item = items.iter().find(|item| item.key == path[1])?;
+                return find(item.panel.as_deref()?, &path[2..]);
+            }
+            node.children()
+                .into_iter()
+                .find_map(|child| find(child, &path[1..]))
+        }
+        find(&self.root, &path.split('/').collect::<Vec<_>>())
+    }
+
+    pub fn movement(
+        &self,
+        path: &str,
+        item: &str,
+        group: &str,
+        before: &str,
+    ) -> Result<&CollectionMovement, Error> {
+        let Node::Collection {
+            groups,
+            items,
+            movement: Some(movement),
+            ..
+        } = self.node_at(path).ok_or_else(invalid)?
+        else {
+            return Err(invalid());
+        };
+        if !self
+            .action(&movement.action)
+            .is_some_and(|action| action.enabled)
+            || [
+                &movement.item_field,
+                &movement.group_field,
+                &movement.before_field,
+            ]
+            .iter()
+            .any(|id| !self.field(id).is_some_and(|field| field.enabled))
+            || !items.iter().any(|entry| entry.key == item)
+            || !groups.iter().any(|entry| entry.key == group)
+            || !before.is_empty()
+                && (before == item
+                    || !items
+                        .iter()
+                        .any(|entry| entry.key == before && entry.group == group))
+        {
+            return Err(invalid());
+        }
+        Ok(movement)
+    }
+
     /// A presentation check, not authorization: the plugin must validate again.
     pub fn submission(
         &self,
@@ -799,6 +1003,59 @@ impl View {
                 _ => return Err(invalid()),
             }
         }
+        fn movement_fields(
+            view: &View,
+            node: &Node,
+            path: String,
+            action: &str,
+            fields: &BTreeMap<String, Value>,
+        ) -> Result<(), Error> {
+            if let Node::Collection {
+                items, movement, ..
+            } = node
+            {
+                if let Some(binding) = movement.as_ref().filter(|binding| binding.action == action)
+                {
+                    let text =
+                        |id: &str| fields.get(id).and_then(Value::as_str).ok_or_else(invalid);
+                    view.movement(
+                        &path,
+                        text(&binding.item_field)?,
+                        text(&binding.group_field)?,
+                        text(&binding.before_field)?,
+                    )?;
+                }
+                for item in items {
+                    if let Some(panel) = &item.panel {
+                        movement_fields(
+                            view,
+                            panel,
+                            format!("{path}/{}/{}", item.key, panel.key()),
+                            action,
+                            fields,
+                        )?;
+                    }
+                }
+            } else {
+                for child in node.children() {
+                    movement_fields(
+                        view,
+                        child,
+                        format!("{path}/{}", child.key()),
+                        action,
+                        fields,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        movement_fields(
+            self,
+            &self.root,
+            self.root.key().into(),
+            &action.id,
+            &fields,
+        )?;
         let request = Request::Submit {
             route,
             revision: self.revision.clone(),
@@ -859,7 +1116,7 @@ impl Reply {
             Self::Rejected { message } => {
                 label(message)?;
             }
-            Self::Conflict | Self::Unrecorded => {}
+            Self::Updated {} | Self::Conflict | Self::Unrecorded => {}
             Self::Consent { request } => request.validate()?,
         }
         bounded(self, MAX_BYTES)
@@ -1205,11 +1462,26 @@ pub mod build {
 
 #[cfg(test)]
 mod boundary;
+#[cfg(test)]
+mod collection;
 
 #[cfg(test)]
 mod tests {
     use super::{build::*, *};
     use serde_json::json;
+
+    #[test]
+    fn updated_receipt_has_no_route_or_embedded_view() {
+        let reply: super::Reply =
+            serde_json::from_value(serde_json::json!({"kind":"updated"})).unwrap();
+        reply.validate().unwrap();
+        for extra in [
+            serde_json::json!({"kind":"updated","route":null}),
+            serde_json::json!({"kind":"updated","view":null}),
+        ] {
+            assert!(serde_json::from_value::<super::Reply>(extra).is_err());
+        }
+    }
 
     fn view() -> View {
         View {

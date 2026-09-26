@@ -124,14 +124,16 @@ impl Transcript {
     }
 
     pub fn timing_visible(&self) -> bool {
-        self.order.iter().zip(&self.starts).any(|(key, start)| {
-            key.part() == Part::Timing
-                && self
-                    .timings
-                    .get(&key.turn)
-                    .is_some_and(|timing| timing.active && timing.end.is_none())
-                && (*start >= self.top && *start < self.top + self.height)
-        })
+        (self.starts.at(self.top)..self.starts.len())
+            .take_while(|index| self.starts.start(*index) < self.top + self.height)
+            .any(|index| {
+                let key = &self.order[index];
+                key.part() == Part::Timing
+                    && self
+                        .timings
+                        .get(&key.turn)
+                        .is_some_and(|timing| timing.active && timing.end.is_none())
+            })
     }
 }
 

@@ -221,7 +221,7 @@ impl crate::app::App {
                 }
                 wanted.insert(instance.execution);
             } else {
-                instance.execution = Uuid::nil();
+                instance.retire_execution();
             }
         }
         wanted

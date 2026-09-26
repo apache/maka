@@ -265,7 +265,6 @@ fn panel(current: Option<&Current>, cx: &Words) -> View {
         children.push(spans(
             "state",
             vec![
-                ("● ".into(), tone),
                 (label, tone),
                 (
                     format!(
@@ -649,6 +648,70 @@ mod tests {
             line(None, &cx()).root.children().is_empty(),
             "no Goal, no status"
         );
+    }
+
+    #[test]
+    fn localized_goal_states_need_no_glyph_and_preserve_the_objective() {
+        for (state, labels, tone) in [
+            (
+                Status::Active,
+                ["Working", "进行中", "進行中"],
+                Tone::Accent,
+            ),
+            (
+                Status::Waiting,
+                ["Waiting for you", "等待你的回复", "等待你的回覆"],
+                Tone::Warning,
+            ),
+            (
+                Status::Achieved,
+                ["Achieved", "已达成", "已達成"],
+                Tone::Success,
+            ),
+            (
+                Status::CancellationUnknown,
+                ["Cancellation unconfirmed", "取消未确认", "取消未確認"],
+                Tone::Warning,
+            ),
+            (
+                Status::Blocked,
+                ["Needs permission", "需要授权", "需要授權"],
+                Tone::Error,
+            ),
+        ] {
+            let mut current = goal(state);
+            current.goal.arm.objective = "目标 ● ✓ 😀".into();
+            for (locale, label) in ["en", "zh-CN", "zh-TW"].into_iter().zip(labels) {
+                let words = Words::new(locale);
+                let view = panel(Some(&current), &words);
+                view.validate().unwrap();
+                let view::Node::Text { spans, .. } = view.root.children()[1] else {
+                    panic!("goal state");
+                };
+                assert_eq!(spans.len(), 2);
+                assert_eq!(spans[0].text, label);
+                assert_eq!(spans[0].tone, tone);
+                assert!(
+                    serde_json::to_string(&view)
+                        .unwrap()
+                        .contains("目标 ● ✓ 😀")
+                );
+                let line = line(Some(&current), &words);
+                line.validate().unwrap();
+                if !state.terminal() {
+                    let view::Node::Text { spans, .. } = line.root.children()[1] else {
+                        panic!("goal status line");
+                    };
+                    assert_eq!(spans[0].text, label);
+                    assert_eq!(spans[0].tone, tone);
+                    assert!(
+                        serde_json::to_string(&line)
+                            .unwrap()
+                            .contains("目标 ● ✓ 😀")
+                    );
+                }
+            }
+        }
     }
 
     #[test]

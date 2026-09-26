@@ -128,6 +128,14 @@ impl Markdown {
                         .bytes
                         .saturating_sub(std::mem::size_of::<VisualLine>());
                 }
+            } else if !prefix.text.is_empty() {
+                // An empty narrow fence contributes semantic spacing without a visual row.
+                // Keep that spacing independently of the deferred visual gap.
+                output.bytes += prefix.text.len();
+                if output.bytes > layout::MAX_BYTES {
+                    return Err("Transcript layout exceeds local capacity");
+                }
+                output.text.push_str(&prefix.text);
             }
             self.source += cut;
             // Subsequent keys are relative to the new, unfrozen Markdown tail.

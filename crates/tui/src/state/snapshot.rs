@@ -70,7 +70,7 @@ impl Snapshot {
             .collect();
         unresolved.sort_by(|left, right| left.session.cmp(&right.session));
         Self {
-            version: 22,
+            version: 23,
             attachments: app.attachments.saved.clone(),
             directories: app.directories.clone(),
             skills: app.skills.saved.clone(),
@@ -106,7 +106,7 @@ impl Snapshot {
         let id = |id: &str| {
             !id.is_empty() && id.encode_utf16().count() <= 256 && !id.chars().any(char::is_control)
         };
-        if self.version != 22
+        if self.version != 23
             || self.root != root
             || self.tabs.len() > LIMIT
             || self.drafts.len() > LIMIT
@@ -490,7 +490,7 @@ mod tests {
         request.input().validate().unwrap();
         original.sending.get_mut("a").unwrap().request = request.clone();
         let saved = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
-        assert_eq!(saved["version"], 22);
+        assert_eq!(saved["version"], 23);
         let mut restored = app();
         serde_json::from_value::<Snapshot>(saved.clone())
             .unwrap()

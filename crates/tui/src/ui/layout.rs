@@ -58,6 +58,12 @@ pub(super) struct Item<M> {
     pub row: Option<(u16, u16)>,
 }
 
+impl<M> Item<M> {
+    pub(super) fn focusable(&self) -> bool {
+        self.on.focusable(self.enabled)
+    }
+}
+
 pub(super) struct Scroller {
     pub id: String,
     pub viewport: Rect,
@@ -189,7 +195,11 @@ impl<'a, M> Pass<'a, M> {
         {
             // Focus and hover are painted by the surface after placement, so a
             // focus that must move to a neighbor is correct in this same frame.
-            scope.style = Some(if !enabled {
+            let destination = matches!(
+                on,
+                On::Collection(super::collection::Control::Destination { .. })
+            );
+            let style = if !enabled {
                 Style::default()
                     .fg(self.colors.subtle)
                     .add_modifier(Modifier::DIM)
@@ -199,7 +209,12 @@ impl<'a, M> Pass<'a, M> {
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-            });
+            };
+            // A destination contains independently interactive cards; it only
+            // supplies a hit region for otherwise empty lane space.
+            if !destination {
+                scope.style = Some(style);
+            }
             // A button's whole hit area reads as one filled control.
             if role.is_some() && enabled && !self.colors.terminal {
                 self.buffer
@@ -521,13 +536,29 @@ fn distribute(sizes: &[(Size, u16)], available: u16, gap: u16) -> Vec<u16> {
 }
 
 pub(super) fn height<M>(node: &Node<M>, width: u16) -> u16 {
+    measure_height(node, width, Height::Natural)
+}
+
+/// Space needed outside scrolling viewports, using the same width distribution
+/// and explicit caps as ordinary layout.
+pub(super) fn required_height<M>(node: &Node<M>, width: u16) -> u16 {
+    measure_height(node, width, Height::Required)
+}
+
+#[derive(Clone, Copy)]
+enum Height {
+    Natural,
+    Required,
+}
+
+fn measure_height<M>(node: &Node<M>, width: u16, mode: Height) -> u16 {
     match &node.kind {
         Kind::Column { children, gap } => children
             .iter()
             .map(|child| match child.size {
                 Size::Fixed(n) => n,
                 Size::Upto(n) => height(child, width).min(n),
-                _ => height(child, width),
+                _ => measure_height(child, width, mode),
             })
             .fold(
                 gap.saturating_mul(children.len().saturating_sub(1) as u16),
@@ -542,10 +573,15 @@ pub(super) fn height<M>(node: &Node<M>, width: u16) -> u16 {
                 width,
                 *gap,
             );
+            let mut remaining = width;
             children
                 .iter()
                 .zip(widths)
-                .map(|(child, width)| height(child, width))
+                .map(|(child, width)| {
+                    let width = width.min(remaining);
+                    remaining = remaining.saturating_sub(width).saturating_sub(*gap);
+                    measure_height(child, width, mode)
+                })
                 .max()
                 .unwrap_or(0)
         }
@@ -555,14 +591,17 @@ pub(super) fn height<M>(node: &Node<M>, width: u16) -> u16 {
             let body = match body.size {
                 Size::Fixed(rows) => rows,
                 Size::Upto(rows) => height(body, inner).min(rows),
-                _ => height(body, inner),
+                _ => measure_height(body, inner, mode),
             };
             body.saturating_add(padding.height())
         }
         Kind::Text { spans, .. } => wrap(spans, width).len() as u16,
         Kind::Rule | Kind::Slot => 1,
         Kind::Transcript { .. } => 12,
-        Kind::Scroll(child) => height(child, width.saturating_sub(1)),
+        Kind::Scroll(child) => match mode {
+            Height::Natural => height(child, width.saturating_sub(1)),
+            Height::Required => 1,
+        },
     }
 }
 
@@ -721,6 +760,62 @@ fn words(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narrow_fixed_width_rows_measure_their_painted_width_and_reach_the_footer() {
+        use crate::ui::{Context, Surface};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{Terminal, backend::TestBackend};
+        let tree = || {
+            let mut lines: Vec<Node<()>> =
+                vec![Node::text("intro", vec![("a".repeat(64), Tone::Normal)])];
+            lines.extend(
+                (0..4)
+                    .map(|i| Node::text(format!("line{i}"), vec![("Entry".into(), Tone::Normal)])),
+            );
+            lines.push(Node::text(
+                "footer",
+                vec![("More imports".into(), Tone::Normal)],
+            ));
+            Node::scroll(
+                "scroll",
+                Node::row(
+                    "row",
+                    vec![Node::column("fixed", lines).size(Size::Fixed(64))],
+                ),
+            )
+            .on(On::Scroll)
+            .size(Size::Fixed(5))
+        };
+        let mut surface = Surface::default();
+        let mut terminal = Terminal::new(TestBackend::new(58, 5)).unwrap();
+        let mut draw = |surface: &mut Surface<()>| {
+            terminal
+                .draw(|frame| {
+                    surface.render(
+                        frame,
+                        frame.area(),
+                        tree(),
+                        Context {
+                            colors: Palette::default(),
+                            ascii: true,
+                            focused: true,
+                        },
+                    )
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        assert!(!draw(&mut surface).contains("More imports"));
+        surface.input(&Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        assert!(draw(&mut surface).contains("More imports"));
+    }
 
     #[test]
     fn fills_share_remaining_space_after_fixed_content_and_gaps() {

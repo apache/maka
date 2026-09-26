@@ -31,6 +31,9 @@ pub(super) fn render<'a>(
     cache: &mut syntax::Cache,
     ascii: bool,
 ) -> Result<(), &'static str> {
+    if writer.recording.is_some() {
+        return super::prepared::prepare_fence(writer, source, kind, start, events, cache, ascii);
+    }
     writer.boundary()?;
     let style = writer.style;
     let info = match kind {
@@ -49,6 +52,7 @@ pub(super) fn render<'a>(
         writer.style = Style::default().fg(cache.colors.subtle);
         writer.decoration(&info, start)?;
         writer.flush()?;
+        writer.logical_line = false;
     }
     let mut parts = Vec::new();
     let first_line = writer.lines.len();
@@ -90,9 +94,12 @@ pub(super) fn render<'a>(
                 || range.clone(),
                 |at| at + local..at + local + grapheme.len(),
             );
-            writer.text(grapheme, source_range, exact.is_some())?;
+            writer.scalar_text(grapheme, source_range, exact.is_some())?;
         }
         offset += value.len();
+    }
+    if body.is_empty() {
+        writer.logical("\n");
     }
     if panel {
         writer.boundary()?;
@@ -130,6 +137,10 @@ pub(super) fn render<'a>(
                 span.display.end += prefix_bytes;
             }
         }
+        writer.last_nonempty = writer
+            .lines
+            .last()
+            .is_some_and(|line| !line.line.spans.is_empty());
         writer.width = width;
         writer.indent = indent;
     }

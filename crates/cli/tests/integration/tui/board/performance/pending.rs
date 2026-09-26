@@ -19,6 +19,7 @@
 
 use super::*;
 
+mod collection;
 pub(super) mod gate;
 
 pub(super) fn fixture(board: &str) -> String {
@@ -38,6 +39,10 @@ fn pending_read_keeps_local_input_scroll_disclosure_and_drag_responsive() {
     let mut report = report::Report::scenario(
         "provider-held semantic Board Read; loaded local operations; idle/pending cell-style drag",
         &[
+            "pending_collection_filter",
+            "pending_collection_restore",
+            "pending_collection_drag",
+            "pending_collection_cancel",
             "pending_input_insert",
             "pending_input_backspace",
             "pending_loaded_scroll_up",
@@ -75,6 +80,7 @@ pub(super) fn exercise(
         timed.tui.resize(columns, 40);
         assert!(timed.input(b"", |s| s.contains("A new card"))["error"].is_null());
     }
+    collection::exercise(timed, runtime, client, proxy, rtt, report);
     timed.tui.send(&timed::click(&timed.screen(), "A new card"));
     phase(timed, runtime, client, proxy, report, (rtt, "input"));
     let click = timed::click(&timed.screen(), "Board activity");

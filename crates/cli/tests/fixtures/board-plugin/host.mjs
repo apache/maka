@@ -77,6 +77,8 @@ export default async function activate(ctx) {
   let activityRevision = 1;
   let viewReads = 0;
   let activityViewReads = 0;
+  let viewWrites = 0;
+  let operationSequence = 0;
   await ctx.remote.method('activity-append', (input) => {
     activity.append(liveKey, String(input), String(++activityRevision));
     return activityRevision;
@@ -85,108 +87,169 @@ export default async function activate(ctx) {
     ...activity.stats,
     viewReads,
     activityViewReads,
+    viewWrites,
     reportBytes: new TextEncoder().encode(report).length,
   }));
   const changed = await tui.changes('board-changed');
   /** Writes the whole board if nobody wrote it since `revision`.
    * @param {number | null} revision
    * @param {Card[]} cards
+   * @param {{operation: string, input: string} | null} receipt
    */
-  const store = async (revision, cards) => {
+  const store = async (revision, cards, receipt = null) => {
     await ctx.storage.batch([
       { key: 'cards', expectedRevision: revision, data: { kind: 'present', value: { cards } } },
+      ...(receipt
+        ? [
+            {
+              key: `move:${receipt.operation}`,
+              expectedRevision: null,
+              data: { kind: /** @type {const} */ ('present'), value: { input: receipt.input } },
+            },
+          ]
+        : []),
     ]);
+    viewWrites++;
     changed();
   };
-  /** @param {Column} column @param {number} step */
-  const move = (column, step) =>
-    columns[Math.min(2, Math.max(0, columns.indexOf(column) + step))] ?? column;
   /** A card identity no card on the board has. @param {Card[]} cards */
   const fresh = (cards) =>
     `c${Math.max(0, ...cards.map((item) => Number(item.id.slice(1)) || 0)) + 1}`;
 
-  await tui.app(
-    'board',
-    {
-      entry: 'board-ui.mjs',
-      resources: [activity.resource],
-      async backend(submission, cx) {
-        if (submission.kind === 'read') {
-          viewReads++;
-          const route = submission.route;
-          if (
-            route &&
-            typeof route === 'object' &&
-            'activity' in route &&
-            route.activity === true
-          ) {
-            activityViewReads++;
-            return { revision: null, cards: [], activity: activity.resource };
-          }
-          return { ...(await load()), activity: null };
+  /** @param {import('../../../../../packages/plugin-sdk/src/host.js').TerminalRequest} submission
+   * @param {import('../../../../../packages/plugin-sdk/src/host.js').TerminalBackendContext} cx
+   * @param {'board' | 'card' | 'create'} panel
+   */
+  const backend = async (submission, cx, panel) => {
+    if (submission.kind === 'recover') {
+      const route = submission.route;
+      const operation =
+        route && typeof route === 'object' && 'operation' in route ? route.operation : null;
+      if (typeof operation !== 'string') return { kind: /** @type {const} */ ('unrecorded') };
+      const receipt = await ctx.storage.read(`move:${operation}`);
+      return receipt?.data.kind === 'present'
+        ? { kind: /** @type {const} */ ('applied'), route: null }
+        : { kind: /** @type {const} */ ('unrecorded') };
+    }
+    if (submission.kind === 'read') {
+      viewReads++;
+      const route = submission.route;
+      const operation = `${cx.caller.documentId}:${++operationSequence}`;
+      if (
+        panel === 'board' &&
+        route &&
+        typeof route === 'object' &&
+        'activity' in route &&
+        route.activity === true
+      ) {
+        activityViewReads++;
+        return { revision: null, cards: [], activity: activity.resource, panel, operation };
+      }
+      return { ...(await load()), activity: null, panel, operation };
+    }
+    const input = JSON.stringify({
+      revision: submission.revision,
+      action: submission.action,
+      fields: submission.fields,
+    });
+    const operation = String(submission.fields.operation ?? '');
+    if (submission.action === 'move') {
+      if (!operation || operation.length > 128)
+        return { kind: /** @type {const} */ ('rejected'), message: 'Invalid move identity' };
+      const old = await ctx.storage.read(`move:${operation}`);
+      if (old?.data.kind === 'present') {
+        const receipt = /** @type {{input: string}} */ (old.data.value);
+        return receipt.input === input
+          ? { kind: /** @type {const} */ ('applied'), route: null }
+          : { kind: /** @type {const} */ ('rejected'), message: 'Move identity was reused' };
+      }
+    }
+    const { revision, cards } = await load();
+    if (String(revision ?? 0) !== submission.revision)
+      return { kind: /** @type {const} */ ('conflict') };
+    const route = submission.route;
+    const id = route && typeof route === 'object' && 'cardId' in route ? route.cardId : null;
+    switch (submission.action) {
+      case 'add': {
+        const title = String(submission.fields.new ?? '').trim();
+        if (!title)
+          return {
+            kind: /** @type {const} */ ('rejected'),
+            message: cx.t('Name the card.', '请填写卡片名称。', '請填寫卡片名稱。'),
+          };
+        await store(revision, [...cards, { id: fresh(cards), title, column: 'todo', note: '' }]);
+        return { kind: /** @type {const} */ ('applied'), route: submission.route };
+      }
+      case 'save':
+        if (!cards.some((card) => card.id === id))
+          return { kind: /** @type {const} */ ('conflict') };
+        await store(
+          revision,
+          cards.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  title: String(submission.fields.title).trim() || item.title,
+                  note: String(submission.fields.note),
+                }
+              : item,
+          ),
+        );
+        return { kind: /** @type {const} */ ('applied'), route: submission.route };
+      case 'move': {
+        const item = cards.find((card) => card.id === submission.fields.item);
+        const group = /** @type {Column} */ (submission.fields.group);
+        const before = String(submission.fields.before);
+        if (
+          !item ||
+          !columns.includes(group) ||
+          (before &&
+            (before === item.id ||
+              !cards.some((card) => card.id === before && card.column === group)))
+        ) {
+          return { kind: /** @type {const} */ ('rejected'), message: 'Invalid card destination' };
         }
-        if (submission.kind !== 'submit') return { kind: 'unrecorded' };
-        const { revision, cards } = await load();
-        if (String(revision ?? 0) !== submission.revision) return { kind: 'conflict' };
-        const route = submission.route;
-        const id = route && typeof route === 'object' && 'card' in route ? route.card : null;
-        switch (submission.action) {
-          case 'add': {
-            const title = String(submission.fields.new ?? '').trim();
-            if (!title)
-              return {
-                kind: 'rejected',
-                message: cx.t('Name the card.', '请填写卡片名称。', '請填寫卡片名稱。'),
-              };
-            await store(revision, [
-              ...cards,
-              { id: fresh(cards), title, column: 'todo', note: '' },
-            ]);
-            return { kind: 'applied', route: null };
-          }
-          case 'save':
-            await store(
-              revision,
-              cards.map((item) =>
-                item.id === id
-                  ? {
-                      ...item,
-                      title: String(submission.fields.title).trim() || item.title,
-                      note: String(submission.fields.note),
-                    }
-                  : item,
-              ),
-            );
-            return { kind: 'applied', route: submission.route };
-          case 'left':
-          case 'right':
-            await store(
-              revision,
-              cards.map((item) =>
-                item.id === id
-                  ? { ...item, column: move(item.column, submission.action === 'left' ? -1 : 1) }
-                  : item,
-              ),
-            );
-            return { kind: 'applied', route: null };
-          case 'delete':
-            await store(
-              revision,
-              cards.filter((item) => item.id !== id),
-            );
-            return { kind: 'applied', route: null };
-          default:
-            return { kind: 'rejected', message: 'Unknown action' };
-        }
+        const remaining = cards.filter((card) => card.id !== item.id);
+        const at = before ? remaining.findIndex((card) => card.id === before) : remaining.length;
+        remaining.splice(at, 0, { ...item, column: group });
+        await store(revision, remaining, { operation, input });
+        return { kind: /** @type {const} */ ('applied'), route: submission.route };
+      }
+      case 'delete':
+        await store(
+          revision,
+          cards.filter((item) => item.id !== id),
+        );
+        return { kind: /** @type {const} */ ('applied'), route: submission.route };
+      default:
+        return { kind: /** @type {const} */ ('rejected'), message: 'Unknown action' };
+    }
+  };
+  for (const panel of /** @type {const} */ (['board', 'card', 'create'])) {
+    await tui.app(
+      panel === 'board' ? 'board' : `board-${panel}`,
+      {
+        entry: 'board-ui.mjs',
+        resources: panel === 'board' ? [activity.resource] : [],
+        backend: (submission, cx) => backend(submission, cx, panel),
       },
-    },
-    {
-      title: { fallback: 'Board', translations: { 'zh-CN': '看板', 'zh-TW': '看板' } },
-      context: 'application',
-      icon: { glyph: '▦', ascii: 'B' },
-      changes: 'board-changed',
-    },
-  );
+      {
+        title: {
+          fallback: panel === 'board' ? 'Board' : panel === 'card' ? 'Card details' : 'New card',
+          translations: {
+            'zh-CN': panel === 'board' ? '看板' : panel === 'card' ? '卡片详情' : '新卡片',
+            'zh-TW': panel === 'board' ? '看板' : panel === 'card' ? '卡片詳情' : '新卡片',
+          },
+        },
+        context: 'application',
+        icon: { glyph: '▦', ascii: 'B' },
+        changes: 'board-changed',
+        ...(panel === 'board'
+          ? {}
+          : { placement: { kind: /** @type {const} */ ('slot'), name: `board.${panel}` } }),
+      },
+    );
+  }
 
   // Another writer: anything that adds a card through the plugin's API.
   await ctx.remote.method('add', async (input) => {

@@ -78,6 +78,9 @@ pub enum Request {
     Copies {
         after: Option<Uuid>,
     },
+    Copy {
+        operation_id: Uuid,
+    },
 }
 #[derive(Serialize)]
 #[serde(
@@ -91,6 +94,7 @@ enum Response {
     Catalog { page: catalog::Page },
     Copy { copy: intent::Copy },
     Copies { page: intent::Page },
+    Detail { copy: Option<intent::Copy> },
     Conflict,
 }
 impl Method for Import {
@@ -183,6 +187,12 @@ impl Import {
             }
             Request::Copies { after } => Ok(Response::Copies {
                 page: repository.list(after).await?,
+            }),
+            Request::Copy { operation_id } => Ok(Response::Detail {
+                copy: repository
+                    .get(operation_id)
+                    .await?
+                    .map(|saved| saved.copy()),
             }),
         }
     }

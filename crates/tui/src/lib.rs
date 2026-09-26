@@ -138,7 +138,7 @@ enum Completed {
     ),
     ChatOpened(
         pages::chat::OpenRequest,
-        Result<Box<pages::chat::Opened>, String>,
+        Result<Box<pages::chat::Opened>, pages::chat::OpenError>,
     ),
     ChatPage(
         pages::chat::PageRequest,
@@ -439,10 +439,7 @@ where
             if let Some(request) = app.chat.open_query() {
                 let client = client.clone();
                 jobs.spawn(async move {
-                    let result = pages::chat::open(&client, &request)
-                        .await
-                        .map(Box::new)
-                        .map_err(|e| e.to_string());
+                    let result = pages::chat::open(&client, &request).await.map(Box::new);
                     Completed::ChatOpened(request, result)
                 });
             }
@@ -952,11 +949,19 @@ where
         }
         let state_wait = state.as_ref().and_then(state::State::wait);
         let oauth_wait = app.oauth_wait();
+        let chat_deadline = if client.is_some() && !app.closing {
+            app.chat.open_deadline()
+        } else {
+            None
+        };
         // Notifications and completions can change persisted owners even when
         // they do not schedule a disk write. Only classified local input and
         // transient reader/paint events retain the derived admission cache.
         let mut checkpoint_impact = state::Impact::Other;
         tokio::select! {
+            _ = pages::chat::wait_for_open(chat_deadline) => {
+                checkpoint_impact = state::Impact::Reading;
+            }
             result = async {
                 match &mut shutdown_job {
                     Some(job) => job.await,
@@ -1204,7 +1209,10 @@ where
                         if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     },
                     Some(Ok(Completed::Directory(request, result))) => app.directory_completed(request, result),
-                    Some(Ok(Completed::Extension(request, result))) => app.apps_complete(*request, result),
+                    Some(Ok(Completed::Extension(request, result))) => {
+                        app.apps_complete(*request, result);
+                        if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
+                    }
                     Some(Ok(Completed::Skills(request, result))) => app.skills_completed(request, result),
                     Some(Ok(Completed::ChooseProject(request, result))) => app.choose_project_completed(request, result),
                     Some(Ok(Completed::Locations(request,result))) => app.locations_completed(request,result),
@@ -1246,15 +1254,19 @@ where
                         if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
                     Some(Ok(Completed::ChatOpened(request, result))) => {
-                        if let Some(id) = app.chat.opened(request, result.map(|opened| *opened)) {
-                            if let Some(client) = client.clone() { close_observation(&mut jobs, client, id); }
-                        } else if app.chat.error.is_none()
-                            && let Some(id) = app.chat.subscription.clone()
-                            && let Some(client) = client.clone() {
-                            jobs.spawn(async move {
-                                let result = client.ready_subscription(&id).await.map_err(|e| e.to_string());
-                                Completed::ChatReady(id, result)
-                            });
+                        match app.chat.opened(request, result.map(|opened| *opened)) {
+                            pages::chat::OpenEffect::Close(id) => {
+                                if let Some(client) = client.clone() { close_observation(&mut jobs, client, id); }
+                            }
+                            pages::chat::OpenEffect::Ready(id) => {
+                                if let Some(client) = client.clone() {
+                                    jobs.spawn(async move {
+                                        let result = client.ready_subscription(&id).await.map_err(|e| e.to_string());
+                                        Completed::ChatReady(id, result)
+                                    });
+                                }
+                            }
+                            pages::chat::OpenEffect::None => {}
                         }
                         if let Some(state) = &mut state { state.changed(&mut app, state::Impact::Other); }
                     }
@@ -1324,6 +1336,7 @@ where
                             Ok(status) if client.as_ref().is_some_and(|c| status["hostEpoch"] == c.identity.host_epoch) => app.status = Some(status),
                             Ok(_) => {
                                 if let Some(old) = client.take() { old.disconnect(); }
+                                app.chat.disconnect(app.i18n.text("host-wrong-epoch"));
                                 app.connection = ConnectionState::WrongEpoch;
                             }
                             Err(error) => app.notice = Some(Notice::Diagnostic(error)),
@@ -1418,7 +1431,7 @@ where
                 app.status = None;
                 app.refreshing = false;
                 app.connection = ConnectionState::Failed(error.to_string());
-                app.chat.error = Some(error.to_string());
+                app.chat.disconnect(error.to_string());
                 dirty = true;
             }
             delivery = transcript_deliveries.recv() => {

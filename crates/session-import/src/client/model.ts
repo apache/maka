@@ -68,13 +68,15 @@ type Request =
   | { kind: 'catalog'; sourceId: string; revision: number; query: Query }
   | { kind: 'prepare'; request: Intent }
   | { kind: 'deliver' | 'abandon'; operationId: string }
-  | { kind: 'copies'; after: string | null };
+  | { kind: 'copies'; after: string | null }
+  | { kind: 'copy'; operationId: string };
 type Response =
   | { kind: 'sources'; snapshot: Snapshot }
   | { kind: 'models'; choices: ModelChoices }
   | { kind: 'catalog'; page: Catalog }
   | { kind: 'copy'; copy: Copy }
   | { kind: 'copies'; page: Copies }
+  | { kind: 'detail'; copy: Copy | null }
   | { kind: 'conflict' };
 
 export function connect(context: ClientContext) {

@@ -56,7 +56,7 @@ export type TerminalPlacement =
   | { kind: 'slot'; name: string };
 
 export interface TerminalView {
-  version: 7;
+  version: 8;
   title: TerminalText;
   context: 'application' | 'session';
   placement?: TerminalPlacement;
@@ -93,6 +93,17 @@ export interface TerminalBoundaryOptions {
   activity?: 'idle' | 'busy';
 }
 
+/** A local keyed collection. Only an explicitly selected panel is mounted. */
+export interface TerminalCollectionOptions {
+  groups: { key: string; label: string }[];
+  items: { key: string; group: string; title: string; summary?: string; panel?: TerminalNode }[];
+  filter?: { label: string; placeholder?: string };
+  initial?: string;
+  ratio?: number;
+  /** The kernel supplies item/group/before to these declared action fields. */
+  movement?: { action: string; item_field: string; group_field: string; before_field: string };
+}
+
 export type TerminalTarget =
   /** Read another route of this view; Back returns. */
   | { kind: 'route'; route: Json }
@@ -103,6 +114,7 @@ export type TerminalTarget =
 
 /** Keys are unique among siblings, contain no `/`, and stay stable across reads. */
 export type TerminalNode =
+  | ({ kind: 'collection'; key: string } & TerminalCollectionOptions)
   | { kind: 'column'; key: string; gap?: number; children: TerminalNode[] }
   | { kind: 'row'; key: string; gap?: number; children: TerminalNode[] }
   | ({ kind: 'boundary'; key: string; body: TerminalNode } & TerminalBoundaryOptions)
@@ -175,7 +187,7 @@ export interface TerminalAction {
 }
 
 export interface TerminalViewTree {
-  version: 7;
+  version: 8;
   title: string;
   /** Opaque; echoed with every submission so writes can compare and swap. */
   revision: string;
@@ -200,6 +212,10 @@ export type TerminalRequest =
 export type TerminalReply =
   | { kind: 'view'; view: TerminalViewTree }
   | { kind: 'applied'; route: Json }
+  /** Submit receipt: retain this document and reread the current route.
+   * Confirms the action, not readback or a background operation's completion.
+   * Recovery must return applied; a new document cannot restore transient state. */
+  | { kind: 'updated' }
   | { kind: 'conflict' }
   | { kind: 'rejected'; message: string }
   /** No committed receipt was observed (recovery reads only). */
@@ -231,6 +247,7 @@ export interface TerminalApps extends TerminalBuilders {
 
 /** Pure node and field builders; the only capability supplied to UI factories. */
 export interface TerminalBuilders {
+  collection(key: string, options: TerminalCollectionOptions): TerminalNode;
   view(body: TerminalViewBody): TerminalViewTree;
   column(key: string, children: TerminalNode[], gap?: number): TerminalNode;
   stack(key: string, children: TerminalNode[]): TerminalNode;

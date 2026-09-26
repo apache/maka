@@ -56,7 +56,11 @@ impl Hold {
                         && row["forwarded_ns"].is_u64()
                 })
                 .collect();
-            if entered["pending"] == true && entered["entered"] == expected && requests.len() == 1 {
+            if entered["pending"] == true
+                && entered["entered"] == expected
+                && requests.len() == 1
+                && proxy.fence()["pending_finite_requests"] == 1
+            {
                 let hold = Self {
                     request: requests[0].clone(),
                     entered,

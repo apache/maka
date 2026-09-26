@@ -190,6 +190,7 @@ impl App {
     }
 
     pub(crate) fn leave_page(&mut self) {
+        self.park_app_reading();
         let route = self.navigation.current();
         match route {
             Route::Plugins(_) => self.plugins.leave(),

@@ -146,9 +146,9 @@ fn view(revision: String, words: &Words, root: Node) -> View {
 
 fn mark(item: &Item) -> (&'static str, Tone, Tone) {
     match item.status {
-        Status::Completed => ("✓", Tone::Success, Tone::Muted),
-        Status::InProgress => ("◐", Tone::Accent, Tone::Strong),
-        Status::Pending => ("○", Tone::Subtle, Tone::Normal),
+        Status::Completed => ("[x]", Tone::Success, Tone::Muted),
+        Status::InProgress => ("[>]", Tone::Accent, Tone::Strong),
+        Status::Pending => ("[ ]", Tone::Subtle, Tone::Normal),
     }
 }
 
@@ -282,5 +282,36 @@ mod tests {
         // The list holds its maximum and still validates.
         let full = document(&[Status::Pending; 200]);
         panel(&full, "5".into(), &words).validate().unwrap();
+
+        for (locale, title) in [("en", "Checklist"), ("zh-CN", "清单"), ("zh-TW", "清單")] {
+            let words = Words::new(locale);
+            let mut working = document(&[Status::Completed, Status::InProgress, Status::Pending]);
+            for item in &mut working.items {
+                item.content.push_str(" 步骤 ✓ ◐ ○ 😀");
+            }
+            let view = panel(&working, "6".into(), &words);
+            view.validate().unwrap();
+            assert_eq!(view.title, title);
+            let rows = view.root.children()[1].children()[0].children();
+            for ((row, item), (mark, tone)) in rows.iter().zip(&working.items).zip([
+                ("[x] ", Tone::Success),
+                ("[>] ", Tone::Accent),
+                ("[ ] ", Tone::Subtle),
+            ]) {
+                let Node::Text { spans, .. } = row else {
+                    panic!("checklist row");
+                };
+                assert_eq!(spans[0].text, mark);
+                assert_eq!(spans[0].tone, tone);
+                assert_eq!(spans[1].text, item.content);
+            }
+            let status = line(&working, "6".into(), &words);
+            status.validate().unwrap();
+            assert!(
+                serde_json::to_string(&status)
+                    .unwrap()
+                    .contains(&working.items[1].content)
+            );
+        }
     }
 }

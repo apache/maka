@@ -188,8 +188,7 @@ impl Location {
     }
     fn mounts_valid(&self) -> bool {
         use maka_plugins::terminal_ui::Placement;
-        if self.embedded.len() > 256
-            || (self.inspector && !matches!(self.route, Route::Session(_)))
+        if (self.inspector && !matches!(self.route, Route::Session(_)))
             || (self.recovery && !matches!(self.route, Route::App(_)))
         {
             return false;

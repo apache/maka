@@ -19,13 +19,15 @@
 
 use crate::{i18n::I18n, navigation::Route};
 use maka_client::{
-    Client, Error,
+    Client, ClientError, Error, RequestFailure,
     transcript::{LiveText, TranscriptBatch},
 };
-use maka_protocol::{subscription::*, transcript::*};
+use maka_protocol::{OperationErrorCode, subscription::*, transcript::*};
 use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
+use std::time::Duration;
+use tokio::time::Instant;
 pub mod context;
 pub mod history;
 pub(super) use crate::ui::transcript::layout;
@@ -39,6 +41,9 @@ mod tools;
 
 const WINDOW_ROWS: usize = 256;
 const WINDOW_BYTES: usize = 4 * 1024 * 1024;
+// Each rejected open advances a bounded Host preparation slice. Pace further
+// reads without holding a task or blocking local input between slices.
+const PREPARATION_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Clone)]
 pub struct OpenRequest {
@@ -49,6 +54,29 @@ pub struct OpenRequest {
 pub struct Opened {
     pub snapshot: SubscriptionOpenResult,
     pub batch: TranscriptBatch,
+}
+#[derive(Debug)]
+pub enum OpenError {
+    Preparing,
+    Failed(String),
+}
+impl From<RequestFailure> for OpenError {
+    fn from(error: RequestFailure) -> Self {
+        match error {
+            RequestFailure::Rejected(ClientError::Rejected(error))
+                if error.code == OperationErrorCode::TranscriptPreparing =>
+            {
+                Self::Preparing
+            }
+            error => Self::Failed(error.to_string()),
+        }
+    }
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenEffect {
+    None,
+    Ready(String),
+    Close(String),
 }
 #[derive(Clone)]
 pub struct PageRequest {
@@ -67,7 +95,8 @@ pub struct Chat {
     pub context: context::Context,
     pub session: Option<String>,
     generation: u64,
-    opening: bool,
+    opening: Option<u64>,
+    open_retry: Option<Instant>,
     requested: bool,
     pub subscription: Option<String>,
     pub snapshot: Option<SessionObservationSnapshot>,
@@ -162,6 +191,14 @@ impl Chat {
             ..Self::default()
         };
     }
+    pub fn disconnect(&mut self, error: String) {
+        self.generation += 1;
+        self.opening = None;
+        self.open_retry = None;
+        self.requested = false;
+        self.subscription = None;
+        self.error = Some(error);
+    }
     /// An explicit refresh after a read failure retries from the current tail;
     /// healthy refreshes keep the reading window. Drafts live outside Chat.
     pub fn refresh(&mut self) -> Option<String> {
@@ -172,11 +209,16 @@ impl Chat {
         self.select(&Route::Workspace)
     }
     pub fn open_query(&mut self) -> Option<OpenRequest> {
-        if self.opening || !self.requested || self.error.is_some() {
+        if self.opening.is_some()
+            || !self.requested
+            || self.error.is_some()
+            || self.open_retry.is_some_and(|at| at > Instant::now())
+        {
             return None;
         }
         let session = self.session.clone()?;
-        self.opening = true;
+        self.opening = Some(self.generation);
+        self.open_retry = None;
         self.requested = false;
         Some(OpenRequest {
             session,
@@ -184,16 +226,26 @@ impl Chat {
             range: self.restore_range,
         })
     }
-    /// Return stale subscription IDs for explicit release, never install them.
+    pub fn open_deadline(&self) -> Option<Instant> {
+        self.open_retry
+    }
+    /// Only the current owner may install or ready a subscription. Stale
+    /// successful opens still need explicit release on the same connection.
     pub fn opened(
         &mut self,
         request: OpenRequest,
-        result: Result<Opened, String>,
-    ) -> Option<String> {
-        self.opening = false;
+        result: Result<Opened, OpenError>,
+    ) -> OpenEffect {
         if request.generation != self.generation {
-            return result.ok().map(|opened| opened.snapshot.subscription_id);
+            if self.opening == Some(request.generation) {
+                self.opening = None;
+            }
+            return result.map_or(OpenEffect::None, |opened| {
+                OpenEffect::Close(opened.snapshot.subscription_id)
+            });
         }
+        self.opening = None;
+        self.open_retry = None;
         match result {
             Ok(opened) => {
                 let newest = opened
@@ -231,10 +283,17 @@ impl Chat {
                 {
                     self.error = Some(error.to_string());
                 }
+                if self.error.is_none() {
+                    return OpenEffect::Ready(self.subscription.clone().unwrap());
+                }
             }
-            Err(error) => self.error = Some(error),
+            Err(OpenError::Preparing) => {
+                self.requested = true;
+                self.open_retry = Some(Instant::now() + PREPARATION_INTERVAL);
+            }
+            Err(OpenError::Failed(error)) => self.error = Some(error),
         }
-        None
+        OpenEffect::None
     }
     pub fn can_older(&self) -> bool {
         self.older.is_some() && !self.paging && self.error.is_none()
@@ -720,33 +779,50 @@ fn validate_row(row: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn open(client: &Client, request: &OpenRequest) -> Result<Opened, Error> {
+pub async fn wait_for_open(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+pub async fn open(client: &Client, request: &OpenRequest) -> Result<Opened, OpenError> {
     let snapshot = client
         .open_subscription(SubscriptionOpenInput {
             session_id: request.session.clone(),
             transcript: TranscriptPolicy::Tail { max_bytes: 16_384 },
         })
-        .await?;
-    let result = if let Some(range) = request.range {
-        reading::restore(client, &snapshot.subscription_id, range).await
-    } else {
-        client
-            .complete_transcript_page(
-                &snapshot.subscription_id,
-                snapshot
-                    .transcript
-                    .as_ref()
-                    .ok_or("Transcript bootstrap missing")?
-                    .durable
-                    .clone(),
-            )
-            .await
-    };
+        .await
+        .map_err(OpenError::from)?;
+    let result = async {
+        if let Some(range) = request.range {
+            reading::restore(client, &snapshot.subscription_id, range).await
+        } else {
+            client
+                .complete_transcript_page(
+                    &snapshot.subscription_id,
+                    snapshot
+                        .transcript
+                        .as_ref()
+                        .ok_or("Transcript bootstrap missing")?
+                        .durable
+                        .clone(),
+                )
+                .await
+        }
+    }
+    .await;
     match result {
         Ok(batch) => Ok(Opened { snapshot, batch }),
         Err(error) => {
-            let _ = client.close_subscription(&snapshot.subscription_id).await;
-            Err(error)
+            if client
+                .close_subscription(&snapshot.subscription_id)
+                .await
+                .is_err()
+            {
+                client.disconnect();
+            }
+            Err(OpenError::Failed(error.to_string()))
         }
     }
 }
@@ -769,6 +845,7 @@ impl Chat {
 
 #[cfg(test)]
 mod tests {
+    mod preparing;
     use super::*;
     use maka_client::transcript::TranscriptRow;
     use serde_json::json;
@@ -1025,7 +1102,10 @@ mod tests {
         chat.restore_range = Some(saved_window);
         let request = chat.open_query().unwrap();
         assert_eq!(request.range, Some(saved_window));
-        chat.opened(request, Err("saved interval unavailable".into()));
+        chat.opened(
+            request,
+            Err(OpenError::Failed("saved interval unavailable".into())),
+        );
         chat.refresh();
         chat.select(&Route::Session("a".into()));
         assert!(chat.open_query().unwrap().range.is_none());
@@ -1054,7 +1134,10 @@ mod tests {
         chat.select(&Route::Session("b".into()));
         chat.select(&Route::Session("a".into()));
         assert!(chat.open_query().is_none());
-        assert_eq!(chat.opened(stale, Ok(opened())).as_deref(), Some("sub"));
+        assert_eq!(
+            chat.opened(stale, Ok(opened())),
+            OpenEffect::Close("sub".into())
+        );
         assert!(chat.snapshot.is_none());
         let current = chat.open_query().unwrap();
         chat.opened(current, Ok(opened()));

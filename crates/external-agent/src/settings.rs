@@ -60,10 +60,16 @@ enum Publication {
     Retired,
 }
 impl Manager {
-    pub async fn agent(&self, id: &str) -> Result<Agent, String> {
-        self.state
-            .lock()
-            .await
+    pub async fn agent_at_revision(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<Agent, String> {
+        let state = self.state.lock().await;
+        if expected.is_some() && state.configuration.revision != expected {
+            return Err("External agent configuration changed; check it again".into());
+        }
+        state
             .configuration
             .agents
             .iter()

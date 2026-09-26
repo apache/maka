@@ -20,6 +20,11 @@
 use super::*;
 
 impl App {
+    pub(crate) fn finish_transcript_frame(&mut self) {
+        for mount in self.apps.readers.mounts.values_mut() {
+            mount.view.finish_layout_frame();
+        }
+    }
     pub fn apps_transcript_mounts(&mut self) -> Vec<transport::Mount> {
         let crate::app::ConnectionState::Connected { root_id, epoch } = &self.connection else {
             self.apps.readers.mounts.clear();
@@ -43,7 +48,7 @@ impl App {
                 && instance.review.is_none()
                 && !instance.execution.is_nil();
             let mut resources = vec![];
-            resources_in(&view.root, "", &mut resources);
+            resources_in(&view.root, "", &instance.collections, &mut resources);
             for (path, resource) in resources {
                 wanted.push((
                     (key.clone(), path),
@@ -205,7 +210,12 @@ impl App {
     }
 }
 
-fn resources_in(node: &Node, parent: &str, out: &mut Vec<(String, wire::Resource)>) {
+fn resources_in(
+    node: &Node,
+    parent: &str,
+    collections: &crate::ui::Collections,
+    out: &mut Vec<(String, wire::Resource)>,
+) {
     let path = if parent.is_empty() {
         node.key().into()
     } else {
@@ -214,7 +224,18 @@ fn resources_in(node: &Node, parent: &str, out: &mut Vec<(String, wire::Resource
     if let Node::Transcript { resource, .. } = node {
         out.push((path.clone(), resource.clone()));
     }
-    for child in node.children() {
-        resources_in(child, &path, out);
+    if let Node::Collection { items, .. } = node {
+        let selected = super::super::tree::collection(collections, &path, node).selected();
+        for item in items {
+            if selected.as_ref() == Some(&item.key)
+                && let Some(panel) = &item.panel
+            {
+                resources_in(panel, &format!("{path}/{}", item.key), collections, out);
+            }
+        }
+    } else {
+        for child in node.children() {
+            resources_in(child, &path, collections, out);
+        }
     }
 }

@@ -164,7 +164,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         app.settings.single = single;
         app.mount_app_views();
     }
-    let (tree, wells) = tree(app, area.width);
+    let (mut tree, mut parts) = tree(app, area.width);
+    if app.sync_settings_reading(std::mem::take(&mut parts.scopes)) {
+        (tree, parts) = self::tree(app, area.width);
+    }
     let context = ui::Context {
         colors: app.theme.colors(),
         ascii: app.chrome.ascii,
@@ -177,12 +180,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .focused
         .then(|| app.settings.surface.focused().map(str::to_owned))
         .flatten();
-    crate::apps::paint_settings(frame, app, wells, focused.as_deref(), context.colors);
+    crate::apps::paint_settings(frame, app, parts.wells, focused.as_deref(), context.colors);
     app.settings.surface.repaint_popover(frame, &context);
 }
 
 /// A plugin's settings pane, under the column it shares with built-in rows.
-fn pane(app: &App, key: &crate::apps::Key, wells: &mut Vec<crate::apps::Well>) -> Node<Message> {
+fn pane(app: &App, key: &crate::apps::Key, parts: &mut crate::apps::Parts) -> Node<Message> {
     let node = key.node();
     let (children, found) = crate::apps::page::pane(
         app,
@@ -191,11 +194,11 @@ fn pane(app: &App, key: &crate::apps::Key, wells: &mut Vec<crate::apps::Well>) -
         ROWS,
         app.settings.surface.splits(),
     );
-    wells.extend(found);
+    parts.extend(found);
     Node::column(node, children).gap(1).map(&Message::App)
 }
 
-fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
+fn tree(app: &App, width: u16) -> (Node<Message>, crate::apps::Parts) {
     let two_panes = width >= TWO_PANES;
     let panes: Vec<_> = app
         .apps
@@ -213,10 +216,10 @@ fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
         })
         .collect();
     let category_width = CATEGORIES.min(width / 3);
-    let mut wells = vec![];
+    let mut parts = crate::apps::Parts::default();
     let rows: Vec<Node<Message>> = if two_panes {
         match app.navigation.location().settings_pane() {
-            Some(key) => vec![pane(app, key, &mut wells)],
+            Some(key) => vec![pane(app, key, &mut parts)],
             None => section(app, app.navigation.location().settings_category()),
         }
     } else {
@@ -235,7 +238,7 @@ fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
                 format!("{}-title", key.node()),
                 vec![(title.clone(), Tone::Strong)],
             ));
-            rows.push(pane(app, key, &mut wells));
+            rows.push(pane(app, key, &mut parts));
         }
         rows
     };
@@ -282,7 +285,7 @@ fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
         children.push(Node::rule("divider"));
     }
     children.push(pane);
-    (Node::row("settings", children).gap(2), wells)
+    (Node::row("settings", children).gap(2), parts)
 }
 
 /// What every settings row shows: an icon borrowed from its shell action, a

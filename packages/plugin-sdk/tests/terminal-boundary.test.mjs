@@ -67,7 +67,7 @@ test('ordinary JS app emits the same Boundary input and bottom action View as Ru
     },
   );
   const descriptor = f.registrations.find((entry) => entry.name === 'review').terminalView;
-  assert.equal(descriptor.version, 7);
+  assert.equal(descriptor.version, 8);
   const read = await p.invoke({ kind: 'read', route: null, locale: 'en' });
   assert.deepEqual(JSON.parse(JSON.stringify(read)), { kind: 'view', view: expected });
   const fields = { note: 'Updated\n中文' };

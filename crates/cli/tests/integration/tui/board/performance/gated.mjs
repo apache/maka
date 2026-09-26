@@ -52,7 +52,7 @@ export default async function activate(ctx) {
         {
           ...registration,
           async backend(request, cx) {
-            if (request.kind === 'read' && armed) {
+            if (name === 'board' && request.kind === 'read' && armed) {
               armed = false;
               pending = true;
               entered++;

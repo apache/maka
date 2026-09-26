@@ -23,7 +23,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 #[derive(Default)]
 pub(super) struct Scrollbar {
     geometry: Option<(Rect, usize)>,
-    drag: Option<(u16, usize)>,
+    drag: Option<(u16, usize, usize)>,
 }
 
 impl Transcript {
@@ -52,12 +52,16 @@ impl Transcript {
 
     pub(super) fn draw_scrollbar(&mut self, frame: &mut Frame<'_>, area: Rect, ascii: bool) {
         let geometry = Some((area, self.total));
-        if geometry != self.scrollbar.geometry {
-            // Reflow, folding and incoming pages invalidate the drag's scale.
+        if self
+            .scrollbar
+            .geometry
+            .is_some_and(|(previous, _)| previous != area)
+        {
             self.scrollbar.drag = None;
         }
         self.scrollbar.geometry = geometry;
         let Some((track, thumb)) = self.scrollbar_geometry() else {
+            self.scrollbar.drag = None;
             return;
         };
         for y in track.y..track.bottom() {
@@ -99,11 +103,15 @@ impl Transcript {
                         / travel)
                         .min(maximum)
                 };
-                self.scrollbar.drag = Some((event.row, top));
+                self.scrollbar.drag = Some((event.row, top, maximum));
                 top
             }
             MouseEventKind::Drag(MouseButton::Left) if self.scrollbar.drag.is_some() => {
-                let (row, top) = self.scrollbar.drag.unwrap();
+                let (row, top, original_maximum) = self.scrollbar.drag.unwrap();
+                // Measured heights refine while dragging. Keep the original
+                // proportional position rather than cancelling capture.
+                let top =
+                    (top as u128 * maximum as u128 / original_maximum.max(1) as u128) as usize;
                 let delta =
                     (i64::from(event.row) - i64::from(row)) * maximum as i64 / travel as i64;
                 (top as i64 + delta).clamp(0, maximum as i64) as usize
@@ -129,7 +137,7 @@ mod tests {
     #[test]
     fn track_drag_follow_resize_and_short_content_share_rendered_geometry() {
         let mut view = Transcript::default();
-        let rows = (0..30).map(|i| (i, json!({"id":format!("m{i}"),"turnId":"t","type":"assistant","text":format!("line {i}")}))).collect();
+        let rows = (0..30).map(|i| (i, json!({"id":format!("m{i}"),"turnId":"t","type":"assistant","text":format!("line {i}: {}", "x".repeat(67))}))).collect();
         let i18n = I18n::new(LocalePreference::Explicit(Locale::En), Locale::En);
         view.sync(&rows, &[], 0, &i18n, false);
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -157,7 +165,13 @@ mod tests {
         )));
         assert_eq!(view.top, 0);
         assert!(!view.following());
+        let estimated_total = view.total;
         draw(&mut view, &mut terminal);
+        assert_ne!(
+            view.total, estimated_total,
+            "newly measured rows refine the estimate"
+        );
+        assert!(view.scrollbar_dragging());
         assert!(view.scrollbar_mouse(mouse(
             MouseEventKind::Drag(MouseButton::Left),
             0,

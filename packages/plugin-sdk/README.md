@@ -156,7 +156,7 @@ Native endpoints accepting caller-supplied Host paths declare `Endpoint::requiri
 
 Host plugins use `ctx.tui.app(name, { entry, backend, resources? }, descriptor, options?)` to register a TUI application. `entry` names an immutable, prebuilt ESM file in the same package, without imports or top-level await; inline UI handlers are unsupported. Generic Remote methods and streams cannot declare `terminalView`. The descriptor selects `page`, `panel`, `status`, `settings`, or a named `slot`; its `context` is `application` or `session`. A view can embed `tui.slot(...)` to compose contributions from other plugins.
 
-The UI entry exports a default factory `({ tui }) => ({ read, submit, recover? })`, initialized once per stable document in its own VM. It receives only pure node and field builders; source creation, storage, services and jobs stay in the original business activation. `read(route, cx)` returns a View v7 body built with `tui` (columns, rows, splits, tabs, text, Markdown, controls and fields). The SDK adds the version. Stable sibling keys preserve focus and editing state; `cx.t(en, zhCN, zhTW)` selects the reader's language. The shell owns layout, local typing, scrolling, confirmation and draft recovery. Plugins use semantic tones and never emit terminal escapes.
+The UI entry exports a default factory `({ tui }) => ({ read, submit, recover? })`, initialized once per stable document in its own VM. It receives only pure node and field builders; source creation, storage, services and jobs stay in the original business activation. `read(route, cx)` returns a View v8 body built with `tui` (columns, rows, splits, tabs, text, Markdown, controls and fields). The SDK adds the version. Stable sibling keys preserve focus and editing state; `cx.t(en, zhCN, zhTW)` selects the reader's language. The shell owns layout, local typing, scrolling, confirmation and draft recovery. Plugins use semantic tones and never emit terminal escapes.
 
 The Host creates page VMs on demand, without a page-count quota. Each has a 128 MiB JavaScript heap limit and a 200 ms synchronous execution slice. These are execution budgets, not total process memory limits or a hostile-code sandbox. Hidden drafts do not reserve VMs; accepted writes retain their owner until settlement. A failed page stops observation and preserves its last valid view and loaded transcript for local reading. Rebinding is explicit and never replays an uncertain write. Page failure does not restart the package's business activation or sibling page VMs.
 
@@ -167,6 +167,8 @@ The Host creates page VMs on demand, without a page-count quota. Each has a 128 
 Tabs and columns of items each contribute one keyboard Tab stop; arrow keys move inside them. Reentering a group restores its last focused item. A list column may include decorative text, Markdown, code, rules or progress; put fields and buttons outside it so each remains reachable with Tab. Focus changes alone never submit an action or follow a plugin route.
 
 `cx` exposes only `locale`, `t`, `signal`, and `backend()`. The parameterless backend call may run at most once per invocation and forwards the exact original Read, Submit or Recover request and caller to this app’s private `backend(request, { locale, t, caller })`; initialization has no backend authority. Read returns a bounded JSON model for the UI to render. The backend retains the original Host permissions and must enforce business policy.
+
+A backend may return `{ kind: 'updated' }` from Submit when the accepted action must keep the current document and its streams, such as starting or cancelling sign-in. The shell settles that submission and reads the same route without replacing the document. Submitted fields are reset; unrelated local drafts survive readback and use the normal conflict review when needed. The receipt confirms the action, not the eventual background result. `{ kind: 'applied', route }` still completes the old form and opens a new document. Recovery cannot return `updated`: use a durable `applied` receipt and let the new page explain any transient state that must be checked again.
 
 `submit({ route, revision, action, fields, grant }, cx)` normally returns `cx.backend()`, as does `recover(route, cx)`. A valid backend receipt determines the Submit/Recover result even if the UI fails afterward; the UI cannot invent or replace it. Use the revision for storage CAS and enforce domain authority in the Host. Declare an action's `recovery` route only when `recover(route, cx)` can look up its durable outcome; the shell never blindly replays an uncertain write.
 
@@ -226,3 +228,15 @@ the actual selected identity is frozen with execution and restored on continuati
 `ctx.modelAdapters.register(name, open)` publishes a protocol adapter. `open('request' | 'conversation')` returns `stream(request, context)` and optional `confirm(history)`. Rust uses `maka_plugins::model::ProviderAdapter` and the same typed events, HTTP and WebSocket contracts. Model overrides select an adapter by `adapter`; defaults are `responses`, `chat-completions` and `anthropic-messages`.
 
 Host freezes the registration per logical step, resolves credentials, and owns admission, cancellation, budgets and canonical settlement. Adapters receive resolved secrets: do not log requests or credentials. They encode protocols, emit events with backpressure, and classify retry safety. HTTP bodies expire with their call; sockets belong to the disposable adapter session. Rebinding a socket uses the next call's transport. Changed routing identity invalidates cached connections. Missing or retired selections fail without silently switching implementation.
+
+`collection(key, { groups, items, filter, movement })` adds local filtering and
+card movement through the public kernel. Each item has a stable `key`, `group`,
+`title`, optional `summary` and optional ordinary `panel` subtree. Enter or a click
+opens only that item's panel; hidden panels do not start documents. Space picks up
+an item, arrows preview its destination, Enter commits, and Escape cancels.
+`movement` names an existing action and three distinct hidden single-line Text
+fields (`item_field`, `group_field`, `before_field`, each allowing 128 bytes).
+The action submits those keys with the existing revision/receipt contract; an empty
+before value appends. Typing, highlighting and drag previews make no backend call.
+Keep independent editable details in separate slot contributions so their drafts
+and unknown writes retain their own ownership. Collection requires View version 8.

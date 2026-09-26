@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(view.groups[&group].len(), 4);
         view.toggle(&group);
         draw(&mut view, 80, false);
-        let header_row = view.starts[0] - view.top;
+        let header_row = view.starts.start(0) - view.top;
         rows.insert(15, json!({"type":"tool_call","turnId":"turn","id":"exec",
             "toolName":"exec","origin":"provider","args":{"code":"await tools.Read({path:'b.rs'})"}}));
         view.trace = true;
@@ -440,7 +440,7 @@ mod tests {
         assert!(!view.folded(&group) && !view.folded(&first));
         assert_eq!(view.blocks[&first].indent, 2);
         draw(&mut view, 80, false);
-        assert_eq!(view.starts[0] - view.top, header_row);
+        assert_eq!(view.starts.start(0) - view.top, header_row);
         for locale in Locale::ALL {
             let i18n = I18n::new(LocalePreference::Explicit(locale), locale);
             view.invalidate_labels();

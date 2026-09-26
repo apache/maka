@@ -77,8 +77,7 @@ impl Transcript {
                     + block.text.capacity()
                     + block.changes.capacity() * std::mem::size_of::<layout::diff::Row>()
                     + block.file.as_ref().map_or(0, |file| file.path.capacity())
-                    + block.layout.as_ref().map_or(0, |layout| layout.bytes)
-                    + block.markdown.syntax_bytes()
+                    + block.geometry_bytes()
                     + block.reveal.bytes()
             })
             .sum::<usize>();
@@ -101,7 +100,19 @@ impl Transcript {
                 .iter()
                 .map(|(key, group)| key.bytes() + group.bytes())
                 .sum::<usize>()
-            + self.starts.capacity() * std::mem::size_of::<usize>()
+            + self.starts.bytes()
+            + self
+                .indexes
+                .keys()
+                .chain(&self.cached)
+                .chain(&self.pending_layouts)
+                .map(MessageKey::bytes)
+                .sum::<usize>()
+            + self.row_request.as_ref().map_or(0, |(key, _)| key.bytes())
+            + self
+                .anchor_row
+                .as_ref()
+                .map_or(0, |(anchor, _, _)| anchor.key.bytes())
             + self.text_selection.retained_bytes()
             + self
                 .search

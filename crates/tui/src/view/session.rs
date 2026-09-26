@@ -136,7 +136,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
         {
             app.chrome.animation.wake_after(wait);
         }
-        if let Some(wait) = app.chat.view.motion_wait() {
+        if let Some(wait) = app.chat.reader().and_then(|reader| reader.motion_wait()) {
             app.chrome.animation.wake_after(wait);
         }
     }

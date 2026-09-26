@@ -20,8 +20,10 @@
 //! Terminal-safe layout with source ranges; generated decoration has no source range.
 pub mod diff;
 mod fenced;
+pub mod prepared;
 pub mod syntax;
 mod table;
+mod wrap;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -69,7 +71,25 @@ pub struct Layout {
     pub text: String,
 }
 
+#[derive(Clone)]
 struct Writer {
+    recording: Option<Vec<prepared::Operation>>,
+    band: Option<prepared::Band>,
+    probe: Option<prepared::Probe>,
+    window: Option<Range<usize>>,
+    rows: usize,
+    solid_rows: usize,
+    max_cells: usize,
+    last_source: usize,
+    last_nonempty: bool,
+    nonempty: bool,
+    logical_line: bool,
+    logical_nonempty: bool,
+    logical_len: usize,
+    retain_text: bool,
+    word_wrap: bool,
+    lookahead: Option<(usize, usize)>,
+    max_grapheme: usize,
     colors: crate::theme::Palette,
     width: usize,
     lines: Vec<VisualLine>,
@@ -88,6 +108,23 @@ struct Writer {
 impl Writer {
     fn new(width: u16) -> Self {
         Self {
+            recording: None,
+            band: None,
+            probe: None,
+            window: None,
+            rows: 0,
+            solid_rows: 0,
+            max_cells: 0,
+            last_source: 0,
+            last_nonempty: false,
+            nonempty: false,
+            logical_line: false,
+            logical_nonempty: false,
+            logical_len: 0,
+            retain_text: true,
+            word_wrap: true,
+            lookahead: None,
+            max_grapheme: 1,
             colors: crate::theme::Palette::default(),
             width: usize::from(width.max(1)),
             lines: vec![],
@@ -103,44 +140,99 @@ impl Writer {
             word_break: false,
         }
     }
+    fn retaining(&self) -> bool {
+        self.window
+            .as_ref()
+            .is_none_or(|window| window.contains(&self.rows))
+    }
+    fn push_operation(&mut self, operation: prepared::Operation) -> Result<(), &'static str> {
+        self.bytes += std::mem::size_of::<prepared::Operation>() + operation.bytes();
+        if self.bytes > MAX_BYTES {
+            return Err("Prepared transcript exceeds local capacity");
+        }
+        self.recording
+            .as_mut()
+            .expect("recording writer")
+            .push(operation);
+        Ok(())
+    }
     fn flush(&mut self) -> Result<(), &'static str> {
+        if self.recording.is_some() {
+            return self.push_operation(prepared::Operation::Flush);
+        }
         if self.lines.len() >= MAX_LINES || self.bytes > MAX_BYTES {
             return Err("Transcript layout exceeds local capacity");
         }
-        self.bytes += std::mem::size_of::<VisualLine>();
-        let previous = self.lines.last().map_or(0, |line| line.source);
-        self.lines.push(VisualLine {
-            line: std::mem::take(&mut self.line),
-            source: self.source.take().unwrap_or(previous),
-            mapping: std::mem::take(&mut self.mapping),
-        });
+        self.max_cells = self.max_cells.max(self.cells);
+        let source = self.source.take().unwrap_or(self.last_source);
+        if let Some(probe) = &mut self.probe {
+            probe.anchor(source, self.rows);
+        }
+        if self.retaining() {
+            self.bytes += std::mem::size_of::<VisualLine>();
+            let mut line = VisualLine {
+                line: std::mem::take(&mut self.line),
+                source,
+                mapping: std::mem::take(&mut self.mapping),
+            };
+            if let Some(band) = &self.band {
+                self.bytes += band.apply(&mut line, self.rows, self.width);
+            }
+            self.lines.push(line);
+        }
+        self.rows += 1;
+        if self.nonempty || self.band.is_some() {
+            self.solid_rows = self.rows;
+        }
+        self.last_source = source;
+        self.last_nonempty = self.nonempty || self.band.is_some();
+        self.nonempty = false;
         self.cells = 0;
         self.display = 0;
         self.word_break = false;
+        self.lookahead = None;
         Ok(())
     }
     fn boundary(&mut self) -> Result<(), &'static str> {
-        if !self.line.spans.is_empty() {
+        if self.recording.is_some() {
+            self.push_operation(prepared::Operation::Boundary)?;
+        } else if self.nonempty {
             self.flush()?;
-            self.logical("\n");
+        }
+        // Soft wrapping must not change the semantic paragraph separators.
+        if self.logical_line {
+            self.observe_logical("\n", self.rows.saturating_sub(1));
+            self.append_logical("\n");
         }
         Ok(())
     }
     fn gap(&mut self) -> Result<(), &'static str> {
-        self.boundary()?;
-        if self
-            .lines
-            .last()
-            .is_some_and(|line| !line.line.spans.is_empty())
-        {
-            self.flush()?;
-            self.logical("\n");
+        if self.recording.is_some() {
+            self.push_operation(prepared::Operation::Gap)?;
+            if self.logical_line {
+                self.observe_logical("\n", self.rows.saturating_sub(1));
+                self.append_logical("\n");
+            }
+        } else {
+            self.boundary()?;
+            if self.last_nonempty {
+                self.flush()?;
+            }
+        }
+        if self.logical_nonempty {
+            self.observe_logical("\n", self.rows.saturating_sub(1));
+            self.append_logical("\n");
         }
         Ok(())
     }
     fn span(&mut self, text: &str) {
-        self.bytes += text.len();
         self.display += text.len();
+        self.nonempty = true;
+        self.logical_line = true;
+        if !self.retaining() {
+            return;
+        }
+        self.bytes += text.len();
         if let Some(last) = self
             .line
             .spans
@@ -155,9 +247,39 @@ impl Writer {
                 .push(Span::styled(text.to_owned(), self.style));
         }
     }
+    fn observe_logical(&mut self, text: &str, row: usize) {
+        if let Some(probe) = &mut self.probe {
+            probe.logical(self.logical_len..self.logical_len + text.len(), row);
+        }
+    }
     fn logical(&mut self, text: &str) {
-        self.bytes += text.len();
-        self.text.push_str(text);
+        self.observe_logical(text, self.rows);
+        if let Some(recording) = &mut self.recording {
+            // Capacity is checked by the next fallible write/boundary, including finish.
+            self.bytes += std::mem::size_of::<prepared::Operation>() + text.len();
+            recording.push(prepared::Operation::Logical(text.to_owned()));
+        }
+        self.append_logical(text);
+    }
+    fn append_logical(&mut self, text: &str) {
+        self.logical_len += text.len();
+        if self.retain_text {
+            let previous = self.text.capacity();
+            self.text.push_str(text);
+            self.bytes += if self.recording.is_some() {
+                self.text.capacity() - previous
+            } else {
+                text.len()
+            };
+        }
+        for ch in text.chars() {
+            if ch == '\n' {
+                self.logical_nonempty = self.logical_line;
+                self.logical_line = false;
+            } else {
+                self.logical_line = true;
+            }
+        }
     }
     fn mapped_span(
         &mut self,
@@ -166,9 +288,12 @@ impl Writer {
         exact: bool,
         logical: Range<usize>,
     ) {
+        if let Some(probe) = &mut self.probe {
+            probe.span(&source, &logical, self.rows);
+        }
         let start = self.display;
         self.span(text);
-        if logical.is_empty() || text.is_empty() {
+        if !self.retaining() || logical.is_empty() || text.is_empty() {
             return;
         }
         if let Some(last) = self.mapping.last_mut()
@@ -205,82 +330,28 @@ impl Writer {
         exact: bool,
         semantic: bool,
     ) -> Result<(), &'static str> {
-        for (offset, grapheme) in text.grapheme_indices(true) {
-            if self.bytes > MAX_BYTES {
-                return Err("Transcript layout exceeds local capacity");
-            }
-            let position = if exact {
-                source.start + offset
-            } else {
-                source.start
-            };
-            if grapheme == "\n" || grapheme == "\r\n" {
-                self.source.get_or_insert(position);
-                if semantic {
-                    self.logical("\n");
-                }
-                self.flush()?;
-                continue;
-            }
-            let safe = if grapheme == "\t" {
-                " ".repeat(4 - self.cells % 4)
-            } else {
-                crate::view::safe(grapheme)
-            };
-            let width = safe.width();
-            let space = matches!(grapheme, " " | "\t");
-            if semantic && space && self.cells + width > self.width && self.cells > 0 {
-                // A space that ends a visual line is kept in copied text but
-                // never carried over as indentation of the next line.
-                self.flush()?;
-                self.logical(grapheme);
-                continue;
-            }
-            if semantic && self.word_break && !space && width == 1 {
-                // Start an overflowing word on a fresh line; words longer than a
-                // line then break between graphemes there, like wide (CJK) text.
-                let word: usize = text[offset..]
-                    .graphemes(true)
-                    .map(|grapheme| crate::view::safe(grapheme).width())
-                    .zip(text[offset..].graphemes(true))
-                    .take_while(|(width, grapheme)| {
-                        *width == 1 && !matches!(*grapheme, " " | "\t" | "\n" | "\r" | "\r\n")
-                    })
-                    .map(|(width, _)| width)
-                    .sum();
-                if self.cells + word > self.width {
-                    self.flush()?;
-                }
-            }
-            if self.cells + width > self.width && self.cells > 0 {
-                self.flush()?;
-            }
-            if self.line.spans.is_empty() && self.indent > 0 {
-                let indent = self.indent.min(self.width.saturating_sub(width.max(1)));
-                self.span(&" ".repeat(indent));
-                self.cells = indent;
-            }
-            self.source.get_or_insert(position);
-            let logical = self.text.len();
-            if semantic {
-                self.logical(if grapheme == "\t" { "\t" } else { &safe });
-            }
-            let logical = logical..self.text.len();
-            let mapped = if exact {
-                position..position + grapheme.len()
-            } else {
-                source.clone()
-            };
-            if width > self.width {
-                self.mapped_span("?", mapped, false, logical); // A two-cell grapheme cannot fit here.
-                self.cells += 1;
-            } else {
-                self.mapped_span(&safe, mapped, exact && safe == grapheme, logical);
-                self.cells += width;
-            }
-            self.word_break = semantic && (space || width > 1);
+        if self.recording.is_some() {
+            return prepared::record(self, text, source, exact, semantic);
+        }
+        let mut offset = 0;
+        while offset < text.len() {
+            offset += self
+                .step(text, offset, &source, exact, semantic, usize::MAX)?
+                .consumed;
         }
         Ok(())
+    }
+    fn scalar_text(
+        &mut self,
+        text: &str,
+        source: Range<usize>,
+        exact: bool,
+    ) -> Result<(), &'static str> {
+        let previous = self.word_wrap;
+        self.word_wrap = false;
+        let result = self.text(text, source, exact);
+        self.word_wrap = previous;
+        result
     }
     fn finish(mut self, trim: bool) -> Result<Layout, &'static str> {
         self.boundary()?;
@@ -325,9 +396,13 @@ pub(super) fn markdown_part(
     trim: bool,
     code: &mut syntax::Cache,
 ) -> Result<Layout, &'static str> {
+    render_events(text, resolved_events(text), width, ascii, trim, code)
+}
+
+fn resolved_events(text: &str) -> impl Iterator<Item = (Event<'_>, Range<usize>)> {
     let mut events = Parser::new_ext(text, options()).into_offset_iter();
     let mut destinations = Vec::new();
-    let events = std::iter::from_fn(move || {
+    std::iter::from_fn(move || {
         let (event, mut range) = events.next()?;
         match &event {
             Event::Start(Tag::Link { id, .. } | Tag::Image { id, .. }) => {
@@ -346,8 +421,7 @@ pub(super) fn markdown_part(
             _ => {}
         }
         Some((event, range))
-    });
-    render_events(text, events, width, ascii, trim, code)
+    })
 }
 
 fn render_events<'a>(
@@ -360,6 +434,17 @@ fn render_events<'a>(
 ) -> Result<Layout, &'static str> {
     let mut writer = Writer::new(width);
     writer.colors = code_cache.colors;
+    render_events_into(text, events, ascii, code_cache, &mut writer)?;
+    writer.finish(trim)
+}
+
+fn render_events_into<'a>(
+    text: &str,
+    events: impl IntoIterator<Item = (Event<'a>, Range<usize>)>,
+    ascii: bool,
+    code_cache: &mut syntax::Cache,
+    writer: &mut Writer,
+) -> Result<(), &'static str> {
     let mut styles = Vec::new();
     let mut lists: Vec<Option<u64>> = Vec::new();
     let mut links = Vec::new();
@@ -367,7 +452,7 @@ fn render_events<'a>(
     while let Some((event, range)) = events.next() {
         if let Event::Start(Tag::CodeBlock(kind)) = event {
             fenced::render(
-                &mut writer,
+                writer,
                 text,
                 kind,
                 range.start,
@@ -378,7 +463,7 @@ fn render_events<'a>(
             continue;
         }
         if let Event::Start(Tag::Table(alignments)) = event {
-            table::render(&mut writer, text, alignments, &mut events, ascii)?;
+            table::render(writer, text, alignments, &mut events, ascii)?;
             continue;
         }
         match event {
@@ -457,7 +542,7 @@ fn render_events<'a>(
                                 .map_or(range.end, |offset| range.start + offset);
                             writer.text(" (", start..start, false)?;
                             if start < range.end {
-                                mapped(&mut writer, text, &url, start..range.end)?;
+                                mapped(writer, text, &url, start..range.end)?;
                             } else {
                                 writer.text(&url, start..start, false)?;
                             }
@@ -469,18 +554,18 @@ fn render_events<'a>(
                 }
             }
             Event::Text(value) | Event::Html(value) | Event::InlineHtml(value) => {
-                mapped(&mut writer, text, &value, range)?;
+                mapped(writer, text, &value, range)?;
             }
             Event::Code(value) => {
                 let style = writer.style;
                 writer.style = style.fg(writer.colors.warning);
-                code(&mut writer, text, &value, range)?;
+                code(writer, text, &value, range)?;
                 writer.style = style;
             }
             Event::InlineMath(value) | Event::DisplayMath(value) => {
                 let style = writer.style;
                 writer.style = style.fg(writer.colors.warning);
-                mapped(&mut writer, text, &value, range)?;
+                mapped(writer, text, &value, range)?;
                 writer.style = style;
             }
             Event::SoftBreak => writer.text(" ", range, false)?,
@@ -502,7 +587,7 @@ fn render_events<'a>(
             Event::FootnoteReference(value) => writer.text(&value, range, false)?,
         }
     }
-    writer.finish(trim)
+    Ok(())
 }
 
 /// Top-level headings take distinct accents; deeper levels recede to text grays.
@@ -575,7 +660,7 @@ fn code(
     for (offset, grapheme) in body[first..body.len() - last].grapheme_indices(true) {
         let start = range.start + ticks + first + offset;
         let newline = matches!(grapheme, "\n" | "\r" | "\r\n");
-        writer.text(
+        writer.scalar_text(
             if newline { " " } else { grapheme },
             start..start + grapheme.len(),
             !newline,

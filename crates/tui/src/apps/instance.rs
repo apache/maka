@@ -82,6 +82,8 @@ pub struct Instance {
     pub(super) generation: u64,
     /// Transient page execution lifetime, independent of per-request fences.
     pub(super) execution: uuid::Uuid,
+    /// Changes only when arrive resets reading, independently of document lifetime.
+    pub(super) reading_epoch: uuid::Uuid,
     /// The binding this instance reads through; none until the directory
     /// names the entry that serves its key.
     pub(super) entry: Option<TerminalViewProjection>,
@@ -102,6 +104,8 @@ pub struct Instance {
     /// The request in flight is a plain read, which the reader may overtake.
     pub(super) reading: bool,
     pub(super) writing: bool,
+    /// Accepted action awaiting readback; retirement never restores backend state.
+    pub(super) updated: bool,
     pub(super) blocked: bool,
     /// A change arrived while the view could not be read again.
     pub(super) stale: bool,
@@ -111,8 +115,10 @@ pub struct Instance {
     pub(super) message: Option<Notice>,
     /// Focus and scroll of the page this instance fills, when it has one.
     pub surface: ui::Surface<Message>,
+    pub collections: ui::Collections,
     /// Where the last frame put each text field of the page.
     pub(super) wells: Vec<tree::Well>,
+    pub(super) scopes: Vec<super::reading::Scope>,
 }
 
 impl Instance {
@@ -125,6 +131,24 @@ impl Instance {
         };
         instance.arrive();
         instance
+    }
+    pub(super) fn settle_updated_fields(&mut self, input: &Input) {
+        if let Input::Submit { fields, .. } = input {
+            for id in fields.keys() {
+                if let Some(field) = self.view.as_ref().and_then(|view| view.field(id)) {
+                    self.drafts
+                        .insert(id.clone(), drafts::value(&field.control));
+                    if let Some(editor) = self.editors.get_mut(id)
+                        && let Control::Text { value, .. } = &field.control
+                    {
+                        let old = editor.text().to_owned();
+                        editor.clear_if_unchanged(&old);
+                        editor.insert(value);
+                        editor.clear_history();
+                    }
+                }
+            }
+        }
     }
     fn dirty_field(&self, field: &Field) -> bool {
         self.drafts.get(&field.id) != Some(&drafts::value(&field.control))
@@ -152,11 +176,41 @@ impl Instance {
     /// Drops a read in flight so the reader's own action goes first; reads
     /// replay safely, and its late result no longer applies.
     pub(super) fn overtake(&mut self) {
-        if self.refreshing() {
+        if self.refreshing() && !self.updated {
             self.generation += 1;
             self.busy = false;
             self.reading = false;
         }
+    }
+    /// Actual ownership retirement is independent of local edit/read arbitration.
+    /// A settled Updated receipt may need a fresh read later, never a replayed write.
+    pub(super) fn retire_execution(&mut self) {
+        // A cached view must reopen its observation after its document retires.
+        self.stale |= !self.execution.is_nil() && (self.view.is_some() || self.reading);
+        if self.updated && self.dirty() {
+            self.result = None;
+        }
+        if self.reading {
+            self.generation += 1;
+            self.busy = false;
+            self.reading = false;
+        }
+        if matches!(
+            self.pending,
+            Some(
+                Work::Call {
+                    input: Input::Read { .. },
+                    ..
+                } | Work::Rebind {
+                    input: Input::Read { .. },
+                    ..
+                }
+            )
+        ) {
+            self.pending = None;
+            self.stale = true;
+        }
+        self.execution = uuid::Uuid::nil();
     }
     pub(super) fn read(&mut self, locale: &str) {
         if self.live.is_none() {
@@ -172,6 +226,10 @@ impl Instance {
         });
     }
     pub(super) fn fail_read(&mut self, notice: Notice) {
+        if self.updated && self.dirty() {
+            self.result = None;
+        }
+        self.updated = false;
         let retained = self.keeps();
         self.live = None;
         self.blocked = retained;
@@ -180,16 +238,25 @@ impl Instance {
     }
     /// Another place: a fresh surface starts at its top, focus on its content.
     pub(super) fn arrive(&mut self) {
+        self.updated = false;
+        // A clean new execution cannot inherit a retired binding's diagnostic.
+        // Its initial read may be deferred while this view remains hidden.
+        self.message = None;
         self.execution = uuid::Uuid::new_v4();
+        self.reading_epoch = self.execution;
         // A route's controls and revision must never serve its destination.
         self.view = None;
         self.drafts.clear();
         self.editors.clear();
         self.surface = ui::Surface::default();
+        self.collections = ui::Collections::default();
         self.surface.start_at(super::page::BODY);
         self.wells.clear();
+        self.scopes.clear();
     }
     pub(super) fn install(&mut self, view: View) {
+        self.updated = false;
+        self.collections.retain(&tree::collection_paths(&view));
         self.drafts.clear();
         let mut previous = std::mem::take(&mut self.editors);
         for field in &view.fields {
@@ -230,9 +297,23 @@ impl Instance {
         if self.live.is_none() || self.blocked || self.review.is_some() {
             return false;
         }
+        if self.updated && matches!(intent, Intent::Submit(_) | Intent::Commit(_)) {
+            return false;
+        }
         match intent {
             // Every destination has its own instance; edits stay at this address.
             Intent::Navigate(_) => true,
+            Intent::Select(path) => matches!(
+                view.node_at(path),
+                Some(maka_plugins::terminal_ui::view::Node::Collection { .. })
+            ),
+            Intent::Move(path) => match view.node_at(path) {
+                Some(maka_plugins::terminal_ui::view::Node::Collection {
+                    movement: Some(binding),
+                    ..
+                }) => self.offered(&Intent::Submit(binding.action.clone())),
+                _ => false,
+            },
             Intent::Submit(id) => view.action(id).is_some_and(|action| {
                 action.enabled
                     && view
@@ -326,6 +407,10 @@ impl Instance {
     }
     /// Revokes every operation on the old registration but keeps drafts.
     pub(super) fn disconnect(&mut self) {
+        if self.updated && self.dirty() {
+            self.result = None;
+        }
+        self.updated = false;
         self.execution = uuid::Uuid::nil();
         self.live = None;
         self.saving = false;

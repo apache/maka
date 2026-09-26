@@ -41,6 +41,8 @@ pub enum Reply {
     Applied {
         route: Value,
     },
+    /// Submit receipt that retains the current document for readback.
+    Updated {},
     Conflict,
     Rejected {
         message: Text,
@@ -58,6 +60,7 @@ impl Reply {
                 view: page.view(locale),
             },
             Self::Applied { route } => view::Reply::Applied { route },
+            Self::Updated {} => view::Reply::Updated {},
             Self::Conflict => view::Reply::Conflict,
             Self::Rejected { message } => view::Reply::Rejected {
                 message: message.resolve(locale).into(),

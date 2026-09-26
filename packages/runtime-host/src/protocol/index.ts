@@ -121,7 +121,7 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Native bundle bindings and whole-catalog invalidation require matching clients.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 195 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 196 as const;
 export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 768 * 1024;
 export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
 export const INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID = 'maka.interactive' as const;

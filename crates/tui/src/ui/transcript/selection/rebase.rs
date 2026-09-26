@@ -19,11 +19,54 @@
 
 use super::*;
 
+/// Width-independent mapping between two immutable semantic revisions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui::transcript) enum Rebase {
+    Unchanged,
+    Changed {
+        prefix: usize,
+        old_end: usize,
+        new_end: usize,
+    },
+}
+
+/// Full-text work belongs on the preparation lane for large revisions.
+pub(in crate::ui::transcript) fn compute(old: &str, new: &str) -> Rebase {
+    if old == new {
+        return Rebase::Unchanged;
+    }
+    let prefix: usize = old
+        .graphemes(true)
+        .zip(new.graphemes(true))
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len())
+        .sum();
+    let suffix: usize = old[prefix..]
+        .graphemes(true)
+        .rev()
+        .zip(new[prefix..].graphemes(true).rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len())
+        .sum();
+    Rebase::Changed {
+        prefix,
+        old_end: old.len() - suffix,
+        new_end: new.len() - suffix,
+    }
+}
+
 impl Selection {
     pub(in crate::ui::transcript) fn references(&self, key: &MessageKey) -> bool {
-        self.drag
-            .as_ref()
-            .is_some_and(|drag| &drag.anchor.key == key)
+        self.loading.as_ref() == Some(key)
+            || self
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.key.as_ref())
+                == Some(key)
+            || self
+                .drag
+                .as_ref()
+                .is_some_and(|drag| &drag.anchor.key == key)
             || self
                 .extent
                 .as_ref()
@@ -34,24 +77,19 @@ impl Selection {
     /// Preserve gestures only within unchanged grapheme prefixes/suffixes.
     /// A changed selected body is invalidated, never silently copied as new text.
     pub(in crate::ui::transcript) fn rebase(&mut self, key: &MessageKey, old: &str, new: &str) {
-        if old == new {
+        self.apply_rebase(key, &compute(old, new));
+    }
+
+    pub(in crate::ui::transcript) fn apply_rebase(&mut self, key: &MessageKey, rebase: &Rebase) {
+        let Rebase::Changed {
+            prefix,
+            old_end,
+            new_end,
+        } = *rebase
+        else {
             return;
-        }
-        let prefix: usize = old
-            .graphemes(true)
-            .zip(new.graphemes(true))
-            .take_while(|(a, b)| a == b)
-            .map(|(a, _)| a.len())
-            .sum();
-        let suffix: usize = old[prefix..]
-            .graphemes(true)
-            .rev()
-            .zip(new[prefix..].graphemes(true).rev())
-            .take_while(|(a, b)| a == b)
-            .map(|(a, _)| a.len())
-            .sum();
-        let old_end = old.len() - suffix;
-        let new_end = new.len() - suffix;
+        };
+        self.movement = None;
         let range = |range: &Range<usize>| {
             if range.end <= prefix {
                 Some(range.clone())
@@ -101,3 +139,6 @@ impl Selection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

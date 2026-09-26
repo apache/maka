@@ -22,6 +22,7 @@ export default function create(initial) {
   factories++;
   if (Object.keys(initial).join(',') !== 'tui') throw new Error('Ambient initialization authority');
   const { tui } = initial;
+  let updates = 0;
   let reads = 0,
     previous,
     lateRejected = 0;
@@ -50,6 +51,7 @@ export default function create(initial) {
           'value',
           JSON.stringify({
             factories,
+            updates,
             reads: ++reads,
             lateRejected,
             model,
@@ -62,7 +64,8 @@ export default function create(initial) {
       if (input.action === 'fake') return { kind: 'applied', route: { operation: 'forged' } };
       input.fields.note = 'UI tampered';
       const receipt = await cx.backend();
-      if (input.action === 'after-loop') {
+      if (receipt.kind === 'updated') updates++;
+      if (input.action === 'after-loop' || input.action === 'updated-after-loop') {
         while (true) {}
       }
       if (input.action === 'override') return { kind: 'applied', route: { operation: 'forged' } };

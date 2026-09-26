@@ -59,6 +59,17 @@ pub(crate) fn clear_overlay(frame: &mut Frame<'_>, area: Rect) {
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    let _work = crate::ui::transcript::frame_work::begin();
+    draw_content(frame, app);
+    app.chat.view.finish_layout_frame();
+    if let Some(history) = &mut app.chat.history
+        && let Some(preview) = &mut history.preview
+    {
+        preview.finish_layout_frame();
+    }
+    app.finish_transcript_frame();
+}
+fn draw_content(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     app.begin_frame(area);
     let animated =

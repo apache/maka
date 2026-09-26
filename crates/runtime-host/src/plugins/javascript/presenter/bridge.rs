@@ -66,7 +66,10 @@ impl Guard {
         }
         let reply: Reply = serde_json::from_value(value.clone()).map_err(invalid)?;
         reply.validate().map_err(invalid)?;
-        if matches!(reply, Reply::Applied { .. } | Reply::Unrecorded) {
+        if matches!(
+            reply,
+            Reply::Updated {} | Reply::Applied { .. } | Reply::Unrecorded
+        ) {
             return Err(invalid("a terminal Read cannot produce a mutation outcome"));
         }
         Ok(value)

@@ -75,6 +75,8 @@ pub struct Choice<M> {
 
 #[derive(Clone)]
 pub enum On<M> {
+    /// Local collection controls share one state with their presenter.
+    Collection(super::collection::Control<M>),
     /// Click, Enter or Space emits the action.
     Activate(M),
     /// Opens a kernel-owned popover; picking a choice emits its action.
@@ -131,6 +133,16 @@ pub enum Kind<M> {
     Scroll(Box<Node<M>>),
 }
 
+impl<M> On<M> {
+    pub(super) fn focusable(&self, enabled: bool) -> bool {
+        enabled
+            && !matches!(
+                self,
+                Self::Collection(super::collection::Control::Destination { .. })
+            )
+    }
+}
+
 /// A keyed node. Keys identify interaction state (focus, hover, scroll) across
 /// frames, so they must be stable and unique among siblings; positions,
 /// translated labels and coordinates are never identities.
@@ -158,6 +170,40 @@ pub struct Node<M> {
 }
 
 impl<M> Node<M> {
+    pub(crate) fn required_height(&self, width: u16) -> u16 {
+        super::layout::required_height(self, width)
+    }
+
+    /// Whether active content needs viewport height. Scroll owns its content's
+    /// height; hidden panels and unfilled slots are absent from the native tree.
+    pub(crate) fn has_transcript(&self) -> bool {
+        match &self.kind {
+            Kind::Transcript { .. } => true,
+            Kind::Column { children, .. } | Kind::Row { children, .. } => {
+                children.iter().any(Self::has_transcript)
+            }
+            Kind::Boundary { body, .. } => body.has_transcript(),
+            _ => false,
+        }
+    }
+
+    /// Controls in the built tree include dynamically filled slots.
+    pub(crate) fn interactive(&self) -> bool {
+        self.on
+            .as_ref()
+            .is_some_and(|on| on.focusable(self.enabled))
+            || match &self.kind {
+                Kind::Column { children, .. } | Kind::Row { children, .. } => {
+                    children.iter().any(Self::interactive)
+                }
+                Kind::Boundary { body, bottom, .. } => {
+                    body.interactive() || bottom.as_ref().is_some_and(|node| node.interactive())
+                }
+                Kind::Scroll(child) => child.interactive(),
+                _ => false,
+            }
+    }
+
     fn new(key: impl Into<Cow<'static, str>>, kind: Kind<M>) -> Self {
         Self {
             key: key.into(),
@@ -344,6 +390,7 @@ impl<M> Node<M> {
         };
         let on = self.on.map(|on| match on {
             On::Activate(message) => On::Activate(f(message)),
+            On::Collection(control) => On::Collection(control.map(f)),
             On::Choose { choices, current } => On::Choose {
                 choices: choices
                     .into_iter()

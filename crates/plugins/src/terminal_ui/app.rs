@@ -120,6 +120,7 @@ impl<A: App> Method for Served<A> {
                 words: Words::new(request.locale()),
                 caller,
             };
+            let submitting = matches!(&request, Request::Submit { .. });
             let reply = match request {
                 Request::Read { route, .. } => Reply::View {
                     view: app.read(route, cx).await?,
@@ -143,6 +144,11 @@ impl<A: App> Method for Served<A> {
                     app.submit(submission, cx).await?
                 }
             };
+            if matches!(reply, Reply::Updated {}) && !submitting {
+                return Err(Error::Invalid(
+                    "Updated is only a submission receipt".into(),
+                ));
+            }
             // An app that builds an invalid view fails here, in the Host,
             // never as a half-drawn page in a shell.
             reply

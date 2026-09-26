@@ -38,6 +38,9 @@ const BODY: &str = "inspector/body/panels";
 pub(crate) const INSPECTOR: u16 = 40;
 const CONVERSATION: u16 = 80;
 
+#[cfg(test)]
+mod reading_tests;
+
 impl super::Apps {
     /// Session views of one placement, in their declared order.
     pub(crate) fn session_views(&self, placement: &Placement) -> Vec<&TerminalViewProjection> {
@@ -128,20 +131,16 @@ pub fn draw_inspector(frame: &mut Frame<'_>, app: &mut App, area: Rect, session:
                 .is_some_and(tree::blank)
         })
         .collect();
-    let mut panels = vec![];
-    let mut wells = vec![];
-    for key in &keys {
-        let (node, found) = panel(app, key, width);
-        panels.push(node);
-        wells.extend(found);
+    let (mut tree, mut parts) = inspector(app, &keys, width);
+    if super::reading::sync(
+        &mut app.apps.instances,
+        &mut app.apps.inspector,
+        &mut app.apps.inspector_scopes,
+        std::mem::take(&mut parts.scopes),
+    ) {
+        (tree, parts) = inspector(app, &keys, width);
     }
-    let tree = Node::scroll(
-        "body",
-        Node::column("panels", panels)
-            .gap(2)
-            .size(Size::Fixed(width)),
-    );
-    let tree = Node::column("inspector", vec![tree]);
+    let wells = parts.wells;
     let context = context(app, app.focus == Focus::Inspector);
     let mut surface = std::mem::take(&mut app.apps.inspector);
     surface.render_motion(frame, area, tree, context, &mut app.chrome.animation);
@@ -173,10 +172,27 @@ pub fn draw_inspector(frame: &mut Frame<'_>, app: &mut App, area: Rect, session:
     app.apps.inspector_wells = wells;
 }
 
-fn panel(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
+fn inspector(app: &App, keys: &[Key], width: u16) -> (Node<Message>, tree::Parts) {
+    let mut panels = vec![];
+    let mut parts = tree::Parts::default();
+    for key in keys {
+        let (node, found) = panel(app, key, width);
+        panels.push(node);
+        parts.extend(found);
+    }
+    let body = Node::scroll(
+        "body",
+        Node::column("panels", panels)
+            .gap(2)
+            .size(Size::Fixed(width)),
+    );
+    (Node::column("inspector", vec![body]), parts)
+}
+
+fn panel(app: &App, key: &Key, width: u16) -> (Node<Message>, tree::Parts) {
     let node = key.node();
     let Some(instance) = app.apps.instances.get(key) else {
-        return (Node::column(node, vec![]), vec![]);
+        return (Node::column(node, vec![]), tree::Parts::default());
     };
     let locale = app.i18n.locale().id();
     let message = |command: Command| Message::Instance(key.clone(), command);
@@ -215,7 +231,7 @@ fn panel(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
         ));
     }
     let mut children = vec![Node::row("head", head).gap(1)];
-    let (pane, wells) = super::page::pane(
+    let (pane, parts) = super::page::pane(
         app,
         key,
         &format!("{BODY}/{node}"),
@@ -223,7 +239,7 @@ fn panel(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
         app.apps.inspector.splits(),
     );
     children.extend(pane);
-    (Node::column(node, children).gap(1), wells)
+    (Node::column(node, children).gap(1), parts)
 }
 
 /// One quiet line: each status view's icon, which reveals its panel, and
@@ -286,6 +302,7 @@ fn status(app: &App, key: &Key, width: u16) -> Node<Message> {
     if let Some(view) = &instance.view {
         let offered = |intent: &Intent| instance.offered(intent);
         let env = tree::Env {
+            collections: &instance.collections,
             readers: &app.apps.readers,
             splits: app.apps.status.splits(),
             resources_live: instance.live.is_some() && !instance.blocked,
@@ -321,6 +338,7 @@ impl App {
             && !over
             && !self.apps.inspector.captures()
             && !self.apps.inspector.dragging_split()
+            && !self.apps.inspector.dragging_collection()
         {
             return None;
         }

@@ -56,3 +56,6 @@ syntect = { version = "5.3.0", default-features = false, features = ["default-sy
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

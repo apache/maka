@@ -25,6 +25,7 @@ use crate::{
 use maka_plugins::terminal_ui::{Placement, view::Reply};
 use serde_json::json;
 
+mod embedded;
 mod native;
 
 fn oversized() -> Navigation {

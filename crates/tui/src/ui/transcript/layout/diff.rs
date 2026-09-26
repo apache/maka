@@ -34,6 +34,7 @@ pub struct Row {
 }
 
 /// The diff gutter is decoration, never copied or searched as file content.
+#[cfg(test)]
 pub fn render(text: &str, rows: &[Row], width: u16, ascii: bool) -> Result<Layout, &'static str> {
     render_colored(text, rows, width, ascii, crate::theme::Palette::default())
 }
@@ -73,7 +74,7 @@ pub fn render_colored(
                 .peek()
                 .filter(|token| token.range.contains(&start))
                 .map_or(base, |token| base.patch(token.style(colors)));
-            writer.text(grapheme, start..start + grapheme.len(), true)?;
+            writer.scalar_text(grapheme, start..start + grapheme.len(), true)?;
         }
         writer.boundary()?;
         for (index, line) in writer.lines[first_line..].iter_mut().enumerate() {
@@ -104,6 +105,53 @@ pub fn render_colored(
     let mut layout = writer.finish(true)?;
     layout.bytes += std::mem::size_of_val(rows);
     Ok(layout)
+}
+
+pub(super) fn prepare(
+    writer: &mut Writer,
+    text: &str,
+    rows: &[Row],
+    ascii: bool,
+    colors: crate::theme::Palette,
+) -> Result<(), &'static str> {
+    let tokens = code_tokens(text, rows);
+    let mut tokens = tokens.iter().peekable();
+    let mut offset = 0;
+    for row in rows {
+        writer.text(
+            &text[offset..row.source.start],
+            offset..row.source.start,
+            true,
+        )?;
+        writer.boundary()?;
+        let (marker, color) = match row.kind {
+            Kind::Removed => (if ascii { "- " } else { "− " }, colors.error),
+            Kind::Added => ("+ ", colors.success),
+            Kind::Context | Kind::Content => ("  ", Color::Reset),
+        };
+        let base = colors.base().bg(background(colors, row.kind));
+        writer.push_operation(prepared::Operation::DiffStart {
+            marker,
+            color,
+            base,
+        })?;
+        for (local, grapheme) in text[row.source.clone()].grapheme_indices(true) {
+            let start = row.source.start + local;
+            while tokens.peek().is_some_and(|token| token.range.end <= start) {
+                tokens.next();
+            }
+            writer.style = tokens
+                .peek()
+                .filter(|token| token.range.contains(&start))
+                .map_or(base, |token| base.patch(token.style(colors)));
+            writer.scalar_text(grapheme, start..start + grapheme.len(), true)?;
+        }
+        writer.boundary()?;
+        writer.push_operation(prepared::Operation::DiffEnd)?;
+        writer.style = Style::default();
+        offset = row.source.end;
+    }
+    writer.text(&text[offset..], offset..text.len(), true)
 }
 
 fn background(colors: crate::theme::Palette, kind: Kind) -> Color {
