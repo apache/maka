@@ -110,11 +110,10 @@ import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event'
 import {
   scanToolLedger,
   referencedToolOperationIds,
-  ToolLedgerReducer,
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
   validateGenericToolLedgerAppend,
-  validateIncrementalToolLedgerTransition,
+  validateToolLedgerTransition,
   type ToolLedgerTransitionKind,
 } from '@maka/core/tool-ledger-scanner';
 import {
@@ -191,12 +190,6 @@ export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
 const RECOVERY_MESSAGE_QUERY_BATCH_SIZE = 400;
-const TOOL_LEDGER_CACHE_EVENT_OVERHEAD_BYTES = 1024;
-const DEFAULT_TOOL_LEDGER_CACHE_BUDGET: ToolLedgerCacheBudget = {
-  maxEntries: 32,
-  maxEstimatedBytes: 16 * 1024 * 1024,
-  maxSingleEntryEstimatedBytes: 8 * 1024 * 1024,
-};
 const IMMUTABLE_STEERING_SQL_PREDICATE = `
   event_kind = 'text'
   AND CASE
@@ -232,23 +225,6 @@ function requireRuntimeEventScanCount(value: unknown): number {
     throw new Error('Invalid RuntimeEvent scan measurement');
   }
   return value as number;
-}
-
-function normalizeToolLedgerCacheBudget(
-  override: Partial<ToolLedgerCacheBudget> | undefined,
-): ToolLedgerCacheBudget {
-  const budget = { ...DEFAULT_TOOL_LEDGER_CACHE_BUDGET, ...override };
-  for (const [name, value] of Object.entries(budget)) {
-    if (!Number.isSafeInteger(value) || value < 1) {
-      throw new Error(`Invalid tool ledger cache ${name}`);
-    }
-  }
-  return budget;
-}
-
-function estimateToolLedgerCacheBytes(storedPayloadBytes: number, eventCount: number): number {
-  const estimate = storedPayloadBytes * 2 + eventCount * TOOL_LEDGER_CACHE_EVENT_OVERHEAD_BYTES;
-  return Number.isSafeInteger(estimate) ? estimate : Number.MAX_SAFE_INTEGER;
 }
 
 const require = createRequire(import.meta.url);
@@ -295,8 +271,6 @@ export interface SqliteRuntimeStoreOptions {
   readOnly?: boolean;
   /** @internal Repository connection supplied by the operational DB owner. */
   databaseLease?: OperationalStateDatabaseLease;
-  /** @internal Test and benchmark override; production uses the fixed default budget. */
-  toolLedgerCacheBudget?: Partial<ToolLedgerCacheBudget>;
 }
 
 export interface RuntimeEventBatchImportResult {
@@ -343,23 +317,6 @@ export class SqliteRuntimeStore
   readonly workspaceVersionAuthorityCapability = WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
   private readonly db: DatabaseSync;
   private readonly databaseLease?: OperationalStateDatabaseLease;
-  private readonly toolLedgerCacheBudget: ToolLedgerCacheBudget;
-  private readonly toolLedgerCache = new Map<string, ToolLedgerCacheEntry>();
-  private toolLedgerCacheEstimatedBytes = 0;
-  private toolLedgerCacheEventCount = 0;
-  private readonly toolLedgerCacheMetrics: ToolLedgerCacheMetrics = {
-    hits: 0,
-    misses: 0,
-    budgetEvictions: 0,
-    terminalEvictions: 0,
-    transientEntries: 0,
-  };
-  private readonly uncommittedToolLedgerStates = new Map<
-    ToolLedgerReducer,
-    UncommittedToolLedgerState
-  >();
-  private toolLedgerCacheVersion: string | undefined;
-  private localCommittedWriteRevision = 0;
   private closed = false;
   private readonly uncommittedEventSessions = new Set<string>();
   private readonly eventCommitListeners = new Set<(sessionId: string) => void>();
@@ -368,7 +325,6 @@ export class SqliteRuntimeStore
     path: string,
     private readonly options: SqliteRuntimeStoreOptions = {},
   ) {
-    this.toolLedgerCacheBudget = normalizeToolLedgerCacheBudget(options.toolLedgerCacheBudget);
     if (options.readOnly && options.databaseLease) {
       throw new Error('Operational state database leases cannot be opened read-only');
     }
@@ -437,8 +393,6 @@ export class SqliteRuntimeStore
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.clearToolLedgerCache();
-    this.uncommittedToolLedgerStates.clear();
     if (this.databaseLease) this.databaseLease.close();
     else this.db.close();
   }
@@ -501,7 +455,6 @@ export class SqliteRuntimeStore
       ) {
         throw new Error('Terminal RuntimeEvent must be the immutable ledger tail');
       }
-      this.invalidateToolLedgerCacheForInvocation(canonicalEvent.invocationId);
       return;
     }
     const existingTerminal = existing.find(isTerminalRuntimeEvent);
@@ -4044,13 +3997,7 @@ export class SqliteRuntimeStore
 
   private transaction<T>(operation: () => T): T {
     if (this.databaseLease) {
-      const nested = this.db.isTransaction;
-      return this.databaseLease.transaction('write', () => {
-        // A sibling lease may have changed the shared transaction view since
-        // this store last used its reconstructible cache.
-        if (nested) this.clearToolLedgerCache();
-        return operation();
-      });
+      return this.databaseLease.transaction('write', operation);
     }
     this.db.exec('BEGIN IMMEDIATE');
     let result: T;
@@ -4063,17 +4010,10 @@ export class SqliteRuntimeStore
       } catch {
         // Preserve the protocol failure that caused rollback.
       }
-      // Reducers may have loaded rows written earlier in this transaction as
-      // their immutable base. Bump the local view even on rollback so the next
-      // admission discards that phantom base before retrying.
-      this.localCommittedWriteRevision += 1;
       this.settleEventCommits(false);
-      this.settleToolLedgerStates(false);
       throw error;
     }
-    this.localCommittedWriteRevision += 1;
     this.settleEventCommits(true);
-    this.settleToolLedgerStates(true);
     return result;
   }
 
@@ -4324,14 +4264,11 @@ export class SqliteRuntimeStore
     candidateEvents: readonly RuntimeEvent[],
     expectedTransition: ToolLedgerTransitionKind,
   ): void {
-    const canonicalEncodings = candidateEvents.map(encodeCanonicalRuntimeEvent);
-    const canonicalEvents = canonicalEncodings.map(({ event }) => event);
-    const entry = this.toolLedgerCacheEntry(canonicalEvents);
-    const appendedEncodings = canonicalEncodings.filter(
-      ({ event }) => entry.reducer.event(event.id) === undefined,
+    const canonicalEvents = candidateEvents.map(
+      (event) => encodeCanonicalRuntimeEvent(event).event,
     );
-    const validation = validateIncrementalToolLedgerTransition({
-      reducer: entry.reducer,
+    const validation = validateToolLedgerTransition({
+      existingEvents: this.readToolLedgerDependencies(canonicalEvents),
       candidateEvents: canonicalEvents,
       expectedTransition,
     });
@@ -4341,55 +4278,16 @@ export class SqliteRuntimeStore
       }
       throw new ToolLedgerRejectionError(validation.code, validation.eventId);
     }
-    if (validation.appendedEvents === 0) return;
-    this.noteToolLedgerState(
-      entry,
-      validation.checkpoint,
-      canonicalEvents.map((event) => event.invocationId),
-      {
-        eventCount: validation.appendedEvents,
-        estimatedBytes: estimateToolLedgerCacheBytes(
-          appendedEncodings.reduce(
-            (bytes, encoding) => bytes + Buffer.byteLength(encoding.json, 'utf8'),
-            0,
-          ),
-          validation.appendedEvents,
-        ),
-      },
-    );
   }
 
-  private toolLedgerCacheEntry(candidateEvents: readonly RuntimeEvent[]): ToolLedgerCacheEntry {
-    const currentVersion = this.currentToolLedgerCacheVersion();
-    if (this.toolLedgerCacheVersion !== currentVersion) this.refreshToolLedgerCacheVersion();
-
-    const directInvocationIds = new Set(candidateEvents.map((event) => event.invocationId));
-    const directOperationIds = referencedToolOperationIds(candidateEvents);
-    for (const invocationId of this.toolLedgerOperationInvocations(directOperationIds)) {
-      directInvocationIds.add(invocationId);
-    }
-
-    for (const [key, entry] of this.toolLedgerCache) {
-      if (
-        entry.seedInvocationIds.size === directInvocationIds.size &&
-        [...directInvocationIds].every((invocationId) => entry.seedInvocationIds.has(invocationId))
-      ) {
-        this.toolLedgerCacheMetrics.hits += 1;
-        this.touchToolLedgerCacheEntry(key, entry);
-        return entry;
-      }
-    }
-    this.toolLedgerCacheMetrics.misses += 1;
-
-    const invocationIds = new Set(directInvocationIds);
-    const operationIds = new Set(directOperationIds);
+  private readToolLedgerDependencies(candidateEvents: readonly RuntimeEvent[]): RuntimeEvent[] {
+    const invocationIds = new Set(candidateEvents.map((event) => event.invocationId));
+    const operationIds = referencedToolOperationIds(candidateEvents);
     const resolvedOperationIds = new Set<string>();
     const loadedInvocationIds = new Set<string>();
     const scopedEvents: Array<{ event: RuntimeEvent; eventSeq: number }> = [];
-    let storedPayloadBytes = 0;
     const readInvocation = this.db.prepare(`
-      SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json,
-             length(CAST(payload_json AS BLOB)) AS stored_bytes
+      SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json
       FROM runtime_events
       WHERE invocation_id = ?
       ORDER BY event_seq ASC, event_id ASC
@@ -4412,11 +4310,8 @@ export class SqliteRuntimeStore
       if (pendingInvocationIds.length === 0 && pendingOperationIds.length === 0) break;
       for (const invocationId of pendingInvocationIds) {
         loadedInvocationIds.add(invocationId);
-        const rows = readInvocation.all(
-          invocationId,
-        ) as unknown as ToolLedgerRuntimeEventStorageRow[];
+        const rows = readInvocation.all(invocationId) as unknown as RuntimeEventPrefixStorageRow[];
         for (const row of rows) {
-          storedPayloadBytes += requireRuntimeEventScanCount(row.stored_bytes);
           const event = decodeRuntimeEventStorageRow(row);
           scopedEvents.push({ event, eventSeq: row.event_seq });
           if (event.refs?.parentOperationId) operationIds.add(event.refs.parentOperationId);
@@ -4424,34 +4319,13 @@ export class SqliteRuntimeStore
       }
     }
 
-    const sortedSeedInvocationIds = [...directInvocationIds].sort();
-    const sortedInvocationIds = [...invocationIds].sort();
-    const key = JSON.stringify([sortedSeedInvocationIds, sortedInvocationIds]);
-    const existing = this.toolLedgerCache.get(key);
-    if (existing) {
-      this.touchToolLedgerCacheEntry(key, existing);
-      return existing;
-    }
     scopedEvents.sort(
       (left, right) =>
         left.event.invocationId.localeCompare(right.event.invocationId) ||
         left.eventSeq - right.eventSeq ||
         left.event.id.localeCompare(right.event.id),
     );
-    const entry: ToolLedgerCacheEntry = {
-      reducer: new ToolLedgerReducer(scopedEvents.map(({ event }) => event)),
-      seedInvocationIds: new Set(sortedSeedInvocationIds),
-      invocationIds: new Set(sortedInvocationIds),
-      eventCount: scopedEvents.length,
-      estimatedBytes: estimateToolLedgerCacheBytes(storedPayloadBytes, scopedEvents.length),
-    };
-    if (this.toolLedgerEntryExceedsAdmissionBudget(entry)) {
-      this.toolLedgerCacheMetrics.transientEntries += 1;
-      return entry;
-    }
-    this.retainToolLedgerCacheEntry(key, entry);
-    this.trimToolLedgerCache();
-    return entry;
+    return scopedEvents.map(({ event }) => event);
   }
 
   private toolLedgerOperationInvocations(operationIds: Iterable<string>): Set<string> {
@@ -4470,172 +4344,6 @@ export class SqliteRuntimeStore
       `)
       .all(...ids) as Array<{ invocation_id: string }>;
     return new Set(rows.map((row) => row.invocation_id));
-  }
-
-  private noteToolLedgerState(
-    entry: ToolLedgerCacheEntry,
-    checkpoint: number,
-    invocationIds: readonly string[],
-    delta: Pick<ToolLedgerCacheEntry, 'estimatedBytes' | 'eventCount'>,
-  ): void {
-    const reducer = entry.reducer;
-    const existing = this.uncommittedToolLedgerStates.get(reducer);
-    if (existing) {
-      for (const invocationId of invocationIds) existing.changedInvocationIds.add(invocationId);
-      this.adjustToolLedgerCacheEntry(entry, delta);
-      return;
-    }
-    if (this.uncommittedToolLedgerStates.size === 0 && this.databaseLease) {
-      this.databaseLease.onTransactionSettled((committed) =>
-        this.settleToolLedgerStates(committed),
-      );
-    }
-    this.uncommittedToolLedgerStates.set(reducer, {
-      checkpoint,
-      changedInvocationIds: new Set(invocationIds),
-      entry,
-      estimatedBytesBefore: entry.estimatedBytes,
-      eventCountBefore: entry.eventCount,
-    });
-    this.adjustToolLedgerCacheEntry(entry, delta);
-  }
-
-  private settleToolLedgerStates(committed: boolean): void {
-    const states = [...this.uncommittedToolLedgerStates.entries()];
-    this.uncommittedToolLedgerStates.clear();
-    if (states.length === 0) return;
-    if (!committed) {
-      for (const [reducer, state] of states.reverse()) {
-        reducer.rollback(state.checkpoint);
-        this.restoreToolLedgerCacheEntry(state);
-      }
-      this.trimToolLedgerCache();
-      return;
-    }
-
-    const retained = new Set(states.map(([reducer]) => reducer));
-    const changedInvocationIds = new Set(
-      states.flatMap(([, state]) => [...state.changedInvocationIds]),
-    );
-    for (const [key, entry] of this.toolLedgerCache) {
-      if (retained.has(entry.reducer)) continue;
-      if ([...entry.invocationIds].some((id) => changedInvocationIds.has(id))) {
-        this.deleteToolLedgerCacheEntry(key);
-      }
-    }
-    for (const [reducer, state] of states) reducer.commit(state.checkpoint);
-    this.toolLedgerCacheVersion = this.currentToolLedgerCacheVersion();
-    this.trimToolLedgerCache();
-  }
-
-  private refreshToolLedgerCacheVersion(): void {
-    if (this.uncommittedToolLedgerStates.size > 0) {
-      throw new Error('Cannot invalidate tool ledger state during an open write transaction');
-    }
-    this.clearToolLedgerCache();
-    this.toolLedgerCacheVersion = this.currentToolLedgerCacheVersion();
-  }
-
-  private retainToolLedgerCacheEntry(key: string, entry: ToolLedgerCacheEntry): void {
-    entry.cacheKey = key;
-    this.toolLedgerCache.set(key, entry);
-    this.toolLedgerCacheEstimatedBytes += entry.estimatedBytes;
-    this.toolLedgerCacheEventCount += entry.eventCount;
-  }
-
-  private touchToolLedgerCacheEntry(key: string, entry: ToolLedgerCacheEntry): void {
-    this.toolLedgerCache.delete(key);
-    this.toolLedgerCache.set(key, entry);
-  }
-
-  private adjustToolLedgerCacheEntry(
-    entry: ToolLedgerCacheEntry,
-    delta: Pick<ToolLedgerCacheEntry, 'estimatedBytes' | 'eventCount'>,
-  ): void {
-    entry.estimatedBytes += delta.estimatedBytes;
-    entry.eventCount += delta.eventCount;
-    if (entry.cacheKey && this.toolLedgerCache.get(entry.cacheKey) === entry) {
-      this.toolLedgerCacheEstimatedBytes += delta.estimatedBytes;
-      this.toolLedgerCacheEventCount += delta.eventCount;
-    }
-  }
-
-  private restoreToolLedgerCacheEntry(state: UncommittedToolLedgerState): void {
-    const entry = state.entry;
-    if (entry.cacheKey && this.toolLedgerCache.get(entry.cacheKey) === entry) {
-      this.toolLedgerCacheEstimatedBytes += state.estimatedBytesBefore - entry.estimatedBytes;
-      this.toolLedgerCacheEventCount += state.eventCountBefore - entry.eventCount;
-    }
-    entry.estimatedBytes = state.estimatedBytesBefore;
-    entry.eventCount = state.eventCountBefore;
-  }
-
-  private deleteToolLedgerCacheEntry(key: string, reason?: 'budget' | 'terminal'): void {
-    const entry = this.toolLedgerCache.get(key);
-    if (!entry) return;
-    this.toolLedgerCache.delete(key);
-    if (entry.cacheKey === key) entry.cacheKey = undefined;
-    this.toolLedgerCacheEstimatedBytes -= entry.estimatedBytes;
-    this.toolLedgerCacheEventCount -= entry.eventCount;
-    if (reason === 'budget') this.toolLedgerCacheMetrics.budgetEvictions += 1;
-    if (reason === 'terminal') this.toolLedgerCacheMetrics.terminalEvictions += 1;
-  }
-
-  private clearToolLedgerCache(): void {
-    for (const entry of this.toolLedgerCache.values()) entry.cacheKey = undefined;
-    this.toolLedgerCache.clear();
-    this.toolLedgerCacheEstimatedBytes = 0;
-    this.toolLedgerCacheEventCount = 0;
-  }
-
-  private invalidateToolLedgerCacheForInvocation(invocationId: string): void {
-    for (const [key, entry] of this.toolLedgerCache) {
-      if (entry.invocationIds.has(invocationId)) {
-        this.deleteToolLedgerCacheEntry(key, 'terminal');
-      }
-    }
-  }
-
-  private toolLedgerEntryExceedsAdmissionBudget(entry: ToolLedgerCacheEntry): boolean {
-    return entry.estimatedBytes > this.toolLedgerCacheBudget.maxSingleEntryEstimatedBytes;
-  }
-
-  private toolLedgerCacheExceedsBudget(): boolean {
-    return (
-      this.toolLedgerCache.size > this.toolLedgerCacheBudget.maxEntries ||
-      this.toolLedgerCacheEstimatedBytes > this.toolLedgerCacheBudget.maxEstimatedBytes
-    );
-  }
-
-  private trimToolLedgerCache(): void {
-    for (;;) {
-      let victim: string | undefined;
-      for (const [key, entry] of this.toolLedgerCache) {
-        if (this.uncommittedToolLedgerStates.has(entry.reducer)) continue;
-        if (this.toolLedgerEntryExceedsAdmissionBudget(entry)) {
-          victim = key;
-          break;
-        }
-      }
-      if (!victim && this.toolLedgerCacheExceedsBudget()) {
-        victim = [...this.toolLedgerCache].find(
-          ([, entry]) => !this.uncommittedToolLedgerStates.has(entry.reducer),
-        )?.[0];
-      }
-      if (!victim) return;
-      this.deleteToolLedgerCacheEntry(victim, 'budget');
-    }
-  }
-
-  private currentToolLedgerCacheVersion(): string {
-    return `${this.runtimeDataVersion()}:${
-      this.databaseLease?.writeViewRevision() ?? this.localCommittedWriteRevision
-    }`;
-  }
-
-  private runtimeDataVersion(): number {
-    const row = this.db.prepare('PRAGMA data_version').get() as { data_version: number };
-    return row.data_version;
   }
 
   private assertInvocationIdentity(events: readonly RuntimeEvent[]): void {
@@ -4931,9 +4639,6 @@ export class SqliteRuntimeStore
           `RuntimeEvent ${canonicalEvent.id} already exists outside this tool transaction`,
         );
       }
-      if (isTerminalRuntimeEvent(canonicalEvent)) {
-        this.invalidateToolLedgerCacheForInvocation(canonicalEvent.invocationId);
-      }
       return this.runtimeEventSeq(canonicalEvent.id);
     }
     this.assertContinuationAuthorityAllowsEvent(
@@ -4984,9 +4689,6 @@ export class SqliteRuntimeStore
     );
     this.noteEventCommit(canonicalEvent.sessionId);
     this.deleteCompletedPartialSnapshot(canonicalEvent);
-    if (isTerminalRuntimeEvent(canonicalEvent)) {
-      this.invalidateToolLedgerCacheForInvocation(canonicalEvent.invocationId);
-    }
     return next;
   }
 
@@ -5150,37 +4852,6 @@ export class SqliteRuntimeStore
       .get(operationId) as ToolOperationRow | undefined;
     return row ? toolOperationFromRow(row) : undefined;
   }
-}
-
-interface ToolLedgerCacheEntry {
-  reducer: ToolLedgerReducer;
-  seedInvocationIds: ReadonlySet<string>;
-  invocationIds: ReadonlySet<string>;
-  estimatedBytes: number;
-  eventCount: number;
-  cacheKey?: string;
-}
-
-interface UncommittedToolLedgerState {
-  checkpoint: number;
-  changedInvocationIds: Set<string>;
-  entry: ToolLedgerCacheEntry;
-  estimatedBytesBefore: number;
-  eventCountBefore: number;
-}
-
-interface ToolLedgerCacheBudget {
-  maxEntries: number;
-  maxEstimatedBytes: number;
-  maxSingleEntryEstimatedBytes: number;
-}
-
-interface ToolLedgerCacheMetrics {
-  hits: number;
-  misses: number;
-  budgetEvictions: number;
-  terminalEvictions: number;
-  transientEntries: number;
 }
 
 interface ToolOperationRow {
@@ -5768,10 +5439,6 @@ function compareWorkspaceHeadRow(
 
 interface RuntimeEventPrefixStorageRow extends RuntimeEventStorageRow {
   event_seq: number;
-}
-
-interface ToolLedgerRuntimeEventStorageRow extends RuntimeEventPrefixStorageRow {
-  stored_bytes: number;
 }
 
 type RuntimeEventPrefixProofStorageRow = Omit<RuntimeEventPrefixStorageRow, 'payload_json'> & {

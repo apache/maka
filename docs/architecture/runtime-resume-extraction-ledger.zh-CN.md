@@ -242,10 +242,10 @@ PR A 没带入 file checkpoint、continuation 或 host lifecycle。
 PR A 后续清偿项不阻塞当前 correctness merge gate：
 
 - 从 public commit input 删除冗余 `journalEventId`，完全由 store 派生；
-- 为全局 prospective scan 增加 event count / duration 指标，再演进为可重建的增量 reducer；
-- 增量 reducer 落地后，把 transition scan 缩到 candidate execution spine；event、invocation、
-  operation 的全局唯一性由 SQL identity constraints/projection 承担，full scan 移到 store open
-  或显式 integrity check；
+- prospective scan 已收窄到 candidate invocation 及显式父工具依赖闭包；每次工具写入从
+  当前 SQLite 事务视图建立临时 reducer，与整段扫描共用解释规则，结束后丢弃，不跨事务缓存；
+- event、invocation、operation 的身份约束与相关 canonical facts 校验继续保留；store open
+  不做 workspace-wide tool scan，历史完整性检查与当前工具写入的局部校验分开；
 - JSONL 是 legacy/readable fallback，不承担跨进程的全局 invocation uniqueness；恢复 authority
   需要 SQLite。
 

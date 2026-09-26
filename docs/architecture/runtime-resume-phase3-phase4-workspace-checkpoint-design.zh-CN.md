@@ -84,9 +84,10 @@ RuntimeEvent 是语义事实的唯一权威，但不能替代执行所有权的�
 
 PR A 首版的 prospective gate 是 workspace-wide semantic fail-stop：任何 session 中已存在的
 canonical tool-ledger corruption 都会拒绝同一 SQLite workspace 后续所有 tool-bearing write。
-这会扩大故障域并在写事务内产生全历史扫描成本，但它是明确的 correctness-first 选择。后续只能
-用可从 immutable events 重建的增量 reducer 收缩到 candidate execution spine；不能用可变缓存
-替代事实权威。
+当前实现已把校验范围缩到 candidate invocation 及其显式父工具依赖闭包。每次写入在同一
+SQLite 事务视图下读取 immutable events，使用与整段扫描相同的 reducer 规则校验候选，
+随后丢弃临时状态。reducer 不跨事务缓存，不需要镜像失效版本、候选撤销日志或 LRU；
+SQLite 事务仍负责事实与投影的原子提交、回滚。无关 invocation 的损坏不会扩大当前写入的失败域。
 
 PR A 的证明矩阵包括：
 

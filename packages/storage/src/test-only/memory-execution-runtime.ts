@@ -48,9 +48,8 @@ import {
   scanToolLedger,
   referencedToolOperationIds,
   ToolLedgerCorruptionError,
-  ToolLedgerReducer,
   ToolLedgerRejectionError,
-  validateIncrementalToolLedgerTransition,
+  validateToolLedgerTransition,
   type ToolLedgerTransitionKind,
 } from '@maka/core/tool-ledger-scanner';
 import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
@@ -219,11 +218,8 @@ function transition(
       }
     }
   }
-  const reducer = new ToolLedgerReducer(
-    existingEvents.filter((event) => invocationIds.has(event.invocationId)),
-  );
-  const validation = validateIncrementalToolLedgerTransition({
-    reducer,
+  const validation = validateToolLedgerTransition({
+    existingEvents: existingEvents.filter((event) => invocationIds.has(event.invocationId)),
     candidateEvents,
     expectedTransition,
   });

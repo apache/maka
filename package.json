@@ -32,6 +32,7 @@
     "prepare": "npm run sync:model-metadata && node scripts/install-husky.mjs",
     "postinstall": "node scripts/apply-dependency-patches.mjs && node scripts/install-electron-with-retry.mjs",
     "lint": "biome lint .",
+    "test:startup-correctness": "node scripts/test-startup-correctness.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "check:e2e-budget": "npm --workspace @maka/desktop run check:e2e-budget",
