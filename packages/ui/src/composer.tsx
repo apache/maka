@@ -2225,7 +2225,7 @@ export const Composer = forwardRef<
             </div>
           )}
           footerActions={(
-            <div className="maka-composer-left-controls">
+            <div className="maka-composer-footer-leading maka-composer-left-controls">
               {/* Resting order: ＋ leftmost, then permission icon. */}
               {showPlusMenu ? (
                 <span className="maka-composer-plus-menu">
@@ -2664,6 +2664,7 @@ function ContextUsageAction(props: {
     <UiButton
       variant="ghost"
       size="sm"
+      className="maka-context-usage-action"
       icon={<CircleGauge size={ICON_SIZE.meta} aria-hidden="true" />}
       label={copy.systemNotes.contextUsageOpen}
       tooltip={tooltip}
