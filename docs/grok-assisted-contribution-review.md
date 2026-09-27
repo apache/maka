@@ -340,7 +340,17 @@ and the Electron renderer-reload E2E passes in this branch.
   for exact bytes, independently stale Markdown, and missing/extra paths. The
   CI planner also recognizes the new test. The real 301-file inventory check
   (after merging upstream), 22 Astryx tests, 40 CI planner tests, and Biome
-  passed. The generator and its later fail-closed dependency parser remain unchanged.
+  passed. A further planner assertion confirms that edits to the generator's
+  test file select the general code lane, which always runs the Astryx gate;
+  no CI rule change was needed. The generator and its later fail-closed
+  dependency parser remain unchanged.
+- #3115: another ablation found that an invalid `Retry-After-Ms` suppressed
+  an otherwise valid `Retry-After` on the same retryable response. The parser
+  now validates each candidate independently, preferring valid milliseconds
+  and falling back to valid seconds or an HTTP date. The new regression failed
+  before the change and passed afterward (20 classification tests); Runtime
+  build and Biome passed. This does not change retryability or constitute a
+  full #3115 replacement.
 - #2967: a new boundary test showed the audit writer could append a record
   across `MAX_AUDIT_BYTES` without recording `audit_truncated` until another
   event arrived. The writer now checks the encoded record length before

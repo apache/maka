@@ -363,6 +363,11 @@ describe('Provider error classification', () => {
     const headerCases: Array<[string, Record<string, string> | undefined, number | undefined]> = [
       ['seconds', { 'retry-after': '40' }, 40_000],
       ['milliseconds', { 'retry-after-ms': '1500' }, 1_500],
+      [
+        'invalid milliseconds with valid seconds',
+        { 'retry-after-ms': 'invalid', 'retry-after': '4' },
+        4_000,
+      ],
       ['malformed', { 'retry-after': 'not-a-delay' }, undefined],
       ['elapsed HTTP-date', { 'retry-after': 'Wed, 21 Oct 2015 07:28:00 GMT' }, undefined],
       ['absent', undefined, undefined],

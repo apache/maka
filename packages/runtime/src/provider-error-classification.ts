@@ -261,17 +261,19 @@ function parseRetryAfterMs(headers: Record<string, string>): number | undefined 
   const rawRetryAfter = headers['retry-after'];
   if (rawMilliseconds === undefined && rawRetryAfter === undefined) return undefined;
 
-  let delayMs: number;
+  const boundedDelay = (delayMs: number): number | undefined =>
+    Number.isFinite(delayMs) && delayMs > 0 && delayMs <= MAX_SAFE_TIMER_DELAY_MS
+      ? Math.ceil(delayMs)
+      : undefined;
   if (rawMilliseconds !== undefined) {
-    delayMs = Number(rawMilliseconds);
-  } else {
-    const seconds = Number(rawRetryAfter);
-    delayMs = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(rawRetryAfter!) - Date.now();
+    const milliseconds = boundedDelay(Number(rawMilliseconds));
+    if (milliseconds !== undefined) return milliseconds;
   }
-  if (!Number.isFinite(delayMs) || delayMs <= 0 || delayMs > MAX_SAFE_TIMER_DELAY_MS) {
-    return undefined;
-  }
-  return Math.ceil(delayMs);
+  if (rawRetryAfter === undefined) return undefined;
+  const seconds = Number(rawRetryAfter);
+  return boundedDelay(
+    Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(rawRetryAfter) - Date.now(),
+  );
 }
 
 function retryMetadataFromFacts(
