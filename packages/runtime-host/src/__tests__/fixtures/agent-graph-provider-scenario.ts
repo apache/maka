@@ -43,18 +43,7 @@ export class AgentGraphProviderScenario {
   constructor(private readonly childResultText: string) {}
 
   respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): void {
-    // The scenario follows user requests, not the Host's ephemeral environment snapshot.
-    body = {
-      ...body,
-      messages: (Array.isArray(body.messages) ? body.messages : []).filter(
-        (message) =>
-          !(
-            message.role === 'user' &&
-            typeof message.content === 'string' &&
-            message.content.startsWith('Runtime Host environment for this turn')
-          ),
-      ),
-    };
+    body = withoutRuntimeHostEnvironment(body);
     if (this.#phase === 'completed' && latestUserText(body).startsWith('Graph follow-up:')) {
       assert.ok(
         JSON.stringify(body).includes(this.childResultText),
@@ -239,6 +228,7 @@ export class GatedSwarmProviderScenario {
   }
 
   async respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): Promise<void> {
+    body = withoutRuntimeHostEnvironment(body);
     const names = toolNames(body);
     if (names.join(',') === 'Glob,Grep,Read') {
       const index = this.#childrenRequested++;
@@ -341,6 +331,21 @@ export class GatedSwarmProviderScenario {
       max_bytes: 32_768,
     });
   }
+}
+
+function withoutRuntimeHostEnvironment(body: Record<string, unknown>): Record<string, unknown> {
+  // The scenario follows user requests, not the Host's ephemeral environment snapshot.
+  return {
+    ...body,
+    messages: (Array.isArray(body.messages) ? body.messages : []).filter(
+      (message) =>
+        !(
+          message.role === 'user' &&
+          typeof message.content === 'string' &&
+          message.content.startsWith('Runtime Host environment for this turn')
+        ),
+    ),
+  };
 }
 
 function toolNames(body: Record<string, unknown>): string[] {
