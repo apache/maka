@@ -128,8 +128,18 @@ export function createConversationWorkspace(catalog: SessionCatalogController, s
     ui, activeIdRef, transcriptRangeRef, observationRef, bootstrapSelectionLease, commands,
     publishedSession: Object.freeze({ get current() { return activeIdRef.current; } }),
     messages: reader((value) => value.messages),
-    usage: (model: string | undefined, connectionId: string | undefined) => reader((value) =>
-      selectLatestRequestUsage(value.messages, model, { llmConnectionId: connectionId })),
+    usage: (model: string | undefined, connectionId: string | undefined) => {
+      let messages: readonly StoredMessage[] | undefined;
+      let usage: ReturnType<typeof selectLatestRequestUsage>;
+      return reader((value) => {
+        // Keep the external-store snapshot stable until its transcript changes.
+        if (messages !== value.messages) {
+          messages = value.messages;
+          usage = selectLatestRequestUsage(messages, model, { llmConnectionId: connectionId });
+        }
+        return usage;
+      });
+    },
     publication: reader((value) => value),
     target: reader((value) => value.sessionId),
     chrome: reader((value) => ({

@@ -17,27 +17,9 @@
  * under the License.
  */
 
-/**
- * The session's latest provider-counted request, or nothing.
- *
- * A token count belongs to one request on one route: it is a number in that
- * model's tokenizer, and it is only the session's latest if nothing newer
- * exists. The runtime enforces both when it reads an anchor back, refusing one
- * whose run header names another model or connection. A control that shows the
- * number has to enforce the same two facts or it will display a precise-looking
- * figure about a request the user is not making — model A's tokens against
- * model B's window, or a historical range's usage presented as current.
- *
- * So this refuses rather than approximates, and the three refusals are the
- * three normal states that break the pairing:
- *
- * - the loaded transcript range is not the session tail, so a newer request may
- *   exist that this range cannot see;
- * - the newest usage row carries no anchor, which is what manual `/compact`
- *   writes, so the scan continues past it exactly as the runtime's does;
- * - the anchor names a different route than the active one, or names none at
- *   all because it was written before anchors carried their route.
- */
+import type { ContextUsageReading } from '@maka/ui';
+import type { LiveContextUsage } from './live-context-usage.js';
+
 export interface LatestRequestUsageAnchor {
   inputTokens: number;
   outputTokens?: number;
@@ -45,22 +27,77 @@ export interface LatestRequestUsageAnchor {
   connectionId?: string;
 }
 
+export interface LatestRequestUsageRow {
+  readonly type: string;
+  readonly ts?: number;
+  readonly kind?: string;
+  readonly lastRequestAnchor?: LatestRequestUsageAnchor;
+}
+
+export type LatestRequestUsage =
+  | { readonly kind: 'tokens'; readonly tokens: number }
+  | { readonly kind: 'compacted'; readonly at?: number }
+  | undefined;
+
+/**
+ * Read the newest route-matching measurement or compaction from the session tail.
+ * Anchorless usage rows (including manual compaction usage) carry no measurement.
+ * A compaction invalidates earlier measurements until a later request settles.
+ */
 export function selectLatestRequestUsage(
-  messages: readonly { type: string; lastRequestAnchor?: LatestRequestUsageAnchor }[],
+  messages: readonly LatestRequestUsageRow[],
   model: string | undefined,
   route: { llmConnectionId?: string } | undefined,
-): number | undefined {
+): LatestRequestUsage {
   const connectionId = route?.llmConnectionId;
-  if (model === undefined || connectionId === undefined) return undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
+    // Ledger order decides whether the latest anchor has been superseded.
+    if (message?.type === 'system_note' && message.kind === 'context_compacted') {
+      return { kind: 'compacted', ...(message.ts !== undefined ? { at: message.ts } : {}) };
+    }
     if (message?.type !== 'token_usage') continue;
     const anchor = message.lastRequestAnchor;
     if (!anchor) continue;
+    if (model === undefined || connectionId === undefined) return undefined;
     if (anchor.modelId !== model || anchor.connectionId !== connectionId) return undefined;
     if (!Number.isFinite(anchor.inputTokens) || anchor.inputTokens <= 0) return undefined;
     const output = Number.isFinite(anchor.outputTokens ?? 0) ? Math.max(0, anchor.outputTokens ?? 0) : 0;
-    return anchor.inputTokens + output;
+    return {
+      kind: 'tokens',
+      tokens: anchor.inputTokens + output,
+    };
   }
   return undefined;
+}
+
+/**
+ * Prefer the per-request snapshot to the turn-end anchor. A known compaction
+ * suppresses snapshots that cannot be shown to postdate its transcript note.
+ * This preserves the existing timestamp policy; the note may be recorded later
+ * than the actual fold, so it is not a causal checkpoint identifier.
+ */
+export function resolveContextUsage(input: {
+  readonly latestRequestUsage: LatestRequestUsage;
+  readonly live?: LiveContextUsage;
+}): ContextUsageReading {
+  const { latestRequestUsage, live } = input;
+  if (
+    latestRequestUsage?.kind === 'compacted' &&
+    (live?.completedAt === undefined ||
+      latestRequestUsage.at === undefined ||
+      latestRequestUsage.at >= live.completedAt)
+  ) {
+    return { kind: 'stale', reason: 'compaction' };
+  }
+  if (live) {
+    return {
+      kind: 'measured',
+      tokens: live.usageTokens,
+      ...(live.contextWindow !== undefined ? { meteredWindow: live.contextWindow } : {}),
+    };
+  }
+  if (latestRequestUsage?.kind === 'tokens')
+    return { kind: 'measured', tokens: latestRequestUsage.tokens };
+  return { kind: 'unavailable' };
 }
