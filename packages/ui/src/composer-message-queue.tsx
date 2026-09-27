@@ -28,6 +28,22 @@ import {
 
 export type { ComposerQueueEntry } from './composer-message-queue-controller.js';
 
+export interface ComposerMessageQueueHostProps {
+  queuedMessages?: readonly MessageQueueEntryProjection[];
+  queuedMessageRevision?: number;
+  onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
+  onUpdateQueuedEntry?(
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ): void | Promise<void>;
+  onDeleteQueuedEntry?(entryId: string): void | Promise<void>;
+  onReorderQueuedEntries?(
+    entryIds: readonly string[],
+    expectedQueueRevision: number,
+  ): void | Promise<void>;
+}
+
 export interface ComposerMessageQueueProps extends Omit<ComposerMessageQueueViewProps, 'entries'> {
   queuedMessages: readonly ComposerQueueEntry[];
 }
