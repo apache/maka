@@ -100,7 +100,11 @@ function queueMutationRegistrations(
 }
 
 function queueEntryId(value: unknown): string {
-  if (typeof value !== "string") {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 256
+  ) {
     throw new TypeError("Invalid queue entry identity");
   }
   return value;

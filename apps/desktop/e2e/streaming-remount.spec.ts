@@ -381,10 +381,8 @@ test("returning to a live conversation settles output accumulated while away", a
       }),
     { sessionId: originalSessionId!, steering: backgroundSteering },
   );
-  await page.evaluate(() => {
-    // Sample the paint clock, not React's intermediate mutation commits.
-    installStreamingPaintObserver();
-  });
+  // Sample the paint clock, not React's intermediate mutation commits.
+  await page.evaluate(installStreamingPaintObserver);
   await sessionRow(sidebar, originalSessionId!).click();
   await expect(liveBubble.filter({ hasText: backgroundSteering })).toHaveCount(
     1,
