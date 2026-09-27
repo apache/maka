@@ -21,7 +21,6 @@ import { realpath } from 'node:fs/promises';
 import type {
   SessionEvent,
   QuoteRef,
-  ShellRunSnapshotResult,
   ShellRunStateResult,
   ShellRunUpdate,
 } from '@maka/core/events';
@@ -134,6 +133,13 @@ export interface MakaSubmitMessageOptions {
 export interface MakaRetractedMessages {
   text: string;
   messageIds: readonly string[];
+  /**
+   * The queued messages' inline excerpts, returned verbatim by the Host's
+   * `queue.retract` — the full `MessageContent` comes back with the
+   * retraction, so a queued submit's quotes can restage instead of
+   * vanishing with the queue row (#5109 review).
+   */
+  quotes: readonly QuoteRef[];
 }
 
 /**

@@ -585,7 +585,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   async retractQueued(): Promise<MakaRetractedMessages> {
-    if (!this.#sessionId) return { text: '', messageIds: [] };
+    if (!this.#sessionId) return { text: '', messageIds: [], quotes: [] };
     const result = await this.#request('queue.retract', {
       originHostEpoch: this.#connection.hostEpoch,
       sessionId: this.#sessionId,
@@ -594,6 +594,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return {
       text: result.retracted.map((entry) => entry.content.text).join('\n\n'),
       messageIds: result.retracted.map((entry) => entry.messageId),
+      // The Host returns the full MessageContent for every retracted entry:
+      // the quotes ride back so the runner can restage them (#5109 review).
+      quotes: result.retracted.flatMap((entry) => entry.content.quotes ?? []),
     };
   }
 

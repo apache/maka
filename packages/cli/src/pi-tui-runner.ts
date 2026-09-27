@@ -93,6 +93,7 @@ import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
+  type MakaRetractedMessages,
   type MakaSessionDriver,
   type MakaSessionRewindResult,
   type MakaSideConversationParentStatus,
@@ -1309,7 +1310,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // connection where both calls are asynchronous.
     void (async () => {
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      const retracted = (await input.driver.retractQueued?.()) ?? {
+        text: '',
+        messageIds: [],
+        quotes: [],
+      };
       acceptRetraction(retracted);
       requestRender();
       await input.driver.stop();
@@ -1386,9 +1391,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (index >= 0) state.entries.splice(index, 1);
   };
 
-  const acceptRetraction = (retracted: { text: string; messageIds: readonly string[] }) => {
+  const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
     refillEditorFromQueues(retracted.text);
+    // The Host returns the full MessageContent with a retraction: quotes that
+    // rode a queued or steered message come back with it and restage here, so
+    // the re-edited retry does not go out without them (#5109 review).
+    if (retracted.quotes.length > 0) {
+      setStagedQuotes(retracted.quotes, input.driver.getSessionId());
+    }
   };
 
   /**
@@ -1517,7 +1528,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const retractQueuedMessages = () => {
     void (async () => {
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      const retracted = (await input.driver.retractQueued?.()) ?? {
+        text: '',
+        messageIds: [],
+        quotes: [],
+      };
       acceptRetraction(retracted);
       requestRender();
     })().catch(reportError);
