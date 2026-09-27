@@ -382,6 +382,43 @@ and the Electron renderer-reload E2E passes in this branch.
   did not respond. #3017 owns the later raw-TCP closure behavior; do not roll
   that implementation back as part of #3008.
 
+### Coordinated minimal-core rewrite (September 27, 2026)
+
+The seven surviving behaviors were then rewritten together around one small
+authority per concern. This is the independent first-pass replacement of their
+current cores; later features that consume those cores remain in place.
+
+| PR | Rewritten current core | Retained boundary |
+|---|---|---|
+| #3008 | CONNECT target normalization is now a pure `(host, port) -> URL` function; the mitmproxy hook only adapts request fields and fails closed. | #3017's raw TCP/TLS layer handling remains authoritative. The live mitmproxy test is still blocked locally because `docker info` does not respond. |
+| #2967 | Audit writing has one byte encoder and append/truncate path; TypeScript reading has one strict line decoder and one statistics pass. | Trial attribution and scoring semantics remain unchanged. |
+| #3048 | Live seed state is reduced from two generation counters to one generation token plus one readiness bit. | Observation subscription, transcript publication, and later recovery orchestration remain consumers of the state machine. |
+| #3066 | Both direct trials and the process runner now use the same scoped framework context; runner completion restores its caller's context. | Explicit `install` remains only for modules/tests that intentionally bootstrap `relay_agent` outside the runner. |
+| #3078 | The checker is a pure generated-versus-committed comparison with direct drift tests; the CLI is only file I/O and reporting. | #3883's later fail-closed Astryx dependency parser remains the generator authority. |
+| #3115 | Retryability, header normalization, and bounded `Retry-After` parsing live in an independent pure policy module. | Provider error evidence classification and Host/UI countdown projection consume that policy. |
+| #3544 | Exact queue permutation validation and UI drag movement share a Core policy; Host remains the revision authority and rejects stale mutations. | Later Host admission, receipt durability, WorkHub, Side Chat, and steering behavior remain around the shared order core. |
+
+The subtraction pass removed the obsolete `readyGeneration`, process-lifetime
+framework installation in the runner, duplicate CONNECT flow parsing,
+classification-local retry tables/header parsing, and separate Host/UI reorder
+algorithms. No compatibility branch or fallback was added.
+
+Verification after merging `origin/main` at `ab021efda`:
+
+- 96 Python Harbor tests pass (13 skipped); 22 egress artifact and 41 Eval
+  lifecycle tests pass.
+- 89 Desktop seed/observer/streaming tests, 23 Runtime retry/classification
+  tests, 165 Runtime Host coordinator/protocol tests, 6 UI queue tests, and 3
+  Core order-policy tests pass.
+- Desktop and all workspace dependencies build; the 301-file inventory gate,
+  22 Astryx tests, and 40 CI planner tests pass.
+- The four streaming-remount Electron tests, the Side Chat native reorder /
+  reconnect test, and the WorkHub queue/steering lifecycle test pass through
+  the Desktop workspace test entrypoint.
+- Direct root-level Playwright invocations were discarded as invalid evidence:
+  they launched Electron with the repository root as `.` and failed during
+  fixture setup before product assertions ran.
+
 ### Remaining 21: current disposition
 
 These are the 25 candidate PRs minus the four narrow replacements above. A
@@ -392,15 +429,15 @@ reason to restore its old implementation just to revert it again.
 |---|---|---|
 | Deleted or superseded original path (8) | #3063, #3118, #3119, #3102, #3104, #3117, #3069, #3106 | Preserve the current replacement/removal; #3117's fixture and #3106's surviving startup behavior remain separately reviewable. |
 | Mixed or uncertain attribution (2) | #3364, #3123 | Keep Maka-authored formatter and required ASF header; resolve #3123 squash-versus-original provenance with maintainers. |
-| Active code with scoped fixes (7) | #3008, #2967, #3048, #3066, #3078, #3115, #3544 | Review the rest of each current behavior against later dependents; the #3008 live proxy test still needs Docker. |
+| Active code with rewritten current cores (7) | #3008, #2967, #3048, #3066, #3078, #3115, #3544 | Continue ablation at the retained later-dependent boundaries; the #3008 live proxy test still needs Docker. |
 | Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | #3111 now covers owner release on failed publish; decide whether surviving behavior requires replacement, including the tagged follow-ups in #3459. |
 | Documentation-only mixed-tool PR (1) | #4345 | Factual correction made; maintainers decide provenance remedy for the surviving architecture document. |
 
-The branch has been built against `c9a176e10`: `npm run build:with-deps`
-passes, as do 214 Host/Runtime tests, 82 Desktop queue tests, and two real
-Electron queue E2Es. These checks do not substitute for the unresolved
-per-PR review or the live proxy test. No branch push or PR update has been
-made for these local review commits.
+The branch has been built against `ab021efda`: `npm run build:with-deps`
+passes, along with the focused suites listed above and six real Electron
+tests. These checks do not substitute for the live proxy test or project/legal
+acceptance of the remediation. No branch push or PR update has been made for
+these local review commits.
 
 ## Review protocol
 
@@ -422,4 +459,9 @@ acceptability of any remediation need Apache project/legal review.
 - [ ] Record which changes are still material, superseded, or mixed with other work.
 - [ ] Decide the appropriate action with the project and ASF legal discussion.
 - [x] Implement and locally verify #3082, #5223, #3070, and #3099 in reviewable slices.
-- [ ] Finish the remaining scoped reviews and any agreed replacements.
+- [x] Independently rewrite the current cores retained from #3008, #2967,
+      #3048, #3066, #3078, #3115, and #3544 around minimal pure authorities.
+- [ ] Run #3008's live mitmproxy regression when a responsive Docker daemon is
+      available.
+- [ ] Continue ablation of later-dependent outer orchestration, then push and
+      update the draft PR once the complete branch diff is reviewed.

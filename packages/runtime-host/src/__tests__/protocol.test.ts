@@ -1683,6 +1683,14 @@ describe('Runtime Host bootstrap protocol', () => {
       () =>
         decodeClientFrame({
           ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: [] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
           input: { ...entriesReorder.input, entryIds: ['not/a/semantic/id'] },
         }),
       isInvalidFrame,

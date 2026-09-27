@@ -576,7 +576,7 @@ function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInpu
   const entryIds = requireBoundedArray(record.entryIds, 'reorder entry identities').map((entryId) =>
     requireEntityId(entryId, 'entryId'),
   );
-  if (new Set(entryIds).size !== entryIds.length) {
+  if (entryIds.length === 0 || new Set(entryIds).size !== entryIds.length) {
     throw invalidProtocolFrame('Invalid reorder entry identities');
   }
   return {
