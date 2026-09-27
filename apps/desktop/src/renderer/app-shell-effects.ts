@@ -411,12 +411,13 @@ export function useActiveSessionEvents(options: {
           completeObservationSeed();
         }
       };
+      const handleObservedEvent = (event: SessionEvent) => {
+        if (attempt !== observationAttempt) return;
+        handleSessionEvent(activeId, event);
+      };
       const unsubscribe = window.maka.sessions.subscribeEvents(
         activeId,
-        (event) => {
-          if (attempt !== observationAttempt) return;
-          handleSessionEvent(activeId, event);
-        },
+        handleObservedEvent,
         handleObservationPhase,
         () => {
           if (attempt !== observationAttempt) return;

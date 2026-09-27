@@ -2508,7 +2508,10 @@ const makaBridge = {
         // same-named Session channel.
         unsubscribeEvents = subscribeEveryRuntimeHostEvent(
           `sessions:event:${session.sessionId}`,
-          (scope, event: SessionEvent | SessionObservationMessage) => {
+          function consumeObservationEvent(
+            scope,
+            event: SessionEvent | SessionObservationMessage,
+          ) {
             if (disposed) return;
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
             if (event.type === 'host_observation_seed') {
