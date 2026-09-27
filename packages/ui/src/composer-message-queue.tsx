@@ -69,7 +69,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   props: ComposerMessageQueueProps,
 ) {
   const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
-  const dragEntryId = useRef<string | null>(null);
+  const dragSource = useRef<{ entryId: string; queueRevision: number } | null>(null);
   const mountedRef = useMountedRef();
   const copy = props.copy;
 
@@ -93,9 +93,15 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   }
 
   function dropOn(targetEntryId: string) {
-    const fromId = dragEntryId.current;
-    dragEntryId.current = null;
-    if (!fromId || fromId === targetEntryId || !props.onReorderEntries || props.queueRevision === undefined) return;
+    const sourceDrag = dragSource.current;
+    dragSource.current = null;
+    if (
+      !sourceDrag
+      || sourceDrag.entryId === targetEntryId
+      || !props.onReorderEntries
+      || props.queueRevision !== sourceDrag.queueRevision
+    ) return;
+    const fromId = sourceDrag.entryId;
     const target = entries.find((entry) => entry.entryId === targetEntryId);
     const source = entries.find((entry) => entry.entryId === fromId);
     if (!target || source?.placement !== target.placement) return;
@@ -130,7 +136,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
               key={entry.entryId}
               data-maka-queue-drop-target={reorderable ? 'true' : undefined}
               onDragOver={(event) => {
-                if (reorderable && dragEntryId.current) event.preventDefault();
+                if (reorderable && dragSource.current) event.preventDefault();
               }}
               onDrop={reorderable ? () => dropOn(entry.entryId) : undefined}
             >
@@ -147,13 +153,14 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                   draggable={reorderable}
                   aria-label={copy.reorderQueuedEntry}
                   onDragStart={(event) => {
-                    dragEntryId.current = entry.entryId;
+                    if (!reorderable || props.queueRevision === undefined) return;
+                    dragSource.current = { entryId: entry.entryId, queueRevision: props.queueRevision };
                     event.dataTransfer.effectAllowed = 'move';
                     event.dataTransfer.setData('text/plain', entry.entryId);
                     event.dataTransfer.setData('application/x-maka-queue-entry', entry.entryId);
                   }}
                   onDragEnd={() => {
-                    dragEntryId.current = null;
+                    dragSource.current = null;
                   }}
                 >
                   <GripVertical size={ICON_SIZE.control} aria-hidden="true" />

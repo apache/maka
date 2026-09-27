@@ -354,7 +354,10 @@ and the Electron renderer-reload E2E passes in this branch.
 - #3544: a UI ablation showed Host-admitted rows remained draggable when the
   queue revision was unavailable, even though editing was disabled. The queue
   component now gates both the drag affordance and drop submission on a known
-  revision. The new test failed before the fix and passed afterward (5 queue
+  revision. Another failing ablation showed an old drag could reorder a newer
+  projection after the Host revision changed mid-drag; the drag now retains
+  its starting revision and discards the drop when it differs. Both tests
+  failed before their respective fixes and passed afterward (6 queue
   component tests); UI build and Biome passed. This is not a complete rewrite
   of the 35-file mixed-author feature.
 - #2967: a new boundary test showed the audit writer could append a record

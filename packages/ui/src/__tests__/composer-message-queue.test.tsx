@@ -185,3 +185,26 @@ test('queued entries cannot start a reorder without a Host queue revision', asyn
     await view.close();
   }
 });
+
+test('a drag from an older queue revision cannot reorder a newer projection', async () => {
+  const reordered: string[][] = [];
+  const entries = [queued('entry-1', 'first'), queued('entry-2', 'second')];
+  const onReorderEntries = (ids: readonly string[]) => { reordered.push([...ids]); };
+  const view = await mountQueue({ queuedMessages: entries, queueRevision: 1, onReorderEntries });
+  try {
+    const source = view.document.querySelectorAll('[draggable="true"]')[1]!;
+    await act(async () => {
+      source.dispatchEvent(Object.assign(new window.Event('dragstart', { bubbles: true }), {
+        dataTransfer: { effectAllowed: '', setData: () => {} },
+      }));
+    });
+    await view.rerender({ queuedMessages: entries, queueRevision: 2, onReorderEntries });
+    await act(async () => {
+      view.document.querySelectorAll('[data-maka-queue-drop-target="true"]')[0]!
+        .dispatchEvent(new window.Event('drop', { bubbles: true }));
+    });
+    assert.deepEqual(reordered, []);
+  } finally {
+    await view.close();
+  }
+});
