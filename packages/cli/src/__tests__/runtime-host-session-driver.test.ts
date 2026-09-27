@@ -1789,6 +1789,7 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(await driver.retractQueued!(), {
       text: 'Later',
       messageIds: ['message-1'],
+      quotes: [],
     });
     assert.deepEqual(
       connection.requests.filter(
