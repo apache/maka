@@ -52,6 +52,17 @@ export const TUI_COPY_RESOURCES = {
       loading: '正在載入待辦…',
       hint: '↑↓/PgUp/PgDn 捲動 · Home/End · Esc 關閉',
     },
+    ko: {
+      title: 'Current Todo',
+      markedComplete: 'marked complete',
+      open: '/todo to view',
+      usage: 'Usage: /todo',
+      progress: 'Todo',
+      unavailable: 'Todo unavailable',
+      empty: 'No Todo items',
+      loading: 'Loading Todo…',
+      hint: '↑↓/PgUp/PgDn scroll · Home/End · Esc close',
+    },
   },
   'transcript-reader': {
     en: {
@@ -74,6 +85,13 @@ export const TUI_COPY_RESOURCES = {
       hint: 'Esc/Ctrl+O 返回 · Ctrl+E 詳情 · / 搜尋 · ↑↓/PgUp/PgDn · Home/End',
       matches: '處符合（目前顯示內容）',
       back: '回到原位置',
+    },
+    ko: {
+      title: 'DETAILED TRANSCRIPT',
+      scope: 'loaded history',
+      hint: 'Esc/Ctrl+O close · Ctrl+E details · / search · ↑↓/PgUp/PgDn · Home/End',
+      matches: 'matches in displayed text',
+      back: 'return',
     },
   },
   'host-owner': {

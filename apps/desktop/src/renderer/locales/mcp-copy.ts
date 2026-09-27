@@ -258,6 +258,8 @@ const MCP_COPY = {
   ko: {
     errors: {
       load: 'Failed to load MCP', install: (name) => `Failed to install ${name}`, cancelInstall: (name) => `Failed to cancel installation of ${name}`, save: 'Failed to save MCP',
+      writeDurabilityUnknown: 'The write was published, but survival after power loss could not be confirmed. Check the refreshed configuration before retrying.',
+      writeOutOfSync: 'Write durability could not be confirmed, and MCP runtime state is out of sync with the configuration. Check the configuration and resynchronize before retrying.',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
       mapLine: (line) => `Line ${line} must use KEY=value`, importJson: 'MCP configuration must be valid JSON', importObject: 'MCP JSON must be an object',
       importVersion: (version) => `Unsupported MCP config version ${version}; versions 1, 2, and 3 are supported`, importServersObject: 'mcpServers must be an object',
@@ -313,7 +315,7 @@ const MCP_COPY = {
       protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.', expandAdvanced: 'Show advanced settings', collapseAdvanced: 'Hide advanced settings',
       stdioProtocolHelp: 'Auto-negotiate and “2026-07-28 only” first start a short-lived probe with the same command, arguments, working directory, and environment. The session process starts only after the probe exits. Existing configurations default to Legacy and start one process.',
     },
-  }
+  },
 } satisfies UiCatalog<McpCopy>;
 
 export function getMcpCopy(locale: UiLocale): McpCopy {

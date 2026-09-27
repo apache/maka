@@ -309,6 +309,10 @@ const COPY = {
       `Importing “${name}”. Maka opens the task as soon as it lands.`,
     importFailedTitle: 'Import failed',
     importFailedFallback: 'This conversation could not be converted or saved. Check the source and try again.',
+    importFailedNoModel:
+      'No usable model connection to attach the imported task to. Configure and enable a model in Settings · Models, then import again.',
+    importFailedSourceUnreadable:
+      'This conversation could not be read or converted — it may be too large, malformed, or temporarily unreadable. Check the source and try again.',
     importRecoveredTitle: 'Import confirmed',
     importRecoveredDescription: (name) =>
       `The imported task is available now for “${name}”.`,
@@ -327,7 +331,7 @@ const COPY = {
     batchNothingImported: 'No conversation was imported.',
     importOutcomeUnknownDescription: (names) =>
       `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
-  }
+  },
 } satisfies UiCatalog<ExternalSessionImportCopy>;
 
 export function getExternalSessionImportCopy(locale: UiLocale): ExternalSessionImportCopy {

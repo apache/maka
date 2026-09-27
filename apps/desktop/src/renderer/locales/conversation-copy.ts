@@ -1160,8 +1160,7 @@ const COPY = {
     turnError: { streamTruncated: 'The response stream ended before completion.', requestRejected: 'The model service rejected the request. Check the model and request configuration.', retryExhausted: 'The automatic retry limit was reached.', retryDeclined: { side_effects: 'Tool activity already occurred in this attempt. Automatic retry was declined to avoid repeating operations. Check the tool results first.', observable_output: 'This attempt already produced output, so it was not retried automatically. Check the retained content first.', policy: 'This attempt was not retried under the current retry policy.', budget: 'The execution budget was exhausted, so this attempt was not retried automatically.' }, unknown: 'Something went wrong; the cause is unknown.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', timeout: 'The model request timed out.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity.', rateLimit: 'Requests were rate-limited.', network: 'The network connection failed. Check the network.', provider: 'The model service returned an error.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.' } },
   },
   ko: {
-    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', imageAttachmentNotDirectTitle: 'Image added as an attachment', imageAttachmentNotDirectDescription: 'The current model does not receive images directly. The image has been provided as an attachment.', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', partialHistoryTitle: 'Viewing earlier messages', returnLatest: 'Return to latest', scrollMainToBottom: 'Scroll main conversation to bottom' },
-    attachments: { tooMany: 'You can attach at most 8 files', tooLarge: 'Attachments must be 50 MB or smaller', duplicate: 'This attachment was already added.' },
+    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', imageAttachmentNotDirectTitle: 'Image added as an attachment', imageAttachmentNotDirectDescription: 'The current model does not receive images directly. The image has been provided as an attachment.', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', scrollMainToBottom: 'Scroll main conversation to bottom' },
     model: {
       fakeBackendLabel: 'Local simulation',
       setupTitle: 'Configure a real model',
@@ -1180,7 +1179,7 @@ const COPY = {
         provider_retired: 'The sign-in this task\u2019s connection uses was removed from Maka, so it cannot send. Switch to another connection in Settings · Models, then start a new task.',
       },
     },
-    footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
+    footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', requestRegenerate: 'Ask the Owner to approve regenerating this response', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
     workbar: {
       ariaLabel: 'Task workbar',
@@ -1188,31 +1187,17 @@ const COPY = {
       review: 'Changes',
       terminal: 'Terminal',
       terminalNumbered: (index) => `Terminal ${index}`,
-      tasks: 'To-do',
-      todoLoadFailed: 'Failed to load the to-do list. Try again.',
       workBoard: 'Work board',
       browser: 'Browser',
       files: 'Generated files',
       inspector: 'Trace',
       sideChat: 'Side chat',
       sideChatNumbered: (index) => `Side chat ${index}`,
-      openTab: 'Open workbar tab',
+      openTab: 'Open or close a workbar face',
       openTools: 'Open tools',
-      closeTab: (label) => `Close ${label}`,
-      tabMenu: (label) => `${label} tab menu`,
-      moveLeft: 'Move left',
-      moveRight: 'Move right',
-      moveToRight: 'Move to right panel',
-      moveToBottom: 'Move to bottom panel',
-      pinTab: 'Pin tab',
-      pinTabHint: 'Preview tab. Double-click or interact with its content to pin it',
-      close: 'Close',
-      closeOthers: 'Close other tabs',
-      closeToRight: 'Close tabs to the right',
       launcher: {
         review: 'View changes in the current Git workspace',
         terminal: 'Inspect terminal runs and live output for this task',
-        tasks: "View and maintain this task's to-do ledger",
         workBoard: 'Capture and manage deferred work',
         browser: 'Open the embedded browser and keep the current page',
         files: 'Browse files generated by this task',
@@ -1305,6 +1290,22 @@ const COPY = {
       totals: {
         cost: 'Estimated cost',
       },
+      tokenUsage: {
+        title: 'Token usage',
+        segment: {
+          cacheRead: 'Cached input',
+          cacheMiss: 'Uncached input',
+          output: 'Output (incl. reasoning)',
+        },
+      },
+      durationUsage: {
+        title: 'Time breakdown',
+        center: 'Recorded time',
+        segment: {
+          model: (count) => `LLM calls × ${count}`,
+          tool: (count) => `Tool runs × ${count}`,
+        },
+      },
       coveragePartial: (parts) =>
         `Some calls could not be shown completely, so the numbers below only undercount${enDetail(parts)}`,
       coverageAbsent: (parts) => `This backend does not record per-call detail${enDetail(parts)}`,
@@ -1348,11 +1349,20 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      defaultName: 'Side chat',
       namePrefix: 'Side: ',
-      preparing: 'Preparing side chat…',
       permissionStreaming: 'Permissions cannot change while the side chat is running',
       scrollToBottom: 'Scroll side conversation to bottom',
+      compactSuccessTitle: 'Context compacted',
+      compactSuccessDescription: 'Older context was replaced with a checkpoint summary.',
+      compactStartedTitle: 'Compacting context',
+      compactStartedDescription: 'Summarizing older context into a checkpoint.',
+      compactUnchangedTitle: 'Nothing to compact',
+      compactUnchangedDescription: 'The task already uses the latest checkpoint.',
+      compactErrorTitle: 'Compaction failed',
+      compactErrorFallback: 'The task could not be compacted. Try again later.',
+      workspaceUnavailableTitle: 'Working directory unavailable',
+      workspaceUnavailableDescription:
+        'The working directory does not exist or cannot be accessed. Select a valid folder for a new task.',
       closeConfirmation: {
         title: (count) => count > 1 ? `Close ${count} side chats?` : 'Close side chat?',
         description: (count) =>
@@ -1393,8 +1403,8 @@ const COPY = {
       reauth: { label: 'Last connection test failed authentication', tooltip: 'The latest test returned 401 / 403. Sending is not blocked, but sign in again under Settings · Models if it fails.' },
       testError: { label: 'Last connection test failed', tooltip: 'The latest test failed because of a network, timeout, or 5xx error. Sending is not blocked; check Base URL or proxy settings if it persists.' },
     },
-    turnError: { unknown: 'Something went wrong, cause unknown. Send a message to retry.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', contextBudgetExhausted: 'The context limit was reached and this task cannot continue. Switch models or start a new task.', malformedSummary: 'Context compaction could not produce a valid summary. Check the model context-window setting, switch models, or start a new task.', timeout: 'The model request timed out. Send a message to retry.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity. Wait a few minutes, or switch models.', rateLimit: 'Requests were rate-limited. Wait a moment, then send a message to retry.', network: 'The network connection failed. Check the network, then send a message again.', provider: 'The model service returned an error. Retry later, or switch models.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.', partialOutput: 'This turn produced part of an answer. Worth reading before you send another message.' } },
-  }
+    turnError: { streamTruncated: 'The response stream ended before completion.', requestRejected: 'The model service rejected the request. Check the model and request configuration.', retryExhausted: 'The automatic retry limit was reached.', retryDeclined: { side_effects: 'Tool activity already occurred in this attempt. Automatic retry was declined to avoid repeating operations. Check the tool results first.', observable_output: 'This attempt already produced output, so it was not retried automatically. Check the retained content first.', policy: 'This attempt was not retried under the current retry policy.', budget: 'The execution budget was exhausted, so this attempt was not retried automatically.' }, unknown: 'Something went wrong; the cause is unknown.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', timeout: 'The model request timed out.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity.', rateLimit: 'Requests were rate-limited.', network: 'The network connection failed. Check the network.', provider: 'The model service returned an error.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.' } },
+  },
 } satisfies UiCatalog<DesktopConversationCopy>;
 
 export function getDesktopConversationCopy(locale: UiLocale): DesktopConversationCopy {

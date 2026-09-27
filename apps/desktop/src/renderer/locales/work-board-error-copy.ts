@@ -48,6 +48,14 @@ const WORK_BOARD_ERROR_COPY = {
     must_archive_first: 'Archive this item before deleting it.',
     unknown: 'The action failed. Try again later.',
   },
+  ko: {
+    invalid_input: 'This action is invalid. Check it and try again.',
+    not_found: 'This item no longer exists.',
+    operation_conflict: 'This item changed. Refresh and try again.',
+    corrupt_record: 'This item cannot be read right now.',
+    must_archive_first: 'Archive this item before deleting it.',
+    unknown: 'The action failed. Try again later.',
+  },
 } satisfies UiCatalog<WorkBoardErrorCopy>;
 
 export function getWorkBoardErrorCopy(locale: UiLocale): WorkBoardErrorCopy {

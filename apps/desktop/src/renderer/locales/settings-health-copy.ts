@@ -180,7 +180,7 @@ const SETTINGS_HEALTH_COPY = {
     source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} runtime` : signal.label),
     signalMessage: (signal) => signalMessagesEn[signal.message],
-    signalDetail: (signal) => signalDetailEn(signal),
+    signalDetail: (signal) => signalDetailEn(signal.detail),
   }
 } satisfies UiCatalog<HealthCenterCopy>;
 
@@ -367,6 +367,7 @@ const unknownRuntimeErrorClass = {
   'zh-CN': '未知错误',
   'zh-TW': '未知錯誤',
   en: 'Unknown error',
+  ko: 'Unknown error',
 } satisfies UiCatalog<string>;
 
 // Runtime probes carry the turn's failure class (rate_limit, context_overflow,

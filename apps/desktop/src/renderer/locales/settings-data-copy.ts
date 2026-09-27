@@ -140,7 +140,8 @@ const SETTINGS_DATA_COPY = {
     loadFailed: 'Failed to load data directory', openFailed: (label) => `Could not open ${label}`, pathCopied: 'Workspace path copied', copyFailed: 'Copy failed', copyFailedDetail: 'The clipboard is unavailable or access was denied by the system.',
     historyCleared: 'Input history cleared', historyClearedDetail: 'Sent prompt history was removed from this device.', selectCategory: 'Select at least one category',
     exported: 'Configuration exported', exportedDetail: (items) => `Included: ${items.join(', ')}`, exportFailed: 'Export failed', noCategories: 'No categories selected', tryAgain: 'Try again later',
-    imported: 'Configuration imported', importFailed: 'Import failed', invalidFile: 'The file is invalid or its version is unsupported.',
+    imported: 'Configuration imported', importFailed: 'Import failed',
+    importFailures: { not_json: 'The file is not valid JSON.', malformed: 'The config bundle is malformed.', unsupported_version: 'The config file version is unsupported.' },
     rows: {
       workspace: 'Workspace path', workspaceDetail: 'Tasks, settings, credentials, and skill files are stored in this directory.', loadValueFailed: 'Failed to load', loading: 'Loading…',
       history: 'Input history', historyDetail: 'Previously sent prompts recalled with the Up and Down arrows are kept on this machine and persist across restarts. Clearing them cannot be undone.',
@@ -151,7 +152,7 @@ const SETTINGS_DATA_COPY = {
     configHelp: 'Select the content to export into a JSON backup. You can import it after moving devices or reinstalling. Secrets are excluded by default.', categoryAria: 'Select export content',
     sensitiveWarning: '⚠️ Secrets will be written to the export file as plain text. Anyone with this file can use them. Store it securely and do not share it.',
     conflictAria: 'How to handle connections with the same name during import', skip: 'Skip', overwrite: 'Overwrite', exportConfig: 'Export configuration…', importConfig: 'Import configuration…',
-  }
+  },
 } satisfies UiCatalog<DataSettingsCopy>;
 
 export function getDataSettingsCopy(locale: UiLocale): DataSettingsCopy {

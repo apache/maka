@@ -72,13 +72,11 @@ const COPY = {
     keepRunning: '繼續執行 Maka',
   },
   ko: {
-    title: 'Maka를 안전하게 종료할 수 없습니다',
-    message: '로컬 Runtime Host를 안전하게 중지하지 못했습니다. Maka가 아직 실행 중입니다.',
-    detail: '종료가 취소되었습니다. 다시 시도하거나 문제가 계속되면 진단 정보를 확인하세요.',
-    process: (pid: number) => `Runtime Host 프로세스 PID: ${pid}`,
-    manual:
-      '다시 시도해도 실패하면, 보존할 실행이 없는지 확인한 뒤 운영체제의 프로세스 관리 도구로 해당 PID를 중지하세요.',
-    cause: '원인',
-    button: '확인',
+    activeTitle: 'Maka가 아직 작업 중입니다',
+    activeMessage: '백그라운드 작업이 아직 실행 중입니다.',
+    activeDetail:
+      '지금 종료하면 Runtime Host가 중지되어 실행 중이거나 예약된 백그라운드 작업이 중단될 수 있습니다. 다음 Runtime Host 실행 시 영속 상태에서 다시 재개됩니다.',
+    stopAndQuit: '작업 중지 및 종료',
+    keepRunning: 'Maka 유지',
   },
 } as const;

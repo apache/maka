@@ -24,7 +24,10 @@ test('persists Korean locale preference through reload', async ({ window: page }
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('main', { name: 'Settings content' })).toBeVisible();
   await page.getByRole('button', { name: 'General', exact: true }).click();
-  await expect(page.getByText('UI language', { exact: true }).first()).toBeVisible();
+  // The Settings → General row labels itself `interfaceLanguage`
+  // (`Interface language` in en) — main-process confirmation copy uses
+  // `UI language`, which is not on this surface.
+  await expect(page.getByText('Interface language', { exact: true }).first()).toBeVisible();
   await page.keyboard.press('Escape');
 
   await page.evaluate(async () => {
@@ -40,7 +43,17 @@ test('persists Korean locale preference through reload', async ({ window: page }
   });
   expect(locale).toBe('ko');
 
+  // The preference must not only persist — it has to be applied. Core locale
+  // resolution surfaces the resolved locale on the document root, so assert it
+  // actually took effect instead of just being stored.
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ko');
+  await expect(page.locator('html')).toHaveAttribute('data-maka-locale', 'ko');
+
+  // Renderer chrome labels are English stubs by design in this PR (the real
+  // renderer catalogs land with the renderer slices #3977–#3979). Keep a smoke
+  // check that Settings → General still renders after the switch so a future
+  // real Korean translation flips this assertion instead of silently passing.
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'General', exact: true }).click();
-  await expect(page.getByText('UI language', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('main', { name: 'Settings content' })).toBeVisible();
 });

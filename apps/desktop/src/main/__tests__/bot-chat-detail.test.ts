@@ -100,6 +100,16 @@ const expectedCopy = {
       [5, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol and 2 more'],
     ],
   },
+  ko: {
+    help: 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored.',
+    cappedHelp: 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored. (limit reached)',
+    warnings: [
+      [1, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice'],
+      [3, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol'],
+      [4, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol and 1 more'],
+      [5, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol and 2 more'],
+    ],
+  },
 } satisfies UiCatalog<{
   help: string;
   cappedHelp: string;
@@ -194,7 +204,7 @@ test('real bridge failures render localized detail and overview output in all lo
     await slack.start();
     assert.ok(socket);
     socket.emit('disconnected');
-    statuses.push([slack.getStatus(), ['Slack 连接已断开，正在等待重新连接', 'Slack 連線已中斷，正在等待重新連線', 'Slack disconnected; waiting to reconnect']]);
+    statuses.push([slack.getStatus(), UI_LOCALES.map((locale) => getBotSettingsCopy(locale).statusReasons.codes['slack-disconnected'])]);
     await slack.stop();
     auth.mock.mockImplementation(async () => { throw new Error('Network error bot-secret app-secret'); });
     await assert.rejects(slack.start());

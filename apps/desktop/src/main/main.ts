@@ -278,6 +278,12 @@ const DEV_SINGLETON_COPY = {
     detail: (profilePath: string) => `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
     exit: 'Exit',
   },
+  ko: {
+    title: 'Maka Dev is already running',
+    message: 'Another Maka Dev instance is using this development profile.',
+    detail: (profilePath: string) => `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
+    exit: 'Exit',
+  },
 } satisfies UiCatalog<{
   title: string;
   message: string;

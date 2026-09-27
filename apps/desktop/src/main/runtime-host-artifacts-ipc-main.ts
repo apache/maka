@@ -260,4 +260,5 @@ const ARTIFACT_DIALOG_COPY = {
   'zh-CN': { saveAs: (name: string) => `另存为 ${name}` },
   'zh-TW': { saveAs: (name: string) => `另存為 ${name}` },
   en: { saveAs: (name: string) => `Save ${name} as` },
+  ko: { saveAs: (name: string) => `Save ${name} as` },
 } satisfies UiCatalog<{ saveAs(name: string): string }>;

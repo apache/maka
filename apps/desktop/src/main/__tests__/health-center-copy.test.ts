@@ -104,6 +104,7 @@ test('capability reason codes have copy in every locale, unknown reasons keep th
     'zh-CN': '状态详情请见对应设置页。',
     'zh-TW': '狀態詳細資料請參閱對應的設定頁。',
     en: 'See the corresponding settings page for details.',
+    ko: 'See the corresponding settings page for details.',
   } satisfies UiCatalog<string>;
   assert.equal(getCapabilityReasonCopy('zh-CN').platform_credentials_missing, '未配置平台凭据');
   for (const locale of UI_LOCALES) {

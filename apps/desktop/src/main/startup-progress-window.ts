@@ -67,6 +67,20 @@ const COPY = {
       attention: '等待你的確認', renderer: '正在開啟工作區',
     },
   },
+  ko: {
+    title: 'Opening your workspace',
+    detail: 'Maka is preparing your local background service.',
+    slow: 'This is taking longer than usual. Updates may need to download or build a package. You can minimize this window while Maka continues.',
+    copy: 'Copy diagnostics', copied: 'Diagnostics copied', copyFailed: 'Could not copy diagnostics',
+    elapsed: 'Elapsed',
+    phases: {
+      prepare: 'Preparing Maka', storage: 'Checking local data', connect: 'Connecting to Runtime Host',
+      package: 'Preparing the Runtime Host package', checking: 'Checking the managed service',
+      staging: 'Installing the update', retiring: 'Safely stopping the previous service',
+      replacing: 'Replacing the managed service', restart: 'Restarting Runtime Host',
+      attention: 'Waiting for your confirmation', renderer: 'Opening your workspace',
+    },
+  },
 } as const;
 
 export interface StartupProgressWindow {

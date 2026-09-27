@@ -145,6 +145,37 @@ const formattedCopy = {
       'The current MEMORY.md will be backed up before the selected backup replaces it. Restore: Backup #2',
     ],
   },
+  ko: {
+    counts: [
+      ['0 active entries', 'Draft · 0 active entries', '0 archived entries', 'Draft · 0 archived entries', '0 memories'],
+      ['1 active entry', 'Draft · 1 active entry', '1 archived entry', 'Draft · 1 archived entry', '1 memory'],
+      ['2 active entries', 'Draft · 2 active entries', '2 archived entries', 'Draft · 2 archived entries', '2 memories'],
+    ],
+    summaries: [
+      ['0 active entries; the previous version was backed up.', '0 active entries'],
+      ['1 active entry; the previous version was backed up.', '1 active entry'],
+      ['2 active entries; the previous version was backed up.', '2 active entries'],
+      ['0 active entries / 2 archived entries; the previous version was backed up.', '0 active entries / 2 archived entries'],
+      ['1 active entry / 1 archived entry; the previous version was backed up.', '1 active entry / 1 archived entry'],
+      ['1 active entry / 2 archived entries; the previous version was backed up.', '1 active entry / 2 archived entries'],
+      ['2 active entries / 1 archived entry; the previous version was backed up.', '2 active entries / 1 archived entry'],
+      ['2 active entries / 2 archived entries; the previous version was backed up.', '2 active entries / 2 archived entries'],
+    ],
+    redacted: [
+      'Suspected tokens, API keys, or passwords were redacted before writing; 1 active entry; the previous version was backed up.',
+      'Suspected tokens, API keys, or passwords were redacted before writing; 1 active entry / 2 archived entries; the previous version was backed up.',
+    ],
+    backupFailures: ['Failed to open Before reset', 'Failed to open Before restore', 'Failed to open Before save'],
+    preview: ['Preview truncated at the 8,000-character limit', 'Preview 1,234 / 8,000 characters', 'Prompt limit: 8,000 characters'],
+    labels: [
+      '0 / 0 matching', '1 / 2 matching', 'Memory #2 list', 'Memory #2 memory actions',
+      'Archive: Memory #2', 'Open backup candidate Backup #2', 'Restore backup candidate Backup #2',
+      'Copy backup candidate reference Backup #2', 'Archive in draft; MEMORY.md is not written until you save',
+      'Restore to draft; MEMORY.md is not written until you save',
+      'The current MEMORY.md will be backed up before the latest backup replaces it. Restore: Backup #2',
+      'The current MEMORY.md will be backed up before the selected backup replaces it. Restore: Backup #2',
+    ],
+  },
 } satisfies UiCatalog<{
   counts: string[][];
   summaries: string[][];

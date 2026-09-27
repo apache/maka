@@ -315,10 +315,20 @@ const PERMISSION_CENTER_COPY = {
       memoryStates: { not_applicable: 'No memory writes', disabled: 'Memory writes disabled', draft_required: 'Draft a memory protocol first', accepted: 'Memory writes accepted' },
       runtimeStates: { not_available: 'No runtime probe available', not_run: 'Probe not run', healthy: 'Probe passed', degraded: 'Probe degraded' },
     },
-    requiredPermissions: 'Required system permissions', requiredPermissionsAria: (label) => `${label} required system permissions`, guidance: 'Suggested actions', guidanceAria: (label) => `${label} suggested actions`,
+    requiredPermissions: 'Required system permissions', requiredPermissionsAria: (label) => `${label} required system permissions`,
     auditSection: 'Audit records', noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
     impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission', dragGrant: 'Guide me', dragGranting: 'Opening…',
-  }
+    cuBackendStatus: (missing, health) =>
+      'The maka-cu artifact passed the local integrity check. '
+      + (missing.length > 0 ? `Waiting for ${missing.join(', ')} permission. ` : '')
+      + ({
+        not_available: 'The maka-cu service failed to start, exited, or was stopped.',
+        degraded: 'The maka-cu service is starting or recovering.',
+        healthy: 'The action and screenshot service is ready; grant by target and action category to operate local apps.',
+        not_run: 'The service starts on first use; grant by target and action category to operate local apps.',
+      } satisfies Record<RuntimeProbeState, string>)[health],
+    reasonFallback: 'See the runtime logs for details.',
+  },
 } satisfies UiCatalog<PermissionCenterCopy>;
 
 export function getPermissionCenterCopy(locale: UiLocale): PermissionCenterCopy {
