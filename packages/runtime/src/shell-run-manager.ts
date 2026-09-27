@@ -511,10 +511,18 @@ export class ShellRunProcessManager
       );
     }
     // The snapshot was captured before persistence. Exit can begin during that
-    // await, so a control response must reconcile against the final record.
-    if (live.driverExit || live.finalizeOnce) record = await live.finished.join();
-    if (isTerminalShellRunStatus(record.status)) record = await this.markObserved(record);
+    // await, so every control response goes through the same final-record
+    // reconciliation rather than returning a stale running snapshot.
+    record = await this.reconcilePtyControlRecord(live, record);
     return clientControl ? compactShellRunContent(record) : shellRunContent(record, operation);
+  }
+
+  private async reconcilePtyControlRecord(
+    live: LiveShellRun,
+    snapshot: ShellRunRecord,
+  ): Promise<ShellRunRecord> {
+    const record = live.driverExit || live.finalizeOnce ? await live.finished.join() : snapshot;
+    return isTerminalShellRunStatus(record.status) ? this.markObserved(record) : record;
   }
 
   async readRuntimeResource(
