@@ -126,8 +126,7 @@ export function useComposerMessageQueueController(
     if (
       !source ||
       source.entryId === targetEntryId ||
-      !actions.onReorderEntries ||
-      actions.queueRevision !== source.queueRevision
+      !actions.onReorderEntries
     ) {
       return;
     }

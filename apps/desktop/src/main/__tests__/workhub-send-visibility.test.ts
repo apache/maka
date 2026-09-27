@@ -683,8 +683,8 @@ test('WorkHub sends queue edits, withdrawal and both queue orders to the Host an
   await act(() => h.emit({ type: 'queue_update', id: 'queued', turnId: 'active-turn', ts: 2,
     queueRevision: 7, steering: ['first', 'second'], followup: [], steeringEntries: entries }));
   await act(async () => {
-    await h.controller.editQueuedEntry?.(entries[1]!);
-    await h.controller.reorderQueuedEntries(['second', 'first']);
+    await h.controller.updateQueuedEntry('second', 7, 'edited second');
+    await h.controller.reorderQueuedEntries(['second', 'first'], 7);
     await h.controller.deleteQueuedEntry('first');
   });
   assert.deepEqual(h.queueMutations, [

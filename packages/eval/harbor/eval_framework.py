@@ -15,16 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Context-local framework authority shared by the trial runner and relay."""
+"""Process-local framework authority shared by the trial runner and relay."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
-from typing import Iterator
-
 _DISTRIBUTIONS = {"harbor": "harbor", "pier": "datacurve-pier"}
-_active: ContextVar[str | None] = ContextVar("maka_eval_active_framework", default=None)
+_active: str | None = None
 
 
 def _validate(name: str) -> str:
@@ -33,26 +29,15 @@ def _validate(name: str) -> str:
     return name
 
 
-def activate(name: str) -> None:
-    """Set the framework for imports executed in the current context."""
+def install(name: str) -> None:
+    """Select the framework before importing its process-wide relay module."""
 
-    _active.set(_validate(name))
-
-
-@contextmanager
-def framework_scope(name: str) -> Iterator[str]:
-    """Temporarily select a framework and restore the caller's selection."""
-
-    selected_name = _validate(name)
-    token = _active.set(selected_name)
-    try:
-        yield selected_name
-    finally:
-        _active.reset(token)
+    global _active
+    _active = _validate(name)
 
 
 def current_framework() -> str:
-    name = _active.get()
+    name = _active
     if name is None:
         raise RuntimeError("Eval framework selection is not installed")
     return _validate(name)

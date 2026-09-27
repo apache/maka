@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import asyncio
 import importlib.util
 import unittest
 from pathlib import Path
@@ -43,16 +42,15 @@ class FrameworkAuthorityTest(unittest.TestCase):
 
         for name, distribution in expected.items():
             with self.subTest(name=name):
-                authority.activate(name)
+                authority.install(name)
                 self.assertEqual(authority.current_framework(), name)
                 self.assertEqual(authority.framework_distribution(name), distribution)
 
-    def test_invalid_names_cannot_mutate_or_enter_the_context(self) -> None:
+    def test_invalid_names_cannot_replace_the_process_selection(self) -> None:
         authority = fresh_authority()
         invalid_operations = (
-            lambda: authority.activate("other"),
+            lambda: authority.install("other"),
             lambda: authority.framework_distribution("other"),
-            lambda: authority.framework_scope("other").__enter__(),
         )
 
         for operation in invalid_operations:
@@ -62,36 +60,11 @@ class FrameworkAuthorityTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "not installed"):
                     authority.current_framework()
 
-    def test_scope_restores_its_caller_when_work_fails(self) -> None:
+    def test_install_replaces_the_process_selection(self) -> None:
         authority = fresh_authority()
-        authority.activate("harbor")
-
-        with self.assertRaisesRegex(ValueError, "trial failed"):
-            with authority.framework_scope("pier") as selected:
-                self.assertEqual(selected, "pier")
-                self.assertEqual(authority.current_framework(), "pier")
-                raise ValueError("trial failed")
-
-        self.assertEqual(authority.current_framework(), "harbor")
-
-    def test_each_async_task_owns_its_selection(self) -> None:
-        authority = fresh_authority()
-
-        async def select_after_peer(name: str, own: asyncio.Event, peer: asyncio.Event) -> str:
-            authority.activate(name)
-            own.set()
-            await peer.wait()
-            return authority.current_framework()
-
-        async def exercise() -> list[str]:
-            harbor_ready = asyncio.Event()
-            pier_ready = asyncio.Event()
-            return await asyncio.gather(
-                select_after_peer("harbor", harbor_ready, pier_ready),
-                select_after_peer("pier", pier_ready, harbor_ready),
-            )
-
-        self.assertEqual(asyncio.run(exercise()), ["harbor", "pier"])
+        authority.install("harbor")
+        authority.install("pier")
+        self.assertEqual(authority.current_framework(), "pier")
 
 
 if __name__ == "__main__":

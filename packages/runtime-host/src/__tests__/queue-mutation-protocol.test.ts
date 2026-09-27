@@ -88,7 +88,6 @@ test('queue mutation requests reject stale, ambiguous, and non-semantic inputs',
     { ...update, input: { ...update.input, text: '   ' } },
     { ...update, input: { ...update.input, expectedQueueRevision: -1 } },
     { ...reorder, input: { ...reorder.input, expectedQueueRevision: 1.5 } },
-    { ...reorder, input: { ...reorder.input, entryIds: [] } },
     { ...reorder, input: { ...reorder.input, entryIds: ['entry-1', 'entry-1'] } },
     { ...reorder, input: { ...reorder.input, entryIds: ['not/a/semantic/id'] } },
   ];

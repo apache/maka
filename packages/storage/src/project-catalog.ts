@@ -876,6 +876,8 @@ export async function resolveProjectLocation(input: {
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
   const location = await stat(canonicalPath);
+  // Reject files before Git discovery: `git -C <file>` reports a generic
+  // process failure that callers cannot classify as an invalid project path.
   if (!location.isDirectory()) {
     throw new TypeError(`Project path is not a directory: ${canonicalPath}`);
   }
@@ -887,6 +889,8 @@ export async function resolveProjectLocation(input: {
     };
   }
   const git = await resolveGitLocation(canonicalPath);
+  // A chooser selection names this directory exactly. Historical working
+  // directories may resolve upward to their enclosing worktree instead.
   if (input.intent === 'selected' && canonicalPath !== git.worktreeRoot) {
     return {
       canonicalPath,

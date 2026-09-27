@@ -147,7 +147,7 @@ export function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReor
     throw invalidProtocolFrame('Invalid reorder entry identities');
   }
   const entryIds = record.entryIds.map((entryId) => requireEntityId(entryId, 'entryId'));
-  if (entryIds.length === 0 || new Set(entryIds).size !== entryIds.length) {
+  if (new Set(entryIds).size !== entryIds.length) {
     throw invalidProtocolFrame('Invalid reorder entry identities');
   }
   return {

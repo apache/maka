@@ -19,17 +19,19 @@
 
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 import type { SessionViewMode } from '@maka/ui';
-import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { createObservableState } from '../../../application/contracts/session-catalog/observable-state.js';
 import {
   clampSessionListWidth,
   readSessionListCollapsed,
+  readSessionListViewMode,
   readSessionListWidth,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
+  writeSessionListCollapsed,
+  writeSessionListViewMode,
+  writeSessionListWidth,
 } from './session-list-layout.js';
 
 const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
-const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
 
 export interface SessionRailLayoutState {
   readonly collapsed: boolean;
@@ -52,11 +54,10 @@ export interface SessionRailLayoutState {
  * instance for it to be an instance of.
  */
 export function createSessionRailLayoutStore() {
-  const storedViewMode = safeLocalStorageGet(VIEW_MODE_KEY);
   const state = createObservableState<SessionRailLayoutState>({
     collapsed: readSessionListCollapsed(),
     width: readSessionListWidth(),
-    viewMode: storedViewMode === 'project' ? 'project' : 'conversation',
+    viewMode: readSessionListViewMode(),
   });
   const collapseHandleRef: { current: SideNavImperativeCollapseHandle | null } = { current: null };
   let widthPersistHandle: ReturnType<typeof setTimeout> | undefined;
@@ -69,7 +70,7 @@ export function createSessionRailLayoutStore() {
       const current = state.getState();
       if (current.collapsed === next) return;
       state.replaceState({ ...current, collapsed: next });
-      safeLocalStorageSet('maka-chat-list-collapsed-v1', next ? 'true' : 'false');
+      writeSessionListCollapsed(next);
     },
     /** Debounced: a drag reports a width per frame and only the last one is worth storing. */
     setWidth(next: number): void {
@@ -87,14 +88,14 @@ export function createSessionRailLayoutStore() {
       state.replaceState({ ...current, width });
       if (widthPersistHandle !== undefined) clearTimeout(widthPersistHandle);
       widthPersistHandle = setTimeout(() => {
-        safeLocalStorageSet('maka-chat-list-width-v1', String(width));
+        writeSessionListWidth(width);
       }, LAYOUT_PERSIST_DEBOUNCE_MS);
     },
     setViewMode(next: SessionViewMode): void {
       const current = state.getState();
       if (current.viewMode === next) return;
       state.replaceState({ ...current, viewMode: next });
-      safeLocalStorageSet(VIEW_MODE_KEY, next);
+      writeSessionListViewMode(next);
     },
   };
 }

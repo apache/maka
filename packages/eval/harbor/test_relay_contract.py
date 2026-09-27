@@ -51,9 +51,9 @@ class Environment:
 
 
 def load_relay(framework="harbor"):
-    from eval_framework import activate
+    from eval_framework import install
 
-    activate(framework)
+    install(framework)
     package = types.ModuleType(framework)
     agents = types.ModuleType(f"{framework}.agents")
     base = types.ModuleType(f"{framework}.agents.base")

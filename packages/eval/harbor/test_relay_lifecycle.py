@@ -241,9 +241,9 @@ class RecordingEnvironment:
 
 
 def load_relay():
-    from eval_framework import activate
+    from eval_framework import install
 
-    activate("harbor")
+    install("harbor")
     package = types.ModuleType("harbor")
     agents = types.ModuleType("harbor.agents")
     base = types.ModuleType("harbor.agents.base")

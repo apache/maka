@@ -59,52 +59,26 @@ class RunTrialPolicyTest(unittest.TestCase):
                 asyncio.run(MODULE.run_trial("other", "1.0.0", Path("missing.json")))
         imported.assert_not_called()
 
-    def test_trial_failure_preserves_the_callers_framework(self) -> None:
+    def test_trial_installs_its_framework_before_loading_modules(self) -> None:
         import eval_framework
 
-        async def exercise() -> None:
-            with eval_framework.framework_scope("pier"):
-                with patch.object(MODULE.importlib.metadata, "version", return_value="different"):
-                    with self.assertRaises(MODULE.FrameworkVersionMismatch):
-                        await MODULE.run_trial("harbor", "1.0.0", Path("missing.json"))
-                self.assertEqual(eval_framework.current_framework(), "pier")
-
-        asyncio.run(exercise())
+        with patch.object(MODULE.importlib.metadata, "version", return_value="different"):
+            with self.assertRaises(MODULE.FrameworkVersionMismatch):
+                asyncio.run(MODULE.run_trial("harbor", "1.0.0", Path("missing.json")))
+        self.assertEqual(eval_framework.current_framework(), "harbor")
 
     def test_main_binds_the_argv_framework_during_the_trial(self) -> None:
         import eval_framework
 
-        observed: list[tuple[str, str, str, Path]] = []
+        observed: list[tuple[str, str, Path]] = []
 
         async def fake_trial(framework: str, expected_version: str, config_file: Path) -> None:
-            observed.append(
-                (
-                    eval_framework.current_framework(),
-                    framework,
-                    expected_version,
-                    config_file,
-                )
-            )
+            observed.append((framework, expected_version, config_file))
 
         with patch.object(sys, "argv", ["run_trial.py", "pier", "1.2.3", "config.json"]):
             with patch.object(MODULE, "run_trial", fake_trial):
                 asyncio.run(MODULE.main())
-        self.assertEqual(observed, [("pier", "pier", "1.2.3", Path("config.json"))])
-
-    def test_main_scope_does_not_replace_the_callers_selection(self) -> None:
-        import eval_framework
-
-        async def fake_trial(_framework: str, _version: str, _config: Path) -> None:
-            self.assertEqual(eval_framework.current_framework(), "harbor")
-
-        async def exercise() -> None:
-            with eval_framework.framework_scope("pier"):
-                with patch.object(sys, "argv", ["run_trial.py", "harbor", "1.2.3", "config.json"]):
-                    with patch.object(MODULE, "run_trial", fake_trial):
-                        await MODULE.main()
-                self.assertEqual(eval_framework.current_framework(), "pier")
-
-        asyncio.run(exercise())
+        self.assertEqual(observed, [("pier", "1.2.3", Path("config.json"))])
 
 
 if __name__ == "__main__":

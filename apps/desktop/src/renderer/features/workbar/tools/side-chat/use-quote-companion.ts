@@ -229,7 +229,10 @@ export interface UseQuoteCompanionResult {
   promoteQueuedEntry: (entryId: string) => Promise<void>;
   editQueuedEntry: (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
-  reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
+  reorderQueuedEntries: (
+    entryIds: readonly string[],
+    expectedQueueRevision: number,
+  ) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   stop: () => Promise<void>;
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
@@ -1639,12 +1642,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [dropOptimisticUserMessage, messageQueue.entries, runQueueEntryAction, sideChat],
   );
   const reorderQueuedEntries = useCallback(
-    (entryIds: readonly string[]) => runQueueEntryAction((id) => {
-      const revision = messageQueue.queueRevision;
-      if (revision === undefined) throw new Error('Message queue is not ready for reordering');
-      return sideChat.reorderQueueEntries(id, entryIds, revision);
-    }),
-    [messageQueue.queueRevision, runQueueEntryAction, sideChat],
+    (entryIds: readonly string[], expectedQueueRevision: number) =>
+      runQueueEntryAction((id) =>
+        sideChat.reorderQueueEntries(id, entryIds, expectedQueueRevision)),
+    [runQueueEntryAction, sideChat],
   );
 
   const setPermissionMode = useCallback(

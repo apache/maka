@@ -117,10 +117,10 @@ def publish_ready_task(namespace: Path, target: Path) -> None:
 
 
 async def run_trial(framework: str, expected_version: str, config_file: Path) -> None:
-    from eval_framework import framework_scope
+    from eval_framework import install
 
-    with framework_scope(framework):
-        await _run_selected_trial(framework, expected_version, config_file)
+    install(framework)
+    await _run_selected_trial(framework, expected_version, config_file)
 
 
 async def _run_selected_trial(framework: str, expected_version: str, config_file: Path) -> None:
@@ -190,11 +190,8 @@ async def create_harbor_trial(trial_type: type, config: object) -> object:
 
 
 async def main() -> None:
-    from eval_framework import framework_scope
-
     framework, expected_version, config_path = sys.argv[1:]
-    with framework_scope(framework):
-        await _run_main(framework, expected_version, config_path)
+    await _run_main(framework, expected_version, config_path)
 
 
 async def _run_main(framework: str, expected_version: str, config_path: str) -> None:

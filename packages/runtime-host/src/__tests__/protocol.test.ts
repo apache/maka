@@ -243,12 +243,8 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
   });
 
-  test('publishes a new compatibility epoch for non-empty queue reorder identities', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 192);
-  });
-
   test('publishes a new compatibility epoch for queue reorder revision fencing', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 193);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 192);
   });
 
   test('publishes a new compatibility epoch for the project registration preference', () => {

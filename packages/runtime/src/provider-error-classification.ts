@@ -28,8 +28,6 @@ import {
   retryAfterMs,
 } from './provider-retry-policy.js';
 
-export { providerRetryReason } from './provider-retry-policy.js';
-
 /**
  * Structured provider error identifiers that mean the INPUT exceeded the
  * model's context window. These come from the provider's error JSON and are
