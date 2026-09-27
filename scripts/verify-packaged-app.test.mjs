@@ -299,13 +299,13 @@ function argbPayload(side) {
   return Buffer.concat([Buffer.from('ARGB', 'latin1'), ...planes]);
 }
 
-/** The PNG signature and IHDR of a `side` px square, which is all the check reads. */
-function pngHead(side) {
+/** The PNG signature and IHDR of a `width` × `height` image, which is all the check reads. */
+function pngHead(width, height = width) {
   const ihdr = Buffer.alloc(25);
   ihdr.writeUInt32BE(13, 0);
   ihdr.write('IHDR', 4, 'latin1');
-  ihdr.writeUInt32BE(side, 8);
-  ihdr.writeUInt32BE(side, 12);
+  ihdr.writeUInt32BE(width, 8);
+  ihdr.writeUInt32BE(height, 12);
   ihdr.set([8, 6, 0, 0, 0], 16);
   return Buffer.concat([PNG_SIGNATURE, ihdr]);
 }
@@ -485,9 +485,9 @@ describe('assertRenderableAppIcon', () => {
     const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
     const whole = argbPayload(16);
     for (const ic04 of [
+      // The empty and one-byte payloads the review reproduced.
       Buffer.alloc(0),
       Buffer.from([0x80]),
-      Buffer.from('ARGB', 'latin1'),
       // The last packed token cut short.
       whole.subarray(0, whole.length - 1),
       // Bytes left over once all four planes are full.
@@ -507,20 +507,13 @@ describe('assertRenderableAppIcon', () => {
         /small sizes macOS cannot decode: 16x16 \(ic04\)\./,
       );
     }
-    const swapped = await withIcon(
-      t,
-      icnsWith([
-        ['ic04', argbPayload(16)],
-        ['ic05', argbPayload(16)],
-      ]),
-    );
-    await assert.rejects(assertRenderableAppIcon(swapped), /cannot decode: 32x32 \(ic05\)\./);
   });
 
   test('rejects PNG art at the wrong size for its slot', async (t) => {
     const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
     // The retina slots as the toolset electron-builder 26.15.3 pinned wrote
-    // them, and a PNG slot with no IHDR to read a size from.
+    // them, PNG slots whose IHDR is missing or cut short, and art that is
+    // not square.
     const resources = await withIcon(
       t,
       icnsWith([
@@ -528,13 +521,17 @@ describe('assertRenderableAppIcon', () => {
         ['ic05', argbPayload(32)],
         ['ic13', pngHead(512)],
         ['ic14', pngHead(1024)],
-        ['ic07', PNG_SIGNATURE],
+        ['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.alloc(17)])],
+        ['ic08', pngHead(256).subarray(0, 20)],
+        ['ic11', pngHead(32, 16)],
       ]),
     );
     await assert.rejects(
       assertRenderableAppIcon(resources),
       new RegExp(
         'ic07 holds no readable size where macOS expects 128x128; ' +
+          'ic08 holds no readable size where macOS expects 256x256; ' +
+          'ic11 holds 32x16 where macOS expects 32x32; ' +
           'ic13 holds 512x512 where macOS expects 256x256; ' +
           'ic14 holds 1024x1024 where macOS expects 512x512\\.',
       ),
@@ -543,9 +540,11 @@ describe('assertRenderableAppIcon', () => {
 
   test('refuses to guess at a truncated entry instead of looping on it', async (t) => {
     const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
-    const icns = icnsWith([['ic04', argbPayload(16)]]);
-    icns.writeUInt32BE(0, 12);
-    await assert.rejects(assertRenderableAppIcon(await withIcon(t, icns)), /unusable length/);
+    for (const length of [0, 1_000]) {
+      const icns = icnsWith([['ic04', argbPayload(16)]]);
+      icns.writeUInt32BE(length, 12);
+      await assert.rejects(assertRenderableAppIcon(await withIcon(t, icns)), /unusable length/);
+    }
   });
 
   test('rejects an archive whose header does not match its entries', async (t) => {

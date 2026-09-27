@@ -205,7 +205,6 @@ function isDecodableArgb(payload, side) {
     const consumed = 1 + (literal ? count : 1);
     if (offset + consumed > payload.length) return false;
     produced += count;
-    if (produced > expected) return false;
     offset += consumed;
   }
   return produced === expected;
