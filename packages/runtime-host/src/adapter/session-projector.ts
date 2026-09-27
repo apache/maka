@@ -851,7 +851,9 @@ function providerRetryEvent(
   // the countdown. Snapshots from older runtimes lack `ts` and degrade to the
   // full delay.
   const remainingMs =
-    retry.ts === undefined ? retry.delayMs : Math.max(0, retry.delayMs - (ts - retry.ts));
+    retry.ts === undefined
+      ? retry.delayMs
+      : Math.max(0, retry.delayMs - Math.max(0, ts - retry.ts));
   return {
     type: 'provider_retry',
     id: `host-seed:${root.runId}:provider_retry`,

@@ -586,6 +586,33 @@ test('reseeds a scheduled retry with remainingMs recomputed from the stored sche
   assert.equal(retry.remainingMs, 39_995);
 });
 
+test('a backward Host clock adjustment cannot lengthen a scheduled retry', () => {
+  const canonical = snapshot({
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+      providerRetry: {
+        phase: 'scheduled' as const,
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 40_000,
+        ts: 100,
+        reason: 'rate_limit' as const,
+      },
+    },
+  });
+  const projector = new RuntimeHostSessionProjector(
+    canonical,
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 50,
+  );
+  const retry = projector.seedActive(true)[0];
+  assert.ok(retry && retry.type === 'provider_retry' && retry.phase === 'scheduled');
+  assert.equal(retry.remainingMs, retry.delayMs);
+});
+
 test('emits a live provider retry when the snapshot overlay appears, then drops it after content', () => {
   const projector = new RuntimeHostSessionProjector(
     snapshot(),

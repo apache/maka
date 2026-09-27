@@ -226,12 +226,15 @@ rollback:
   to `packages/core/src/__tests__/relative-time.test.ts`. The relative-time
   behavior and tests came from Maka-tagged commits, with a later untagged
   follow-up. Keep the required license header and do not revert the formatter
-  under the squash commit's aggregate Grok trailer.
+  under the squash commit's aggregate Grok trailer. The current formatter and
+  refresh tests pass (8 tests).
 - #3123's three original PR commits and PR description do not disclose Grok,
   despite the squash commit's trailer. Its only changed file,
   `apps/desktop/e2e/prompt-rail.spec.ts`, was deleted by #4741. The original
   provenance is unresolved; there is no surviving test file to revert and
-  reimplement mechanically.
+  reimplement mechanically. #4741 removed the old layout E2E after repeated
+  compositor-dependent failures; that removal does not attribute its earlier
+  test lines to any model.
 
 #3008 is only partly recognizable in today's Eval egress filter. Its CONNECT
 host classification remains, but #3017 subsequently replaced the raw-TCP
@@ -300,7 +303,11 @@ the active Host/UI code has not been independently replaced. A new failing
 classification test showed that a standard `Headers` instance on a provider
 error lost `Retry-After` even though retryability remained true. Header
 extraction now accepts both `Headers` and plain records; the 20 classification
-tests and Biome pass. This is a scoped parsing fix, not a full #3115 rewrite.
+tests and Biome pass. A second failing test showed a backward Host clock
+adjustment projecting more remaining wait than the original scheduled delay;
+the projector now caps elapsed time at zero. Projector/continuity tests
+(79 pass) and Biome pass. These are scoped parsing and projection fixes, not
+a full #3115 rewrite.
 
 #3111's Daily Review fixture still writes through the interactive storage
 authority with nested writer/owner cleanup. Its current archive-seeding test
