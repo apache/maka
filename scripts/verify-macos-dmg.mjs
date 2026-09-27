@@ -30,6 +30,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { crc32, inflateSync } from 'node:zlib';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
@@ -191,12 +192,14 @@ function readIcnsSlots(icns) {
  * An `ic04`/`ic05` payload is `ARGB` followed by the alpha, red, green and
  * blue planes, packed the ICNS way: a control byte below 0x80 copies the next
  * `control + 1` bytes, and one from 0x80 up repeats the next byte
- * `control - 0x80 + 3` times. macOS can draw it only if it unpacks to exactly
- * four `side` × `side` planes with no bytes left over.
+ * `control - 0x80 + 3` times. macOS unpacks each plane on its own and cuts a
+ * token off at the plane's end, so a token that runs past its plane shifts
+ * every plane after it: it can draw the art only if each plane ends exactly
+ * on a token boundary and four `side` × `side` planes leave no bytes over.
  */
 function isDecodableArgb(payload, side) {
   if (payload.subarray(0, 4).toString('latin1') !== 'ARGB') return false;
-  const expected = 4 * side * side;
+  const plane = side * side;
   let produced = 0;
   for (let offset = 4; offset < payload.length; ) {
     const control = payload[offset];
@@ -204,18 +207,60 @@ function isDecodableArgb(payload, side) {
     const count = literal ? control + 1 : control - 0x80 + 3;
     const consumed = 1 + (literal ? count : 1);
     if (offset + consumed > payload.length) return false;
+    if (Math.floor(produced / plane) !== Math.floor((produced + count - 1) / plane)) return false;
     produced += count;
     offset += consumed;
   }
-  return produced === expected;
+  return produced === 4 * plane;
 }
 
-/** Width and height from a PNG's IHDR, or undefined when there is none. */
-function pngSize(payload) {
-  if (payload.length < 24 || payload.subarray(12, 16).toString('latin1') !== 'IHDR') {
+// Channels per pixel for each PNG color type.
+const PNG_CHANNELS = new Map([
+  [0, 1],
+  [2, 3],
+  [3, 1],
+  [4, 2],
+  [6, 4],
+]);
+
+/**
+ * The size of a PNG slot's art, or undefined unless it decodes: every chunk's
+ * CRC holds from IHDR through IEND with nothing after it, and the IDAT stream
+ * inflates to exactly one filter byte (0-4) and one scanline per row of the
+ * size IHDR declares.
+ */
+function decodedPngSize(payload) {
+  let header;
+  const data = [];
+  let offset = PNG_SIGNATURE.length;
+  for (let ended = false; !ended; ) {
+    if (offset + 12 > payload.length) return undefined;
+    const length = payload.readUInt32BE(offset);
+    if (offset + 12 + length > payload.length) return undefined;
+    const chunk = payload.subarray(offset + 4, offset + 8 + length);
+    if (crc32(chunk) !== payload.readUInt32BE(offset + 8 + length)) return undefined;
+    const type = chunk.subarray(0, 4).toString('latin1');
+    if (header === undefined && type !== 'IHDR') return undefined;
+    if (type === 'IHDR') header = chunk.subarray(4);
+    if (type === 'IDAT') data.push(chunk.subarray(4));
+    ended = type === 'IEND';
+    offset += 12 + length;
+  }
+  if (offset !== payload.length || header.length !== 13) return undefined;
+  const width = header.readUInt32BE(0);
+  const height = header.readUInt32BE(4);
+  const stride = 1 + Math.ceil((width * PNG_CHANNELS.get(header[9]) * header[8]) / 8);
+  let pixels;
+  try {
+    pixels = inflateSync(Buffer.concat(data));
+  } catch {
     return undefined;
   }
-  return { width: payload.readUInt32BE(16), height: payload.readUInt32BE(20) };
+  if (pixels.length !== height * stride) return undefined;
+  for (let row = 0; row < pixels.length; row += stride) {
+    if (pixels[row] > 4) return undefined;
+  }
+  return { width, height };
 }
 
 export async function assertRenderableAppIcon(resourcesPath, { readIcon = readFile } = {}) {
@@ -246,13 +291,13 @@ export async function assertRenderableAppIcon(resourcesPath, { readIcon = readFi
   const misdrawn = [...PNG_ICNS_SLOTS]
     .filter(([type]) => isPng(slots.get(type)))
     .flatMap(([type, side]) => {
-      const size = pngSize(slots.get(type));
-      if (size?.width === side && size.height === side) return [];
-      const found = size ? `${size.width}x${size.height}` : 'no readable size';
-      return [`${type} holds ${found} where macOS expects ${side}x${side}`];
+      const size = decodedPngSize(slots.get(type));
+      if (!size) return [`${type} does not decode`];
+      if (size.width === side && size.height === side) return [];
+      return [`${type} holds ${size.width}x${size.height} where macOS expects ${side}x${side}`];
     });
   if (misdrawn.length > 0) {
-    throw new Error(`Maka icon stores art at the wrong size: ${misdrawn.join('; ')}.`);
+    throw new Error(`Maka icon has PNG art macOS cannot draw: ${misdrawn.join('; ')}.`);
   }
 }
 

@@ -22,6 +22,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { after, describe, test } from 'node:test';
+import { crc32, deflateSync } from 'node:zlib';
 import { createPackage } from '@electron/asar';
 import {
   FileMatcher,
@@ -299,22 +300,38 @@ function argbPayload(side) {
   return Buffer.concat([Buffer.from('ARGB', 'latin1'), ...planes]);
 }
 
-/** The PNG signature and IHDR of a `width` × `height` image, which is all the check reads. */
-function pngHead(width, height = width) {
-  const ihdr = Buffer.alloc(25);
-  ihdr.writeUInt32BE(13, 0);
-  ihdr.write('IHDR', 4, 'latin1');
-  ihdr.writeUInt32BE(width, 8);
-  ihdr.writeUInt32BE(height, 12);
-  ihdr.set([8, 6, 0, 0, 0], 16);
-  return Buffer.concat([PNG_SIGNATURE, ihdr]);
+/** One PNG chunk, with its CRC. */
+function pngChunk(type, data) {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, 'latin1');
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
+  return chunk;
+}
+
+/** A real 8-bit RGBA PNG of a `width` × `height` image. `rows` and `filter`
+ *  let a test write fewer scanlines than IHDR declares or an unknown filter. */
+function pngImage(width, height = width, { rows = height, filter = 0 } = {}) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 6, 0, 0, 0], 8);
+  const scanline = Buffer.alloc(1 + width * 4, 0x7f);
+  scanline[0] = filter;
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: rows }, () => scanline)))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
 const RENDERABLE_ICNS = icnsWith([
   ['ic04', argbPayload(16)],
   ['ic05', argbPayload(32)],
-  ['ic07', pngHead(128)],
-  ['ic13', pngHead(256)],
+  ['ic07', pngImage(128)],
+  ['ic13', pngImage(256)],
 ]);
 
 const PTY_PACKAGES = ['@xterm/headless', '@xterm/addon-unicode11'];
@@ -467,9 +484,9 @@ describe('assertRenderableAppIcon', () => {
     const resources = await withIcon(
       t,
       icnsWith([
-        ['icp4', pngHead(16)],
-        ['icp5', pngHead(32)],
-        ['ic07', pngHead(128)],
+        ['icp4', pngImage(16)],
+        ['icp5', pngImage(32)],
+        ['ic07', pngImage(128)],
       ]),
     );
     await assert.rejects(assertRenderableAppIcon(resources), /16x16 \(icp4\), 32x32 \(icp5\)/);
@@ -477,7 +494,7 @@ describe('assertRenderableAppIcon', () => {
 
   test('rejects an icon that carries no small sizes at all', async (t) => {
     const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
-    const resources = await withIcon(t, icnsWith([['ic07', pngHead(128)]]));
+    const resources = await withIcon(t, icnsWith([['ic07', pngImage(128)]]));
     await assert.rejects(assertRenderableAppIcon(resources), /missing the sizes/);
   });
 
@@ -494,6 +511,28 @@ describe('assertRenderableAppIcon', () => {
       Buffer.concat([whole, Buffer.from([0x00, 0xff])]),
       // The right planes behind the wrong magic.
       Buffer.concat([Buffer.from('PNGX', 'latin1'), whole.subarray(4)]),
+      // 1024 bytes in all, as the review built it, but a run spills four
+      // bytes of the first plane into the second: planes of 260, 252, 256
+      // and 256, which macOS draws with every plane after the first shifted.
+      Buffer.from([
+        ...Buffer.from('ARGB'),
+        0xff,
+        1,
+        0xff,
+        1,
+        0xff,
+        2,
+        0xf7,
+        2,
+        0xff,
+        3,
+        0xfb,
+        3,
+        0xff,
+        4,
+        0xfb,
+        4,
+      ]),
     ]) {
       const resources = await withIcon(
         t,
@@ -512,30 +551,66 @@ describe('assertRenderableAppIcon', () => {
   test('rejects PNG art at the wrong size for its slot', async (t) => {
     const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
     // The retina slots as the toolset electron-builder 26.15.3 pinned wrote
-    // them, PNG slots whose IHDR is missing or cut short, and art that is
-    // not square.
+    // them, and art that is not square.
     const resources = await withIcon(
       t,
       icnsWith([
         ['ic04', argbPayload(16)],
         ['ic05', argbPayload(32)],
-        ['ic13', pngHead(512)],
-        ['ic14', pngHead(1024)],
-        ['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.alloc(17)])],
-        ['ic08', pngHead(256).subarray(0, 20)],
-        ['ic11', pngHead(32, 16)],
+        ['ic13', pngImage(512)],
+        ['ic14', pngImage(1024)],
+        ['ic11', pngImage(32, 16)],
       ]),
     );
     await assert.rejects(
       assertRenderableAppIcon(resources),
       new RegExp(
-        'ic07 holds no readable size where macOS expects 128x128; ' +
-          'ic08 holds no readable size where macOS expects 256x256; ' +
-          'ic11 holds 32x16 where macOS expects 32x32; ' +
+        'ic11 holds 32x16 where macOS expects 32x32; ' +
           'ic13 holds 512x512 where macOS expects 256x256; ' +
           'ic14 holds 1024x1024 where macOS expects 512x512\\.',
       ),
     );
+  });
+
+  test('rejects PNG art that does not decode', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    const whole = pngImage(128);
+    const signatureAndHeader = whole.subarray(0, 33);
+    const end = pngChunk('IEND', Buffer.alloc(0));
+    const badCrc = Buffer.from(whole);
+    badCrc[29] ^= 0xff;
+    const overlong = Buffer.from(whole);
+    overlong.writeUInt32BE(1, whole.length - 12);
+    for (const ic07 of [
+      // A signature and IHDR alone, as the review's fixture was.
+      signatureAndHeader,
+      badCrc,
+      // Bytes after IEND.
+      Buffer.concat([whole, Buffer.from([0])]),
+      // A chunk longer than what is left.
+      overlong,
+      // IHDR not first, and one byte short.
+      Buffer.concat([PNG_SIGNATURE, pngChunk('pHYs', Buffer.alloc(9)), whole.subarray(8)]),
+      Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', whole.subarray(16, 28)), whole.subarray(33)]),
+      // IDAT that does not inflate.
+      Buffer.concat([signatureAndHeader, pngChunk('IDAT', Buffer.from('not deflate')), end]),
+      // A scanline short, and an unknown row filter.
+      pngImage(128, 128, { rows: 127 }),
+      pngImage(128, 128, { filter: 5 }),
+    ]) {
+      const resources = await withIcon(
+        t,
+        icnsWith([
+          ['ic04', argbPayload(16)],
+          ['ic05', argbPayload(32)],
+          ['ic07', ic07],
+        ]),
+      );
+      await assert.rejects(
+        assertRenderableAppIcon(resources),
+        /PNG art macOS cannot draw: ic07 does not decode\./,
+      );
+    }
   });
 
   test('refuses to guess at a truncated entry instead of looping on it', async (t) => {
