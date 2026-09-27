@@ -72,6 +72,7 @@ import {
   type TurnMessageSubmitResult,
   type TurnSnapshot,
 } from '../protocol/index.js';
+import type { OperationSpec } from '../protocol/operation-spec.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import { worstCaseFailedTurnSnapshot } from './canonical-turn-snapshot.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
@@ -105,6 +106,29 @@ type MessageOperationErrorCode =
   | 'session_busy'
   | 'operation_conflict'
   | 'outcome_unknown';
+
+type QueueMutationOperationKey =
+  | 'queue.retract'
+  | 'queue.entry.retract'
+  | 'queue.entry.promote'
+  | 'queue.entry.update'
+  | 'queue.entries.reorder';
+
+type QueueMutationInput = {
+  'queue.retract': QueueRetractInput;
+  'queue.entry.retract': QueueEntryRetractInput;
+  'queue.entry.promote': QueueEntryPromoteInput;
+  'queue.entry.update': QueueEntryUpdateInput;
+  'queue.entries.reorder': QueueEntriesReorderInput;
+};
+
+type QueueMutationOutput = {
+  'queue.retract': QueueRetractResult;
+  'queue.entry.retract': QueueMutationResult;
+  'queue.entry.promote': QueueMutationResult;
+  'queue.entry.update': QueueMutationResult;
+  'queue.entries.reorder': QueueMutationResult;
+};
 
 type MessageOutcome<T> =
   | { readonly ok: true; readonly result: T }
@@ -407,46 +431,41 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     'turn.message.query': (input) => this.queryMessages(input),
     'turn.message.execution.query': (input) => this.queryMessageExecutions(input),
     'turn.message.submit': (input, context) => this.submit(input, context),
-    'queue.retract': (input) => this.#runQueueMutation({
-      spec: MESSAGE_OPERATION_SPECS['queue.retract'],
-      kind: 'retract',
-      id: input.retractId,
-      verb: 'Retract',
-      input,
-      execute: () => this.#retractAdmitted(input),
-    }),
-    'queue.entry.retract': (input) => this.#runQueueMutation({
-      spec: MESSAGE_OPERATION_SPECS['queue.entry.retract'],
-      kind: 'retract_entry',
-      id: input.retractId,
-      verb: 'Retract entry',
-      input,
-      execute: () => this.#retractQueuedEntryAdmitted(input),
-    }),
-    'queue.entry.promote': (input) => this.#runQueueMutation({
-      spec: MESSAGE_OPERATION_SPECS['queue.entry.promote'],
-      kind: 'promote',
-      id: input.promoteId,
-      verb: 'Promote entry',
-      input,
-      execute: () => this.#promoteQueuedEntryAdmitted(input),
-    }),
-    'queue.entry.update': (input) => this.#runQueueMutation({
-      spec: MESSAGE_OPERATION_SPECS['queue.entry.update'],
-      kind: 'update_entry',
-      id: input.updateId,
-      verb: 'Update entry',
-      input,
-      execute: () => this.#updateQueuedEntryAdmitted(input),
-    }),
-    'queue.entries.reorder': (input) => this.#runQueueMutation({
-      spec: MESSAGE_OPERATION_SPECS['queue.entries.reorder'],
-      kind: 'reorder',
-      id: input.reorderId,
-      verb: 'Reorder entries',
-      input,
-      execute: () => this.#reorderQueuedEntriesAdmitted(input),
-    }),
+    'queue.retract': this.#queueMutationHandler(
+      'queue.retract',
+      'retract',
+      'Retract',
+      (input) => input.retractId,
+      (input) => this.#retractAdmitted(input),
+    ),
+    'queue.entry.retract': this.#queueMutationHandler(
+      'queue.entry.retract',
+      'retract_entry',
+      'Retract entry',
+      (input) => input.retractId,
+      (input) => this.#retractQueuedEntryAdmitted(input),
+    ),
+    'queue.entry.promote': this.#queueMutationHandler(
+      'queue.entry.promote',
+      'promote',
+      'Promote entry',
+      (input) => input.promoteId,
+      (input) => this.#promoteQueuedEntryAdmitted(input),
+    ),
+    'queue.entry.update': this.#queueMutationHandler(
+      'queue.entry.update',
+      'update_entry',
+      'Update entry',
+      (input) => input.updateId,
+      (input) => this.#updateQueuedEntryAdmitted(input),
+    ),
+    'queue.entries.reorder': this.#queueMutationHandler(
+      'queue.entries.reorder',
+      'reorder',
+      'Reorder entries',
+      (input) => input.reorderId,
+      (input) => this.#reorderQueuedEntriesAdmitted(input),
+    ),
     'turn.interrupt': (input) => this.interrupt(input),
   };
 
@@ -1640,6 +1659,28 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     });
   }
 
+  #queueMutationHandler<K extends QueueMutationOperationKey>(
+    operation: K,
+    kind: QueuedMutationKind,
+    verb: string,
+    operationId: (input: QueueMutationInput[K]) => string,
+    execute: (input: QueueMutationInput[K]) => Promise<MessageOutcome<QueueMutationOutput[K]>>,
+  ) {
+    return (input: QueueMutationInput[K]) =>
+      this.#runQueueMutation<QueueMutationInput[K], QueueMutationOutput[K]>({
+        spec: MESSAGE_OPERATION_SPECS[operation] as OperationSpec<
+          QueueMutationInput[K],
+          QueueMutationOutput[K],
+          MessageOperationErrorCode
+        >,
+        kind,
+        id: operationId(input),
+        verb,
+        input,
+        execute: () => execute(input),
+      });
+  }
+
   async #retractAdmitted(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
     const admitted = await this.#openQueueMutation(input.sessionId, true);
     if (!admitted.ok) return admitted;
@@ -1682,16 +1723,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const state = admitted.result;
     const selected = selectQueuedEntry(state, input.entryId);
     if (selected.kind !== 'found') return queueEntrySelectionFailure(selected);
-    await this.#admissions.cancelMessageAdmissions(input.sessionId, [selected.location.entry.messageId]);
+    await this.#admissions.cancelMessageAdmissions(input.sessionId, [
+      selected.location.entry.messageId,
+    ]);
     this.#releaseEntry(removeQueuedEntry(state, selected.location));
     this.#mutated(state);
     this.#maybeReclaim(input.sessionId, state);
-    return this.#completeQueueEntryMutation(
-      'retract_entry',
-      state,
-      input.retractId,
-      input,
-    );
+    return this.#completeQueueEntryMutation('retract_entry', state, input.retractId, input);
   }
 
   async #promoteQueuedEntryAdmitted(
