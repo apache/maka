@@ -21,8 +21,14 @@ import { RetryError } from 'ai';
 import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { isAuthenticationErrorText } from '@maka/core/redaction';
-import type { ProviderRetryReason } from '@maka/core/events';
 import type { ModelFailure, ModelFailureKind } from './model-protocol.js';
+import {
+  providerRetryReason,
+  responseHeadersFromError,
+  retryAfterMs,
+} from './provider-retry-policy.js';
+
+export { providerRetryReason } from './provider-retry-policy.js';
 
 /**
  * Structured provider error identifiers that mean the INPUT exceeded the
@@ -154,33 +160,11 @@ interface ProviderFailureSummary {
 
 const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
 
-const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;
-
 /** Codes the incremental Responses transport raises before any HTTP response. */
 const OPENAI_RESPONSES_TRANSPORT_CODES: ReadonlySet<string> = new Set([
   'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
   'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
 ]);
-
-/** Retryability follows the kind alone; never re-derive it from a status or header. */
-const MODEL_FAILURE_RETRY: Record<ModelFailureKind, ProviderRetryReason | null> = {
-  abort: null,
-  auth: null,
-  context_overflow: null,
-  network: 'network',
-  provider_billing: null,
-  provider_capacity: 'provider_capacity',
-  provider_unavailable: 'provider_unavailable',
-  rate_limit: 'rate_limit',
-  request_rejected: null,
-  stream_truncated: 'stream_truncated',
-  timeout: 'timeout',
-  unknown: null,
-};
-
-export function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason | null {
-  return MODEL_FAILURE_RETRY[kind];
-}
 
 function providerErrorTarget(error: unknown): unknown {
   return RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
@@ -239,43 +223,6 @@ function isTransportFailure(target: unknown, statusCode: string): boolean {
   return false;
 }
 
-function responseHeadersFromError(error: unknown): Record<string, string> | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const value = (error as { responseHeaders?: unknown }).responseHeaders;
-  if (typeof value !== 'object' || value === null) return undefined;
-  const headers: Record<string, string> = {};
-  if (value instanceof Headers) {
-    value.forEach((header, key) => {
-      headers[key.toLowerCase()] = header;
-    });
-    return headers;
-  }
-  for (const [key, header] of Object.entries(value)) {
-    if (typeof header === 'string') headers[key.toLowerCase()] = header;
-  }
-  return headers;
-}
-
-function parseRetryAfterMs(headers: Record<string, string>): number | undefined {
-  const rawMilliseconds = headers['retry-after-ms'];
-  const rawRetryAfter = headers['retry-after'];
-  if (rawMilliseconds === undefined && rawRetryAfter === undefined) return undefined;
-
-  const boundedDelay = (delayMs: number): number | undefined =>
-    Number.isFinite(delayMs) && delayMs > 0 && delayMs <= MAX_SAFE_TIMER_DELAY_MS
-      ? Math.ceil(delayMs)
-      : undefined;
-  if (rawMilliseconds !== undefined) {
-    const milliseconds = boundedDelay(Number(rawMilliseconds));
-    if (milliseconds !== undefined) return milliseconds;
-  }
-  if (rawRetryAfter === undefined) return undefined;
-  const seconds = Number(rawRetryAfter);
-  return boundedDelay(
-    Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(rawRetryAfter) - Date.now(),
-  );
-}
-
 function retryMetadataFromFacts(
   facts: ProviderErrorFacts,
   errorClass = classifyProviderFacts(facts),
@@ -284,9 +231,9 @@ function retryMetadataFromFacts(
   // The Codex transport already spent its complete 2/10/30-second budget.
   // Do not let the outer model loop restart that same transport budget.
   if (isTrustedCodexEdgeRejection(facts)) return { retryable: false };
-  if (MODEL_FAILURE_RETRY[errorClass] === null) return { retryable: false };
-  const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
-  return { retryable: true, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
+  if (providerRetryReason(errorClass) === null) return { retryable: false };
+  const delay = retryAfterMs(facts.responseHeaders ?? {});
+  return { retryable: true, ...(delay === undefined ? {} : { retryAfterMs: delay }) };
 }
 
 /** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
