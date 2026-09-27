@@ -35,7 +35,7 @@ export interface LatestRequestUsageRow {
 }
 
 export type LatestRequestUsage =
-  | { readonly kind: 'tokens'; readonly tokens: number }
+  | { readonly kind: 'tokens'; readonly tokens: number; readonly at?: number }
   | { readonly kind: 'compacted'; readonly at?: number }
   | undefined;
 
@@ -66,16 +66,16 @@ export function selectLatestRequestUsage(
     return {
       kind: 'tokens',
       tokens: anchor.inputTokens + output,
+      ...(message.ts !== undefined ? { at: message.ts } : {}),
     };
   }
   return undefined;
 }
 
 /**
- * Prefer the per-request snapshot to the turn-end anchor. A known compaction
- * suppresses snapshots that cannot be shown to postdate its transcript note.
- * This preserves the existing timestamp policy; the note may be recorded later
- * than the actual fold, so it is not a causal checkpoint identifier.
+ * Prefer the newest timed measurement. A known compaction suppresses snapshots
+ * that cannot be shown to postdate its transcript note. The note may be
+ * recorded later than the actual fold, so it is not a causal checkpoint identifier.
  */
 export function resolveContextUsage(input: {
   readonly latestRequestUsage: LatestRequestUsage;
@@ -89,6 +89,13 @@ export function resolveContextUsage(input: {
       latestRequestUsage.at >= live.completedAt)
   ) {
     return { kind: 'stale', reason: 'compaction' };
+  }
+  if (
+    latestRequestUsage?.kind === 'tokens' &&
+    latestRequestUsage.at !== undefined &&
+    (live?.completedAt === undefined || latestRequestUsage.at > live.completedAt)
+  ) {
+    return { kind: 'measured', tokens: latestRequestUsage.tokens };
   }
   if (live) {
     return {

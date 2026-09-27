@@ -101,7 +101,36 @@ test('a measurement newer than the boundary stands, which is the post-fold readi
     MODEL,
     ROUTE,
   );
-  assert.deepEqual(reading, { kind: 'tokens', tokens: 35 });
+  assert.deepEqual(reading, { kind: 'tokens', tokens: 35, at: 3_000 });
+});
+
+test('a post-fold anchor supersedes a pre-fold snapshot while diagnostics are pending', () => {
+  const latestRequestUsage = selectLatestRequestUsage(
+    [
+      usage({ inputTokens: 90_000, modelId: MODEL, connectionId: 'conn-a' }, 1_000),
+      compactionNote('context_compacted', 2_000),
+      usage({ inputTokens: 35_000, modelId: MODEL, connectionId: 'conn-a' }, 3_000),
+    ],
+    MODEL,
+    ROUTE,
+  );
+  assert.deepEqual(
+    resolveContextUsage({
+      latestRequestUsage,
+      live: { usageTokens: 90_000, contextWindow: 100_000, completedAt: 1_000 },
+    }),
+    { kind: 'measured', tokens: 35_000 },
+  );
+});
+
+test('a timed anchor wins when the retained snapshot has no settlement time', () => {
+  assert.deepEqual(
+    resolveContextUsage({
+      latestRequestUsage: { kind: 'tokens', tokens: 35_000, at: 3_000 },
+      live: { usageTokens: 90_000 },
+    }),
+    { kind: 'measured', tokens: 35_000 },
+  );
 });
 
 test('a failed-open fold is not a boundary', () => {
@@ -171,7 +200,7 @@ test('refuses a non-positive input count', () => {
 test('the snapshot is the reading when it is the newer answer', () => {
   assert.deepEqual(
     resolveContextUsage({
-      latestRequestUsage: { kind: 'tokens', tokens: 120 },
+      latestRequestUsage: { kind: 'tokens', tokens: 120, at: 1_000 },
       live: { usageTokens: 130, completedAt: 1_500 },
     }),
     { kind: 'measured', tokens: 130 },
@@ -180,6 +209,13 @@ test('the snapshot is the reading when it is the newer answer', () => {
   assert.deepEqual(
     resolveContextUsage({ latestRequestUsage: { kind: 'tokens', tokens: 120 } }),
     { kind: 'measured', tokens: 120 },
+  );
+  assert.deepEqual(
+    resolveContextUsage({
+      latestRequestUsage: { kind: 'tokens', tokens: 120, at: 1_500 },
+      live: { usageTokens: 130, completedAt: 1_500 },
+    }),
+    { kind: 'measured', tokens: 130 },
   );
   // The snapshot can still vouch when the transcript established nothing.
   assert.deepEqual(
