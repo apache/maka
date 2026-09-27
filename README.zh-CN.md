@@ -187,9 +187,9 @@ Workspace 数据默认放在 Electron `userData` 下：
 ```text
 <Electron userData>/workspaces/default/
   runtime.sqlite
-  connection-catalog.json
-  credential-vault.json
-  settings.json
+  settings.json                  # 界面与工作区偏好
+  connection-catalog.json        # 提供商与模型元数据
+  credential-vault.json          # 本地提供商密钥
   artifacts/
 ```
 

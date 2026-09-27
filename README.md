@@ -188,9 +188,9 @@ Workspace data lives under Electron `userData` by default:
 ```text
 <Electron userData>/workspaces/default/
   runtime.sqlite
-  connection-catalog.json
-  credential-vault.json
-  settings.json
+  settings.json                  # UI and workspace preferences
+  connection-catalog.json        # provider and model metadata
+  credential-vault.json          # local provider secrets
   artifacts/
 ```
 
