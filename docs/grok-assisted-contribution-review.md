@@ -20,11 +20,12 @@
 # Grok-assisted contribution review
 
 **Baseline:** `d2f19f400` (2026-09-27). **Status:** all 25 original-commit
-inventories, current behaviors, tests, and dispositions are reviewed. Four
-narrow surviving slices and seven active current cores have independently
-reasoned replacements; deleted, superseded, mixed-attribution, test-only, and
-documentation entries have explicit dispositions below. Project and ASF legal
-acceptance remains open.
+inventories and current behaviors are reviewed, but implementation remediation
+is incomplete. The current branch adds tests, policy boundaries, and narrow
+replacements, while 3,770 of the 3,935 base squash-attributed lines remain at
+the branch head. The retained production implementations and disputed
+dispositions below require another pass. Project and ASF legal acceptance also
+remains open.
 
 This is a provenance and engineering inventory, not a legal classification or
 an assertion that these changes must be removed. The scope is merged PRs whose
@@ -125,49 +126,52 @@ follows supersedes path presence as the disposition basis.
 | #4345 | 1/1 | Mixed-tool architecture documentation accuracy |
 | #5223 | 2/2 | Directory type validation still runs in project resolution |
 
-### Squash-line survival on current main
+### Squash-line survival on current main and the PR head
 
 The following measurement resolves each mainline squash commit to its full SHA,
 counts lines added by that commit, and uses `git blame -w -M --line-porcelain`
-on `origin/main` at `d2f19f400` to count lines still attributed to it. It is a
-stronger survival signal than path presence, but it is not a generated-line
-classifier: mixed-origin PRs are not split by original commit, `-C` copy
-detection is not enabled, and `-M` can reattribute moved lines. A later rewrite
-also does not erase the original contribution's provenance.
+on `origin/main` at `d2f19f400` and on PR head `d712ae45f`. It is a stronger
+survival signal than path presence, but it is not a generated-line classifier:
+mixed-origin PRs are not split by original commit, `-C` copy detection is not
+enabled, and `-M` can reattribute moved lines. Counts can increase after later
+edits or moves, so every exception still needs commit-level review.
 
-| PR | Added lines | Surviving on `main` |
-|---:|---:|---:|
-| #3008 | 180 | 166 |
-| #2967 | 678 | 651 |
-| #3048 | 462 | 287 |
-| #3063 | 0 | 0 |
-| #3066 | 201 | 129 |
-| #3070 | 177 | 137 |
-| #3078 | 114 | 89 |
-| #3082 | 116 | 66 |
-| #3099 | 129 | 86 |
-| #3101 | 54 | 42 |
-| #3102 | 39 | 4 |
-| #3104 | 20 | 17 |
-| #3106 | 279 | 139 |
-| #3111 | 59 | 57 |
-| #3115 | 429 | 407 |
-| #3117 | 282 | 252 |
-| #3118 | 0 | 0 |
-| #3119 | 2 | 1 |
-| #3123 | 48 | 0 |
-| #3069 | 200 | 0 |
-| #3459 | 288 | 150 |
-| #3364 | 118 | 111 |
-| #3544 | 1713 | 1090 |
-| #4345 | 22 | 22 |
-| #5223 | 43 | 32 |
+| PR | Added lines | Base survival | PR-head survival |
+|---:|---:|---:|---:|
+| #3008 | 180 | 166 | 159 |
+| #2967 | 678 | 651 | 641 |
+| #3048 | 462 | 287 | 270 |
+| #3063 | 0 | 0 | 0 |
+| #3066 | 201 | 129 | 123 |
+| #3070 | 177 | 137 | 111 |
+| #3078 | 114 | 89 | 77 |
+| #3082 | 116 | 66 | 23 |
+| #3099 | 129 | 86 | 75 |
+| #3101 | 54 | 42 | 42 |
+| #3102 | 39 | 4 | 4 |
+| #3104 | 20 | 17 | 17 |
+| #3106 | 279 | 139 | 139 |
+| #3111 | 59 | 57 | 73 |
+| #3115 | 429 | 407 | 414 |
+| #3117 | 282 | 252 | 252 |
+| #3118 | 0 | 0 | 0 |
+| #3119 | 2 | 1 | 1 |
+| #3123 | 48 | 0 | 0 |
+| #3069 | 200 | 0 | 0 |
+| #3459 | 288 | 150 | 154 |
+| #3364 | 118 | 111 | 111 |
+| #3544 | 1713 | 1090 | 1061 |
+| #4345 | 22 | 22 | 18 |
+| #5223 | 43 | 32 | 5 |
 
-The measurement finds 3,935 surviving squash-attributed lines. Four entries
-have no surviving added output: #3063 and #3118 are deletion-only, while the
-only #3123 file and both #3069 files were later deleted. The largest surviving
-concentrations are #3544, #2967, #3115, #3048, and #3117; the behavioral and
-attribution review below handles those current boundaries rather than treating
+The base measurement finds 3,935 surviving squash-attributed lines; the PR
+head retains 3,770. Four entries have no surviving added output: #3063 and
+#3118 are deletion-only, while the only #3123 file and both #3069 files were
+later deleted. The limited reduction shows that the branch's extracted
+boundaries and bug fixes are preparatory work, not completion of the stated
+rewrite goal. The largest surviving concentrations are #3544, #2967, #3115,
+#3048, and #3117; the behavioral and attribution review below handles those
+current boundaries rather than treating
 the blame count as a completion metric.
 
 The largest original change, #3544, touched 35 files and changed more than
@@ -194,27 +198,31 @@ Some entries are removals rather than added implementation. For example,
 revert followed by the same deletion would leave the final product unchanged;
 such a commit pair alone does not establish an independent replacement.
 
-### Replacement slices
+### Narrow slices and revert-state probes
 
 The following work was done against the 2026-09-27 baseline, preserving later
 changes. It does not erase the original history or settle ASF legal questions.
 
-| PR | Revert-state evidence | Replacement and verification |
+| PR | Revert-state evidence | Current change and status |
 |---:|---|---|
 | #3082 | Removing the PTY exit reconciliation made the delayed-persist test return `running` instead of `completed`. | Reconcile the control reply after persistence against finalization, then mark terminal observations. Replaced the Grok-authored test with a fresh test that pauses storage and observes driver exit without monkeypatching the driver prototype. Runtime build, shell-run-manager suite (62 pass, 4 platform skips), and Biome passed. |
 | #5223 | Removing the directory check made the regular-file test fail with `Missing expected rejection`. | Check the canonical path's stat before Git discovery and reject non-directories with `TypeError`. Replaced the original test with Git/non-Git file cases, registration non-mutation, and a directory control. Storage build, project-catalog suite (23 pass), and Biome passed. |
-| #3070 | Removing explicit nested-project selection made registration return the parent project's ID and broke relinking to a child directory. | Make resolution intent explicit: selected paths retain a nested folder identity, while historical paths and selected repository roots keep Git identity. Storage build, project-catalog suite (24 pass), Desktop nested-selection test, and Biome passed. The full Desktop build initially had seven unrelated implicit-`any` diagnostics; it passed after the latest upstream merge. |
-| #3099 | Disconnecting the migrated rail store's grouping read/write made a fresh store lose the selected grouping (`undefined` persisted value). | Let the rail layout store hydrate and write grouping directly, removing the old standalone read/write helpers. Rail layout tests (6 pass), navigation boundary tests (4 pass), and Biome passed. The full Desktop build initially had the same seven unrelated diagnostics; it passed after the latest upstream merge. |
+| #3070 | Removing explicit nested-project selection made registration return the parent project's ID and broke relinking to a child directory. | Make resolution intent explicit: selected paths retain a nested folder identity, while historical paths and selected repository roots keep Git identity. Tests pass, but 111 squash-attributed lines remain; treat this as a preparatory behavior fix, not a completed replacement. |
+| #3099 | Disconnecting the migrated rail store's grouping read/write made a fresh store lose the selected grouping (`undefined` persisted value). | Let the rail layout store hydrate and write grouping directly, removing the old standalone read/write helpers. Tests pass, but 75 squash-attributed lines remain; treat this as a preparatory behavior fix, not a completed replacement. |
 
 The #3082 and #5223 revert-state commits are separate from the replacement
 commit to make the failure evidence inspectable. They are not safe to merge
-without the following replacement. The remaining 21 entries are dispositioned
-below: seven active cores were rewritten, eight paths are deleted or
-superseded, two are mixed or uncertain attribution, three are test/fixture or
-mixed-feature regressions, and one is documentation-only.
+without the following replacement. #3070 and #3099 have tested behavior fixes
+but remain open for implementation replacement. The remaining 23 entries are
+tracked below: nine active implementations require further replacement, six
+paths appear deleted or superseded, two dispositions are reopened, two are
+mixed or uncertain attribution, three are test/fixture or mixed-feature
+regressions, and one is documentation-only.
 
-Eight narrow paths have been traced to a no-code disposition rather than an
-identical revert/reapply. They are reviewed, **not** counted as replacements:
+Six narrow paths have been traced to a no-code disposition rather than an
+identical revert/reapply. Two additional candidates (#3117 and #3106) have
+plausible supersession evidence but are reopened because their squash-attributed
+line counts did not change. None is counted as a replacement:
 
 - #3063 removed `history-compact-cleanup.ts`; the file and references to it
   are absent now (a repository search finds only this review document).
@@ -247,25 +255,25 @@ identical revert/reapply. They are reviewed, **not** counted as replacements:
   and protocol test adjustments pass with the current Runtime read-model and
   coordinator suites (31 tests). The deleted loop has no behavior to
   independently rewrite.
-- #3117 deleted the legacy `llm-connections.json` store. Current storage and
+- #3117 **(reopened)** deleted the legacy `llm-connections.json` store. Current storage and
   Desktop main source has no production reference to that file or
   `createConnectionStore`; the fixture writes to the Runtime Policy catalog
   through its current storage authority. Its fixture test passes and asserts
   the old JSON file is not created (rerun against the current Desktop build).
   The fixture and related migration edits remain active and require their
-  own review; restoring the removed legacy store just to remove it again is
-  not a remedy.
+  own review. Split those surviving lines by behavior and later authorship
+  before accepting the supersession disposition.
 - #3069 only added local transcript-search tests; both original test paths
   were subsequently deleted (#4877 and #5531). Search now uses the Recall
   pipeline. The current multi-host Recall search tests pass (9 tests), but
   restoring the old tests would target a retired local-scan implementation.
-- #3106 originally sent `--desktop-e2e` through the production candidate CLI
+- #3106 **(reopened)** originally sent `--desktop-e2e` through the production candidate CLI
   and launcher. #3226 later separated the E2E execution entry into a
   `test-only` module and made the production candidate reject that flag. The
   current candidate/desktop tests pass (35 tests), including isolation from
-  test-only modules. Do not restore the old production flag. The surviving
-  startup and candidate wiring was reviewed at its current boundary and needs
-  no replacement of the superseded E2E authority.
+  test-only modules. Do not restore the old production flag, but split the
+  surviving startup and candidate wiring by behavior and later authorship
+  before accepting the supersession disposition.
 
 Two mixed/uncertain entries require attribution decisions, not a wholesale
 rollback:
@@ -430,13 +438,14 @@ and the Electron renderer-reload E2E passes in this branch.
   because the Docker daemon does not respond. #3017 owns the later raw-TCP
   closure behavior; do not roll that implementation back as part of #3008.
 
-### Coordinated minimal-core rewrite (September 27, 2026)
+### Preparatory boundary extraction (September 27, 2026)
 
-The seven surviving behaviors were then rewritten together around one small
-authority per concern. This is the independent first-pass replacement of their
-current cores; later features that consume those cores remain in place.
+The current branch extracts one small authority per concern and adds focused
+regressions around seven surviving behaviors. The branch-head survival results
+show that this work did not replace most of the retained implementations, so
+these changes are preparatory hardening rather than completed rewrites.
 
-| PR | Rewritten current core | Retained boundary |
+| PR | Current preparatory change | Retained boundary and remaining work |
 |---|---|---|
 | #3008 | CONNECT target normalization is now a pure `(host, port) -> URL` function; the mitmproxy hook only adapts request fields and fails closed. | #3017's raw TCP/TLS layer handling remains authoritative. The live mitmproxy test passes in PR CI. |
 | #2967 | Audit writing has one byte encoder and append/truncate path; TypeScript reading has one strict line decoder and one statistics pass. | Trial attribution and scoring semantics remain unchanged. |
@@ -449,7 +458,9 @@ current cores; later features that consume those cores remain in place.
 The subtraction pass removed the obsolete `readyGeneration`, process-lifetime
 framework installation in the runner, duplicate CONNECT flow parsing,
 classification-local retry tables/header parsing, and separate Host/UI reorder
-algorithms. No compatibility branch or fallback was added.
+algorithms. No compatibility branch or fallback was added, but this subtraction
+does not establish replacement while most squash-attributed implementation
+lines remain.
 
 Verification after merging `origin/main` at `d2f19f400`:
 
@@ -477,17 +488,18 @@ Verification after merging `origin/main` at `d2f19f400`:
   they launched Electron with the repository root as `.` and failed during
   fixture setup before product assertions ran.
 
-### Remaining 21: current disposition
+### Remaining 23: current disposition
 
-These are the 25 candidate PRs minus the four narrow replacements above. A
+These are the 25 candidate PRs minus the two narrow replacements above. A
 scoped fix is **not** a whole-PR rewrite, and a removed feature is not a
 reason to restore its old implementation just to revert it again.
 
 | Disposition | PRs | Next evidence or action |
 |---|---|---|
-| Deleted or superseded original path (8) | #3063, #3118, #3119, #3102, #3104, #3117, #3069, #3106 | Preserve the current replacement/removal; #3117's current fixture and #3106's current startup boundary have focused passing regressions. |
+| Deleted or superseded original path (6) | #3063, #3118, #3119, #3102, #3104, #3069 | Confirm that the surviving incidental lines do not implement the original behavior. |
+| Disposition reopened (2) | #3117, #3106 | Their branch-head survival counts are unchanged; separate current production behavior, tests, and later-author work before deciding whether they are superseded. |
 | Mixed or uncertain attribution (2) | #3364, #3123 | Keep Maka-authored formatter and required ASF header; resolve #3123 squash-versus-original provenance with maintainers. |
-| Active code with rewritten current cores (7) | #3008, #2967, #3048, #3066, #3078, #3115, #3544 | Minimal authorities, subtraction/failure-injection ablations, and focused regressions are complete; the #3008 live proxy test passes in PR CI. |
+| Active code with preparatory boundaries or fixes (9) | #3008, #2967, #3048, #3066, #3070, #3078, #3099, #3115, #3544 | Replace the retained production implementations rather than counting extracted helpers and boundary fixes as rewrites. |
 | Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | Preserve the current test/fixture behavior: #3101's current Electron assertion passes, #3111 now covers owner release on failed publish, and #3459's tagged follow-ups are isolated and tested without reverting its untagged feature commits. |
 | Documentation-only mixed-tool PR (1) | #4345 | Preserve the current document with the factual correction; include it in the project/legal provenance decision. |
 
@@ -542,12 +554,18 @@ acceptability of any remediation need Apache project/legal review.
       no-code deletions and mixed-author PRs are tracked separately above.
 - [x] Record which changes are still material, superseded, or mixed with other work.
 - [ ] Decide the appropriate action with the project and ASF legal discussion.
-- [x] Implement and locally verify #3082, #5223, #3070, and #3099 in reviewable slices.
-- [x] Independently rewrite the current cores retained from #3008, #2967,
-      #3048, #3066, #3078, #3115, and #3544 around minimal pure authorities.
+- [x] Implement and locally verify the narrow #3082 and #5223 replacements.
+- [ ] Split mixed-origin, test-only, later-modified, and independently authored
+      exceptions from retained production implementation.
+- [ ] Replace the retained production-code slices from #3008, #2967, #3048,
+      #3066, #3070, #3078, #3099, #3115, and #3544 and remove the old
+      implementation paths.
+- [ ] Re-evaluate #3117 and #3106, whose branch-head survival counts are
+      unchanged, and any other disposition unsupported by line/behavior evidence.
 - [x] Run #3008's live mitmproxy regression in PR CI with a responsive Docker
       daemon.
-- [x] Complete selected subtraction and failure-injection ablations at every
-      rewritten core and retain later-dependent orchestration only where its
-      own focused regressions pass.
-- [ ] Converge CI and project/ASF legal review on draft PR #5747.
+- [ ] Rerun subtraction and failure-injection ablations against the completed
+      replacements and retain later-dependent orchestration only where its own
+      focused regressions pass.
+- [ ] Publish final per-PR before/after survival evidence and converge CI,
+      project review, and ASF legal review on PR #5747.
