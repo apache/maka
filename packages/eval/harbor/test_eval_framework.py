@@ -38,10 +38,15 @@ class FrameworkAuthorityTest(unittest.TestCase):
 
     def test_supported_names_and_distributions_are_explicit(self) -> None:
         authority = fresh_authority()
-        expected = {"harbor": "harbor", "pier": "datacurve-pier"}
+        expected = {
+            "harbor": ("harbor", "harbor"),
+            "pier": ("pier", "datacurve-pier"),
+        }
 
-        for name, distribution in expected.items():
+        for name, (expected_name, distribution) in expected.items():
             with self.subTest(name=name):
+                spec = authority.framework_spec(name)
+                self.assertEqual((spec.name, spec.distribution), (expected_name, distribution))
                 authority.install(name)
                 self.assertEqual(authority.current_framework(), name)
                 self.assertEqual(authority.framework_distribution(name), distribution)
@@ -59,6 +64,13 @@ class FrameworkAuthorityTest(unittest.TestCase):
                     operation()
                 with self.assertRaisesRegex(RuntimeError, "not installed"):
                     authority.current_framework()
+
+    def test_invalid_spec_lookup_does_not_change_an_installed_framework(self) -> None:
+        authority = fresh_authority()
+        authority.install("harbor")
+        with self.assertRaisesRegex(RuntimeError, "harbor or pier"):
+            authority.framework_spec("other")
+        self.assertEqual(authority.current_framework(), "harbor")
 
     def test_install_replaces_the_process_selection(self) -> None:
         authority = fresh_authority()

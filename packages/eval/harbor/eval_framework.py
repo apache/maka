@@ -19,29 +19,40 @@
 
 from __future__ import annotations
 
-_DISTRIBUTIONS = {"harbor": "harbor", "pier": "datacurve-pier"}
-_active: str | None = None
+from typing import NamedTuple
 
 
-def _validate(name: str) -> str:
-    if name not in _DISTRIBUTIONS:
+class FrameworkSpec(NamedTuple):
+    name: str
+    distribution: str
+
+
+_FRAMEWORKS = {
+    "harbor": FrameworkSpec("harbor", "harbor"),
+    "pier": FrameworkSpec("pier", "datacurve-pier"),
+}
+_active: FrameworkSpec | None = None
+
+
+def framework_spec(name: str) -> FrameworkSpec:
+    try:
+        return _FRAMEWORKS[name]
+    except KeyError:
         raise RuntimeError("framework must be harbor or pier")
-    return name
 
 
 def install(name: str) -> None:
     """Select the framework before importing its process-wide relay module."""
 
     global _active
-    _active = _validate(name)
+    _active = framework_spec(name)
 
 
 def current_framework() -> str:
-    name = _active
-    if name is None:
+    if _active is None:
         raise RuntimeError("Eval framework selection is not installed")
-    return _validate(name)
+    return _active.name
 
 
 def framework_distribution(name: str) -> str:
-    return _DISTRIBUTIONS[_validate(name)]
+    return framework_spec(name).distribution
