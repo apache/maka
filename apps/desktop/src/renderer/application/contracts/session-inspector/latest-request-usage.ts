@@ -23,6 +23,7 @@ import type { LiveContextUsage } from './live-context-usage.js';
 export interface LatestRequestUsageAnchor {
   inputTokens: number;
   outputTokens?: number;
+  completedAt?: number;
   modelId?: string;
   connectionId?: string;
 }
@@ -66,7 +67,9 @@ export function selectLatestRequestUsage(
     return {
       kind: 'tokens',
       tokens: anchor.inputTokens + output,
-      ...(message.ts !== undefined ? { at: message.ts } : {}),
+      // The row is persisted after request settlement (and sometimes after a
+      // compaction note). Its write time cannot order its own snapshot.
+      ...(anchor.completedAt !== undefined ? { at: anchor.completedAt } : {}),
     };
   }
   return undefined;

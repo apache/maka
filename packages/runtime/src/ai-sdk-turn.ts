@@ -2364,6 +2364,9 @@ export class AiSdkTurn {
                 ? {
                     lastRequestAnchor: {
                       inputTokens: anchorInputTokens,
+                      ...(providerRequestTracker?.latestCompletedMainRequestAt !== undefined
+                        ? { completedAt: providerRequestTracker.latestCompletedMainRequestAt }
+                        : {}),
                       ...(anchorOutputTokens !== undefined
                         ? { outputTokens: anchorOutputTokens }
                         : {}),

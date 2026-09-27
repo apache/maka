@@ -1672,6 +1672,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     const fixture = buildFixture({
       contextWindow: 1_000_000,
       finalAtSecondCall: true,
+      meteredSummarizer: true,
     });
     await runFixtureTurn(fixture);
 
@@ -1687,10 +1688,12 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     // Two steps: 100 + 120 reported input, and the send sum is both.
     assert.equal(usage?.input, 220);
     const anchor = usage?.lastRequestAnchor as
-      | { inputTokens: number; outputTokens?: number }
+      | { inputTokens: number; outputTokens?: number; completedAt?: number }
       | undefined;
     assert.equal(anchor?.inputTokens, 120);
     assert.equal(anchor?.outputTokens, 10);
+    const lastMainAttempt = fixture.modelCalls.filter((call) => call.callKind === 'main').at(-1);
+    assert.equal(anchor?.completedAt, lastMainAttempt?.completedAt);
   });
 
   test('an anchor is discarded unless its invocation proves it came from this model', async () => {
