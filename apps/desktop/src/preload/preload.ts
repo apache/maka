@@ -2537,10 +2537,8 @@ const makaBridge = {
             }
             handler(projectDesktopSessionEvent(scope, event));
         };
-        unsubscribeEvents = subscribeEveryRuntimeHostEvent(
-          `sessions:event:${session.sessionId}`,
-          consumeObservationEvent,
-        );
+        const observationChannel = `sessions:event:${session.sessionId}`;
+        unsubscribeEvents = subscribeEveryRuntimeHostEvent(observationChannel, consumeObservationEvent);
         return {
           completion: invokeWhenReady(
             'sessions:observe',
