@@ -85,6 +85,10 @@ test('query blocking pauses, resumes, and fences automatic Skills and Plan reads
       readExecutionBoundary: async () => {
         throw new Error('Execution boundary is not used in query gate tests');
       },
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      retractQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
     },
     runtimeHosts: { subscribeChanges: () => () => undefined },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
