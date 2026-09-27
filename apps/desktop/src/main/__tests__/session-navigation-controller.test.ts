@@ -217,7 +217,6 @@ function navigationTree(
 const linkedCatalog = [
   session('root', { projectId: 'project', cwd: '/repo' }),
   session('child', {
-    parentSessionId: 'root',
     subagentParent: {
       kind: 'subagent',
       parentSessionId: 'root',
@@ -339,6 +338,18 @@ describe('useSessionNavigationReads', () => {
       ['root', 'remote', 'environment'],
     );
     assert.equal(latestRail.activeId, 'root');
+    assert.equal(latestReads.activeParentSession?.id, 'root');
+
+    await act(async () =>
+      root.render(
+        navigationTree(
+          catalog,
+          { activeSessionId: 'side-conversation', workHubActive: false },
+          createElement(ReadsProbe, { catalog, activeSessionId: 'side-conversation' }),
+          null,
+        ),
+      ),
+    );
     assert.equal(latestReads.activeParentSession?.id, 'root');
   });
 });

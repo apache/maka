@@ -20,6 +20,7 @@
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import type { SessionCatalogState } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { deriveSessionRail } from '../model/session-rail.js';
 import {
   selectRailLayout,
   sessionRailLayoutStore,
@@ -48,6 +49,9 @@ const selectActiveParentSession = (
   state: SessionCatalogState,
   activeSessionId: string | undefined,
 ): SessionNavigationSession | undefined => {
+  const linkedParent = deriveSessionRail(state.sessions, activeSessionId, () => true)
+    .activeParentSession;
+  if (linkedParent) return linkedParent;
   const parentSessionId = state.sessions.find(
     (session) => session.id === activeSessionId,
   )?.parentSessionId;
