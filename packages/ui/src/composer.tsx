@@ -590,7 +590,7 @@ export const Composer = forwardRef<
     mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
-  } & ComposerMessageQueueHostProps & ComposerGoalProps
+  } & ComposerGoalProps & ComposerMessageQueueHostProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);

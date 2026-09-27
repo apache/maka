@@ -209,7 +209,16 @@ function QueueEntryActions({ controller, editing, entry, ...props }: QueueEntryA
     return (
       <span className="maka-composer-queue-actions">
         {entry.localMessage.deliveryActions.map((action) => (
-          <Button key={action.label} variant="ghost" size="sm" type="button" label={action.label} onClick={action.onClick} />
+          <IconButton
+            key={action.label}
+            variant="ghost"
+            size="sm"
+            type="button"
+            label={action.label}
+            tooltip={action.label}
+            icon={action.icon}
+            onClick={action.onClick}
+          />
         ))}
       </span>
     );
