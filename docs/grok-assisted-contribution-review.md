@@ -19,7 +19,7 @@
 
 # Grok-assisted contribution review
 
-**Baseline:** `a0ce9aa79` (2026-09-27). **Status:** all 25 original-commit
+**Baseline:** `027d6afba` (2026-09-27). **Status:** all 25 original-commit
 inventories, current behaviors, tests, and dispositions are reviewed. Four
 narrow surviving slices and seven active current cores have independently
 reasoned replacements; deleted, superseded, mixed-attribution, test-only, and
@@ -129,7 +129,7 @@ follows supersedes path presence as the disposition basis.
 
 The following measurement resolves each mainline squash commit to its full SHA,
 counts lines added by that commit, and uses `git blame -w -M --line-porcelain`
-on `origin/main` at `a0ce9aa79` to count lines still attributed to it. It is a
+on `origin/main` at `027d6afba` to count lines still attributed to it. It is a
 stronger survival signal than path presence, but it is not a generated-line
 classifier: mixed-origin PRs are not split by original commit, `-C` copy
 detection is not enabled, and `-M` can reattribute moved lines. A later rewrite
@@ -451,14 +451,14 @@ framework installation in the runner, duplicate CONNECT flow parsing,
 classification-local retry tables/header parsing, and separate Host/UI reorder
 algorithms. No compatibility branch or fallback was added.
 
-Verification after merging `origin/main` at `a0ce9aa79`:
+Verification after merging `origin/main` at `027d6afba`:
 
 - 96 Python Harbor tests pass (13 skipped); 22 egress artifact and 41 Eval
   lifecycle tests pass.
 - 89 Desktop seed/observer/streaming tests, 23 Runtime retry/classification
   tests, 177 Runtime Host coordinator/protocol tests, the focused 87-test
   protocol suite, 6 UI queue tests, and 3 Core order-policy tests pass.
-- Desktop and all workspace dependencies build; the 301-file inventory gate,
+- Desktop and all workspace dependencies build; the 302-file inventory gate,
   22 Astryx tests, and 40 CI planner tests pass.
 - The final upstream merge boundary passes 72 selected Desktop main tests and
   11 UI queue/attachment tests; Desktop preload, main, renderer, and Storybook
@@ -466,6 +466,8 @@ Verification after merging `origin/main` at `a0ce9aa79`:
 - The final Runtime and Runtime Host upstream merges plus the rewritten retry
   and protocol policies pass 207 focused computer-use, transport, provider,
   and protocol tests.
+- The final UI upstream merge passes 4 focused Extensions tests, the 302-file
+  inventory gate, and all 22 Astryx inventory tests.
 - The four streaming-remount Electron tests, the Side Chat native reorder /
   reconnect test, and the WorkHub queue/steering lifecycle test pass through
   the Desktop workspace test entrypoint.
@@ -487,7 +489,7 @@ reason to restore its old implementation just to revert it again.
 | Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | Preserve the current test/fixture behavior: #3101's current Electron assertion passes, #3111 now covers owner release on failed publish, and #3459's tagged follow-ups are isolated and tested without reverting its untagged feature commits. |
 | Documentation-only mixed-tool PR (1) | #4345 | Preserve the current document with the factual correction; include it in the project/legal provenance decision. |
 
-The branch is built against `a0ce9aa79`: `npm run build:with-deps` passes,
+The branch is built against `027d6afba`: `npm run build:with-deps` passes,
 along with the focused suites listed above and six real Electron tests. These
 checks do not substitute for project/legal acceptance of the remediation. The
 live proxy regression and the full Linux, macOS, and Windows PR checks passed
