@@ -122,6 +122,15 @@ test('invalid UTF-8 is counted as a malformed line, not judged', () => {
   assert.deepEqual(collectEgressAuditArtifact(audit, true), inventory(audit, false, 0, 1));
 });
 
+test('invalid UTF-8 inside a valid JSON string is still a malformed audit line', () => {
+  const audit = Buffer.concat([
+    Buffer.from('{"ruleId":"policy_error","host":"'),
+    Buffer.from([0xff]),
+    Buffer.from('"}\n{"ruleId":"audit_truncated"}\n'),
+  ]);
+  assert.deepEqual(collectEgressAuditArtifact(audit, true), inventory(audit, true, 0, 1));
+});
+
 test('trials without an egress proxy do not invent a missing-audit artifact', () => {
   assert.deepEqual(collectEgressAuditArtifact(undefined, false), {
     missing: false,

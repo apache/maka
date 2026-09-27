@@ -763,12 +763,18 @@ function inspectEgressAudit(audit: Buffer): {
   let truncated = false;
   let policyErrorCount = 0;
   let malformedLineCount = 0;
-  for (const line of audit.toString('utf8').split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  for (let start = 0; start < audit.length; ) {
+    const newline = audit.indexOf(0x0a, start);
+    const end = newline === -1 ? audit.length : newline;
+    const line = audit.subarray(start, end);
+    start = newline === -1 ? audit.length : newline + 1;
+    if (line.length === 0) continue;
     let record: unknown;
     try {
-      record = JSON.parse(trimmed);
+      const text = decoder.decode(line).trim();
+      if (!text) continue;
+      record = JSON.parse(text);
     } catch {
       malformedLineCount += 1;
       continue;
