@@ -127,26 +127,6 @@
   resize: vertical;
 }
 
-.maka-composer-queue-grip {
-  display: grid;
-  align-items: center;
-  justify-items: center;
-  inline-size: 16px;
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-  cursor: grab;
-  opacity: 0;
-  transition: opacity 120ms ease-out;
-}
-
-.maka-composer-queue-list li:is(:hover, :focus-within) .maka-composer-queue-grip {
-  opacity: 1;
-}
-
-.maka-composer-queue-grip:active {
-  cursor: grabbing;
-}
-
 @media (max-width: 640px) {
   .maka-composer-queue {
     width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-3)));

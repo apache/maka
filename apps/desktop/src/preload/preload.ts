@@ -2356,12 +2356,10 @@ const makaBridge = {
     queryMessageExecutions(sessionId, messageIds) {
       return invokeSessionRuntimeHost('sessions:queryMessageExecutions', sessionId, messageIds);
     },
-    retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeQueueMutation('sessions:retractQueueEntry', sessionId, entryId);
-    },
-    promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeQueueMutation('sessions:promoteQueueEntry', sessionId, entryId);
-    },
+    retractQueueEntry: (sessionId: string, entryId: string) =>
+      invokeQueueMutation('sessions:retractQueueEntry', sessionId, entryId),
+    promoteQueueEntry: (sessionId: string, entryId: string) =>
+      invokeQueueMutation('sessions:promoteQueueEntry', sessionId, entryId),
     updateQueueEntry(
       sessionId: string,
       entryId: string,
@@ -2376,9 +2374,8 @@ const makaBridge = {
         text,
       );
     },
-    reorderQueueEntries(sessionId: string, entryIds: readonly string[], expectedQueueRevision: number): Promise<void> {
-      return invokeQueueMutation('sessions:reorderQueueEntries', sessionId, [...entryIds], expectedQueueRevision);
-    },
+    reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>
+      invokeQueueMutation('sessions:reorderQueueEntries', sessionId, [...entryIds], expectedQueueRevision),
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeSessionRuntimeHost('sessions:readExecutionBoundary', sessionId);
     },
