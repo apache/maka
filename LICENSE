@@ -478,8 +478,9 @@ Dependency patch: patches/app-builder-lib+26.16.1.patch
 License: MIT
 
 Maka redistributes source patches that omit modification and access times
-from ZIP archives and skip withdrawn prereleases whose update metadata is
-missing. The following MIT License applies to that material:
+from 7-Zip ZIP archives, keep macOS ZIP archives on the system zip, and skip
+withdrawn prereleases whose update metadata is missing. The following MIT
+License applies to that material:
 
 The MIT License (MIT)
 
