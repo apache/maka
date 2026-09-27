@@ -172,3 +172,16 @@ test('dragging reorders the Host-owned id list', async () => {
     await view.close();
   }
 });
+
+test('queued entries cannot start a reorder without a Host queue revision', async () => {
+  const view = await mountQueue({
+    queuedMessages: [queued('entry-1', 'first'), queued('entry-2', 'second')],
+    onReorderEntries: () => assert.fail('reorder must remain unavailable'),
+  });
+  try {
+    assert.equal(view.document.querySelectorAll('[draggable="true"]').length, 0);
+    assert.equal(view.document.querySelectorAll('[data-maka-queue-drop-target="true"]').length, 0);
+  } finally {
+    await view.close();
+  }
+});

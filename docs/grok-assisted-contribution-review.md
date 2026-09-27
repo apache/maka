@@ -351,6 +351,12 @@ and the Electron renderer-reload E2E passes in this branch.
   before the change and passed afterward (20 classification tests); Runtime
   build and Biome passed. This does not change retryability or constitute a
   full #3115 replacement.
+- #3544: a UI ablation showed Host-admitted rows remained draggable when the
+  queue revision was unavailable, even though editing was disabled. The queue
+  component now gates both the drag affordance and drop submission on a known
+  revision. The new test failed before the fix and passed afterward (5 queue
+  component tests); UI build and Biome passed. This is not a complete rewrite
+  of the 35-file mixed-author feature.
 - #2967: a new boundary test showed the audit writer could append a record
   across `MAX_AUDIT_BYTES` without recording `audit_truncated` until another
   event arrived. The writer now checks the encoded record length before

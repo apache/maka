@@ -95,9 +95,11 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   function dropOn(targetEntryId: string) {
     const fromId = dragEntryId.current;
     dragEntryId.current = null;
-    if (!fromId || fromId === targetEntryId || !props.onReorderEntries) return;
-    if (!entries.some((entry) => entry.entryId === targetEntryId)) return;
-    const ids = entries.filter((entry) => entry.state === 'queued').map((entry) => entry.entryId);
+    if (!fromId || fromId === targetEntryId || !props.onReorderEntries || props.queueRevision === undefined) return;
+    const target = entries.find((entry) => entry.entryId === targetEntryId);
+    const source = entries.find((entry) => entry.entryId === fromId);
+    if (!target || source?.placement !== target.placement) return;
+    const ids = entries.filter((entry) => entry.placement === target.placement && entry.state === 'queued').map((entry) => entry.entryId);
     const from = ids.indexOf(fromId);
     const to = ids.indexOf(targetEntryId);
     if (from === -1 || to === -1) return;
@@ -121,6 +123,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
             entry.state === 'queued'
             && !local
             && Boolean(props.onReorderEntries)
+            && props.queueRevision !== undefined
             && pendingEntryId === null;
           return (
             <div
