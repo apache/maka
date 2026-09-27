@@ -386,7 +386,7 @@ and the Electron renderer-reload E2E passes in this branch.
   reverted just to reproduce an obsolete selector.
 - #3078: the inventory checker now exposes a pure drift comparison, with tests
   for exact bytes, independently stale Markdown, and missing/extra paths. The
-  CI planner also recognizes the new test. The real 301-file inventory check
+  CI planner also recognizes the new test. The current 302-file inventory check
   (after merging upstream), 22 Astryx tests, 40 CI planner tests, and Biome
   passed. A further planner assertion confirms that edits to the generator's
   test file select the general code lane, which always runs the Astryx gate;
