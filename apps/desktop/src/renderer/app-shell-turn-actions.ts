@@ -90,24 +90,15 @@ export function createAppShellTurnActions(deps: {
           },
           turnId,
         );
-        const result = await window.maka.sessions.branchFromTurn(sessionId, {
+        const newSession = await window.maka.sessions.branchFromTurn(sessionId, {
           sourceTurnId: copyAttempt.sourceTurnId,
           copyId: copyAttempt.copyId,
         });
         copyAttempt.complete();
-        if (!result.ok) {
-          if (selectionIsCurrent()) {
-            toastApi.info(copy.branchUnavailableTitle, copy.copyFailures[result.reason]);
-          }
-          return;
-        }
         await refreshSessions();
         if (selectionIsCurrent()) {
-          openSessionInChat(result.session.id);
-          toastApi.success(
-            copy.branchCreatedTitle,
-            copy.branchCreatedDescription(result.session.name),
-          );
+          openSessionInChat(newSession.id);
+          toastApi.success(copy.branchCreatedTitle, copy.branchCreatedDescription(newSession.name));
         }
       }
     } catch (error) {

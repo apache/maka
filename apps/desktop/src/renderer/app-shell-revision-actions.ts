@@ -295,17 +295,10 @@ export function createAppShellRevisionActions(deps: {
     const sourceSessionId = startedDraft.sourceSessionId;
     let preparedSessionId: string | undefined;
     try {
-      const result = await window.maka.sessions.reviseBeforeTurn(sourceSessionId, {
+      const newSession = await window.maka.sessions.reviseBeforeTurn(sourceSessionId, {
         sourceTurnId: startedDraft.sourceTurnId,
         copyId: startedDraft.copyId,
       });
-      if (!result.ok) {
-        if (selectionIsCurrent()) {
-          toastApi.info(copy.revisionUnavailableTitle, copy.copyFailures[result.reason]);
-        }
-        return false;
-      }
-      const newSession = result.session;
       preparedSessionId = newSession.id;
       if (!selectionIsCurrent() || revisionDraftRef.current !== startedDraft) {
         await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);

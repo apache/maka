@@ -54,7 +54,7 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   DesktopBranchFromTurnInput,
-  DesktopSessionCopyResult,
+  DesktopSideConversationBranchResult,
   DesktopSessionStopResult,
   DesktopReviseBeforeTurnInput,
   AppUpdateInstallRequest,
@@ -774,18 +774,32 @@ async function invokeSessionUpdate(
     : result;
 }
 
-async function invokeSessionCopy(
-  channel: 'sessions:branchFromTurn' | 'sessions:reviseBeforeTurn',
+async function invokeBranchFromTurn(
   sessionId: string,
-  input: DesktopBranchFromTurnInput | DesktopReviseBeforeTurnInput,
-): Promise<DesktopSessionCopyResult> {
+  input: DesktopBranchFromTurnInput & { sideConversation: true },
+): Promise<DesktopSideConversationBranchResult>;
+async function invokeBranchFromTurn(
+  sessionId: string,
+  input: DesktopBranchFromTurnInput & { sideConversation?: false },
+): Promise<DesktopSessionSummary>;
+async function invokeBranchFromTurn(
+  sessionId: string,
+  input: DesktopBranchFromTurnInput,
+): Promise<DesktopSessionSummary | DesktopSideConversationBranchResult> {
   const ref = await runtimeHostSessionRef(sessionId);
-  const result = await invokeWhenReady(channel, ref.scope, ref.sessionId, input) as
-    | { ok: true; session: DesktopSessionSummaryInput }
-    | Extract<DesktopSessionCopyResult, { ok: false }>;
-  return result.ok
-    ? { ok: true, session: projectCreatedSessionSummary(ref.scope, result.session) }
-    : result;
+  const result = await invokeWhenReady(
+    'sessions:branchFromTurn',
+    ref.scope,
+    ref.sessionId,
+    input,
+  ) as DesktopSessionSummaryInput | { ok: true; session: DesktopSessionSummaryInput } | { ok: false; reason: string };
+  if (input.sideConversation) {
+    if (!('ok' in result) || result.ok === false) {
+      return result as DesktopSideConversationBranchResult;
+    }
+    return { ok: true, session: projectCreatedSessionSummary(ref.scope, result.session) };
+  }
+  return projectCreatedSessionSummary(ref.scope, result as DesktopSessionSummaryInput);
 }
 
 async function invokeSessionInput<T, I extends { readonly sessionId: string }>(
@@ -2409,10 +2423,14 @@ const makaBridge = {
     listTurnLandmarks(sessionId, turnId = null) {
       return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);
     },
-    branchFromTurn: (sessionId: string, input: DesktopBranchFromTurnInput) =>
-      invokeSessionCopy('sessions:branchFromTurn', sessionId, input),
-    reviseBeforeTurn: (sessionId: string, input: DesktopReviseBeforeTurnInput) =>
-      invokeSessionCopy('sessions:reviseBeforeTurn', sessionId, input),
+    branchFromTurn: invokeBranchFromTurn,
+    async reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary> {
+      const ref = await runtimeHostSessionRef(sessionId);
+      const summary = await invokeWhenReady(
+        'sessions:reviseBeforeTurn', ref.scope, ref.sessionId, input,
+      ) as DesktopSessionSummaryInput;
+      return projectCreatedSessionSummary(ref.scope, summary);
+    },
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
       return invokeSessionRuntimeHost('sessions:respondToSandboxBoundary', sessionId, response);
     },

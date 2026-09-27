@@ -25,7 +25,6 @@ import {
   createAppShellRevisionActions,
   type TurnRevisionDraft,
 } from '../../renderer/app-shell-revision-actions.js';
-import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import { installWindow } from './app-shell-chat-actions-fixture.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
@@ -45,7 +44,7 @@ function userMessage(turnId: string, text: string, extra: Record<string, unknown
 function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean }) {
   const drafts: unknown[] = [];
   const errors: string[] = [];
-  const infos: Array<{ title: string; description?: string }> = [];
+  const infos: string[] = [];
   let composerText = '';
   let selectionRevision = 0;
   const activeIdRef: { current: string | undefined } = { current: SESSION_1 };
@@ -86,7 +85,7 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
     },
     revisionDraftRef,
     toastApi: {
-      info: (title: string, description?: string) => infos.push({ title, description }),
+      info: (title: string) => infos.push(title),
       error: (title: string) => errors.push(title),
     },
   } as never);
@@ -165,7 +164,7 @@ describe('prepareRevisionSend transcript settlement', () => {
     await withWindowMaka(
       {
         sessions: {
-          reviseBeforeTurn: async () => ({ ok: true, session: { id: SESSION_2 } }),
+          reviseBeforeTurn: async () => ({ id: SESSION_2 }),
           abandonSessionCopy: async () => {
             abandoned += 1;
           },
@@ -200,7 +199,7 @@ describe('prepareRevisionSend transcript settlement', () => {
     await withWindowMaka(
       {
         sessions: {
-          reviseBeforeTurn: async () => ({ ok: true, session: { id: SESSION_2 } }),
+          reviseBeforeTurn: async () => ({ id: SESSION_2 }),
           abandonSessionCopy: async () => {
             abandoned += 1;
           },
@@ -227,29 +226,6 @@ describe('prepareRevisionSend transcript settlement', () => {
         assert.equal(h.composerState.text, 'edited');
       },
     );
-  });
-});
-
-describe('prepareRevisionSend Host refusals', () => {
-  it('explains why the Host refused the revision and keeps the draft', async () => {
-    const copy = getDesktopConversationCopy('en').actions;
-    for (const reason of ['session_busy', 'operation_unavailable'] as const) {
-      await withWindowMaka(
-        { sessions: { reviseBeforeTurn: async () => ({ ok: false, reason }) } },
-        async () => {
-          const h = createActions({ messages: [userMessage('turn-1', 'original')] });
-          h.beginEditUserMessage('turn-1');
-          assert.equal(await h.prepareRevisionSend('edited'), false);
-          assert.deepEqual(h.errors, []);
-          assert.deepEqual(h.infos.at(-1), {
-            title: copy.revisionUnavailableTitle,
-            description: copy.copyFailures[reason],
-          });
-          assert.equal(h.activeIdRef.current, SESSION_1);
-          assert.equal(h.composerState.text, 'original');
-        },
-      );
-    }
   });
 });
 
@@ -302,7 +278,7 @@ describe('revision draft lifecycle over a prepared send', () => {
       sessions: {
         reviseBeforeTurn: async () => {
           reviseCalls += 1;
-          return { ok: true, session: { id: SESSION_2 } };
+          return { id: SESSION_2 };
         },
         abandonSessionCopy: async (_sessionId: string, copyId: string) => {
           abandonedCopies.push(copyId);

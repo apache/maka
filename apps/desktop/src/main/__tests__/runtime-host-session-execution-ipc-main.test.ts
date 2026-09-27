@@ -601,8 +601,8 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
       input.channel,
       "source-session",
       input.payload,
-    )) as { ok: true; session: { id: string } };
-    assert.equal(retried.session.id, input.copyId);
+    )) as { id: string };
+    assert.equal(retried.id, input.copyId);
   }
 
   assert.deepEqual(calls, [
@@ -625,8 +625,8 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
   const newBranch = (await ipc.invoke("sessions:branchFromTurn", "source-session", {
     sourceTurnId: "branch-source-turn",
     copyId: "branch-copy-2",
-  })) as { ok: true; session: { id: string } };
-  assert.equal(newBranch.session.id, "branch-copy-2");
+  })) as { id: string };
+  assert.equal(newBranch.id, "branch-copy-2");
   assert.equal(committed.size, 3);
 });
 
@@ -713,22 +713,19 @@ test("sends Side Conversation intent and metadata atomically to Runtime Host", a
   ]);
 });
 
-test('returns structured Branch, Side Conversation and Revision refusals across IPC', async () => {
-  for (const [reason, channel, sideConversation] of [
-    ['session_busy', 'sessions:branchFromTurn', true],
-    ['operation_unavailable', 'sessions:branchFromTurn', true],
-    ['session_busy', 'sessions:branchFromTurn', false],
-    ['operation_unavailable', 'sessions:branchFromTurn', false],
-    ['session_busy', 'sessions:reviseBeforeTurn', false],
-    ['operation_unavailable', 'sessions:reviseBeforeTurn', false],
-  ] as const) {
+test('returns structured Side Conversation setup failures across IPC', async () => {
+  for (const reason of ['session_busy', 'operation_unavailable'] as const) {
     const ipc = ipcHarness();
     const rejectedCreations: string[] = [];
     registerExecutionIpc(
       {
         client: executionClient({
-          copySession: async (kind) => {
-            throw new RuntimeHostOperationError(`session.${kind}.create`, reason, 'Copy refused');
+          copySession: async () => {
+            throw new RuntimeHostOperationError(
+              'session.branch.create',
+              reason,
+              'Side Conversation setup failed',
+            );
           },
         }),
         observer: unusedObserver(),
@@ -749,14 +746,14 @@ test('returns structured Branch, Side Conversation and Revision refusals across 
     );
 
     assert.deepEqual(
-      await ipc.invoke(channel, 'source-session', {
+      await ipc.invoke('sessions:branchFromTurn', 'source-session', {
         sourceTurnId: 'source-turn',
-        copyId: `copy-${reason}`,
-        ...(sideConversation ? { sideConversation } : {}),
+        copyId: `side-copy-${reason}`,
+        sideConversation: true,
       }),
       { ok: false, reason },
     );
-    assert.deepEqual(rejectedCreations, sideConversation ? [`copy-${reason}`] : []);
+    assert.deepEqual(rejectedCreations, [`side-copy-${reason}`]);
   }
 });
 
