@@ -27,6 +27,7 @@ import {
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
+import { exactQueueReorder } from '@maka/core/message-queue-order';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
@@ -2034,27 +2035,18 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
     const steering = state.steering.some((entry) => entry.entryId === input.entryIds[0]);
     const current = steering ? state.steering : state.followup;
-    if (input.entryIds.length !== current.length) {
+    const reorder = exactQueueReorder(current, input.entryIds);
+    if (!reorder) {
       return failure('operation_conflict', 'Message queue changed since the reorder was issued');
     }
-    const byId = new Map(current.map((entry) => [entry.entryId, entry]));
-    const reordered: LiveEntry[] = [];
-    for (const entryId of input.entryIds) {
-      const entry = byId.get(entryId);
-      if (!entry) {
-        return failure('operation_conflict', 'Message queue changed since the reorder was issued');
-      }
-      byId.delete(entryId);
-      reordered.push(entry);
-    }
-    if (reordered.some((entry, index) => current[index] !== entry)) {
+    if (reorder.changed) {
       await this.#admissions.reorderMessageAdmissions(
         input.sessionId,
-        reordered.map((entry) => entry.messageId),
+        reorder.entries.map((entry) => entry.messageId),
         steering ? 'steering' : 'followup',
       );
-      if (steering) state.steering = reordered;
-      else state.followup = reordered;
+      if (steering) state.steering = [...reorder.entries];
+      else state.followup = [...reorder.entries];
       this.#mutated(state);
     }
     const result = { queueRevision: state.revision };

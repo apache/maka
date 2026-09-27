@@ -29,6 +29,7 @@
     "./execution-inspect": "./dist/execution-inspect.js",
     "./events": "./dist/events.js",
     "./provider-retry-countdown": "./dist/provider-retry-countdown.js",
+    "./message-queue-order": "./dist/message-queue-order.js",
     "./interaction": "./dist/interaction.js",
     "./session": "./dist/session.js",
     "./turn-origin": "./dist/turn-origin.js",

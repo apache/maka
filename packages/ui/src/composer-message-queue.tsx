@@ -20,6 +20,7 @@
 import { memo, useRef, useState } from 'react';
 import type { TransientUserMessageProjection } from './chat-view.js';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
+import { moveQueueEntryId } from '@maka/core/message-queue-order';
 import { IconButton } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
@@ -106,14 +107,11 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     const source = entries.find((entry) => entry.entryId === fromId);
     if (!target || source?.placement !== target.placement) return;
     const ids = entries.filter((entry) => entry.placement === target.placement && entry.state === 'queued').map((entry) => entry.entryId);
-    const from = ids.indexOf(fromId);
-    const to = ids.indexOf(targetEntryId);
-    if (from === -1 || to === -1) return;
-    ids.splice(from, 1);
-    ids.splice(to, 0, fromId);
+    const reordered = moveQueueEntryId(ids, fromId, targetEntryId);
+    if (!reordered) return;
     // The Host projection is the only rendered order. Keep other queue actions
     // pending until this request settles instead of maintaining a local overlay.
-    void runEntryAction(fromId, () => props.onReorderEntries?.(ids));
+    void runEntryAction(fromId, () => props.onReorderEntries?.(reordered));
   }
 
   return (
