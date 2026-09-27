@@ -67,6 +67,7 @@ import {
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { ChatMessageSurface } from './chat-message-surface';
+import { createAppShellMessageQueueActions } from './app-shell-message-queue-actions.js';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
@@ -1631,9 +1632,9 @@ function AppShellContent({
     return ok;
   }
 
-  const queuedEntryActions = createAppShellQueueActions({
+  const messageQueueActions = createAppShellMessageQueueActions({
     activeSessionId: () => activeIdRef.current,
-    entries: activeMessageQueue?.entries ?? [],
+    queueEntries: () => activeMessageQueue?.entries ?? [],
     reportFailure(sessionId, error) {
       showSessionError(
         sessionId,
@@ -1646,12 +1647,6 @@ function AppShellContent({
       );
     },
     removeTransientMessage,
-    retract: (sessionId, entryId) => window.maka.sessions.retractQueueEntry(sessionId, entryId),
-    promote: (sessionId, entryId) => window.maka.sessions.promoteQueueEntry(sessionId, entryId),
-    update: (sessionId, entryId, expectedQueueRevision, text) =>
-      window.maka.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
-    reorder: (sessionId, entryIds, expectedQueueRevision) =>
-      window.maka.sessions.reorderQueueEntries(sessionId, entryIds, expectedQueueRevision),
   });
 
   const stop = createAppShellStopAction({
@@ -2323,10 +2318,10 @@ function AppShellContent({
                   pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
-                  onPromoteQueuedEntry={activeId ? queuedEntryActions.promote : undefined}
-                  onUpdateQueuedEntry={activeId ? queuedEntryActions.update : undefined}
-                  onDeleteQueuedEntry={activeId ? queuedEntryActions.retract : undefined}
-                  onReorderQueuedEntries={activeId ? queuedEntryActions.reorder : undefined}
+                  onPromoteQueuedEntry={activeId ? messageQueueActions.promote : undefined}
+                  onUpdateQueuedEntry={activeId ? messageQueueActions.update : undefined}
+                  onDeleteQueuedEntry={activeId ? messageQueueActions.remove : undefined}
+                  onReorderQueuedEntries={activeId ? messageQueueActions.reorder : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {
