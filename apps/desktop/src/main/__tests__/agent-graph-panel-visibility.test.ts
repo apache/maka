@@ -25,7 +25,7 @@ import {
   isAgentGraphPanelDismissible,
   reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
-} from '../../renderer/agent-graph-panel-model.js';
+} from '../../renderer/agent-graph-panel-visibility.js';
 
 describe('isAgentGraphLive', () => {
   it('treats in-flight statuses as live and settled ones as not', () => {

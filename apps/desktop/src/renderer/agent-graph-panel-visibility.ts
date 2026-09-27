@@ -19,12 +19,14 @@
 
 export {
   createAgentGraphPanelModel,
+  dismissAgentGraphPanel,
   isAgentGraphLive,
   isAgentGraphPanelDismissible,
+  reconcileAgentGraphPanelDismissals,
   reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
   type AgentGraphPanelDismissals,
   type AgentGraphPanelModelAction,
   type AgentGraphPanelModelState,
   type AgentGraphPanelStatus,
-} from './agent-graph-panel-model.js';
+} from './features/overlays/index.js';

@@ -67,8 +67,6 @@ import {
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { ChatMessageSurface } from './chat-message-surface';
-import { createAppShellMessageQueueActions } from './app-shell-message-queue-actions.js';
-import type { RestoredDraftContent } from './application/contracts/transient-message-projection.js';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
@@ -163,7 +161,6 @@ import {
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
-import { createAppShellQueueActions } from './app-shell-queue-actions';
 import { useStableActions } from './use-stable-actions';
 import {
   useActiveSessionEvents,
@@ -174,7 +171,6 @@ import {
   useSessionEventHealthPolling,
   useShellRunUpdates,
 } from './app-shell-effects';
-import * as liveContent from './observation-visibility';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
@@ -344,6 +340,7 @@ function AppShellContent({
     sharedSessionActive,
     ownerActiveId,
     switchingSession,
+    queueSurface,
   } = useAppShellSessionWorkspace(toastApi);
   // The shell's own reading of the catalog rides the membership set the list
   // hook already publishes — background row churn belongs to the rail, which
@@ -614,13 +611,8 @@ function AppShellContent({
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
-  const composerRef = useRef<ComposerHandle>(null);
-  const restoreLocalMessageDraft = useCallback((targetSessionId: string, draft: RestoredDraftContent) => {
-    if (draft.attachments?.length) restoreAttachments(targetSessionId, draft.attachments);
-    if (draft.directoryReferences?.length) restoreDirectories(targetSessionId, draft.directoryReferences);
-    if (draft.quotes?.length) restoreQuotes(targetSessionId, draft.quotes);
-    if (draft.text.trim()) composerRef.current?.appendDraft?.(targetSessionId, draft.text);
-  }, [restoreAttachments, restoreDirectories, restoreQuotes]);
+  const composerRef = queueSurface.composer;
+  const restoreLocalMessageDraft = queueSurface.restoreDraft;
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -1626,23 +1618,6 @@ function AppShellContent({
     return ok;
   }
 
-  const messageQueueActions = createAppShellMessageQueueActions({
-    activeSessionId: () => activeIdRef.current,
-    queueEntries: () => activeMessageQueue?.entries ?? [],
-    reportFailure(sessionId, error) {
-      showSessionError(
-        sessionId,
-        desktopConversationCopy.actions.operationFailedTitle,
-        localizedShellErrorMessage(
-          error,
-          desktopConversationCopy.actions.operationFailedFallback,
-          uiLocale,
-        ),
-      );
-    },
-    removeTransientMessage,
-  });
-
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
@@ -1736,28 +1711,28 @@ function AppShellContent({
     themePalette,
     themePref,
   });
-  const [liveContentSeed, setLiveContentSeed] = useState<liveContent.LiveContentSeedState>(
-    liveContent.INITIAL_LIVE_CONTENT_SEED,
+  const [liveContentSeed, setLiveContentSeed] = useState<Conversation.LiveContentSeedState>(
+    Conversation.INITIAL_LIVE_CONTENT_SEED,
   );
   const liveContentSeedRef = useRef(liveContentSeed);
   liveContentSeedRef.current = liveContentSeed;
   function beginObservationSeed(sessionId: string) {
-    const seed = liveContent.beginLiveContentSeed(liveContentSeedRef.current, sessionId);
+    const seed = Conversation.beginLiveContentSeed(liveContentSeedRef.current, sessionId);
     liveContentSeedRef.current = seed.state;
     holdDisplayEvents(sessionId);
     setLiveContentSeed(seed.state);
     function finishObservationSeed() {
-      if (!liveContent.ownsLiveContentSeed(liveContentSeedRef.current, seed.token)) return;
+      if (!Conversation.ownsLiveContentSeed(liveContentSeedRef.current, seed.token)) return;
       releaseDisplayEvents(sessionId);
-      const revealed = liveContent.revealLiveContentSeed(liveContentSeedRef.current, seed.token);
+      const revealed = Conversation.revealLiveContentSeed(liveContentSeedRef.current, seed.token);
       liveContentSeedRef.current = revealed;
       setLiveContentSeed(revealed);
       void retireCancelledTransientMessages(sessionId);
     }
     return finishObservationSeed;
   }
-  const observationAuthorityRef = useRef(liveContent.INITIAL_OBSERVATION_AUTHORITY);
-  observationAuthorityRef.current = liveContent.reconcileObservationAuthority(
+  const observationAuthorityRef = useRef(Conversation.INITIAL_OBSERVATION_AUTHORITY);
+  observationAuthorityRef.current = Conversation.reconcileObservationAuthority(
     observationAuthorityRef.current,
     {
       sessionId: requestedSessionId,
@@ -2293,7 +2268,6 @@ function AppShellContent({
                         enabled={(activeSessionForView.orchestrationMode ?? 'default') === 'graph'}
                         locale={uiLocale}
                         onOpenSession={openSessionInChat}
-                        backend={window.maka.graphs}
                       />
                     ) : null}
                     {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
@@ -2339,10 +2313,10 @@ function AppShellContent({
                   pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
-                  onPromoteQueuedEntry={activeId ? messageQueueActions.promote : undefined}
-                  onUpdateQueuedEntry={activeId ? messageQueueActions.update : undefined}
-                  onDeleteQueuedEntry={activeId ? messageQueueActions.remove : undefined}
-                  onReorderQueuedEntries={activeId ? messageQueueActions.reorder : undefined}
+                  onPromoteQueuedEntry={activeId ? queueSurface.promoteQueuedEntry : undefined}
+                  onUpdateQueuedEntry={activeId ? queueSurface.updateQueuedEntry : undefined}
+                  onDeleteQueuedEntry={activeId ? queueSurface.deleteQueuedEntry : undefined}
+                  onReorderQueuedEntries={activeId ? queueSurface.reorderQueuedEntries : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {
@@ -2438,7 +2412,7 @@ function AppShellContent({
                 onLoadEarlierHistory={() => transcriptReadingCommands.current?.loadEarlier()}
                 transcriptTurnIndex={activeId && transcriptTurnIndex?.sessionId === activeId ? transcriptTurnIndex.turns : undefined}
                 onLoadTranscriptTurn={(turn) => transcriptReadingCommands.current?.loadEarlier(turn.sequence)}
-                liveContentSeedGeneration={liveContent.visibleLiveContentGeneration(liveContentSeed, activeId)}
+                  liveContentSeedGeneration={Conversation.visibleLiveContentGeneration(liveContentSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
                 messageLoading={activeMessageLoading}

@@ -56,6 +56,8 @@ export function createDesktopConversationServices(
     },
     sessions: {
       ...bridge.sessions,
+      updateQueueEntry: (sessionId: string, entryId: string, expectedQueueRevision: number, text: string) =>
+        bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
       reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>
         bridge.sessions.reorderQueueEntries(sessionId, entryIds, expectedQueueRevision),
     },

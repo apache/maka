@@ -125,6 +125,30 @@ export function isAgentGraphLive(status: AgentGraphPanelStatus | undefined): boo
   return status !== undefined && LIVE_STATUSES.has(status);
 }
 
+export function dismissAgentGraphPanel(
+  dismissedBySession: AgentGraphPanelDismissals,
+  sessionId: string,
+  graphId: string,
+): AgentGraphPanelDismissals {
+  if (dismissedBySession[sessionId] === graphId) return dismissedBySession;
+  return { ...dismissedBySession, [sessionId]: graphId };
+}
+
+export function reconcileAgentGraphPanelDismissals(
+  dismissedBySession: AgentGraphPanelDismissals,
+  sessionId: string,
+  snapshot:
+    | { rootSessionId: string; graphId: string; status: AgentGraphPanelStatus }
+    | undefined,
+): AgentGraphPanelDismissals {
+  const dismissed = dismissedBySession[sessionId];
+  if (!dismissed || !snapshot || snapshot.rootSessionId !== sessionId) return dismissedBySession;
+  if (snapshot.graphId === dismissed && isAgentGraphPanelDismissible(snapshot.status)) return dismissedBySession;
+  const next = { ...dismissedBySession };
+  delete next[sessionId];
+  return next;
+}
+
 export function shouldShowAgentGraphPanel(input: {
   enabled: boolean;
   hasGraphActivity: boolean;

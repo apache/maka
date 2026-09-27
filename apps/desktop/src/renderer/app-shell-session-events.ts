@@ -397,16 +397,14 @@ export function createAppShellSessionEventHandlers(options: {
     }
   }
 
-  return Object.freeze<AppShellSessionEventHandlers>({
-    handleEvent: (sessionId, event) => handleEvent(sessionId, event),
-    reconcilePersistedMessages: (sessionId, messages) =>
-      reconcilePersistedMessages(sessionId, messages),
-    settleAssistantStreaming: (sessionId, messageId) =>
-      settleAssistantStreaming(sessionId, messageId),
+  return {
+    handleEvent,
+    reconcilePersistedMessages,
+    settleAssistantStreaming,
     holdDisplayEvents,
     releaseDisplayEvents,
     discardDisplayEvents,
-  });
+  };
 }
 
 function sessionEventDiagnosticDetails(

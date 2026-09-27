@@ -19,7 +19,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAppShellQueueActions } from "../../renderer/app-shell-queue-actions.js";
+import { createAppShellQueueActions } from "../../renderer/features/conversation/index.js";
 
 test("queue actions capture the active session and retract its transient message", async () => {
   const calls: unknown[] = [];

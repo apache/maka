@@ -154,7 +154,6 @@ function panel() {
           enabled
           locale={LOCALE}
           onOpenSession={() => undefined}
-          backend={window.maka.graphs}
         />
       </div>
     </div>
