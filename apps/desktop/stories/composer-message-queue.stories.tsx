@@ -17,309 +17,118 @@
  * under the License.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
-import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
-import type { ComponentProps, ReactElement, ReactNode } from 'react';
-import type { MessageQueueEntryProjection } from '@maka/core/events';
-import type { SessionSummary } from '@maka/core/session';
-import { Composer } from '@maka/ui';
-import type { ChatModelChoice, ComposerHandle, TransientUserMessageProjection } from '@maka/ui';
-import {
-  ConversationServicesProvider,
-  SessionLocalMessages,
-  type ConversationServices,
-} from '../src/renderer/features/conversation';
-import { stubConversationServices } from '../src/renderer/features/conversation/testing';
-import type { DesktopLocalMessage } from '../src/shared/session-local-contract.js';
+import { useReducer } from "react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { MessageQueueEntryProjection } from "@maka/core/events";
+import type { SessionSummary } from "@maka/core/session";
+import { Composer, type ChatModelChoice } from "@maka/ui";
 
-const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
-const SESSION_ID = 's';
-
-type DeliveryState = 'queued' | 'unconfirmed' | 'failed';
-
-function localDeliveryMessages(state: DeliveryState): DesktopLocalMessage[] {
-  const base = {
-    sessionId: SESSION_ID,
-    attachments: [],
-    inlineReferences: [],
-    placement: 'next_turn' as const,
-  };
-  if (state === 'unconfirmed') {
-    return [
-      {
-        ...base,
-        messageId: 'local-unconfirmed',
-        createdAt: NOW - 60_000,
-        state: 'unknown',
-        canCancel: false,
-        text: 'Check whether the queue drained before retrying the compaction audit.',
-        error: 'Connection dropped before the receipt arrived',
-      },
-      {
-        ...base,
-        messageId: 'local-waiting',
-        createdAt: NOW - 30_000,
-        state: 'saved',
-        canCancel: true,
-        text: 'Summarize the retry budget for the pending follow-ups.',
-      },
-    ];
-  }
-  if (state === 'failed') {
-    return [
-      {
-        ...base,
-        messageId: 'local-failed',
-        createdAt: NOW - 60_000,
-        state: 'failed',
-        canCancel: true,
-        text: 'Attach the runtime.sqlite compaction log to the report.',
-        error: 'Message preparation failed. The local copy is retained.',
-      },
-    ];
-  }
-  return [];
-}
-
-function localDeliveryServices(state: DeliveryState): ConversationServices {
-  let messages = localDeliveryMessages(state);
-  return stubConversationServices({
-    listMessages: async () => messages,
-    cancelMessage: async (_sessionId, messageId) => {
-      messages = messages.filter((message) => message.messageId !== messageId);
-    },
-  });
-}
-
-const meta = {
-  title: 'Product/Composer Message Queue',
-  component: QueuedComposer,
-  parameters: { layout: 'fullscreen' },
-} satisfies Meta<typeof QueuedComposer>;
-
-export default meta;
-
-type Story = StoryObj<typeof meta>;
-type ComposerProps = ComponentProps<typeof Composer>;
-
-function noop() {
-  return undefined;
-}
-
-function session(): SessionSummary {
-  return {
-    id: 's',
-    name: '排查 Context summary failed',
-    isFlagged: false,
-    isArchived: false,
-    labels: [],
-    hasUnread: false,
-    lastMessageAt: NOW,
-    lastMessagePreview: '查一下 PR #3526 相关的 session。',
-    status: 'running',
-    backend: 'ai-sdk',
-    llmConnectionId: 'connection-anthropic-main',
-    llmConnectionSlug: 'anthropic-main',
-    connectionLocked: false,
-    model: 'claude-sonnet-4-5',
-    permissionMode: 'ask',
-  };
-}
-
-const modelChoices: ChatModelChoice[] = [
-  {
-    connectionId: 'connection-anthropic-main',
-    connectionSlug: 'anthropic-main',
-    providerType: 'anthropic',
-    providerLabel: 'Anthropic',
-    model: 'claude-sonnet-4-5',
-    label: 'Claude Sonnet 4.5',
-    isDefault: true,
-    thinkingLevels: [],
-  },
+const SESSION: SessionSummary = {
+  id: "s",
+  name: "排查 Context summary failed",
+  isFlagged: false,
+  isArchived: false,
+  labels: [],
+  hasUnread: false,
+  lastMessageAt: Date.UTC(2026, 6, 1, 9, 30, 0),
+  lastMessagePreview: "查一下 PR #3526 相关的 session。",
+  status: "running",
+  backend: "ai-sdk",
+  llmConnectionId: "connection-anthropic-main",
+  llmConnectionSlug: "anthropic-main",
+  connectionLocked: false,
+  model: "claude-sonnet-4-5",
+  permissionMode: "ask",
+};
+const MODELS: ChatModelChoice[] = [{
+  connectionId: "connection-anthropic-main",
+  connectionSlug: "anthropic-main",
+  providerType: "anthropic",
+  providerLabel: "Anthropic",
+  model: "claude-sonnet-4-5",
+  label: "Claude Sonnet 4.5",
+  isDefault: true,
+  thinkingLevels: [],
+}];
+const INITIAL_QUEUE: MessageQueueEntryProjection[] = [
+  queueEntry("entry-steer", "先把刚才的判断改成只检查当前工作树。", "current_turn"),
+  queueEntry("entry-1", "先不要改协议。"),
+  queueEntry("entry-2", "查一下 PR #3526 相关的 session 及其 compaction 诊断记录。"),
+  queueEntry("entry-3", "把 runtime.sqlite 里的 compaction 日志也带上。"),
 ];
 
-function followUpEntry(entryId: string, text: string): MessageQueueEntryProjection {
+type QueueAction =
+  | { type: "remove"; entryId: string }
+  | { type: "rename"; entryId: string; text: string }
+  | { type: "reorder"; entryIds: readonly string[] };
+
+function queueEntry(
+  entryId: string,
+  text: string,
+  placement: MessageQueueEntryProjection["placement"] = "next_turn",
+): MessageQueueEntryProjection {
   return {
     entryId,
     messageId: `message-${entryId}`,
     content: { text },
-    placement: 'next_turn',
-    state: 'queued',
+    placement,
+    state: "queued",
   };
 }
 
-/**
- * Local stand-in for the Runtime Host queue projection: promote hands an
- * entry to the active Turn (it leaves the plate), edit retracts it back into
- * the draft, retract drops it, and reorder applies the drag order. The component contract
- * (projection in, mutations
- * out) is the real one; only the authority is simulated.
- */
-// A production queue snapshot also carries queued steering; the drawer filters
-// it out — steering renders in the transcript instead (see the
-// QueuedMessageLifecycleFlow story in app-shell).
-const DEFAULT_QUEUE: MessageQueueEntryProjection[] = [
-  {
-    entryId: 'entry-steer',
-    messageId: 'message-steer',
-    content: { text: '先把刚才的判断改成只检查当前工作树。' },
-    placement: 'current_turn',
-    state: 'queued',
-  },
-  followUpEntry('entry-1', '先不要改协议。'),
-  followUpEntry('entry-2', '查一下 PR #3526 相关的 session 及其 compaction 诊断记录。'),
-  followUpEntry('entry-3', '把 runtime.sqlite 里的 compaction 日志也带上。'),
-];
-
-function QueuedComposer({
-  deliveryState,
-  stagedContext = true,
-  entries = DEFAULT_QUEUE,
-}: {
-  deliveryState: DeliveryState;
-  stagedContext?: boolean;
-  entries?: MessageQueueEntryProjection[];
-}) {
-  const composerRef = useRef<ComposerHandle>(null);
-  const [followup, setFollowup] = useState<MessageQueueEntryProjection[]>(entries);
-
-  const base: ComposerProps = {
-    draftKey: 'storybook-composer-queue',
-    onSend: noop,
-    onStop: noop,
-    modelLabel: 'K3-256k',
-    activeSession: session(),
-    activeModel: 'claude-sonnet-4-5',
-    activeModelLabel: 'K3-256k',
-    modelChoices,
-    permissionMode: 'ask',
-    onPermissionModeChange: noop,
-    onPickAttachments: noop,
-    streaming: true,
-    // Real mid-turn state can stage context while follow-ups wait: the two
-    // sections stack inside the one staging drawer.
-    pendingQuotes: stagedContext
-      ? [{ text: 'queue.entries 表在 Host 端是唯一权威', label: '设计笔记' }]
-      : undefined,
-    pendingAttachments: stagedContext
-      ? [{ kind: 'other', displayName: 'compaction-audit.md', mimeType: 'text/markdown', size: 12_400 }]
-      : undefined,
-  };
-
-  const [published, setPublished] = useState(new Map<string, TransientUserMessageProjection>());
-  const publish = useCallback((_sessionId: string, message: TransientUserMessageProjection) => {
-    setPublished((current) => new Map(current).set(message.id, message));
-  }, []);
-  const retire = useCallback((_sessionId: string, messageId: string) => {
-    setPublished((current) => {
-      const next = new Map(current);
-      next.delete(messageId);
-      return next;
-    });
-  }, []);
-  const services = useMemo(() => localDeliveryServices(deliveryState), [deliveryState]);
-
-  return (
-    <ConversationServicesProvider services={services}>
-      <SessionLocalMessages
-        sessionId={SESSION_ID}
-        publish={publish}
-        retire={retire}
-        reportError={noop}
-        restoreDraft={(_id, draft) => {
-          composerRef.current?.setText(draft.text);
-          composerRef.current?.focus();
-        }}
-      />
-      <Composer
-        {...base}
-        ref={composerRef}
-        queuedMessages={deliveryState === 'queued' ? followup : []}
-        pendingMessages={[...published.values()]}
-        onPromoteQueuedEntry={(entryId) => {
-          setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
-        }}
-        onEditQueuedEntry={(entry) => {
-          setFollowup((current) => current.filter((candidate) => candidate.entryId !== entry.entryId));
-          composerRef.current?.setText(entry.content.displayText ?? entry.content.text);
-        }}
-        onDeleteQueuedEntry={(entryId) => {
-          setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
-        }}
-        onReorderQueuedEntries={(entryIds) => {
-          setFollowup((current) =>
-            entryIds.flatMap((entryId) =>
-              current.filter((candidate) => candidate.entryId === entryId),
-            ),
-          );
-        }}
-      />
-    </ConversationServicesProvider>
+function reduceQueue(
+  queue: readonly MessageQueueEntryProjection[],
+  action: QueueAction,
+): MessageQueueEntryProjection[] {
+  if (action.type === "remove") {
+    return queue.filter((entry) => entry.entryId !== action.entryId);
+  }
+  if (action.type === "rename") {
+    return queue.map((entry) => entry.entryId === action.entryId
+      ? { ...entry, content: { ...entry.content, text: action.text, displayText: action.text } }
+      : entry);
+  }
+  const rank = new Map(action.entryIds.map((entryId, index) => [entryId, index]));
+  return [...queue].sort((left, right) =>
+    (rank.get(left.entryId) ?? -1) - (rank.get(right.entryId) ?? -1),
   );
 }
 
-function storyFrame(children: ReactNode): ReactElement {
-  return <div style={{ padding: '24px 24px 48px', maxWidth: 840 }}>{children}</div>;
+function PendingQueueExample() {
+  const [queue, dispatch] = useReducer(reduceQueue, INITIAL_QUEUE);
+  return (
+    <div style={{ padding: "24px 24px 48px", maxWidth: 840 }}>
+      <Composer
+        draftKey="storybook-composer-queue"
+        onSend={() => undefined}
+        onStop={() => undefined}
+        modelLabel="K3-256k"
+        activeSession={SESSION}
+        activeModel="claude-sonnet-4-5"
+        activeModelLabel="K3-256k"
+        modelChoices={MODELS}
+        permissionMode="ask"
+        onPermissionModeChange={() => undefined}
+        onPickAttachments={() => undefined}
+        streaming
+        queuedMessages={queue}
+        queuedMessageRevision={1}
+        onPromoteQueuedEntry={(entryId) => dispatch({ type: "remove", entryId })}
+        onUpdateQueuedEntry={(entryId, _revision, text) =>
+          dispatch({ type: "rename", entryId, text })}
+        onDeleteQueuedEntry={(entryId) => dispatch({ type: "remove", entryId })}
+        onReorderQueuedEntries={(entryIds) => dispatch({ type: "reorder", entryIds })}
+      />
+    </div>
+  );
 }
 
-// Real path: mid-turn sends while a quote and a file are staged — the staging
-// drawer holds the queue section above a hairline and the context chips below.
-// Drag follow-ups to reorder; 直接发送 promotes one, 编辑 takes it back into the draft.
-export const PendingPlate: Story = {
-  args: { deliveryState: 'queued' },
-  argTypes: {
-    deliveryState: {
-      options: ['queued', 'unconfirmed', 'failed'],
-      control: { type: 'radio' },
-    },
-  },
-  render: (args) =>
-    storyFrame(
-      <QueuedComposer key={args.deliveryState} deliveryState={args.deliveryState} />,
-    ),
-};
+const meta = {
+  title: "Product/Composer Message Queue",
+  parameters: { layout: "fullscreen" },
+} satisfies Meta;
 
-// Real path: the user folds the staging slab; every staged item collapses into
-// the count strip until it is reopened.
-export const StagingCollapsed: Story = {
-  args: { deliveryState: 'queued' },
-  render: () => storyFrame(<QueuedComposer deliveryState="queued" />),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole('button', { name: /收起|collapse/i }));
-    await waitFor(() => {
-      // Collapsed content stays mounted under the grid-row collapse — assert on
-      // the disclosure state, not DOM removal.
-      const toggle = canvas.getByRole('button', { name: /展开|expand/i });
-      expect(toggle).toHaveAttribute('aria-expanded', 'false');
-      expect(toggle).toHaveTextContent(/5|附加内容|staged/i);
-    });
-  },
-};
+export default meta;
+type Story = StoryObj<typeof meta>;
 
-// Real path: a long Turn while the user keeps queueing — the list scrolls
-// inside the drawer instead of growing the composer.
-export const OverflowingQueue: Story = {
-  args: { deliveryState: 'queued' },
-  render: () =>
-    storyFrame(
-      <QueuedComposer
-        deliveryState="queued"
-        stagedContext={false}
-        entries={Array.from({ length: 9 }, (_, index) =>
-          followUpEntry(`entry-${index + 1}`, `排队跟进 ${index + 1}：检查 compaction 诊断记录的第 ${index + 1} 段。`),
-        )}
-      />,
-    ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const list = canvasElement.querySelector<HTMLElement>('.maka-composer-queue-list');
-    await waitFor(() => {
-      expect(list).not.toBeNull();
-      expect(list!.scrollHeight).toBeGreaterThan(list!.clientHeight);
-    });
-    await expect(canvas.getAllByText(/^排队跟进/).length).toBe(9);
-  },
-};
+export const PendingPlate: Story = { render: () => <PendingQueueExample /> };

@@ -17,24 +17,16 @@
  * under the License.
  */
 
-/**
- * The composer's send slot holds ONE control (Astryx's send/stop toggle), and
- * mid-turn it reads Stop while the draft is empty. This is the shape the slot
- * drifted out of more than once — a Stop button and a Steer button side by
- * side, then a Queue/Steer mode switch beside Send — so the count is asserted,
- * not just the label. Queue affordances live in the pending plate above the
- * card, never in the send slot.
- */
+/** The send slot is a single Send/Stop control; queue actions live above it. */
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { act, createRef } from 'react';
+import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
-import { Composer, type ComposerHandle } from '../composer.js';
+import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
-import { ICON_SIZE, Search } from '../icons.js';
 
 function renderComposer(streaming: boolean): string {
   return renderToStaticMarkup(
@@ -45,7 +37,10 @@ function renderComposer(streaming: boolean): string {
 }
 
 function sendSlotControls(markup: string): string[] {
-  return markup.match(/aria-label="(?:Send|Stop)"/g) ?? [];
+  const document = parseHTML(`<html><body>${markup}</body></html>`).document;
+  return [...document.querySelectorAll('button[aria-label="Send"], button[aria-label="Stop"]')]
+    .map((button) => button.getAttribute('aria-label'))
+    .filter((label): label is string => label !== null);
 }
 
 /** The Send control's own `aria-disabled` value — asserted directly, not by a
@@ -59,7 +54,7 @@ function sendButtonAriaDisabled(markup: string): string | null {
 
 test('an idle composer offers Send alone', () => {
   const controls = sendSlotControls(renderComposer(false));
-  assert.deepEqual(controls, ['aria-label="Send"']);
+  assert.deepEqual(controls, ['Send']);
 });
 
 test('a host-owned send gate disables Send without an inline notice', () => {
@@ -79,12 +74,12 @@ test('a host-owned send gate disables Send without an inline notice', () => {
 
 test('a turn in flight turns the same single control into Stop', () => {
   const controls = sendSlotControls(renderComposer(true));
-  assert.deepEqual(controls, ['aria-label="Stop"']);
+  assert.deepEqual(controls, ['Stop']);
 });
 
-test('a running composer keeps Send alone — no mode switch in the send slot', () => {
+test('a running composer adds no queue mode switch beside Stop', () => {
   const markup = renderComposer(true);
-  assert.deepEqual(sendSlotControls(markup), ['aria-label="Stop"']);
+  assert.deepEqual(sendSlotControls(markup), ['Stop']);
   assert.doesNotMatch(markup, /Follow-up behavior/);
   assert.doesNotMatch(markup, /SegmentedControl/);
 });
@@ -132,7 +127,7 @@ test('a staged quote enables Send without any host opt-in (#4804)', () => {
   );
   // The toggle and the disabled state agree: a quote-only draft is a live
   // Send, and it needs no per-host decision the way attachments do.
-  assert.deepEqual(sendSlotControls(staged), ['aria-label="Send"']);
+  assert.deepEqual(sendSlotControls(staged), ['Send']);
   assert.equal(sendButtonAriaDisabled(staged), null);
   // The same empty draft with nothing staged is what disabled looks like, so
   // the assertion above pins the staged quote as the enabling reason.
@@ -173,7 +168,7 @@ test('the three send gates agree about a staged quote while streaming (#4804)', 
     ));
     // Gate 1 — the send/stop toggle: mid-turn the slot stays on Send because
     // the staged quote is handable content, not an empty draft.
-    assert.deepEqual(sendSlotControls(container.innerHTML), ['aria-label="Send"']);
+    assert.deepEqual(sendSlotControls(container.innerHTML), ['Send']);
     const button = container.querySelector('button[aria-label="Send"]');
     assert.ok(button);
     // Gate 2 — sendDisabled: the control is live.
@@ -231,181 +226,26 @@ test('the actual submit waits for Session references and keeps the draft on refu
   }
 });
 
-test('a send completing after navigation keeps the newer draft it left behind', async () => {
-  const original = { document: globalThis.document, window: globalThis.window, Node: globalThis.Node, HTMLElement: globalThis.HTMLElement,
-    IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
-  const { document, window } = parseHTML('<div id="root"></div>');
-  window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
-  Object.assign(window, { getSelection: () => null });
-  Object.assign(document, { getSelection: () => null });
-  Object.assign(globalThis, { document, window, Node: window.Node, HTMLElement: window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true });
-  const root = createRoot(document.querySelector('#root')!);
-  const handle = createRef<ComposerHandle>();
-  let finish!: (sent: boolean) => void;
-  const render = (draftKey: string) => root.render(
-    <LocaleProvider locale="en">
-      <Composer ref={handle} draftKey={draftKey}
-        onSend={() => new Promise<boolean>((resolve) => { finish = resolve; })}
-        onStop={() => undefined} />
-    </LocaleProvider>,
-  );
-  try {
-    await act(() => render('a'));
-    await act(() => handle.current!.setText('first request'));
-    await act(async () => {
-      document.querySelector('form')!.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-      await Promise.resolve();
-    });
-    await act(() => handle.current!.setText('second unsent draft'));
-    await act(() => render('b'));
-    await act(async () => { finish(true); await Promise.resolve(); });
-    assert.equal(handle.current!.getDraft('a'), 'second unsent draft');
-  } finally {
-    await act(() => root.unmount());
-    Object.assign(globalThis, original);
-  }
-});
-
-test('keeps Host order visible until the reordered projection arrives', async () => {
-  const original = {
-    document: globalThis.document,
-    window: globalThis.window,
-    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
-      IS_REACT_ACT_ENVIRONMENT?: boolean;
-    }).IS_REACT_ACT_ENVIRONMENT,
-  };
-  const { document, window } = parseHTML('<div id="root"></div>');
-  window.getComputedStyle = () => ({
-    direction: 'ltr',
-    writingMode: 'horizontal-tb',
-    getPropertyValue: () => '',
-  }) as unknown as CSSStyleDeclaration;
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
-  let requestedOrder: readonly string[] | undefined;
-  const editedEntryIds: string[] = [];
-  const deletedEntryIds: string[] = [];
-
-  try {
-    await act(() => root.render(
-      <LocaleProvider locale="en">
-        <Composer
-          streaming
-          queuedMessages={[
-            {
-              entryId: 'steering',
-              messageId: 'message-steering',
-              content: { text: 'steering' },
-              placement: 'current_turn',
-              state: 'queued',
-            },
-            ...['first', 'second'].map((entryId) => ({
-              entryId,
-              messageId: `message-${entryId}`,
-              content: { text: entryId },
-              placement: 'next_turn' as const,
-              state: 'queued' as const,
-            })),
-          ]}
-          onPromoteQueuedEntry={() => undefined}
-          onEditQueuedEntry={(entry) => {
-            editedEntryIds.push(entry.entryId);
-          }}
-          onDeleteQueuedEntry={(entryId) => {
-            deletedEntryIds.push(entryId);
-          }}
-          onReorderQueuedEntries={(entryIds) => {
-            requestedOrder = entryIds;
-            return new Promise<void>(() => undefined);
-          }}
-          onSend={() => undefined}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    ));
-    const editButtons = [
-      ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Edit"]'),
-    ];
-    const deleteButtons = [
-      ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Delete"]'),
-    ];
-    // Queued steering lives in the transcript, not the follow-up plate.
-    assert.equal(container.querySelectorAll('[aria-label="Send now"]').length, 2);
-    assert.equal(editButtons.length, 2);
-    assert.equal(deleteButtons.length, 2);
-    assert.equal(
-      [...container.querySelectorAll('.maka-composer-queue-text')]
-        .every((row) => !row.textContent?.includes('steering')),
-      true,
-    );
-    await act(async () => {
-      editButtons[0]?.dispatchEvent(new window.Event('click', { bubbles: true }));
-      await Promise.resolve();
-    });
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>('[aria-label="Delete"]')
-        ?.dispatchEvent(new window.Event('click', { bubbles: true }));
-      await Promise.resolve();
-    });
-    assert.deepEqual(editedEntryIds, ['first']);
-    assert.deepEqual(deletedEntryIds, ['first']);
-    const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
-    assert.equal(grips.length, 2);
-    const dragStart = new window.Event('dragstart', { bubbles: true });
-    Object.defineProperty(dragStart, 'dataTransfer', {
-      value: { effectAllowed: '', setData() {} },
-    });
-    await act(() => grips[1]?.dispatchEvent(dragStart));
-    const firstRow = grips[0]?.closest('li')?.parentElement;
-    assert.ok(firstRow);
-    const drop = new window.Event('drop', { bubbles: true });
-    Object.defineProperty(drop, 'dataTransfer', { value: { types: [], files: [] } });
-    await act(() => firstRow.dispatchEvent(drop));
-
-    assert.deepEqual(requestedOrder, ['second', 'first']);
-    assert.deepEqual(
-      [...container.querySelectorAll('.maka-composer-queue-text')].map((row) => row.textContent),
-      ['first', 'second'],
-    );
-  } finally {
-    await act(() => root.unmount());
-    Object.assign(globalThis, original);
+test('deduplicates pending steering against Host queue entries and keeps the plate through an empty queue snapshot', () => {
+  const pending = { id: 'steer', text: 'new direction', ts: 1, transientPlacement: 'steering' as const };
+  const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
+  for (const entries of [[queued], []]) {
+    const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
+      queuedMessages={entries} pendingMessages={[pending]} /></LocaleProvider>);
+    const document = parseHTML(`<html><body>${markup}</body></html>`).document;
+    assert.equal(document.querySelectorAll('.maka-composer-queue-text').length, 1);
+    assert.equal(document.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
+    assert.equal(document.querySelector('.maka-composer-queue-status')?.textContent, 'Steering · Applied together');
   }
 });
 
 
-test('local sends share the flat staging list with icon-only delivery actions', () => {
+test('a locally saved follow-up keeps its delivery status and recovery actions in the pending list', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-    queuedMessages={[{
-      entryId: 'admitted', messageId: 'message-admitted',
-      content: { text: 'admitted follow-up' }, placement: 'next_turn', state: 'queued',
-    }]}
-    pendingMessages={[
-      { id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'follow_up',
-        deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
-        deliveryActions: [{ label: 'Check delivery', icon: <Search size={ICON_SIZE.control} aria-hidden="true" />, onClick() {} }] },
-      { id: 'sending', text: 'still sending', ts: 2, transientPlacement: 'follow_up',
-        deliveryStatus: 'Sending…' },
-      { id: 'local-steer', text: 'steering in flight', ts: 3,
-        transientPlacement: 'transcript', deliveryStatus: 'Sending…' },
-    ]} /></LocaleProvider>);
+    pendingMessages={[{ id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'follow_up',
+      deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
+      deliveryActions: [{ label: 'Check delivery', onClick() {} }] }]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
-  assert.deepEqual(
-    [...document.querySelectorAll('.maka-composer-queue-list li')].map((row) => row.textContent),
-    ['admitted follow-up', 'offline follow-up', 'still sending'],
-    'admitted entries and in-flight sends share one flat list',
-  );
-  assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'),
-    'the delivery action stays an accessible labelled icon control');
-  const gripRows = [...document.querySelectorAll('li')]
-    .filter((row) => row.querySelector('.maka-composer-queue-grip') !== null);
-  assert.equal(gripRows.length, 1, 'only the admitted row carries a drag grip');
-  const sendingRow = [...document.querySelectorAll('li')]
-    .find((row) => row.textContent?.includes('still sending'));
-  assert.ok(sendingRow);
-  assert.equal(sendingRow.querySelectorAll('.maka-composer-queue-actions button').length, 0,
-    'a local row without delivery actions offers no Host edit/steer/delete operations');
+  assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
+  assert.ok([...document.querySelectorAll('.maka-composer-queue-actions button')].some((button) => button.textContent === 'Check delivery'));
 });

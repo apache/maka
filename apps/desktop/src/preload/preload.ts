@@ -730,6 +730,20 @@ async function invokeSessionRuntimeHost<T>(
   return invokeWhenReady(channel, session.scope, session.sessionId, ...args) as Promise<T>;
 }
 
+type QueueMutationChannel =
+  | 'sessions:promoteQueueEntry'
+  | 'sessions:reorderQueueEntries'
+  | 'sessions:retractQueueEntry'
+  | 'sessions:updateQueueEntry';
+
+function invokeQueueMutation(
+  channel: QueueMutationChannel,
+  sessionId: string,
+  ...args: unknown[]
+): Promise<void> {
+  return invokeSessionRuntimeHost(channel, sessionId, ...args);
+}
+
 async function invokeRuntimeHostForSession<T>(
   channel: string,
   sessionId: string,
@@ -2343,13 +2357,27 @@ const makaBridge = {
       return invokeSessionRuntimeHost('sessions:queryMessageExecutions', sessionId, messageIds);
     },
     retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:retractQueueEntry', sessionId, entryId);
+      return invokeQueueMutation('sessions:retractQueueEntry', sessionId, entryId);
     },
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:promoteQueueEntry', sessionId, entryId);
+      return invokeQueueMutation('sessions:promoteQueueEntry', sessionId, entryId);
+    },
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void> {
+      return invokeQueueMutation(
+        'sessions:updateQueueEntry',
+        sessionId,
+        entryId,
+        expectedQueueRevision,
+        text,
+      );
     },
     reorderQueueEntries(sessionId: string, entryIds: readonly string[], expectedQueueRevision: number): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:reorderQueueEntries', sessionId, [...entryIds], expectedQueueRevision);
+      return invokeQueueMutation('sessions:reorderQueueEntries', sessionId, [...entryIds], expectedQueueRevision);
     },
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeSessionRuntimeHost('sessions:readExecutionBoundary', sessionId);

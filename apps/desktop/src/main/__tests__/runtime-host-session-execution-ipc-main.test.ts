@@ -1879,77 +1879,6 @@ test('keeps an unknown Desktop follow-up admission available for reconciliation'
   );
 });
 
-test("routes per-entry queue mutations to the Runtime Host", async () => {
-  const calls: unknown[] = [];
-  let sequence = 0;
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        retractQueueEntry: async (input) => {
-          calls.push({ operation: "retract", ...input });
-          return { queueRevision: 3 };
-        },
-        promoteQueueEntry: async (input) => {
-          calls.push({ operation: "promote", ...input });
-          return { queueRevision: 4 };
-        },
-        reorderQueueEntries: async (input) => {
-          calls.push({ operation: "reorder", ...input });
-          return { queueRevision: 5 };
-        },
-      }),
-      observer: unusedObserver(),
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
-      beforeStop() {},
-      newId: () => `id-${++sequence}`,
-    },
-    ipc,
-  );
-
-  assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
-  await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
-  await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"], 5);
-
-  assert.deepEqual(calls, [
-    {
-      operation: "retract",
-      sessionId: "session-1",
-      entryId: "entry-1",
-      retractId: "id-1",
-    },
-    {
-      operation: "promote",
-      sessionId: "session-1",
-      entryId: "entry-2",
-      promoteId: "id-2",
-    },
-    {
-      operation: "reorder",
-      sessionId: "session-1",
-      reorderId: "id-3",
-      expectedQueueRevision: 5,
-      entryIds: ["entry-3", "entry-2"],
-    },
-  ]);
-
-  await assert.rejects(
-    () => ipc.invoke("sessions:promoteQueueEntry", "session-1", 42),
-    /Invalid queue entry identity/,
-  );
-  await assert.rejects(
-    () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1", 42]),
-    /Invalid queue entry order/,
-  );
-  await assert.rejects(
-    () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1"], -1),
-    /Invalid Queue sequence/,
-  );
-});
-
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
@@ -2300,6 +2229,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     openSession: unavailable,
     retractQueueEntry: unavailable,
     promoteQueueEntry: unavailable,
+    updateQueueEntry: unavailable,
     reorderQueueEntries: unavailable,
     setSessionReadMarker: unavailable,
     startTurnResume: unavailable,

@@ -21,7 +21,7 @@ import {
   FAKE_HOLD_OPEN_PROMPT,
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
-import type { Locator } from '@playwright/test';
+import type { Locator } from "@playwright/test";
 import {
   awaitSendReady,
   COMPOSER_INPUT,
@@ -44,11 +44,9 @@ function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`);
 }
 
-async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
-  // Mid-turn steering is Cmd/Ctrl+Enter: Send stays Send, and the modified
-  // submit hands the draft to the active Turn once.
+async function submitSteeringDraft(composer: Locator, text: string): Promise<void> {
   await composer.fill(text);
-  await composer.press('ControlOrMeta+Enter');
+  await composer.press("ControlOrMeta+Enter");
 }
 
 test('ordinary Enter queues on an already-running Session before observation recovers', async ({ window: page }) => {
@@ -187,7 +185,7 @@ test('a successor owns working status and remounting leaves accumulated output s
   });
 
   const steering = 'trigger rewrite after returning to this conversation';
-  await steerActiveTurn(composer, steering);
+  await submitSteeringDraft(composer, steering);
   const finalText = 'prefix <redacted> NEW streamed after the remount';
   await expect(liveBubble).toContainText(finalText);
 

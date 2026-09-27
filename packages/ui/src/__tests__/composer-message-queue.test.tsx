@@ -212,3 +212,63 @@ test('a drag from an older queue revision cannot reorder a newer projection', as
     await view.close();
   }
 });
+
+test('promote and delete dispatch only for Host-owned queued entries', async () => {
+  const promoted: string[] = [];
+  const deleted: string[] = [];
+  const view = await mountQueue({
+    queuedMessages: [
+      queued('entry-1', 'first'),
+      { ...queued('entry-2', 'second'), state: 'in_flight' },
+    ],
+    queueRevision: 4,
+    onPromoteEntry: (entryId) => { promoted.push(entryId); },
+    onDeleteEntry: (entryId) => { deleted.push(entryId); },
+  });
+  try {
+    assert.equal(actionButton(view.document, copy.promoteQueuedEntry, 1).disabled, true);
+    assert.equal(
+      actionButton(view.document, copy.deleteQueuedEntry, 1).getAttribute('aria-disabled'),
+      'true',
+    );
+    await click(actionButton(view.document, copy.promoteQueuedEntry, 0));
+    await click(actionButton(view.document, copy.deleteQueuedEntry, 0));
+    assert.deepEqual(promoted, ['entry-1']);
+    assert.deepEqual(deleted, ['entry-1']);
+  } finally {
+    await view.close();
+  }
+});
+
+test('one render cannot dispatch two mutations for the same pending queue', async () => {
+  let settlePromotion!: () => void;
+  const promotion = new Promise<void>((resolve) => {
+    settlePromotion = resolve;
+  });
+  const calls: string[] = [];
+  const view = await mountQueue({
+    queuedMessages: [queued('entry-1', 'first')],
+    queueRevision: 4,
+    onPromoteEntry: () => {
+      calls.push('promote');
+      return promotion;
+    },
+    onDeleteEntry: () => {
+      calls.push('delete');
+    },
+  });
+  try {
+    const promote = actionButton(view.document, copy.promoteQueuedEntry);
+    const remove = actionButton(view.document, copy.deleteQueuedEntry);
+    await act(async () => {
+      promote.dispatchEvent(new window.Event('click', { bubbles: true }));
+      remove.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+    assert.deepEqual(calls, ['promote']);
+    settlePromotion();
+    await act(async () => promotion);
+  } finally {
+    settlePromotion();
+    await view.close();
+  }
+});
