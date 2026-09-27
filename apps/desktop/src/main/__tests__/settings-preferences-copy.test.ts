@@ -29,18 +29,28 @@ test('language selector offers every preference with locale-appropriate labels',
     ['auto', '跟随系统'],
     ['zh-CN', '简体中文'],
     ['zh-TW', '繁體中文'],
+    ['ko', '한국어'],
     ['en', 'English'],
   ]);
   assert.deepEqual(getSettingsPreferencesCopy('zh-TW').personalization.localeOptions, [
     ['auto', '自動（跟隨系統）'],
     ['zh-CN', '简体中文'],
     ['zh-TW', '繁體中文'],
+    ['ko', '한국어'],
+    ['en', 'English'],
+  ]);
+  assert.deepEqual(getSettingsPreferencesCopy('ko').personalization.localeOptions, [
+    ['auto', '시스템 설정 따름'],
+    ['zh-CN', '简体中文'],
+    ['zh-TW', '繁體中文'],
+    ['ko', '한국어'],
     ['en', 'English'],
   ]);
   assert.deepEqual(getSettingsPreferencesCopy('en').personalization.localeOptions, [
     ['auto', 'Follow system'],
     ['zh-CN', 'Simplified Chinese'],
     ['zh-TW', 'Traditional Chinese'],
+    ['ko', 'Korean'],
     ['en', 'English'],
   ]);
 });

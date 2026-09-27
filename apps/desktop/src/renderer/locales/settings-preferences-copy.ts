@@ -270,7 +270,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   'zh-CN': {
     personalization: {
       saveFailed: '保存失败', displayName: '显示名称', displayNameHelp: 'Maka 在聊天里会以这个名字称呼你。留空就用默认的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未设置，Maka 会称呼你“你”', displayNameChange: '更改', displayNameSet: '设置',
-      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
+      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['ko', '한국어'], ['en', 'English']],
       assistantTone: '助手语气偏好', assistantToneHelp: '最多 500 字，只影响回答的语气和风格。权限确认与安全规则不受影响；改动会自动保存。', assistantTonePlaceholder: '例如：技术严谨、偏简洁、不要 emoji。',
     },
     sections: {
@@ -369,7 +369,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   'zh-TW': {
     personalization: {
       saveFailed: '儲存失敗', displayName: '顯示名稱', displayNameHelp: 'Maka 在聊天裡會以這個名字稱呼你。留空就用預設的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未設定，Maka 會稱呼你“你”', displayNameChange: '更改', displayNameSet: '設定',
-      interfaceLanguage: '介面語言', interfaceLanguageHelp: '選擇 Maka 介面的顯示語言。切換後立即生效，重新啟動後仍會保留。', localeOptions: [['auto', '自動（跟隨系統）'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
+      interfaceLanguage: '介面語言', interfaceLanguageHelp: '選擇 Maka 介面的顯示語言。切換後立即生效，重新啟動後仍會保留。', localeOptions: [['auto', '自動（跟隨系統）'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['ko', '한국어'], ['en', 'English']],
       assistantTone: '助手語氣偏好', assistantToneHelp: '最多 500 字，只影響回答的語氣和風格。權限確認與安全規則不受影響；改動會自動儲存。', assistantTonePlaceholder: '例如：技術嚴謹、偏簡潔、不要 emoji。',
     },
     sections: {
@@ -459,7 +459,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   },
   en: {
     personalization: {
-      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh-CN', 'Simplified Chinese'], ['zh-TW', 'Traditional Chinese'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
+      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh-CN', 'Simplified Chinese'], ['zh-TW', 'Traditional Chinese'], ['ko', 'Korean'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
     },
     sections: {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
@@ -518,6 +518,68 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       sourceCode: 'Source code', releaseNotes: 'Release notes',
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
+  },
+  ko: {
+    personalization: {
+      saveFailed: '저장 실패', displayName: '표시 이름', displayNameHelp: 'Maka가 사용자를 부를 때 이 이름을 씁니다. 비워 두면 이름 없이 부릅니다.', displayNamePlaceholder: '예: JK', displayNameUnset: '설정 안 됨 — Maka가 이름 없이 부릅니다', displayNameChange: '변경', displayNameSet: '설정', interfaceLanguage: '인터페이스 언어', interfaceLanguageHelp: 'Maka에서 사용할 언어를 선택하세요. 변경 사항은 즉시 적용되며 다시 시작한 후에도 유지됩니다.', localeOptions: [['auto', '시스템 설정 따름'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['ko', '한국어'], ['en', 'English']], assistantTone: '어시스턴트 어조', assistantToneHelp: '최대 500자입니다. 응답 스타일만 바뀌며 권한과 안전 규칙은 그대로 적용됩니다. 변경 사항은 자동으로 저장됩니다.', assistantTonePlaceholder: '예: 기술적으로 엄밀하게, 간결하게, 이모지 없이.',
+    },
+    sections: {
+      identity: '프로필', identityHelp: 'Maka가 사용자를 부르는 방식과 인터페이스 언어, 응답 어조를 정합니다.',
+      privacy: '개인정보 보호 및 알림', privacyHelp: 'Maka가 로컬에서 읽고 쓸 수 있는 범위와 알림을 보내는 시점을 정합니다.',
+      chatDefaults: '작업 기본값', chatDefaultsHelp: '새 작업이 시작할 때 쓰는 모델, 권한 모드, 사고 수준입니다.',
+      shell: '명령 실행 환경', shellHelp: 'Runtime Host가 Bash 도구와 터미널 명령에 사용할 셸을 선택하세요.',
+      network: '네트워크', networkHelp: 'AI 모델 요청이 거치는 네트워크 경로입니다.',
+      theme: '테마', themeHelp: '시스템 화면 모드를 따르거나 라이트 또는 다크로 고정합니다.',
+      palette: '색상 팔레트', paletteHelp: '강조 색상과 캔버스 색상입니다. 변경 사항은 즉시 적용되고 로컬에 저장됩니다.',
+      appIcon: '앱 아이콘', appIconHelp: 'Dock, 작업 표시줄, 앱 전환기에 표시되는 Maka 아이콘입니다. 변경 사항은 즉시 적용됩니다.',
+      fontSize: '글꼴 크기', fontSizeHelp: '인터페이스와 터미널 전체의 텍스트 크기입니다. 변경 사항은 즉시 적용되고 로컬에 저장됩니다.',
+      pets: '사용자 지정 펫', petsHelp: '직접 가져온 PetPack을 관리합니다. Maka는 기본으로 포함하거나 켜 두는 펫이 없습니다.',
+    },
+    appearance: {
+      saveFailed: '모양 설정 저장 실패', theme: '테마', palette: '색상 팔레트', themeOptions: { light: { label: '라이트', help: '항상 라이트 인터페이스를 사용합니다.' }, dark: { label: '다크', help: '항상 다크 인터페이스를 사용합니다.' }, auto: { label: '시스템 설정 따름', help: '현재 시스템 화면 모드에 맞춥니다.' } }, paletteLabels: { default: '기본', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '코랄', azure: '애저', forest: '포레스트', dusk: '더스크', sand: '샌드', mono: '모노크롬' }, paletteHelp: { default: 'Maka 브랜드 블루 강조 색상', onedark: '클래식 다크 에디터 테마', 'catppuccin-mocha': '부드러운 보라색 다크 테마', 'tokyo-night': '짙은 파란색 에디터 테마', nord: '차가운 북유럽 색감', coral: '따뜻한 분홍·코랄 강조 색상', azure: '깔끔하고 차분한 파란색 강조 색상', forest: '짙은 이끼색과 따뜻한 꿀색', dusk: '차가운 캔버스 위의 짙은 보라색', sand: '앰버 샌드와 따뜻한 아이보리', mono: '색이 없는 순수 회색조' }, paletteGroups: { editor: '에디터 테마', product: '제품 색상' }, appIconLabels: { default: '클래식', mono: '모노크롬', 'sky': '스카이', 'cyan': '시안', 'ice': '아이스', 'pale-inverted': '인버티드', 'ink': '잉크', 'paper': '페이퍼', 'graphite': '그래파이트', 'pencil-kraft': '펜슬, 크래프트', 'pencil-sky': '펜슬, 스카이', 'pencil-navy': '펜슬, 네이비', 'alpine': '알파인', 'dusk': '더스크', 'night': '나이트', 'midnight': '미드나이트', 'carbon': '카본', 'slate': '슬레이트', 'obsidian': '옵시디언', 'neon-cyan': '네온 시안', 'matrix': '포스퍼', 'magenta': '마젠타', 'amber-crt': '앰버 CRT', 'clay': '클레이', 'sage': '세이지', 'dust': '더스트', 'fog': '포그', 'sunset': '선셋', 'amber': '앰버', 'terracotta': '테라코타', 'ocean': '오션', 'moss': '모스', 'desert': '데저트', 'glacier': '글레이셔', 'gold': '골드', 'chrome': '크롬', 'mono-black': '모노 블랙', 'mono-white': '모노 화이트', 'hazard': '해저드', 'forest': '포레스트' }, appIconHelp: { default: '기본 Maka 마크', mono: '회색조, 더 차분한 Dock용', 'sky': '브랜드 블루의 기하학적 M 마크', 'cyan': '시안에 가까운 파란색', 'ice': '옅은 파란색에서 짙은 파란색으로 이어지는 그라데이션', 'pale-inverted': '옅은 바탕에 짙은 파란색 마크', 'ink': '검은 바탕에 흰색, 가장 높은 대비', 'paper': '흰 바탕에 검은색', 'graphite': '흰 바탕에 검은색, 끝은 회색', 'pencil-kraft': '펜슬 모티프, 크래프트 바탕', 'pencil-sky': '펜슬 모티프, 스카이 블루 바탕', 'pencil-navy': '펜슬 모티프, 짙은 네이비 바탕', 'alpine': '맑은 하늘 아래 눈 덮인 봉우리', 'dusk': '황혼의 눈 덮인 봉우리', 'night': '밤의 눈 덮인 봉우리', 'midnight': '짙은 네이비 바탕의 밝은 마크. 어두운 Dock에서도 윤곽이 살아 있음', 'carbon': '완전한 검정이라 OLED 화면에는 마크만 보임', 'slate': '차가운 슬레이트 바탕에 옅은 회색', 'obsidian': '보랏빛 검정 그라데이션 바탕에 라일락색', 'neon-cyan': '검정에 가까운 바탕에 선명한 시안', 'matrix': '포스퍼 터미널의 녹색', 'magenta': '짙은 보라색 바탕에 핫핑크', 'amber-crt': '초기 터미널의 앰버색', 'clay': '차분한 테라코타', 'sage': '차분한 회녹색', 'dust': '차분한 더스티 로즈', 'fog': '차분한 청회색', 'sunset': '주황에서 분홍으로 이어지는 대각선', 'amber': '앰버 바탕에 어두운 마크', 'terracotta': '벽돌색 그라데이션', 'ocean': '짙은 청록 그라데이션', 'moss': '짙은 모스 그라데이션', 'desert': '데저트 샌드 바탕에 어두운 마크', 'glacier': '옅은 빙하색 파랑', 'gold': '마크 자체에 골드 그라데이션', 'chrome': '마크 자체에 은색 그라데이션', 'mono-black': '순백 바탕에 검은색. 한 가지 색으로 인쇄 가능', 'mono-white': '완전한 검정 바탕에 흰색', 'hazard': '검은 바탕에 노란색, 이 묶음에서 대비가 가장 높음', 'forest': '녹색 바탕의 눈 덮인 봉우리' }, appIconGroups: { mascot: '마스코트', blue: '파란색 계열', contrast: '흑백', pencil: '펜슬', mountain: '산', dark: '다크', neon: '네온', muted: '차분한 색', warm: '따뜻한 색', nature: '자연', metal: '금속', highContrast: '고대비', custom: '가져온 항목' }, appIconSplitLabel: '다크 모드에서 다른 아이콘 사용', appIconSplitHelp: '끄면 두 화면 모드 모두 같은 아이콘을 사용합니다.', appIconTargets: { light: '라이트', dark: '다크' }, appIconCustom: '가져온 아이콘', appIconCustomHelp: '직접 가져온 이미지', appIconImport: '아이콘 가져오기…', appIconImporting: '가져오는 중…', appIconImportHelp: '정사각형 PNG가 가장 좋습니다. Dock에서 다른 앱과 같은 크기로 보이도록 가장자리에 약 10%의 투명 여백을 두세요.', appIconRemove: '제거', appIconImportError: '아이콘 가져오기 실패', appIconRemoveFailed: '아이콘 제거 실패', appIconSelectFailed: '아이콘 전환 실패', appIconImportFailed: { too_large: '파일이 너무 큽니다. 더 작은 이미지를 선택하세요', too_many_pixels: '이미지가 너무 큽니다. 최대 4096×4096입니다', unsupported_format: 'PNG와 JPEG만 지원됩니다', unreadable: '이 파일에서 이미지를 읽지 못했습니다', too_small: '이미지가 너무 작습니다. 최소 128×128입니다', write_failed: '가져온 아이콘 저장 실패' }, appIconUnavailable: '앱 아이콘 불러오기 실패', fontSize: { uiLabel: 'UI 글꼴 크기', uiHelp: '인터페이스 전체에 쓰이는 기본 글꼴 크기', terminalLabel: '터미널 글꼴 크기', terminalHelp: '터미널 출력과 코드에 쓰이는 글꼴 크기' },
+    },
+    pets: {
+      import: 'PetPack 가져오기', importing: '가져오는 중…', loading: '사용자 지정 펫 불러오는 중…',
+      status: '데스크톱 펫', activePet: (name) => `현재 사용 중: ${name}`, disabled: '꺼짐', disable: '펫 끄기', disabling: '끄는 중…',
+      empty: '아직 가져온 펫 없음', emptyHelp: 'pet.json과 스프라이트 시트가 들어 있는 로컬 폴더를 선택하세요.',
+      selected: '사용 중', select: '사용', selecting: '전환하는 중…', remove: '제거', removing: '제거하는 중…',
+      removeTitle: (name) => `“${name}” 제거할까요?`, removeDescription: 'Maka에 저장된 이 펫 팩의 로컬 사본이 제거되며 되돌릴 수 없습니다. 원본 폴더에는 영향이 없습니다.', confirmRemove: '제거', cancel: '취소',
+      loadFailed: '사용자 지정 펫 불러오기 실패', importFailed: '펫 가져오기 실패', selectFailed: '펫 전환 실패', removeFailed: '펫 제거 실패',
+      importErrors: { invalid_directory: '선택한 폴더가 올바르지 않습니다.', invalid_manifest: 'pet.json이 maka.pet/v1 형식과 맞지 않습니다.', invalid_asset: '스프라이트 시트가 없거나, 올바르지 않거나, 지원 범위를 벗어났습니다.', already_installed: '같은 ID의 펫이 이미 설치되어 있습니다.', read_failed: '선택한 폴더를 읽지 못했습니다.' },
+      selectErrors: { invalid_id: '펫 ID가 올바르지 않습니다.', not_found: '이 펫은 더 이상 로컬 라이브러리에 없습니다.', read_failed: '펫 라이브러리를 읽지 못했습니다.', write_failed: '펫 선택을 저장하지 못했습니다.' },
+      removeErrors: { invalid_id: '펫 ID가 올바르지 않습니다.', remove_failed: '로컬 펫 팩을 제거하지 못했습니다.' },
+    },
+    general: {
+      incognito: '시크릿 모드', incognitoHelp: '로컬 메모리, 웹 검색, 정기 작업 실행을 일시 중지합니다.', enableIncognito: '시크릿 모드 켜기', incognitoFailed: '시크릿 모드 변경 실패', notifications: '완료되면 시스템 알림 보내기', notificationsHelp: '창이 백그라운드에 있을 때 응답이 완료되거나 실패하면 알립니다.', notificationsFailed: '알림 설정 변경 실패', workspaceInstructions: '프로젝트 지침 따르기', workspaceInstructionsHelp: '각 프로젝트에 있는 AGENTS.md, CLAUDE.md, GEMINI.md 파일을 자동으로 읽습니다. 파일은 각 프로젝트에서 관리하세요.', workspaceInstructionsFailed: '프로젝트 지침 설정 변경 실패', workHub: 'WorkHub 켜기', workHubHelp: 'WorkHub는 아직 사용할 수 없습니다. 이 토글은 개발 테스트용이며, 켜도 사용할 수 있는 기능이 생기지 않습니다.', workHubFailed: 'WorkHub 설정 변경 실패', updateFailed: '설정이 적용되지 않았습니다. 잠시 후 다시 시도해 주세요.', defaultModel: '기본 모델', defaultModelHelp: '새 작업에 사용할 모델입니다.', notSet: '설정 안 됨', saveDefaultModelFailed: '기본 모델 저장 실패', defaultPermission: '기본 권한 모드', defaultPermissionHelp: '새 작업의 초기 권한 모드입니다. 언제든지 바꿀 수 있습니다.', saveDefaultPermissionFailed: '기본 권한 모드 저장 실패', defaultThinking: '기본 사고 수준', defaultThinkingHelp: '새 작업의 사고 수준입니다. 선택한 수준을 지원하지 않는 모델은 자체 기본값을 사용합니다.', followModelDefault: '모델 기본값 따름', saveDefaultThinkingFailed: '기본 사고 수준 저장 실패', proxy: '프록시 서버', proxyHelp: 'AI 모델 요청에 사용할 네트워크 프록시를 설정하세요', enableProxy: '프록시 서버 켜기', saveNetworkFailed: '네트워크 설정 저장 실패', proxyProtocol: '프록시 프로토콜', serverAddress: '서버 주소', port: '포트', proxyAuth: '프록시 인증', proxyAuthHelp: '사용자 이름과 비밀번호가 필요할 때 켜세요.', enableProxyAuth: '프록시 인증 켜기', username: '사용자 이름', password: '비밀번호', bypassList: '프록시 우회 목록', bypassHelp: '이 도메인은 프록시를 거치지 않고 직접 연결됩니다. 여러 도메인은 쉼표로 구분하세요.', autoBypass: (count) => `도메인 ${count}개가 자동으로 추가되었습니다. 프록시는 AI 모델 요청에만 적용됩니다.`, testing: '테스트하는 중…', testCurrent: '현재 구성 테스트', proxyReachable: '프록시에 연결할 수 있음', proxyTestFailed: '프록시 테스트 실패', proxyTestError: '프록시를 테스트하지 못함',
+      shellPreference: 'Bash 도구 셸', shellPreferenceHelp: '자동은 PowerShell을 우선하는 Windows 기본 동작을 유지합니다. Git Bash는 현재 Runtime Host에만 적용되는 명시적 재정의입니다.', shellAuto: '자동(권장)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 실행 파일', shellExecutableHelp: 'Runtime Host를 실행하는 Windows 컴퓨터에서 bash.exe의 절대 경로를 입력하세요. 기존 System32 WSL Bash 심(shim)도 인식합니다. Maka는 저장하기 전에 GNU Bash인지 확인합니다.', saveShell: '셸 설정 저장', savingShell: '저장하는 중…', shellSaved: '저장됨', saveShellFailed: '셸 설정 저장 실패', shellExecutableRejected: '현재 Runtime Host에서 이 경로를 GNU Bash로 실행하지 못했습니다. Host가 Windows에서 실행 중인지, 경로가 있는지, 파일 이름이 bash.exe인지 확인하세요.',
+      passwordSavedPlaceholder: '비밀번호가 저장되어 있습니다. 바꾸려면 새 비밀번호를 입력하세요',
+    },
+    about: {
+      loadFailed: '앱 정보 불러오기 실패', loading: '앱 정보 불러오는 중', unavailable: '앱 정보를 사용할 수 없음', copied: '진단 정보 복사됨', pasteHint: '내용을 확인한 뒤 이슈 보고서에 붙여 넣으세요', copyFailed: '복사 실패', clipboardUnavailable: '클립보드를 사용할 수 없거나 접근이 거부되었습니다.',
+      channelSummaries: {
+        dev: '로컬 개발 빌드입니다. 업데이트를 확인하지 않습니다.',
+        nightly: '매일 나오는 사전 릴리스 빌드입니다. 최신 nightly로 자동 업데이트되며 정식 릴리스 설치를 대체합니다.',
+        release: '공식 릴리스 빌드입니다. 안정 업데이트를 자동으로 받습니다.',
+      },
+      supportTitle: '지원',
+      copyDiagnostics: '진단 정보 복사', copyAction: '복사', copyHelp: '버전, 플랫폼, 홈 경로를 가린 작업 공간 경로, 민감 정보를 가린 최근 로그를 복사합니다. 보고서는 클립보드에만 기록되며 자동으로 업로드되지 않습니다.',
+      reportIssueLabel: '이슈 보고', reportIssueHelp: '진단 정보를 첨부해 GitHub 이슈를 여세요 — 더 빨리 답변을 받을 수 있습니다.', reportIssueOpen: '열기',
+      keyboardShortcuts: '키보드 단축키', keyboardShortcutsHelp: 'Maka가 지원하는 모든 단축키입니다.', keyboardShortcutsOpen: '보기',
+      checkForUpdates: '업데이트 확인',
+      checkingForUpdates: '업데이트 확인하는 중…',
+      updateIdle: '아직 업데이트를 확인하지 않음',
+      updateNotAvailable: '최신 버전을 사용 중입니다',
+      updateAvailable: (version) => `v${version} 사용 가능`,
+      updateDownloading: (version, percent) => `v${version} 다운로드하는 중(${percent}%)`,
+      updateVerifying: (version) => `v${version}의 릴리스 출처 확인하는 중`,
+      updateDownloaded: (version) => `v${version} 설치 준비됨`,
+      updateDownloadedHint: '사이드바 아래쪽에서 다시 시작하면 설치됩니다.',
+      updateInstalling: (version) => `v${version} 설치하는 중`,
+      updateFailed: { check: '업데이트 확인 실패', download: '업데이트 다운로드 실패', install: '업데이트 설치 실패' },
+      openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
+      sourceCode: '소스 코드', releaseNotes: '릴리스 노트',
+    },
+    password: { copyFailed: '복사 실패', clipboardUnavailable: '클립보드를 사용할 수 없거나 접근이 거부되었습니다.', copying: '복사하는 중', copied: '복사됨', copy: '복사', hide: '숨기기', show: '표시', value: '인증 정보 값' },
   },
 } satisfies UiCatalog<SettingsPreferencesCopy>;
 
