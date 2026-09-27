@@ -25,6 +25,7 @@ import { act } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
+import { deriveComposerSendPolicy, hasComposerStagedContext } from '../composer-send-policy.js';
 import { LocaleProvider } from '../locale-context.js';
 import { mountComposer } from './composer-test-harness.js';
 
@@ -51,6 +52,22 @@ function sendButtonAriaDisabled(markup: string): string | null {
   assert.ok(button, 'the send slot renders Send');
   return button.getAttribute('aria-disabled');
 }
+
+test('the send policy treats staged context as sendable content across all gates', () => {
+  const staged = hasComposerStagedContext({ pendingQuotes: [{}] });
+  assert.deepEqual(
+    deriveComposerSendPolicy({
+      text: '',
+      hasStagedContext: staged,
+      executorModelPending: false,
+      sendPending: false,
+      importActionBusy: false,
+      noModelConnection: false,
+      streaming: true,
+    }),
+    { hasSendableContent: true, sendDisabled: false, stopShown: false },
+  );
+});
 
 test('an idle composer offers Send alone', () => {
   const controls = sendSlotControls(renderComposer(false));

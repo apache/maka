@@ -148,6 +148,10 @@ import {
   MakaClientSessionScope,
   MakaClientSlotOutlet,
 } from './client-plugin-slots.js';
+import {
+  deriveComposerSendPolicy,
+  hasComposerStagedContext,
+} from './composer-send-policy.js';
 
 // Astryx keeps this selection helper internal, so the shell owns its small
 // equivalent instead of importing an unpublished root export.
@@ -1398,10 +1402,7 @@ export const Composer = forwardRef<
   // on the Host opt-in (`allowAttachmentOnlySend`), so the upstream flag
   // governs that half while staged quotes pass the same gates (send handler,
   // disabled state, send/stop toggle) as text.
-  const hasStagedContext =
-    (props.pendingQuotes?.length ?? 0) > 0 ||
-    (props.pendingSessionReferences?.length ?? 0) > 0 ||
-    (props.allowAttachmentOnlySend === true && (props.pendingAttachments?.length ?? 0) > 0);
+  const hasStagedContext = hasComposerStagedContext(props);
 
   async function sendCurrent(followUpMode?: FollowUpMode) {
     if (
@@ -1625,14 +1626,18 @@ export const Composer = forwardRef<
 
   const importActionBusy = pendingImportAction !== null;
   const noModelConnection = props.noModelConnection === true;
-  const sendDisabled =
-    props.disabled ||
-    props.sendBlocked ||
-    executorModelPending ||
-    sendPending ||
-    importActionBusy ||
-    (!text.trim() && !hasStagedContext) ||
-    noModelConnection;
+  const sendPolicy = deriveComposerSendPolicy({
+    text,
+    hasStagedContext,
+    disabled: props.disabled,
+    sendBlocked: props.sendBlocked,
+    executorModelPending,
+    sendPending,
+    importActionBusy,
+    noModelConnection,
+    streaming: props.streaming,
+  });
+  const { sendDisabled, stopShown } = sendPolicy;
   // Hosts can explain a disabled Send without adding a second visible notice;
   // other disabled reasons (empty draft, in-flight import) keep the neutral label.
   const sendTitle = props.sendBlocked && props.sendBlockedReason?.trim()
@@ -1641,9 +1646,6 @@ export const Composer = forwardRef<
       ? copy.noModelSendTitle
       : copy.sendLabel;
   // Send and Stop share one slot; structured staged content is also sendable.
-  const stopShown =
-    props.streaming === true
-    && (props.sendBlocked === true || (!text.trim() && !hasStagedContext));
   // A Host receipt is not model consumption. Keep steering above the composer
   // until the host surface retires its transient on steering_message.
   const queuedMessages = projectComposerMessageQueue(props.queuedMessages ?? [], props.pendingMessages ?? []);
