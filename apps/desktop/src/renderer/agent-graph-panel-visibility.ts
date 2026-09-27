@@ -25,4 +25,4 @@ export {
   reconcileAgentGraphPanelDismissals,
   reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
-} from './features/overlays/index.js';
+} from './application/contracts/agent-graph-panel-visibility.js';

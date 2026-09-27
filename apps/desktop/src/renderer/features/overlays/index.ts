@@ -28,10 +28,6 @@ export type { Command } from './model/command.js';
 export type { OverlaysShellProjection } from './model/overlays-projection.js';
 export {
   createAgentGraphPanelModel,
-  dismissAgentGraphPanel,
-  isAgentGraphLive,
-  isAgentGraphPanelDismissible,
-  reconcileAgentGraphPanelDismissals,
   reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
 } from './model/agent-graph-panel-model.js';

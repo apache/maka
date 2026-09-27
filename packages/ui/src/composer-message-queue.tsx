@@ -50,6 +50,9 @@ export interface ComposerMessageQueueHostProps {
 
 export interface ComposerMessageQueueProps extends Omit<ComposerMessageQueueViewProps, 'entries'> {
   queuedMessages: readonly ComposerQueueEntry[];
+  onEditEntry?(
+    entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>,
+  ): void | Promise<void>;
 }
 
 /** Host entries own queue actions; local sends remain visible before a receipt. */
@@ -57,10 +60,11 @@ export function projectComposerMessageQueue(
   queued: readonly MessageQueueEntryProjection[],
   transient: readonly TransientUserMessageProjection[],
 ): readonly ComposerQueueEntry[] {
-  const ids = new Set(queued.map((entry) => entry.messageId));
+  const followups = queued.filter((entry) => entry.placement === 'next_turn');
+  const ids = new Set(followups.map((entry) => entry.messageId));
   const pending = transient.filter((message) => message.transientPlacement !== 'transcript' && !ids.has(message.id));
-  if (pending.length === 0) return queued;
-  return [...queued, ...pending.map((message): ComposerQueueEntry => ({
+  if (pending.length === 0) return followups;
+  return [...followups, ...pending.map((message): ComposerQueueEntry => ({
     entryId: message.id, messageId: message.id, content: { text: message.text },
     placement: 'next_turn', state: 'local', localMessage: message,
   }))];

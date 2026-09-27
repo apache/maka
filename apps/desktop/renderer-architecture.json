@@ -915,7 +915,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./features/overlays/index.js": 1
+          "./application/contracts/agent-graph-panel-visibility.js": 1
         }
       },
       "src/renderer/agent-graph-panel.tsx": {

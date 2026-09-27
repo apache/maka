@@ -19,6 +19,7 @@
 
 import { Button, IconButton, Tooltip } from "@astryxdesign/core";
 import { List, ListItem } from "@astryxdesign/core/List";
+import type { MessageQueueEntryProjection } from "@maka/core/events";
 import type { ConversationCopy } from "./conversation-copy.js";
 import {
   type ComposerQueueEntry,
@@ -31,6 +32,7 @@ export interface ComposerMessageQueueViewProps {
   entries: readonly ComposerQueueEntry[];
   queueRevision?: number;
   copy: ConversationCopy["composer"];
+  onEditEntry?(entry: Pick<MessageQueueEntryProjection, "entryId" | "content">): void | Promise<void>;
   onPromoteEntry?(entryId: string): void | Promise<void>;
   onUpdateEntry?(entryId: string, expectedQueueRevision: number, text: string): void | Promise<void>;
   onDeleteEntry?(entryId: string): void | Promise<void>;
@@ -261,7 +263,7 @@ function QueueDefaultActions({ controller, entry, ...props }: Omit<QueueEntryAct
         variant="ghost"
         size="sm"
         type="button"
-        isDisabled={busy || !queued || props.queueRevision === undefined || !props.onUpdateEntry}
+        isDisabled={busy || !queued || (!props.onEditEntry && (props.queueRevision === undefined || !props.onUpdateEntry))}
         label={props.copy.editQueuedEntry}
         onClick={() => controller.beginEdit(entry)}
       />

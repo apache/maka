@@ -30,6 +30,7 @@ export type ComposerQueueEntry = Omit<MessageQueueEntryProjection, "state"> & {
 
 export interface ComposerQueueActions {
   queueRevision?: number;
+  onEditEntry?(entry: ComposerQueueEntry): void | Promise<void>;
   onUpdateEntry?(entryId: string, expectedQueueRevision: number, text: string): void | Promise<void>;
   onReorderEntries?(entryIds: readonly string[], expectedQueueRevision: number): void | Promise<void>;
 }
@@ -74,7 +75,11 @@ export function useComposerMessageQueueController(
   }
 
   function beginEdit(entry: ComposerQueueEntry): void {
-    if (pendingEntryId || !actions.onUpdateEntry || actions.queueRevision === undefined) return;
+    if (pendingEntryId) return;
+    if (!actions.onUpdateEntry || actions.queueRevision === undefined) {
+      if (actions.onEditEntry) void runAction(entry.entryId, () => actions.onEditEntry?.(entry));
+      return;
+    }
     setEditing({
       entryId: entry.entryId,
       queueRevision: actions.queueRevision,
