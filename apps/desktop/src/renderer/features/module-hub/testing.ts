@@ -41,10 +41,7 @@ export {
   mcpDraftFromConfig,
   mcpWriteFailureMessage,
 } from "./model/mcp-page-model.js";
-export {
-  useModuleHubController,
-  type ModuleHubHostModel,
-} from "./controller/use-module-hub-controller.js";
+export { useModuleHubController } from "./controller/use-module-hub-controller.js";
 export {
   createDailyReviewBridge,
   useDailyReviewController,

@@ -287,6 +287,7 @@ packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
 packages/ui/src/skill-detail.tsx
 packages/ui/src/skills-panel.tsx
+packages/ui/src/status-label.tsx
 packages/ui/src/styles.css
 packages/ui/src/titlebar-session-identity.tsx
 packages/ui/src/toast.tsx
