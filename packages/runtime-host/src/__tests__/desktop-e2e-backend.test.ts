@@ -23,6 +23,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
 import type { HistoryCompactCheckpoint } from '@maka/runtime/history-compact-checkpoint';
 import type { BackendFactoryContext } from '@maka/runtime/session-manager';
+import { createDesktopE2eCheckpoint } from '../test-only/desktop-e2e-checkpoint.js';
 import { DesktopE2eBackend } from '../test-only/desktop-e2e-backend.js';
 
 const input = () => ({
@@ -63,6 +64,14 @@ test('records one deterministic sectioned checkpoint', async () => {
   assert.deepEqual(result, {
     outcome: { kind: 'compacted', checkpointId: checkpoint.checkpointId },
   });
+  assert.equal(checkpoint.version, 2);
+  assert.match(checkpoint.summary, /^## Goal\nDeterministic Desktop E2E context checkpoint\./);
+  assert.equal(checkpoint.summaryFormat, 'sections_v1');
+});
+
+test('builds the same checkpoint without a backend instance', () => {
+  const checkpoint = createDesktopE2eCheckpoint('session-1', [userEvent()]);
+
   assert.equal(checkpoint.version, 2);
   assert.match(checkpoint.summary, /^## Goal\nDeterministic Desktop E2E context checkpoint\./);
   assert.equal(checkpoint.summaryFormat, 'sections_v1');

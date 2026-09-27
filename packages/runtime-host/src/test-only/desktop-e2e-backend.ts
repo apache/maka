@@ -21,9 +21,9 @@ import type {
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
 } from '@maka/core/backend-types';
-import { buildHistoryCompactCheckpoint } from '@maka/runtime/history-compact-checkpoint';
 import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import type { BackendFactoryContext } from '@maka/runtime/session-manager';
+import { createDesktopE2eCheckpoint } from './desktop-e2e-checkpoint.js';
 
 export class DesktopE2eBackend extends FakeBackend {
   constructor(private readonly context: BackendFactoryContext) {
@@ -36,23 +36,7 @@ export class DesktopE2eBackend extends FakeBackend {
       throw new Error('Desktop E2E compaction requires a checkpoint recorder');
     }
 
-    const checkpoint = buildHistoryCompactCheckpoint({
-      sessionId: this.sessionId,
-      coveredRuntimeEvents: input.runtimeContext,
-      summary: [
-        '## Goal',
-        'Deterministic Desktop E2E context checkpoint.',
-        '',
-        '## Progress',
-        '- deterministic compaction exercised',
-        '',
-        '## Next Steps',
-        '1. continue',
-        '',
-        '## Critical Context',
-        '- (none)',
-      ].join('\n'),
-    });
+    const checkpoint = createDesktopE2eCheckpoint(this.sessionId, input.runtimeContext);
     await recordCheckpoint(checkpoint, input.turnId);
     return { outcome: { kind: 'compacted', checkpointId: checkpoint.checkpointId } };
   }
