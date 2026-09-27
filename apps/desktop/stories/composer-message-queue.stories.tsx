@@ -30,6 +30,7 @@ import {
   SessionLocalMessages,
   type ConversationServices,
 } from '../src/renderer/features/conversation';
+import { stubConversationServices } from '../src/renderer/features/conversation/testing';
 import type { DesktopLocalMessage } from '../src/shared/session-local-contract.js';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
@@ -83,37 +84,12 @@ function localDeliveryMessages(state: DeliveryState): DesktopLocalMessage[] {
 
 function localDeliveryServices(state: DeliveryState): ConversationServices {
   let messages = localDeliveryMessages(state);
-  return {
+  return stubConversationServices({
     listMessages: async () => messages,
     cancelMessage: async (_sessionId, messageId) => {
       messages = messages.filter((message) => message.messageId !== messageId);
     },
-    reconcileMessage: async () => undefined,
-    subscribeChanges: () => () => undefined,
-    sessions: {
-      readSnapshot: async () => {
-        throw new Error('Session snapshots are not used in this story');
-      },
-      readExecutionBoundary: async () => {
-        throw new Error('Execution boundary is not used in this story');
-      },
-      promoteQueueEntry: async () => undefined,
-      updateQueueEntry: async () => undefined,
-      retractQueueEntry: async () => undefined,
-      reorderQueueEntries: async () => undefined,
-    },
-    runtimeHosts: { subscribeChanges: () => () => undefined },
-    skills: { listInvocable: async () => [] },
-    workspace: {
-      searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }),
-    },
-    newTasks: {
-      subscribeChanges: () => () => undefined,
-      listInvocableSkills: async () => [],
-      searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }),
-    },
-    mcp: { subscribeChanges: () => () => undefined },
-  };
+  });
 }
 
 const meta = {
@@ -176,8 +152,8 @@ function followUpEntry(entryId: string, text: string): MessageQueueEntryProjecti
 
 /**
  * Local stand-in for the Runtime Host queue projection: promote hands an
- * entry to the active Turn (it leaves the plate), update edits it in place,
- * retract drops it, and reorder applies the drag order. The component contract
+ * entry to the active Turn (it leaves the plate), edit retracts it back into
+ * the draft, retract drops it, and reorder applies the drag order. The component contract
  * (projection in, mutations
  * out) is the real one; only the authority is simulated.
  */
@@ -262,18 +238,12 @@ function QueuedComposer({
         ref={composerRef}
         queuedMessages={deliveryState === 'queued' ? followup : []}
         pendingMessages={[...published.values()]}
-        queuedMessageRevision={1}
         onPromoteQueuedEntry={(entryId) => {
           setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
         }}
-        onUpdateQueuedEntry={(entryId, _expectedQueueRevision, text) => {
-          setFollowup((current) =>
-            current.map((candidate) =>
-              candidate.entryId === entryId
-                ? { ...candidate, content: { ...candidate.content, text, displayText: text } }
-                : candidate,
-            ),
-          );
+        onEditQueuedEntry={(entry) => {
+          setFollowup((current) => current.filter((candidate) => candidate.entryId !== entry.entryId));
+          composerRef.current?.setText(entry.content.displayText ?? entry.content.text);
         }}
         onDeleteQueuedEntry={(entryId) => {
           setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
@@ -296,7 +266,7 @@ function storyFrame(children: ReactNode): ReactElement {
 
 // Real path: mid-turn sends while a quote and a file are staged — the staging
 // drawer holds the queue section above a hairline and the context chips below.
-// Drag follow-ups to reorder; 直接发送 promotes one, 编辑 updates it in place.
+// Drag follow-ups to reorder; 直接发送 promotes one, 编辑 takes it back into the draft.
 export const PendingPlate: Story = {
   args: { deliveryState: 'queued' },
   argTypes: {
@@ -309,13 +279,6 @@ export const PendingPlate: Story = {
     storyFrame(
       <QueuedComposer key={args.deliveryState} deliveryState={args.deliveryState} />,
     ),
-};
-
-// Real path: follow-ups sent mid-turn with nothing staged — the drawer holds
-// the queue section alone and collapses to a "N 条待发送消息" strip.
-export const QueueOnly: Story = {
-  args: { deliveryState: 'queued' },
-  render: () => storyFrame(<QueuedComposer deliveryState="queued" stagedContext={false} />),
 };
 
 // Real path: the user folds the staging slab; every staged item collapses into
@@ -359,32 +322,4 @@ export const OverflowingQueue: Story = {
     });
     await expect(canvas.getAllByText(/^排队跟进/).length).toBe(9);
   },
-};
-
-// Real path: the pencil on a queued row opens an inline editor inside the
-// drawer; Enter commits, Escape cancels.
-export const EditingQueuedEntry: Story = {
-  args: { deliveryState: 'queued' },
-  render: () => storyFrame(<QueuedComposer deliveryState="queued" stagedContext={false} />),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(canvas.getAllByRole('button', { name: '编辑' })[1]!);
-    const editor = await canvas.findByRole('textbox', { name: '编辑' });
-    await expect(editor).toHaveValue('查一下 PR #3526 相关的 session 及其 compaction 诊断记录。');
-    await userEvent.clear(editor);
-    await userEvent.type(editor, '改查 PR #3526 的 session 列表。');
-    await userEvent.keyboard('{Enter}');
-    await waitFor(() => {
-      expect(canvas.getByText('改查 PR #3526 的 session 列表。')).toBeVisible();
-      expect(canvas.queryByRole('textbox', { name: '编辑' })).toBeNull();
-    });
-  },
-};
-
-// Real path: a 720px Desktop window — the smoke runner gives ids containing
-// "narrow" the narrow viewport; rows stay one line and actions keep the
-// trailing edge.
-export const NarrowPendingPlate: Story = {
-  args: { deliveryState: 'queued' },
-  render: () => storyFrame(<QueuedComposer deliveryState="queued" />),
 };

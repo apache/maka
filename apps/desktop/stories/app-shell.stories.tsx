@@ -45,7 +45,7 @@ import {
 import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { deriveMessageQueueProjection } from '../src/renderer/application/contracts/message-queue-projection';
-import { withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
+import { retractQueuedEntryToDraft, withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
 import { AppShellTitlebar } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
@@ -752,7 +752,6 @@ type QueueHost = {
 type QueueHostAction =
   | { type: 'enqueue'; text: string; placement: MessageQueuePlacement }
   | { type: 'promote' | 'retract'; entryId: string }
-  | { type: 'update'; entryId: string; text: string }
   | { type: 'reorder'; entryIds: readonly string[] }
   | { type: 'consume' };
 
@@ -788,11 +787,6 @@ function reduceQueueHost(host: QueueHost, action: QueueHostAction): QueueHost {
     }
     case 'retract':
       return { ...host, revision, steering: without(host.steering, action.entryId), followup: without(host.followup, action.entryId) };
-    case 'update': {
-      const edit = (entry: MessageQueueEntryProjection) =>
-        entry.entryId === action.entryId ? { ...entry, content: { ...entry.content, text: action.text } } : entry;
-      return { ...host, revision, steering: host.steering.map(edit), followup: host.followup.map(edit) };
-    }
     case 'reorder':
       return {
         ...host,
@@ -847,7 +841,10 @@ function QueuedMessageLifecycle() {
   const [startedAt] = useState(Date.now);
   const composerRef = useRef<ComposerHandle>(null);
   const queue = deriveMessageQueueProjection(queueUpdate(host, startedAt));
-  const retract = async (entryId: string) => dispatch({ type: 'retract', entryId });
+  const draftActions = {
+    retract: async (entryId: string) => dispatch({ type: 'retract', entryId }),
+    restoreDraft: (draft: { text: string }) => composerRef.current?.setText(draft.text),
+  };
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8, flexShrink: 0 }}>
@@ -870,24 +867,19 @@ function QueuedMessageLifecycle() {
             { type: 'turn_state', id: 'state-queue', turnId: QUEUE_TURN, ts: startedAt - 20_000, status: 'running' },
           ],
           liveTurns: host.liveTurns,
-          transientMessages: withQueuedSteeringTransients([], queue, {
-            locale: 'zh-CN',
-            retract,
-            restoreDraft: (draft) => composerRef.current?.setText(draft.text),
-          }),
+          transientMessages: withQueuedSteeringTransients([], queue, { ...draftActions, locale: 'zh-CN' }),
         }}
         composer={{
           ref: composerRef,
           queuedMessages: queue.entries,
-          queuedMessageRevision: queue.queueRevision,
           // Plain Enter mid-turn is an ordinary send the Host queues for the
           // next Turn; Cmd/Ctrl+Enter asks for the current one.
           onSend: (text, metadata) => {
             dispatch({ type: 'enqueue', text, placement: metadata?.followUpMode === 'steer' ? 'current_turn' : 'next_turn' });
           },
           onPromoteQueuedEntry: (entryId) => dispatch({ type: 'promote', entryId }),
-          onUpdateQueuedEntry: (entryId, _revision, text) => dispatch({ type: 'update', entryId, text }),
-          onDeleteQueuedEntry: retract,
+          onEditQueuedEntry: (entry) => retractQueuedEntryToDraft(entry, draftActions),
+          onDeleteQueuedEntry: draftActions.retract,
           onReorderQueuedEntries: (entryIds) => dispatch({ type: 'reorder', entryIds }),
         }}
       />

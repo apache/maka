@@ -123,19 +123,6 @@
   flex: 0 0 auto;
 }
 
-.maka-composer-queue-edit {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  border-bottom: var(--border-width-hairline) solid var(--border-strong);
-  outline: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  line-height: inherit;
-  resize: vertical;
-}
-
 .maka-composer-queue-grip {
   display: grid;
   place-items: center;

@@ -306,8 +306,7 @@ export function WorkHubRoot() {
             <WorkHubComposer
               pendingMessages={controller.transientMessages}
               queuedMessages={controller.messageQueue.entries}
-              queuedMessageRevision={controller.messageQueue.revision}
-              onUpdateQueuedEntry={controller.updateQueuedEntry}
+              onEditQueuedEntry={controller.editQueuedEntry}
               onDeleteQueuedEntry={controller.deleteQueuedEntry}
               onPromoteQueuedEntry={controller.promoteQueuedEntry}
               onReorderQueuedEntries={controller.reorderQueuedEntries}

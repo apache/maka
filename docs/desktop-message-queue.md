@@ -35,13 +35,13 @@ Runtime Host already owns the durable message semantics:
 - While a turn is active, a composer submit queues a follow-up. There is no mode switch: Send is always Send.
 - `Cmd+Enter` on macOS (`Ctrl+Enter` on Windows/Linux) steers the draft into the active turn once; while idle it sends normally.
 - `Shift+Enter` and `Alt+Enter` always insert a line break, including during an active turn.
-- Queued follow-ups render in a pending plate above the composer card, in send order (first at the top). Queued steering renders as transcript bubbles instead, where its Edit and Delete actions retract the entry. Per plate entry:
+- Queued follow-ups render in a pending plate above the composer card, in send order (first at the top). Queued steering renders as transcript bubbles instead. Per plate entry:
   - drag the hover grip to reorder the follow-up queue,
   - promote (直接发送 / Send now) to steer the entry into the active turn,
-  - edit to update the entry's text in place (Host CAS on the queue revision),
+  - edit, which works the same as on a transcript bubble,
   - delete to retract the entry.
-- A transcript bubble's Edit retracts the steering entry and restores its full content (text, attachments, directory references, quotes) into the originating Session's composer draft; Delete only retracts.
-- Queue contents and mutations are Runtime Host operations (`turn.message.submit`, `queue.entry.promote`, `queue.entry.retract`, `queue.entry.update`, `queue.entries.reorder`); the renderer mirrors the authoritative projection.
+- Edit, on a plate entry or a transcript bubble, retracts the entry and restores its full content (text, attachments, directory references, quotes) into the originating Session's composer draft, so a half-edited message can never run; resending queues it at the tail. Delete only retracts.
+- Queue contents and mutations are Runtime Host operations (`turn.message.submit`, `queue.entry.promote`, `queue.entry.retract`, `queue.entries.reorder`); the renderer mirrors the authoritative projection.
 - Identical active toasts reuse one toast instead of stacking duplicates.
 
 ## Race Fix

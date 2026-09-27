@@ -24,7 +24,9 @@ import {
   type ComposerHandle,
   type TransientUserMessageProjection,
 } from '@maka/ui';
+import type { MessageQueueEntryProjection } from '@maka/core/events';
 import {
+  retractQueuedEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../application/contracts/transient-message-projection.js';
@@ -59,7 +61,7 @@ export function useSessionMessageQueue(options: {
     ((sessionId: string, draft: RestoredDraftContent) => void) | undefined
   >;
   promoteQueuedEntry: (entryId: string) => Promise<void>;
-  updateQueuedEntry: (entryId: string, expectedQueueRevision: number, text: string) => Promise<void>;
+  editQueuedEntry: (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
   reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
 } {
@@ -121,8 +123,10 @@ export function useSessionMessageQueue(options: {
     restoreDraft,
     draftContextRestorer,
     promoteQueuedEntry: (entryId) => runAction((targetSessionId) => services.sessions.promoteQueueEntry(targetSessionId, entryId)),
-    updateQueuedEntry: (entryId, expectedQueueRevision, text) =>
-      runAction((targetSessionId) => services.sessions.updateQueueEntry(targetSessionId, entryId, expectedQueueRevision, text)),
+    editQueuedEntry: (entry) => runAction((targetSessionId) => retractQueuedEntryToDraft(entry, {
+      retract: (entryId) => services.sessions.retractQueueEntry(targetSessionId, entryId),
+      restoreDraft: (draft) => restoreDraft(targetSessionId, draft),
+    })),
     deleteQueuedEntry: (entryId) => runAction((targetSessionId) => services.sessions.retractQueueEntry(targetSessionId, entryId)),
     reorderQueuedEntries: (entryIds) => runAction((targetSessionId) => services.sessions.reorderQueueEntries(targetSessionId, entryIds)),
   };

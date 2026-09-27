@@ -672,7 +672,7 @@ function AppShellContent({
     restoreDraft: restoreLocalMessageDraft,
     draftContextRestorer,
     promoteQueuedEntry,
-    updateQueuedEntry,
+    editQueuedEntry,
     deleteQueuedEntry,
     reorderQueuedEntries,
   } = queueSurface;
@@ -2335,9 +2335,8 @@ function AppShellContent({
                   onStop={stop}
                   pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}
-                  queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}
-                  onUpdateQueuedEntry={activeId ? updateQueuedEntry : undefined}
+                  onEditQueuedEntry={activeId ? editQueuedEntry : undefined}
                   onDeleteQueuedEntry={activeId ? deleteQueuedEntry : undefined}
                   onReorderQueuedEntries={activeId ? reorderQueuedEntries : undefined}
                   revisionNotice={

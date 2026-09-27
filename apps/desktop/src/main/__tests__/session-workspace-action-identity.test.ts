@@ -28,10 +28,8 @@ import {
   SessionCatalogContext,
 } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { useAppShellSessionWorkspace } from '../../renderer/use-app-shell-session-workspace.js';
-import {
-  ConversationServicesProvider,
-  type ConversationServices,
-} from '../../renderer/features/conversation/index.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 
@@ -56,34 +54,6 @@ function actionKeys(workspace: Workspace): string[] {
   return Object.keys(workspace).filter(
     (key) => typeof (workspace as Record<string, unknown>)[key] === 'function',
   );
-}
-
-function stubConversationServices(): ConversationServices {
-  return {
-    listMessages: async () => [],
-    cancelMessage: async () => undefined,
-    reconcileMessage: async () => undefined,
-    subscribeChanges: () => () => undefined,
-    skills: { listInvocable: async () => [] },
-    sessions: {
-      readSnapshot: async () => {
-        throw new Error('Session snapshot is not used in this test');
-      },
-      readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
-      promoteQueueEntry: async () => undefined,
-      updateQueueEntry: async () => undefined,
-      retractQueueEntry: async () => undefined,
-      reorderQueueEntries: async () => undefined,
-    },
-    runtimeHosts: { subscribeChanges: () => () => undefined },
-    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
-    newTasks: {
-      subscribeChanges: () => () => undefined,
-      listInvocableSkills: async () => [],
-      searchFiles: async () => ({ ok: false, reason: 'no_project' }),
-    },
-    mcp: { subscribeChanges: () => () => undefined },
-  };
 }
 
 describe('session workspace action identity', () => {

@@ -2347,20 +2347,6 @@ const makaBridge = {
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:promoteQueueEntry', sessionId, entryId);
     },
-    updateQueueEntry(
-      sessionId: string,
-      entryId: string,
-      expectedQueueRevision: number,
-      text: string,
-    ): Promise<void> {
-      return invokeSessionRuntimeHost(
-        'sessions:updateQueueEntry',
-        sessionId,
-        entryId,
-        expectedQueueRevision,
-        text,
-      );
-    },
     reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void> {
       return invokeSessionRuntimeHost('sessions:reorderQueueEntries', sessionId, [...entryIds]);
     },

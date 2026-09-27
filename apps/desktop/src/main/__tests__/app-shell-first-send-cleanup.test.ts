@@ -41,14 +41,13 @@ import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   ConversationServicesProvider,
   useAppShellSessionUiState,
-  type ConversationServices,
 } from '../../renderer/features/conversation/index.js';
 import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 import { LocaleProvider, ToastProvider, type LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
-import { prepareTranscriptForSend } from '../../renderer/features/conversation/testing.js';
+import { prepareTranscriptForSend, stubConversationServices } from '../../renderer/features/conversation/testing.js';
 
 import {
   createActionsDeps,
@@ -719,33 +718,7 @@ describe('composer first-send cleanup', () => {
     const { root } = installReactRenderer();
     let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
     const catalog = createSessionCatalogController();
-    const services: ConversationServices = {
-      listMessages: async () => [],
-      cancelMessage: async () => undefined,
-      reconcileMessage: async () => undefined,
-      subscribeChanges: () => () => undefined,
-      skills: { listInvocable: async () => [] },
-      sessions: {
-        readSnapshot: async () => {
-          throw new Error('Session snapshot is not used in this test');
-        },
-        readExecutionBoundary: async () => {
-          throw new Error('Execution boundary is not used in this test');
-        },
-        promoteQueueEntry: async () => undefined,
-        updateQueueEntry: async () => undefined,
-        retractQueueEntry: async () => undefined,
-        reorderQueueEntries: async () => undefined,
-      },
-      runtimeHosts: { subscribeChanges: () => () => undefined },
-      workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
-      newTasks: {
-        subscribeChanges: () => () => undefined,
-        listInvocableSkills: async () => [],
-        searchFiles: async () => ({ ok: false, reason: 'no_project' }),
-      },
-      mcp: { subscribeChanges: () => () => undefined },
-    };
+    const services = stubConversationServices();
     function Probe(): null {
       publication = useAppShellSessionUiState(
         catalog, undefined, deps.activeIdRef,

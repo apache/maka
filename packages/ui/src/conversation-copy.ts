@@ -96,8 +96,6 @@ export interface ConversationCopy {
     queuedMessages: string;
     promoteQueuedEntry: string;
     editQueuedEntry: string;
-    saveQueuedEntry: string;
-    cancelQueuedEntryEdit: string;
     deleteQueuedEntry: string;
     reorderQueuedEntry: string;
     stopLabel: string;
@@ -449,7 +447,7 @@ const CONVERSATION_COPY = {
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
       queuedMessages: '待发送',
-      promoteQueuedEntry: '直接发送', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
+      promoteQueuedEntry: '直接发送', editQueuedEntry: '编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
       addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件', referenceFolder: '引用文件夹',
@@ -573,7 +571,7 @@ const CONVERSATION_COPY = {
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
       queuedMessagesAriaLabel: (count) => `${count} 條待發送訊息`,
       queuedMessages: '待發送',
-      promoteQueuedEntry: '直接傳送', editQueuedEntry: '編輯', saveQueuedEntry: '儲存', cancelQueuedEntryEdit: '取消編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
+      promoteQueuedEntry: '直接傳送', editQueuedEntry: '編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
       addContext: '新增上下文', stagedContext: '附加內容',
       selectModel: '選擇模型', dropToImport: '鬆開以匯入檔案內容', addingAttachment: '正在新增附件', addFileOrDirectory: '新增檔案或目錄', referenceFolder: '引用資料夾',
@@ -697,7 +695,7 @@ const CONVERSATION_COPY = {
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
       queuedMessages: 'queued',
-      promoteQueuedEntry: 'Send now', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
+      promoteQueuedEntry: 'Send now', editQueuedEntry: 'Edit', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
       addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add files', referenceFolder: 'Reference folder',

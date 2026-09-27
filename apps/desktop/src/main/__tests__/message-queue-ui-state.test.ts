@@ -27,7 +27,7 @@ import {
   type TransientUserMessageProjection,
 } from '@maka/ui';
 import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
-import { useSessionMessageQueue } from '../../renderer/features/conversation/testing.js';
+import { stubConversationServices, useSessionMessageQueue } from '../../renderer/features/conversation/testing.js';
 import type { RestoredDraftContent } from '../../renderer/application/contracts/transient-message-projection.js';
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
 import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
@@ -51,23 +51,12 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     ...(messageId === 'root' ? { localDisplayPlacement: 'current_turn' as const } : {}),
   }));
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
-    createElement(ConversationServicesProvider, { services: {
+    createElement(ConversationServicesProvider, { services: stubConversationServices({
       listMessages: async () => messages,
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
       cancelMessage: async (sessionId, messageId) => { cancelled.push([sessionId, messageId]); },
       reconcileMessage: async (sessionId, messageId) => { reconciled.push([sessionId, messageId]); },
-      sessions: {
-        readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
-        readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
-        promoteQueueEntry: async () => undefined, updateQueueEntry: async () => undefined,
-        retractQueueEntry: async () => undefined, reorderQueueEntries: async () => undefined,
-      },
-      runtimeHosts: { subscribeChanges: () => () => {} },
-      skills: { listInvocable: async () => [] },
-      workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
-      newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
-      mcp: { subscribeChanges: () => () => {} },
-    }, children: createElement(SessionLocalMessages, {
+    }), children: createElement(SessionLocalMessages, {
       sessionId: 'session-1',
       publish: (_id, message) => {
         const current = transient.get(message.id);
@@ -176,7 +165,6 @@ test('queue_update stores the snapshot and retires every listed local placeholde
 
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
     ts: 1,
-    queueRevision: 3,
     entries: [steeringEntry, followupEntry],
   });
   assert.equal(transientMessages.size, 0,
@@ -218,7 +206,6 @@ test('queue_update stores the snapshot and retires every listed local placeholde
   assert.equal(transientMessages.size, 0);
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
     ts: 3,
-    queueRevision: 4,
     entries: [nextEntry],
   });
 
@@ -427,7 +414,7 @@ test('complete events deliver the durable context compaction outcome to Desktop'
   ]);
 });
 
-test('editing a queued steering restores content under the owning Session even after navigation', async () => {
+test('editing a queued message retracts it and restores its content under the owning Session', async () => {
   const { root } = installReactRenderer();
   const entry = {
     entryId: 'entry-1', messageId: 'message-1',
@@ -441,6 +428,11 @@ test('editing a queued steering restores content under the owning Session even a
       quotes: [{ text: 'quoted' }],
     },
   };
+  const followUp = {
+    entryId: 'entry-2', messageId: 'message-2',
+    placement: 'next_turn' as const, state: 'queued' as const,
+    content: { text: 'model text', displayText: 'follow up', directoryReferences: [{ hostId: 'h', path: '/repo' }] },
+  };
   const retracted: string[][] = [];
   const restoredDrafts: [string, string][] = [];
   const restoredContext: [string, RestoredDraftContent][] = [];
@@ -450,7 +442,7 @@ test('editing a queued steering restores content under the owning Session even a
   function Probe() {
     surface = useSessionMessageQueue({
       sessionId: 'session-a',
-      queue: { entries: [entry], ts: 1, queueRevision: 2 },
+      queue: { entries: [entry, followUp], ts: 1 },
       transientMessages: [],
       activeSessionId,
     });
@@ -458,27 +450,13 @@ test('editing a queued steering restores content under the owning Session even a
   }
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ToastProvider, { children:
-      createElement(ConversationServicesProvider, { services: {
-        listMessages: async () => [],
-        subscribeChanges: () => () => {},
-        cancelMessage: async () => {},
-        reconcileMessage: async () => {},
+      createElement(ConversationServicesProvider, { services: stubConversationServices({
         sessions: {
-          readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
-          readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
-          promoteQueueEntry: async () => undefined,
-          updateQueueEntry: async () => undefined,
           retractQueueEntry: async (sessionId: string, entryId: string) => {
             retracted.push([sessionId, entryId]);
           },
-          reorderQueueEntries: async () => undefined,
         },
-        runtimeHosts: { subscribeChanges: () => () => {} },
-        skills: { listInvocable: async () => [] },
-        workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
-        newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
-        mcp: { subscribeChanges: () => () => {} },
-      }, children: createElement(Probe) }) })})));
+      }), children: createElement(Probe) }) })})));
   surface.composer.current = {
     setText() {}, appendText() {}, getText: () => '', clearDraft() {},
     setDraft: (key, text) => { restoredDrafts.push([key, text]); },
@@ -501,4 +479,11 @@ test('editing a queued steering restores content under the owning Session even a
     'quotes ride back into the draft');
   assert.deepEqual(restoredDrafts, [['session-a', 'steer it']],
     'the draft lands under the owning Session even while another is active');
+
+  // A queued follow-up row edits the same way: out of the queue, back into the draft.
+  activeSessionId.current = 'session-a';
+  await act(async () => { await surface.editQueuedEntry(followUp); });
+  assert.deepEqual(retracted.at(-1), ['session-a', 'entry-2']);
+  assert.deepEqual(restoredDrafts.at(-1), ['session-a', 'follow up']);
+  assert.equal(restoredContext.at(-1)![1].directoryReferences, followUp.content.directoryReferences);
 });

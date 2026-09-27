@@ -333,15 +333,10 @@ export const Composer = forwardRef<
     stopPending?: boolean;
     pendingMessages?: readonly import('./chat-view.js').TransientUserMessageProjection[];
     queuedMessages?: readonly MessageQueueEntryProjection[];
-    queuedMessageRevision?: number;
     /** Promote a queued follow-up into the active Turn (调整方向). */
     onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
-    /** Update one queued entry in place without changing its order or placement. */
-    onUpdateQueuedEntry?(
-      entryId: string,
-      expectedQueueRevision: number,
-      text: string,
-    ): void | Promise<void>;
+    /** Take a queued entry out of the queue and hand its content back to the draft. */
+    onEditQueuedEntry?(entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>): void | Promise<void>;
     /** Remove one queued entry without restoring it. */
     onDeleteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Reorder the follow-up queue; entryIds is the full intended order. */
@@ -1968,10 +1963,9 @@ export const Composer = forwardRef<
               {!props.hidden && queueCount > 0 ? (
                 <ComposerMessageQueue
                   queuedMessages={queuedMessages}
-                  queueRevision={props.queuedMessageRevision}
                   copy={copy}
                   onPromoteEntry={props.onPromoteQueuedEntry}
-                  onUpdateEntry={props.onUpdateQueuedEntry}
+                  onEditEntry={props.onEditQueuedEntry}
                   onDeleteEntry={props.onDeleteQueuedEntry}
                   onReorderEntries={props.onReorderQueuedEntries}
                 />

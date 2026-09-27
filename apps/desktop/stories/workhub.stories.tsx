@@ -102,7 +102,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
       subscribeUsageChanges: () => () => {},
     },
     retractQueueEntry: async () => {}, promoteQueueEntry: async () => {},
-    updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
+    reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
     queryMessageExecutions: async () => ({ resolutions: [] }),
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},

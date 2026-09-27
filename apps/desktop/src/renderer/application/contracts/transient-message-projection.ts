@@ -44,21 +44,38 @@ export interface RestoredDraftContent {
   quotes?: readonly QuoteRef[];
 }
 
+export interface QueuedEntryDraftActions {
+  retract(entryId: string): Promise<void>;
+  restoreDraft(draft: RestoredDraftContent): void;
+}
+
+/**
+ * Editing any queued message takes it out of the Host queue first, so it cannot
+ * run half-edited, then hands its full content back to the composer. `retract`
+ * reports its own failure and rejects, so a failed edit restores nothing.
+ */
+export async function retractQueuedEntryToDraft(
+  { entryId, content }: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>,
+  actions: QueuedEntryDraftActions,
+): Promise<void> {
+  await actions.retract(entryId);
+  actions.restoreDraft({
+    text: content.displayText ?? content.text,
+    attachments: content.attachments,
+    directoryReferences: content.directoryReferences,
+    quotes: content.quotes,
+  });
+}
+
 /**
  * Queued steering is a thin projection of the Host queue snapshot, not a stored
  * transient: one tail bubble per current_turn entry, appearing and disappearing
- * with `queue` alone. Delete retracts the entry; edit retracts it and hands the
- * content back to the draft. `retract` reports its own failure and rejects, so
- * a failed edit restores nothing.
+ * with `queue` alone.
  */
 export function withQueuedSteeringTransients(
   transientMessages: readonly TransientUserMessage[],
   queue: { readonly entries: readonly MessageQueueEntryProjection[]; readonly ts?: number } | undefined,
-  actions: {
-    locale: UiLocale;
-    retract(entryId: string): Promise<void>;
-    restoreDraft(draft: RestoredDraftContent): void;
-  },
+  actions: QueuedEntryDraftActions & { locale: UiLocale },
 ): TransientUserMessage[] {
   const steering = (queue?.entries ?? []).filter(
     (entry) => entry.placement === 'current_turn',
@@ -67,27 +84,22 @@ export function withQueuedSteeringTransients(
   const copy = getConversationCopy(actions.locale).composer;
   const icon = (glyph: typeof Pencil) => createElement(glyph, { size: ICON_SIZE.control, 'aria-hidden': true });
   const ignore = () => {};
-  const bubbles = steering.map(({ entryId, messageId, content }): TransientUserMessage => ({
-    id: messageId,
+  const bubbles = steering.map((entry): TransientUserMessage => ({
+    id: entry.messageId,
     transientPlacement: 'transcript',
     ts: queue?.ts ?? 0,
-    text: content.displayText ?? content.text,
-    ...(content.attachments && { attachments: [...content.attachments] }),
-    ...(content.directoryReferences && { directoryReferences: content.directoryReferences }),
-    ...(content.quotes && { quotes: [...content.quotes] }),
-    ...(content.inlineReferences && { inlineReferences: [...content.inlineReferences] }),
+    text: entry.content.displayText ?? entry.content.text,
+    ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
+    ...(entry.content.directoryReferences && { directoryReferences: entry.content.directoryReferences }),
+    ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
+    ...(entry.content.inlineReferences && { inlineReferences: [...entry.content.inlineReferences] }),
     deliveryActions: [
       {
         label: copy.editQueuedEntry,
         icon: icon(Pencil),
-        onClick: () => actions.retract(entryId).then(() => actions.restoreDraft({
-          text: content.displayText ?? content.text,
-          attachments: content.attachments,
-          directoryReferences: content.directoryReferences,
-          quotes: content.quotes,
-        }), ignore),
+        onClick: () => retractQueuedEntryToDraft(entry, actions).catch(ignore),
       },
-      { label: copy.deleteQueuedEntry, icon: icon(Trash2), onClick: () => actions.retract(entryId).catch(ignore) },
+      { label: copy.deleteQueuedEntry, icon: icon(Trash2), onClick: () => actions.retract(entry.entryId).catch(ignore) },
     ],
   }));
   const ids = new Set(bubbles.map((message) => message.id));

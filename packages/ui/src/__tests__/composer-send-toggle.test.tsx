@@ -250,11 +250,7 @@ test('keeps Host order visible until the reordered projection arrives', async ()
   assert.ok(container);
   const root = createRoot(container);
   let requestedOrder: readonly string[] | undefined;
-  const updatedEntries: Array<{
-    entryId: string;
-    expectedQueueRevision: number;
-    text: string;
-  }> = [];
+  const editedEntryIds: string[] = [];
   const deletedEntryIds: string[] = [];
 
   try {
@@ -278,10 +274,9 @@ test('keeps Host order visible until the reordered projection arrives', async ()
               state: 'queued' as const,
             })),
           ]}
-          queuedMessageRevision={7}
           onPromoteQueuedEntry={() => undefined}
-          onUpdateQueuedEntry={(entryId, expectedQueueRevision, text) => {
-            updatedEntries.push({ entryId, expectedQueueRevision, text });
+          onEditQueuedEntry={(entry) => {
+            editedEntryIds.push(entry.entryId);
           }}
           onDeleteQueuedEntry={(entryId) => {
             deletedEntryIds.push(entryId);
@@ -314,31 +309,13 @@ test('keeps Host order visible until the reordered projection arrives', async ()
       editButtons[0]?.dispatchEvent(new window.Event('click', { bubbles: true }));
       await Promise.resolve();
     });
-    const editInput = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit"]',
-    );
-    assert.ok(editInput);
-    await act(() => {
-      editInput.value = 'updated first\nsecond line';
-      editInput.dispatchEvent(new window.Event('input', { bubbles: true }));
-    });
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>('[aria-label="Save"]')
-        ?.dispatchEvent(new window.Event('click', { bubbles: true }));
-      await Promise.resolve();
-    });
     await act(async () => {
       container
         .querySelector<HTMLButtonElement>('[aria-label="Delete"]')
         ?.dispatchEvent(new window.Event('click', { bubbles: true }));
       await Promise.resolve();
     });
-    assert.deepEqual(updatedEntries, [{
-      entryId: 'first',
-      expectedQueueRevision: 7,
-      text: 'updated first\nsecond line',
-    }]);
+    assert.deepEqual(editedEntryIds, ['first']);
     assert.deepEqual(deletedEntryIds, ['first']);
     const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
     assert.equal(grips.length, 2);

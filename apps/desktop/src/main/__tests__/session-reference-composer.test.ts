@@ -59,7 +59,6 @@ const readExecutionBoundary = async () => {
 
 const queueStubs = {
   promoteQueueEntry: async () => undefined,
-  updateQueueEntry: async () => undefined,
   retractQueueEntry: async () => undefined,
   reorderQueueEntries: async () => undefined,
 };

@@ -50,6 +50,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   const requests: Array<Parameters<WorkHubServices['answer']>[1]> = [];
   let rootTurn: { turnId: string; runId: string; status: 'running' | 'cancelled' | 'completed' } | undefined;
   const queueMutations: unknown[][] = [];
+  const restoredDrafts: [string, string][] = [];
   const steers: Array<Parameters<WorkHubServices['enqueueMessage']>> = [];
   let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
   const executionQueries: string[][] = [];
@@ -117,7 +118,6 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     },
     retractQueueEntry: async (...input: Parameters<WorkHubServices['retractQueueEntry']>) => { queueMutations.push(['retract', ...input]); },
     promoteQueueEntry: async (...input: Parameters<WorkHubServices['promoteQueueEntry']>) => { queueMutations.push(['promote', ...input]); },
-    updateQueueEntry: async (...input: Parameters<WorkHubServices['updateQueueEntry']>) => { queueMutations.push(['update', ...input]); },
     reorderQueueEntries: async (...input: Parameters<WorkHubServices['reorderQueueEntries']>) => { queueMutations.push(['reorder', ...input]); },
     enqueueMessage: async (...input: Parameters<WorkHubServices['enqueueMessage']>) => { steers.push(input); onSteer?.(input); return steerResult; },
     queryMessageExecutions: async (_id: string, messageIds: readonly string[]) => {
@@ -136,7 +136,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     ...overrides,
   } as unknown as WorkHubServices;
   let submissions = 0;
-  function Probe() { controller = useWorkHubController(() => { submissions++; }, () => {}); return null; }
+  function Probe() { controller = useWorkHubController(() => { submissions++; }, (sessionId, draft) => { restoredDrafts.push([sessionId, draft.text]); }); return null; }
   await act(async () => {
     root.render(createElement(LocaleProvider, { locale: 'en', children:
       createElement(WorkHubServicesProvider, { services }, createElement(Probe)),
@@ -149,7 +149,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     reconnect(epoch = hostEpoch) { hostEpoch = epoch; onPhase('pending'); onPhase('ready'); },
     complete(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'completed' }; projectExecution(); },
     onSteer(handler: typeof onSteer) { onSteer = handler; },
-    queueMutations, steers, setSteerResult(value: typeof steerResult) { steerResult = value; },
+    queueMutations, restoredDrafts, steers, setSteerResult(value: typeof steerResult) { steerResult = value; },
     executionQueries, setExecutionResolutions(value: typeof executionResolutions) { executionResolutions = value; },
     setStopRetractions(ids: string[]) { stopRetractions = ids; },
     sessionId, requests, get admission() { return admission; }, interrupts,
@@ -683,15 +683,16 @@ test('WorkHub sends queue edits, withdrawal and both queue orders to the Host an
   await act(() => h.emit({ type: 'queue_update', id: 'queued', turnId: 'active-turn', ts: 2,
     queueRevision: 7, steering: ['first', 'second'], followup: [], steeringEntries: entries }));
   await act(async () => {
-    await h.controller.updateQueuedEntry('second', 7, 'edited second');
+    await h.controller.editQueuedEntry?.(entries[1]!);
     await h.controller.reorderQueuedEntries(['second', 'first']);
     await h.controller.deleteQueuedEntry('first');
   });
   assert.deepEqual(h.queueMutations, [
-    ['update', h.controller.sessionId, 'second', 7, 'edited second'],
+    ['retract', h.controller.sessionId, 'second'],
     ['reorder', h.controller.sessionId, ['second', 'first']],
     ['retract', h.controller.sessionId, 'first'],
   ]);
+  assert.deepEqual(h.restoredDrafts, [[h.controller.sessionId, 'second']], 'edit hands the retracted text back to the draft');
   assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.entryId), ['first', 'second']);
   await act(() => h.emit({ type: 'queue_update', id: 'updated', turnId: 'active-turn', ts: 3,
     queueRevision: 10, steering: ['edited second'], followup: [], steeringEntries: [{ ...entries[1]!, content: { text: 'edited second' } }] }));

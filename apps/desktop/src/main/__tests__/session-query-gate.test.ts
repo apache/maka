@@ -29,10 +29,8 @@ import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
 } from '../../renderer/composer-mentions.js';
-import {
-  ConversationServicesProvider,
-  type ConversationServices,
-} from '../../renderer/features/conversation/index.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import {
   usePlanModeState,
   type PlanModeState,
@@ -67,38 +65,14 @@ test('query blocking pauses, resumes, and fences automatic Skills and Plan reads
   let planMode: PlanModeState | undefined;
   let skillsUnavailable = false;
 
-  const services: ConversationServices = {
-    listMessages: async () => [],
-    cancelMessage: async () => undefined,
-    reconcileMessage: async () => undefined,
-    subscribeChanges: () => () => undefined,
+  const services = stubConversationServices({
     skills: {
       listInvocable: async () => {
         skillQueries += 1;
         return skillQueries === 1 ? firstSkillQuery.promise : [];
       },
     },
-    sessions: {
-      readSnapshot: async () => {
-        throw new Error('Session snapshot is not used in query gate tests');
-      },
-      readExecutionBoundary: async () => {
-        throw new Error('Execution boundary is not used in query gate tests');
-      },
-      promoteQueueEntry: async () => undefined,
-      updateQueueEntry: async () => undefined,
-      retractQueueEntry: async () => undefined,
-      reorderQueueEntries: async () => undefined,
-    },
-    runtimeHosts: { subscribeChanges: () => () => undefined },
-    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
-    newTasks: {
-      subscribeChanges: () => () => undefined,
-      listInvocableSkills: async () => [],
-      searchFiles: async () => ({ ok: false, reason: 'no_project' }),
-    },
-    mcp: { subscribeChanges: () => () => undefined },
-  };
+  });
 
   (globalThis.window as unknown as { maka: unknown }).maka = {
     sessions: {

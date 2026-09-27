@@ -67,7 +67,6 @@ export interface ConversationServices extends Pick<
     readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
-    updateQueueEntry(sessionId: string, entryId: string, expectedQueueRevision: number, text: string): Promise<void>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
   };

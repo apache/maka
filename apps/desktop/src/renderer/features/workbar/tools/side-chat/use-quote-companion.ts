@@ -77,6 +77,7 @@ import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import {
   mergeTransientMessageProjection,
   reconcileTransientMessages,
+  retractQueuedEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../../application/contracts/transient-message-projection.js';
@@ -188,7 +189,6 @@ export interface UseQuoteCompanionResult {
   transientMessages: readonly TransientUserMessageProjection[];
   /** Host-authoritative pending steering and follow-up messages. */
   queuedMessages: readonly MessageQueueEntryProjection[];
-  queuedMessageRevision: number | undefined;
   liveTurns: LiveTurnBuffer | undefined;
   activeTurn: ReturnType<typeof chatTurnActivity>;
   streaming: boolean;
@@ -227,11 +227,7 @@ export interface UseQuoteCompanionResult {
   /** Queue text for the next companion turn while the current turn continues. */
   queue: (text: string) => Promise<boolean>;
   promoteQueuedEntry: (entryId: string) => Promise<void>;
-  updateQueuedEntry: (
-    entryId: string,
-    expectedQueueRevision: number,
-    text: string,
-  ) => Promise<void>;
+  editQueuedEntry: (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
   reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
@@ -358,7 +354,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
   const [messageQueue, setMessageQueue] = useState<{
     readonly entries: readonly MessageQueueEntryProjection[];
-    readonly queueRevision?: number;
     readonly ts?: number;
   }>({ entries: [] });
   // Reseed reconciliation reads the queue between React flushes, so every
@@ -1635,13 +1630,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     (entryId: string) => runQueueEntryAction((id) => sideChat.promoteQueueEntry(id, entryId)),
     [runQueueEntryAction, sideChat],
   );
-  const updateQueuedEntry = useCallback(
-    (entryId: string, expectedQueueRevision: number, text: string) =>
-      runQueueEntryAction((id) =>
-        sideChat.updateQueueEntry(id, entryId, expectedQueueRevision, text),
-      ),
-    [runQueueEntryAction, sideChat],
-  );
   const deleteQueuedEntry = useCallback(
     async (entryId: string): Promise<void> => {
       const messageId = messageQueue.entries.find((entry) => entry.entryId === entryId)?.messageId;
@@ -1740,12 +1728,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
   );
-  const transientMessages = companion
-    ? withQueuedSteeringTransients(pendingUserMessages, messageQueue, {
-        locale: localeRef.current,
-        retract: deleteQueuedEntry,
-        restoreDraft: (draft) => input.restoreDraft(companion.id, draft),
-      })
+  const queuedEntryDraft = companion
+    ? { retract: deleteQueuedEntry, restoreDraft: (draft: RestoredDraftContent) => input.restoreDraft(companion.id, draft) }
+    : undefined;
+  const transientMessages = queuedEntryDraft
+    ? withQueuedSteeringTransients(pendingUserMessages, messageQueue, { ...queuedEntryDraft, locale: localeRef.current })
     : pendingUserMessages;
   // Inherited model (read-only): the fork's once created, else the source's.
   const activeModel = companion
@@ -1779,7 +1766,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     messages,
     transientMessages,
     queuedMessages: messageQueue.entries,
-    queuedMessageRevision: messageQueue.queueRevision,
     liveTurns,
     activeTurn: chatTurnActivity(execution),
     streaming,
@@ -1797,7 +1783,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     steer,
     queue,
     promoteQueuedEntry,
-    updateQueuedEntry,
+    editQueuedEntry: async (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => {
+      if (queuedEntryDraft) await retractQueuedEntryToDraft(entry, queuedEntryDraft);
+    },
     deleteQueuedEntry,
     reorderQueuedEntries,
     setPermissionMode,

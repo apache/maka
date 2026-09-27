@@ -19,6 +19,7 @@
 
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import {
+  retractQueuedEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../application/contracts/transient-message-projection.js';
@@ -63,7 +64,7 @@ interface SendAttempt {
 }
 interface MessagePresentation {
   transientMessages: TransientUserMessageProjection[];
-  messageQueue: { entries: readonly MessageQueueEntryProjection[]; revision?: number; ts?: number };
+  messageQueue: { entries: readonly MessageQueueEntryProjection[]; ts?: number };
 }
 export function useWorkHubController(
   onSubmit: (() => void) | undefined,
@@ -423,7 +424,7 @@ export function useWorkHubController(
           const ids = new Set(entries.map((entry) => entry.messageId));
           if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
           setMessagePresentation((previous) => ({
-            messageQueue: { entries, revision: event.queueRevision, ts: event.ts },
+            messageQueue: { entries, ts: event.ts },
             transientMessages: previous.transientMessages.filter((message) => !ids.has(message.id)),
           }));
         }
@@ -715,6 +716,9 @@ export function useWorkHubController(
     catch (reason) { report(reason); throw reason; }
   }
   const deleteQueuedEntry = (entryId: string) => mutateQueue((target) => services.retractQueueEntry(target, entryId));
+  const queuedEntryDraft = sessionId
+    ? { retract: deleteQueuedEntry, restoreDraft: (draft: RestoredDraftContent) => restoreDraft(sessionId, draft) }
+    : undefined;
   return {
     services,
     sessionId,
@@ -734,15 +738,13 @@ export function useWorkHubController(
       if (!sessionId) throw new Error('WorkHub Session is unavailable');
       await services.respondToUserQuestion(sessionId, response);
     },
-    transientMessages: sessionId
-      ? withQueuedSteeringTransients(transientMessages, messageQueue, {
-          locale,
-          retract: deleteQueuedEntry,
-          restoreDraft: (draft) => restoreDraft(sessionId, draft),
-        })
+    transientMessages: queuedEntryDraft
+      ? withQueuedSteeringTransients(transientMessages, messageQueue, { ...queuedEntryDraft, locale })
       : transientMessages,
     messageQueue,
-    updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
+    editQueuedEntry: queuedEntryDraft
+      ? (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => retractQueuedEntryToDraft(entry, queuedEntryDraft)
+      : undefined,
     deleteQueuedEntry,
     promoteQueuedEntry: (entryId: string) => mutateQueue((target) => services.promoteQueueEntry(target, entryId)),
     reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => services.reorderQueueEntries(target, entryIds)),

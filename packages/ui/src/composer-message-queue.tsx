@@ -23,7 +23,7 @@ import type { MessageQueueEntryProjection } from '@maka/core/events';
 import { IconButton } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
-import { Check, CornerDownLeft, GripVertical, ICON_SIZE, Pencil, Trash2, X } from './icons.js';
+import { CornerDownLeft, GripVertical, ICON_SIZE, Pencil, Trash2 } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
@@ -34,16 +34,16 @@ type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
 /**
  * The queued follow-up section of the composer staging drawer. It lists
  * follow-up entries — Host-queued and still in flight — so a queued message
- * stays editable, reorderable and deletable until a Turn consumes it.
+ * stays promotable, reorderable and deletable until a Turn consumes it; edit
+ * hands it back to the composer.
  * Steering targets the active Turn and lives in the transcript instead, where
  * its delivery state is message metadata rather than a queue row.
  */
 export interface ComposerMessageQueueProps {
   queuedMessages: readonly ComposerQueueEntry[];
-  queueRevision?: number;
   copy: ConversationCopy['composer'];
   onPromoteEntry?(entryId: string): void | Promise<void>;
-  onUpdateEntry?(entryId: string, expectedQueueRevision: number, text: string): void | Promise<void>;
+  onEditEntry?(entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>): void | Promise<void>;
   onDeleteEntry?(entryId: string): void | Promise<void>;
   onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
 }
@@ -69,8 +69,6 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   props: ComposerMessageQueueProps,
 ) {
   const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
-  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState('');
   const dragEntryId = useRef<string | null>(null);
   const mountedRef = useMountedRef();
   const copy = props.copy;
@@ -80,17 +78,15 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   async function runEntryAction(
     entryId: string,
     action: (() => void | Promise<void>) | undefined,
-  ): Promise<boolean> {
-    if (!action || pendingEntryId) return false;
+  ): Promise<void> {
+    if (!action || pendingEntryId) return;
     setPendingEntryId(entryId);
     try {
       // The caller (app shell) surfaces failures itself; the projection is
       // unchanged on failure, so there is nothing to settle here.
       await action();
-      return true;
     } catch {
       // surfaced by the caller
-      return false;
     } finally {
       if (mountedRef.current) setPendingEntryId(null);
     }
@@ -112,33 +108,6 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     void runEntryAction(fromId, () => props.onReorderEntries?.(ids));
   }
 
-  function beginEdit(entry: ComposerQueueEntry) {
-    if (pendingEntryId || !props.onUpdateEntry || props.queueRevision === undefined) return;
-    setEditingEntryId(entry.entryId);
-    const text = entry.content.displayText ?? entry.content.text;
-    setEditingText(text);
-  }
-
-  async function commitEdit(entryId: string) {
-    const text = editingText.trim();
-    if (!text || props.queueRevision === undefined) return;
-    // CAS against the latest known revision: a conflict surfaces once via the
-    // caller's toast, and an explicit re-save retries against fresh state
-    // instead of dead-locking on the revision captured when editing began.
-    const updated = await runEntryAction(entryId, () =>
-      props.onUpdateEntry?.(entryId, props.queueRevision ?? 0, text)
-    );
-    if (updated && mountedRef.current) {
-      setEditingEntryId(null);
-      setEditingText('');
-    }
-  }
-
-  function cancelEdit() {
-    setEditingEntryId(null);
-    setEditingText('');
-  }
-
   return (
     <div
       className="maka-composer-queue"
@@ -147,12 +116,10 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     >
       <List className="maka-composer-queue-list" density="compact">
         {entries.map((entry) => {
-          const editing = editingEntryId === entry.entryId;
           const local = entry.localMessage;
           const reorderable =
             entry.state === 'queued'
             && !local
-            && !editing
             && Boolean(props.onReorderEntries)
             && pendingEntryId === null;
           return (
@@ -165,29 +132,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
               onDrop={reorderable ? () => dropOn(entry.entryId) : undefined}
             >
               <ListItem
-              label={editing ? (
-                <textarea
-                  autoFocus
-                  className="maka-composer-queue-edit"
-                  aria-label={copy.editQueuedEntry}
-                  rows={1}
-                  value={editingText}
-                  onInput={(event) => setEditingText(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === 'Enter'
-                      && !event.shiftKey
-                      && !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      void commitEdit(entry.entryId);
-                    } else if (event.key === 'Escape') {
-                      event.preventDefault();
-                      cancelEdit();
-                    }
-                  }}
-                />
-              ) : (
+              label={(
                 <span className="maka-composer-queue-text" title={entry.content.displayText ?? entry.content.text}>
                   {entry.content.displayText ?? entry.content.text}
                 </span>
@@ -218,30 +163,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                       label={action.label}
                       tooltip={local.deliveryStatus ? `${local.deliveryStatus} · ${action.label}` : action.label}
                       icon={action.icon} clickAction={action.onClick} />
-                  )) : editing ? (
-                    <>
-                      <IconButton
-                        variant="ghost"
-                        size="sm"
-                        type="button"
-                        isDisabled={pendingEntryId !== null || editingText.trim().length === 0}
-                        label={copy.saveQueuedEntry}
-                        tooltip={copy.saveQueuedEntry}
-                        onClick={() => void commitEdit(entry.entryId)}
-                        icon={<Check size={ICON_SIZE.control} aria-hidden="true" />}
-                      />
-                      <IconButton
-                        variant="ghost"
-                        size="sm"
-                        type="button"
-                        isDisabled={pendingEntryId !== null}
-                        label={copy.cancelQueuedEntryEdit}
-                        tooltip={copy.cancelQueuedEntryEdit}
-                        onClick={cancelEdit}
-                        icon={<X size={ICON_SIZE.control} aria-hidden="true" />}
-                      />
-                    </>
-                  ) : (
+                  )) : (
                     <>
                       <IconButton
                         variant="ghost"
@@ -262,15 +184,13 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                         variant="ghost"
                         size="sm"
                         type="button"
-                        isDisabled={
-                          pendingEntryId !== null
-                          || entry.state !== 'queued'
-                          || props.queueRevision === undefined
-                          || !props.onUpdateEntry
-                        }
+                        isDisabled={pendingEntryId !== null || entry.state !== 'queued' || !props.onEditEntry}
                         label={copy.editQueuedEntry}
                         tooltip={copy.editQueuedEntry}
-                        onClick={() => beginEdit(entry)}
+                        onClick={() => void runEntryAction(
+                          entry.entryId,
+                          props.onEditEntry ? () => props.onEditEntry?.(entry) : undefined,
+                        )}
                         icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
                       />
                       <IconButton
