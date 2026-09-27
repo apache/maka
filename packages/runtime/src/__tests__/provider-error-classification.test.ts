@@ -386,6 +386,17 @@ describe('Provider error classification', () => {
     assert.equal(providerModelFailure(refusedWithDelay).retryAfterMs, undefined);
   });
 
+  test('reads Retry-After from a Headers instance without losing retryability', () => {
+    const error = Object.assign(new Error('provider rejected the request'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      responseHeaders: new Headers({ 'Retry-After': '3' }),
+    });
+    const failure = providerModelFailure(error);
+    assert.equal(failure.retryable, true);
+    assert.equal(failure.retryAfterMs, 3_000);
+  });
+
   test('abort and a spent Codex edge budget override the retryable kinds', () => {
     const aborted = new RetryError({
       message: 'Retry stopped',

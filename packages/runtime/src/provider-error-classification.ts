@@ -244,6 +244,12 @@ function responseHeadersFromError(error: unknown): Record<string, string> | unde
   const value = (error as { responseHeaders?: unknown }).responseHeaders;
   if (typeof value !== 'object' || value === null) return undefined;
   const headers: Record<string, string> = {};
+  if (value instanceof Headers) {
+    value.forEach((header, key) => {
+      headers[key.toLowerCase()] = header;
+    });
+    return headers;
+  }
   for (const [key, header] of Object.entries(value)) {
     if (typeof header === 'string') headers[key.toLowerCase()] = header;
   }

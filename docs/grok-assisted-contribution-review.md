@@ -284,7 +284,11 @@ review; a direct squash revert previously conflicted in 31 paths.
 countdown remain live. The current Runtime/Host suites pass (97 tests) and
 Core/UI countdown suites pass (8 tests), including remaining-time projection
 after reconnect and reduced-motion display. This is a baseline review only;
-the active classification/Host/UI code has not been independently replaced.
+the active Host/UI code has not been independently replaced. A new failing
+classification test showed that a standard `Headers` instance on a provider
+error lost `Retry-After` even though retryability remained true. Header
+extraction now accepts both `Headers` and plain records; the 20 classification
+tests and Biome pass. This is a scoped parsing fix, not a full #3115 rewrite.
 
 #3111's Daily Review fixture still writes through the interactive storage
 authority with nested writer/owner cleanup. Its current archive-seeding test
