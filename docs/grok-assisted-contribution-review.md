@@ -23,8 +23,9 @@
 
 This is a provenance and engineering inventory, not a legal classification or
 an assertion that these changes must be removed. The scope is merged PRs whose
-Grok-assisted work was committed on or after 2026-08-14, the effective date of
-the xAI Acceptable Use Policy change under discussion. The scan matches
+mainline squash commits are dated on or after 2026-08-14, the effective date
+of the xAI Acceptable Use Policy change under discussion. A squash date is
+**not** the date a tool produced the original contribution. The scan matches
 `Generated-by: .*Grok` in commits reachable from `origin/main`, then checks PR
 disclosures for contributions without that trailer. A trailer does not establish
 which individual lines were generated; a PR without one can still disclose use.
@@ -61,6 +62,16 @@ PR #2956 disclosed Grok but merged on 2026-08-13, before the selected date,
 so it is outside this inventory. Closed, unmerged PRs are not in the current
 mainline and are tracked separately: #4809, #4899, #5102, #5342, #5349,
 #5350, and #5497.
+
+The original PR commit histories narrow this initial scope further. #2967 has
+five Grok-tagged original commits, starting on 2026-08-13 and continuing
+through 2026-08-15; it needs commit-level attribution rather than treating the
+whole PR as post-change output. #3123 has a Grok trailer on the squash commit,
+but none of its three original PR commits have that trailer and its original
+PR description has no AI-use disclosure. Confirm that provenance before
+classifying it. #5223 has no Grok-tagged commit but explicitly discloses
+Cursor/Grok assistance in the PR description. The remaining 22 trailer-bearing
+PRs have at least one Grok-tagged original commit dated 2026-08-14 or later.
 
 ## First-pass engineering triage
 
