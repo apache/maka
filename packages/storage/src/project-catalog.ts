@@ -316,24 +316,13 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async touch(projectId: string, path?: string): Promise<ProjectRecord> {
-    let canonicalPath: string | undefined;
-    if (path) {
-      try {
-        canonicalPath = normalize(await realpath(resolve(path)));
-      } catch {
-        throw new ProjectUnavailableError(projectId);
-      }
-    }
+    const requestedPath = path ? await canonicalTouchPath(projectId, path) : undefined;
     const touched = await this.mutate((file) => {
       const project = findProjectById(file.projects, projectId);
       if (!project) throw new ProjectNotFoundError(projectId);
-      const location = canonicalPath
-        ? project.locations.find((item) => item.path === canonicalPath)
-        : [...project.locations].sort(
-            (a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path),
-          )[0];
-      if (canonicalPath && !location) {
-        throw new ProjectPathMismatchError(projectId, canonicalPath);
+      const location = locationForTouch(project, requestedPath);
+      if (requestedPath && !location) {
+        throw new ProjectPathMismatchError(projectId, requestedPath);
       }
       const timestamp = this.now();
       if (location) location.lastUsedAt = timestamp;
@@ -844,6 +833,30 @@ async function isDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function canonicalTouchPath(projectId: string, path: string): Promise<string> {
+  try {
+    return normalize(await realpath(resolve(path)));
+  } catch {
+    throw new ProjectUnavailableError(projectId);
+  }
+}
+
+function locationForTouch(project: PersistedProject, requestedPath?: string) {
+  if (requestedPath) {
+    return project.locations.find((location) => location.path === requestedPath);
+  }
+  return project.locations.reduce<(typeof project.locations)[number] | undefined>(
+    (preferred, location) => {
+      if (!preferred) return location;
+      if (location.lastUsedAt !== preferred.lastUsedAt) {
+        return location.lastUsedAt > preferred.lastUsedAt ? location : preferred;
+      }
+      return location.path.localeCompare(preferred.path) < 0 ? location : preferred;
+    },
+    undefined,
+  );
 }
 
 export interface ResolvedProjectLocation {

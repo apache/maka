@@ -83,6 +83,36 @@ function sessionInput(cwd: string, projectId: string) {
   };
 }
 
+function createNumberedCatalog(storageRoot: string): ProjectCatalog {
+  let nextId = 0;
+  return createProjectCatalog(storageRoot, {
+    createId: () => `project-${++nextId}`,
+    now: () => 1_000,
+  });
+}
+
+async function withNestedRepository(
+  label: string,
+  run: (layout: {
+    base: string;
+    nested: readonly [string, string];
+    outside: readonly [string, string];
+    repository: string;
+  }) => Promise<void>,
+): Promise<void> {
+  const base = await mkdtemp(join(tmpdir(), `${label}-`));
+  const repository = join(base, 'repository');
+  const nested = [join(repository, 'nested-a'), join(repository, 'nested-b')] as const;
+  const outside = [join(base, 'outside-a'), join(base, 'outside-b')] as const;
+  try {
+    await Promise.all([...nested, ...outside].map((path) => mkdir(path, { recursive: true })));
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+    await run({ base, nested, outside, repository });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+}
+
 test('project registration accepts directories but never regular files', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-path-kind-'));
   try {
@@ -191,42 +221,23 @@ test('explicit selection preserves a subfolder while historical paths retain rep
   }
 });
 
-test('registering a nested folder keeps that folder instead of the enclosing repository', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-folder-'));
-  try {
-    const parent = join(base, 'parent-project');
-    const child = join(parent, 'child-project');
-    await mkdir(child, { recursive: true });
-    await execFileAsync('git', ['init', '--quiet'], { cwd: parent });
-    const catalog = createProjectCatalog(join(base, 'storage'), {
-      now: () => 1_000,
-      createId: (() => {
-        let id = 0;
-        return () => `project-${++id}`;
-      })(),
-    });
+test('a selected repository subdirectory owns its catalog identity and touch path', async () => {
+  await withNestedRepository('maka-selected-subdirectory', async (layout) => {
+    const catalog = createNumberedCatalog(join(layout.base, 'storage'));
+    const repositoryProject = await catalog.register(layout.repository);
+    const nestedProject = await catalog.register(layout.nested[0]);
+    const canonicalNested = await realpath(layout.nested[0]);
 
-    const parentProject = await catalog.register(parent);
-    const childProject = await catalog.register(child);
-    const parentPath = await realpath(parent);
-    const childPath = await realpath(child);
-
-    assert.notEqual(childProject.id, parentProject.id);
-    assert.equal(parentProject.preferredPath, parentPath);
-    assert.equal(childProject.preferredPath, childPath);
-    assert.equal(childProject.name, 'child-project');
-
-    // session.create → HostWorkspaceResolver.touch(projectId, preferredPath)
-    const touched = await catalog.touch(childProject.id, childProject.preferredPath);
-    assert.equal(touched.id, childProject.id);
-    assert.equal(touched.preferredPath, childPath);
+    assert.notEqual(nestedProject.id, repositoryProject.id);
+    assert.equal(nestedProject.name, 'nested-a');
+    assert.equal(nestedProject.preferredPath, canonicalNested);
+    assert.equal((await catalog.touch(nestedProject.id, canonicalNested)).id, nestedProject.id);
     await assert.rejects(
-      () => catalog.touch(childProject.id, parentPath),
-      (error) => error instanceof ProjectPathMismatchError && error.projectId === childProject.id,
+      () => catalog.touch(nestedProject.id, layout.repository),
+      (error: unknown) =>
+        error instanceof ProjectPathMismatchError && error.projectId === nestedProject.id,
     );
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+  });
 });
 
 test('registration validates the final canonical path against its boundary', async () => {
@@ -247,56 +258,33 @@ test('registration validates the final canonical path against its boundary', asy
   }
 });
 
-test('relink and relinkWithSessions keep a nested repository directory', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-relink-'));
-  const storage = join(base, 'storage');
-  const sessions = createSessionStore(storage);
-  try {
-    const parent = join(base, 'parent-project');
-    const child = join(parent, 'child-project');
-    const childTwo = join(parent, 'child-two');
-    const elsewhere = join(base, 'elsewhere');
-    const elsewhereTwo = join(base, 'elsewhere-two');
-    await mkdir(child, { recursive: true });
-    await mkdir(childTwo, { recursive: true });
-    await mkdir(elsewhere, { recursive: true });
-    await mkdir(elsewhereTwo, { recursive: true });
-    await execFileAsync('git', ['init', '--quiet'], { cwd: parent });
-    const catalog = createProjectCatalog(storage, {
-      now: () => 1_000,
-      createId: (() => {
-        let id = 0;
-        return () => `project-${++id}`;
-      })(),
-    });
+test('nested relinks preserve identity and move assigned sessions atomically', async () => {
+  await withNestedRepository('maka-nested-relink', async (layout) => {
+    const storage = join(layout.base, 'storage');
+    const catalog = createNumberedCatalog(storage);
+    const sessions = createSessionStore(storage);
+    try {
+      const repositoryProject = await catalog.register(layout.repository);
+      const [plainProject, sessionProject] = await Promise.all(
+        layout.outside.map((path) => catalog.register(path)),
+      );
+      const assigned = await sessions.create(sessionInput(layout.outside[1], sessionProject.id));
 
-    const parentProject = await catalog.register(parent);
-    const original = await catalog.register(elsewhere);
-    const originalSessions = await catalog.register(elsewhereTwo);
-    const childPath = await realpath(child);
-    const childTwoPath = await realpath(childTwo);
-    const assigned = await sessions.create(sessionInput(elsewhereTwo, originalSessions.id));
+      const plainRelink = await catalog.relink(plainProject.id, layout.nested[0]);
+      const sessionRelink = await catalog.relinkWithSessions(sessionProject.id, layout.nested[1]);
 
-    const relinked = await catalog.relink(original.id, child);
-    assert.equal(relinked.id, original.id);
-    assert.notEqual(relinked.id, parentProject.id);
-    assert.equal(relinked.preferredPath, childPath);
-
-    const { project: relinkedSessions, updatedSessionIds } = await catalog.relinkWithSessions(
-      originalSessions.id,
-      childTwo,
-    );
-    assert.equal(relinkedSessions.id, originalSessions.id);
-    assert.notEqual(relinkedSessions.id, parentProject.id);
-    assert.equal(relinkedSessions.preferredPath, childTwoPath);
-    assert.deepEqual(updatedSessionIds, [assigned.id]);
-    const header = await sessions.readHeaderSnapshot(assigned.id);
-    assert.equal(header.projectId, relinkedSessions.id);
-    assert.equal(header.cwd, childTwoPath);
-  } finally {
-    await sessions.close?.();
-    await rm(base, { recursive: true, force: true });
-  }
+      assert.equal(plainRelink.id, plainProject.id);
+      assert.equal(plainRelink.preferredPath, await realpath(layout.nested[0]));
+      assert.equal(sessionRelink.project.id, sessionProject.id);
+      assert.notEqual(sessionRelink.project.id, repositoryProject.id);
+      assert.deepEqual(sessionRelink.updatedSessionIds, [assigned.id]);
+      const reassigned = await sessions.readHeaderSnapshot(assigned.id);
+      assert.equal(reassigned.cwd, await realpath(layout.nested[1]));
+      assert.equal(reassigned.projectId, sessionProject.id);
+    } finally {
+      await sessions.close?.();
+    }
+  });
 });
 
 async function resolveProjectLocationWithoutGit(path: string): Promise<ResolvedProjectLocation> {
