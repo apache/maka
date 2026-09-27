@@ -64,7 +64,10 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
-import { skillInvocationBlockedMessage } from '../session-driver.js';
+import {
+  MakaSessionCatalogIncompleteError,
+  skillInvocationBlockedMessage,
+} from '../session-driver.js';
 import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
@@ -6015,6 +6018,36 @@ Slug openai-work<cursor>
 
     terminal.input('\r');
     await waitFor(() => driver.resumeCalls === 1);
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('/resume reports when current-workspace discovery is incomplete', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new BoundedResumeAvailabilityDriver([]);
+    driver.listSessions = async () => {
+      throw new MakaSessionCatalogIncompleteError(8);
+    };
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    const visibleOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
+    await waitFor(() =>
+      visibleOutput().includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice),
+    );
+    assert.doesNotMatch(visibleOutput(), /No matching sessions/);
+
     terminal.input('/exit');
     terminal.input('\r');
     await run;

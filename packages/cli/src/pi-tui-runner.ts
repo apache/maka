@@ -91,6 +91,7 @@ import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-com
 import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
 import {
   inspectSessionResumeAvailability,
+  MakaSessionCatalogIncompleteError,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
   type MakaSessionDriver,
@@ -3377,7 +3378,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
-    let sessions = await listSessions(
+    const readSessions = async (sessionOptions: MakaSessionListOptions) => {
+      try {
+        return await listSessions(sessionOptions);
+      } catch (error) {
+        if (error instanceof MakaSessionCatalogIncompleteError) {
+          throw new Error(pickerCopy.resumeCatalogIncompleteNotice);
+        }
+        throw error;
+      }
+    };
+    let sessions = await readSessions(
       options.onlyResumable ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd } : {},
     );
     let sessionTree = projectRevisionLinkedSessionTree(
@@ -3551,7 +3562,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           const nextScope = pickerScope === 'current' ? 'all' : 'current';
           void (async () => {
             if (options.onlyResumable) {
-              sessions = await listSessions(
+              sessions = await readSessions(
                 nextScope === 'current'
                   ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd }
                   : { limit: MAX_SESSION_RESUME_CANDIDATES },

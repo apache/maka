@@ -104,9 +104,9 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
-  test('bounds current-workspace scans when no catalog entries match', async () => {
+  test('returns a complete empty result when the catalog ends at the scan bound', async () => {
     const connection = new FakeConnection([]);
-    const catalogSessions = Array.from({ length: 10 * 32 }, (_, index) => {
+    const catalogSessions = Array.from({ length: 8 * 32 }, (_, index) => {
       const cwd = `/other-${index}`;
       return sessionProjection({
         id: `session-${index}`,
@@ -131,6 +131,42 @@ describe('Runtime Host Maka Session driver', () => {
     });
 
     assert.deepEqual(await driver.listSessions({ limit: 200, cwd: '/repo' }), []);
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      8,
+    );
+  });
+
+  test('reports incomplete results when a current-workspace candidate is beyond the scan bound', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 9 * 32 }, (_, index) => {
+      const cwd = index === 8 * 32 ? '/repo' : `/other-${index}`;
+      return sessionProjection({
+        id: `session-${index}`,
+        workspace: { target: { kind: 'host_path', path: cwd }, hostCwd: cwd },
+      });
+    });
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = Math.min(offset + 32, catalogSessions.length);
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    await assert.rejects(driver.listSessions({ limit: 200, cwd: '/repo' }), {
+      name: 'MakaSessionCatalogIncompleteError',
+      scannedPages: 8,
+    });
     assert.equal(
       connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
       8,

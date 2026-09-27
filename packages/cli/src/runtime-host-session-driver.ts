@@ -110,6 +110,7 @@ import type {
   SessionResumeAvailability,
 } from './session-driver.js';
 import {
+  MakaSessionCatalogIncompleteError,
   inspectSessionResumeAvailability,
   skillInvocationBlockedMessage,
 } from './session-driver.js';
@@ -383,6 +384,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
             if (limit !== undefined && sessions.length >= limit) break;
           }
           if (!page.nextCursor || (limit !== undefined && sessions.length >= limit)) {
+            cursor = undefined;
             break;
           }
           cursor = page.nextCursor;
@@ -390,6 +392,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
             throw new Error('Runtime Host Session catalog returned a repeated cursor');
           }
           cursors.add(cursor.cursor);
+        }
+        if (cursor !== undefined && pagesRead === MAX_SESSION_CATALOG_SCAN_PAGES) {
+          throw new MakaSessionCatalogIncompleteError(pagesRead);
         }
         return sessions;
       } catch (error) {

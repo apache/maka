@@ -82,6 +82,7 @@ interface TuiPickerCopy {
   readonly resumeAvailabilityNotice: string;
   readonly resumeStartingNotice: string;
   readonly resumeUnavailableNotice: string;
+  readonly resumeCatalogIncompleteNotice: string;
   readonly selectPickerHint: string;
   readonly providerConfigured: string;
   readonly addAccount: string;
