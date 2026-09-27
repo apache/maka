@@ -172,7 +172,7 @@ import {
   useSessionEventHealthPolling,
   useShellRunUpdates,
 } from './app-shell-effects';
-import * as liveContent from './live-content-seed';
+import * as liveContent from './observation-visibility';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
@@ -1752,12 +1752,12 @@ function AppShellContent({
   );
   const liveContentSeedRef = useRef(liveContentSeed);
   liveContentSeedRef.current = liveContentSeed;
-  const beginObservationSeed = (sessionId: string) => {
+  function beginObservationSeed(sessionId: string) {
     const seed = liveContent.beginLiveContentSeed(liveContentSeedRef.current, sessionId);
     liveContentSeedRef.current = seed.state;
     holdDisplayEvents(sessionId);
     setLiveContentSeed(seed.state);
-    return () => {
+    return function finishObservationSeed() {
       if (!liveContent.ownsLiveContentSeed(liveContentSeedRef.current, seed.token)) return;
       releaseDisplayEvents(sessionId);
       const revealed = liveContent.revealLiveContentSeed(liveContentSeedRef.current, seed.token);
@@ -1765,12 +1765,14 @@ function AppShellContent({
       setLiveContentSeed(revealed);
       void retireCancelledTransientMessages(sessionId);
     };
-  };
+  }
   const observationAuthorityRef = useRef(liveContent.INITIAL_OBSERVATION_AUTHORITY);
   observationAuthorityRef.current = liveContent.reconcileObservationAuthority(
     observationAuthorityRef.current,
-    requestedSessionId,
-    requestedCatalogSession?.profileId,
+    {
+      sessionId: requestedSessionId,
+      profileId: requestedCatalogSession?.profileId,
+    },
   );
   useActiveSessionEvents({
     publishTranscript,

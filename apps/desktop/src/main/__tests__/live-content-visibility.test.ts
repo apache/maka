@@ -27,18 +27,29 @@ import {
   reconcileObservationAuthority,
   revealLiveContentSeed,
   visibleLiveContentGeneration,
-} from '../../renderer/live-content-seed.js';
+} from '../../renderer/observation-visibility.js';
 
 test('observation generations change only when the owning source changes', () => {
   const selected = reconcileObservationAuthority(
     INITIAL_OBSERVATION_AUTHORITY,
-    'session-a',
-    undefined,
+    { sessionId: 'session-a' },
   );
-  const hydrated = reconcileObservationAuthority(selected, 'session-a', 'profile-a');
-  const sameProfile = reconcileObservationAuthority(hydrated, 'session-a', 'profile-a');
-  const changedProfile = reconcileObservationAuthority(sameProfile, 'session-a', 'profile-b');
-  const changedSession = reconcileObservationAuthority(changedProfile, 'session-b', 'profile-b');
+  const hydrated = reconcileObservationAuthority(selected, {
+    sessionId: 'session-a',
+    profileId: 'profile-a',
+  });
+  const sameProfile = reconcileObservationAuthority(hydrated, {
+    sessionId: 'session-a',
+    profileId: 'profile-a',
+  });
+  const changedProfile = reconcileObservationAuthority(sameProfile, {
+    sessionId: 'session-a',
+    profileId: 'profile-b',
+  });
+  const changedSession = reconcileObservationAuthority(changedProfile, {
+    sessionId: 'session-b',
+    profileId: 'profile-b',
+  });
 
   assert.deepEqual(
     [selected.generation, hydrated.generation, sameProfile.generation, changedProfile.generation, changedSession.generation],

@@ -182,20 +182,18 @@ export function createAppShellSessionEventHandlers(options: {
     });
   }
 
-  function holdDisplayEvents(sessionId: string): void {
-    displayBatch.heldSessions.add(sessionId);
-  }
+  const holdDisplayEvents = (sessionId: string): void => void displayBatch.heldSessions.add(sessionId);
 
-  function releaseDisplayEvents(sessionId: string): void {
+  const releaseDisplayEvents = (sessionId: string): void => {
     const queued = takePendingDisplayEvents(sessionId);
     if (queued.length > 0) updateLiveTurn(sessionId, queued);
     displayBatch.heldSessions.delete(sessionId);
-  }
+  };
 
-  function discardDisplayEvents(sessionId: string): void {
+  const discardDisplayEvents = (sessionId: string): void => {
     displayBatch.pendingEvents.delete(sessionId);
     displayBatch.heldSessions.delete(sessionId);
-  }
+  };
 
   function updateLiveTurn(sessionId: string, events: readonly SessionEvent[]): void {
     setLiveTurnBySession((current) => replaceLiveTurns(current, new Map([[sessionId, events]])));
@@ -402,15 +400,16 @@ export function createAppShellSessionEventHandlers(options: {
     }
   }
 
-  const handlers: AppShellSessionEventHandlers = {
-    handleEvent,
-    reconcilePersistedMessages,
-    settleAssistantStreaming,
+  return {
+    handleEvent: (sessionId, event) => handleEvent(sessionId, event),
+    reconcilePersistedMessages: (sessionId, messages) =>
+      reconcilePersistedMessages(sessionId, messages),
+    settleAssistantStreaming: (sessionId, messageId) =>
+      settleAssistantStreaming(sessionId, messageId),
     holdDisplayEvents,
     releaseDisplayEvents,
     discardDisplayEvents,
   };
-  return handlers;
 }
 
 function sessionEventDiagnosticDetails(

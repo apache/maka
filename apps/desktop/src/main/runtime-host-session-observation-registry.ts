@@ -233,11 +233,8 @@ export class RuntimeHostSessionObservationRegistry {
     return [...new Set(restored.filter((sessionId): sessionId is string => !!sessionId))];
   }
 
-  observationSessionIds(): string[] {
-    return Array.from(
-      new Set(Array.from(this.#registrations.values(), ({ sessionId }) => sessionId)),
-    );
-  }
+  observationSessionIds = (): string[] =>
+    Array.from(new Set(Array.from(this.#registrations.values(), ({ sessionId }) => sessionId)));
 
   trackedSessionIds(): string[] {
     return [

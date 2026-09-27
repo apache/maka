@@ -934,10 +934,7 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
 
   const seedPendingAt = timeline.sessionEventIndex('session-1', 'host_observation_pending');
   const seedReadyAt = timeline.sessionEventIndex('session-1', 'host_observation_seed');
-  assert.deepEqual(
-    { announcedPending: seedPendingAt >= 0, seededAfterPending: seedReadyAt > seedPendingAt },
-    { announcedPending: true, seededAfterPending: true },
-  );
+  assert.equal(seedPendingAt >= 0 && seedReadyAt > seedPendingAt, true);
   const seed = timeline.records[seedReadyAt]!.payload as {
     execution: { available: boolean };
     events: unknown[];
@@ -1007,10 +1004,7 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
   t.after(() => registry.close());
   const timeline = createRendererTimeline();
   const sourceIpc = ipcHarness(timeline.record);
-  const sourceHost = connectionHarness('restore-source', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-  });
+  const sourceHost = connectionHarness('restore-source', restorableObservation());
   const sourceCandidate = await createDesktopRuntimeHostCandidate(
     sourceHost.connection,
     deps(sourceIpc),
@@ -1020,18 +1014,15 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
   await sourceCandidate.close();
   timeline.clear();
 
-  const rejectedHost = connectionHarness('restore-failure', {
-    sessionId: 'session-1',
+  const rejectedHost = connectionHarness('restore-failure', restorableObservation({
     subscribeFailure: new Error('restore failed'),
-  });
-  await assert.rejects(
-    createDesktopRuntimeHostCandidate(
-      rejectedHost.connection,
-      { ...deps(ipcHarness()), renderer: timeline.renderer },
-      registry,
-    ),
-    /Failed to restore Session observations: session-1/,
+  }));
+  const rejectedCandidate = createDesktopRuntimeHostCandidate(
+    rejectedHost.connection,
+    { ...deps(ipcHarness()), renderer: timeline.renderer },
+    registry,
   );
+  await assert.rejects(rejectedCandidate, /restore Session observations: session-1/);
   const failureEvents = timeline.sessionEvents('session-1');
   assert.deepEqual(
     [...new Set(failureEvents.map((event) => event.type))].sort(),
@@ -1043,11 +1034,9 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
   );
   timeline.clear();
 
-  const replacementHost = connectionHarness('restore-recovered', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
+  const replacementHost = connectionHarness('restore-recovered', restorableObservation({
     assistantStreams: [textStream('message-1')],
-  });
+  }));
   const replacementCandidate = await createDesktopRuntimeHostCandidate(
     replacementHost.connection,
     { ...deps(ipcHarness()), renderer: timeline.renderer },
@@ -1060,7 +1049,7 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
     { pendingWasSent: true, readyFollowedPending: true },
   );
   await replacementCandidate.close();
-});
+}); // A failed replacement leaves the registry available to the next candidate.
 
 test('drops a stale shared Session observation when Guest access is gone', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
@@ -1582,11 +1571,22 @@ function continuitySnapshot(
   };
 }
 
-function textStream(messageId: string): SessionAssistantStreamIdentity {
-  return {
+const textStream = (messageId: string): SessionAssistantStreamIdentity => ({
     kind: 'text',
     turnId: 'turn-1',
     messageId,
+});
+
+function restorableObservation(
+  overrides: {
+    assistantStreams?: readonly SessionAssistantStreamIdentity[];
+    subscribeFailure?: Error;
+  } = {},
+) {
+  return {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+    ...overrides,
   };
 }
 

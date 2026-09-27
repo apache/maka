@@ -538,18 +538,19 @@ describe('single live-turn handoff', () => {
   });
 
   it('publishes recovery text before returning the session to frame scheduling', () => {
+    const sessionId = 'recovery-session';
     const state = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
-      'session-1': [armLiveTurn('turn-1')],
-    });
+      [sessionId]: [armLiveTurn('turn-1')],
+    } satisfies Record<string, readonly LiveTurnProjection[]>);
     const stateRef = { current: state.get() };
     const frameQueue: Array<() => void> = [];
     const publicationCounts: number[] = [];
-    const handlers = createAppShellSessionEventHandlers({
+    const eventHandlers = createAppShellSessionEventHandlers({
       uiLocale: 'zh-CN',
-      activeIdRef: { current: 'session-1' },
+      activeIdRef: { current: sessionId },
       liveTurnBySessionRef: stateRef,
-      refreshMessages: async () => true,
-      refreshSessions: async () => [],
+      async refreshMessages() { return true; },
+      async refreshSessions() { return []; },
       setLiveTurnBySession(update) {
         state.set(update);
         stateRef.current = state.get();
@@ -562,10 +563,11 @@ describe('single live-turn handoff', () => {
         frameQueue.push(callback);
       },
     });
-    const renderedText = () => state.get()['session-1']?.[0]?.steps[0]?.text?.text;
+    const renderedText = () => state.get()[sessionId]?.[0]?.steps[0]?.text?.text;
+    const emit = (event: SessionEvent) => eventHandlers.handleEvent(sessionId, event);
 
-    handlers.holdDisplayEvents('session-1');
-    handlers.handleEvent('session-1', {
+    eventHandlers.holdDisplayEvents(sessionId);
+    emit({
       type: 'text_delta', id: 'recovered', turnId: 'turn-1', messageId: 'assistant-1',
       ts: 1, startOffset: 0, text: 'restored prefix',
     });
@@ -574,8 +576,8 @@ describe('single live-turn handoff', () => {
       { publications: 1, frames: 0, text: 'restored prefix' },
     );
 
-    handlers.releaseDisplayEvents('session-1');
-    handlers.handleEvent('session-1', {
+    eventHandlers.releaseDisplayEvents(sessionId);
+    emit({
       type: 'text_delta', id: 'continued', turnId: 'turn-1', messageId: 'assistant-1',
       ts: 2, text: ' plus live text',
     });
@@ -588,7 +590,7 @@ describe('single live-turn handoff', () => {
       { publications: publicationCounts.length, text: renderedText() },
       { publications: 2, text: 'restored prefix plus live text' },
     );
-  });
+  }); // Recovery delivery is synchronous only while the hold is active.
 
   it('shares pending display events across handler replacement', () => {
     const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
