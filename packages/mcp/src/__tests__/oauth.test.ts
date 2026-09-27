@@ -29,6 +29,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_CONFIG_VERSION, type McpConfigFile } from '@maka/core/mcp';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import {
   createMemoryMcpOAuthStorage,
   McpClientManager,
@@ -68,7 +69,9 @@ describe('McpClientManager OAuth E2E', () => {
     assert.ok((await storage.get('remote'))?.discovery?.authorizationServerUrl);
 
     const redirectUrl = 'http://127.0.0.1:39999/callback';
-    const start = await manager.startAuthorization('remote', redirectUrl, { state: 'maka-state' });
+    const start = await manager.startAuthorization('remote', redirectUrl, {
+      state: 'maka-state',
+    });
     assert.equal(start.status, 'redirect');
     if (start.status !== 'redirect') return;
     const authorizationUrl = new URL(start.authorizationUrl);
@@ -111,11 +114,16 @@ describe('McpClientManager OAuth E2E', () => {
     const code = location.searchParams.get('code');
     assert.ok(code);
 
-    const status = await manager.finishAuthorization('remote', { code, state: 'maka-state' });
+    const status = await manager.finishAuthorization('remote', {
+      code,
+      state: 'maka-state',
+    });
     assert.equal(status.state, 'connected');
     assert.equal(status.authenticated, true);
     assert.deepEqual(
-      await manager.callTool(bindingFor(manager, 'remote', 'echo'), { value: 'authorized' }),
+      await manager.callTool(bindingFor(manager, 'remote', 'echo'), {
+        value: 'authorized',
+      }),
       {
         content: [{ type: 'text', text: 'authorized' }],
         structuredContent: undefined,
@@ -187,7 +195,9 @@ describe('McpClientManager OAuth E2E', () => {
 
     fixture.rotateAccessToken();
     await assert.rejects(
-      manager.callTool(bindingFor(manager, 'remote', 'echo'), { value: 'revoked' }),
+      manager.callTool(bindingFor(manager, 'remote', 'echo'), {
+        value: 'revoked',
+      }),
     );
     assert.equal(manager.status('remote')?.state, 'needs-auth');
   });
@@ -374,7 +384,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer', id_token: idToken },
+      tokens: {
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+        id_token: idToken,
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -389,7 +403,9 @@ describe('McpClientManager OAuth E2E', () => {
     const fixture = await createOAuthFixture({
       mcpFailureBody: () => 'upstream rejected credential k7#',
     });
-    const manager = new McpClientManager({ oauthStorage: createMemoryMcpOAuthStorage() });
+    const manager = new McpClientManager({
+      oauthStorage: createMemoryMcpOAuthStorage(),
+    });
     managers.push(manager);
     await manager.sync({
       version: MCP_CONFIG_VERSION,
@@ -453,12 +469,141 @@ describe('McpClientManager OAuth E2E', () => {
     assert.equal(manager.status('remote')?.state, 'needs-auth');
   });
 
+  test('clearAuthorization aborts an in-flight reconnect instead of reporting success', async () => {
+    const reconnectStarted = deferred<void>();
+    let holdReconnect = false;
+    const fixture = await createOAuthFixture({
+      holdMcpRequest: async () => {
+        if (!holdReconnect) return false;
+        reconnectStarted.resolve();
+        return true;
+      },
+    });
+    const storage = createMemoryMcpOAuthStorage();
+    await storage.set('remote', {
+      serverUrl: fixture.mcpUrl,
+      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+    });
+    const manager = new McpClientManager({
+      oauthStorage: storage,
+      timeouts: { remoteConnectMs: 300 },
+    });
+    managers.push(manager);
+    await manager.sync(config(fixture.mcpUrl));
+    assert.equal(manager.status('remote')?.state, 'connected');
+
+    holdReconnect = true;
+    const abort = new AbortController();
+    const clearing = manager.clearAuthorization('remote', {
+      signal: abort.signal,
+    });
+    await reconnectStarted.promise;
+    abort.abort(new Error('cancelled authorization reconnect'));
+
+    const settled = await Promise.race([
+      clearing.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+    ]);
+    await assert.rejects(clearing, /cancelled authorization reconnect/u);
+    assert.equal(settled, true, 'abort must settle before the 300ms connect timeout');
+    assert.equal((await storage.get('remote'))?.tokens, undefined);
+    assert.equal(manager.status('remote')?.state, 'disconnected');
+  });
+
+  for (const action of ['start', 'finish'] as const) {
+    test(`${action}Authorization cancels its trailing reconnect with the caller reason`, async () => {
+      const reconnecting = deferred<void>();
+      let holdReconnect = false;
+      const fixture = await createOAuthFixture({
+        holdMcpRequest: async () => {
+          if (!holdReconnect) return false;
+          reconnecting.resolve();
+          return true;
+        },
+        holdRefresh: async () => {
+          holdReconnect = true;
+        },
+      });
+      const memory = createMemoryMcpOAuthStorage();
+      let arm = false;
+      const storage: McpOAuthStorage = {
+        ...memory,
+        set: async (id, record) => {
+          await memory.set(id, record);
+          if (arm && record.tokens) holdReconnect = true;
+        },
+      };
+      const manager = new McpClientManager({
+        oauthStorage: storage,
+        timeouts: { remoteConnectMs: 800 },
+      });
+      managers.push(manager);
+      await manager.sync(config(fixture.mcpUrl));
+      const abort = new AbortController();
+      let operation: Promise<unknown>;
+      if (action === 'start') {
+        const record = await memory.get('remote');
+        await memory.set('remote', {
+          ...record,
+          serverUrl: fixture.mcpUrl,
+          clientInformation: { client_id: 'stored-client' },
+          tokens: {
+            access_token: 'stale-token',
+            token_type: 'Bearer',
+            refresh_token: fixture.refreshToken,
+          },
+        });
+        arm = true;
+        operation = manager.startAuthorization('remote', 'http://127.0.0.1:39995/callback', {
+          signal: abort.signal,
+        });
+      } else {
+        const start = await manager.startAuthorization(
+          'remote',
+          'http://127.0.0.1:39995/callback',
+          { state: 'reconnect-cancel' },
+        );
+        assert.equal(start.status, 'redirect');
+        if (start.status !== 'redirect') return;
+        const consent = await fetch(start.authorizationUrl, { redirect: 'manual' });
+        const code = new URL(consent.headers.get('location')!).searchParams.get('code')!;
+        arm = true;
+        operation = manager.finishAuthorization(
+          'remote',
+          { code, state: 'reconnect-cancel' },
+          { signal: abort.signal },
+        );
+      }
+      const outcome = operation.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await reconnecting.promise;
+      const reason = new Error('cancel OAuth reconnect');
+      abort.abort(reason);
+      const early = await Promise.race([
+        outcome.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+      ]);
+      const error = await outcome;
+      assert.equal(early, true);
+      assert.equal(error, reason);
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+      assert.ok((await memory.get('remote'))?.tokens, 'completed authorization stays committed');
+    });
+  }
+
   test('the probe speaks the current protocol version to strict POST-only servers', async () => {
     const fixture = await createOAuthFixture({
       challengeOnPostOnly: true,
       requireProtocolVersion: LATEST_PROTOCOL_VERSION,
     });
-    const manager = new McpClientManager({ oauthStorage: createMemoryMcpOAuthStorage() });
+    const manager = new McpClientManager({
+      oauthStorage: createMemoryMcpOAuthStorage(),
+    });
     managers.push(manager);
     await manager.sync(config(fixture.mcpUrl));
     assert.equal(manager.status('remote')?.state, 'needs-auth');
@@ -473,7 +618,9 @@ describe('McpClientManager OAuth E2E', () => {
 
   test('a bare 401 on GET does not stop the probe from asking via POST', async () => {
     const fixture = await createOAuthFixture({ bareChallengeOnGet: true });
-    const manager = new McpClientManager({ oauthStorage: createMemoryMcpOAuthStorage() });
+    const manager = new McpClientManager({
+      oauthStorage: createMemoryMcpOAuthStorage(),
+    });
     managers.push(manager);
     await manager.sync(config(fixture.mcpUrl));
     assert.equal(manager.status('remote')?.state, 'needs-auth');
@@ -519,7 +666,9 @@ describe('McpClientManager OAuth E2E', () => {
   });
 
   test('a token endpoint reflecting the PKCE verifier does not leak it', async () => {
-    const fixture = await createOAuthFixture({ reflectVerifierInTokenError: true });
+    const fixture = await createOAuthFixture({
+      reflectVerifierInTokenError: true,
+    });
     const storage = createMemoryMcpOAuthStorage();
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -640,7 +789,9 @@ describe('McpClientManager OAuth E2E', () => {
 
   test('a token endpoint reflecting the authorization code does not leak it', async () => {
     const fixture = await createOAuthFixture({ reflectCodeInTokenError: true });
-    const manager = new McpClientManager({ oauthStorage: createMemoryMcpOAuthStorage() });
+    const manager = new McpClientManager({
+      oauthStorage: createMemoryMcpOAuthStorage(),
+    });
     managers.push(manager);
     await manager.sync(config(fixture.mcpUrl));
 
@@ -654,7 +805,10 @@ describe('McpClientManager OAuth E2E', () => {
     assert.ok(code);
 
     await assert.rejects(
-      manager.finishAuthorization('remote', { code, state: 'code-reflect-state' }),
+      manager.finishAuthorization('remote', {
+        code,
+        state: 'code-reflect-state',
+      }),
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.ok(!error.message.includes(code));
@@ -775,7 +929,11 @@ describe('McpClientManager OAuth E2E', () => {
     assert.ok(iss);
 
     // The genuine issuer passes...
-    const status = await manager.finishAuthorization('remote', { code, iss, state: 'iss-state' });
+    const status = await manager.finishAuthorization('remote', {
+      code,
+      iss,
+      state: 'iss-state',
+    });
     assert.equal(status.state, 'connected');
   });
 
@@ -821,7 +979,10 @@ describe('McpClientManager OAuth E2E', () => {
     const consent = await fetch(start.authorizationUrl, { redirect: 'manual' });
     const code = new URL(consent.headers.get('location') ?? '').searchParams.get('code');
     assert.ok(code);
-    await manager.finishAuthorization('remote', { code, state: 'version-state' });
+    await manager.finishAuthorization('remote', {
+      code,
+      state: 'version-state',
+    });
 
     const record = await storage.get('remote');
     assert.ok(record?.tokens);
@@ -863,7 +1024,10 @@ describe('McpClientManager OAuth E2E', () => {
     // The exchange must refuse to overwrite the externally changed record —
     // and the conflict proves CAS survives the manager's storage wrapper.
     await assert.rejects(
-      manager.finishAuthorization('remote', { code, state: 'cas-conflict-state' }),
+      manager.finishAuthorization('remote', {
+        code,
+        state: 'cas-conflict-state',
+      }),
       /outside/u,
     );
     assert.ok(tokenWriteConflicts >= 1);
@@ -967,7 +1131,10 @@ describe('McpClientManager OAuth E2E', () => {
       manager.sync({
         version: MCP_CONFIG_VERSION,
         mcpServers: {
-          remote: { url: 'https://changed.example/mcp', transport: 'streamable-http' },
+          remote: {
+            url: 'https://changed.example/mcp',
+            transport: 'streamable-http',
+          },
         },
       }),
       /credential store unavailable/u,
@@ -1130,7 +1297,9 @@ describe('McpClientManager OAuth E2E', () => {
     });
     assert.equal(first.status, 'redirect');
     if (first.status !== 'redirect') return;
-    const firstConsent = await fetch(first.authorizationUrl, { redirect: 'manual' });
+    const firstConsent = await fetch(first.authorizationUrl, {
+      redirect: 'manual',
+    });
     const firstCode = new URL(firstConsent.headers.get('location') ?? '').searchParams.get('code');
     assert.ok(firstCode);
 
@@ -1143,12 +1312,17 @@ describe('McpClientManager OAuth E2E', () => {
     assert.equal(second.status, 'redirect');
     if (second.status !== 'redirect') return;
     await assert.rejects(
-      manager.finishAuthorization('remote', { code: firstCode, state: 'round-one' }),
+      manager.finishAuthorization('remote', {
+        code: firstCode,
+        state: 'round-one',
+      }),
       /superseded/u,
     );
 
     // Round 2 completes normally.
-    const secondConsent = await fetch(second.authorizationUrl, { redirect: 'manual' });
+    const secondConsent = await fetch(second.authorizationUrl, {
+      redirect: 'manual',
+    });
     const secondCode = new URL(secondConsent.headers.get('location') ?? '').searchParams.get(
       'code',
     );
@@ -1226,7 +1400,10 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: 'https://mcp.example/mcp',
-      clientInformation: { client_id: 'as-a-client', client_secret: 'as-a-secret' },
+      clientInformation: {
+        client_id: 'as-a-client',
+        client_secret: 'as-a-secret',
+      },
       tokens: { access_token: 'as-a-token', token_type: 'Bearer' },
       discovery: { authorizationServerUrl: 'https://as-a.example' } as never,
     });
@@ -1255,7 +1432,10 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: 'https://old.example/mcp',
-      clientInformation: { client_id: 'old-client', client_secret: 'old-secret' },
+      clientInformation: {
+        client_id: 'old-client',
+        client_secret: 'old-secret',
+      },
       tokens: { access_token: 'old-token', token_type: 'Bearer' },
       discovery: { authorizationServerUrl: 'https://as.example' } as never,
       generation: 3,
@@ -1296,7 +1476,11 @@ describe('McpClientManager OAuth E2E', () => {
     const config: McpConfigFile = {
       version: MCP_CONFIG_VERSION,
       mcpServers: {
-        remote: { url: 'https://mcp.example/mcp', transport: 'streamable-http', enabled: false },
+        remote: {
+          url: 'https://mcp.example/mcp',
+          transport: 'streamable-http',
+          enabled: false,
+        },
       },
     };
     await managerB.sync(config);
@@ -1350,8 +1534,16 @@ describe('McpClientManager OAuth E2E', () => {
     // lands, round B persists a fresh verifier/state. A's abandon must
     // become a no-op instead of CAS-deleting B's pending round.
     const rounds: McpOAuthRecord[] = [
-      { version: 3, codeVerifier: 'round-a-verifier', pendingState: 'round-a-state' },
-      { version: 4, codeVerifier: 'round-b-verifier', pendingState: 'round-b-state' },
+      {
+        version: 3,
+        codeVerifier: 'round-a-verifier',
+        pendingState: 'round-a-state',
+      },
+      {
+        version: 4,
+        codeVerifier: 'round-b-verifier',
+        pendingState: 'round-b-state',
+      },
     ];
     let stored = rounds[0] as McpOAuthRecord;
     let reads = 0;
@@ -1428,7 +1620,10 @@ describe('McpClientManager OAuth E2E', () => {
       manager.sync({
         version: MCP_CONFIG_VERSION,
         mcpServers: {
-          remote: { url: 'https://changed.example/mcp', transport: 'streamable-http' },
+          remote: {
+            url: 'https://changed.example/mcp',
+            transport: 'streamable-http',
+          },
         },
       }),
       /credential store unavailable/u,
@@ -1436,7 +1631,9 @@ describe('McpClientManager OAuth E2E', () => {
     assert.match(manager.status('remote')?.error ?? '', /could not be removed/u);
     // Not just connect(): the interactive paths fail closed too.
     await assert.rejects(
-      manager.startAuthorization('remote', 'http://127.0.0.1:39998/callback', { state: 's' }),
+      manager.startAuthorization('remote', 'http://127.0.0.1:39998/callback', {
+        state: 's',
+      }),
       /blocked/u,
     );
     await assert.rejects(
@@ -1555,6 +1752,8 @@ async function createOAuthFixture(
     /** The token endpoint reflects the authorization code it received into
      * error_description. */
     reflectCodeInTokenError?: boolean;
+    /** Holds the MCP endpoint open until the client aborts the request. */
+    holdMcpRequest?: () => Promise<boolean>;
   } = {},
 ): Promise<OAuthFixture> {
   let accessToken = `token-${randomUUID()}`;
@@ -1573,6 +1772,7 @@ async function createOAuthFixture(
         const authorization = req.headers.authorization;
         if (typeof authorization === 'string') lastAuthorization = authorization;
         mcpRequests.push(typeof authorization === 'string' ? { authorization } : {});
+        if (options.holdMcpRequest && (await options.holdMcpRequest())) return;
         if (options.bareChallengeOnGet && req.method === 'GET') {
           res.writeHead(401, { 'www-authenticate': 'Bearer realm="mcp"' }).end();
           return;
@@ -1603,7 +1803,9 @@ async function createOAuthFixture(
               .end(JSON.stringify({ error: 'unauthorized' }));
             return;
           }
-          const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: undefined,
+          });
           const server = createProtocolServer();
           await server.connect(transport);
           res.once('close', () => {
@@ -1634,7 +1836,9 @@ async function createOAuthFixture(
           res.writeHead(405).end();
           return;
         }
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+        });
         const server = createProtocolServer(
           options.reflectAuthInProtocol ? () => lastAuthorization : undefined,
         );
@@ -1647,7 +1851,10 @@ async function createOAuthFixture(
         return;
       }
       if (url.pathname === '/.well-known/oauth-protected-resource' && req.method === 'GET') {
-        json(res, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+        json(res, {
+          resource: `${origin}/mcp`,
+          authorization_servers: [origin],
+        });
         return;
       }
       if (url.pathname === '/.well-known/oauth-authorization-server' && req.method === 'GET') {
@@ -1810,7 +2017,10 @@ function createProtocolServer(reflect?: () => string): McpServer {
         // A server echoing the credential it was just sent — into the tool
         // metadata the client persists.
         description: reflect ? `Echo text (${reflect()})` : 'Echo text',
-        inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+        inputSchema: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+        },
       },
     ],
   }));

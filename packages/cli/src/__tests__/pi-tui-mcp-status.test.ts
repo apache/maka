@@ -426,17 +426,160 @@ describe('MCP management overlay', () => {
     });
   }
 
+  test('Esc aborts the active MCP action and ignores its late result', async () => {
+    let actionSignal: AbortSignal | undefined;
+    let resolveAction!: (result: TuiMcpActionResult) => void;
+    const actionResult = new Promise<TuiMcpActionResult>((resolve) => {
+      resolveAction = resolve;
+    });
+    const mcp = surface(listSnapshot());
+    mcp.execute = async (_action, options?: { signal?: AbortSignal }) => {
+      actionSignal = options?.signal;
+      return actionResult;
+    };
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: mcp,
+      viewportRows: () => 8,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    overlay.handleInput('t');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(actionSignal?.aborted, false);
+
+    overlay.handleInput('\u001b');
+    assert.equal(actionSignal?.aborted, true);
+    resolveAction({ status: 'tested', test: testResult(true), effect: 'published' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const text = overlay.render(100).map(stripAnsi).join('\n');
+    assert.doesNotMatch(text, /Connection test passed/u);
+    assert.match(text, /filesystem/u);
+  });
+
+  for (const [key, label] of [
+    ['\u001b', 'Esc'],
+    ['\u0003', 'Ctrl-C'],
+  ] as const) {
+    for (const reason of ['cancelled', 'rollback-failed'] as const) {
+      test(`${label} shows the settled ${reason} notice after returning to the server list`, async () => {
+        const mcp = surface(listSnapshot());
+        let signal: AbortSignal | undefined;
+        let finish!: (result: TuiMcpActionResult) => void;
+        mcp.execute = (_action, options) => {
+          signal = options?.signal;
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        };
+        const overlay = new McpManagementOverlay({
+          locale: 'en',
+          surface: mcp,
+          viewportRows: () => 10,
+          onClose: () => undefined,
+          onChange: () => undefined,
+        });
+        overlay.handleInput('t');
+        assert.match(overlay.render(120).map(stripAnsi).join('\n'), /Esc\/Ctrl-C Cancel/u);
+        overlay.handleInput(key);
+        assert.equal(signal?.aborted, true);
+        assert.match(overlay.render(120).map(stripAnsi).join('\n'), /waiting for cleanup/u);
+        finish({ status: 'failed', reason });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const text = overlay.render(140).map(stripAnsi).join('\n');
+        assert.ok(text.includes(TUI_COPY_RESOURCES['mcp-status'].en.editor.results[reason]));
+        assert.match(text, /filesystem/u);
+      });
+    }
+  }
+
+  test('cancelled cleanup cannot replace a newer action or editor view', async () => {
+    for (const next of ['action', 'editor'] as const) {
+      const mcp = surface(listSnapshot());
+      const finish: Array<(result: TuiMcpActionResult) => void> = [];
+      mcp.execute = () => new Promise((resolve) => finish.push(resolve));
+      const overlay = new McpManagementOverlay({
+        locale: 'en',
+        surface: mcp,
+        viewportRows: () => 10,
+        onClose: () => undefined,
+        onChange: () => undefined,
+      });
+      overlay.handleInput('t');
+      overlay.handleInput('\u001b');
+      overlay.handleInput(next === 'action' ? 'r' : 'a');
+      finish[0]!({ status: 'failed', reason: 'rollback-failed' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const text = overlay.render(120).map(stripAnsi).join('\n');
+      assert.doesNotMatch(text, /cleanup failed/u);
+      assert.match(text, next === 'action' ? /Reconnecting MCP server/u : /Add MCP server/u);
+      if (next === 'action') {
+        finish[1]!({ status: 'applied', effect: 'published' });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.match(
+          overlay.render(120).map(stripAnsi).join('\n'),
+          /Configuration saved and tools refreshed/u,
+        );
+      } else {
+        overlay.handleInput('\u001b');
+        assert.doesNotMatch(overlay.render(120).map(stripAnsi).join('\n'), /cleanup failed/u);
+      }
+    }
+  });
+
+  test('a pending commit shows its final outcome without replacing a newer view', async () => {
+    for (const openEditor of [false, true]) {
+      let finish!: (result: TuiMcpActionResult) => void;
+      const completion = new Promise<TuiMcpActionResult>((resolve) => {
+        finish = resolve;
+      });
+      const mcp = surface(listSnapshot());
+      mcp.execute = async () => ({ status: 'pending', reason: 'commit-pending', completion });
+      const overlay = new McpManagementOverlay({
+        locale: 'en',
+        surface: mcp,
+        viewportRows: () => 10,
+        onClose: () => undefined,
+        onChange: () => undefined,
+      });
+      overlay.handleInput(' ');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.match(
+        overlay.render(140).map(stripAnsi).join('\n'),
+        /still being saved and cannot be cancelled/u,
+      );
+      if (openEditor) overlay.handleInput('a');
+      finish({ status: 'applied', effect: 'published' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const text = overlay.render(140).map(stripAnsi).join('\n');
+      assert.match(
+        text,
+        openEditor ? /Add MCP server/u : /Configuration saved and tools refreshed/u,
+      );
+      assert.doesNotMatch(text, /still being saved and cannot be cancelled/u);
+    }
+  });
+
   const resultCopy = TUI_COPY_RESOURCES['mcp-status'].en.editor.results;
   const RESULT_CASES: readonly [TuiMcpActionResult, keyof typeof resultCopy][] = [
+    [
+      { status: 'pending', reason: 'commit-pending', completion: new Promise(() => undefined) },
+      'commit-pending',
+    ],
     [{ status: 'conflict', reason: 'exists' }, 'exists'],
     [{ status: 'conflict', reason: 'stale_config' }, 'stale_config'],
     [{ status: 'conflict', reason: 'stale_edit' }, 'stale_edit'],
     [{ status: 'conflict', reason: 'stale_import' }, 'stale_import'],
     [{ status: 'conflict', reason: 'missing' }, 'missing'],
     [{ status: 'failed', reason: 'closed' }, 'closed'],
+    [{ status: 'failed', reason: 'cancelled' }, 'cancelled'],
+    [{ status: 'failed', reason: 'commit-in-progress' }, 'commit-in-progress'],
     [{ status: 'failed', reason: 'invalid-config' }, 'invalid-config'],
     [{ status: 'failed', reason: 'credential-cleanup-failed' }, 'credential-cleanup-failed'],
     [{ status: 'failed', reason: 'persist-failed' }, 'persist-failed'],
+    [{ status: 'failed', reason: 'rollback-failed' }, 'rollback-failed'],
     [
       {
         status: 'failed',

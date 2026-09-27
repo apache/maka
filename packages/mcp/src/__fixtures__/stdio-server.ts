@@ -22,7 +22,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { installStdioFixtureEvents } from './stdio-fixture-events.js';
 
-installStdioFixtureEvents('legacy');
+const recordFixtureEvent = installStdioFixtureEvents('legacy');
 
 if (process.argv.includes('--crash')) {
   process.stderr.write('fixture startup failed: deliberate diagnostic\n');
@@ -57,6 +57,10 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async ({ params }) => {
+  if (process.argv.includes('--slow-tool-list')) {
+    recordFixtureEvent('tools-list');
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
+  }
   if (process.argv.includes('--schema-annotations')) {
     return {
       tools: [

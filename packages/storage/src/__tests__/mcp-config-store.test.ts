@@ -18,14 +18,16 @@
  */
 
 import assert from 'node:assert/strict';
-import { fork } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
+import { promisify } from 'node:util';
 import { MCP_CONFIG_VERSION, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import {
   createMcpConfigStore,
+  McpConfigRevisionConflictError,
   normalizeMcpConfig,
   normalizeMcpImport,
 } from '../mcp-config-store.js';
@@ -69,7 +71,9 @@ test('creates and atomically updates a Claude-compatible mcp.json', async () => 
       : undefined,
     'npx',
   );
-  assert.deepEqual(JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8')), next);
+  const document = JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8'));
+  assert.equal(typeof document._makaWriteRevision, 'string');
+  assert.deepEqual(normalizeMcpConfig(document), next);
   if (process.platform !== 'win32')
     assert.equal((await stat(join(root, 'mcp.json'))).mode & 0o777, 0o600);
   await store.remove('filesystem');
@@ -291,6 +295,85 @@ test('two independent stores preserve concurrent additions to one workspace', as
   );
 });
 
+test('transaction receipts permit compensation of their own write after reopening the store', async () => {
+  const root = await tempRoot();
+  const path = join(root, 'mcp.json');
+  const legacy = '{"version":1,"mcpServers":{"docs":{"command":"server"}}}\n';
+  await writeFile(path, legacy);
+  const store = createMcpConfigStore(root);
+  const previous = await store.get();
+  assert.equal(await readFile(path, 'utf8'), legacy);
+  let revision = '';
+  await store.transform((current, transaction) => {
+    assert.ok(transaction);
+    revision = transaction.writeRevision;
+    current.mcpServers.docs.enabled = false;
+    return current;
+  });
+  assert.equal(JSON.parse(await readFile(path, 'utf8'))._makaWriteRevision, revision);
+  const restored = await createMcpConfigStore(root).transform((_current, transaction) => {
+    assert.ok(transaction);
+    transaction.assertRevision(revision);
+    return previous;
+  });
+  assert.deepEqual(restored, previous);
+  assert.notEqual(JSON.parse(await readFile(path, 'utf8'))._makaWriteRevision, revision);
+});
+
+for (const writer of ['process', 'external-document'] as const) {
+  test(`transaction guard rejects a same-value ${writer} write before compensation effects`, async () => {
+    const root = await tempRoot();
+    const path = join(root, 'mcp.json');
+    const store = createMcpConfigStore(root);
+    let revision = '';
+    const committed = await store.transform((current, transaction) => {
+      assert.ok(transaction);
+      revision = transaction.writeRevision;
+      current.mcpServers.docs = { command: 'server', enabled: false };
+      return current;
+    });
+    if (writer === 'process') {
+      const moduleUrl = new URL('../mcp-config-store.js', import.meta.url).href;
+      await promisify(execFile)(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `import { createMcpConfigStore } from ${JSON.stringify(moduleUrl)};
+         await createMcpConfigStore(process.argv[1]).upsert('docs', {
+           command: 'server', enabled: false,
+         });`,
+          root,
+        ],
+        { timeout: 10_000 },
+      );
+    } else {
+      // Editors/older clients may omit the internal metadata altogether.
+      await writeFile(path, JSON.stringify(committed));
+    }
+    const winningDocument = await readFile(path, 'utf8');
+    assert.notEqual(JSON.parse(winningDocument)._makaWriteRevision, revision);
+    let effects = 0;
+    await assert.rejects(
+      store.transform((current, transaction) => {
+        assert.ok(transaction);
+        transaction.assertRevision(revision);
+        effects += 1;
+        current.mcpServers.docs.enabled = true;
+        return current;
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof McpConfigRevisionConflictError);
+        assert.deepEqual(error.current, committed);
+        return true;
+      },
+    );
+    assert.equal(effects, 0);
+    assert.equal(await readFile(path, 'utf8'), winningDocument);
+    assert.deepEqual(await store.get(), committed);
+  });
+}
+
 test('a new store commits after a killed MCP config writer releases its native lock', async (t) => {
   const root = await tempRoot();
   const holder = fork(new URL('./fixtures/mcp-config-lock-holder.js', import.meta.url), [root], {
@@ -343,7 +426,7 @@ test('serializes concurrent updates without corrupting the file', async () => {
     Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`s-${index}`, `cmd-${index}`])),
   );
   const text = await readFile(join(root, 'mcp.json'), 'utf8');
-  assert.deepEqual(JSON.parse(text), saved);
+  assert.deepEqual(normalizeMcpConfig(JSON.parse(text)), saved);
 });
 
 test('rejects corrupt files and unsafe or invalid configs', async () => {
