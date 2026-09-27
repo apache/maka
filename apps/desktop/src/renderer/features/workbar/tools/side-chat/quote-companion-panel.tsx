@@ -40,7 +40,6 @@ import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
 import { preflightAttachmentItems } from '../../../../attachment-preflight';
-import { toComposerIngestItems } from '../../../../composer-attachments';
 import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import { useAppShellTurnPresentation } from '../../../../application/contracts/turn-presentation.js';
 import {
@@ -314,12 +313,10 @@ export function QuoteCompanionPanel(props: {
                     // boundary, not on the hook's optimistic return: an unknown
                     // outcome keeps them staged for retry (#4804).
                     const submitted = pendingAttachments;
-                    const submittedItems =
-                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
                     return companion.steer(
                       text,
-                      submittedItems,
-                      submittedItems
+                      submitted,
+                      submitted.length > 0
                         ? () => clearSubmittedAttachments(submitted)
                         : undefined,
                     );
@@ -336,12 +333,10 @@ export function QuoteCompanionPanel(props: {
                     }
                     // Same admission-boundary retirement as `steer` above.
                     const submitted = pendingAttachments;
-                    const submittedItems =
-                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
                     const accepted = await companion.send(
                       text,
-                      submittedItems,
-                      submittedItems
+                      submitted,
+                      submitted.length > 0
                         ? () => clearSubmittedAttachments(submitted)
                         : undefined,
                     );

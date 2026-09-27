@@ -21,6 +21,7 @@ import type { SessionInspectorService } from '../../application/contracts/sessio
 export type { SessionInspectorService, SessionTracePage, SessionUsageSummary } from '../../application/contracts/session-inspector/service.js';
 
 import type {
+  AttachmentRef,
   MessageQueuePlacement,
   QuoteRef,
   SessionEvent,
@@ -61,6 +62,12 @@ export type WorkbarUnsubscribe = () => void;
 export type WorkbarIngestInput =
   | { approvalId: string; name: string; mimeType?: string }
   | { file: File };
+
+/** A send's attachments: new files to ingest, and Host attachments a restored draft already owns. */
+export interface WorkbarSubmittedAttachments {
+  attachmentItems?: WorkbarIngestInput[];
+  retainedAttachments?: AttachmentRef[];
+}
 
 export interface WorkbarReviewService {
   read(input: {
@@ -226,8 +233,7 @@ export interface SideChatSessionPort {
       turnId: string;
       text: string;
       quotes?: QuoteRef[];
-      attachmentItems?: WorkbarIngestInput[];
-    },
+    } & WorkbarSubmittedAttachments,
   ): Promise<SideChatSendResult>;
   stop(
     sessionId: string,
@@ -238,7 +244,7 @@ export interface SideChatSessionPort {
     placement: MessageQueuePlacement,
     text: string,
     admissionId: string,
-    content?: { quotes?: QuoteRef[]; attachmentItems?: WorkbarIngestInput[] },
+    content?: { quotes?: QuoteRef[] } & WorkbarSubmittedAttachments,
   ): Promise<SideChatFollowUpResult>;
   queryMessageExecutions(
     sessionId: string,

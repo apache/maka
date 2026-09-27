@@ -26,7 +26,7 @@ import {
   type ComposerProps,
 } from '@maka/ui';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
-import { toComposerIngestItems } from '@maka/ui/composer-attachments';
+import { toSubmittedAttachments } from '@maka/ui/composer-attachments';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import type { AttachmentRef, FollowUpMode } from '@maka/core/events';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
@@ -113,9 +113,10 @@ export const WorkHubComposer = forwardRef<ComposerHandle, WorkHubComposerProps>(
         const attachments: AttachmentRef[] = [];
         for (const item of snapshot) {
           const key = `${scope}:${item.stagingKey}`;
-          let attachment = uploaded.current.get(key);
+          const { attachmentItems = [], retainedAttachments = [] } = toSubmittedAttachments([item]);
+          let attachment = retainedAttachments[0] ?? uploaded.current.get(key);
           if (!attachment) {
-            [attachment] = await services.prepareAttachments(sessionId, toComposerIngestItems([item]));
+            [attachment] = await services.prepareAttachments(sessionId, attachmentItems);
             if (!attachment) throw new Error(t.attachmentUploadFailed);
             uploaded.current.set(key, attachment);
           }

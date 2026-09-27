@@ -92,6 +92,7 @@ export function createDesktopWorkbarServices(
         // with its structured content (#4804).
         ...(content?.quotes ? { quotes: content.quotes } : {}),
         ...(content?.attachmentItems ? { attachmentItems: content.attachmentItems } : {}),
+        ...(content?.retainedAttachments ? { retainedAttachments: content.retainedAttachments } : {}),
       },
       { waitForHostAdmission: true },
     );

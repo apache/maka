@@ -58,7 +58,7 @@ import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import { getShellCopy } from '../../../../locales/shell-copy.js';
 import { createObservableState } from '../../../../application/contracts/session-catalog/observable-state.js';
-import type { WorkbarIngestInput } from '../../ports.js';
+import { toSubmittedAttachments, type PendingAttachment } from '@maka/ui/composer-attachments';
 import {
   abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
@@ -213,7 +213,7 @@ export interface UseQuoteCompanionResult {
    *  can retire submitted attachments on the same boundary as the quotes. */
   send: (
     text: string,
-    attachmentItems?: WorkbarIngestInput[],
+    attachments?: readonly PendingAttachment[],
     onAdmitted?: () => void,
   ) => Promise<boolean>;
   /** Insert text — or a structured-only quote/attachment — into the active
@@ -221,7 +221,7 @@ export interface UseQuoteCompanionResult {
    *  confirmed-admission boundary as `send`. */
   steer: (
     text: string,
-    attachmentItems?: WorkbarIngestInput[],
+    attachments?: readonly PendingAttachment[],
     onAdmitted?: () => void,
   ) => Promise<boolean>;
   /** Queue text for the next companion turn while the current turn continues. */
@@ -1192,7 +1192,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const send = useCallback(
     async (
       text: string,
-      attachmentItems?: WorkbarIngestInput[],
+      attachments?: readonly PendingAttachment[],
       onAdmitted?: () => void,
     ): Promise<boolean> => {
       const trimmed = text.trim();
@@ -1203,7 +1203,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       if (
         !mountedRef.current ||
-        (!trimmed && quoteSnapshot.quotes.length === 0 && !attachmentItems?.length) ||
+        (!trimmed && quoteSnapshot.quotes.length === 0 && !attachments?.length) ||
         submitLockRef.current ||
         compactionRequestInFlightRef.current ||
         activeTurnIdRef.current ||
@@ -1318,7 +1318,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         turnId,
         text: trimmed,
         quotes: quoteSnapshot.quotes.length > 0 ? [...quoteSnapshot.quotes] : undefined,
-        ...(attachmentItems?.length ? { attachmentItems } : {}),
+        ...(attachments?.length ? { attachments: toSubmittedAttachments(attachments) } : {}),
         onForkCreated: () => {},
         onForkCleanupSucceeded: (sessionId) =>
           onForkVisibilityChangeRef.current?.({
@@ -1480,7 +1480,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const submitFollowUp = useCallback(async (
     text: string,
     placement: MessageQueuePlacement,
-    structured?: { attachmentItems?: WorkbarIngestInput[]; onAdmitted?: () => void },
+    structured?: { attachments?: readonly PendingAttachment[]; onAdmitted?: () => void },
   ): Promise<boolean> => {
     const id = companionIdRef.current;
     const trimmed = text.trim();
@@ -1490,7 +1490,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     const quoteSnapshot =
       placement === 'current_turn' ? snapshotCompanionQuotes(panelId, pendingQuotes) : null;
     const hasStructuredContent =
-      (quoteSnapshot?.quotes.length ?? 0) > 0 || (structured?.attachmentItems?.length ?? 0) > 0;
+      (quoteSnapshot?.quotes.length ?? 0) > 0 || (structured?.attachments?.length ?? 0) > 0;
     if (
       !mountedRef.current ||
       !id ||
@@ -1531,9 +1531,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         ...(quoteSnapshot && quoteSnapshot.quotes.length > 0
           ? { quotes: [...quoteSnapshot.quotes] }
           : {}),
-        ...(structured?.attachmentItems?.length
-          ? { attachmentItems: structured.attachmentItems }
-          : {}),
+        ...toSubmittedAttachments(structured?.attachments ?? []),
       });
       if (!mountedRef.current) return false;
       if (placement === 'current_turn' && (await admission.stopPromise) === 'confirmed') {
@@ -1609,9 +1607,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const steer = useCallback(
     (
       text: string,
-      attachmentItems?: WorkbarIngestInput[],
+      attachments?: readonly PendingAttachment[],
       onAdmitted?: () => void,
-    ) => submitFollowUp(text, 'current_turn', { attachmentItems, onAdmitted }),
+    ) => submitFollowUp(text, 'current_turn', { attachments, onAdmitted }),
     [submitFollowUp],
   );
   const queue = useCallback(
