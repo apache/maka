@@ -23,6 +23,7 @@ import json
 import os
 import re
 import time
+from ipaddress import IPv6Address
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -244,12 +245,19 @@ def apply_http_policy(flow: object, raw_url: str) -> None:
 
 def connect_target_url(flow: object) -> str:
     request = flow.request
-    host = (getattr(request, "host", "") or "").strip()
-    if not host:
+    host = getattr(request, "host", None)
+    if not isinstance(host, str) or not host or host != host.strip():
         raise ValueError("empty CONNECT host")
-    if ":" in host and not host.startswith("["):
+    if host.startswith("[") and host.endswith("]"):
+        IPv6Address(host[1:-1])
+    elif ":" in host:
+        IPv6Address(host)
         host = f"[{host}]"
+    elif re.search(r"[\s/@?#\\\[\]]", host):
+        raise ValueError("invalid CONNECT host")
     port = getattr(request, "port", None)
+    if port is not None and (type(port) is not int or not 1 <= port <= 65535):
+        raise ValueError("invalid CONNECT port")
     if port in (None, 443):
         return f"https://{host}/"
     if port == 80:

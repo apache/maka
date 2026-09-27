@@ -204,6 +204,29 @@ class EgressFilterTest(unittest.TestCase):
             MODULE.http_connect(flow)
             self.assertEqual(flow.response["status"], 503)
 
+    def test_connect_rejects_malformed_authorities_and_ports(self) -> None:
+        self._install_response_stub()
+        with tempfile.TemporaryDirectory() as directory:
+            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
+            for host, port in (
+                ("tbench.ai@safe.example", 443),
+                ("safe.example/path", 443),
+                ("safe.example", 0),
+                ("safe.example", 65536),
+            ):
+                with self.subTest(host=host, port=port):
+                    flow = SimpleNamespace(
+                        request=SimpleNamespace(host=host, port=port), response=None
+                    )
+                    MODULE.http_connect(flow)
+                    self.assertEqual(flow.response["status"], 503)
+
+            valid = SimpleNamespace(
+                request=SimpleNamespace(host="2001:db8::1", port=8443), response=None
+            )
+            MODULE.http_connect(valid)
+            self.assertIsNone(valid.response)
+
     def test_tcp_start_kills_raw_tunnels_and_records_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"

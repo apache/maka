@@ -354,10 +354,13 @@ and the Electron renderer-reload E2E passes in this branch.
 - #3008: a new test exposed that CONNECT classification trusted `pretty_host`
   over the actual tunnel destination, allowing a spoofed Host header to hide a
   blocklisted target. It now classifies `request.host`; missing targets fail
-  closed. Python 3.13 Eval tests (90 pass, 13 skips) passed. A live mitmproxy
-  regression was added but not run locally because the Docker daemon did not
-  respond. #3017 owns the later raw-TCP closure behavior; do not roll that
-  implementation back as part of #3008.
+  closed. A further ablation showed malformed CONNECT authorities (userinfo
+  and path delimiters) and out-of-range ports were still accepted as benign
+  destinations. Host/port parsing now rejects those inputs while retaining
+  valid IPv6; Python 3.13 Harbor tests (94 total, 13 skips) passed. A live
+  mitmproxy regression was added but not run locally because the Docker daemon
+  did not respond. #3017 owns the later raw-TCP closure behavior; do not roll
+  that implementation back as part of #3008.
 
 ### Remaining 21: current disposition
 
