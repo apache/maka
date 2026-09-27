@@ -26,6 +26,7 @@ import {
   type ClientCapabilities,
 } from '@agentclientprotocol/sdk';
 import { HOST_OPERATION_SPECS } from '@maka/runtime-host/protocol';
+import { goalPlanRouteInput } from './goal-plan-routes.js';
 import type { AcpLoadContext, AcpSessionRegistry } from './session-registry.js';
 
 export interface MakaAcpAgentOptions {
@@ -36,6 +37,12 @@ export interface MakaAcpAgentOptions {
     | 'load'
     | 'resume'
     | 'resumeTurn'
+    | 'goalQuery'
+    | 'goalArm'
+    | 'goalControl'
+    | 'planQuery'
+    | 'planControl'
+    | 'planTurnStart'
     | 'queryCopySource'
     | 'branch'
     | 'createRevision'
@@ -45,6 +52,11 @@ export interface MakaAcpAgentOptions {
     | 'prompt'
     | 'cancel'
     | 'close'
+    | 'artifactQuery'
+    | 'artifactIngest'
+    | 'artifactDelete'
+    | 'memoryQuery'
+    | 'memoryMutate'
   >;
 }
 
@@ -58,6 +70,7 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
         agentCapabilities: {
           loadSession: true,
           sessionCapabilities: { list: {}, resume: {}, close: {} },
+          _meta: { '_maka/goalPlan': { version: 1 } },
         },
         authMethods: [],
         agentInfo: { name: 'maka', title: 'Maka', version: options.version },
@@ -92,6 +105,51 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
       },
       ({ params, signal, client }) =>
         options.sessionRegistry.resumeTurn(
+          params,
+          sessionContext(client, signal, clientCapabilities, true),
+        ),
+    )
+    .onRequest('_maka/goal/query', goalPlanRouteInput('goal.query'), ({ params, signal, client }) =>
+      options.sessionRegistry.goalQuery(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest('_maka/goal/arm', goalPlanRouteInput('goal.arm'), ({ params, signal, client }) =>
+      options.sessionRegistry.goalArm(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest(
+      '_maka/goal/control',
+      goalPlanRouteInput('goal.control'),
+      ({ params, signal, client }) =>
+        options.sessionRegistry.goalControl(
+          params,
+          sessionContext(client, signal, clientCapabilities, true),
+        ),
+    )
+    .onRequest('_maka/plan/query', goalPlanRouteInput('plan.query'), ({ params, signal, client }) =>
+      options.sessionRegistry.planQuery(
+        params,
+        sessionContext(client, signal, clientCapabilities, true),
+      ),
+    )
+    .onRequest(
+      '_maka/plan/control',
+      goalPlanRouteInput('plan.control'),
+      ({ params, signal, client }) =>
+        options.sessionRegistry.planControl(
+          params,
+          sessionContext(client, signal, clientCapabilities, true),
+        ),
+    )
+    .onRequest(
+      '_maka/plan/turn/start',
+      goalPlanRouteInput('plan.turn.start'),
+      ({ params, signal, client }) =>
+        options.sessionRegistry.planTurnStart(
           params,
           sessionContext(client, signal, clientCapabilities, true),
         ),
@@ -170,7 +228,61 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
     .onNotification(methods.agent.session.cancel, ({ params }) =>
       options.sessionRegistry.cancel(params),
     )
-    .onRequest(methods.agent.session.close, ({ params }) => options.sessionRegistry.close(params));
+    .onRequest(methods.agent.session.close, ({ params }) => options.sessionRegistry.close(params))
+    .onRequest(
+      '_maka/artifact/query',
+      extensionParams('artifact.query', HOST_OPERATION_SPECS['artifact.query'].decodeInput),
+      ({ params }) => options.sessionRegistry.artifactQuery(params),
+    )
+    .onRequest(
+      '_maka/artifact/ingest',
+      extensionParams('artifact.ingest', HOST_OPERATION_SPECS['artifact.ingest'].decodeInput),
+      ({ params }) => options.sessionRegistry.artifactIngest(params),
+    )
+    .onRequest(
+      '_maka/artifact/delete',
+      extensionParams('artifact.delete', HOST_OPERATION_SPECS['artifact.delete'].decodeInput),
+      ({ params }) => options.sessionRegistry.artifactDelete(params),
+    )
+    .onRequest(
+      '_maka/memory/query',
+      extensionParams('memory.query', HOST_OPERATION_SPECS['memory.query'].decodeInput),
+      ({ params }) => options.sessionRegistry.memoryQuery(params),
+    )
+    .onRequest(
+      '_maka/memory/mutate',
+      extensionParams('memory.mutate', HOST_OPERATION_SPECS['memory.mutate'].decodeInput),
+      ({ params }) => options.sessionRegistry.memoryMutate(params),
+    );
+}
+
+function extensionParams<Input>(
+  operation: string,
+  decode: (params: unknown) => Input,
+): (params: unknown) => Input {
+  return (params) => {
+    try {
+      if (params && typeof params === 'object' && !Array.isArray(params) && '_meta' in params) {
+        const record = params as Record<string, unknown>;
+        const meta = record._meta;
+        if (
+          meta !== undefined &&
+          meta !== null &&
+          (typeof meta !== 'object' || Array.isArray(meta))
+        ) {
+          throw new Error('Invalid ACP request metadata');
+        }
+        const { _meta: _ignored, ...domainParams } = record;
+        return decode(domainParams);
+      }
+      return decode(params);
+    } catch {
+      throw RequestError.invalidParams(
+        { source: 'adapter', operation, code: 'invalid_request' },
+        `Invalid ${operation} request`,
+      );
+    }
+  };
 }
 
 function sessionContext(
@@ -194,6 +306,16 @@ function sessionContext(
           notifyTurnStatus: (
             status: Parameters<NonNullable<AcpLoadContext['notifyTurnStatus']>>[0],
           ) => client.notify('_maka/turn/status', status),
+        }
+      : {}),
+    ...(capabilities._meta?.['_maka/goalPlanStatus'] === true
+      ? {
+          notifyGoalStatus: (
+            status: Parameters<NonNullable<AcpLoadContext['notifyGoalStatus']>>[0],
+          ) => client.notify('_maka/goal/status', status),
+          notifyPlanChanged: (
+            status: Parameters<NonNullable<AcpLoadContext['notifyPlanChanged']>>[0],
+          ) => client.notify('_maka/plan/changed', status),
         }
       : {}),
   };

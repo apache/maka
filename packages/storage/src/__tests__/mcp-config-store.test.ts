@@ -572,7 +572,7 @@ test('normalizes and bounds the remote oauth block', async () => {
     ['read', 'a\tb'],
     ['read"admin'],
     ['read\\admin'],
-    ['readadmin'],
+    ['read\u0001admin'],
     ['café'],
   ]) {
     assert.throws(

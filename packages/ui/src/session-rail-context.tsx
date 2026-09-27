@@ -89,6 +89,9 @@ export interface SessionRailData {
    * the scoped key the rows carry for their own actions, because the Host whose
    * project it is has never seen that key. The shell answers this per Session so
    * a task is never offered a project from a Host that does not hold it.
+   * The provider excludes the current project (including aliases) and includes
+   * the null exit only for known membership, even if that project is archived
+   * or unavailable. Consumers use these targets without re-deriving membership.
    */
   moveTargets?(sessionId: string): readonly SessionMoveTarget[];
   /**

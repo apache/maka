@@ -24,9 +24,9 @@ import {
   NO_REAL_CONNECTION_CODE,
   parseNoRealConnectionError,
 } from './application/contracts/connection-error-cleaner.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
-import { describeSessionErrorReason } from './session-error-presentation.js';
+import { describeSessionErrorReason } from './application/contracts/session-error-presentation.js';
 
 export function isNoRealConnectionError(error: unknown): boolean {
   return parseNoRealConnectionError(error).matched;

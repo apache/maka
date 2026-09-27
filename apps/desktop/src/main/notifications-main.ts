@@ -17,44 +17,28 @@
  * under the License.
  */
 
-import { app, ipcMain, Notification } from 'electron';
+import { app, Notification } from 'electron';
 import type { AppSettings } from '@maka/core/settings';
 import type { createMainWindowController } from './main-window.js';
 import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 import {
-  isRunNotificationKind,
+  type RunNotificationEvent,
+  deduplicateRunNotifications,
   resolveNotificationContent,
   shouldRaiseRunNotification,
 } from './notifications-policy.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
-interface NotificationsIpcDeps {
-  ipcMain?: Pick<typeof ipcMain, 'handle'>;
+interface NotificationsDeps {
   settingsStore: { get(): Promise<AppSettings> };
   locale: Pick<DesktopLocaleAuthority, 'observe'>;
   mainWindowController: MainWindowController;
   e2e: boolean;
 }
 
-/**
- * Wires the renderer's "a turn ended or is waiting on the user" signal to a
- * native OS notification and a dock bounce. The renderer fires on every terminal turn event and
- * every interaction request; the
- * gating (product toggle + platform support + window-focus) lives here
- * in the main process, which is the only place that authoritatively
- * knows whether the window is focused and can raise/focus it on click.
- *
- * Fire-and-forget from the renderer's perspective: it does not await the
- * result, so we resolve `void` and never surface main-side failures to
- * the chat UI — a missed banner must never break a completed turn.
- */
-export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
-  const target = deps.ipcMain ?? ipcMain;
-  target.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
-    const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown };
-    if (!isRunNotificationKind(raw.kind)) return;
-
+export function createRunNotifier(deps: NotificationsDeps): (input: RunNotificationEvent) => Promise<void> {
+  return deduplicateRunNotifications(async (input) => {
     const supported = Notification.isSupported();
     // Read the toggle lazily so a mid-session settings change takes
     // effect on the very next turn without any cache invalidation.
@@ -63,15 +47,12 @@ export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
       enabled: settings.notifications.runComplete,
       supported,
       windowFocused: deps.mainWindowController.isFocused(),
-      incognito: settings.privacy.incognitoActive,
       e2e: deps.e2e,
     };
     if (!shouldRaiseRunNotification(gate)) return;
 
-    // Prefer the renderer's session name + reply preview; policy applies
-    // per-field fallbacks + sanitization for blank/oversize/non-strings.
     const copy = resolveNotificationContent(
-      { kind: raw.kind, title: raw.title, body: raw.body },
+      input,
       deps.locale.observe(settings),
     );
     const notification = new Notification({ title: copy.title, body: copy.body });

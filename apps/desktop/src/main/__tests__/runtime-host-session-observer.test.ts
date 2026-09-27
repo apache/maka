@@ -77,7 +77,13 @@ test('projects root lifecycle without fabricating content events', async (t) => 
   if (seed?.type === 'host_observation_seed') {
     assert.deepEqual(seed.observerIds, ['execution-observer']);
     assert.equal(seed.execution.rootTurn, null);
-    assert.deepEqual(seed.events, []);
+    // The rootless seed carries the authoritative queue once, so a stale
+    // queued card from an earlier observation retires on re-subscription
+    // (apache/maka#5520 review).
+    assert.deepEqual(
+      seed.events.map((event) => event.type),
+      ['queue_update'],
+    );
   }
   const seededCount = messages.length;
   events.push({

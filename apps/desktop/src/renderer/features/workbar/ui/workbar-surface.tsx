@@ -65,7 +65,7 @@ import { WorkbarToggle } from './workbar-toggle';
 import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-toggle.js';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getShellCopy } from '../../../locales/shell-copy.js';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,

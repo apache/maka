@@ -37,7 +37,7 @@ const transient: TransientUserMessageProjection = {
   id: 'message-1',
   ts: 2,
   text: 'send now',
-  transientPlacement: 'current_turn',
+  transientPlacement: 'transcript',
 };
 
 test('keeps a transient message through sparse transcript replacement', () => {
@@ -165,16 +165,14 @@ test('derives one queue projection for main and Side Conversation consumers', ()
   assert.deepEqual(projection.transientMessages, [
     {
       id: 'message-in-flight',
-      pendingSteering: true,
-      transientPlacement: 'current_turn',
+      transientPlacement: 'steering',
       hostTurnId: 'turn-1',
       ts: 7,
       text: 'in flight',
     },
     {
       id: 'message-steer',
-      pendingSteering: true,
-      transientPlacement: 'current_turn',
+      transientPlacement: 'steering',
       hostTurnId: 'turn-1',
       ts: 7,
       text: 'steer',
@@ -182,7 +180,7 @@ test('derives one queue projection for main and Side Conversation consumers', ()
     },
     {
       id: 'message-next',
-      transientPlacement: 'next_turn',
+      transientPlacement: 'follow_up',
       ts: 7,
       text: 'next',
     },
@@ -197,50 +195,6 @@ test('keeps a Host-bound current Turn when a later IPC result has no Turn identi
     ...lateIpcUpdate,
     hostTurnId: 'host-turn',
   });
-});
-
-test('ordinary sends stay in the transcript through local delivery, including failed delivery', () => {
-  const localOutbox = {
-    ...transient, transientPlacement: 'next_turn' as const,
-    deliveryStatus: 'Sending',
-  };
-  const pending = mergeTransientMessageProjection(transient, localOutbox);
-  assert.equal(pending.transientPlacement, 'current_turn');
-  assert.equal(pending.deliveryStatus, 'Sending');
-  const failed = mergeTransientMessageProjection(pending, {
-    ...localOutbox, deliveryStatus: 'Failed',
-  });
-  assert.equal(failed.transientPlacement, 'current_turn');
-  assert.equal(failed.deliveryStatus, 'Failed');
-  // The admission reply, unlike a local outbox update, can still move a
-  // genuine follow-up above the composer.
-  const queued = mergeTransientMessageProjection(pending, {
-    ...transient, transientPlacement: 'next_turn', pendingSteering: false,
-  });
-  assert.equal(queued.transientPlacement, 'next_turn');
-  assert.equal(queued.deliveryStatus, 'Sending');
-  assert.equal(mergeTransientMessageProjection(queued, localOutbox).transientPlacement, 'next_turn');
-});
-
-test('an explicit follow-up stays in the pending plate during local delivery', () => {
-  const localOutbox = {
-    ...transient, transientPlacement: 'next_turn' as const,
-    deliveryStatus: 'Sending',
-  };
-  const pending = mergeTransientMessageProjection({
-    ...transient, transientPlacement: 'next_turn',
-  }, localOutbox);
-  assert.equal(pending.transientPlacement, 'next_turn');
-  assert.equal(pending.deliveryStatus, 'Sending');
-});
-
-test('explicit steering stays in the composer queue during local outbox updates', () => {
-  const steering = { ...transient, pendingSteering: true };
-  const updated = mergeTransientMessageProjection(steering, {
-    ...transient, transientPlacement: 'next_turn', deliveryStatus: 'Sending',
-  });
-  assert.equal(updated.transientPlacement, 'current_turn');
-  assert.equal(updated.pendingSteering, true);
 });
 
 test('keeps a transient message send time when a later update carries a new timestamp', () => {

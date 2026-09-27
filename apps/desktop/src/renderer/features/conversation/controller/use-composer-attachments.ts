@@ -19,7 +19,7 @@
 
 import { useUiLocale } from '@maka/ui';
 import { useComposerAttachments as useSharedComposerAttachments } from '@maka/ui/use-composer-attachments';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 

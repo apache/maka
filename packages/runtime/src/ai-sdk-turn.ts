@@ -629,6 +629,7 @@ export class AiSdkTurn {
   readonly runId: string | undefined;
   readonly orchestration: EffectiveOrchestration;
   readonly toolRuntime: ToolRuntime;
+  private readonly startedAt: number;
 
   constructor(
     private readonly deps: AiSdkTurnDependencies,
@@ -636,6 +637,7 @@ export class AiSdkTurn {
   ) {
     this.turnId = request.turnId;
     this.runId = request.runId;
+    this.startedAt = deps.now();
     this.orchestration =
       request.orchestration ??
       resolveEffectiveOrchestration(deps.backend.header.orchestrationMode, undefined);
@@ -1501,20 +1503,16 @@ export class AiSdkTurn {
           const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
             ({ text }) => ({ role: 'user', content: text }),
           );
-          const contextualRequestMessages =
-            dynamicContextMessages.length === 0
-              ? requestMessages
-              : [...requestMessages, ...dynamicContextMessages];
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
                 stepNumber: runtimeSteps,
                 model,
-                messages: contextualRequestMessages,
+                messages: requestMessages,
                 resolveDispatch,
               })
             : undefined;
-          const projectedMessages = shaped?.messages ?? contextualRequestMessages;
+          const projectedMessages = shaped?.messages ?? requestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
           const requestSystemPrompt = joinPromptFragments([
             requestSystemPromptBase,
@@ -1561,9 +1559,11 @@ export class AiSdkTurn {
             const attemptHasNoObservableOutput = () =>
               !attemptSawVisibleContent && !attemptSawToolActivity && !attemptSawReplayBarrier;
             const attemptCanReplay = () => !attemptSawToolActivity && !attemptSawReplayBarrier;
-            this.memorySourceMessages = [...attemptMessages];
+            // Request-only facts must survive history replacement and overflow recovery.
+            const dispatchMessages = [...attemptMessages, ...dynamicContextMessages];
+            this.memorySourceMessages = dispatchMessages;
             this.memorySourceEventMessagePositions =
-              this.deps.messageProjection.memoryEventMessagePositions(attemptMessages);
+              this.deps.messageProjection.memoryEventMessagePositions(dispatchMessages);
             this.memorySourceSystemPrompt = requestSystemPrompt;
             this.memorySourceTools = modelTools;
             this.memorySourceActiveTools = [...activeToolsForRequest];
@@ -1588,7 +1588,7 @@ export class AiSdkTurn {
             const historyCompactBoundary = requestHistoryCompactBoundary();
             result = await this.deps.modelAdapter.startStream({
               model,
-              messages: attemptMessages,
+              messages: dispatchMessages,
               tools: modelTools,
               activeTools: activeToolsForRequest,
               onStreamActivity: () => requestWatchdog?.markActivity(),
@@ -2856,6 +2856,7 @@ export class AiSdkTurn {
         sessionId: this.deps.backend.sessionId,
         turnId,
         cwd: this.deps.backend.header.cwd,
+        turnStartedAt: this.startedAt,
         emitSkillCatalogTrace: (message, data) =>
           this.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });

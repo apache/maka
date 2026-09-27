@@ -19,7 +19,7 @@
 
 import type { ModelFailureKind } from '@maka/core/model-failure';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './conversation-copy.js';
 
 /**
  * Locale-aware allowlist for stable ErrorEvent.reason values emitted by the

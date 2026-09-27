@@ -33,6 +33,8 @@ export * from './model/workbar-tool-definitions.js';
 export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
 export * from '../../application/contracts/session-inspector/session-inspector-panel-model.js';
+export { SessionReviewPanel } from './tools/review/session-review-panel.js';
+export { SessionReviewBaseBranchPicker } from './tools/review/session-review-base-branch-picker.js';
 export {
   compactNumberFormatter,
   InspectorCompositionSection,
@@ -67,7 +69,15 @@ const noopSubscription = (): (() => void) => () => undefined;
 export function createFakeWorkbarServices(
   overrides: Partial<WorkbarServices> = {},
 ): WorkbarServices {
+  const reviewBaseBranches = new Map<string, string>();
   return {
+    reviewBaseBranchPreference: {
+      read: (sessionId) => reviewBaseBranches.get(sessionId) ?? null,
+      write: (sessionId, branch) => {
+        if (branch === null) reviewBaseBranches.delete(sessionId);
+        else reviewBaseBranches.set(sessionId, branch);
+      },
+    },
     popupMenu: async () => null,
     review: {
       read: async () => {

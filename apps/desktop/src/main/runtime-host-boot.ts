@@ -152,7 +152,7 @@ import {
   registerTaskSubmissionReadinessIpc,
   type DesktopModelTargetResolution,
 } from "./task-submission-readiness-main.js";
-import { registerNotificationsIpc } from "./notifications-ipc-main.js";
+import { createRunNotifier } from "./notifications-main.js";
 import { registerMarkdownSaveIpc } from "./markdown-save-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
 import { registerWorkBoardIpc } from "./work-board-ipc-main.js";
@@ -972,8 +972,7 @@ registerPetPackIpc({
   settingsStore,
   resolveLocale: () => desktopLocale.resolve(),
 });
-registerNotificationsIpc({
-  ipcMain,
+const notifyRun = createRunNotifier({
   settingsStore,
   locale: desktopLocale,
   mainWindowController,
@@ -1149,6 +1148,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       ? { transcriptHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES }
       : {}),
     completeDesktopInteractionTurn,
+    notifyRun,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
         workspaceRoot,
