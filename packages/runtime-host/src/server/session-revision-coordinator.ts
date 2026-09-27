@@ -31,7 +31,6 @@ import {
 } from '@maka/core/session';
 import { runtimeHostConversationCopyUnavailableReason } from './host-session-availability.js';
 import {
-  archivedToolResultContainsLinkedChildReferences,
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
@@ -79,8 +78,8 @@ import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admi
 import { projectSessionCatalogRecord } from './session-catalog-coordinator.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import {
-  agentGraphRevisionAdmissionSessionIds,
-  prepareAgentGraphRevisionReferences,
+  linkedChildCopyAdmissionSessionIds,
+  prepareLinkedChildCopyReferences,
 } from './session-revision-graph-references.js';
 import {
   conversationCopyCommitFailureDiagnostic,
@@ -430,7 +429,7 @@ export class HostSessionRevisionCoordinator {
       runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       archivedResults: archivePreflight.serializedResults,
     });
-    const missingGraphChildSessionIds = agentGraphRevisionAdmissionSessionIds({
+    const missingGraphChildSessionIds = linkedChildCopyAdmissionSessionIds({
       sourceSessionId: input.sourceSessionId,
       sessionHeaders,
       copyTurnIds,
@@ -439,7 +438,7 @@ export class HostSessionRevisionCoordinator {
     if (missingGraphChildSessionIds.length > 0) {
       return { kind: 'retry_admission', sessionIds: missingGraphChildSessionIds };
     }
-    const linkedReferences = await prepareAgentGraphRevisionReferences(
+    const linkedReferences = await prepareLinkedChildCopyReferences(
       {
         kind,
         sourceSessionId: input.sourceSessionId,
@@ -457,21 +456,6 @@ export class HostSessionRevisionCoordinator {
     );
     if (!linkedReferences.ok) {
       return copyFailure(linkedReferences.code, linkedReferences.message);
-    }
-    if (
-      kind !== 'side_conversation' &&
-      archivePreflight.serializedResults.some((serializedResult) =>
-        archivedToolResultContainsConversationOwnedReferences(
-          serializedResult,
-          input.sourceSessionId,
-          linkedReferences.references,
-        ),
-      )
-    ) {
-      return copyFailure(
-        'operation_unavailable',
-        'Session conversation copy cannot preserve owned references inside archived tool results',
-      );
     }
 
     let createInput: ConversationCopyCreateInput;
@@ -521,16 +505,14 @@ export class HostSessionRevisionCoordinator {
     }
 
     try {
-      const archivedSnapshotResults = new Map(
+      const inlinedArchives = new Map(
         archivePreflight.results
-          .filter(
-            ({ serializedResult }) =>
-              archivedToolResultContainsLinkedChildReferences(serializedResult) ||
-              archivedToolResultContainsConversationOwnedReferences(
-                serializedResult,
-                input.sourceSessionId,
-                linkedReferences.references,
-              ),
+          .filter(({ serializedResult }) =>
+            archivedToolResultContainsConversationOwnedReferences(
+              serializedResult,
+              input.sourceSessionId,
+              linkedReferences.shared,
+            ),
           )
           .map(({ descriptor, serializedResult }) => [descriptor.artifactId, serializedResult]),
       );
@@ -564,12 +546,10 @@ export class HostSessionRevisionCoordinator {
         ...(referencedSessionFileIds.size > 0
           ? { includeArtifactIds: [...referencedSessionFileIds] }
           : {}),
-        ...(kind !== 'revision' && archivedSnapshotResults.size > 0
-          ? { excludeArtifactIds: [...archivedSnapshotResults.keys()] }
-          : {}),
-        ...(kind !== 'revision' && linkedReferences.references.size > 0
+        ...(inlinedArchives.size > 0 ? { excludeArtifactIds: [...inlinedArchives.keys()] } : {}),
+        ...(linkedReferences.snapshots.size > 0
           ? {
-              linkedArtifacts: [...linkedReferences.references].map(([sessionId, references]) => ({
+              linkedArtifacts: [...linkedReferences.snapshots].map(([sessionId, references]) => ({
                 sessionId,
                 artifactIds: [...references.artifactIds],
               })),
@@ -577,7 +557,6 @@ export class HostSessionRevisionCoordinator {
           : {}),
       });
       const references = {
-        mode: 'exact' as const,
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
@@ -585,18 +564,8 @@ export class HostSessionRevisionCoordinator {
         contextRefs: new Map(
           contextCopy.copied.map(({ sourceRefId, targetRefId }) => [sourceRefId, targetRefId]),
         ),
-        linkedChildren:
-          kind !== 'revision'
-            ? {
-                mode: 'snapshot' as const,
-                archivedResults: archivedSnapshotResults,
-              }
-            : linkedReferences.references.size > 0
-              ? {
-                  mode: 'preserve_validated' as const,
-                  references: linkedReferences.references,
-                }
-              : { mode: 'reject' as const },
+        sharedChildren: linkedReferences.shared,
+        inlinedArchives,
       };
       const runtimeCopy = await cloneConversationRuntimeLedger({
         plan,

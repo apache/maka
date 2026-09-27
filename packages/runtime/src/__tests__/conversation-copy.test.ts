@@ -51,7 +51,6 @@ import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
-  archivedToolResultContainsLinkedChildReferences,
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
@@ -369,32 +368,7 @@ test('collectConversationCopySessionFileRefs gathers source-Session refs across 
   ]);
 });
 
-test('Side Conversation preflight identifies linked-child archive bodies', () => {
-  assert.equal(
-    archivedToolResultContainsLinkedChildReferences(
-      JSON.stringify({
-        kind: 'subagent',
-        childSessionId: 'child-session',
-        agentName: 'Researcher',
-        turnId: 'child-turn',
-        runId: 'child-run',
-        status: 'completed',
-        permissionMode: 'ask',
-        summary: 'done',
-        artifactIds: ['child-artifact'],
-      }),
-    ),
-    true,
-  );
-  assert.equal(
-    archivedToolResultContainsLinkedChildReferences(
-      JSON.stringify({ kind: 'text', text: 'safe result' }),
-    ),
-    false,
-  );
-});
-
-test('Side Conversation snapshots remove linked child ownership identifiers', () => {
+test('conversation copy snapshots unshared linked children without their identifiers', () => {
   const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
     type: 'tool_result',
     id: 'linked-result',
@@ -426,15 +400,10 @@ test('Side Conversation snapshots remove linked child ownership identifiers', ()
     },
   };
   const rewritten = rewriteConversationCopyMessage(message, {
-    mode: 'exact',
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['child-artifact', 'child-artifact-snapshot']]),
     relativePaths: new Map(),
-    linkedChildren: {
-      mode: 'snapshot',
-      archivedResults: new Map(),
-    },
     runIds: new Map(),
     runtimeEventIds: new Map(),
     providerTraceIds: new Map(),
@@ -458,7 +427,7 @@ test('Side Conversation snapshots remove linked child ownership identifiers', ()
   ]);
 });
 
-test('Side Conversation snapshots rewrite source-owned Agent Swarm identities', () => {
+test('conversation copy rewrites source-owned Agent Swarm identities', () => {
   const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
     type: 'tool_result',
     id: 'source-owned-result',
@@ -488,15 +457,10 @@ test('Side Conversation snapshots rewrite source-owned Agent Swarm identities', 
     },
   };
   const rewritten = rewriteConversationCopyMessage(message, {
-    mode: 'exact',
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['artifact-source', 'artifact-target']]),
     relativePaths: new Map(),
-    linkedChildren: {
-      mode: 'snapshot',
-      archivedResults: new Map(),
-    },
     runIds: new Map([
       ['run-source', 'run-target'],
       ['run-parent-source', 'run-parent-target'],
@@ -524,7 +488,7 @@ test('Side Conversation snapshots rewrite source-owned Agent Swarm identities', 
   ]);
 });
 
-test('Side Conversation snapshots rewrite source-owned subagent identities', () => {
+test('conversation copy rewrites source-owned subagent identities', () => {
   const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
     type: 'tool_result',
     id: 'source-owned-result',
@@ -544,15 +508,10 @@ test('Side Conversation snapshots rewrite source-owned subagent identities', () 
     },
   };
   const rewritten = rewriteConversationCopyMessage(message, {
-    mode: 'exact',
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['artifact-source', 'artifact-target']]),
     relativePaths: new Map(),
-    linkedChildren: {
-      mode: 'snapshot',
-      archivedResults: new Map(),
-    },
     runIds: new Map([['run-source', 'run-target']]),
     runtimeEventIds: new Map(),
     providerTraceIds: new Map(),
@@ -566,7 +525,7 @@ test('Side Conversation snapshots rewrite source-owned subagent identities', () 
   assert.deepEqual(rewritten.content.artifactIds, ['artifact-target']);
 });
 
-test('Side Conversation snapshots preserve ordinary archived tool results', () => {
+test('conversation copy keeps ordinary archived tool results as references', () => {
   const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
     type: 'tool_result',
     id: 'archived-result',
@@ -591,15 +550,10 @@ test('Side Conversation snapshots preserve ordinary archived tool results', () =
     },
   };
   const rewritten = rewriteConversationCopyMessage(message, {
-    mode: 'exact',
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['artifact-source', 'artifact-target']]),
     relativePaths: new Map(),
-    linkedChildren: {
-      mode: 'snapshot',
-      archivedResults: new Map(),
-    },
     runIds: new Map(),
     runtimeEventIds: new Map([['event-source', 'event-target']]),
     providerTraceIds: new Map(),
@@ -623,7 +577,7 @@ test('Side Conversation snapshots preserve ordinary archived tool results', () =
   });
 });
 
-test('Side Conversation snapshots retire archived linked-child results', () => {
+test('conversation copy inlines archived linked-child results as snapshots', () => {
   const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
     type: 'tool_result',
     id: 'archived-result',
@@ -648,30 +602,26 @@ test('Side Conversation snapshots retire archived linked-child results', () => {
     },
   };
   const rewritten = rewriteConversationCopyMessage(message, {
-    mode: 'exact',
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['child-artifact', 'child-artifact-snapshot']]),
     relativePaths: new Map(),
-    linkedChildren: {
-      mode: 'snapshot',
-      archivedResults: new Map([
-        [
-          'artifact-source',
-          JSON.stringify({
-            kind: 'subagent',
-            childSessionId: 'child-session',
-            agentName: 'Researcher',
-            turnId: 'child-turn',
-            runId: 'child-run',
-            status: 'completed',
-            permissionMode: 'ask',
-            summary: 'The archived review found one issue.',
-            artifactIds: ['child-artifact'],
-          }),
-        ],
-      ]),
-    },
+    inlinedArchives: new Map([
+      [
+        'artifact-source',
+        JSON.stringify({
+          kind: 'subagent',
+          childSessionId: 'child-session',
+          agentName: 'Researcher',
+          turnId: 'child-turn',
+          runId: 'child-run',
+          status: 'completed',
+          permissionMode: 'ask',
+          summary: 'The archived review found one issue.',
+          artifactIds: ['child-artifact'],
+        }),
+      ],
+    ]),
     runIds: new Map(),
     runtimeEventIds: new Map([['event-source', 'event-target']]),
     providerTraceIds: new Map(),
@@ -829,8 +779,6 @@ test('conversation copy rewrites owned references without changing opaque tool p
     },
   ];
   const references = {
-    mode: 'exact' as const,
-    linkedChildren: { mode: 'reject' as const },
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -1002,18 +950,6 @@ test('conversation copy rewrites owned references without changing opaque tool p
       : undefined,
     'event-target',
   );
-  const preserved = rewriteConversationCopyMessage(messages[0]!, {
-    mode: 'preserve_external',
-    sourceSessionId: 'session-source',
-    targetSessionId: 'session-target',
-    runIds: new Map(),
-    runtimeEventIds: new Map(),
-    providerTraceIds: new Map(),
-  });
-  assert.deepEqual(
-    preserved.type === 'user' ? preserved.attachments?.[0]?.ref : undefined,
-    messages[0]?.type === 'user' ? messages[0].attachments?.[0]?.ref : undefined,
-  );
   // An archived tool result's Artifact holds that result's own bytes, and the
   // two are removed together, so a copy that lost it has lost what a reader
   // will ask for.
@@ -1070,18 +1006,15 @@ test('conversation copy rewrites owned references without changing opaque tool p
     },
     {
       ...references,
-      linkedChildren: {
-        mode: 'preserve_validated',
-        references: new Map([
-          [
-            'child-session',
-            {
-              runIds: new Set(['child-run']),
-              artifactIds: new Set(['child-artifact']),
-            },
-          ],
-        ]),
-      },
+      sharedChildren: new Map([
+        [
+          'child-session',
+          {
+            runIds: new Set(['child-run']),
+            artifactIds: new Set(['child-artifact']),
+          },
+        ],
+      ]),
     },
   );
   assert.equal(
@@ -1096,24 +1029,15 @@ test('conversation copy rewrites owned references without changing opaque tool p
       : undefined,
     ['child-artifact'],
   );
-  assert.deepEqual(
-    rewriteConversationCopyMessage(linked, {
-      mode: 'preserve_external',
-      sourceSessionId: 'session-source',
-      targetSessionId: 'session-target',
-      runIds: new Map(),
-      runtimeEventIds: new Map(),
-      providerTraceIds: new Map(),
-    }),
-    linked,
-  );
   assert.throws(
     () =>
       rewriteConversationCopyMessage(linked, {
         ...references,
-        linkedChildren: { mode: 'preserve_validated', references: new Map() },
+        sharedChildren: new Map([
+          ['child-session', { runIds: new Set(), artifactIds: new Set(['child-artifact']) }],
+        ]),
       }),
-    /missing linked child Session child-session/,
+    /missing external AgentRun child-run/,
   );
 });
 
@@ -1301,8 +1225,6 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -1522,8 +1444,6 @@ test('conversation copy excludes legacy Code Mode partials while rewriting paren
         plan,
         copiedMessages: source.messages,
         referenceMap: {
-          mode: 'exact',
-          linkedChildren: { mode: 'reject' },
           sourceSessionId: 'session-source',
           targetSessionId,
           artifactIds: new Map(),
@@ -1634,8 +1554,6 @@ test('conversation copy rewrites the nested identity of a model call attempt', a
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -1740,8 +1658,6 @@ test('conversation copy survives a capture the store has already reclaimed', asy
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -1830,8 +1746,6 @@ test('conversation copy repairs a model call attempt stranded by a pre-fix copy'
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -2158,8 +2072,6 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-missing-artifact',
         artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -2200,8 +2112,6 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([
@@ -2485,8 +2395,6 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -2606,8 +2514,6 @@ test('conversation copy drops a checkpoint from a superseded source policy inste
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -2770,8 +2676,6 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -3148,8 +3052,6 @@ for (const inspectFirst of [false, true]) {
         plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
         copiedMessages: source.messages,
         referenceMap: {
-          mode: 'exact',
-          linkedChildren: { mode: 'reject' },
           sourceSessionId: 'session-source',
           targetSessionId: 'session-target',
           artifactIds: new Map(),
@@ -3461,8 +3363,6 @@ test('conversation copy rebuilds projection transitions against the copied event
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([
@@ -3668,8 +3568,6 @@ test('conversation copy carries a transition recorded by a later, uncopied run',
       plan: await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore),
       copiedMessages: firstTurnMessages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([['artifact-source-1', 'artifact-target-1']]),
@@ -3839,8 +3737,6 @@ test('conversation copy reproduces the source fold rather than re-deciding it', 
       plan: await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore),
       copiedMessages: firstTurnMessages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([
@@ -3981,8 +3877,6 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
       plan: await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore),
       copiedMessages: firstTurnMessages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -4146,8 +4040,6 @@ test('conversation copy preserves a corrupt paging dispatch hash for the re-scan
         plan: tamperedPlan,
         copiedMessages: firstTurnMessages,
         referenceMap: {
-          mode: 'exact',
-          linkedChildren: { mode: 'reject' },
           sourceSessionId: 'session-source',
           targetSessionId: 'session-target',
           artifactIds: new Map(),
@@ -4266,8 +4158,6 @@ test('conversation copy re-authenticates a rewritten ArchiveRead against its dis
       plan: await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore),
       copiedMessages: firstTurnMessages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -4382,8 +4272,6 @@ test('conversation copy gives a run whose opening the migration shelved its open
       plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
-        mode: 'exact',
-        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
