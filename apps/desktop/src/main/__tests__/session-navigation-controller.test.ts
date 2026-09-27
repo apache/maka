@@ -19,9 +19,15 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactNode } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
-import { LocaleProvider, useSessionRailData, type SessionRailData } from '@maka/ui';
+import {
+  LocaleProvider,
+  useSessionRailData,
+  type SessionRailData,
+  type SessionRailSelection,
+} from '@maka/ui';
+import { useSessionRailSelection } from '@maka/ui/testing';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeSessionNavigationServices,
@@ -172,6 +178,42 @@ function input(
   };
 }
 
+function navigationTree(
+  catalog: ReturnType<typeof createSessionCatalogController>,
+  shell: { activeSessionId: string; workHubActive: boolean },
+  sibling: ReactNode,
+  child: ReactNode,
+) {
+  return createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(
+      SessionNavigationServicesProvider,
+      { services: fakeServices },
+      sibling,
+      createElement(
+        SessionNavigationProvider,
+        {
+          ...shell,
+          catalog,
+          hiddenSessionIds,
+          projectScopes: [localProjectScope],
+          streamingSessionIds: new Set<string>(),
+          sessionSendOutcomes: {},
+          ports: ports(linkedCatalog, shell.activeSessionId),
+          commandsRef: { current: null },
+          selection: { section: 'sessions' },
+          onSelect: () => undefined,
+          onOpenSettings: () => undefined,
+          onNew: () => undefined,
+          onExitWorkHub: () => undefined,
+          onSelectSession: () => undefined,
+        },
+        child,
+      ),
+    ),
+  });
+}
+
 const linkedCatalog = [
   session('root', { projectId: 'project', cwd: '/repo' }),
   session('child', {
@@ -281,35 +323,12 @@ describe('useSessionNavigationReads', () => {
     catalog.commitSessions(linkedCatalog);
     await act(async () =>
       root.render(
-        createElement(LocaleProvider, {
-          locale: 'en',
-          children: createElement(
-            SessionNavigationServicesProvider,
-            { services: fakeServices },
-            createElement(ReadsProbe, { catalog, activeSessionId: 'child' }),
-            createElement(
-              SessionNavigationProvider,
-              {
-                catalog,
-                activeSessionId: 'child',
-                hiddenSessionIds,
-                projectScopes: [localProjectScope],
-                streamingSessionIds: new Set<string>(),
-                sessionSendOutcomes: {},
-                ports: ports(linkedCatalog, 'child'),
-                commandsRef: { current: null },
-                selection: { section: 'sessions' },
-                workHubActive: false,
-                onSelect: () => undefined,
-                onOpenSettings: () => undefined,
-                onNew: () => undefined,
-                onExitWorkHub: () => undefined,
-                onSelectSession: () => undefined,
-              },
-              createElement(RailProbe),
-            ),
-          ),
-        }),
+        navigationTree(
+          catalog,
+          { activeSessionId: 'child', workHubActive: false },
+          createElement(ReadsProbe, { catalog, activeSessionId: 'child' }),
+          createElement(RailProbe),
+        ),
       ),
     );
 
@@ -325,6 +344,48 @@ describe('useSessionNavigationReads', () => {
       parentSessionId: 'root',
       parentSessionName: 'root',
     });
+  });
+});
+
+describe('SessionNavigationProvider selection', () => {
+  it('drops the picks when WorkHub stops painting the open row', async () => {
+    let latest: SessionRailSelection | null = null;
+    function SelectionProbe() {
+      latest = useSessionRailSelection();
+      return null;
+    }
+    const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const render = (workHubActive: boolean) =>
+      act(async () =>
+        root.render(
+          navigationTree(
+            catalog,
+            { activeSessionId: 'root', workHubActive },
+            null,
+            createElement(SelectionProbe),
+          ),
+        ),
+      );
+    const selection = () => {
+      assert.ok(latest);
+      return latest;
+    };
+
+    await render(false);
+    await act(async () =>
+      selection().commands.pick({
+        sessionId: 'root',
+        pick: 'replace',
+        orderedSessionIds: ['root', 'remote', 'environment'],
+      }),
+    );
+    assert.deepEqual([...selection().selectedIds], ['root']);
+
+    await render(true);
+
+    assert.deepEqual([...selection().selectedIds], []);
   });
 });
 

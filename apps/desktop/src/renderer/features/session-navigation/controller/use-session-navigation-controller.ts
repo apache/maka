@@ -24,7 +24,6 @@ import {
   deriveTitlebarProjectName,
   useUiLocale,
   type SessionHistoryGroup,
-  type SessionRailSelection,
 } from '@maka/ui';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
@@ -45,7 +44,6 @@ import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
-import { useSessionSelection } from './use-session-selection.js';
 
 export interface UseSessionNavigationControllerInput {
   /**
@@ -69,7 +67,6 @@ export interface SessionNavigationController {
   layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
-  selection: SessionRailSelection;
 }
 
 /**
@@ -184,14 +181,5 @@ export function useSessionNavigationController(
     [groups, sessionMeta, sessionProjectName, worktreeSessionIds],
   );
 
-  const selection = useSessionSelection({
-    sessions: rail.sessions,
-    commands,
-    activeId: rail.activeRowId,
-  });
-
-  return useMemo(
-    () => ({ layout, selectors, commands, selection }),
-    [commands, layout, selection, selectors],
-  );
+  return useMemo(() => ({ layout, selectors, commands }), [commands, layout, selectors]);
 }

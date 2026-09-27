@@ -38,6 +38,7 @@ import {
 } from '@maka/ui';
 import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
+import { useSessionSelection } from '../controller/use-session-selection.js';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
@@ -131,6 +132,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     rail,
     projectScopes: props.projectScopes,
     ports: props.ports,
+  });
+  const openRowId = props.workHubActive ? undefined : rail.activeRowId;
+  const selection = useSessionSelection({
+    sessions: rail.sessions,
+    commands: controller.commands,
+    activeId: openRowId,
   });
 
   useLayoutEffect(() => {
@@ -238,7 +245,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   const data = useMemo<SessionRailData>(
     () => ({
       sessions: rail.sessions,
-      activeId: props.workHubActive ? undefined : rail.activeRowId,
+      activeId: openRowId,
       streamingSessionIds: props.streamingSessionIds,
       staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
@@ -265,12 +272,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNewProject,
       moveDropGroupKeys,
       moveTargets,
+      openRowId,
       projectActions,
       relinkableProjectIds,
       rail,
       staleSessionIds,
       props.streamingSessionIds,
-      props.workHubActive,
       rowActions,
       sessionBadge,
     ],
@@ -310,7 +317,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     <SessionRailProvider
       data={data}
       chrome={chrome}
-      selection={controller.selection}
+      selection={selection}
     >
       {props.children}
     </SessionRailProvider>
