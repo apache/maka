@@ -294,13 +294,12 @@ describe('RuntimeKernel Interaction close cleanup', () => {
   test('each kernel gets its own host generation; epochs restart per process (#5713 review)', () => {
     const backends = new BackendRegistry();
     backends.register('ai-sdk', () => new BlockingBackend(SESSION_ID, {}));
-    let id = 0;
-    const newId = () => `gen-id-${++id}`;
     const first = new RuntimeKernel({
       store: memoryStore(),
       backends,
-      newId,
+      newId: () => 'unused',
       now: () => 0,
+      hostGeneration: () => 'host-generation-1',
     });
     // A second kernel stands in for the restarted Host process: a fresh
     // generation and epoch counters back to zero, even though the previous
@@ -308,10 +307,12 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const second = new RuntimeKernel({
       store: memoryStore(),
       backends,
-      newId,
+      newId: () => 'unused',
       now: () => 0,
+      hostGeneration: () => 'host-generation-2',
     });
-    assert.notEqual(first.sessionHostGeneration(), second.sessionHostGeneration());
+    assert.equal(first.sessionHostGeneration(), 'host-generation-1');
+    assert.equal(second.sessionHostGeneration(), 'host-generation-2');
     assert.equal(first.sessionRunEpoch(SESSION_ID), 0);
     assert.equal(second.sessionRunEpoch(SESSION_ID), 0);
   });

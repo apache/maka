@@ -20,6 +20,7 @@
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import type { AgentRunStore } from '@maka/core/agent-run';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
+import { randomUUID } from 'node:crypto';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import {
   decodeRuntimeBoundaryCursor,
@@ -293,6 +294,12 @@ export interface RuntimeKernelDeps {
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   backends: BackendRegistry;
   newId: () => string;
+  /**
+   * The run-epoch generation of this kernel process. Omit to draw a random
+   * UUID; injecting one lets tests pin `sessionHostGeneration()` without
+   * touching the `newId` sequence.
+   */
+  hostGeneration?: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
   resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
@@ -425,8 +432,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // One identity per kernel process: catalog rows survive a Host restart
     // while the per-session epoch counters restart at zero, so clients pair
     // the generation with the epoch instead of comparing epochs across
-    // processes (#5713 review).
-    this.#hostGeneration = deps.newId();
+    // processes (#5713 review). Drawn outside the `newId` sequence so a
+    // restart identity never shifts the ids callers observe, and defaulted
+    // for deps that omit `newId` entirely.
+    this.#hostGeneration = deps.hostGeneration?.() ?? randomUUID();
     this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
