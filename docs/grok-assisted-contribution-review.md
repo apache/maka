@@ -176,6 +176,23 @@ Three narrow paths need a disposition rather than an identical revert/reapply:
   removed root barrel import would break typecheck; an identical import fix is
   not an independent implementation.
 
+#3008 is only partly recognizable in today's Eval egress filter. Its CONNECT
+host classification remains, but #3017 subsequently replaced the raw-TCP
+layer-closing path, added HTTP/TLS prefix handling, and introduced live
+mitmproxy tests. Reverting the #3008 squash against today's code would also
+unwind later security behavior. Treat the surviving CONNECT validation as a
+separate security review with unit and live-proxy regression checks.
+
+#3070 remains material in `project-catalog.ts`: explicit registration and
+relinking still use `resolveUserSelectedProjectLocation`, while session cwd
+resolution keeps repository identity. Its behavior overlaps the #5223 path
+validation, so a replacement must test nested registration, touch, relink,
+session reassignment, and invalid paths together. #3099's original renderer
+files moved under `features/session-navigation`; the successor
+`session-rail-layout-store.ts` still hydrates and writes the grouping mode
+through `session-list-layout.ts`. Review the current store and renderer reload
+test, not the deleted AppShell persistence effect.
+
 ## Review protocol
 
 For each row, verify the original behavior and tests against current `main`,
