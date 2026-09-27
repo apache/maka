@@ -158,8 +158,8 @@ changes. It does not erase the original history or settle ASF legal questions.
 |---:|---|---|
 | #3082 | Removing the PTY exit reconciliation made the delayed-persist test return `running` instead of `completed`. | Reconcile the control reply after persistence against finalization, then mark terminal observations. Replaced the Grok-authored test with a fresh test that pauses storage and observes driver exit without monkeypatching the driver prototype. Runtime build, shell-run-manager suite (62 pass, 4 platform skips), and Biome passed. |
 | #5223 | Removing the directory check made the regular-file test fail with `Missing expected rejection`. | Check the canonical path's stat before Git discovery and reject non-directories with `TypeError`. Replaced the original test with Git/non-Git file cases, registration non-mutation, and a directory control. Storage build, project-catalog suite (23 pass), and Biome passed. |
-| #3070 | Removing explicit nested-project selection made registration return the parent project's ID and broke relinking to a child directory. | Make resolution intent explicit: selected paths retain a nested folder identity, while historical paths and selected repository roots keep Git identity. Storage build, project-catalog suite (24 pass), Desktop nested-selection test, and Biome passed. Desktop full build remains blocked by seven unrelated implicit-`any` diagnostics. |
-| #3099 | Disconnecting the migrated rail store's grouping read/write made a fresh store lose the selected grouping (`undefined` persisted value). | Let the rail layout store hydrate and write grouping directly, removing the old standalone read/write helpers. Rail layout tests (6 pass), navigation boundary tests (4 pass), and Biome passed. Desktop full build has the same seven unrelated implicit-`any` diagnostics. |
+| #3070 | Removing explicit nested-project selection made registration return the parent project's ID and broke relinking to a child directory. | Make resolution intent explicit: selected paths retain a nested folder identity, while historical paths and selected repository roots keep Git identity. Storage build, project-catalog suite (24 pass), Desktop nested-selection test, and Biome passed. The full Desktop build initially had seven unrelated implicit-`any` diagnostics; it passed after the latest upstream merge. |
+| #3099 | Disconnecting the migrated rail store's grouping read/write made a fresh store lose the selected grouping (`undefined` persisted value). | Let the rail layout store hydrate and write grouping directly, removing the old standalone read/write helpers. Rail layout tests (6 pass), navigation boundary tests (4 pass), and Biome passed. The full Desktop build initially had the same seven unrelated diagnostics; it passed after the latest upstream merge. |
 
 The #3082 and #5223 revert-state commits are separate from the replacement
 commit to make the failure evidence inspectable. They are not safe to merge
@@ -272,8 +272,9 @@ token through the observation hook and refuses to flush/display a newer seed
 for an older signal. The three test files now pass (89 tests) and Biome passes.
 This is a scoped independent hardening, **not** a replacement for the entire
 two tagged implementations. The full streaming-remount Electron E2E (4 tests)
-and session-local recovery E2E (3 tests) pass. Desktop's full main build
-still reports seven unrelated implicit-any errors.
+and session-local recovery E2E (3 tests) pass. Desktop's full build also
+passes after merging the latest upstream; it initially reported seven
+unrelated implicit-`any` diagnostics.
 
 #3101's only squash change modified the streaming-remount E2E to sample on
 animation frames instead of body mutations. The current test has since gained
