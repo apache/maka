@@ -22,11 +22,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
+import { mountComposer } from './composer-test-harness.js';
 
 function renderComposer(streaming: boolean): string {
   return renderToStaticMarkup(
@@ -135,94 +135,53 @@ test('a staged quote enables Send without any host opt-in (#4804)', () => {
 });
 
 test('the three send gates agree about a staged quote while streaming (#4804)', async () => {
-  const original = {
-    document: globalThis.document,
-    window: globalThis.window,
-    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
-      IS_REACT_ACT_ENVIRONMENT?: boolean;
-    }).IS_REACT_ACT_ENVIRONMENT,
-  };
-  const { document, window } = parseHTML('<div id="root"></div>');
-  window.getComputedStyle = () => ({
-    direction: 'ltr',
-    writingMode: 'horizontal-tb',
-    getPropertyValue: () => '',
-  }) as unknown as CSSStyleDeclaration;
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
   const sends: string[] = [];
+  const harness = await mountComposer({
+    streaming: true,
+    pendingQuotes: [{ text: 'the excerpt', sourceTurnId: 'turn-9' }],
+    onSend(text) {
+      sends.push(text);
+    },
+    onStop() {},
+  });
   try {
-    await act(() => root.render(
-      <LocaleProvider locale="en">
-        <Composer
-          streaming
-          pendingQuotes={[{ text: 'the excerpt', sourceTurnId: 'turn-9' }]}
-          onSend={(text) => {
-            sends.push(text);
-          }}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    ));
     // Gate 1 — the send/stop toggle: mid-turn the slot stays on Send because
     // the staged quote is handable content, not an empty draft.
-    assert.deepEqual(sendSlotControls(container.innerHTML), ['Send']);
-    const button = container.querySelector('button[aria-label="Send"]');
+    assert.deepEqual(sendSlotControls(harness.container.innerHTML), ['Send']);
+    const button = harness.container.querySelector('button[aria-label="Send"]');
     assert.ok(button);
     // Gate 2 — sendDisabled: the control is live.
     assert.equal(button.getAttribute('aria-disabled'), null);
     // Gate 3 — sendCurrent's content guard: submitting hands the empty draft
     // text over, the quote travelling as the message's structured content.
     // The control is type="submit", so its activation is the form's submit.
-    const form = container.querySelector('form');
-    assert.ok(form);
-    await act(async () => {
-      form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-      await Promise.resolve();
-    });
+    await harness.submit();
     assert.deepEqual(sends, ['']);
   } finally {
-    await act(() => root.unmount());
-    Object.assign(globalThis, original);
+    await harness.unmount();
   }
 });
 
 test('the actual submit waits for Session references and keeps the draft on refusal', async () => {
-  const original = { document: globalThis.document, window: globalThis.window,
-    IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
-  const { document, window } = parseHTML('<div id="root"></div>');
-  window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
-  const container = document.querySelector('#root')!;
-  const root = createRoot(container);
   const sends: string[] = [];
   let release!: (ready: boolean) => void;
+  const harness = await mountComposer({
+    pendingSessionReferences: [{ id: 'source', name: 'Research' }],
+    waitForSessionReference: () => new Promise((resolve) => { release = resolve; }),
+    onSend(text) {
+      sends.push(text);
+    },
+    onStop() {},
+  });
   try {
-    await act(() => root.render(
-      <LocaleProvider locale="en">
-        <Composer
-          pendingSessionReferences={[{ id: 'source', name: 'Research' }]}
-          waitForSessionReference={() => new Promise((resolve) => { release = resolve; })}
-          onSend={(text) => { sends.push(text); }}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    ));
-    const form = container.querySelector('form')!;
     for (const ready of [false, true]) {
-      await act(async () => {
-        form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-        await Promise.resolve();
-      });
+      await harness.submit();
       assert.deepEqual(sends, [], 'no send may precede snapshot resolution');
       await act(async () => { release(ready); await Promise.resolve(); });
       assert.deepEqual(sends, ready ? [''] : []);
     }
   } finally {
-    await act(() => root.unmount());
-    Object.assign(globalThis, original);
+    await harness.unmount();
   }
 });
 
