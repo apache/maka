@@ -17,80 +17,79 @@
  * under the License.
  */
 
-export interface LiveContentGate {
-  readonly sessionId: string | undefined;
-  readonly issuedRevision: number;
-  readonly visibleRevision: number;
-}
-
-export interface SessionObservationAuthority {
+export interface ObservationAuthority {
   readonly sessionId: string | undefined;
   readonly profileId: string | undefined;
-  readonly revision: number;
+  readonly generation: number;
 }
 
-export const EMPTY_SESSION_OBSERVATION_AUTHORITY: SessionObservationAuthority = {
+export const INITIAL_OBSERVATION_AUTHORITY: ObservationAuthority = {
   sessionId: undefined,
   profileId: undefined,
-  revision: 0,
+  generation: 0,
 };
 
-/**
- * Changes the observation identity only when its actual authority changes.
- *
- * A newly created Session is selected before its catalog row arrives. The
- * preload already resolved and pinned that Session's profile for the first
- * observation, so the catalog's later undefined -> profile hydration is not a
- * new authority and must not tear down the ready stream. A known profile
- * changing to another known profile is a real authority handoff and does need
- * a fresh observation.
- */
-export function advanceSessionObservationAuthority(
-  current: SessionObservationAuthority,
+export function reconcileObservationAuthority(
+  current: ObservationAuthority,
   sessionId: string | undefined,
   profileId: string | undefined,
-): SessionObservationAuthority {
+): ObservationAuthority {
   if (current.sessionId !== sessionId) {
-    return { sessionId, profileId, revision: current.revision + 1 };
+    return { sessionId, profileId, generation: current.generation + 1 };
   }
-  if (profileId === undefined || profileId === current.profileId) return current;
-  if (current.profileId === undefined) return { ...current, profileId };
-  return { sessionId, profileId, revision: current.revision + 1 };
+  if (!profileId || profileId === current.profileId) return current;
+  if (!current.profileId) return { ...current, profileId };
+  return { sessionId, profileId, generation: current.generation + 1 };
 }
 
-export const EMPTY_LIVE_CONTENT_GATE: LiveContentGate = {
+export interface LiveContentSeedState {
+  readonly sessionId: string | undefined;
+  readonly generation: number;
+  readonly revealed: boolean;
+}
+
+export interface LiveContentSeedToken {
+  readonly sessionId: string;
+  readonly generation: number;
+}
+
+export const INITIAL_LIVE_CONTENT_SEED: LiveContentSeedState = {
   sessionId: undefined,
-  issuedRevision: 0,
-  visibleRevision: 0,
+  generation: 0,
+  revealed: false,
 };
 
-export function closeLiveContentGate(
-  current: LiveContentGate,
+export function beginLiveContentSeed(
+  current: LiveContentSeedState,
   sessionId: string,
-): LiveContentGate {
-  return {
+): { state: LiveContentSeedState; token: LiveContentSeedToken } {
+  const state: LiveContentSeedState = {
     sessionId,
-    issuedRevision: current.issuedRevision + 1,
-    visibleRevision: 0,
+    generation: current.generation + 1,
+    revealed: false,
   };
+  return { state, token: { sessionId, generation: state.generation } };
 }
 
-export function openLiveContentGate(
-  current: LiveContentGate,
-  sessionId: string,
-  revision: number,
-): LiveContentGate {
-  if (current.sessionId !== sessionId || current.issuedRevision !== revision) {
-    return current;
-  }
-  if (current.visibleRevision === revision) return current;
-  return { ...current, visibleRevision: revision };
+export function ownsLiveContentSeed(
+  current: LiveContentSeedState,
+  token: LiveContentSeedToken,
+): boolean {
+  return current.sessionId === token.sessionId && current.generation === token.generation;
 }
 
-export function visibleLiveContentRevision(
-  gate: LiveContentGate,
+export function revealLiveContentSeed(
+  current: LiveContentSeedState,
+  token: LiveContentSeedToken,
+): LiveContentSeedState {
+  if (!ownsLiveContentSeed(current, token) || current.revealed) return current;
+  return { ...current, revealed: true };
+}
+
+export function visibleLiveContentGeneration(
+  current: LiveContentSeedState,
   activeSessionId: string | undefined,
 ): number {
-  if (!activeSessionId || gate.sessionId !== activeSessionId) return 0;
-  return gate.visibleRevision;
+  if (!current.revealed || current.sessionId !== activeSessionId) return 0;
+  return current.generation;
 }

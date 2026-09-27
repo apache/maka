@@ -767,7 +767,7 @@ export async function createDesktopRuntimeHostCandidate(
         }
       }
     }
-    observationsAttached = true;
+    observationsAttached = Boolean(sessionObserver);
     const restoredSessionIds = await restoreSessionObservations({
       sessionIds: () => sessionObservations.observationSessionIds(),
       announcePending: (sessionId) =>

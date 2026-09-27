@@ -234,11 +234,9 @@ export class RuntimeHostSessionObservationRegistry {
   }
 
   observationSessionIds(): string[] {
-    const sessionIds = new Set<string>();
-    for (const registration of this.#registrations.values()) {
-      sessionIds.add(registration.sessionId);
-    }
-    return [...sessionIds];
+    return Array.from(
+      new Set(Array.from(this.#registrations.values(), ({ sessionId }) => sessionId)),
+    );
   }
 
   trackedSessionIds(): string[] {

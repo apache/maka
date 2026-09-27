@@ -760,11 +760,11 @@ function AppShellContent({
   // model claims live in the session UI store.
   const turnActionRegistry = useTurnActionRegistry();
 
-  // A hoisted declaration on purpose: `dropDisplayEvents` is destructured
+  // A hoisted declaration on purpose: `discardDisplayEvents` is destructured
   // hundreds of lines below, and the rail does not need this identity held
   // still — the rail's controller reads it through `portsRef`.
   function clearSessionRendererState(sessionId: string): void {
-    dropDisplayEvents(sessionId);
+    discardDisplayEvents(sessionId);
     // `clearOwnedSessionState` ends in `clearSessionUiState`, which drops this
     // session from every session-UI map — the four pending claims included.
     clearOwnedSessionState(sessionId);
@@ -1663,14 +1663,7 @@ function AppShellContent({
   });
 
   const [sessionDisplayBatch] = useState(createAppShellSessionDisplayBatch);
-  const {
-    handleEvent,
-    reconcilePersistedMessages,
-    settleAssistantStreaming,
-    beginDisplayCatchUp,
-    finishDisplayCatchUp,
-    dropDisplayEvents,
-  } = useStableActions(createAppShellSessionEventHandlers, {
+  const sessionEventHandlers = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
     liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
@@ -1692,6 +1685,12 @@ function AppShellContent({
         setPetCompletionNonce((current) => current + 1);
     },
   });
+  const handleEvent = sessionEventHandlers.handleEvent;
+  const reconcilePersistedMessages = sessionEventHandlers.reconcilePersistedMessages;
+  const settleAssistantStreaming = sessionEventHandlers.settleAssistantStreaming;
+  const holdDisplayEvents = sessionEventHandlers.holdDisplayEvents;
+  const releaseDisplayEvents = sessionEventHandlers.releaseDisplayEvents;
+  const discardDisplayEvents = sessionEventHandlers.discardDisplayEvents;
 
   // Streaming-settle handoff, FALLBACK path only. The bubble's primary
   // `onStreamingSettled` signal runs after Astryx commits the terminal text.
@@ -1748,31 +1747,27 @@ function AppShellContent({
     themePalette,
     themePref,
   });
-  const [liveContentGate, setLiveContentGate] = useState<liveContent.LiveContentGate>(
-    liveContent.EMPTY_LIVE_CONTENT_GATE,
+  const [liveContentSeed, setLiveContentSeed] = useState<liveContent.LiveContentSeedState>(
+    liveContent.INITIAL_LIVE_CONTENT_SEED,
   );
-  const liveContentGateRef = useRef(liveContentGate);
-  liveContentGateRef.current = liveContentGate;
+  const liveContentSeedRef = useRef(liveContentSeed);
+  liveContentSeedRef.current = liveContentSeed;
   const beginObservationSeed = (sessionId: string) => {
-    const closed = liveContent.closeLiveContentGate(liveContentGateRef.current, sessionId);
-    liveContentGateRef.current = closed;
-    beginDisplayCatchUp(sessionId);
-    setLiveContentGate(closed);
+    const seed = liveContent.beginLiveContentSeed(liveContentSeedRef.current, sessionId);
+    liveContentSeedRef.current = seed.state;
+    holdDisplayEvents(sessionId);
+    setLiveContentSeed(seed.state);
     return () => {
-      if (liveContentGateRef.current !== closed) return;
-      finishDisplayCatchUp(sessionId);
-      const opened = liveContent.openLiveContentGate(
-        closed,
-        sessionId,
-        closed.issuedRevision,
-      );
-      liveContentGateRef.current = opened;
-      setLiveContentGate(opened);
+      if (!liveContent.ownsLiveContentSeed(liveContentSeedRef.current, seed.token)) return;
+      releaseDisplayEvents(sessionId);
+      const revealed = liveContent.revealLiveContentSeed(liveContentSeedRef.current, seed.token);
+      liveContentSeedRef.current = revealed;
+      setLiveContentSeed(revealed);
       void retireCancelledTransientMessages(sessionId);
     };
   };
-  const observationAuthorityRef = useRef(liveContent.EMPTY_SESSION_OBSERVATION_AUTHORITY);
-  observationAuthorityRef.current = liveContent.advanceSessionObservationAuthority(
+  const observationAuthorityRef = useRef(liveContent.INITIAL_OBSERVATION_AUTHORITY);
+  observationAuthorityRef.current = liveContent.reconcileObservationAuthority(
     observationAuthorityRef.current,
     requestedSessionId,
     requestedCatalogSession?.profileId,
@@ -1781,10 +1776,10 @@ function AppShellContent({
     publishTranscript,
     uiLocale,
     activeId: requestedHostSession?.id,
-    observationAuthorityRevision: observationAuthorityRef.current.revision,
+    observationAuthorityRevision: observationAuthorityRef.current.generation,
     activeIdRef,
     handleEvent,
-    beginObservationSeed,
+    beginObservationSeed: (sessionId) => beginObservationSeed(sessionId),
     setExecution: sessionUiController.setExecution,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     clearMessageLoadError: sessionUiController.clearMessageLoadError,
@@ -2423,7 +2418,7 @@ function AppShellContent({
                 onLoadEarlierHistory={() => transcriptReadingCommands.current?.loadEarlier()}
                 transcriptTurnIndex={activeId && transcriptTurnIndex?.sessionId === activeId ? transcriptTurnIndex.turns : undefined}
                 onLoadTranscriptTurn={(turn) => transcriptReadingCommands.current?.loadEarlier(turn.sequence)}
-                liveContentSeedRevision={liveContent.visibleLiveContentRevision(liveContentGate, activeId)}
+                liveContentSeedGeneration={liveContent.visibleLiveContentGeneration(liveContentSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
                 messageLoading={activeMessageLoading}

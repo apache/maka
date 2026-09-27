@@ -529,7 +529,7 @@ describe('single live-turn handoff', () => {
       seq: 0, stream: 'stdout', chunk: 'late', redacted: false,
       createdAt: 1, ts: 1,
     });
-    handlers.dropDisplayEvents('session-1');
+    handlers.discardDisplayEvents('session-1');
     liveTurns.set(() => ({}));
     liveTurnBySessionRef.current = liveTurns.get();
 
@@ -537,64 +537,56 @@ describe('single live-turn handoff', () => {
     assert.equal(liveTurns.get()['session-1'], undefined);
   });
 
-  it('keeps catch-up traffic synchronous, then restores frame batching atomically', () => {
-    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+  it('publishes recovery text before returning the session to frame scheduling', () => {
+    const state = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
       'session-1': [armLiveTurn('turn-1')],
     });
-    const liveTurnBySessionRef = { current: liveTurns.get() };
-    const interactions = createStateSetter<InteractionQueues>({});
-    const frames: Array<() => void> = [];
-    let publications = 0;
+    const stateRef = { current: state.get() };
+    const frameQueue: Array<() => void> = [];
+    const publicationCounts: number[] = [];
     const handlers = createAppShellSessionEventHandlers({
       uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
-      liveTurnBySessionRef,
+      liveTurnBySessionRef: stateRef,
       refreshMessages: async () => true,
       refreshSessions: async () => [],
-      setLiveTurnBySession: (updater) => {
-        publications += 1;
-        liveTurns.set(updater);
-        liveTurnBySessionRef.current = liveTurns.get();
+      setLiveTurnBySession(update) {
+        state.set(update);
+        stateRef.current = state.get();
+        publicationCounts.push(publicationCounts.length + 1);
       },
-      setInteractionBySession: interactions.set,
-      showModelSetupToast: () => {},
-      toastApi: { error: () => {} },
-      scheduleFrame: (callback) => { frames.push(callback); },
+      setInteractionBySession: createStateSetter<InteractionQueues>({}).set,
+      showModelSetupToast() {},
+      toastApi: { error() {} },
+      scheduleFrame(callback) {
+        frameQueue.push(callback);
+      },
     });
+    const renderedText = () => state.get()['session-1']?.[0]?.steps[0]?.text?.text;
 
-    handlers.beginDisplayCatchUp('session-1');
+    handlers.holdDisplayEvents('session-1');
     handlers.handleEvent('session-1', {
-      type: 'text_delta',
-      id: 'seed',
-      turnId: 'turn-1',
-      messageId: 'assistant-1',
-      ts: 1,
-      startOffset: 0,
-      text: 'prefix accumulated while away',
+      type: 'text_delta', id: 'recovered', turnId: 'turn-1', messageId: 'assistant-1',
+      ts: 1, startOffset: 0, text: 'restored prefix',
     });
-    assert.equal(publications, 1);
-    assert.equal(frames.length, 0);
-    assert.equal(
-      liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text,
-      'prefix accumulated while away',
+    assert.deepEqual(
+      { publications: publicationCounts.length, frames: frameQueue.length, text: renderedText() },
+      { publications: 1, frames: 0, text: 'restored prefix' },
     );
 
-    handlers.finishDisplayCatchUp('session-1');
+    handlers.releaseDisplayEvents('session-1');
     handlers.handleEvent('session-1', {
-      type: 'text_delta',
-      id: 'live',
-      turnId: 'turn-1',
-      messageId: 'assistant-1',
-      ts: 2,
-      text: ' new',
+      type: 'text_delta', id: 'continued', turnId: 'turn-1', messageId: 'assistant-1',
+      ts: 2, text: ' plus live text',
     });
-    assert.equal(publications, 1);
-    assert.equal(frames.length, 1);
-    frames.shift()?.();
-    assert.equal(publications, 2);
-    assert.equal(
-      liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text,
-      'prefix accumulated while away new',
+    assert.deepEqual(
+      { publications: publicationCounts.length, frames: frameQueue.length },
+      { publications: 1, frames: 1 },
+    );
+    frameQueue.shift()?.();
+    assert.deepEqual(
+      { publications: publicationCounts.length, text: renderedText() },
+      { publications: 2, text: 'restored prefix plus live text' },
     );
   });
 

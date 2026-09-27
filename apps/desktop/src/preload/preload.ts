@@ -2482,7 +2482,7 @@ const makaBridge = {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onObservationPhase?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
       onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
     ): () => void {
@@ -2520,13 +2520,13 @@ const makaBridge = {
                 if (disposed) return;
                 handler(projectDesktopSessionEvent(scope, seededEvent));
               }
-              if (!disposed) onObservationSeed?.('ready');
+              if (!disposed) onObservationPhase?.('ready');
               return;
             }
             if (event.type === 'host_observation_pending') {
               if (lastExecution) lastExecution = { ...lastExecution, available: false };
               onExecution?.(lastExecution);
-              onObservationSeed?.('pending');
+              onObservationPhase?.('pending');
               return;
             }
             if (event.type === 'host_execution') {
@@ -4218,7 +4218,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   makaBridge.sessions.subscribeEvents = (
     sessionId,
     handler,
-    onObservationSeed,
+    onObservationPhase,
     onSeedError,
     onExecution,
   ) => {
@@ -4229,7 +4229,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       let unsubscribe = () => {};
       void waitForLatch('sessions.observe').then(() => {
         if (!disposed) unsubscribe = subscribeSessionEvents(
-          sessionId, handler, onObservationSeed, onSeedError, onExecution,
+          sessionId, handler, onObservationPhase, onSeedError, onExecution,
         );
       });
       return () => { disposed = true; unsubscribe(); };
