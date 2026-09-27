@@ -4375,8 +4375,29 @@ test('Host-owned idle message submission starts a Turn without a Client initiato
       backends.register('ai-sdk', (context) => new FakeBackend(context));
     },
   });
+  const provider = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-a'),
+    { send: async () => {} },
+  );
 
   try {
+    const replaced = await clientCapabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'plugin-agent-provider',
+        offers: [
+          {
+            offerId: 'opaque',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'cwd',
+            label: 'Opaque',
+            tools: [{ serverId: 'opaque', name: 'inspect', inputSchema: { type: 'object' } }],
+          },
+        ],
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(replaced.ok, true);
     const submitted = await fixture.messages.handlers['turn.message.submit'](
       {
         originHostEpoch: fixture.hostEpoch,
@@ -4396,6 +4417,9 @@ test('Host-owned idle message submission starts a Turn without a Client initiato
     if (!submitted.ok) return;
     assert.equal(submitted.result.disposition, 'turn_started');
     if (submitted.result.disposition !== 'turn_started') return;
+    const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(snapshot?.registrationIds, ['plugin-agent-provider']);
+    snapshot?.release();
     assert.ok(
       await fixture.stores.agentRunStore.readRootTurnAdmission(
         fixture.sessionId,
@@ -4405,6 +4429,7 @@ test('Host-owned idle message submission starts a Turn without a Client initiato
     await fixture.coordinator.whenIdle(fixture.sessionId);
   } finally {
     await fixture.coordinator.close();
+    provider.close();
     await clientCapabilities.close();
     await fixture.dispose();
   }
