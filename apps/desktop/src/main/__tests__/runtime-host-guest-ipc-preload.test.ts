@@ -25,7 +25,7 @@ import test from 'node:test';
 import { build } from 'esbuild';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { DesktopSessionSummary, MakaBridge } from '../../preload/bridge-contract.js';
-import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
+import { normalizeSessionSummaryForDisplay } from '../../renderer/application/contracts/session-status-presentation.js';
 
 test('onboarding and workspace search never fan out Owner IPC to a ready Guest', async () => {
   const owner = {
