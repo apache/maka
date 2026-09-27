@@ -41,6 +41,15 @@ class EvalFrameworkTest(unittest.TestCase):
         module.install("pier")
         self.assertEqual(module.selected(), "pier")
 
+    def test_scoped_selection_restores_prior_framework_after_nested_failure(self) -> None:
+        module = self._load_fresh()
+        module.install("harbor")
+        with self.assertRaisesRegex(ValueError, "trial failed"):
+            with module.selected_framework("pier"):
+                self.assertEqual(module.selected(), "pier")
+                raise ValueError("trial failed")
+        self.assertEqual(module.selected(), "harbor")
+
     def test_concurrent_trials_do_not_share_framework_selection(self) -> None:
         module = self._load_fresh()
 

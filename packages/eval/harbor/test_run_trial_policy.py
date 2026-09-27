@@ -59,6 +59,18 @@ class RunTrialPolicyTest(unittest.TestCase):
                 asyncio.run(MODULE.run_trial("other", "1.0.0", Path("missing.json")))
         imported.assert_not_called()
 
+    def test_failed_trial_restores_the_callers_framework(self) -> None:
+        import eval_framework
+
+        async def run() -> None:
+            with eval_framework.selected_framework("pier"):
+                with patch.object(MODULE.importlib.metadata, "version", return_value="different"):
+                    with self.assertRaises(MODULE.FrameworkVersionMismatch):
+                        await MODULE.run_trial("harbor", "1.0.0", Path("missing.json"))
+                self.assertEqual(eval_framework.selected(), "pier")
+
+        asyncio.run(run())
+
     def test_main_installs_the_argv_framework_before_the_trial(self) -> None:
         import eval_framework
 

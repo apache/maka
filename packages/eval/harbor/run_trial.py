@@ -117,9 +117,13 @@ def publish_ready_task(namespace: Path, target: Path) -> None:
 
 
 async def run_trial(framework: str, expected_version: str, config_file: Path) -> None:
-    from eval_framework import install
+    from eval_framework import selected_framework
 
-    install(framework)
+    with selected_framework(framework):
+        await _run_selected_trial(framework, expected_version, config_file)
+
+
+async def _run_selected_trial(framework: str, expected_version: str, config_file: Path) -> None:
     distribution = {"harbor": "harbor", "pier": "datacurve-pier"}[framework]
     if importlib.metadata.version(distribution) != expected_version:
         raise FrameworkVersionMismatch

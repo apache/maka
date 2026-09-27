@@ -329,10 +329,13 @@ and the Electron renderer-reload E2E passes in this branch.
 
 - #3066: a new concurrent-trial test failed under the process-global framework
   selection (`harbor` observed `pier`). Selection now uses a Python `ContextVar`;
-  Python 3.13 Eval tests (88 pass, 12 skips), Eval TypeScript build, and 19
-  lifecycle tests passed. The original TypeScript removal of the environment
-  selector remains in place and was verified by the lifecycle suite; it was
-  not reverted just to reproduce an obsolete selector.
+  the next ablation showed that a failed trial leaked its framework into the
+  caller's context. `run_trial` now scopes selection with a `ContextVar` token
+  and restores the caller's framework after success or error. Python 3.13
+  Harbor tests (93 total, 13 skips), Eval TypeScript build, and 19 lifecycle
+  tests passed. The original TypeScript removal of the environment selector
+  remains in place and was verified by the lifecycle suite; it was not
+  reverted just to reproduce an obsolete selector.
 - #3078: the inventory checker now exposes a pure drift comparison, with tests
   for exact bytes, independently stale Markdown, and missing/extra paths. The
   CI planner also recognizes the new test. The real 301-file inventory check

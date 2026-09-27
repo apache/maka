@@ -19,7 +19,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import Iterator
 
 _FRAMEWORKS = frozenset({"harbor", "pier"})
 _framework: ContextVar[str | None] = ContextVar("eval_framework", default=None)
@@ -29,6 +31,17 @@ def install(framework: str) -> None:
     if framework not in _FRAMEWORKS:
         raise RuntimeError("framework must be harbor or pier")
     _framework.set(framework)
+
+
+@contextmanager
+def selected_framework(framework: str) -> Iterator[None]:
+    if framework not in _FRAMEWORKS:
+        raise RuntimeError("framework must be harbor or pier")
+    token = _framework.set(framework)
+    try:
+        yield
+    finally:
+        _framework.reset(token)
 
 
 def selected() -> str:
