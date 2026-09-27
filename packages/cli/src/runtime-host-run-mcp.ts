@@ -22,9 +22,10 @@ import { stableJsonStringify } from '@maka/core/canonical-json';
 import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
-import type {
-  RuntimeHostConnectionAvailability,
-  RuntimeHostReconnectingConnection,
+import {
+  RuntimeHostOperationError,
+  type RuntimeHostConnectionAvailability,
+  type RuntimeHostReconnectingConnection,
 } from '@maka/runtime-host/client';
 import { createMcpCapabilityProvider } from './mcp-capability-provider.js';
 import { McpCapabilityPublication } from './mcp-capability-publication.js';
@@ -98,7 +99,13 @@ export class RuntimeHostRunMcp {
     if (this.#closed) throw new Error('MCP publication is closed');
     try {
       const config = await createMcpConfigStore(this.#workspaceRoot).get();
-      await this.#manager.sync(config);
+      try {
+        await this.#manager.sync(config);
+      } catch (error) {
+        throw new Error('Session MCP preparation failed; check the workspace MCP configuration', {
+          cause: error,
+        });
+      }
       if (this.#closed) throw new Error('MCP publication is closed');
       this.#sessionConfigurationId = `sha256:${createHash('sha256').update(stableJsonStringify(config)).digest('hex')}`;
       this.#sessionId = sessionId;
@@ -113,6 +120,15 @@ export class RuntimeHostRunMcp {
     if (this.#closed || !this.#sessionId) throw new Error('MCP publication is not prepared');
     const state = await this.#publication.settle();
     if (state !== 'published') {
+      if (
+        this.#publication.lastError instanceof RuntimeHostOperationError &&
+        this.#publication.lastError.code === 'session_binding_conflict'
+      ) {
+        throw new Error(
+          'Session MCP configuration conflicts with its frozen tools; restore the same configuration before resuming',
+          { cause: this.#publication.lastError },
+        );
+      }
       throw new Error('Session MCP capability publication is unavailable', {
         cause: this.#publication.lastError,
       });
