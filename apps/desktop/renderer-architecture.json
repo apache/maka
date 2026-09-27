@@ -788,7 +788,7 @@
           "react": 1
         },
         "importSpecifiers": 92,
-        "nonTriviaTokens": 12139
+        "nonTriviaTokens": 12141
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
