@@ -158,7 +158,10 @@ export class RuntimeHostSessionProjector {
     this.#projectMessageAdmissions = true;
   }
 
-  seedActive(includeAssistantText: boolean): SessionEvent[] {
+  seedActive(
+    includeAssistantText: boolean,
+    options: { includeEmptyQueue?: boolean } = {},
+  ): SessionEvent[] {
     const root = this.#snapshot.rootTurn;
     if (!root) {
       // A Session whose root Turn is gone still owns an authoritative queue:
@@ -175,11 +178,15 @@ export class RuntimeHostSessionProjector {
       return [projectQueueUpdate(this.#unplacedQueue(queue), '', this.#now())];
     }
     const events: SessionEvent[] = [];
-    // The seed is the only queue evidence a re-observing or reconnecting client
-    // receives — an empty queue must still clear its last-seen entries.
-    const queueEvents = [
-      projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now()),
-    ];
+    // A queue-rendering client needs the empty seed to clear entries it saw
+    // before re-observing. ACP ignores queue_update, and delivering one after
+    // an output failure would stop the Host Turn it restored.
+    const queueEvents =
+      options.includeEmptyQueue ||
+      this.#projectMessageAdmissions ||
+      queueHasEntries(this.#snapshot.queue)
+        ? [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())]
+        : [];
     if (this.#projectMessageAdmissions) {
       events.push(
         ...projectMessageAdmissionEvents(
@@ -741,6 +748,10 @@ function queueChanged(
   next: SessionMessageQueueProjection,
 ): boolean {
   return previous.hostEpoch !== next.hostEpoch || previous.queueRevision !== next.queueRevision;
+}
+
+function queueHasEntries(queue: SessionMessageQueueProjection): boolean {
+  return queue.steering.length > 0 || queue.followup.length > 0;
 }
 
 function projectQueueUpdate(
