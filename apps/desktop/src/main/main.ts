@@ -279,10 +279,10 @@ const DEV_SINGLETON_COPY = {
     exit: 'Exit',
   },
   ko: {
-    title: 'Maka Dev is already running',
-    message: 'Another Maka Dev instance is using this development profile.',
-    detail: (profilePath: string) => `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
-    exit: 'Exit',
+    title: 'Maka Dev가 이미 실행 중입니다',
+    message: '다른 Maka Dev 인스턴스가 이 개발 프로필을 사용 중입니다.',
+    detail: (profilePath: string) => `개발 프로필: ${profilePath}\n\n실행 중인 인스턴스를 종료한 후 다시 시도하세요.`,
+    exit: '종료',
   },
 } satisfies UiCatalog<{
   title: string;

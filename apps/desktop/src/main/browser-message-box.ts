@@ -640,4 +640,4 @@ function escapeHtml(value: string): string {
   });
 }
 
-const CLOSE_LABEL: UiCatalog<string> = { 'zh-CN': '关闭', 'zh-TW': '關閉', en: 'Close', ko: 'Close' };
+const CLOSE_LABEL: UiCatalog<string> = { 'zh-CN': '关闭', 'zh-TW': '關閉', en: 'Close', ko: '닫기' };
