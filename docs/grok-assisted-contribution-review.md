@@ -248,8 +248,9 @@ separate security review with unit and live-proxy regression checks.
 handling. Its three Grok-tagged follow-ups suppress XTVERSION replies, preserve
 cursor-position reports, and mark CLI `/transcript` as local while a turn runs.
 The implementation moved to the workbar terminal feature; the three behaviors
-and their unit tests survive. The Desktop query suite (6 tests) and CLI
-mid-turn `/transcript` test pass. Reverting the squash would remove the
+and their unit tests survive. A new registered-handler test verifies status,
+CPR, and XTVERSION routing at the parser boundary. The Desktop query suite
+(7 tests) and CLI mid-turn `/transcript` test pass. Reverting the squash would remove the
 untagged implementation too. Review the tagged behaviors at their current
 boundaries, not the terminal feature as a wholly Grok-authored change.
 

@@ -166,3 +166,30 @@ test('registers and disposes every xterm response-generating query handler', () 
   queryReplies.dispose();
   assert.equal(disposed, registered.length);
 });
+
+test('registered handlers leave cursor reports to xterm while suppressing capability replies', () => {
+  const handlers = new Map<string, (params: (number | number[])[]) => boolean>();
+  const disposable = (): IDisposable => ({ dispose() {} });
+  const parser = {
+    registerOscHandler: () => disposable(),
+    registerCsiHandler: (id: unknown, callback: (params: (number | number[])[]) => boolean) => {
+      handlers.set(JSON.stringify(id), callback);
+      return disposable();
+    },
+    registerDcsHandler: () => disposable(),
+  } as unknown as IParser;
+  const registration = suppressTerminalQueryReplies({ parser, write() {} });
+  try {
+    const status = handlers.get(JSON.stringify({ final: 'n' }));
+    const version = handlers.get(JSON.stringify({ prefix: '>', final: 'q' }));
+    assert.ok(status);
+    assert.ok(version);
+    assert.equal(status([5]), true);
+    assert.equal(status([6]), false);
+    assert.equal(handlers.has(JSON.stringify({ prefix: '?', final: 'n' })), false);
+    assert.equal(version([0]), true);
+    assert.equal(version([1]), false);
+  } finally {
+    registration.dispose();
+  }
+});
