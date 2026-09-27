@@ -336,6 +336,7 @@ export const Composer = forwardRef<
     stopPending?: boolean;
     pendingMessages?: readonly import('./chat-view.js').TransientUserMessageProjection[];
     queuedMessages?: readonly MessageQueueEntryProjection[];
+    queuedMessageRevision?: number;
     /** Promote a queued follow-up into the active Turn (调整方向). */
     onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Take a queued entry out of the queue and hand its content back to the draft. */
@@ -343,7 +344,9 @@ export const Composer = forwardRef<
     /** Remove one queued entry without restoring it. */
     onDeleteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Reorder the follow-up queue; entryIds is the full intended order. */
-    onReorderQueuedEntries?(entryIds: readonly string[]): void | Promise<void>;
+    onReorderQueuedEntries?(
+      entryIds: readonly string[], expectedQueueRevision: number,
+    ): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
     draftKey?: string;
     /** Optional host persistence for reload-safe draft scopes. */
@@ -1957,6 +1960,7 @@ export const Composer = forwardRef<
               {!props.hidden && queueCount > 0 ? (
                 <ComposerMessageQueue
                   queuedMessages={queuedMessages}
+                  queueRevision={props.queuedMessageRevision}
                   copy={copy}
                   onPromoteEntry={props.onPromoteQueuedEntry}
                   onEditEntry={props.onEditQueuedEntry}

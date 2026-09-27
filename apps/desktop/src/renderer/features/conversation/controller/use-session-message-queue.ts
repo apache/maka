@@ -63,7 +63,7 @@ export function useSessionMessageQueue(options: {
   promoteQueuedEntry: (entryId: string) => Promise<void>;
   editQueuedEntry: (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
-  reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
+  reorderQueuedEntries: (entryIds: readonly string[], expectedQueueRevision?: number) => Promise<void>;
 } {
   const { sessionId, queue, transientMessages, activeSessionId } = options;
   const services = useConversationServices();
@@ -128,8 +128,7 @@ export function useSessionMessageQueue(options: {
       restoreDraft: (draft) => restoreDraft(targetSessionId, draft),
     })),
     deleteQueuedEntry: (entryId) => runAction((targetSessionId) => services.sessions.retractQueueEntry(targetSessionId, entryId)),
-    reorderQueuedEntries: (entryIds) => {
-      const expectedQueueRevision = queue?.queueRevision;
+    reorderQueuedEntries: (entryIds, expectedQueueRevision = queue?.queueRevision) => {
       if (expectedQueueRevision === undefined) {
         return Promise.reject(new Error('Message queue is not ready for reordering'));
       }

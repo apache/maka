@@ -40,10 +40,13 @@ function queued(entryId: string, text: string): MessageQueueEntryProjection {
 
 async function mountQueue(props: {
   queuedMessages: readonly MessageQueueEntryProjection[];
+  queueRevision?: number;
   onEditEntry?(entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>): void | Promise<void>;
   onDeleteEntry?(entryId: string): void | Promise<void>;
   onPromoteEntry?(entryId: string): void | Promise<void>;
-  onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
+  onReorderEntries?(
+    entryIds: readonly string[], expectedQueueRevision: number,
+  ): void | Promise<void>;
 }) {
   const dom = installDom();
   const { createRoot } = await import('react-dom/client');
@@ -148,14 +151,15 @@ test('queue actions stay disabled until the entry is Host-admitted', async () =>
 });
 
 test('dragging reorders the Host-owned id list', async () => {
-  const reordered: string[][] = [];
+  const reordered: Array<{ ids: readonly string[]; revision: number }> = [];
   const view = await mountQueue({
     queuedMessages: [
       queued('entry-1', 'first follow-up'),
       queued('entry-2', 'second follow-up'),
       queued('entry-3', 'retract this follow-up'),
     ],
-    onReorderEntries: (ids) => { reordered.push([...ids]); },
+    queueRevision: 1,
+    onReorderEntries: (ids, revision) => { reordered.push({ ids: [...ids], revision }); },
   });
   try {
     const grips = view.document.querySelectorAll('[draggable="true"]');
@@ -167,7 +171,7 @@ test('dragging reorders the Host-owned id list', async () => {
       }));
       target.dispatchEvent(new window.Event('drop', { bubbles: true }));
     });
-    assert.deepEqual(reordered, [['entry-2', 'entry-1', 'entry-3']]);
+    assert.deepEqual(reordered, [{ ids: ['entry-2', 'entry-1', 'entry-3'], revision: 1 }]);
   } finally {
     await view.close();
   }

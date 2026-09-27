@@ -1744,17 +1744,15 @@ function AppShellContent({
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
-    return next.generation;
-  };
-  const completeObservationSeed = (sessionId: string, generation: number) => {
-    const current = activeEventSeedRef.current;
-    if (current.sessionId !== sessionId || current.generation !== generation) return;
-    flushDisplayEvents(sessionId);
-    markDisplayReady(sessionId);
-    const next = liveContent.completeLiveContentSeed(current, sessionId, generation);
-    activeEventSeedRef.current = next;
-    setActiveEventSeed(next);
-    void retireCancelledTransientMessages(sessionId);
+    return () => {
+      if (activeEventSeedRef.current !== next) return;
+      flushDisplayEvents(sessionId);
+      markDisplayReady(sessionId);
+      const ready = liveContent.completeLiveContentSeed(next, sessionId, next.generation);
+      activeEventSeedRef.current = ready;
+      setActiveEventSeed(ready);
+      void retireCancelledTransientMessages(sessionId);
+    };
   };
   const observationAuthorityRef = useRef(liveContent.EMPTY_SESSION_OBSERVATION_AUTHORITY);
   observationAuthorityRef.current = liveContent.advanceSessionObservationAuthority(
@@ -1771,7 +1769,6 @@ function AppShellContent({
     handleEvent,
     beginObservationSeed,
     setExecution: sessionUiController.setExecution,
-    completeObservationSeed,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     clearMessageLoadError: sessionUiController.clearMessageLoadError,
     setMessageLoadPending,
@@ -2336,6 +2333,7 @@ function AppShellContent({
                   onStop={stop}
                   pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}
+                  queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}
                   onEditQueuedEntry={activeId ? editQueuedEntry : undefined}
                   onDeleteQueuedEntry={activeId ? deleteQueuedEntry : undefined}

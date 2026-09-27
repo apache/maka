@@ -42,11 +42,14 @@ type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
  */
 export interface ComposerMessageQueueProps {
   queuedMessages: readonly ComposerQueueEntry[];
+  queueRevision?: number;
   copy: ConversationCopy['composer'];
   onPromoteEntry?(entryId: string): void | Promise<void>;
   onEditEntry?(entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>): void | Promise<void>;
   onDeleteEntry?(entryId: string): void | Promise<void>;
-  onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
+  onReorderEntries?(
+    entryIds: readonly string[], expectedQueueRevision: number,
+  ): void | Promise<void>;
 }
 
 /** The plate owns next-turn sends only; steering renders in the transcript. */
@@ -111,7 +114,9 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     if (!reordered) return;
     // The Host projection is the only rendered order. Keep other queue actions
     // pending until this request settles instead of maintaining a local overlay.
-    void runEntryAction(fromId, () => props.onReorderEntries?.(reordered));
+    void runEntryAction(fromId, () =>
+      props.onReorderEntries?.(reordered, sourceDrag.queueRevision)
+    );
   }
 
   return (
