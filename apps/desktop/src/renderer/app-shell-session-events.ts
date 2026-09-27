@@ -55,20 +55,19 @@ export interface AppShellSessionEventHandlers {
   handleEvent(sessionId: string, event: SessionEvent): void;
   reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void;
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
-  flushDisplayEvents(sessionId: string): void;
+  beginDisplayCatchUp(sessionId: string): void;
+  finishDisplayCatchUp(sessionId: string): void;
   dropDisplayEvents(sessionId: string): void;
-  markDisplayPending(sessionId: string): void;
-  markDisplayReady(sessionId: string): void;
 }
 
 export interface AppShellSessionDisplayBatch {
   readonly pendingEvents: Map<string, SessionEvent[]>;
-  readonly displayPendingSessions: Set<string>;
+  readonly catchUpSessions: Set<string>;
   framePending: boolean;
 }
 
 export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch {
-  return { pendingEvents: new Map(), displayPendingSessions: new Set(), framePending: false };
+  return { pendingEvents: new Map(), catchUpSessions: new Set(), framePending: false };
 }
 
 export function createAppShellSessionEventHandlers(options: {
@@ -189,21 +188,18 @@ export function createAppShellSessionEventHandlers(options: {
     updateLiveTurn(sessionId, events);
   }
 
+  function beginDisplayCatchUp(sessionId: string): void {
+    displayBatch.catchUpSessions.add(sessionId);
+  }
+
+  function finishDisplayCatchUp(sessionId: string): void {
+    flushDisplayEvents(sessionId);
+    displayBatch.catchUpSessions.delete(sessionId);
+  }
+
   function dropDisplayEvents(sessionId: string): void {
     displayBatch.pendingEvents.delete(sessionId);
-    displayBatch.displayPendingSessions.delete(sessionId);
-  }
-
-  function markDisplayPending(sessionId: string): void {
-    displayBatch.displayPendingSessions.add(sessionId);
-  }
-
-  function markDisplayReady(sessionId: string): void {
-    displayBatch.displayPendingSessions.delete(sessionId);
-  }
-
-  function canBatchDisplayEvents(sessionId: string): boolean {
-    return !displayBatch.displayPendingSessions.has(sessionId);
+    displayBatch.catchUpSessions.delete(sessionId);
   }
 
   function updateLiveTurn(sessionId: string, events: readonly SessionEvent[]): void {
@@ -282,7 +278,7 @@ export function createAppShellSessionEventHandlers(options: {
     if (
       scheduleFrame
       && activeIdRef.current === sessionId
-      && canBatchDisplayEvents(sessionId)
+      && !displayBatch.catchUpSessions.has(sessionId)
       && (
         event.type === 'text_delta'
         || event.type === 'thinking_delta'
@@ -415,10 +411,9 @@ export function createAppShellSessionEventHandlers(options: {
     handleEvent,
     reconcilePersistedMessages,
     settleAssistantStreaming,
-    flushDisplayEvents,
+    beginDisplayCatchUp,
+    finishDisplayCatchUp,
     dropDisplayEvents,
-    markDisplayPending,
-    markDisplayReady,
   };
 }
 

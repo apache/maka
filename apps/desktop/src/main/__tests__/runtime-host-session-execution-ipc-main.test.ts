@@ -81,14 +81,14 @@ for (const phase of ['connecting', 'seeding'] as const) {
       const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
       void observing.catch(() => undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.deepEqual(observations.observedSessionIds(), ['session-1']);
+      assert.deepEqual(observations.observationSessionIds(), ['session-1']);
 
       if (cancellation === 'unobserve') await observations.unobserve('observer-1');
       else ipc.rendererDestroyed();
       finishSeed();
 
       assert.deepEqual(await observing, { kind: 'cancelled' });
-      assert.deepEqual(observations.observedSessionIds(), []);
+      assert.deepEqual(observations.observationSessionIds(), []);
       assert.deepEqual(await observations.attach(source), []);
       assert.equal(seeds, phase === 'seeding' ? 1 : 0);
       assert.deepEqual(errors, []);
@@ -2521,9 +2521,9 @@ test('renderer reload releases old observations without accumulating destroyed l
     assert.equal(ipc.rendererListenerCount(), 2);
     ipc.rendererNavigate(true); // Same-document navigation keeps live subscriptions.
     ipc.rendererNavigate(false, false); // So do child-frame navigations.
-    assert.deepEqual(registry.observedSessionIds(), ['session-1']);
+    assert.deepEqual(registry.observationSessionIds(), ['session-1']);
     ipc.rendererNavigate();
-    assert.deepEqual(registry.observedSessionIds(), []);
+    assert.deepEqual(registry.observationSessionIds(), []);
     assert.equal(ipc.rendererListenerCount(), 1);
   }
   assert.equal(removed.length, 20);
@@ -2540,7 +2540,7 @@ test('an observation admitted across document replacement is cancelled before re
   ipc.rendererNavigate();
   resolving.resolve();
   assert.deepEqual(await observing, { kind: 'cancelled' });
-  assert.deepEqual(registry.observedSessionIds(), []);
+  assert.deepEqual(registry.observationSessionIds(), []);
   await registry.close();
 });
 

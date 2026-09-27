@@ -17,10 +17,10 @@
  * under the License.
  */
 
-export interface LiveContentSeed {
+export interface LiveContentGate {
   readonly sessionId: string | undefined;
-  readonly generation: number;
-  readonly ready: boolean;
+  readonly issuedRevision: number;
+  readonly visibleRevision: number;
 }
 
 export interface SessionObservationAuthority {
@@ -58,49 +58,39 @@ export function advanceSessionObservationAuthority(
   return { sessionId, profileId, revision: current.revision + 1 };
 }
 
-export const EMPTY_LIVE_CONTENT_SEED: LiveContentSeed = {
+export const EMPTY_LIVE_CONTENT_GATE: LiveContentGate = {
   sessionId: undefined,
-  generation: 0,
-  ready: false,
+  issuedRevision: 0,
+  visibleRevision: 0,
 };
 
-export function beginLiveContentSeed(
-  current: LiveContentSeed,
+export function closeLiveContentGate(
+  current: LiveContentGate,
   sessionId: string,
-): LiveContentSeed {
+): LiveContentGate {
   return {
     sessionId,
-    generation: current.generation + 1,
-    ready: false,
+    issuedRevision: current.issuedRevision + 1,
+    visibleRevision: 0,
   };
 }
 
-export function completeLiveContentSeed(
-  current: LiveContentSeed,
+export function openLiveContentGate(
+  current: LiveContentGate,
   sessionId: string,
-  generation: number,
-): LiveContentSeed {
-  if (current.sessionId !== sessionId || current.generation !== generation) {
+  revision: number,
+): LiveContentGate {
+  if (current.sessionId !== sessionId || current.issuedRevision !== revision) {
     return current;
   }
-  return {
-    sessionId,
-    generation: current.generation,
-    ready: true,
-  };
+  if (current.visibleRevision === revision) return current;
+  return { ...current, visibleRevision: revision };
 }
 
-export function liveContentSeedRevision(
-  seed: LiveContentSeed,
+export function visibleLiveContentRevision(
+  gate: LiveContentGate,
   activeSessionId: string | undefined,
 ): number {
-  if (
-    !activeSessionId
-    || seed.sessionId !== activeSessionId
-    || seed.generation === 0
-    || !seed.ready
-  ) {
-    return 0;
-  }
-  return seed.generation;
+  if (!activeSessionId || gate.sessionId !== activeSessionId) return 0;
+  return gate.visibleRevision;
 }

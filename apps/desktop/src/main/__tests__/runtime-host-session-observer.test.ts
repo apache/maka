@@ -1911,7 +1911,7 @@ test("ignores a stale seed failure after its replacement succeeds", async () => 
   assert.deepEqual(await attaching, ["session-1"]);
   await observing;
   assert.equal(ready, true);
-  assert.deepEqual(observations.observedSessionIds(), ["session-1"]);
+  assert.deepEqual(observations.observationSessionIds(), ["session-1"]);
   await observations.close();
 });
 

@@ -1652,10 +1652,9 @@ function AppShellContent({
     handleEvent,
     reconcilePersistedMessages,
     settleAssistantStreaming,
-    flushDisplayEvents,
+    beginDisplayCatchUp,
+    finishDisplayCatchUp,
     dropDisplayEvents,
-    markDisplayPending,
-    markDisplayReady,
   } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
@@ -1734,23 +1733,26 @@ function AppShellContent({
     themePalette,
     themePref,
   });
-  const [activeEventSeed, setActiveEventSeed] = useState<liveContent.LiveContentSeed>(
-    liveContent.EMPTY_LIVE_CONTENT_SEED,
+  const [liveContentGate, setLiveContentGate] = useState<liveContent.LiveContentGate>(
+    liveContent.EMPTY_LIVE_CONTENT_GATE,
   );
-  const activeEventSeedRef = useRef(activeEventSeed);
-  activeEventSeedRef.current = activeEventSeed;
+  const liveContentGateRef = useRef(liveContentGate);
+  liveContentGateRef.current = liveContentGate;
   const beginObservationSeed = (sessionId: string) => {
-    const next = liveContent.beginLiveContentSeed(activeEventSeedRef.current, sessionId);
-    activeEventSeedRef.current = next;
-    markDisplayPending(sessionId);
-    setActiveEventSeed(next);
+    const closed = liveContent.closeLiveContentGate(liveContentGateRef.current, sessionId);
+    liveContentGateRef.current = closed;
+    beginDisplayCatchUp(sessionId);
+    setLiveContentGate(closed);
     return () => {
-      if (activeEventSeedRef.current !== next) return;
-      flushDisplayEvents(sessionId);
-      markDisplayReady(sessionId);
-      const ready = liveContent.completeLiveContentSeed(next, sessionId, next.generation);
-      activeEventSeedRef.current = ready;
-      setActiveEventSeed(ready);
+      if (liveContentGateRef.current !== closed) return;
+      finishDisplayCatchUp(sessionId);
+      const opened = liveContent.openLiveContentGate(
+        closed,
+        sessionId,
+        closed.issuedRevision,
+      );
+      liveContentGateRef.current = opened;
+      setLiveContentGate(opened);
       void retireCancelledTransientMessages(sessionId);
     };
   };
@@ -2433,7 +2435,7 @@ function AppShellContent({
                 onLoadEarlierHistory={() => transcriptReadingCommands.current?.loadEarlier()}
                 transcriptTurnIndex={activeId && transcriptTurnIndex?.sessionId === activeId ? transcriptTurnIndex.turns : undefined}
                 onLoadTranscriptTurn={(turn) => transcriptReadingCommands.current?.loadEarlier(turn.sequence)}
-                liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
+                liveContentSeedRevision={liveContent.visibleLiveContentRevision(liveContentGate, activeId)}
                 messages={messages}
                 transientMessages={transcriptTransientMessages}
                 messageLoading={activeMessageLoading}

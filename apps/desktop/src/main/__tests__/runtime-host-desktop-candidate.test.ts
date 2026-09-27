@@ -1173,7 +1173,7 @@ test('forgets an observed Session the Host no longer serves instead of blocking 
 
   // The stale active registration is forgotten instead of failing the
   // candidate start, and the renderer is told to drop the Session view.
-  assert.deepEqual(observations.observedSessionIds(), []);
+  assert.deepEqual(observations.observationSessionIds(), []);
   assert.ok(
     changes.some(
       ({ reason, sessionId }) => reason === 'deleted' && sessionId === 'session-1',
@@ -1192,7 +1192,7 @@ test('forgets an observed Session the Host no longer serves instead of blocking 
     observations,
   );
   await thirdIpc.invoke('sessions:observe', 'session-2', 'observer-2');
-  assert.deepEqual(observations.observedSessionIds(), ['session-2']);
+  assert.deepEqual(observations.observationSessionIds(), ['session-2']);
   await thirdCandidate.close();
   await observations.close();
 });

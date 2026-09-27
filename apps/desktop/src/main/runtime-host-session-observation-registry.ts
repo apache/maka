@@ -233,8 +233,12 @@ export class RuntimeHostSessionObservationRegistry {
     return [...new Set(restored.filter((sessionId): sessionId is string => !!sessionId))];
   }
 
-  observedSessionIds(): string[] {
-    return [...new Set([...this.#registrations.values()].map((registration) => registration.sessionId))];
+  observationSessionIds(): string[] {
+    const sessionIds = new Set<string>();
+    for (const registration of this.#registrations.values()) {
+      sessionIds.add(registration.sessionId);
+    }
+    return [...sessionIds];
   }
 
   trackedSessionIds(): string[] {

@@ -537,7 +537,7 @@ describe('single live-turn handoff', () => {
     assert.equal(liveTurns.get()['session-1'], undefined);
   });
 
-  it('applies catch-up deltas immediately until the returning session is seeded', () => {
+  it('keeps catch-up traffic synchronous, then restores frame batching atomically', () => {
     const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
       'session-1': [armLiveTurn('turn-1')],
     });
@@ -562,7 +562,7 @@ describe('single live-turn handoff', () => {
       scheduleFrame: (callback) => { frames.push(callback); },
     });
 
-    handlers.markDisplayPending('session-1');
+    handlers.beginDisplayCatchUp('session-1');
     handlers.handleEvent('session-1', {
       type: 'text_delta',
       id: 'seed',
@@ -579,8 +579,7 @@ describe('single live-turn handoff', () => {
       'prefix accumulated while away',
     );
 
-    handlers.flushDisplayEvents('session-1');
-    handlers.markDisplayReady('session-1');
+    handlers.finishDisplayCatchUp('session-1');
     handlers.handleEvent('session-1', {
       type: 'text_delta',
       id: 'live',

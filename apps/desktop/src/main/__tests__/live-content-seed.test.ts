@@ -20,12 +20,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  EMPTY_LIVE_CONTENT_SEED,
+  EMPTY_LIVE_CONTENT_GATE,
   EMPTY_SESSION_OBSERVATION_AUTHORITY,
   advanceSessionObservationAuthority,
-  beginLiveContentSeed,
-  completeLiveContentSeed,
-  liveContentSeedRevision,
+  closeLiveContentGate,
+  openLiveContentGate,
+  visibleLiveContentRevision,
 } from '../../renderer/live-content-seed.js';
 
 test('catalog hydration does not replace an already-bound Session observation', () => {
@@ -52,48 +52,40 @@ test('a real Session observation authority handoff advances the revision', () =>
   assert.equal(handedOff.revision, selected.revision + 1);
 });
 
-test('withholds live content until the current observation generation is ready', () => {
-  const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
-  assert.equal(liveContentSeedRevision(first, 'session-a'), 0);
+test('live content gate publishes only the matching Session observation revision', () => {
+  const first = closeLiveContentGate(EMPTY_LIVE_CONTENT_GATE, 'session-a');
+  const switched = closeLiveContentGate(first, 'session-b');
+  const returned = closeLiveContentGate(switched, 'session-a');
 
-  const ready = completeLiveContentSeed(first, 'session-a', first.generation);
-  assert.equal(liveContentSeedRevision(ready, 'session-a'), first.generation);
-  assert.equal(liveContentSeedRevision(ready, 'session-b'), 0);
+  assert.deepEqual(
+    [first.issuedRevision, switched.issuedRevision, returned.issuedRevision],
+    [1, 2, 3],
+  );
+  for (const sessionId of ['session-a', 'session-b']) {
+    assert.equal(visibleLiveContentRevision(returned, sessionId), 0);
+  }
+
+  const stale = openLiveContentGate(returned, 'session-a', first.issuedRevision);
+  assert.equal(stale, returned);
+  assert.equal(visibleLiveContentRevision(stale, 'session-a'), 0);
+
+  const visible = openLiveContentGate(returned, 'session-a', returned.issuedRevision);
+  assert.equal(visibleLiveContentRevision(visible, 'session-a'), returned.issuedRevision);
+  assert.equal(visibleLiveContentRevision(visible, 'session-b'), 0);
 });
 
-test('A → B → A does not reuse the previous ready generation', () => {
-  const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
-  const firstReady = completeLiveContentSeed(first, 'session-a', first.generation);
-  assert.equal(liveContentSeedRevision(firstReady, 'session-a'), first.generation);
+test('recovery closes previously visible content until its own revision opens', () => {
+  const initial = closeLiveContentGate(EMPTY_LIVE_CONTENT_GATE, 'session-a');
+  const visible = openLiveContentGate(initial, 'session-a', initial.issuedRevision);
+  const recovering = closeLiveContentGate(visible, 'session-a');
 
-  const pendingB = beginLiveContentSeed(firstReady, 'session-b');
-  assert.equal(liveContentSeedRevision(pendingB, 'session-b'), 0);
-  assert.equal(liveContentSeedRevision(pendingB, 'session-a'), 0);
+  assert.equal(visibleLiveContentRevision(visible, 'session-a'), 1);
+  assert.equal(visibleLiveContentRevision(recovering, 'session-a'), 0);
 
-  const pendingA = beginLiveContentSeed(pendingB, 'session-a');
-  assert.equal(pendingA.generation, 3);
-  assert.equal(liveContentSeedRevision(pendingA, 'session-a'), 0);
-
-  const recovered = completeLiveContentSeed(pendingA, 'session-a', pendingA.generation);
-  assert.equal(liveContentSeedRevision(recovered, 'session-a'), 3);
-});
-
-test('a recovery generation only exposes live content after that generation completes', () => {
-  const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
-  const firstReady = completeLiveContentSeed(first, 'session-a', first.generation);
-  const recovering = beginLiveContentSeed(firstReady, 'session-a');
-  assert.equal(liveContentSeedRevision(recovering, 'session-a'), 0);
-
-  const ready = completeLiveContentSeed(recovering, 'session-a', recovering.generation);
-  assert.equal(liveContentSeedRevision(ready, 'session-a'), 2);
-});
-
-test('a stale ready signal cannot complete a newer observation of the same Session', () => {
-  const initial = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
-  const recovering = beginLiveContentSeed(initial, 'session-a');
-  const stale = completeLiveContentSeed(recovering, 'session-a', initial.generation);
-  assert.equal(stale, recovering);
-  assert.equal(liveContentSeedRevision(stale, 'session-a'), 0);
-  const ready = completeLiveContentSeed(stale, 'session-a', recovering.generation);
-  assert.equal(liveContentSeedRevision(ready, 'session-a'), recovering.generation);
+  const recovered = openLiveContentGate(
+    recovering,
+    'session-a',
+    recovering.issuedRevision,
+  );
+  assert.equal(visibleLiveContentRevision(recovered, 'session-a'), 2);
 });

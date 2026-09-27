@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
+import { useMemo, useRef, type ComponentProps, type ReactNode } from 'react';
 import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
@@ -140,32 +140,34 @@ export function ChatMessageSurface({
   const liveTurns = useExternalStoreSelector(sessionUiController, selectLiveTurns, activeSessionId);
   const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
   const seededLiveTurns = liveContentSeedRevision > 0 ? liveTurns : undefined;
-  const [activation, setActivation] = useState(() => ({
+  const activationRef = useRef({
     sessionId: activeSessionId,
     seedRevision: liveContentSeedRevision,
     initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
-  }));
+  });
+  let activation = activationRef.current;
   if (
     activation.sessionId !== activeSessionId
     || activation.seedRevision !== liveContentSeedRevision
   ) {
-    setActivation({
+    activation = {
       sessionId: activeSessionId,
       seedRevision: liveContentSeedRevision,
       initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
-    });
+    };
   } else if (
     activation.initialLiveContent
     && (
       !seededLiveTurns?.some((turn) => turn.turnId === activation.initialLiveContent?.turnId && !turn.terminal)
     )
   ) {
-    setActivation({
+    activation = {
       sessionId: activeSessionId,
       seedRevision: liveContentSeedRevision,
       initialLiveContent: undefined,
-    });
+    };
   }
+  activationRef.current = activation;
   // Select the raw per-session record: its identity is the store's own, so a
   // change to any OTHER map cannot rebuild the array. Deriving it in the
   // selector would need a comparator to say the same thing, and would still
