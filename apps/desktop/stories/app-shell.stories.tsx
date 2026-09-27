@@ -20,11 +20,16 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable';
-import { useEffect, useReducer, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import type { SessionEvent } from '@maka/core/events';
+import type {
+  MessageQueueEntryProjection,
+  MessageQueuePlacement,
+  QueueUpdateEvent,
+  SessionEvent,
+} from '@maka/core/events';
 import {
   ChatSurfaceLayout,
   ChatView,
@@ -37,8 +42,9 @@ import {
   TitlebarSessionIdentity,
   ToastProvider,
 } from '@maka/ui';
-import type { ChatModelChoice, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
+import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
+import { deriveMessageQueueProjection } from '../src/renderer/application/contracts/message-queue-projection';
 import { withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
 import { AppShellTitlebar } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
@@ -735,46 +741,194 @@ export const PromptSentBeforeTurnLands: Story = {
   },
 };
 
-// Real path: a steering send the Host queued but has not consumed yet derives
-// from the queue snapshot at the render boundary — the transcript bubble is
-// that entry, with retract-backed edit/delete. The plate shows follow-ups only.
-export const QueuedSteeringInTranscript: Story = {
-  render: () => (
-    <ComposedShell
-      session={{ status: 'running', streaming: true }}
-      chat={{
-        activeTurn: { turnId: 'turn-s' },
-        messages: [
-          user('msg-s-1', 'turn-s', 3, '把整套测试跑一遍，看看那三个失败用例是不是同一个原因。'),
-          { type: 'turn_state', id: 'state-s', turnId: 'turn-s', ts: NOW - 30_000, status: 'running' },
-        ],
-        liveTurns: [{
-          turnId: 'turn-s', steps: [{
-            stepId: 'msg-assistant-s',
-            text: { text: '先把失败用例的栈对上。', truncated: false, complete: false },
-            tools: [],
-          }],
-        }],
-        transientMessages: withQueuedSteeringTransients([], {
-          ts: NOW - 10_000,
-          entries: [{
-            entryId: 'entry-steer',
-            messageId: 'msg-steer-queued',
-            content: { text: '顺便确认一下 coverage 阈值没有变。' },
-            placement: 'current_turn',
-            state: 'queued',
-          }],
-        }, { locale: 'zh-CN', retract: async () => {}, restoreDraft: () => {} }),
-      }}
-    />
-  ),
+const QUEUE_TURN = 'turn-queue';
+
+type QueueHost = {
+  revision: number;
+  steering: MessageQueueEntryProjection[];
+  followup: MessageQueueEntryProjection[];
+  liveTurns: LiveTurnBuffer | undefined;
+};
+type QueueHostAction =
+  | { type: 'enqueue'; text: string; placement: MessageQueuePlacement }
+  | { type: 'promote' | 'retract'; entryId: string }
+  | { type: 'update'; entryId: string; text: string }
+  | { type: 'reorder'; entryIds: readonly string[] }
+  | { type: 'consume' };
+
+// Stands in for the Runtime Host queue: every mutation bumps the revision the
+// shell reads through the same queue_update projection production uses, and
+// consumption echoes the steering_message a step boundary emits.
+function reduceQueueHost(host: QueueHost, action: QueueHostAction): QueueHost {
+  const revision = host.revision + 1;
+  const without = (entries: MessageQueueEntryProjection[], entryId: string) =>
+    entries.filter((entry) => entry.entryId !== entryId);
+  switch (action.type) {
+    case 'enqueue': {
+      const entry: MessageQueueEntryProjection = {
+        entryId: `entry-${revision}`,
+        messageId: `msg-queued-${revision}`,
+        content: { text: action.text },
+        placement: action.placement,
+        state: 'queued',
+      };
+      return action.placement === 'current_turn'
+        ? { ...host, revision, steering: [...host.steering, entry] }
+        : { ...host, revision, followup: [...host.followup, entry] };
+    }
+    case 'promote': {
+      const entry = host.followup.find((candidate) => candidate.entryId === action.entryId);
+      if (!entry) return host;
+      return {
+        ...host,
+        revision,
+        followup: without(host.followup, action.entryId),
+        steering: [...host.steering, { ...entry, placement: 'current_turn' }],
+      };
+    }
+    case 'retract':
+      return { ...host, revision, steering: without(host.steering, action.entryId), followup: without(host.followup, action.entryId) };
+    case 'update': {
+      const edit = (entry: MessageQueueEntryProjection) =>
+        entry.entryId === action.entryId ? { ...entry, content: { ...entry.content, text: action.text } } : entry;
+      return { ...host, revision, steering: host.steering.map(edit), followup: host.followup.map(edit) };
+    }
+    case 'reorder':
+      return {
+        ...host,
+        revision,
+        followup: action.entryIds.flatMap((entryId) => host.followup.filter((entry) => entry.entryId === entryId)),
+      };
+    case 'consume': {
+      const [entry, ...rest] = host.steering;
+      if (!entry) return host;
+      const liveTurns = applyLiveTurnBufferEvent(host.liveTurns, {
+        type: 'steering_message',
+        id: `steering-${entry.messageId}`,
+        turnId: QUEUE_TURN,
+        ts: Date.now(),
+        messageId: entry.messageId,
+        content: entry.content,
+      }, 'zh-CN');
+      return { ...host, revision, steering: rest, liveTurns };
+    }
+  }
+}
+
+function queueUpdate(host: QueueHost, ts: number): QueueUpdateEvent {
+  return {
+    type: 'queue_update',
+    id: `queue-${host.revision}`,
+    turnId: QUEUE_TURN,
+    ts,
+    queueRevision: host.revision,
+    steering: host.steering.map((entry) => entry.content.text),
+    followup: host.followup.map((entry) => entry.content.text),
+    steeringEntries: host.steering,
+    followupEntries: host.followup,
+  };
+}
+
+function QueuedMessageLifecycle() {
+  const [host, dispatch] = useReducer(reduceQueueHost, {
+    revision: 0,
+    steering: [],
+    followup: [],
+    liveTurns: [{
+      turnId: QUEUE_TURN,
+      steps: [{
+        stepId: 'msg-assistant-queue',
+        text: { text: '先把失败用例的栈对上，三个都停在同一个断言附近。', truncated: false, complete: false },
+        tools: [],
+      }],
+    }],
+  });
+  // The running Turn's clock reads wall time, so the scene starts from mount.
+  const [startedAt] = useState(Date.now);
+  const composerRef = useRef<ComposerHandle>(null);
+  const queue = deriveMessageQueueProjection(queueUpdate(host, startedAt));
+  const retract = async (entryId: string) => dispatch({ type: 'retract', entryId });
+  return (
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8, flexShrink: 0 }}>
+        <span>演示控制 · Host 在下一个步骤边界消费已排队的 steering</span>
+        <Button
+          size="sm"
+          label="Host 消费 steering"
+          isDisabled={host.steering.length === 0}
+          onClick={() => dispatch({ type: 'consume' })}
+        />
+      </div>
+      <ComposedShell
+        sidebarCollapsed
+        frameHeight="calc(100vh - 48px)"
+        session={{ status: 'running', streaming: true }}
+        chat={{
+          activeTurn: { turnId: QUEUE_TURN },
+          messages: [
+            { type: 'user', id: 'msg-queue-1', turnId: QUEUE_TURN, ts: startedAt - 20_000, text: '把整套测试跑一遍，看看那三个失败用例是不是同一个原因。' },
+            { type: 'turn_state', id: 'state-queue', turnId: QUEUE_TURN, ts: startedAt - 20_000, status: 'running' },
+          ],
+          liveTurns: host.liveTurns,
+          transientMessages: withQueuedSteeringTransients([], queue, {
+            locale: 'zh-CN',
+            retract,
+            restoreDraft: (draft) => composerRef.current?.setText(draft.text),
+          }),
+        }}
+        composer={{
+          ref: composerRef,
+          queuedMessages: queue.entries,
+          queuedMessageRevision: queue.queueRevision,
+          // Plain Enter mid-turn is an ordinary send the Host queues for the
+          // next Turn; Cmd/Ctrl+Enter asks for the current one.
+          onSend: (text, metadata) => {
+            dispatch({ type: 'enqueue', text, placement: metadata?.followUpMode === 'steer' ? 'current_turn' : 'next_turn' });
+          },
+          onPromoteQueuedEntry: (entryId) => dispatch({ type: 'promote', entryId }),
+          onUpdateQueuedEntry: (entryId, _revision, text) => dispatch({ type: 'update', entryId, text }),
+          onDeleteQueuedEntry: retract,
+          onReorderQueuedEntries: (entryIds) => dispatch({ type: 'reorder', entryIds }),
+        }}
+      />
+    </div>
+  );
+}
+
+// Real path: mid-turn Enter queues a follow-up in the staging drawer → 直接发送
+// promotes it into the running Turn, where it becomes a transcript bubble with
+// edit/delete → the Host consumes it at the next step boundary and the same
+// message lands inside the Turn, shown once. The control bar stands in for the
+// step boundary.
+export const QueuedMessageLifecycleFlow: Story = {
+  name: '排队消息：暂存区 → 直接发送 → 进入对话',
+  render: () => <QueuedMessageLifecycle />,
   play: async ({ canvasElement }) => {
-    const bubble = canvasElement.querySelector('[data-transient-message-id="msg-steer-queued"]');
-    await expect(bubble).not.toBeNull();
-    await expect(bubble?.textContent).toContain('coverage');
-    await expect(bubble?.querySelector('[aria-label="编辑"]')).not.toBeNull();
-    await expect(bubble?.querySelector('[aria-label="删除"]')).not.toBeNull();
-    await expect(canvasElement.querySelector('.maka-composer-queue')).toBeNull();
+    const canvas = within(canvasElement);
+    const text = '顺便确认一下 coverage 阈值没有变。';
+    const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
+    if (!input) throw new Error('The composer input is missing');
+    await userEvent.type(input, text);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvasElement.querySelector('.maka-composer-queue-text')).toHaveTextContent(text));
+    await expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
+
+    await userEvent.click(canvas.getByRole('button', { name: '直接发送' }));
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.maka-composer-queue')).toBeNull();
+      const bubble = canvasElement.querySelector('[data-transient-message-id]');
+      expect(bubble).toHaveTextContent(text);
+      expect(bubble?.querySelector('[aria-label="编辑"]')).not.toBeNull();
+      expect(bubble?.querySelector('[aria-label="删除"]')).not.toBeNull();
+    });
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Host 消费 steering' }));
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
+      const rows = canvas.getAllByText(text);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.closest(`[data-turn-id="${QUEUE_TURN}"]`)).not.toBeNull();
+    });
   },
 };
 

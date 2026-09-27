@@ -183,7 +183,7 @@ function followUpEntry(entryId: string, text: string): MessageQueueEntryProjecti
  */
 // A production queue snapshot also carries queued steering; the drawer filters
 // it out — steering renders in the transcript instead (see the
-// QueuedSteeringInTranscript story in app-shell).
+// QueuedMessageLifecycleFlow story in app-shell).
 const DEFAULT_QUEUE: MessageQueueEntryProjection[] = [
   {
     entryId: 'entry-steer',
