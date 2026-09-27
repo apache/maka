@@ -405,6 +405,19 @@ describe('shellSessionRowEqual', () => {
         });
       });
       assert.deepEqual(selectSessionById(catalog.getState(), row.id)?.runningTurnIds, []);
+
+      // A Host restart reseeds the epoch from the new process's clock, so the
+      // restarted Host's first read (a low counter on a huge clock base) must
+      // beat any epoch the previous process produced (#5713 review).
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: ['turn-2'],
+          runEpoch: 1_700_000_000_000,
+        });
+      });
+      assert.deepEqual(selectSessionById(catalog.getState(), row.id)?.runningTurnIds, ['turn-2']);
     } finally { cleanupFakeDom(); }
   });
 

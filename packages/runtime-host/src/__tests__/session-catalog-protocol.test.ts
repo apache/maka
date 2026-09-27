@@ -91,6 +91,31 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('decodes a Session attention payload on a catalog change', () => {
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'session.catalog.changed',
+        revision: 4,
+        sessionId: 'session-1',
+        attention: {
+          kind: 'errored',
+          eventId: 'terminal-1',
+          body: 'Provider request failed',
+        },
+      }),
+      {
+        kind: 'session.catalog.changed',
+        revision: 4,
+        sessionId: 'session-1',
+        attention: {
+          kind: 'errored',
+          eventId: 'terminal-1',
+          body: 'Provider request failed',
+        },
+      },
+    );
+  });
+
   test('accepts an optional run epoch in the live run state and rejects a bad one', () => {
     const withEpoch = {
       ...projection(),

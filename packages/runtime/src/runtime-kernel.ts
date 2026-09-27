@@ -413,6 +413,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
+    // The per-session run-epoch counters restart at zero with a fresh process,
+    // while Desktop's catalog rows survive Host restarts. Seeding every epoch
+    // with the construction clock keeps a restarted Host's epochs strictly
+    // greater than anything the previous process produced (#5713 review).
+    this.#sessionRunEpochBase = deps.now?.() ?? 0;
     this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
@@ -2199,10 +2204,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return [...new Set(this.activeRunsFor(sessionId).map((run) => run.turnId))];
   }
 
-  #sessionRunEpochs = new Map<string, number>();
+  readonly #sessionRunEpochBase: number;
+  readonly #sessionRunEpochs = new Map<string, number>();
 
   sessionRunEpoch(sessionId: string): number {
-    return this.#sessionRunEpochs.get(sessionId) ?? 0;
+    return this.#sessionRunEpochBase + (this.#sessionRunEpochs.get(sessionId) ?? 0);
   }
 
   #bumpSessionRunEpoch(sessionId: string): void {
