@@ -69,11 +69,13 @@ function stubConversationServices(): ConversationServices {
       readSnapshot: async () => {
         throw new Error('Session snapshot is not used in this test');
       },
+      readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
       promoteQueueEntry: async () => undefined,
       updateQueueEntry: async () => undefined,
       retractQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
     },
+    runtimeHosts: { subscribeChanges: () => () => undefined },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
     newTasks: {
       subscribeChanges: () => () => undefined,

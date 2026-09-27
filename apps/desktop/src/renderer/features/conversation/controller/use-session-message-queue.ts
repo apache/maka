@@ -29,7 +29,7 @@ import {
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../application/contracts/transient-message-projection.js';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { useConversationServices } from '../services.js';
 import type { MessageQueueUiState } from '../model/session-ui-state.js';

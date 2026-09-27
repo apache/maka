@@ -57,7 +57,6 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       cancelMessage: async (sessionId, messageId) => { cancelled.push([sessionId, messageId]); },
       reconcileMessage: async (sessionId, messageId) => { reconciled.push([sessionId, messageId]); },
       sessions: {
-        list: async () => [], subscribeChanges: () => () => {},
         readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
         readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
         promoteQueueEntry: async () => undefined, updateQueueEntry: async () => undefined,
@@ -170,7 +169,7 @@ test('queue_update stores the snapshot and retires every listed local placeholde
     id: 'message-next', text: 'do this next', ts: 1, transientPlacement: 'follow_up',
   });
   transientMessages.set('message-steer', {
-    id: 'message-steer', text: 'adjust this run', ts: 1, transientPlacement: 'current_turn',
+    id: 'message-steer', text: 'adjust this run', ts: 1, transientPlacement: 'transcript',
     pendingSteering: true,
   });
 
@@ -220,6 +219,8 @@ test('queue_update stores the snapshot and retires every listed local placeholde
   });
   assert.equal(transientMessages.size, 0);
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
+    turnId: 'turn-1',
+    ts: 3,
     queueRevision: 4,
     entries: [nextEntry],
   });
@@ -467,6 +468,7 @@ test('editing a queued steering restores content under the owning Session even a
         reconcileMessage: async () => {},
         sessions: {
           readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
+          readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
           promoteQueueEntry: async () => undefined,
           updateQueueEntry: async () => undefined,
           retractQueueEntry: async (sessionId: string, entryId: string) => {
@@ -474,6 +476,7 @@ test('editing a queued steering restores content under the owning Session even a
           },
           reorderQueueEntries: async () => undefined,
         },
+        runtimeHosts: { subscribeChanges: () => () => {} },
         skills: { listInvocable: async () => [] },
         workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
         newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },

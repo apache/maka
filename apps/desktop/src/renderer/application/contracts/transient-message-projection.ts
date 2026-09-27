@@ -124,12 +124,12 @@ export function withQueuedSteeringTransients(
   },
 ): TransientUserMessage[] {
   const steering = (queue?.entries ?? []).filter(
-    (entry) => entry.placement === 'current_turn' && entry.state === 'queued',
+    (entry) => entry.placement === 'current_turn',
   );
   if (steering.length === 0) return [...transientMessages];
   const bubbles = steering.map((entry): TransientUserMessage => ({
     id: entry.messageId,
-    transientPlacement: 'current_turn',
+    transientPlacement: 'transcript',
     pendingSteering: true,
     hostTurnId: queue?.turnId,
     ts: queue?.ts ?? 0,

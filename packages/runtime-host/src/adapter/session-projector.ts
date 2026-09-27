@@ -30,6 +30,7 @@ import type {
   SessionContinuitySnapshot,
   SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
+  SteeringMessageSnapshot,
   SessionSteeringEvent,
   SubscriptionFrame,
   LiveTurnSnapshot,
@@ -177,7 +178,9 @@ export class RuntimeHostSessionProjector {
     const events: SessionEvent[] = [];
     // The seed is the only queue evidence a re-observing or reconnecting client
     // receives — an empty queue must still clear its last-seen entries.
-    const queueEvents = [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())];
+    const queueEvents = [
+      projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now()),
+    ];
     if (this.#projectMessageAdmissions) {
       events.push(
         ...projectMessageAdmissionEvents(

@@ -729,11 +729,15 @@ describe('composer first-send cleanup', () => {
         readSnapshot: async () => {
           throw new Error('Session snapshot is not used in this test');
         },
+        readExecutionBoundary: async () => {
+          throw new Error('Execution boundary is not used in this test');
+        },
         promoteQueueEntry: async () => undefined,
         updateQueueEntry: async () => undefined,
         retractQueueEntry: async () => undefined,
         reorderQueueEntries: async () => undefined,
       },
+      runtimeHosts: { subscribeChanges: () => () => undefined },
       workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
       newTasks: {
         subscribeChanges: () => () => undefined,

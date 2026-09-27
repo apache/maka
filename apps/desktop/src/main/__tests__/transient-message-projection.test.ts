@@ -145,6 +145,13 @@ test('derives one queue projection for main and Side Conversation consumers', ()
     queueRevision: 3,
     entries: [
       {
+        entryId: 'in-flight',
+        messageId: 'message-in-flight',
+        content: { text: 'in flight' },
+        placement: 'current_turn',
+        state: 'in_flight',
+      },
+      {
         entryId: 'steer',
         messageId: 'message-steer',
         content: { text: 'raw', displayText: 'steer' },

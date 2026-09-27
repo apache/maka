@@ -94,11 +94,15 @@ function localDeliveryServices(state: DeliveryState): ConversationServices {
       readSnapshot: async () => {
         throw new Error('Session snapshots are not used in this story');
       },
+      readExecutionBoundary: async () => {
+        throw new Error('Execution boundary is not used in this story');
+      },
       promoteQueueEntry: async () => undefined,
       updateQueueEntry: async () => undefined,
       retractQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
     },
+    runtimeHosts: { subscribeChanges: () => () => undefined },
     skills: { listInvocable: async () => [] },
     workspace: {
       searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }),
@@ -323,8 +327,11 @@ export const StagingCollapsed: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole('button', { name: /收起|collapse/i }));
     await waitFor(() => {
-      expect(canvas.queryByText('先不要改协议。')).toBeNull();
-      expect(canvas.getByRole('button', { name: /附加内容|staged/i })).toBeVisible();
+      // Collapsed content stays mounted under the grid-row collapse — assert on
+      // the disclosure state, not DOM removal.
+      const toggle = canvas.getByRole('button', { name: /展开|expand/i });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(toggle).toHaveTextContent(/5|附加内容|staged/i);
     });
   },
 };

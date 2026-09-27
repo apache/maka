@@ -349,7 +349,9 @@ test('keeps Host order visible until the reordered projection arrives', async ()
     await act(() => grips[1]?.dispatchEvent(dragStart));
     const firstRow = grips[0]?.closest('li')?.parentElement;
     assert.ok(firstRow);
-    await act(() => firstRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
+    const drop = new window.Event('drop', { bubbles: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: { types: [], files: [] } });
+    await act(() => firstRow.dispatchEvent(drop));
 
     assert.deepEqual(requestedOrder, ['second', 'first']);
     assert.deepEqual(

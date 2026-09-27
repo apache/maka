@@ -46,6 +46,7 @@ export function SessionLocalMessages(props: {
         .listMessages(sessionId)
         .then((messages) => {
           if (disposed || revision !== admitted) return;
+          let waitingForPrevious = false;
           for (const message of messages) {
             if (message.state === 'accepted' && !message.turnId) {
               // The Host queue owns accepted steering and follow-ups. A local
