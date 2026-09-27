@@ -117,6 +117,22 @@ current file to "rewrite". Review should identify a present behavior before
 proposing a replacement, and high-risk egress/Host paths need their own focused
 tests and review.
 
+### Revert feasibility probe
+
+On 2026-09-27, a disposable worktree at `d89ccce01` (then-current
+`origin/main`) attempted `git revert --no-commit dc9d2f0dd` for #3544.
+The revert stopped with 31 unmerged paths across Desktop IPC and renderer,
+Runtime Host protocol/coordinator, UI, tests, and two modify/delete cases.
+The probe was aborted and its worktree removed; no revert was committed or
+pushed. This is direct evidence that a wholesale revert cannot be applied
+mechanically to today's tree. The current behavior and later dependents must
+be resolved before a replacement can be tested.
+
+Some entries are removals rather than added implementation. For example,
+#3118 removed one discovery filter and #3063 deleted an unused module. A
+revert followed by the same deletion would leave the final product unchanged;
+such a commit pair alone does not establish an independent replacement.
+
 ## Review protocol
 
 For each row, verify the original behavior and tests against current `main`,
