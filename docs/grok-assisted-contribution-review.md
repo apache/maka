@@ -311,10 +311,11 @@ the projector now caps elapsed time at zero. Projector/continuity tests
 a full #3115 rewrite.
 
 #3111's Daily Review fixture still writes through the interactive storage
-authority with nested writer/owner cleanup. Its current archive-seeding test
-passes, but there is no independent replacement for this live fixture writer;
+authority with nested writer/owner cleanup. Its archive-seeding test passes;
+a new failure-path test rejects an invalid archive, reacquires the same root
+owner, and confirms that no partial archive was written (2 tests pass). This
+validates cleanup rather than independently replacing the live fixture writer;
 the old Desktop archive store was deleted and has no direct current file.
-The current fixture test was rerun (1 pass).
 
 #3070 and #3099 were replaced in the current branch after reviewing their
 migrated implementations. #3070's historical cwd resolution remains distinct
@@ -361,7 +362,7 @@ reason to restore its old implementation just to revert it again.
 | Deleted or superseded original path (8) | #3063, #3118, #3119, #3102, #3104, #3117, #3069, #3106 | Preserve the current replacement/removal; #3117's fixture and #3106's surviving startup behavior remain separately reviewable. |
 | Mixed or uncertain attribution (2) | #3364, #3123 | Keep Maka-authored formatter and required ASF header; resolve #3123 squash-versus-original provenance with maintainers. |
 | Active code with scoped fixes (7) | #3008, #2967, #3048, #3066, #3078, #3115, #3544 | Review the rest of each current behavior against later dependents; the #3008 live proxy test still needs Docker. |
-| Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | Decide whether surviving behavior requires replacement, including the tagged follow-ups in #3459. |
+| Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | #3111 now covers owner release on failed publish; decide whether surviving behavior requires replacement, including the tagged follow-ups in #3459. |
 | Documentation-only mixed-tool PR (1) | #4345 | Factual correction made; maintainers decide provenance remedy for the surviving architecture document. |
 
 The branch has been built against `c9a176e10`: `npm run build:with-deps`
