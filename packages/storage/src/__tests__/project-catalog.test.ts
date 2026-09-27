@@ -83,38 +83,28 @@ function sessionInput(cwd: string, projectId: string) {
   };
 }
 
-test('a regular file is rejected as a project location', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-file-'));
+test('project registration accepts directories but never regular files', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-path-kind-'));
   try {
-    const outsideFile = join(base, 'README.md');
-    await writeFile(outsideFile, 'not a project\n');
-    await assert.rejects(
-      () => resolveProjectLocation({ path: outsideFile }),
-      (error) =>
-        error instanceof TypeError &&
-        String(error.message).includes('Project path is not a directory'),
-    );
+    const gitRoot = join(base, 'repo');
+    await mkdir(gitRoot);
+    await execFileAsync('git', ['init', '--quiet'], { cwd: gitRoot });
+    const catalog = createProjectCatalog(join(base, 'catalog'));
 
-    const repository = join(base, 'repository');
-    await mkdir(repository);
-    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
-    const insideFile = join(repository, 'README.md');
-    await writeFile(insideFile, 'not a project\n');
-    await assert.rejects(
-      () => resolveProjectLocation({ path: insideFile }),
-      (error) =>
-        error instanceof TypeError &&
-        String(error.message).includes('Project path is not a directory'),
-    );
-
-    const catalog = createProjectCatalog(join(base, 'storage'));
-    await assert.rejects(
-      () => catalog.register(insideFile),
-      (error) =>
-        error instanceof TypeError &&
-        String(error.message).includes('Project path is not a directory'),
-    );
+    for (const parent of [base, gitRoot]) {
+      const file = join(parent, 'project.txt');
+      await writeFile(file, 'file, not a folder');
+      const canonicalFile = await realpath(file);
+      await assert.rejects(
+        () => resolveProjectLocation({ path: file }),
+        (error: unknown) =>
+          error instanceof TypeError &&
+          error.message === `Project path is not a directory: ${canonicalFile}`,
+      );
+      await assert.rejects(() => catalog.register(file), TypeError);
+    }
     assert.deepEqual(await catalog.list(), []);
+    assert.equal((await resolveProjectLocation({ path: gitRoot })).kind, 'git');
   } finally {
     await rm(base, { recursive: true, force: true });
   }

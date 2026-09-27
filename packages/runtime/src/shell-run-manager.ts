@@ -510,6 +510,9 @@ export class ShellRunProcessManager
         }),
       );
     }
+    // The snapshot was captured before persistence. Exit can begin during that
+    // await, so a control response must reconcile against the final record.
+    if (live.driverExit || live.finalizeOnce) record = await live.finished.join();
     if (isTerminalShellRunStatus(record.status)) record = await this.markObserved(record);
     return clientControl ? compactShellRunContent(record) : shellRunContent(record, operation);
   }

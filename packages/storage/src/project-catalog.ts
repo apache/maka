@@ -861,6 +861,10 @@ export async function resolveProjectLocation(input: {
   path: string;
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
+  const location = await stat(canonicalPath);
+  if (!location.isDirectory()) {
+    throw new TypeError(`Project path is not a directory: ${canonicalPath}`);
+  }
   if (!(await hasEnclosingGitEntry(canonicalPath))) {
     return {
       canonicalPath,

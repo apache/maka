@@ -19,7 +19,8 @@
 
 # Grok-assisted contribution review
 
-**Baseline:** `bfb315acc` (2026-09-27). **Status:** inventory; implementation review pending.
+**Baseline:** `d89ccce01` (2026-09-27). **Status:** original-commit inventory
+reviewed; two narrow replacements verified; remaining behavior reviews open.
 
 This is a provenance and engineering inventory, not a legal classification or
 an assertion that these changes must be removed. The scope is merged PRs whose
@@ -72,6 +73,18 @@ PR description has no AI-use disclosure. Confirm that provenance before
 classifying it. #5223 has no Grok-tagged commit but explicitly discloses
 Cursor/Grok assistance in the PR description. The remaining 22 trailer-bearing
 PRs have at least one Grok-tagged original commit dated 2026-08-14 or later.
+
+A second pass read the original commit titles and trailers for all 25 PRs.
+#3048, #3544, and #4345 also contain Codex-authored commits. #3459 contains
+two untagged feature commits before its three Grok-tagged commits. In #3364,
+the three substantive relative-time commits are tagged Maka; its only
+Grok-tagged original commit adds an ASF header to a test file. Reverting the
+whole #3364 change would therefore remove work not attributed to Grok.
+#3101, #3102, #3104, #3106, #3111, #3117, and #3069 also have untagged
+merge or follow-up commits: inspect their merged diffs, not just their branch
+commit lists. For example, #3118's original branch includes a Plan Mode import
+fix also merged separately in #3119, but #3118's squash diff contains only
+the xAI discovery/test deletions.
 
 ## First-pass engineering triage
 
@@ -133,6 +146,36 @@ Some entries are removals rather than added implementation. For example,
 revert followed by the same deletion would leave the final product unchanged;
 such a commit pair alone does not establish an independent replacement.
 
+### Replacement slices
+
+The following work was done against the 2026-09-27 baseline, preserving later
+changes. It does not erase the original history or settle ASF legal questions.
+
+| PR | Revert-state evidence | Replacement and verification |
+|---:|---|---|
+| #3082 | Removing the PTY exit reconciliation made the delayed-persist test return `running` instead of `completed`. | Reconcile the control reply after persistence against finalization, then mark terminal observations. Replaced the Grok-authored test with a fresh test that pauses storage and observes driver exit without monkeypatching the driver prototype. Runtime build, shell-run-manager suite (62 pass, 4 platform skips), and Biome passed. |
+| #5223 | Removing the directory check made the regular-file test fail with `Missing expected rejection`. | Check the canonical path's stat before Git discovery and reject non-directories with `TypeError`. Replaced the original test with Git/non-Git file cases, registration non-mutation, and a directory control. Storage build, project-catalog suite (23 pass), and Biome passed. |
+
+The #3082 and #5223 revert-state commits are separate from the replacement
+commit to make the failure evidence inspectable. They are not safe to merge
+without the following replacement. The remaining 23 entries have **not** been
+reverted or reimplemented; #3364 and #3123 require provenance decisions before
+any broad rollback.
+
+Three narrow paths need a disposition rather than an identical revert/reapply:
+
+- #3063 removed `history-compact-cleanup.ts`; the file and references to it
+  are absent now. Restoring and removing it again would not replace live code.
+- #3118 removed the `fallback-models` filter for xAI OAuth discovery, which is
+  still absent in the current registry. Its test change also removed a stale
+  snapshot assertion. Reintroducing the filter just to delete it again would
+  temporarily restore a model-discovery regression without changing the final
+  behavior.
+- #3119 moved Plan Mode types to core subpath imports. The imports survive,
+  with later UI-locale behavior added at the same boundary. Restoring the
+  removed root barrel import would break typecheck; an identical import fix is
+  not an independent implementation.
+
 ## Review protocol
 
 For each row, verify the original behavior and tests against current `main`,
@@ -146,7 +189,10 @@ acceptability of any remediation need Apache project/legal review.
 ## Open work
 
 - [x] Triage all 25 original changes by path, size, and current path presence.
-- [ ] Trace current lines, behaviors, and tests for all 25 PRs.
+- [x] Read original commit trailers and compare branch history with the merged
+      diff for the 25 candidate PRs.
+- [ ] Trace current lines, behaviors, and tests for the remaining 23 PRs.
 - [ ] Record which changes are still material, superseded, or mixed with other work.
 - [ ] Decide the appropriate action with the project and ASF legal discussion.
-- [ ] Implement and verify any agreed replacements in reviewable slices.
+- [x] Implement and verify #3082 and #5223 in reviewable slices.
+- [ ] Finish the remaining scoped reviews and any agreed replacements.
