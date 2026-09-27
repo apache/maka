@@ -77,7 +77,6 @@ import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import {
   mergeTransientMessageProjection,
   reconcileTransientMessages,
-  retractQueueEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../../application/contracts/transient-message-projection.js';
@@ -163,7 +162,7 @@ export interface UseQuoteCompanionInput {
   ) => void;
   onContextCompactionError?: (sessionId: string, error: unknown) => void;
   /** Returns a retracted message's content to the composer draft for editing. */
-  restoreDraft?: (sessionId: string, draft: RestoredDraftContent) => void;
+  restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void;
 }
 
 export async function requestPermissionModeWithConfirmation(
@@ -357,12 +356,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const pendingUserMessagesRef = useRef<Map<string, TransientUserMessageProjection>>(
     new Map(),
   );
-  const restoreDraftRef = useRef(input.restoreDraft);
-  restoreDraftRef.current = input.restoreDraft;
   const [messageQueue, setMessageQueue] = useState<{
     readonly entries: readonly MessageQueueEntryProjection[];
     readonly queueRevision?: number;
-    readonly turnId?: string;
     readonly ts?: number;
   }>({ entries: [] });
   // Reseed reconciliation reads the queue between React flushes, so every
@@ -543,15 +539,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const projectMessageQueue = useCallback(
     (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
       const queue = deriveMessageQueueProjection(event);
-      applyMessageQueue({
-        entries: queue.entries,
-        queueRevision: event.queueRevision,
-        turnId: event.turnId,
-        ts: event.ts,
-      });
-      // Queued steering renders from this snapshot as transcript bubbles —
-      // every entry the Host lists retires its local transient copy.
-      for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+      applyMessageQueue(queue);
+      for (const entry of queue.entries) {
         pendingUserMessagesRef.current.delete(entry.messageId);
         queueOwnedMessageIdsRef.current.add(entry.messageId);
       }
@@ -1755,21 +1744,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
   );
-  const transientMessages = withQueuedSteeringTransients(pendingUserMessages, messageQueue, {
-    locale: localeRef.current,
-    editable: input.restoreDraft !== undefined,
-    retract: (entry, draftText) => {
-      const forkId = companionIdRef.current;
-      if (!forkId) return Promise.resolve(false);
-      return retractQueueEntryToDraft(entry, draftText, {
-        retractEntry: () => sideChat.retractQueueEntry(forkId, entry.entryId),
-        reportError: () => {
-          if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
-        },
-        restoreDraft: (draft) => restoreDraftRef.current?.(forkId, draft),
-      });
-    },
-  });
+  const transientMessages = companion
+    ? withQueuedSteeringTransients(pendingUserMessages, messageQueue, {
+        locale: localeRef.current,
+        retract: deleteQueuedEntry,
+        restoreDraft: (draft) => input.restoreDraft(companion.id, draft),
+      })
+    : pendingUserMessages;
   // Inherited model (read-only): the fork's once created, else the source's.
   const activeModel = companion
     ? { llmConnectionSlug: companion.llmConnectionSlug, model: companion.model }

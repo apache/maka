@@ -379,19 +379,6 @@ test('a Host-admitted steering entry leaves the plate while an unadmitted local 
 });
 
 
-test('queued steering rendered in the transcript never appears in the plate', () => {
-  const pending = { id: 'steer', text: 'new direction', ts: 1, pendingSteering: true, transientPlacement: 'transcript' as const };
-  const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
-  for (const entries of [[queued], []]) {
-    const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-      queuedMessages={entries} pendingMessages={[pending]} /></LocaleProvider>);
-    const document = parseHTML(`<html><body>${markup}</body></html>`).document;
-    assert.equal(document.querySelector('.maka-composer-queue'), null,
-      'a transcript steering bubble is not also a staging row');
-  }
-});
-
-
 test('local sends share the flat staging list with icon-only delivery actions', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
     queuedMessages={[{
@@ -404,7 +391,7 @@ test('local sends share the flat staging list with icon-only delivery actions', 
         deliveryActions: [{ label: 'Check delivery', icon: <Search size={ICON_SIZE.control} aria-hidden="true" />, onClick() {} }] },
       { id: 'sending', text: 'still sending', ts: 2, transientPlacement: 'follow_up',
         deliveryStatus: 'Sending…' },
-      { id: 'local-steer', text: 'steering in flight', ts: 3, pendingSteering: true,
+      { id: 'local-steer', text: 'steering in flight', ts: 3,
         transientPlacement: 'transcript', deliveryStatus: 'Sending…' },
     ]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;

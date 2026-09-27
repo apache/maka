@@ -25,7 +25,6 @@ import {
   type TransientUserMessageProjection,
 } from '@maka/ui';
 import {
-  retractQueueEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../application/contracts/transient-message-projection.js';
@@ -94,8 +93,7 @@ export function useSessionMessageQueue(options: {
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.
   const runAction = useCallback(
-    async (action: (targetSessionId: string) => Promise<void>) => {
-      const targetSessionId = activeSessionId.current;
+    async (action: (targetSessionId: string) => Promise<void>, targetSessionId = activeSessionId.current) => {
       if (!targetSessionId) return;
       try {
         await action(targetSessionId);
@@ -107,21 +105,15 @@ export function useSessionMessageQueue(options: {
     [activeSessionId, reportError],
   );
   const merged = useMemo(
-    () => withQueuedSteeringTransients(transientMessages, queue, {
-      locale,
-      editable: true,
-      retract: (entry, draftText) => {
-        if (!sessionId) return Promise.resolve(false);
-        return retractQueueEntryToDraft(entry, draftText, {
-          retractEntry: () => services.sessions.retractQueueEntry(sessionId, entry.entryId),
-          reportError: (error) => {
-            if (activeSessionId.current === sessionId) reportError(sessionId, error);
-          },
+    // Bubble actions stay bound to the Session that rendered them.
+    () => sessionId
+      ? withQueuedSteeringTransients(transientMessages, queue, {
+          locale,
+          retract: (entryId) => runAction((target) => services.sessions.retractQueueEntry(target, entryId), sessionId),
           restoreDraft: (draft) => restoreDraft(sessionId, draft),
-        });
-      },
-    }),
-    [sessionId, transientMessages, queue, locale, activeSessionId, services, reportError, restoreDraft],
+        })
+      : [...transientMessages],
+    [sessionId, transientMessages, queue, locale, runAction, services, restoreDraft],
   );
   return {
     composer,

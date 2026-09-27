@@ -136,7 +136,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     ...overrides,
   } as unknown as WorkHubServices;
   let submissions = 0;
-  function Probe() { controller = useWorkHubController(() => { submissions++; }); return null; }
+  function Probe() { controller = useWorkHubController(() => { submissions++; }, () => {}); return null; }
   await act(async () => {
     root.render(createElement(LocaleProvider, { locale: 'en', children:
       createElement(WorkHubServicesProvider, { services }, createElement(Probe)),
@@ -662,8 +662,6 @@ test('WorkHub queued steering keeps a transcript bubble until consumed or retrac
   assert.deepEqual(h.controller.messageQueue.entries, [entry]);
   assert.deepEqual(h.controller.transientMessages.map((message) => message.id), ['queued'],
     'queued steering waits in the transcript, not the follow-up plate');
-  assert.equal(h.controller.transientMessages[0]?.pendingSteering, true);
-  assert.equal(h.controller.transientMessages[0]?.hostTurnId, 'active-turn');
   await act(() => h.emit({ type: 'steering_message', id: 'consumed', turnId: 'active-turn', ts: 3, messageId: entry.messageId, content: entry.content }));
   await act(() => project('in_flight'));
   assert.deepEqual(h.controller.messageQueue.entries, [{ ...entry, state: 'in_flight' }], 'a pulled message stays pending until the runtime places it');

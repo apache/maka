@@ -142,8 +142,6 @@ export interface ChatViewGoalIndicatorProps {
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
-  /** Renders as a transcript bubble until Runtime emits steering_message. */
-  pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
   deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];
@@ -518,9 +516,6 @@ export function ChatView(props: {
     const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
     if (
       turn === undefined
-      // Queued steering is not the Turn's root prompt; it renders at the tail
-      // until steering_message carries it into the timeline.
-      || message.pendingSteering === true
       || turn.user !== undefined
       || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
     ) continue;

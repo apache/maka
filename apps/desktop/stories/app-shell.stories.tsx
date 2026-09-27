@@ -756,7 +756,6 @@ export const QueuedSteeringInTranscript: Story = {
           }],
         }],
         transientMessages: withQueuedSteeringTransients([], {
-          turnId: 'turn-s',
           ts: NOW - 10_000,
           entries: [{
             entryId: 'entry-steer',
@@ -765,7 +764,7 @@ export const QueuedSteeringInTranscript: Story = {
             placement: 'current_turn',
             state: 'queued',
           }],
-        }, { locale: 'zh-CN', editable: true, retract: async () => true }),
+        }, { locale: 'zh-CN', retract: async () => {}, restoreDraft: () => {} }),
       }}
     />
   ),

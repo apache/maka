@@ -90,8 +90,8 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   messages = messages.map((message) => ({ ...message, state: 'saved', canCancel: true }));
   await act(async () => changed('session-1'));
   const followup = transient.get('followup');
-  assert.equal(followup?.deliveryStatus, 'Waiting for earlier messages to be delivered');
-  assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Edit', 'Cancel sending']);
+  assert.equal(followup?.deliveryStatus, 'Waiting to send');
+  assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Edit', 'Delete unsent message']);
   await act(async () => { await followup?.deliveryActions?.[0]?.onClick(); });
   assert.deepEqual(cancelled, [['session-1', 'followup']]);
   assert.deepEqual(restored, [['session-1', 'followup']],
@@ -104,7 +104,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   assert.deepEqual(transient.get('root')?.deliveryActions, []);
   messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
   await act(async () => changed('session-1'));
-  assert.equal(transient.get('root')?.deliveryStatus, 'Waiting for earlier messages to be delivered');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Waiting to send');
   assert.equal(transient.get('root')?.deliveryActions?.length, 2, 'a Host outage keeps the copy editable and removable');
   messages = messages.map((message) => ({ ...message, state: 'failed' }));
   await act(async () => changed('session-1'));
@@ -170,13 +170,11 @@ test('queue_update stores the snapshot and retires every listed local placeholde
   });
   transientMessages.set('message-steer', {
     id: 'message-steer', text: 'adjust this run', ts: 1, transientPlacement: 'transcript',
-    pendingSteering: true,
   });
 
   handlers.handleEvent('session-1', queueUpdate([steeringEntry]));
 
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
-    turnId: 'turn-1',
     ts: 1,
     queueRevision: 3,
     entries: [steeringEntry, followupEntry],
@@ -219,7 +217,6 @@ test('queue_update stores the snapshot and retires every listed local placeholde
   });
   assert.equal(transientMessages.size, 0);
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
-    turnId: 'turn-1',
     ts: 3,
     queueRevision: 4,
     entries: [nextEntry],
@@ -453,7 +450,7 @@ test('editing a queued steering restores content under the owning Session even a
   function Probe() {
     surface = useSessionMessageQueue({
       sessionId: 'session-a',
-      queue: { entries: [entry], turnId: 'turn-1', ts: 1, queueRevision: 2 },
+      queue: { entries: [entry], ts: 1, queueRevision: 2 },
       transientMessages: [],
       activeSessionId,
     });
@@ -490,7 +487,7 @@ test('editing a queued steering restores content under the owning Session even a
     focus() {}, openModelPicker() {},
   } as ComposerHandle;
   surface.draftContextRestorer.current = (sessionId, draft) => { restoredContext.push([sessionId, draft]); };
-  const bubble = surface.transientMessages.find((message) => message.pendingSteering);
+  const bubble = surface.transientMessages.find((message) => message.id === entry.messageId);
   assert.ok(bubble, 'a queued steering entry derives a transcript bubble');
   const edit = bubble.deliveryActions?.find((action) => action.label === 'Edit');
   assert.ok(edit, 'the bubble offers edit');

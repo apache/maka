@@ -3522,6 +3522,7 @@ function QuoteCompanionProbe(props: {
     locale: 'en',
     onQuotesConsumed: () => undefined,
     confirmBypass: props.confirmBypass ?? (async () => true),
+    restoreDraft: () => undefined,
   });
   props.onSetPermissionMode?.(companion.setPermissionMode);
   return createElement('div', {
@@ -3556,6 +3557,7 @@ function QuoteCompanionOwnershipProbe(props: {
     onQuotesConsumed: props.onQuotesConsumed ?? (() => undefined),
     confirmBypass: async () => true,
     onContextCompactionError: props.onContextCompactionError,
+    restoreDraft: () => undefined,
   });
   props.onSend(companion.send);
   props.onProjection?.(companion);

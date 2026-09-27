@@ -665,8 +665,6 @@ function AppShellContent({
       }
     : undefined;
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
-  // Queued steering is a thin projection of the Host queue snapshot — the
-  // bubble appears and disappears with it, no bookkeeping of our own.
   const {
     composer: composerRef,
     transientMessages: transcriptTransientMessages,
@@ -685,8 +683,7 @@ function AppShellContent({
     if (draft.directoryReferences?.length) restoreDirectories(targetSessionId, draft.directoryReferences);
     if (draft.quotes?.length) restoreQuotes(targetSessionId, draft.quotes);
   };
-  const activeMessageSubmitting = transientMessages.length > 0;
-  const activeDesktopSession = activeSession;  // The shell's reading of the active live turn: streaming/settled flags, the
+  // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
   const {

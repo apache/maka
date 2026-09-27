@@ -40,7 +40,7 @@ Runtime Host already owns the durable message semantics:
   - promote (直接发送 / Send now) to steer the entry into the active turn,
   - edit to update the entry's text in place (Host CAS on the queue revision),
   - delete to retract the entry.
-- Retracting an entry — via the plate's Delete or the transcript bubble's Edit — restores its full content (text, attachments, directory references, quotes) into the originating Session's composer draft.
+- A transcript bubble's Edit retracts the steering entry and restores its full content (text, attachments, directory references, quotes) into the originating Session's composer draft; Delete only retracts.
 - Queue contents and mutations are Runtime Host operations (`turn.message.submit`, `queue.entry.promote`, `queue.entry.retract`, `queue.entry.update`, `queue.entries.reorder`); the renderer mirrors the authoritative projection.
 - Identical active toasts reuse one toast instead of stacking duplicates.
 

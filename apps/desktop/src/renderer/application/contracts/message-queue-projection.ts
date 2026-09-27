@@ -24,7 +24,6 @@ import type {
 
 /** The last Host queue snapshot a surface renders from. */
 export interface MessageQueueProjection {
-  readonly turnId: string;
   readonly ts: number;
   readonly queueRevision?: number;
   readonly entries: readonly MessageQueueEntryProjection[];
@@ -39,7 +38,6 @@ export function deriveMessageQueueProjection(
     ...(event.followupEntries ?? []),
   ].map((entry) => structuredClone(entry));
   return {
-    turnId: event.turnId,
     ts: event.ts,
     queueRevision: event.queueRevision,
     entries,

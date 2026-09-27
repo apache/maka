@@ -21,12 +21,10 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 interface SessionLocalCopy {
   saved: string;
-  waitingForPrevious: string;
   unknown: string;
   failed: string;
   edit: string;
   remove: string;
-  cancel: string;
   check: string;
   updateError: string;
 }
@@ -34,34 +32,28 @@ interface SessionLocalCopy {
 const catalog = {
   en: {
     saved: 'Waiting to send',
-    waitingForPrevious: 'Waiting for earlier messages to be delivered',
     unknown: 'Delivery unconfirmed. Do not send again.',
     failed: 'Could not send · message kept',
     edit: 'Edit',
     remove: 'Delete unsent message',
-    cancel: 'Cancel sending',
     check: 'Check delivery',
     updateError: 'Unable to update the saved message',
   },
   'zh-CN': {
     saved: '等待发送',
-    waitingForPrevious: '等待之前的消息送达',
     unknown: '暂时无法确认是否送达，请勿重复发送',
     failed: '未能发送 · 消息已保留',
     edit: '编辑',
     remove: '删除未发送的消息',
-    cancel: '取消发送',
     check: '检查是否送达',
     updateError: '无法更新已保存的消息',
   },
   'zh-TW': {
     saved: '等待傳送',
-    waitingForPrevious: '等待先前的訊息送達',
     unknown: '暫時無法確認是否送達，請勿重複傳送',
     failed: '無法傳送 · 訊息已保留',
     edit: '編輯',
     remove: '刪除未傳送的訊息',
-    cancel: '取消傳送',
     check: '檢查是否送達',
     updateError: '無法更新已儲存的訊息',
   },

@@ -30,7 +30,7 @@ export function SessionLocalMessages(props: {
   readonly retire: (sessionId: string, messageId: string) => void;
   readonly reportError: (message: string) => void;
   /** Puts a never-dispatched message's content back into the composer for editing. */
-  readonly restoreDraft?: (sessionId: string, draft: RestoredDraftContent) => void;
+  readonly restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void;
 }): null {
   const services = useConversationServices();
   const locale = useUiLocale();
@@ -46,7 +46,6 @@ export function SessionLocalMessages(props: {
         .listMessages(sessionId)
         .then((messages) => {
           if (disposed || revision !== admitted) return;
-          let waitingForPrevious = false;
           for (const message of messages) {
             if (message.state === 'accepted' && !message.turnId) {
               // The Host queue owns accepted steering and follow-ups. A local
@@ -56,13 +55,13 @@ export function SessionLocalMessages(props: {
             }
             const status = message.state === 'accepted' || message.state === 'sending'
               || (message.state === 'saved' && message.delivering && !message.error)
-              ? undefined
-              : message.state === 'saved' && waitingForPrevious
-                ? copy.waitingForPrevious
-                : copy[message.state];
-            if (message.state !== 'accepted' && message.state !== 'failed') waitingForPrevious = true;
+              ? undefined : copy[message.state];
             const action = (operation: () => Promise<void>) => () => {
               void operation().catch(() => reportError(copy.updateError));
+            };
+            const remove = async () => {
+              await services.cancelMessage(sessionId, message.messageId);
+              retire(sessionId, message.messageId);
             };
             publish(sessionId, {
               id: message.messageId,
@@ -92,31 +91,23 @@ export function SessionLocalMessages(props: {
                   ]
                 : message.canCancel
                   ? [
-                      ...(restoreDraft
-                        ? [{
-                            label: copy.edit,
-                            icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />,
-                            onClick: action(async () => {
-                              await services.cancelMessage(sessionId, message.messageId);
-                              retire(sessionId, message.messageId);
-                              restoreDraft(sessionId, {
-                                text: message.text,
-                                attachments: message.attachments,
-                                directoryReferences: message.directoryReferences,
-                                quotes: message.quotes,
-                              });
-                            }),
-                          }]
-                        : []),
                       {
-                        label: message.state === 'failed' ? copy.remove : copy.cancel,
-                        icon: message.state === 'failed'
-                          ? <Trash2 size={ICON_SIZE.control} style={{ color: 'var(--destructive-text)' }} aria-hidden="true" />
-                          : <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
+                        label: copy.edit,
+                        icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />,
                         onClick: action(async () => {
-                          await services.cancelMessage(sessionId, message.messageId);
-                          retire(sessionId, message.messageId);
+                          await remove();
+                          restoreDraft(sessionId, {
+                            text: message.text,
+                            attachments: message.attachments,
+                            directoryReferences: message.directoryReferences,
+                            quotes: message.quotes,
+                          });
                         }),
+                      },
+                      {
+                        label: copy.remove,
+                        icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
+                        onClick: action(remove),
                       },
                     ]
                   : [],

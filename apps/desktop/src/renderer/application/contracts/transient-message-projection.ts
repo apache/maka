@@ -45,109 +45,50 @@ export interface RestoredDraftContent {
 }
 
 /**
- * One retract-and-restore path for every surface's queued-entry edit: the Host
- * call first, the draft hand-back only when the caller passed the text.
- * `retractEntry` owns the service call, `reportError` the surface's failure
- * channel; resolves false when the retract failed.
- */
-export async function retractQueueEntryToDraft(
-  entry: MessageQueueEntryProjection,
-  draftText: string | undefined,
-  options: {
-    retractEntry(): Promise<unknown>;
-    reportError(error: unknown): void;
-    restoreDraft?(draft: RestoredDraftContent): void;
-  },
-): Promise<boolean> {
-  try {
-    await options.retractEntry();
-  } catch (error) {
-    options.reportError(error);
-    return false;
-  }
-  if (draftText !== undefined) {
-    options.restoreDraft?.({
-      text: draftText,
-      attachments: entry.content.attachments,
-      directoryReferences: entry.content.directoryReferences,
-      quotes: entry.content.quotes,
-    });
-  }
-  return true;
-}
-
-/**
- * Edit/delete controls for steering the Host queued but has not consumed.
- * Both retract the queue entry; edit also hands the text back to the caller's
- * draft restore, so it is only offered when the caller can actually restore —
- * without one, edit would silently behave like delete. `retract` resolves
- * false when the Host call failed.
- */
-export function queuedSteeringDeliveryActions(input: {
-  locale: UiLocale;
-  draftText: string;
-  editable: boolean;
-  retract: (draftText?: string) => Promise<boolean>;
-}): NonNullable<TransientUserMessage['deliveryActions']> {
-  const copy = getConversationCopy(input.locale).composer;
-  const icon = (glyph: typeof Pencil) => createElement(glyph, { size: ICON_SIZE.control, 'aria-hidden': true });
-  return [
-    ...(input.editable
-      ? [{ label: copy.editQueuedEntry, icon: icon(Pencil), onClick: async () => { await input.retract(input.draftText); } }]
-      : []),
-    { label: copy.deleteQueuedEntry, icon: icon(Trash2), onClick: async () => { await input.retract(); } },
-  ];
-}
-
-/**
  * Queued steering is a thin projection of the Host queue snapshot, not a stored
- * transient: the bubble appears, updates and disappears with `queue` alone.
- * Appends one transcript bubble per queued current_turn entry — with the
- * retract-backed edit/delete actions — and drops any stored transient the
- * queue now owns, so a message never renders twice.
+ * transient: one tail bubble per current_turn entry, appearing and disappearing
+ * with `queue` alone. Delete retracts the entry; edit retracts it and hands the
+ * content back to the draft. `retract` reports its own failure and rejects, so
+ * a failed edit restores nothing.
  */
 export function withQueuedSteeringTransients(
   transientMessages: readonly TransientUserMessage[],
-  queue:
-    | {
-        readonly entries: readonly MessageQueueEntryProjection[];
-        readonly turnId?: string;
-        readonly ts?: number;
-      }
-    | undefined,
+  queue: { readonly entries: readonly MessageQueueEntryProjection[]; readonly ts?: number } | undefined,
   actions: {
     locale: UiLocale;
-    /** Offer the retract-and-restore edit action. */
-    editable: boolean;
-    /** Retract the queue entry; resolves false when the Host call failed. */
-    retract(entry: MessageQueueEntryProjection, draftText?: string): Promise<boolean>;
+    retract(entryId: string): Promise<void>;
+    restoreDraft(draft: RestoredDraftContent): void;
   },
 ): TransientUserMessage[] {
   const steering = (queue?.entries ?? []).filter(
     (entry) => entry.placement === 'current_turn',
   );
   if (steering.length === 0) return [...transientMessages];
-  const bubbles = steering.map((entry): TransientUserMessage => ({
-    id: entry.messageId,
+  const copy = getConversationCopy(actions.locale).composer;
+  const icon = (glyph: typeof Pencil) => createElement(glyph, { size: ICON_SIZE.control, 'aria-hidden': true });
+  const ignore = () => {};
+  const bubbles = steering.map(({ entryId, messageId, content }): TransientUserMessage => ({
+    id: messageId,
     transientPlacement: 'transcript',
-    pendingSteering: true,
-    hostTurnId: queue?.turnId,
     ts: queue?.ts ?? 0,
-    text: entry.content.displayText ?? entry.content.text,
-    ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
-    ...(entry.content.directoryReferences && {
-      directoryReferences: entry.content.directoryReferences,
-    }),
-    ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
-    ...(entry.content.inlineReferences && {
-      inlineReferences: [...entry.content.inlineReferences],
-    }),
-    deliveryActions: queuedSteeringDeliveryActions({
-      locale: actions.locale,
-      draftText: entry.content.displayText ?? entry.content.text,
-      editable: actions.editable,
-      retract: (draftText) => actions.retract(entry, draftText),
-    }),
+    text: content.displayText ?? content.text,
+    ...(content.attachments && { attachments: [...content.attachments] }),
+    ...(content.directoryReferences && { directoryReferences: content.directoryReferences }),
+    ...(content.quotes && { quotes: [...content.quotes] }),
+    ...(content.inlineReferences && { inlineReferences: [...content.inlineReferences] }),
+    deliveryActions: [
+      {
+        label: copy.editQueuedEntry,
+        icon: icon(Pencil),
+        onClick: () => actions.retract(entryId).then(() => actions.restoreDraft({
+          text: content.displayText ?? content.text,
+          attachments: content.attachments,
+          directoryReferences: content.directoryReferences,
+          quotes: content.quotes,
+        }), ignore),
+      },
+      { label: copy.deleteQueuedEntry, icon: icon(Trash2), onClick: () => actions.retract(entryId).catch(ignore) },
+    ],
   }));
   const ids = new Set(bubbles.map((message) => message.id));
   return [
@@ -168,7 +109,6 @@ export function mergeTransientMessageProjection(
     ...update,
     // A Message's send time is written once; an update's `ts` must not move it.
     ts: current.ts,
-    ...(update.pendingSteering === undefined && current.pendingSteering !== undefined ? { pendingSteering: current.pendingSteering } : {}),
     ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
     ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),
     ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),

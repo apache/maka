@@ -30,7 +30,6 @@ import type {
   SessionContinuitySnapshot,
   SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
-  SteeringMessageSnapshot,
   SessionSteeringEvent,
   SubscriptionFrame,
   LiveTurnSnapshot,
@@ -742,23 +741,6 @@ function queueChanged(
   next: SessionMessageQueueProjection,
 ): boolean {
   return previous.hostEpoch !== next.hostEpoch || previous.queueRevision !== next.queueRevision;
-}
-
-function newlyInFlight(
-  previous: SessionMessageQueueProjection,
-  next: SessionMessageQueueProjection,
-): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
-  const previousIds = new Set(rootQueueInFlight(previous).map((entry) => entry.entryId));
-  return rootQueueInFlight(next).filter((entry) => !previousIds.has(entry.entryId));
-}
-
-function rootQueueInFlight(
-  queue: SessionMessageQueueProjection,
-): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
-  return queue.steering.filter(
-    (entry): entry is Extract<SteeringMessageSnapshot, { state: 'in_flight' }> =>
-      entry.state === 'in_flight',
-  );
 }
 
 function projectQueueUpdate(
