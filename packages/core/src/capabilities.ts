@@ -118,6 +118,7 @@ export const CAPABILITY_REASON_CODES = [
   'cu_artifact_missing',
   'cu_backend_status',
   'cu_backend_unavailable',
+  'cu_platform_unsupported',
   'cu_executor_undistributable',
   'cu_executor_stopped',
   'cu_executor_start_failed',

@@ -38,6 +38,7 @@ import {
 import { type AppSettings } from '@maka/core/settings';
 import type { CuBackendId } from '@maka/computer-use';
 import type { BotStatus } from '@maka/runtime/bots';
+import { computerUseCapabilityReasons } from './computer-use-capability-reasons.js';
 import type { computerUseServiceHealth } from './computer-use-host.js';
 import {
   mapMediaAccessStatus,
@@ -132,6 +133,7 @@ function computerUseCapability(
   // read `not_available` for a machine that had a working backend, merely a
   // different one.
   const artifactAvailable = input !== undefined && input.backendId !== 'none';
+  const reasons = computerUseCapabilityReasons(input);
   return staticCapability({
     id: 'computer_use',
     label: 'Computer Use',
@@ -139,7 +141,7 @@ function computerUseCapability(
     feature: {
       state: artifactAvailable ? 'enabled' : 'not_available',
       source: 'runtime',
-      reason: input === undefined || input.backendId === 'none' ? 'cu_artifact_missing' : 'cu_backend_status',
+      reason: reasons.feature,
     },
     requiredPermissions: [
       { id: 'accessibility', required: true, status: permissions.accessibility.status },
@@ -154,7 +156,7 @@ function computerUseCapability(
       state: input?.health.state ?? 'not_available',
       source: 'runtime_probe',
       lastCheckedAt: now,
-      reason: input?.health.reason ?? 'cu_backend_unavailable',
+      reason: reasons.probe,
     },
   });
 }
