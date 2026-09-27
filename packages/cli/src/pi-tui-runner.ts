@@ -1309,21 +1309,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // Serializing these operations also preserves that ordering over a Host
     // connection where both calls are asynchronous.
     void (async () => {
-      // Fence the retraction to the session it was asked for: a mid-turn
-      // `/session` landing while the Host call is in flight re-keys the
-      // driver, and neither the retracted text nor its quotes may land in
-      // the session we switched to (#5109 review).
+      // Fence the retraction and the stop to the session they were asked for:
+      // a mid-turn `/session` landing while enqueues or the Host call are in
+      // flight re-keys the driver, and the abandoned retraction must neither
+      // retract the new session's queue nor stop its running turn, nor land
+      // its text or quotes there (#5109 review).
       const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
+      if (input.driver.getSessionId() !== retractionSessionId) return;
       const retracted = (await input.driver.retractQueued?.()) ?? {
         text: '',
         messageIds: [],
         quotes: [],
       };
-      if (input.driver.getSessionId() === retractionSessionId) {
-        acceptRetraction(retracted);
-        requestRender();
+      if (input.driver.getSessionId() !== retractionSessionId) {
+        return;
       }
+      acceptRetraction(retracted);
+      requestRender();
       await input.driver.stop();
     })().catch((error) => {
       interruptRequested = false;
@@ -1535,10 +1538,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const retractQueuedMessages = () => {
     void (async () => {
       // Same session fence as the interrupt path: a mid-turn `/session` that
-      // lands while the retraction is in flight must not inherit the quotes
-      // or the text of the session we left (#5109 review).
+      // lands while enqueues or the retraction are in flight must neither
+      // retract the new session's queue nor inherit the quotes or the text
+      // of the session we left (#5109 review).
       const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
+      if (input.driver.getSessionId() !== retractionSessionId) return;
       const retracted = (await input.driver.retractQueued?.()) ?? {
         text: '',
         messageIds: [],

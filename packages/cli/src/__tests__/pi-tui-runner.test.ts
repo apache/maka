@@ -8221,6 +8221,108 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('does not retract the switched-to queue when enqueues settle after a switch', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // Park a second enqueue inside the driver, then Alt+Up: the runner must
+    // wait for that enqueue, notice the session moved underneath it, and drop
+    // the retraction *before* calling retractQueued — otherwise the Host call
+    // retracts the switched-to session's queue and the mismatch fence then
+    // discards those messages silently (#5109 review).
+    driver.enqueueGate = deferred<void>();
+    terminal.input('second queued');
+    terminal.input('\r');
+    driver.switchSession('session-other');
+    driver.enqueueGate.resolve();
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    await delay(30);
+    assert.equal(driver.retractCalls, 0, 'the moved-past retraction must not run');
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('keeps the interrupt stop bound to the session it was asked for', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // Ctrl+C interrupts the running turn; the pre-stop retraction is held on
+    // a gate while the user switches sessions. The switch owns stopping the
+    // old turn — the fenced interrupt must not stop the session it landed on
+    // (#5109 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b'); // double Escape arms and fires the interrupt
+    terminal.input('\x1b');
+    await waitFor(() => driver.retractCalls === 1);
+    driver.switchSession('session-other');
+    driver.retractGate.resolve();
+    await waitFor(() => driver.retractedQuoteLoads.length === 1);
+    await delay(30);
+    assert.equal(driver.stopCalls, 0, 'the fenced stop must not hit the switched-to session');
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('discards a retraction that lands after a mid-turn session switch', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
@@ -13719,11 +13821,17 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
   readonly queuedRows: Array<{ messageId: string; text: string; quotes: readonly QuoteRef[] }> = [];
   readonly retractedQuoteLoads: Array<readonly QuoteRef[]> = [];
   retractGate: ReturnType<typeof deferred<void>> | undefined = undefined;
+  enqueueGate: ReturnType<typeof deferred<void>> | undefined = undefined;
   #retractCalls = 0;
+  #stopCalls = 0;
   #turnStarted = false;
 
   get retractCalls(): number {
     return this.#retractCalls;
+  }
+
+  get stopCalls(): number {
+    return this.#stopCalls;
   }
 
   override startBlockingTurn(): void {
@@ -13741,8 +13849,16 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
         text,
         quotes: options.quotes ?? [],
       });
+      if (this.enqueueGate) {
+        const gate = this.enqueueGate;
+        return gate.promise.then(() => super.submitMessage(text, options));
+      }
     }
     return super.submitMessage(text, options);
+  }
+
+  override async stop(): Promise<void> {
+    this.#stopCalls += 1;
   }
 
   async retractQueued(): Promise<MakaRetractedMessages> {
