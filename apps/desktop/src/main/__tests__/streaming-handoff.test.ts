@@ -568,10 +568,12 @@ describe('single live-turn handoff', () => {
       type: 'text_delta', id: 'recovered', turnId: 'turn-1', messageId: 'assistant-1',
       ts: 1, startOffset: 0, text: 'restored prefix',
     } satisfies SessionEvent);
-    assert.deepEqual(
-      { publications: publicationCounts.length, frames: frameQueue.length, text: renderedText() },
-      { publications: 1, frames: 0, text: 'restored prefix' }, 'recovery is immediate',
-    );
+    const recoverySnapshot = {
+      publications: publicationCounts.length,
+      frames: frameQueue.length,
+      text: renderedText(),
+    };
+    assert.deepEqual(recoverySnapshot, { publications: 1, frames: 0, text: 'restored prefix' });
     eventHandlers.releaseDisplayEvents(sessionId);
     emit({
       type: 'text_delta', id: 'continued', turnId: 'turn-1', messageId: 'assistant-1',
@@ -582,12 +584,9 @@ describe('single live-turn handoff', () => {
       { publications: 1, frames: 1 }, 'live continuation waits for a frame',
     );
     frameQueue.shift()?.();
-    assert.deepEqual(
-      { publications: publicationCounts.length, text: renderedText() },
-      { publications: 2, text: 'restored prefix plus live text' }, 'the frame appends live text',
-    );
+    const renderedSnapshot = { publications: publicationCounts.length, text: renderedText() };
+    assert.deepEqual(renderedSnapshot, { publications: 2, text: 'restored prefix plus live text' });
   }); // Recovery delivery is synchronous only while the hold is active.
-
   it('shares pending display events across handler replacement', () => {
     const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
       'session-1': [armLiveTurn('turn-1')],

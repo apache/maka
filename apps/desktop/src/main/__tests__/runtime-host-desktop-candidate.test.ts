@@ -1013,36 +1013,27 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
   await sourceIpc.invoke('sessions:observe', 'session-1', 'observer-1');
   await sourceCandidate.close();
   timeline.clear();
-
   const rejectedHost = connectionHarness('restore-failure', restorableObservation({
     subscribeFailure: new Error('restore failed'),
   }));
-  const rejectedCandidate = start(
-    rejectedHost.connection,
-    { ...deps(ipcHarness()), renderer: timeline.renderer },
-  );
+  const rejectedDeps = { ...deps(ipcHarness()), renderer: timeline.renderer };
+  const rejectedCandidate = start(rejectedHost.connection, rejectedDeps);
   await assert.rejects(rejectedCandidate, /restore Session observations: session-1/);
   const failureEvents = timeline.sessionEvents('session-1');
-  assert.equal(
-    [...new Set(failureEvents.map((event) => event.type))].sort().join(','),
-    'host_observation_error,host_observation_pending',
-  );
+  const failureTypes = [...new Set(failureEvents.map((event) => event.type))].sort().join(',');
+  assert.equal(failureTypes, 'host_observation_error,host_observation_pending');
   assert.equal(failureEvents.find((event) => event.type === 'host_observation_error')?.message, 'restore failed');
   timeline.clear();
-
   const replacementHost = connectionHarness('restore-recovered', restorableObservation({
     assistantStreams: [textStream('message-1')],
   }));
-  const replacementCandidate = await start(
-    replacementHost.connection,
-    { ...deps(ipcHarness()), renderer: timeline.renderer },
-  );
+  const replacementDeps = { ...deps(ipcHarness()), renderer: timeline.renderer };
+  const replacementCandidate = await start(replacementHost.connection, replacementDeps);
   const pendingAt = timeline.sessionEventIndex('session-1', 'host_observation_pending');
   const readyAt = timeline.sessionEventIndex('session-1', 'host_observation_seed');
   assert.equal(pendingAt >= 0 && readyAt > pendingAt, true);
   await replacementCandidate.close();
 }); // A failed replacement leaves the registry available to the next candidate.
-
 test('drops a stale shared Session observation when Guest access is gone', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const firstIpc = ipcHarness();
