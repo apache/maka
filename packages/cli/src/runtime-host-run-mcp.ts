@@ -41,6 +41,7 @@ export class RuntimeHostRunMcp {
   #availability: RuntimeHostConnectionAvailability | undefined;
   #sessionId: string | undefined;
   #sessionConfigurationId: string | undefined;
+  #enabledServerIds: readonly string[] = [];
   #prepareTask: Promise<void> | undefined;
   #closed = false;
   #closeTask: Promise<void> | undefined;
@@ -99,6 +100,9 @@ export class RuntimeHostRunMcp {
     if (this.#closed) throw new Error('MCP publication is closed');
     try {
       const config = await createMcpConfigStore(this.#workspaceRoot).get();
+      this.#enabledServerIds = Object.entries(config.mcpServers)
+        .filter(([, server]) => server.enabled !== false)
+        .map(([serverId]) => serverId);
       try {
         await this.#manager.sync(config);
       } catch (error) {
@@ -106,6 +110,7 @@ export class RuntimeHostRunMcp {
           cause: error,
         });
       }
+      this.#assertServersConnected();
       if (this.#closed) throw new Error('MCP publication is closed');
       this.#sessionConfigurationId = `sha256:${createHash('sha256').update(stableJsonStringify(config)).digest('hex')}`;
       this.#sessionId = sessionId;
@@ -118,6 +123,7 @@ export class RuntimeHostRunMcp {
 
   async ready(): Promise<void> {
     if (this.#closed || !this.#sessionId) throw new Error('MCP publication is not prepared');
+    this.#assertServersConnected();
     const state = await this.#publication.settle();
     if (state !== 'published') {
       if (
@@ -132,6 +138,17 @@ export class RuntimeHostRunMcp {
       throw new Error('Session MCP capability publication is unavailable', {
         cause: this.#publication.lastError,
       });
+    }
+    this.#assertServersConnected();
+  }
+
+  #assertServersConnected(): void {
+    const unavailable = this.#enabledServerIds.flatMap((serverId) => {
+      const state = this.#manager.status(serverId)?.state ?? 'missing';
+      return state === 'connected' ? [] : [`${serverId} (${state})`];
+    });
+    if (unavailable.length > 0) {
+      throw new Error(`Session MCP server(s) unavailable: ${unavailable.join(', ')}`);
     }
   }
 
