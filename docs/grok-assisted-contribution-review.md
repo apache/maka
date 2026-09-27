@@ -19,7 +19,8 @@
 
 # Grok-assisted contribution review
 
-**Baseline:** `d89ccce01` (2026-09-27). **Status:** all 25 original-commit
+**Baseline:** `c9a176e10` (2026-09-27; merged into the review branch after
+the initial `d89ccce01` pass). **Status:** all 25 original-commit
 inventories reviewed; four narrow replacements verified locally, seven further
 PRs have scoped fixes, and a mixed-tool architecture document has been
 corrected. Remaining behavior reviews and whole-PR dispositions are open.
@@ -331,9 +332,9 @@ and the Electron renderer-reload E2E passes in this branch.
   not reverted just to reproduce an obsolete selector.
 - #3078: the inventory checker now exposes a pure drift comparison, with tests
   for exact bytes, independently stale Markdown, and missing/extra paths. The
-  CI planner also recognizes the new test. The real 300-file inventory check,
-  22 Astryx tests, 40 CI planner tests, and Biome passed. The generator and its
-  later fail-closed dependency parser remain unchanged.
+  CI planner also recognizes the new test. The real 301-file inventory check
+  (after merging upstream), 22 Astryx tests, 40 CI planner tests, and Biome
+  passed. The generator and its later fail-closed dependency parser remain unchanged.
 - #2967: a new boundary test showed the audit writer could append a record
   across `MAX_AUDIT_BYTES` without recording `audit_truncated` until another
   event arrived. The writer now checks the encoded record length before
@@ -348,6 +349,26 @@ and the Electron renderer-reload E2E passes in this branch.
   regression was added but not run locally because the Docker daemon did not
   respond. #3017 owns the later raw-TCP closure behavior; do not roll that
   implementation back as part of #3008.
+
+### Remaining 21: current disposition
+
+These are the 25 candidate PRs minus the four narrow replacements above. A
+scoped fix is **not** a whole-PR rewrite, and a removed feature is not a
+reason to restore its old implementation just to revert it again.
+
+| Disposition | PRs | Next evidence or action |
+|---|---|---|
+| Deleted or superseded original path (8) | #3063, #3118, #3119, #3102, #3104, #3117, #3069, #3106 | Preserve the current replacement/removal; #3117's fixture and #3106's surviving startup behavior remain separately reviewable. |
+| Mixed or uncertain attribution (2) | #3364, #3123 | Keep Maka-authored formatter and required ASF header; resolve #3123 squash-versus-original provenance with maintainers. |
+| Active code with scoped fixes (7) | #3008, #2967, #3048, #3066, #3078, #3115, #3544 | Review the rest of each current behavior against later dependents; the #3008 live proxy test still needs Docker. |
+| Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | Decide whether surviving behavior requires replacement, including the tagged follow-ups in #3459. |
+| Documentation-only mixed-tool PR (1) | #4345 | Factual correction made; maintainers decide provenance remedy for the surviving architecture document. |
+
+The branch has been built against `c9a176e10`: `npm run build:with-deps`
+passes, as do 214 Host/Runtime tests, 82 Desktop queue tests, and two real
+Electron queue E2Es. These checks do not substitute for the unresolved
+per-PR review or the live proxy test. No branch push or PR update has been
+made for these local review commits.
 
 ## Review protocol
 
