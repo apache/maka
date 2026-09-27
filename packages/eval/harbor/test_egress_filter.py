@@ -493,6 +493,18 @@ class EgressFilterTest(unittest.TestCase):
                 ["audit_truncated"],
             )
 
+    def test_audit_marks_a_record_that_would_cross_the_byte_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
+            MODULE.AUDIT_PATH.write_bytes(b"{}\n" * (MODULE.MAX_AUDIT_BYTES // 3))
+            self.assertEqual(MODULE.AUDIT_PATH.stat().st_size, MODULE.MAX_AUDIT_BYTES - 1)
+
+            MODULE.append_audit("tbench_domain", "tbench.ai", "/tasks")
+
+            last_line = MODULE.AUDIT_PATH.read_bytes().splitlines()[-1]
+            self.assertEqual(json.loads(last_line)["ruleId"], "audit_truncated")
+            self.assertTrue(MODULE.audit_already_truncated())
+
     def test_truncation_probe_ignores_non_object_json_tails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"

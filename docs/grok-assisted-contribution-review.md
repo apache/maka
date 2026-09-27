@@ -310,6 +310,13 @@ and the Electron renderer-reload E2E passes in this branch.
   CI planner also recognizes the new test. The real 300-file inventory check,
   22 Astryx tests, 40 CI planner tests, and Biome passed. The generator and its
   later fail-closed dependency parser remain unchanged.
+- #2967: a new boundary test showed the audit writer could append a record
+  across `MAX_AUDIT_BYTES` without recording `audit_truncated` until another
+  event arrived. The writer now checks the encoded record length before
+  appending and emits the marker immediately on overflow. Python 3.13 Harbor
+  tests (91 pass, 13 skips) and 21 Eval audit artifact tests passed. This is a
+  scoped fix, not an independent replacement of all five original commits;
+  the first Grok-tagged commit predates the selected policy date.
 - #3008: a new test exposed that CONNECT classification trusted `pretty_host`
   over the actual tunnel destination, allowing a spoofed Host header to hide a
   blocklisted target. It now classifies `request.host`; missing targets fail

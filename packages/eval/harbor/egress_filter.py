@@ -385,17 +385,19 @@ def blocked_response(rule_id: str):
 
 def append_audit(rule_id: str, host: str, normalized_path: str) -> None:
     AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if AUDIT_PATH.exists() and AUDIT_PATH.stat().st_size >= MAX_AUDIT_BYTES:
-        write_truncation_marker()
-        return
     record = {
         "ts": int(time.time() * 1000),
         "ruleId": rule_id,
         "host": host[:255],
         "normalizedPath": normalized_path[:4096],
     }
+    line = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
+    size = AUDIT_PATH.stat().st_size if AUDIT_PATH.exists() else 0
+    if size + len(line.encode("utf-8")) > MAX_AUDIT_BYTES:
+        write_truncation_marker()
+        return
     with AUDIT_PATH.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+        stream.write(line)
 
 
 def write_truncation_marker() -> None:
