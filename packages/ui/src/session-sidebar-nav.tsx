@@ -65,6 +65,10 @@ export function SessionSidebarNav() {
           </kbd>
         )}
       />
+      <MakaClientSlotOutlet
+        name="sidebar.navigation"
+        owner={{ collapsed: props.collapsed }}
+      />
       {props.workHubEntry ? (
         <SideNavItem
           label={props.workHubEntry.label}

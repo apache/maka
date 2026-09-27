@@ -45,6 +45,10 @@ import {
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import type {
+  TurnFinishContext,
+  TurnFinishDecision,
+} from '@maka/runtime/plugin-turn-finish-service';
 import {
   type BackendFactoryContext,
   type BackendPreparationContext,
@@ -80,6 +84,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
+  readonly beforeTurnFinish?: (context: TurnFinishContext) => Promise<TurnFinishDecision>;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
   readonly contextOffload?: InteractiveContextOffloadReader;
@@ -494,6 +499,7 @@ async function buildHostAiSdkBackend(
             ],
           };
         },
+        ...(input.beforeTurnFinish ? { beforeTurnFinish: input.beforeTurnFinish } : {}),
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,

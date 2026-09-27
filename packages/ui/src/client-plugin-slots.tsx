@@ -77,6 +77,11 @@ export interface MakaClientSidebarFooterProps {
   readonly collapsed: boolean;
 }
 
+/** Stable owner props for an additive primary-navigation contribution. */
+export interface MakaClientSidebarNavigationProps {
+  readonly collapsed: boolean;
+}
+
 /** Stable owner props for one plugin-owned Settings navigation control. */
 export interface MakaClientSettingsNavigationProps {
   readonly activePage: string;
@@ -176,6 +181,11 @@ export interface MakaClientSlotMap {
     kind: 'list';
     scope: 'root';
     owner: MakaClientSidebarFooterProps;
+  };
+  'sidebar.navigation': {
+    kind: 'list';
+    scope: 'root';
+    owner: MakaClientSidebarNavigationProps;
   };
   'settings.navigation': {
     kind: 'list';
@@ -442,6 +452,7 @@ const EMPTY_ENTRIES: readonly MakaClientStoredSlotEntry[] = Object.freeze([]);
 export const MAKA_CLIENT_NATIVE_SLOT_SPECS = Object.freeze({
   'shell.overlay': { kind: 'list', scope: 'root' },
   'sidebar.footer': { kind: 'list', scope: 'root' },
+  'sidebar.navigation': { kind: 'list', scope: 'root' },
   'settings.navigation': { kind: 'list', scope: 'root' },
   'settings.page': { kind: 'keyed', scope: 'root' },
   'conversation.header.actions': { kind: 'list', scope: 'session' },
