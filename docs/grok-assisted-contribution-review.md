@@ -358,7 +358,8 @@ and the Electron renderer-reload E2E passes in this branch.
   projection after the Host revision changed mid-drag; the drag now retains
   its starting revision and discards the drop when it differs. Both tests
   failed before their respective fixes and passed afterward (6 queue
-  component tests); UI build and Biome passed. This is not a complete rewrite
+  component tests); UI build, Desktop build, the Side Chat native-reorder and
+  reconnect Electron E2E, and Biome passed. This is not a complete rewrite
   of the 35-file mixed-author feature.
 - #2967: a new boundary test showed the audit writer could append a record
   across `MAX_AUDIT_BYTES` without recording `audit_truncated` until another
