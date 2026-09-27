@@ -163,17 +163,18 @@ export function useSessionNavigationController(
     return projects;
   }, [input.projectScopes]);
   const sessionProjectName = useCallback(
-    (session: SessionSummary): string | undefined =>
-      deriveTitlebarProjectName({
-        projectName:
-          session.projectId && 'runtimeHostId' in session
-            ? projectByIdentity.get(
-                runtimeHostProjectKey(session.runtimeHostId, session.projectId),
-              )?.name
-            : undefined,
+    (session: SessionSummary): string | undefined => {
+      const projected = sessionById.get(session.id);
+      return deriveTitlebarProjectName({
+        projectName: projected?.projectId
+          ? projectByIdentity.get(
+              runtimeHostProjectKey(projected.runtimeHostId, projected.projectId),
+            )?.name
+          : undefined,
         projectPath: session.cwd,
-      }),
-    [projectByIdentity],
+      });
+    },
+    [projectByIdentity, sessionById],
   );
   const sessionLocation = useCallback(
     (session: SessionSummary): string | undefined => {

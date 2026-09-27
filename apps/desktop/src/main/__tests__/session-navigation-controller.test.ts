@@ -379,6 +379,53 @@ describe('useSessionNavigationController', () => {
     assert.equal(controller().selectors.sessionLocation(catalog[0]!), 'C:\\');
   });
 
+  it('keeps double-slash POSIX locations case-sensitive', async () => {
+    const { root } = installReactRenderer();
+    const posix: ProjectRecord = {
+      id: 'posix',
+      name: 'POSIX',
+      locations: [
+        { path: '//Repo', isWorktree: false },
+        { path: '//Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('different-case', { projectId: 'posix', cwd: '//repo-feature' }),
+      session('exact-case', { projectId: 'posix', cwd: '//Repo-Feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'exact-case'), projectScopes: [localScope(posix)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), undefined);
+    assert.equal(controller().selectors.worktreeSessionIds.has('different-case'), false);
+    assert.equal(controller().selectors.sessionLocation(catalog[1]!), '//Repo-Feature');
+    assert.equal(controller().selectors.worktreeSessionIds.has('exact-case'), true);
+  });
+
+  it('matches explicit UNC locations against forward-slash session paths', async () => {
+    const { root } = installReactRenderer();
+    const windows: ProjectRecord = {
+      id: 'windows-unc',
+      name: 'Windows UNC',
+      locations: [
+        { path: '\\\\Server\\Repo', isWorktree: false },
+        { path: '\\\\Server\\Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('unc-feature', { projectId: 'windows-unc', cwd: '//server/repo-feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'unc-feature'), projectScopes: [localScope(windows)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), '\\\\Server\\Repo-Feature');
+    assert.equal(controller().selectors.worktreeSessionIds.has('unc-feature'), true);
+  });
+
   it('does not match a Host-workspace session against local project locations', async () => {
     const { root } = installReactRenderer();
     const linked: ProjectRecord = {
