@@ -20,7 +20,7 @@
 # Grok-assisted contribution review
 
 **Baseline:** `d89ccce01` (2026-09-27). **Status:** original-commit inventory
-reviewed; two narrow replacements verified; remaining behavior reviews open.
+reviewed; four narrow replacements verified locally; remaining behavior reviews open.
 
 This is a provenance and engineering inventory, not a legal classification or
 an assertion that these changes must be removed. The scope is merged PRs whose
@@ -155,26 +155,31 @@ changes. It does not erase the original history or settle ASF legal questions.
 |---:|---|---|
 | #3082 | Removing the PTY exit reconciliation made the delayed-persist test return `running` instead of `completed`. | Reconcile the control reply after persistence against finalization, then mark terminal observations. Replaced the Grok-authored test with a fresh test that pauses storage and observes driver exit without monkeypatching the driver prototype. Runtime build, shell-run-manager suite (62 pass, 4 platform skips), and Biome passed. |
 | #5223 | Removing the directory check made the regular-file test fail with `Missing expected rejection`. | Check the canonical path's stat before Git discovery and reject non-directories with `TypeError`. Replaced the original test with Git/non-Git file cases, registration non-mutation, and a directory control. Storage build, project-catalog suite (23 pass), and Biome passed. |
+| #3070 | Removing explicit nested-project selection made registration return the parent project's ID and broke relinking to a child directory. | Make resolution intent explicit: selected paths retain a nested folder identity, while historical paths and selected repository roots keep Git identity. Storage build, project-catalog suite (24 pass), Desktop nested-selection test, and Biome passed. Desktop full build remains blocked by seven unrelated implicit-`any` diagnostics. |
+| #3099 | Disconnecting the migrated rail store's grouping read/write made a fresh store lose the selected grouping (`undefined` persisted value). | Let the rail layout store hydrate and write grouping directly, removing the old standalone read/write helpers. Rail layout tests (6 pass), navigation boundary tests (4 pass), and Biome passed. Desktop full build has the same seven unrelated implicit-`any` diagnostics. |
 
 The #3082 and #5223 revert-state commits are separate from the replacement
 commit to make the failure evidence inspectable. They are not safe to merge
-without the following replacement. The remaining 23 entries have **not** been
+without the following replacement. The remaining 21 entries have **not** been
 reverted or reimplemented; #3364 and #3123 require provenance decisions before
 any broad rollback.
 
-Three narrow paths need a disposition rather than an identical revert/reapply:
+Three narrow paths have been traced to a no-code disposition rather than an
+identical revert/reapply. They are reviewed, **not** counted as replacements:
 
 - #3063 removed `history-compact-cleanup.ts`; the file and references to it
-  are absent now. Restoring and removing it again would not replace live code.
+  are absent now (a repository search finds only this review document).
+  Restoring and removing it again would not replace live code.
 - #3118 removed the `fallback-models` filter for xAI OAuth discovery, which is
-  still absent in the current registry. Its test change also removed a stale
-  snapshot assertion. Reintroducing the filter just to delete it again would
-  temporarily restore a model-discovery regression without changing the final
-  behavior.
+  still absent in `packages/core/src/provider-registry.ts`. The other changed
+  line removed an unused test import. Reintroducing the filter just to delete
+  it again would temporarily restore a model-discovery regression without
+  changing the final behavior.
 - #3119 moved Plan Mode types to core subpath imports. The imports survive,
-  with later UI-locale behavior added at the same boundary. Restoring the
-  removed root barrel import would break typecheck; an identical import fix is
-  not an independent implementation.
+  with later UI-locale lookup behavior added at the same boundary in
+  `apps/desktop/src/renderer/locales/plan-mode-copy.ts`. Restoring the removed
+  root barrel import would break typecheck; an identical import fix is not an
+  independent implementation.
 
 #3008 is only partly recognizable in today's Eval egress filter. Its CONNECT
 host classification remains, but #3017 subsequently replaced the raw-TCP
@@ -183,15 +188,11 @@ mitmproxy tests. Reverting the #3008 squash against today's code would also
 unwind later security behavior. Treat the surviving CONNECT validation as a
 separate security review with unit and live-proxy regression checks.
 
-#3070 remains material in `project-catalog.ts`: explicit registration and
-relinking still use `resolveUserSelectedProjectLocation`, while session cwd
-resolution keeps repository identity. Its behavior overlaps the #5223 path
-validation, so a replacement must test nested registration, touch, relink,
-session reassignment, and invalid paths together. #3099's original renderer
-files moved under `features/session-navigation`; the successor
-`session-rail-layout-store.ts` still hydrates and writes the grouping mode
-through `session-list-layout.ts`. Review the current store and renderer reload
-test, not the deleted AppShell persistence effect.
+#3070 and #3099 were replaced in the current branch after reviewing their
+migrated implementations. #3070's historical cwd resolution remains distinct
+from explicit nested selection. #3099's renderer reload test survives at
+`apps/desktop/e2e/sidebar-project-reload.spec.ts`; its direct store tests pass,
+but that Electron E2E has not yet been rerun in this branch.
 
 ## Review protocol
 
@@ -208,8 +209,9 @@ acceptability of any remediation need Apache project/legal review.
 - [x] Triage all 25 original changes by path, size, and current path presence.
 - [x] Read original commit trailers and compare branch history with the merged
       diff for the 25 candidate PRs.
-- [ ] Trace current lines, behaviors, and tests for the remaining 23 PRs.
+- [ ] Trace current lines, behaviors, and tests for 18 further PRs (three
+      no-code dispositions above are already traced).
 - [ ] Record which changes are still material, superseded, or mixed with other work.
 - [ ] Decide the appropriate action with the project and ASF legal discussion.
-- [x] Implement and verify #3082 and #5223 in reviewable slices.
+- [x] Implement and locally verify #3082, #5223, #3070, and #3099 in reviewable slices.
 - [ ] Finish the remaining scoped reviews and any agreed replacements.
