@@ -39,17 +39,21 @@ class FrameworkAuthorityTest(unittest.TestCase):
     def test_supported_names_and_distributions_are_explicit(self) -> None:
         authority = fresh_authority()
         expected = {
-            "harbor": ("harbor", "harbor"),
-            "pier": ("pier", "datacurve-pier"),
+            "harbor": ("harbor", "harbor", "harbor.agents.base"),
+            "pier": ("pier", "datacurve-pier", "pier.agents.base"),
         }
 
-        for name, (expected_name, distribution) in expected.items():
+        for name, (expected_name, distribution, agent_module) in expected.items():
             with self.subTest(name=name):
                 spec = authority.framework_spec(name)
-                self.assertEqual((spec.name, spec.distribution), (expected_name, distribution))
+                self.assertEqual(
+                    (spec.name, spec.distribution, spec.agent_module),
+                    (expected_name, distribution, agent_module),
+                )
                 authority.install(name)
                 self.assertEqual(authority.current_framework(), name)
                 self.assertEqual(authority.framework_distribution(name), distribution)
+                self.assertEqual(authority.framework_agent_module(name), agent_module)
 
     def test_invalid_names_cannot_replace_the_process_selection(self) -> None:
         authority = fresh_authority()

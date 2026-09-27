@@ -25,11 +25,12 @@ from typing import NamedTuple
 class FrameworkSpec(NamedTuple):
     name: str
     distribution: str
+    agent_module: str
 
 
 _FRAMEWORKS = {
-    "harbor": FrameworkSpec("harbor", "harbor"),
-    "pier": FrameworkSpec("pier", "datacurve-pier"),
+    "harbor": FrameworkSpec("harbor", "harbor", "harbor.agents.base"),
+    "pier": FrameworkSpec("pier", "datacurve-pier", "pier.agents.base"),
 }
 _active: FrameworkSpec | None = None
 
@@ -56,3 +57,7 @@ def current_framework() -> str:
 
 def framework_distribution(name: str) -> str:
     return framework_spec(name).distribution
+
+
+def framework_agent_module(name: str) -> str:
+    return framework_spec(name).agent_module

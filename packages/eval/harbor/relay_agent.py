@@ -23,6 +23,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -31,13 +32,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from eval_framework import current_framework
+from eval_framework import current_framework, framework_agent_module
 
 framework = current_framework()
-if framework == "harbor":
-    from harbor.agents.base import BaseAgent
-else:
-    from pier.agents.base import BaseAgent
+BaseAgent = importlib.import_module(framework_agent_module(framework)).BaseAgent
 
 
 class RelayTransportClosed(RuntimeError):
