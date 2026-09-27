@@ -747,7 +747,11 @@ export function useWorkHubController(
       : undefined,
     deleteQueuedEntry,
     promoteQueuedEntry: (entryId: string) => mutateQueue((target) => services.promoteQueueEntry(target, entryId)),
-    reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => services.reorderQueueEntries(target, entryIds)),
+    reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => {
+      const revision = messageQueue.revision;
+      if (revision === undefined) throw new Error('Message queue is not ready for reordering');
+      return services.reorderQueueEntries(target, entryIds, revision);
+    }),
     viewportNavigation,
     liveTurn,
     liveTurns,

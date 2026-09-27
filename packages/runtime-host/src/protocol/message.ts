@@ -188,6 +188,7 @@ export interface QueueEntriesReorderInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
   readonly reorderId: string;
+  readonly expectedQueueRevision: number;
   readonly entryIds: readonly string[];
 }
 
@@ -569,6 +570,7 @@ function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInpu
     'originHostEpoch',
     'sessionId',
     'reorderId',
+    'expectedQueueRevision',
     'entryIds',
   ]);
   const entryIds = requireBoundedArray(record.entryIds, 'reorder entry identities').map((entryId) =>
@@ -581,6 +583,7 @@ function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInpu
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     reorderId: requireEntityId(record.reorderId, 'reorderId'),
+    expectedQueueRevision: requireCount(record.expectedQueueRevision, 'expectedQueueRevision'),
     entryIds,
   };
 }

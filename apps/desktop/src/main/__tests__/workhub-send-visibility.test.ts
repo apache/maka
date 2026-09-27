@@ -689,7 +689,7 @@ test('WorkHub sends queue edits, withdrawal and both queue orders to the Host an
   });
   assert.deepEqual(h.queueMutations, [
     ['retract', h.controller.sessionId, 'second'],
-    ['reorder', h.controller.sessionId, ['second', 'first']],
+    ['reorder', h.controller.sessionId, ['second', 'first'], 7],
     ['retract', h.controller.sessionId, 'first'],
   ]);
   assert.deepEqual(h.restoredDrafts, [[h.controller.sessionId, 'second']], 'edit hands the retracted text back to the draft');

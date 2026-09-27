@@ -1639,9 +1639,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [dropOptimisticUserMessage, messageQueue.entries, runQueueEntryAction, sideChat],
   );
   const reorderQueuedEntries = useCallback(
-    (entryIds: readonly string[]) =>
-      runQueueEntryAction((id) => sideChat.reorderQueueEntries(id, entryIds)),
-    [runQueueEntryAction, sideChat],
+    (entryIds: readonly string[]) => runQueueEntryAction((id) => {
+      const revision = messageQueue.queueRevision;
+      if (revision === undefined) throw new Error('Message queue is not ready for reordering');
+      return sideChat.reorderQueueEntries(id, entryIds, revision);
+    }),
+    [messageQueue.queueRevision, runQueueEntryAction, sideChat],
   );
 
   const setPermissionMode = useCallback(

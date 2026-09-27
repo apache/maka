@@ -2353,6 +2353,7 @@ test('entries reorder permutes the follow-up queue and rejects stale orders', as
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-1',
+      expectedQueueRevision: revisionBefore,
       entryIds: ['id-3', 'id-1', 'id-2'],
     },
     operationContext(),
@@ -2370,17 +2371,33 @@ test('entries reorder permutes the follow-up queue and rejects stale orders', as
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-1',
+      expectedQueueRevision: revisionBefore,
       entryIds: ['id-3', 'id-1', 'id-2'],
     },
     operationContext(),
   );
   assert.deepEqual(retry, reordered);
 
+  const staleMembers = {
+    originHostEpoch: 'epoch-1',
+    sessionId: ROOT.sessionId,
+    reorderId: 'reorder-stale-members',
+    entryIds: ['id-2', 'id-3', 'id-1'],
+    expectedQueueRevision: revisionBefore,
+  };
+  const overwritten = await fixture.coordinator.handlers['queue.entries.reorder'](
+    staleMembers,
+    operationContext(),
+  );
+  assert.equal(overwritten.ok, false);
+  if (!overwritten.ok) assert.equal(overwritten.error.code, 'operation_conflict');
+
   const stale = await fixture.coordinator.handlers['queue.entries.reorder'](
     {
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-2',
+      expectedQueueRevision: revisionBefore,
       entryIds: ['id-2', 'id-1'],
     },
     operationContext(),
@@ -2393,6 +2410,7 @@ test('entries reorder permutes the follow-up queue and rejects stale orders', as
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-3',
+      expectedQueueRevision: revisionBefore + 1,
       entryIds: ['id-3', 'id-1', 'id-2'],
     },
     operationContext(),
@@ -2481,6 +2499,7 @@ test('steering edits and reorders settle before one complete batch is pulled; fo
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-steering',
+      expectedQueueRevision: fixture.coordinator.projection(ROOT.sessionId).queueRevision,
       entryIds: [entries[2]!.entryId, entries[0]!.entryId, entries[1]!.entryId],
     },
     operationContext(),
@@ -2552,6 +2571,7 @@ test('queued mutations reject a queue that is draining into the next Turn', asyn
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-draining',
+      expectedQueueRevision: fixture.coordinator.projection(ROOT.sessionId).queueRevision,
       entryIds: ['id-2', 'id-1'],
     },
     operationContext(),
@@ -2569,6 +2589,7 @@ test('queued mutations reject a queue that is draining into the next Turn', asyn
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-after-commit',
+      expectedQueueRevision: fixture.coordinator.projection(ROOT.sessionId).queueRevision,
       entryIds: ['id-2'],
     },
     operationContext(),

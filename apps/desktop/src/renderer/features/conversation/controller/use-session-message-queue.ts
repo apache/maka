@@ -128,6 +128,14 @@ export function useSessionMessageQueue(options: {
       restoreDraft: (draft) => restoreDraft(targetSessionId, draft),
     })),
     deleteQueuedEntry: (entryId) => runAction((targetSessionId) => services.sessions.retractQueueEntry(targetSessionId, entryId)),
-    reorderQueuedEntries: (entryIds) => runAction((targetSessionId) => services.sessions.reorderQueueEntries(targetSessionId, entryIds)),
+    reorderQueuedEntries: (entryIds) => {
+      const expectedQueueRevision = queue?.queueRevision;
+      if (expectedQueueRevision === undefined) {
+        return Promise.reject(new Error('Message queue is not ready for reordering'));
+      }
+      return runAction((targetSessionId) =>
+        services.sessions.reorderQueueEntries(targetSessionId, entryIds, expectedQueueRevision),
+      );
+    },
   };
 }

@@ -2029,6 +2029,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (state.transition) {
       return failure('operation_conflict', 'Message queue is draining into the next Turn');
     }
+    if (state.revision !== input.expectedQueueRevision) {
+      return failure('operation_conflict', 'Message queue changed since the reorder was issued');
+    }
     const steering = state.steering.some((entry) => entry.entryId === input.entryIds[0]);
     const current = steering ? state.steering : state.followup;
     if (input.entryIds.length !== current.length) {

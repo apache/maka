@@ -676,7 +676,7 @@ export function registerRuntimeHostSessionExecutionIpc(
   );
   ipcMain.handle(
     "sessions:reorderQueueEntries",
-    async (_event, sessionId: string, entryIds: unknown) => {
+    async (_event, sessionId: string, entryIds: unknown, expectedQueueRevision: unknown) => {
       if (
         !Array.isArray(entryIds) ||
         entryIds.some((entryId) => typeof entryId !== "string")
@@ -686,6 +686,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       await deps.client.reorderQueueEntries({
         sessionId,
         reorderId: newId(),
+        expectedQueueRevision: requiredSequence(expectedQueueRevision, "Queue"),
         entryIds,
       });
     },

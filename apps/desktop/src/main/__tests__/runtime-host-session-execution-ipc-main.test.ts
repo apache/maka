@@ -1912,7 +1912,7 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
 
   assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
   await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
-  await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"]);
+  await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"], 5);
 
   assert.deepEqual(calls, [
     {
@@ -1931,6 +1931,7 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
       operation: "reorder",
       sessionId: "session-1",
       reorderId: "id-3",
+      expectedQueueRevision: 5,
       entryIds: ["entry-3", "entry-2"],
     },
   ]);
@@ -1942,6 +1943,10 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
   await assert.rejects(
     () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1", 42]),
     /Invalid queue entry order/,
+  );
+  await assert.rejects(
+    () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1"], -1),
+    /Invalid Queue sequence/,
   );
 });
 

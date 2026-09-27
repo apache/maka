@@ -20,7 +20,7 @@
 # Grok-assisted contribution review
 
 **Baseline:** `d89ccce01` (2026-09-27). **Status:** all 25 original-commit
-inventories reviewed; four narrow replacements verified locally, four further
+inventories reviewed; four narrow replacements verified locally, seven further
 PRs have scoped fixes, and a mixed-tool architecture document has been
 corrected. Remaining behavior reviews and whole-PR dispositions are open.
 
@@ -187,22 +187,27 @@ identical revert/reapply. They are reviewed, **not** counted as replacements:
   clearing, MCP reconnect, artifact get, and skill starter/details) have no
   present Desktop callers or registered handlers in the source tree. Its
   original branch also includes an untagged merge and an E2E follow-up. Do not
-  resurrect the discarded IPC authority merely to delete it again; the
-  surviving E2E changes remain a separate test review.
+  resurrect the discarded IPC authority merely to delete it again. Its two
+  touched E2E files were later deleted (#5567 and #4752); the surviving
+  `/compact` Electron E2E passes (1 test), and the slash availability and
+  Skills controller tests pass (21 tests). The original E2E paths no longer
+  provide a live test target.
 - #3104 removed a dead `runAgentGraphToQuiescence` loop and its test suite. A
   current source search finds no call sites for that function; the migrated
   `stream-graph-dispatch.ts` exports supervisor types still used by the live
   coordinator and reconciliation code. Restoring an inactive second graph
   driver would create another execution authority. Its remaining coordinator
-  and protocol test adjustments require focused verification, but the deleted
-  loop itself has no behavior to independently rewrite.
+  and protocol test adjustments pass with the current Runtime read-model and
+  coordinator suites (31 tests). The deleted loop has no behavior to
+  independently rewrite.
 - #3117 deleted the legacy `llm-connections.json` store. Current storage and
   Desktop main source has no production reference to that file or
   `createConnectionStore`; the fixture writes to the Runtime Policy catalog
   through its current storage authority. Its fixture test passes and asserts
-  the old JSON file is not created. The fixture and related migration edits
-  remain active and require their own review; restoring the removed legacy
-  store just to remove it again is not a remedy.
+  the old JSON file is not created (rerun against the current Desktop build).
+  The fixture and related migration edits remain active and require their
+  own review; restoring the removed legacy store just to remove it again is
+  not a remedy.
 - #3069 only added local transcript-search tests; both original test paths
   were subsequently deleted (#4877 and #5531). Search now uses the Recall
   pipeline. The current multi-host Recall search tests pass (9 tests), but
@@ -262,15 +267,14 @@ ready at the helper boundary. Completion now carries the exact generation
 token through the observation hook and refuses to flush/display a newer seed
 for an older signal. The three test files now pass (89 tests) and Biome passes.
 This is a scoped independent hardening, **not** a replacement for the entire
-two tagged implementations. The returning-to-live-conversation Electron E2E
-passes; a separate Host-recovery E2E remains open. Desktop's full main build
+two tagged implementations. The full streaming-remount Electron E2E (4 tests)
+and session-local recovery E2E (3 tests) pass. Desktop's full main build
 still reports seven unrelated implicit-any errors.
 
 #3101's only squash change modified the streaming-remount E2E to sample on
 animation frames instead of body mutations. The current test has since gained
-other assertions; its returning-to-live-conversation case passes in a real
-Electron window. This validates the existing assertion, not an independently
-rewritten test or the rest of that E2E file.
+other assertions; the full file passes in a real Electron window (4 tests).
+This validates the existing assertions, not an independently rewritten test.
 
 #3544's first six original commits are Grok-tagged and the last three are
 Codex-tagged. The per-entry queue still has Host protocol, coordinator, and
@@ -278,7 +282,15 @@ Desktop UI behavior, though the original Desktop action module has since been
 removed. The current Host message-coordinator and protocol suites pass (165
 tests). That baseline does not constitute a replacement for its 35-file mixed
 change. The Host/protocol/UI slices and Electron workflow need separate
-review; a direct squash revert previously conflicted in 31 paths.
+review; a direct squash revert previously conflicted in 31 paths. A new
+same-members concurrent-reorder test failed because `queue.entries.reorder`
+had no expected queue revision, letting an old client's permutation overwrite
+a newer one. The Host now checks a required revision, and Desktop main,
+preload, WorkHub, and Side Chat pass through the observed revision. Host
+message/protocol tests (175 pass), Desktop main/preload/renderer typechecks,
+Desktop queue tests, and Side Chat/WorkHub Electron E2Es pass after rebuilding
+the preload and renderer. This is a scoped concurrency fix, not a full rewrite
+of the mixed 35-file PR.
 
 #3115's rate-limit classification, Host retry projection/continuity, and UI
 countdown remain live. The current Runtime/Host suites pass (97 tests) and
@@ -294,6 +306,7 @@ tests and Biome pass. This is a scoped parsing fix, not a full #3115 rewrite.
 authority with nested writer/owner cleanup. Its current archive-seeding test
 passes, but there is no independent replacement for this live fixture writer;
 the old Desktop archive store was deleted and has no direct current file.
+The current fixture test was rerun (1 pass).
 
 #3070 and #3099 were replaced in the current branch after reviewing their
 migrated implementations. #3070's historical cwd resolution remains distinct

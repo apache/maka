@@ -1645,6 +1645,7 @@ describe('Runtime Host bootstrap protocol', () => {
         originHostEpoch: 'epoch-1',
         sessionId: 'session-1',
         reorderId: 'reorder-1',
+        expectedQueueRevision: 7,
         entryIds: ['entry-2', 'entry-1'],
       },
     };
@@ -1652,6 +1653,16 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
     assert.deepEqual(decodeClientFrame(entryUpdate), entryUpdate);
     assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
+    for (const expectedQueueRevision of [undefined, -1, 1.5]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            ...entriesReorder,
+            input: { ...entriesReorder.input, expectedQueueRevision },
+          }),
+        isInvalidFrame,
+      );
+    }
     assert.throws(
       () =>
         decodeClientFrame({
