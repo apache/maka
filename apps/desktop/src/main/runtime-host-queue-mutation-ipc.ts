@@ -33,60 +33,70 @@ export function registerRuntimeHostQueueMutationIpc(
   client: RuntimeHostQueueMutationClient,
   newId: () => string,
 ): void {
-  ipcMain.handle(
-    "sessions:retractQueueEntry",
-    async (_event, sessionId: string, entryId: unknown) => {
-      await client.retractQueueEntry({
-        sessionId,
-        entryId: queueEntryId(entryId),
-        retractId: newId(),
-      });
+  for (const mutation of queueMutationRegistrations(client)) {
+    ipcMain.handle(mutation.channel, async (_event, ...args: unknown[]) => {
+      await mutation.invoke(args, newId);
+    });
+  }
+}
+
+type QueueMutationRegistration = {
+  readonly channel:
+    | "sessions:promoteQueueEntry"
+    | "sessions:reorderQueueEntries"
+    | "sessions:retractQueueEntry"
+    | "sessions:updateQueueEntry";
+  readonly invoke: (args: readonly unknown[], newId: () => string) => Promise<void>;
+};
+
+function queueMutationRegistrations(
+  client: RuntimeHostQueueMutationClient,
+): readonly QueueMutationRegistration[] {
+  return [
+    {
+      channel: "sessions:retractQueueEntry",
+      invoke: async ([sessionId, entryId], newId) => {
+        await client.retractQueueEntry({
+          sessionId: requiredId(sessionId, "Session"),
+          entryId: queueEntryId(entryId),
+          retractId: newId(),
+        });
+      },
     },
-  );
-  ipcMain.handle(
-    "sessions:promoteQueueEntry",
-    async (_event, sessionId: string, entryId: unknown) => {
-      await client.promoteQueueEntry({
-        sessionId,
-        entryId: queueEntryId(entryId),
-        promoteId: newId(),
-      });
+    {
+      channel: "sessions:promoteQueueEntry",
+      invoke: async ([sessionId, entryId], newId) => {
+        await client.promoteQueueEntry({
+          sessionId: requiredId(sessionId, "Session"),
+          entryId: queueEntryId(entryId),
+          promoteId: newId(),
+        });
+      },
     },
-  );
-  ipcMain.handle(
-    "sessions:updateQueueEntry",
-    async (
-      _event,
-      sessionId: unknown,
-      entryId: unknown,
-      expectedQueueRevision: unknown,
-      text: unknown,
-    ) => {
-      await client.updateQueueEntry({
-        sessionId: requiredId(sessionId, "Session"),
-        entryId: requiredId(entryId, "Queue entry"),
-        updateId: newId(),
-        expectedQueueRevision: queueRevision(expectedQueueRevision),
-        text: queuedMessageText(text),
-      });
+    {
+      channel: "sessions:updateQueueEntry",
+      invoke: async ([sessionId, entryId, expectedQueueRevision, text], newId) => {
+        await client.updateQueueEntry({
+          sessionId: requiredId(sessionId, "Session"),
+          entryId: requiredId(entryId, "Queue entry"),
+          updateId: newId(),
+          expectedQueueRevision: queueRevision(expectedQueueRevision),
+          text: queuedMessageText(text),
+        });
+      },
     },
-  );
-  ipcMain.handle(
-    "sessions:reorderQueueEntries",
-    async (
-      _event,
-      sessionId: string,
-      entryIds: unknown,
-      expectedQueueRevision: unknown,
-    ) => {
-      await client.reorderQueueEntries({
-        sessionId,
-        reorderId: newId(),
-        expectedQueueRevision: queueRevision(expectedQueueRevision),
-        entryIds: queueEntryOrder(entryIds),
-      });
+    {
+      channel: "sessions:reorderQueueEntries",
+      invoke: async ([sessionId, entryIds, expectedQueueRevision], newId) => {
+        await client.reorderQueueEntries({
+          sessionId: requiredId(sessionId, "Session"),
+          reorderId: newId(),
+          expectedQueueRevision: queueRevision(expectedQueueRevision),
+          entryIds: queueEntryOrder(entryIds),
+        });
+      },
     },
-  );
+  ];
 }
 
 function queueEntryId(value: unknown): string {
