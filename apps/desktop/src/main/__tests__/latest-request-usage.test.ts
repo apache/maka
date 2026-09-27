@@ -33,6 +33,7 @@ function usage(
     outputTokens?: number;
     modelId?: string;
     connectionId?: string;
+    completedAt?: number;
   },
   ts?: number,
 ) {
@@ -96,7 +97,7 @@ test('a measurement newer than the boundary stands, which is the post-fold readi
     [
       usage({ inputTokens: 100, outputTokens: 20, modelId: MODEL, connectionId: 'conn-a' }, 1_000),
       compactionNote('context_compacted', 2_000),
-      usage({ inputTokens: 30, outputTokens: 5, modelId: MODEL, connectionId: 'conn-a' }, 3_000),
+      usage({ inputTokens: 30, outputTokens: 5, modelId: MODEL, connectionId: 'conn-a', completedAt: 3_000 }, 3_100),
     ],
     MODEL,
     ROUTE,
@@ -109,17 +110,50 @@ test('a post-fold anchor supersedes a pre-fold snapshot while diagnostics are pe
     [
       usage({ inputTokens: 90_000, modelId: MODEL, connectionId: 'conn-a' }, 1_000),
       compactionNote('context_compacted', 2_000),
-      usage({ inputTokens: 35_000, modelId: MODEL, connectionId: 'conn-a' }, 3_000),
+      usage({ inputTokens: 35_000, modelId: MODEL, connectionId: 'conn-a', completedAt: 2_500 }, 3_000),
     ],
     MODEL,
     ROUTE,
   );
+  assert.deepEqual(latestRequestUsage, { kind: 'tokens', tokens: 35_000, at: 2_500 });
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage,
       live: { usageTokens: 90_000, contextWindow: 100_000, completedAt: 1_000 },
     }),
     { kind: 'measured', tokens: 35_000 },
+  );
+});
+
+test('the token row written after its own request keeps the settled snapshot and window', () => {
+  const latestRequestUsage = selectLatestRequestUsage(
+    [usage({ inputTokens: 100, outputTokens: 20, modelId: MODEL, connectionId: 'conn-a', completedAt: 1_000 }, 1_100)],
+    MODEL,
+    ROUTE,
+  );
+  assert.deepEqual(
+    resolveContextUsage({
+      latestRequestUsage,
+      live: { usageTokens: 100, contextWindow: 1_000, completedAt: 1_000 },
+    }),
+    { kind: 'measured', tokens: 100, meteredWindow: 1_000 },
+  );
+});
+
+test('a legacy anchor without settlement time cannot displace a live snapshot', () => {
+  assert.deepEqual(
+    resolveContextUsage({
+      latestRequestUsage: selectLatestRequestUsage(
+        [{
+          type: 'token_usage', ts: 1_100,
+          lastRequestAnchor: { inputTokens: 100, outputTokens: 20, modelId: MODEL, connectionId: 'conn-a' },
+        }],
+        MODEL,
+        ROUTE,
+      ),
+      live: { usageTokens: 100, contextWindow: 1_000, completedAt: 1_000 },
+    }),
+    { kind: 'measured', tokens: 100, meteredWindow: 1_000 },
   );
 });
 

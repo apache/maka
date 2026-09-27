@@ -265,6 +265,7 @@ describe('provider request tracker', () => {
     await drain(result.stream);
 
     assert.equal(attempts[0]?.contextWindow, 200_000);
+    assert.equal(tracker.latestCompletedMainRequestAt, attempts[0]?.completedAt);
   });
 
   test('omits a non-positive request model context window', async () => {
