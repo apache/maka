@@ -25,6 +25,8 @@ import {
   providerEndpointPresentation,
 } from '../../renderer/settings/provider-endpoint-presentation.js';
 
+import { providerRequestUrlPreview } from '../../renderer/features/connection-settings/index.js';
+
 // A 40-char hex-shaped run, built rather than written: long enough to trip
 // the display redactor's long-opaque-token rule wherever it is left alone.
 const longOpaqueToken = 'ab01'.repeat(10);
@@ -65,7 +67,7 @@ test('a persisted override is the displayed effective endpoint', () => {
 test('displaying a custom endpoint masks userinfo and every query value without hiding its route', () => {
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl:
         `https://relay-user:relay-password@relay.example.com/v1?api-version=2026-08-01&api_key=${longOpaqueToken}`,
     }),
@@ -81,7 +83,7 @@ test('displaying a custom endpoint masks userinfo and every query value without 
 test('query values are masked under arbitrary key names, not just known ones', () => {
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: `https://relay.example.com/v1?key=${longOpaqueToken}`,
     }),
     {
@@ -92,7 +94,7 @@ test('query values are masked under arbitrary key names, not just known ones', (
   );
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: `https://relay.example.com/v1?client_secret=${longOpaqueToken}`,
     }),
     {
@@ -106,7 +108,7 @@ test('query values are masked under arbitrary key names, not just known ones', (
 test('custom relays and local runtimes retain endpoint editing', () => {
   assert.deepEqual(
     providerEndpointPresentation({
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: 'https://relay.example.com/v1',
     }),
     {
@@ -149,7 +151,7 @@ test('derived and OAuth endpoints remain visible but read-only', () => {
 
 test('an absent custom endpoint remains visible as a missing editable value', () => {
   assert.deepEqual(
-    providerEndpointPresentation({ providerType: 'openai-compatible' }),
+    providerEndpointPresentation({ providerType: 'custom' }),
     { value: null, editable: true, emptyState: 'missing' },
   );
 });
@@ -201,4 +203,40 @@ test('endpointCarriesCredentials gates userinfo and query-bearing endpoints', ()
   assert.equal(endpointCarriesCredentials(''), false);
   assert.equal(endpointCarriesCredentials(undefined), false);
   assert.equal(endpointCarriesCredentials('not a url'), false);
+});
+
+
+test('draft request previews follow the relay protocol, custom prefixes and endpoint forms', () => {
+  assert.equal(providerRequestUrlPreview('custom', 'http://localhost:8080/v1'),
+    'http://localhost:8080/v1/chat/completions');
+  assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/proxy/chat/completions/'),
+    'https://relay.example/proxy/chat/completions');
+  assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/proxy/responses', 'openai-responses'),
+    'https://relay.example/proxy/responses');
+  assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/', 'openai-responses'),
+    'https://relay.example/responses');
+});
+
+test('switching a custom connection protocol replaces the full OpenAI endpoint', () => {
+  assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/proxy/chat/completions', 'openai-responses'),
+    'https://relay.example/proxy/responses');
+  assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/proxy/responses', 'openai-chat'),
+    'https://relay.example/proxy/chat/completions');
+});
+
+test('draft request previews redact token-shaped path segments without changing URL normalization', () => {
+  assert.equal(
+    providerRequestUrlPreview('custom', `https://relay.example/${longOpaqueToken}/v1`),
+    'https://relay.example/<redacted>/v1/chat/completions',
+  );
+});
+
+test('empty, incomplete, unsaveable and unsupported protocol drafts have no request preview', () => {
+  for (const draft of ['', '  ', 'http', 'https://', 'https:relay.example', 'relay.example/v1',
+    'file:///v1', 'https://relay.example:abc/v1', 'https://user:secret@relay.example/v1',
+    'https://relay.example/v1?token=secret', 'https://relay.example/v1#fragment']) {
+    assert.equal(providerRequestUrlPreview('custom', draft), null, draft);
+  }
+  assert.equal(providerRequestUrlPreview('openai', 'https://relay.example/v1'), null);
+  assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/v1', 'anthropic-messages'), null);
 });

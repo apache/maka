@@ -21,12 +21,11 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
+
 import { parseHTML } from 'linkedom';
 import { Composer, type ComposerHandle, type ComposerSendMetadata } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
-import { getConversationCopy } from '../conversation-copy.js';
-import { PlatformShortcutText } from '../platform-shortcut-text.js';
+
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 const originalGlobals = {
@@ -180,14 +179,3 @@ test('steering supports staged context and coalesces repeated keys while admissi
   assert.deepEqual(calls, [{ followUpMode: 'steer' }]);
   await act(async () => finish(true));
 });
-
-for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
-  for (const [platform, modifier] of [['MacIntel', 'Cmd'], ['Win32', 'Ctrl']] as const) {
-    test(`${locale}: queue help renders ${modifier}+Enter on ${platform}`, () => {
-      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform } });
-      const markup = renderToStaticMarkup(<PlatformShortcutText {...getConversationCopy(locale).composer.queueShortcuts} />);
-      assert.ok(markup.startsWith(`${modifier}+Enter`));
-      assert.ok(markup.includes('Shift+Enter'));
-    });
-  }
-}

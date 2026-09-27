@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { providerDefaultsOf, type ProviderType } from './provider-registry.js';
+import { isModelApiProtocol, providerDefaultsOf, type ProviderType } from './provider-registry.js';
 import { isModelModality } from './llm-connections.js';
 import type { ModelInfo } from './llm-connections.js';
 
@@ -133,12 +133,7 @@ export function normalizeModelFactOverride(value: unknown): ModelFactOverride {
     }
   }
   if ('apiProtocol' in value) {
-    if (
-      value.apiProtocol !== 'openai-chat' &&
-      value.apiProtocol !== 'openai-responses' &&
-      value.apiProtocol !== 'anthropic-messages'
-    )
-      throw new Error('Invalid apiProtocol');
+    if (!isModelApiProtocol(value.apiProtocol)) throw new Error('Invalid apiProtocol');
     result.apiProtocol = value.apiProtocol;
   }
   for (const key of ['contextWindow', 'inputLimit', 'maxOutputTokens'] as const) {

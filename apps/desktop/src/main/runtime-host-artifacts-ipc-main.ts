@@ -279,6 +279,11 @@ async function materializeArtifact(
     } catch (error) {
       throw new ArtifactMaterializationError("replace_failed", error);
     }
+    // handle.sync() covered the staging file's content, not the rename's
+    // directory entry, so a crash here can still show the old destination
+    // next to a leftover staging file. Best-effort: the save has already
+    // succeeded, so a failed sync must not report a failed save.
+    await syncDirectory(dirname(targetPath)).catch(() => undefined);
   } catch (error) {
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
@@ -299,6 +304,19 @@ class ArtifactMaterializationError extends Error {
   ) {
     super(`Artifact materialization failed: ${reason}`, { cause });
     this.name = "ArtifactMaterializationError";
+  }
+}
+
+// The desktop write paths fsync the containing directory after a rename so
+// the new entry survives a crash. Windows cannot open a directory handle
+// this way, and its rename already persists the entry, so it is skipped.
+async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 

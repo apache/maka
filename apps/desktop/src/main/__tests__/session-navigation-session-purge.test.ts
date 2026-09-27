@@ -141,6 +141,7 @@ function createActions(input: {
 }) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
+    acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
     clearSessionRendererState: (id) => {
       input.harness.cleared.push(id);
     },

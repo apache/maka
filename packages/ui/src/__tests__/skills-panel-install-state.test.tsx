@@ -21,40 +21,49 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { LocaleProvider } from '../locale-context.js';
+import type { BundledSkillCatalogEntry } from '../module-panel-types.js';
 import { SkillsModuleMain } from '../skills-panel.js';
 import { ToastProvider } from '../toast.js';
 
-function renderBundledSkill(installed: boolean): string {
+function renderDiscover(props: Partial<Parameters<typeof SkillsModuleMain>[0]>): string {
   return renderToStaticMarkup(
     <LocaleProvider locale="en">
       <ToastProvider>
-        <SkillsModuleMain
-          bundledSkillCatalog={[{
-            id: 'computer-use',
-            name: 'Computer Use',
-            description: 'Operate desktop applications.',
-            category: '效率工具',
-            declaredTools: ['Computer'],
-            installed,
-          }]}
-          onInstallBundledSkill={() => undefined}
-        />
+        <SkillsModuleMain onInstallBundledSkill={() => undefined} onInstallManagedSkill={() => undefined} {...props} />
       </ToastProvider>
     </LocaleProvider>,
   );
 }
 
-test('an available bundled skill renders the install action', () => {
-  const markup = renderBundledSkill(false);
+const computerUse: Omit<BundledSkillCatalogEntry, 'installed'> = {
+  id: 'computer-use',
+  name: 'Computer Use',
+  description: 'Operate desktop applications.',
+  category: '效率工具',
+  declaredTools: ['Computer'],
+};
+
+test('an available bundled skill is offered in Discover with an install action', () => {
+  const markup = renderDiscover({ bundledSkillCatalog: [{ ...computerUse, installed: false }] });
   assert.match(markup, /aria-label="Install Computer Use"/);
-  assert.match(markup, /lucide-download/);
-  assert.doesNotMatch(markup, /maka-skill-install-complete-icon/);
 });
 
-test('an installed bundled skill replaces the download action with a completion check', () => {
-  const markup = renderBundledSkill(true);
-  assert.match(markup, /aria-label="Computer Use is installed in this workspace"/);
-  assert.match(markup, /maka-skill-install-complete-icon/);
-  assert.match(markup, /lucide-check/);
-  assert.doesNotMatch(markup, /lucide-download/);
+test('an installed bundled skill is listed once, under Installed', () => {
+  const markup = renderDiscover({
+    skills: [{ id: 'computer-use', name: 'Computer Use', description: 'Operate desktop applications.', path: '/skills/computer-use', sourceType: 'bundled', enabled: true, runtimeStatus: 'enabled' }],
+    bundledSkillCatalog: [{ ...computerUse, installed: true }],
+  });
+  assert.equal(markup.match(/>Computer Use</g)?.length, 1);
+  assert.match(markup.split('>Installed<')[1] ?? '', />Computer Use</);
+  assert.doesNotMatch(markup, /Install Computer Use/);
+});
+
+test('a skill offered both built in and by a source is one Discover entry, the built-in one', () => {
+  const markup = renderDiscover({
+    bundledSkillCatalog: [{ ...computerUse, installed: false }],
+    managedSkillSources: [{ id: 'computer-use', name: 'Computer Use', description: 'From a source.', category: '效率工具', sourceType: 'local' }],
+  });
+  assert.equal(markup.match(/aria-label="Install Computer Use"/g)?.length, 1);
+  assert.match(markup, /Operate desktop applications\./);
+  assert.doesNotMatch(markup, /From a source\./);
 });

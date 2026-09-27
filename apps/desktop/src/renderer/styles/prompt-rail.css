@@ -149,7 +149,7 @@
   width: 26px;
   height: 3px;
   border-radius: var(--radius-pill);
-  background: currentColor;
+  background: var(--maka-prompt-rail-background, currentColor);
   transform: scaleX(var(--maka-prompt-rail-scale, 0.5385));
   transform-origin: right center;
   transition: transform var(--duration-emphasized) var(--ease-out-strong);

@@ -104,7 +104,6 @@ import {
   type QueueEntriesReorderInput,
   type QueueEntryPromoteInput,
   type QueueEntryRetractInput,
-  type QueueEntryUpdateInput,
   type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
@@ -1342,15 +1341,6 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  updateQueueEntry(
-    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.update", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
-  }
-
   reorderQueueEntries(
     input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
   ): Promise<QueueMutationResult> {
@@ -1840,6 +1830,10 @@ export class DesktopRuntimeHostClient {
       "session_not_found",
       `Runtime Host Session not found: ${sessionId}`,
     );
+  }
+
+  generatePromptSuggestion(sessionId: string) {
+    return this.request('session.prompt-suggestion.generate', { sessionId }, 7000);
   }
 
   request<K extends DirectRequestOperationKey>(

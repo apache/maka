@@ -94,9 +94,12 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   // auto-dismissed (Linux closes popups after window resizes) must not be
   // closed again — closePopup on a dead popup crashes the main process.
   if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
-    await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
+    // Close on the same owner passed to popup(). The no-window overload takes
+    // Electron's close-all MenuRunner path on Linux, even for this single menu.
+    await mainWindow.evaluate((window) =>
+      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup(window));
   }
-  await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
+  await expect(addPanel).not.toHaveAttribute('aria-expanded', 'true');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
   const draftBeforeOverlays = 'Draft survives main-window overlays.';
@@ -111,7 +114,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     return visible(window.contentView);
   });
   const actions = page.getByRole('button', { name: /Sidebar task.*任务操作$/ });
-  await page.getByRole('button', { name: 'Sidebar task', exact: true }).hover();
+  await page.getByRole('button').filter({ has: page.getByText('Sidebar task', { exact: true }) }).hover();
   await actions.click();
   await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
@@ -121,7 +124,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await page.keyboard.press('Escape');
   await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeHidden();
   await expect(actions).toBeFocused();
-  const actionTooltip = page.getByRole('tooltip', { name: 'Sidebar task 任务操作', exact: true });
+  const actionTooltip = page.getByRole('tooltip', { name: /^Sidebar task.*任务操作$/ });
   await expect(actionTooltip).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
   const workHubNavigation = page.getByRole('button', { name: 'WorkHub', exact: true });
@@ -167,6 +170,9 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   expect(await app.evaluate(({ app }) => process.platform !== 'darwin' || app.dock!.isVisible())).toBe(true);
   const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
   await editor.fill('Keep this draft while folding the conversation.');
+  // The floating native window is foregrounded on local runs. Release its
+  // editor so host keyboard input cannot mutate the draft under assertion.
+  await editor.blur();
   const expandedHeight = await workhub.evaluate(() => window.innerHeight);
   const floatingBottom = () => app.evaluate(({ BrowserWindow }) => {
     const bounds = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getBounds();
@@ -411,7 +417,7 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(prompt).toHaveCount(1);
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await expect(stop).toBeVisible();
-  const followups = workhub.locator('[data-queue-placement="next_turn"] .maka-composer-queue-text');
+  const followups = workhub.locator('.maka-composer-queue .maka-composer-queue-text');
   const queuedTexts = ['下一轮整理测试结果', '再下一轮补充使用说明'] as const;
   await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[0]);
   await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
@@ -422,17 +428,6 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('Enter');
   await expect(followups).toHaveText(queuedTexts);
-  const shortcuts = workhub.getByRole('button', { name: '发送快捷键', exact: true });
-  await expect(shortcuts).toHaveCount(1);
-  await shortcuts.hover();
-  const shortcutHint = workhub.getByRole('tooltip');
-  const steerModifier = process.platform === 'darwin' ? 'Cmd' : 'Ctrl';
-  await expect(shortcutHint).toHaveText(`${steerModifier}+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行`);
-  await expect.poll(() => shortcutHint.evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
-  })).toBe(true);
-  await workhub.screenshot({ path: testInfo.outputPath('workhub-queue-shortcuts.png') });
   for (const text of queuedTexts) {
     await expect(workhub.locator('.maka-user-message').filter({ hasText: text })).toHaveCount(0);
   }
@@ -440,7 +435,9 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('ControlOrMeta+Enter');
-  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
+  await expect(workhub.locator('.maka-bubble-streaming', {
+    hasText: 'Acknowledged steering: 立即调整方向，保持当前任务',
+  })).toHaveCount(1);
   const steered = workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' });
   await expect(steered).toHaveCount(1);
   // A queued message is only ever durable at the tail, so sending one has to

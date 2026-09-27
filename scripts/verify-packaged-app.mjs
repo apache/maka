@@ -1061,11 +1061,9 @@ export async function assertPackagedResources(
     join('licenses', 'renderer', 'THIRD_PARTY_LICENSES.txt'),
     join('licenses', 'renderer', 'GEIST_LICENSE.txt'),
     join('licenses', 'renderer', 'GEIST_MONO_LICENSE.txt'),
-    join('licenses', 'renderer', 'ANT_DESIGN_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'SIMPLE_ICONS_LICENSE.md'),
     join('licenses', 'renderer', 'TDESIGN_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'ALLOGO_LICENSE.txt'),
-    join('licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'),
     ...(requireWindowsSandbox
       ? [

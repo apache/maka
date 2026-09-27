@@ -36,6 +36,7 @@ import {
   decodeCredentialLocator,
   decodeCredentialStatus,
   decodeCredentialVersionBasis,
+  decodeDefaultApiProtocol,
   decodeProviderType,
   normalizeCreateCatalogConnectionInput,
   normalizeDeleteCredentialInput,
@@ -735,6 +736,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'name',
       'providerType',
       'baseUrl',
+      'defaultApiProtocol',
       'enabled',
       'modelSource',
       'lastTest',
@@ -762,6 +764,9 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     header.baseUrl === undefined
       ? undefined
       : decodeDomain(() => decodeCanonicalConnectionBaseUrl(header.baseUrl, provider));
+  const defaultApiProtocol = decodeDomain(() =>
+    decodeDefaultApiProtocol(header.defaultApiProtocol, provider),
+  );
   const modelCount = integer(
     header.modelCount,
     'model count',
@@ -795,6 +800,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     name: decodeDomain(() => decodeConnectionName(header.name)),
     providerType: provider,
     ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
     enabled: boolean(header.enabled, 'connection enabled'),
     ...(header.modelSource === undefined ? {} : { modelSource: modelSource(header.modelSource) }),
     ...(header.lastTest === undefined

@@ -36,8 +36,7 @@
 
 /* Hairline between neighboring rows — the templates' own row-then-Divider
    idiom, owned by the group so call sites can't forget it. */
-.settingsRows > * + *,
-.settingsRowsGroup > * + * {
+.settingsRows > * + * {
   border-block-start: var(--border-width-hairline) solid var(--border);
 }
 
@@ -53,34 +52,23 @@
    so its hover highlight should span it too. Zeroing the radius is therefore
    the whole fix: do NOT wrap the row to preserve rounded hover, which would
    reintroduce the chip the open idiom removed. */
-.settingsRows > .astryx-item,
-.settingsRowsGroup > .astryx-item {
+.settingsRows > .astryx-item {
   border-radius: 0;
 }
 
 /* Form blocks inside a row group (SettingsField / SettingsActions): block
    padding only — the open idiom has no inline inset, so fields stay flush
    with the section heading and the Item rows around them. */
-.settingsRows > .settingsFieldRow,
-.settingsRowsGroup > .settingsFieldRow {
+.settingsRows > .settingsFieldRow {
   padding-block: var(--space-3);
 }
 
 /* Not on .settingsActionRow — that one stays the flex cluster from form.css
    (grid would stretch each button to a full-width stacked bar). */
-.settingsRows > .settingsFieldRow:not(.settingsActionRow),
-.settingsRowsGroup > .settingsFieldRow:not(.settingsActionRow) {
+.settingsRows > .settingsFieldRow:not(.settingsActionRow) {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
-}
-
-/* A semantic wrapper (role="group" + aria-label) around consecutive rows in
-   a group. Lays out exactly like the group itself so its rows keep the
-   shared track and divider rhythm. */
-.settingsRowsGroup {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .settingsReadOnlyValue {
@@ -248,14 +236,12 @@
    form block (`.settingsFieldRow` / `.settingsActionRow`), and the corner
    belongs to whatever is actually last. Placed after the `radius: 0` rule
    above: equal specificity, so source order decides. */
-.settingsRows > *:first-child,
-.settingsRowsGroup > *:first-child {
+.settingsRows > *:first-child {
   border-start-start-radius: var(--radius-surface);
   border-start-end-radius: var(--radius-surface);
 }
 
-.settingsRows > *:last-child,
-.settingsRowsGroup > *:last-child {
+.settingsRows > *:last-child {
   border-end-start-radius: var(--radius-surface);
   border-end-end-radius: var(--radius-surface);
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { JevSettingsSection } from '../features/jev-settings';
 import { useEffect, useMemo, useState } from "react";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
@@ -73,6 +74,7 @@ import { getShellCopy } from "../locales/shell-copy.js";
 import type { RuntimeHostSettingsConnectionsBridge } from '../features/connection-settings';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
+  RuntimeHostSettingsGenerationBoundary,
   useOptionalRuntimeHostSettingsTarget,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
@@ -325,6 +327,9 @@ export function GeneralSettingsPage(props: {
               testNetworkProxy={props.testNetworkProxy!}
             />
           </SettingsSection>
+          {host && <RuntimeHostSettingsGenerationBoundary>
+            <JevSettingsSection settings={props.settings.jev} isInteractive={runtimeHostSettingsInteractive} onUpdate={props.onUpdate} />
+          </RuntimeHostSettingsGenerationBoundary>}
         </>
       ) : showRuntimeHostSettingsPlaceholder ? (
         <>
@@ -447,7 +452,7 @@ function ShellSettingsSection(props: {
       ) : null}
       <SettingsActions>
         <Button
-          variant="primary"
+          variant="secondary"
           isDisabled={!canSave || !props.isInteractive}
           isLoading={saving}
           onClick={() => void save()}
@@ -923,22 +928,15 @@ function NetworkProxySection(props: {
               }
               placeholder="metaso.cn, baidu.com"
               label={copy.bypassList}
-              description={copy.bypassHelp}
+              description={copy.bypassHelp(proxyDraft.autoBypassDomains.length)}
               width="100%"
               isDisabled={!props.isInteractive}
             />
           </SettingsField>
 
-          <SettingsField>
-            <Banner
-              status="info"
-              title={copy.autoBypass(proxyDraft.autoBypassDomains.length)}
-            />
-          </SettingsField>
-
           <SettingsActions>
             <Button
-              variant="primary"
+              variant="secondary"
               isLoading={testing}
               isDisabled={!props.isInteractive}
               onClick={() => void testProxy(passwordDraft)}

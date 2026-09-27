@@ -176,7 +176,17 @@ async function run() {
     const point = await page.executeJavaScript(`(() => { const r = document.querySelector('button').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
-    assert.equal(await page.executeJavaScript("document.querySelector('button').textContent"), 'Clicked');
+    // CDP input acknowledgement can precede the renderer's click handler on
+    // Linux. Observe its effect without dispatching another click, so a lost
+    // event or broken background-page attachment still fails this smoke.
+    const clickDeadline = Date.now() + 3_000;
+    let buttonText;
+    do {
+      buttonText = await page.executeJavaScript("document.querySelector('button').textContent");
+      if (buttonText === 'Clicked') break;
+      await wait(20);
+    } while (Date.now() < clickDeadline);
+    assert.equal(buttonText, 'Clicked', 'background page must handle the native click after Main closes');
     await closedMainLease.release();
     console.log('PASS closing Main preserves the background page and native clicks');
   } finally {

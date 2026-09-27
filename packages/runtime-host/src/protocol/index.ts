@@ -103,7 +103,28 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 182 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 196 as const;
+// 196: `turn.start` carries an optional durable external-message origin; older
+// peers would drop activation provenance and misclassify automated turns.
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
+// 194: Session catalog live run state may carry the runtime's run epoch, which
+// lets clients order same-revision reads. Epoch-193 peers reject the unknown
+// key, so a newer Desktop against an older Host loses session catalog reads.
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
+// 191: Session catalog change frames can carry attention events.
+// 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
+// 189: Remove form_interaction transcript messages and the transcript_changed close reason.
+// 188: Session capability replacement can require an atomic idle root check;
+// complete MCP configuration identities fence conflicting providers across ACP clients.
+// 187: transcript_changed closes a subscription for automatic bounded-tail reseeding.
+// 186: Settled form/question history adds form_interaction transcript messages.
+// 185: Add the bounded next-prompt suggestion operation.
+// 184: the unified `custom` provider type and its defaultApiProtocol require matching peers.
+// 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
 // 182: Executor catalogs expose structured model families and thinking variant IDs.
 // 181: Canonical executor models and retained provider stop reasons after cancellation.
 // 180: Reject contradictory executor configuration and legacy model targets.

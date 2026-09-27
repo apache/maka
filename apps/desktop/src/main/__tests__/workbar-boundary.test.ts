@@ -111,10 +111,26 @@ describe('Workbar feature boundary', () => {
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.match(
-      appShell,
-      /<WorkbarHost\b[^>]*\bmodel=\{workbar\.host\}/,
+    assert.match(appShell, /<WorkbarHost togglePosition=\{workbarTogglePosition\} \/>/);
+  });
+
+  it('owns the Workbar controller below AppShell', () => {
+    const appShell = readFileSync(
+      join(desktopRoot, 'src', 'renderer', 'app-shell.tsx'),
+      'utf8',
     );
+    const productionEntry = readFileSync(join(featureRoot, 'index.ts'), 'utf8');
+    const provider = readFileSync(
+      join(featureRoot, 'ui', 'workbar-provider.tsx'),
+      'utf8',
+    );
+    for (const forbidden of ['useWorkbarController', 'workbar.host', 'model={workbar']) {
+      assert.equal(appShell.includes(forbidden), false, forbidden);
+    }
+    assert.equal(appShell.includes('<WorkbarShellRoot>'), true);
+    assert.equal(appShell.includes('<WorkbarProvider'), true);
+    assert.equal(provider.includes('useWorkbarController(props.input)'), true);
+    assert.equal(productionEntry.includes('useWorkbarController'), false);
   });
 
   it('keeps Quote Companion catalog state and localized scroll copy at the seam', () => {

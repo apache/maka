@@ -66,7 +66,7 @@
    rules came out with them. Session name + model live in the sidebar;
    create-session lives in the sidebar new-task button. */
 
-/* Session lineage, revisions, modes, and autonomous-goal state share one
+/* Session revisions, modes, and autonomous-goal state share one
    structural layer. The layer is omitted when no extra context exists. */
 .maka-session-context {
   flex: 0 0 auto;
@@ -83,7 +83,7 @@
 
 /* A live Goal can keep creating Turns after the user stops typing, so its
    identity and kill switches stay reachable while the transcript scrolls.
-   Ordinary lineage/revision context remains in-flow when no Goal is present. */
+   Ordinary revision context remains in-flow when no Goal is present. */
 .maka-session-context[data-has-goal="true"] {
   position: sticky;
   top: 0;
@@ -102,33 +102,9 @@
   padding: var(--space-1-5) var(--space-3);
 }
 
-.maka-session-context__lineage,
+.maka-session-context__lead,
 .maka-session-context__cluster {
   min-width: 0;
-}
-
-.maka-session-context__breadcrumbs {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.maka-session-context__breadcrumbs > ol {
-  min-width: 0;
-  flex-wrap: nowrap;
-  overflow: hidden;
-}
-
-.maka-session-context__breadcrumbs > ol > li {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.maka-session-context__breadcrumb-label {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .maka-session-context__goal-description {

@@ -52,6 +52,19 @@ const SOURCE_EXTENSIONS = ['.css', '.ts', '.tsx'];
 
 const RETIRED_INK = ['--foreground-secondary', '--foreground-dimmed'];
 
+// These reads intentionally consume layout declarations, never colours.
+// Keep this exact: an unknown property must still fail the palette guard.
+const LAYOUT_DECLARATION_READS = new Set([
+  '--maka-session-workbar-width', // Restore the inline width declaration after a drag.
+  '--maka-focused-composer-space', // Assert the measured pixel clearance in the layout story.
+]);
+
+function unapprovedCustomPropertyReads(source: string): string[] {
+  return [...withoutComments(source).matchAll(/getPropertyValue\(\s*['"`](--[a-z0-9-]+)/g)]
+    .map((match) => match[1]!)
+    .filter((name) => !LAYOUT_DECLARATION_READS.has(name));
+}
+
 async function sourceFilesUnder(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const found: string[] = [];
@@ -205,16 +218,27 @@ describe('mode expression', () => {
     const offenders: string[] = [];
     for (const file of files) {
       if (!file.endsWith('.ts') && !file.endsWith('.tsx')) continue;
-      const source = withoutComments(await readFile(file, 'utf8'));
-      for (const match of source.matchAll(/getPropertyValue\(\s*['"`](--[a-z0-9-]+)/g)) {
-        offenders.push(`${relative(REPO_ROOT, file)} → ${match[1]}`);
+      const source = await readFile(file, 'utf8');
+      for (const name of unapprovedCustomPropertyReads(source)) {
+        offenders.push(`${relative(REPO_ROOT, file)} → ${name}`);
       }
     }
 
     assert.deepEqual(
       offenders,
       [],
-      'a custom property reads back as its declaration, not as a resolved value',
+      'a palette custom property reads back as its declaration, not as a resolved colour',
     );
+  });
+
+  it('allows the explicit layout reads without admitting palette or unknown properties', () => {
+    assert.deepEqual(unapprovedCustomPropertyReads(`
+      frame.style.getPropertyValue('--maka-session-workbar-width');
+      getComputedStyle(frame).getPropertyValue('--maka-focused-composer-space');
+      getComputedStyle(frame).getPropertyValue('--foreground');
+      getComputedStyle(frame).getPropertyValue("--background");
+      getComputedStyle(frame).getPropertyValue('--maka-brand');
+      frame.style.getPropertyValue('--maka-unknown-width');
+    `), ['--foreground', '--background', '--maka-brand', '--maka-unknown-width']);
   });
 });

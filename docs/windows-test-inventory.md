@@ -16,22 +16,26 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 37 |
+| portable-candidate | 51 |
 | platform-contract | 38 |
 
-Total Windows-excluded declarations: **102**
+Total Windows-excluded declarations: **116**
 
 ## Inventory
 
 | Classification | Test | Skip expression |
 |---|---|---|
 | platform-contract | `apps/desktop/scripts/check-renderer-architecture.test.mjs` handles read-only POSIX permissions on the checker directory according to --strict-base | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
+| portable-candidate | `apps/desktop/scripts/dev-worktree.test.mjs` a symlink to a worktree uses the same data directory | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP remove reconciles a live manager after the real store publishes then fails directory sync | `process.platform === 'win32'` |
-| portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP upsert reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP update reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |
-| portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP cancelled install does not start a new connection during post-rename reconciliation | `process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/opencli-chrome.test.ts` launchers run the entry in Node mode with the mode each caller needs | `process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/opencli-chrome.test.ts` Windows opens the store page in installed Chrome, not the default browser | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/runtime-host-skills-ipc-main.test.ts` reports create_failed without opening when a Skill directory parent is not writable | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory parent read-only' : process.getuid?.() === 0` |
+| portable-candidate | `apps/desktop/src/main/__tests__/settings-recovery-startup.test.ts` early-window presents recovery guidance despite ${nativeFailure} | `nativeFailure === 'commit-unknown' && process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/settings-recovery.test.ts` published reset failure is independently reported and consumers reread without replaying a mutation | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
@@ -76,6 +80,7 @@ Total Windows-excluded declarations: **102**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
+| portable-candidate | `packages/runtime/src/__tests__/filesystem-authority.test.ts` the model-facing Glob result marks a capped permission-limited walk incomplete | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
@@ -118,6 +123,15 @@ Total Windows-excluded declarations: **102**
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/settings-store-onboarding.test.ts` preserves a restrictive umask-derived settings.json mode and leaves no temp file behind | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` corrupt settings behind a symlink are not reset and the link survives | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a valid settings symlink keeps its existing read behavior | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a symlink installed during temp preparation is not replaced or followed for recovery | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a completed backup survives directory sync failure and is fenced again before reuse | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a ${unsafe} backup candidate is never reused or replaced | `process.platform === 'win32' && (unsafe === 'public mode' \|\| unsafe === 'hard link')` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` private backups do not change the normal settings umask policy | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` backup ${phase} failure preserves source and reports the original cause | `process.platform === 'win32' && (phase === 'chmod' \|\| phase === 'directory')` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` refuses a preexisting backup ${planted} without deleting it | `process.platform === 'win32' && planted === 'symlink'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` post-publication failure remains commit-unknown through ${mutation} | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` rejects a symlink instead of following it | `process.platform === 'win32' ? 'POSIX no-follow semantics are required' : false` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |

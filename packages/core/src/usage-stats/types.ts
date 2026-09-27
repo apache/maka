@@ -28,6 +28,7 @@ export const MODEL_CALL_KINDS = [
   'goal_evaluation',
   'session_title',
   'session_recap',
+  'prompt_suggestion',
   'daily_review',
   'memory_extraction',
   'workhub_intent',

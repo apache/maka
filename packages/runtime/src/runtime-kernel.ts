@@ -20,6 +20,7 @@
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import type { AgentRunStore } from '@maka/core/agent-run';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
+import { randomUUID } from 'node:crypto';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import {
   decodeRuntimeBoundaryCursor,
@@ -197,6 +198,21 @@ export interface RuntimeKernelLike {
    * from an arbitrary one of them.
    */
   runningTurnIds?(sessionId: string): string[];
+  /**
+   * Bumped every time a run enters or leaves the session's active set, so two
+   * same-revision catalog reads can be ordered by their live run state even
+   * when a turn started or ended between them (#5713). The counter belongs to
+   * this process alone; pair it with `sessionHostGeneration` to tell which
+   * process an observation came from.
+   */
+  sessionRunEpoch?(sessionId: string): number;
+  /**
+   * Identifies this kernel process's run-epoch generation. Catalog rows
+   * survive a Host restart while the per-process epoch counters restart at
+   * zero, so clients must not order rows across generations by epoch — a
+   * restarted Host supersedes every observation its predecessor published.
+   */
+  sessionHostGeneration?(): string;
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
   requestRunHandoff?(
     sessionId: string,
@@ -278,6 +294,12 @@ export interface RuntimeKernelDeps {
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   backends: BackendRegistry;
   newId: () => string;
+  /**
+   * The run-epoch generation of this kernel process. Omit to draw a random
+   * UUID; injecting one lets tests pin `sessionHostGeneration()` without
+   * touching the `newId` sequence.
+   */
+  hostGeneration?: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
   resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
@@ -407,6 +429,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
+    // One identity per kernel process: catalog rows survive a Host restart
+    // while the per-session epoch counters restart at zero, so clients pair
+    // the generation with the epoch instead of comparing epochs across
+    // processes (#5713 review). Drawn outside the `newId` sequence so a
+    // restart identity never shifts the ids callers observe, and defaulted
+    // for deps that omit `newId` entirely.
+    this.#hostGeneration = deps.hostGeneration?.() ?? randomUUID();
     this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
@@ -567,6 +596,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     execution.run = run;
     execution.phase = 'attached';
+    // A host-operation claim's run is visible through the claim itself before
+    // any backend reservation: the epoch must follow that visibility change
+    // too, or two same-revision reads can disagree about runningTurnIds
+    // (#5713 review).
+    if (execution.hostOperation) this.#bumpSessionRunEpoch(execution.sessionId);
     if (execution.stopIntent) {
       run.stop(execution.stopIntent.input.source, execution.stopIntent.input.workHubActionId);
     }
@@ -626,6 +660,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
     outcome: ExecutionClaimOutcome,
   ): void {
+    // The claim removal takes a host-operation run out of the visible set:
+    // order that transition like the attach and the unregister (#5713 review).
+    if (execution.hostOperation && execution.run) {
+      this.#bumpSessionRunEpoch(execution.sessionId);
+    }
     const claims = this.executionClaims.get(execution.sessionId);
     claims?.delete(execution);
     if (claims?.size === 0) this.executionClaims.delete(execution.sessionId);
@@ -724,6 +763,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       this.attachExecutionClaim(execution, run);
       yield* this.runAgentTurn(sessionId, run, execution, {
         steering: true,
+        allowPriorUnknownToolOutcomes: isExplicitClientMessage(input),
         onRunStarted: options.onRunStarted,
         initialHeader: header,
       });
@@ -1325,6 +1365,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
     options: {
       steering?: boolean;
+      allowPriorUnknownToolOutcomes?: boolean;
       onRunStarted?: (runId: string, initialHeader: SessionHeader) => void | Promise<void>;
       initialHeader?: SessionHeader;
       prepareBackendActivation?: () => Promise<void>;
@@ -1376,6 +1417,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         invocationId: begin.initialRuntimeEvent.invocationId,
         runId: run.runId,
         ...begin.backendInput,
+        ...(options.allowPriorUnknownToolOutcomes ? { allowPriorUnknownToolOutcomes: true } : {}),
         headAnchorRuntimeEvent: begin.initialRuntimeEvent,
         handoffBoundary: (signal, remainingSteps) =>
           run.reachHandoffBoundary(signal, remainingSteps),
@@ -2183,6 +2225,21 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return [...new Set(this.activeRunsFor(sessionId).map((run) => run.turnId))];
   }
 
+  readonly #sessionRunEpochs = new Map<string, number>();
+  readonly #hostGeneration: string;
+
+  sessionRunEpoch(sessionId: string): number {
+    return this.#sessionRunEpochs.get(sessionId) ?? 0;
+  }
+
+  sessionHostGeneration(): string {
+    return this.#hostGeneration;
+  }
+
+  #bumpSessionRunEpoch(sessionId: string): void {
+    this.#sessionRunEpochs.set(sessionId, (this.#sessionRunEpochs.get(sessionId) ?? 0) + 1);
+  }
+
   hasActiveRun(sessionId: string, runId: string, turnId?: string): boolean {
     return this.activeRunsFor(sessionId).some(
       (run) => run.runId === runId && (turnId === undefined || run.turnId === turnId),
@@ -2721,6 +2778,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     active.activeRuns.set(run.runId, run);
     active.turnToRunId.set(run.turnId, run.runId);
+    this.#bumpSessionRunEpoch(active.sessionId);
   }
 
   private assertRunCanDispatch(run: AgentRun, backend: AgentBackend): void {
@@ -2748,6 +2806,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (active.turnToRunId.get(run.turnId) === run.runId) {
       active.turnToRunId.delete(run.turnId);
     }
+    this.#bumpSessionRunEpoch(active.sessionId);
   }
 
   private async unregisterParentRun(active: AgentRunActiveSession, run: AgentRun): Promise<void> {
@@ -3537,6 +3596,19 @@ function assertNoRemovedChildAgentRunLineage(input: UserMessageInput): void {
   ) {
     throw new Error('Live Turn cannot use removed child AgentRun lineage');
   }
+}
+
+function isExplicitClientMessage(input: UserMessageInput): boolean {
+  return (
+    input.origin === undefined &&
+    input.agentId === undefined &&
+    input.agentName === undefined &&
+    input.parentSessionId === undefined &&
+    input.parentTurnId === undefined &&
+    input.retriedFromTurnId === undefined &&
+    input.regeneratedFromTurnId === undefined &&
+    input.branchOfTurnId === undefined
+  );
 }
 
 async function interactionResumeAllowed(

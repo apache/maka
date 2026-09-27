@@ -17,6 +17,22 @@
  * under the License.
  */
 
+.maka-code {
+  font: var(--maka-text-code);
+  /* Geist Mono ships programming ligatures on by default, which collapse a
+     run like `=== 目录 ===` into a strikethrough-looking rule. Code and
+     command surfaces read literally, so ligatures stay off. */
+  font-variant-ligatures: none;
+  background: var(--foreground-3);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  padding: var(--space-2) var(--space-2-5);
+  color: var(--foreground);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
 .maka-artifact-pane {
   width: 100%;
   height: 100%;
@@ -131,7 +147,7 @@
 
 .maka-artifact-preview-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-1-5);
   min-height: 48px;
@@ -173,6 +189,21 @@
   padding: var(--space-2);
   background: var(--background);
   min-height: 0;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-artifact-preview {
+  padding: var(--space-3) var(--space-4) var(--maka-focused-composer-space, 180px);
+  scroll-padding-bottom: var(--maka-focused-composer-space, 180px);
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-artifact-preview-markdown {
+  margin-inline: auto;
+  padding-inline: var(--space-2);
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-artifact-preview-image {
+  max-height: none;
+  min-height: min(60vh, 520px);
 }
 
 .maka-artifact-preview-text {

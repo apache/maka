@@ -17,12 +17,14 @@
  * under the License.
  */
 
+import { watch } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   MCP_CONFIG_VERSION,
   createDefaultMcpConfig,
   isNonLoopbackCleartextHttp,
+  mcpConfigChangeRetiresCredentials,
   type McpConfigFile,
   type McpConfigSourceFailureReason,
   type McpOAuthConfig,
@@ -44,9 +46,17 @@ const MAX_ID_LENGTH = 128;
 const MAX_STRING_LENGTH = 8_192;
 const MAX_CONFIG_BYTES = 1_048_576;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+// An atomic replace is a temp write plus a rename; one settle window turns
+// that burst into one notification.
+const CHANGE_SETTLE_MS = 150;
 
 export interface McpConfigStore {
   get(): Promise<McpConfigFile>;
+  /** Called after any process replaces mcp.json, this one included, and
+   * once when watching begins, so a change made before that is not missed.
+   * The listener re-reads with get(); it receives an error once if watching
+   * stops. */
+  subscribeChanges(listener: (error?: Error) => void): () => void;
   /** One cross-process read-transform-write transaction. `apply` sees the
    * current on-disk config and may finish asynchronous effects that must
    * precede the commit, such as retiring credentials. The shared file lock
@@ -66,6 +76,7 @@ export class McpConfigSourceError extends Error {
     readonly reason: McpConfigSourceFailureReason,
     readonly version?: string,
     message: string = reason,
+    readonly path?: string,
   ) {
     super(message);
     this.name = 'McpConfigSourceError';
@@ -84,6 +95,71 @@ export class McpServerExistsError extends Error {
 
 export function createMcpConfigStore(workspaceRoot: string): McpConfigStore {
   return new FileMcpConfigStore(join(workspaceRoot, 'mcp.json'));
+}
+
+/** Watches the directory, not the file: an atomic replace renames a new
+ * inode over the old one, which ends a watch on the file itself. */
+export function subscribeMcpConfigFileChanges(
+  path: string,
+  listener: (error?: Error) => void,
+): () => void {
+  const name = basename(path);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let watcher: ReturnType<typeof watch>;
+  const settle = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => listener(), CHANGE_SETTLE_MS);
+  };
+  try {
+    watcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
+      if (filename === null || filename.toString() === name) settle();
+    });
+  } catch (error) {
+    queueMicrotask(() => listener(error as Error));
+    return () => {};
+  }
+  settle();
+  const stop = () => {
+    clearTimeout(timer);
+    watcher.close();
+  };
+  watcher.on('error', (error) => {
+    stop();
+    listener(error);
+  });
+  return stop;
+}
+
+export class McpConfigurationValidationError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'Invalid MCP configuration', { cause });
+    this.name = 'McpConfigurationValidationError';
+  }
+}
+
+/** Validate before retiring credentials, and retire before publishing the
+ * replacement. Both effects run under the config file's cross-process lock. */
+export function updateMcpConfiguration(
+  store: Pick<McpConfigStore, 'transform'>,
+  prepare: (current: McpConfigFile) => McpConfigFile,
+  retireCredentials: (serverId: string, previous: McpServerConfig) => Promise<void>,
+): Promise<McpConfigFile> {
+  return store.transform(async (current) => {
+    const proposed = prepare(current);
+    let next: McpConfigFile;
+    try {
+      next = normalizeMcpConfig(proposed);
+      assertMcpEndpointPolicyOnChanges(current, next);
+    } catch (error) {
+      throw new McpConfigurationValidationError(error);
+    }
+    for (const [serverId, previous] of Object.entries(current.mcpServers)) {
+      if (mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) {
+        await retireCredentials(serverId, previous);
+      }
+    }
+    return next;
+  });
 }
 
 export function normalizeMcpConfig(value: unknown): McpConfigFile {
@@ -105,6 +181,12 @@ export function normalizeMcpConfig(value: unknown): McpConfigFile {
   return { version: MCP_CONFIG_VERSION, mcpServers: { ...mcpServers } };
 }
 
+// Accept an optional UTF-8 BOM at the document boundary only. Keep size checks
+// on the original input and leave all other JSON/schema validation unchanged.
+function parseMcpJson(source: string): unknown {
+  return JSON.parse(source.startsWith('\uFEFF') ? source.slice(1) : source);
+}
+
 /** Parse either a wrapped mcp.json document or a direct server map while
  * preserving the source wrapper version until schema validation completes.
  * Import presentation belongs to the caller; config interpretation lives here
@@ -115,7 +197,7 @@ export function normalizeMcpImport(source: string): McpConfigFile {
   }
   let value: unknown;
   try {
-    value = JSON.parse(source);
+    value = parseMcpJson(source);
   } catch {
     throw new McpConfigSourceError('invalid-json', undefined, 'MCP config must be valid JSON');
   }
@@ -146,6 +228,23 @@ class FileMcpConfigStore implements McpConfigStore {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       return this.withUpdateLock(() => this.readOrCreate());
     }
+  }
+
+  subscribeChanges(listener: (error?: Error) => void): () => void {
+    let stop: (() => void) | undefined;
+    let stopped = false;
+    void this.ensureDirectory().then(
+      () => {
+        if (!stopped) stop = subscribeMcpConfigFileChanges(this.path, listener);
+      },
+      (error: Error) => {
+        if (!stopped) listener(error);
+      },
+    );
+    return () => {
+      stopped = true;
+      stop?.();
+    };
   }
 
   async transform(
@@ -183,7 +282,22 @@ class FileMcpConfigStore implements McpConfigStore {
     if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES) {
       throw new Error('MCP config exceeds 1 MiB');
     }
-    return normalizeMcpConfig(JSON.parse(text));
+    let persisted: unknown;
+    try {
+      persisted = parseMcpJson(text);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      // JSON.parse can quote credentials in its message. Report the location
+      // and recovery action without retaining those source bytes in an error.
+      throw new McpConfigSourceError(
+        'invalid-json',
+        undefined,
+        `MCP config at ${this.path} contains invalid JSON. The file was not modified. ` +
+          'Close the app, back up and repair this file before retrying.',
+        this.path,
+      );
+    }
+    return normalizeMcpConfig(persisted);
   }
 
   private async readOrCreate(): Promise<McpConfigFile> {
@@ -332,6 +446,22 @@ function normalizeServer(
 function normalizeOAuth(value: unknown, serverId: string): McpOAuthConfig {
   if (!isRecord(value)) throw new Error(`${serverId}.oauth must be an object`);
   const result: McpOAuthConfig = {};
+  if (value.issuer !== undefined) {
+    const issuer = nonEmptyString(value.issuer, `${serverId}.oauth.issuer`);
+    const parsed = new URL(issuer);
+    if (
+      !['https:', 'http:'].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error(
+        `${serverId}.oauth.issuer must be an HTTP(S) issuer URL without credentials, query or fragment`,
+      );
+    }
+    result.issuer = issuer;
+  }
   if (value.clientId !== undefined) {
     result.clientId = nonEmptyString(value.clientId, `${serverId}.oauth.clientId`);
   }

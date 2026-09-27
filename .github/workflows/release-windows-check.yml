@@ -70,6 +70,7 @@ on:
       # these sources, so changes here must reach the packaged lifecycle gate.
       - 'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs'
       - 'packages/runtime/scripts/build-filesystem-worker.mjs'
+      - 'packages/runtime/src/format-json.ts'
       - 'packages/runtime/src/filesystem-worker/**'
       - 'packages/runtime/src/sandbox/**'
       - 'packages/runtime/src/path-containment.ts'

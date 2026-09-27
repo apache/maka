@@ -43,10 +43,8 @@ export interface AppShellSessionUiState {
   transcriptRestoreUnavailableBySession: Record<string, string>;
 }
 
-// The pending plate keeps the Host revision beside its entries so edits can
-// reject stale multi-client projections instead of silently overwriting them.
 export interface MessageQueueUiState {
-  readonly queueRevision?: number;
+  readonly ts: number;
   readonly entries: readonly MessageQueueEntryProjection[];
 }
 

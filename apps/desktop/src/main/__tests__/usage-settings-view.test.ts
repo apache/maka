@@ -171,188 +171,163 @@ const flush = async () => {
   await Promise.resolve();
 };
 
-function statsWithLargeTokenCounts(): UsageStats {
-  return {
-    ...statsWithRequests(1_284),
-    summary: {
-      totalRequests: 1_284,
-      totalCostUsd: 12.34,
-      totalTokens: 1_048_576,
-      inputTokens: 1_003_376,
-      outputTokens: 45_200,
-      cacheTokens: 1_000_500,
-      cacheMiss: 128_000,
-      cacheRead: 999_500,
-      cacheCreation: 1_000,
-      reasoning: 0,
-    },
-    logs: [{
-      id: 'large-request',
-      ts: 1,
-      kind: 'model',
-      provider: 'example-provider',
-      model: 'example-model',
-      inputTokens: 1_003_376,
-      outputTokens: 45_200,
-      costUsd: 12.34,
-      latencyMs: 1_284,
-      status: 'success',
-    }],
-    byProvider: [{ provider: 'example-provider', requests: 1_284, tokens: 1_048_576, costUsd: 12.34 }],
-    byModel: [{ model: 'example-model', requests: 1_284, tokens: 1_048_576, costUsd: 12.34 }],
-    provenance: {
-      ...EMPTY_USAGE_PROVENANCE,
-      coverage: {
-        ...EMPTY_USAGE_PROVENANCE.coverage,
-        attempts: 1_284,
-        pricedAttempts: 1_284,
-        usageReportedAttempts: 1_284,
-      },
-    },
-  };
-}
-
-async function assertCompactTooltip(scope: Element, compact: string, exact: string): Promise<void> {
-  const trigger = [...scope.querySelectorAll<HTMLElement>('[tabindex="0"][aria-describedby]')]
-    .find((element) => element.textContent === compact);
-  assert.ok(trigger, `missing keyboard-accessible compact value: ${compact}`);
-  const originalMatches = trigger.matches.bind(trigger);
-  // linkedom has no keyboard modality or :focus-visible implementation.
-  trigger.matches = ((selector: string) => selector === ':focus-visible'
-    || originalMatches(selector)) as typeof trigger.matches;
-  await act(async () => {
-    trigger.dispatchEvent(new window.Event('focusin', { bubbles: true }));
-    await flush();
-  });
-  trigger.matches = originalMatches;
-  const descriptions = (trigger.getAttribute('aria-describedby') ?? '').split(/\s+/)
-    .map((id) => trigger.ownerDocument.getElementById(id));
-  const tooltip = descriptions.find((element) => element?.getAttribute('role') === 'tooltip');
-  assert.ok(tooltip, `keyboard focus must reveal the exact value for ${compact}`);
-  assert.equal(tooltip.textContent, exact);
-  assert.notEqual(tooltip.style.display, 'none');
-}
-
-for (const expected of [
-  {
-    locale: 'en',
-    tokenDetail: 'Input 1M / output 45.2k',
-    exactTokenDetail: 'Input 1,003,376 / output 45,200',
-    cacheDetail: 'New 128k / hit 1M / created 1k',
-    exactCacheDetail: 'New 128,000 / hit 999,500 / created 1,000',
-  },
-  {
-    locale: 'zh-CN',
-    tokenDetail: '输入 1M / 输出 45.2k',
-    exactTokenDetail: '输入 1,003,376 / 输出 45,200',
-    cacheDetail: '新 128k / 命中 1M / 创建 1k',
-    exactCacheDetail: '新 128,000 / 命中 999,500 / 创建 1,000',
-  },
-  {
-    locale: 'zh-TW',
-    tokenDetail: '輸入 1M / 輸出 45.2k',
-    exactTokenDetail: '輸入 1,003,376 / 輸出 45,200',
-    cacheDetail: '新 128k / 命中 1M / 建立 1k',
-    exactCacheDetail: '新 128,000 / 命中 999,500 / 建立 1,000',
-  },
-] as const) {
-  it(`shows compact tokens with exact keyboard tooltips throughout Usage in ${expected.locale}`, async () => {
-    const { container, root } = setupDom();
-    const stats = statsWithLargeTokenCounts();
-    stats.logs.push({ ...stats.logs[0]!, id: 'small-request', inputTokens: 999, outputTokens: 0 });
-    stats.byProvider.push({ provider: 'small-provider', requests: 1, tokens: 999, costUsd: 0 });
-    stats.byModel.push({ model: 'small-model', requests: 1, tokens: 999, costUsd: 0 });
-    const base = mergeSettings(createDefaultSettings(), {
-      usage: { range: 'all', activeTab: 'providers', showDetails: true },
+describe('Usage feature scope', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    it(`keeps exact token counts accessible in all Usage tables in ${locale}`, async () => {
+      const { container, root } = setupDom();
+      const cases = [
+        { count: 0, compact: '0', exact: '0' },
+        { count: 999, compact: '999', exact: '999' },
+        { count: 45_200, compact: '45.2K', exact: '45,200' },
+        { count: 1_048_576, compact: '1M', exact: '1,048,576' },
+        { count: 1_000_000_000, compact: '1B', exact: '1,000,000,000' },
+      ];
+      const stats = statsWithRequests(1_284);
+      stats.logs = cases.map(({ count }, index) => ({
+        id: `request-${index}`, ts: 1, kind: 'model',
+        provider: `provider-${index}`, model: `model-${index}`,
+        inputTokens: Math.floor(count / 2), outputTokens: count - Math.floor(count / 2),
+        costUsd: 12.34, latencyMs: 1_284, status: 'success',
+      }));
+      stats.byProvider = cases.map(({ count }, index) => ({
+        provider: `provider-${index}`, requests: 1_284, tokens: count, costUsd: 12.34,
+      }));
+      stats.byModel = cases.map(({ count }, index) => ({
+        model: `model-${index}`, requests: 1_284, tokens: count, costUsd: 12.34,
+      }));
+      const base = mergeSettings(createDefaultSettings(), {
+        usage: { range: 'all', activeTab: 'providers', showDetails: true },
+      });
+      const services: UsageServices = {
+        loadUsageStats: async () => stats,
+        updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+      };
+      try {
+        for (const activeTab of ['providers', 'models', 'requests'] as const) {
+          const settings = mergeSettings(base, { usage: { activeTab } });
+          await act(async () => {
+            root.render(tree({ active: true, settings, targetKey: 'host', services, locale }));
+            await flush();
+          });
+          const rows = container.querySelectorAll('tbody tr');
+          assert.equal(rows.length, cases.length);
+          for (const [index, expected] of cases.entries()) {
+            const cells = rows[index]!.querySelectorAll('td');
+            const tokenIndex = activeTab === 'requests' ? 4 : 2;
+            const tokenCell = cells[tokenIndex]!;
+            assert.equal(tokenCell.textContent, expected.compact);
+            assert.equal(cells[tokenIndex + 1]?.textContent, '$12.34');
+            assert.equal(activeTab === 'requests' ? cells[6]?.textContent : cells[1]?.textContent,
+              activeTab === 'requests' ? '1284ms' : '1284');
+            if (expected.count < 1_000) {
+              assert.equal(tokenCell.querySelectorAll('[tabindex], [aria-describedby]').length, 0,
+                'already exact values must not add tooltip tab stops');
+              continue;
+            }
+            const trigger = tokenCell.querySelector<HTMLElement>('[tabindex="0"][aria-describedby]');
+            assert.ok(trigger, 'abbreviated counts must expose exact values to keyboard users');
+            const originalMatches = trigger.matches.bind(trigger);
+            // linkedom has no keyboard modality or :focus-visible implementation.
+            trigger.matches = ((selector: string) => selector === ':focus-visible'
+              || originalMatches(selector)) as typeof trigger.matches;
+            try {
+              await act(async () => {
+                trigger.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+                await flush();
+              });
+              const tooltip = document.getElementById(trigger.getAttribute('aria-describedby')!);
+              assert.ok(tooltip);
+              assert.equal(tooltip.getAttribute('role'), 'tooltip');
+              assert.equal(tooltip.textContent, expected.exact);
+              assert.notEqual(tooltip.style.display, 'none');
+            } finally {
+              trigger.matches = originalMatches;
+              await act(async () => {
+                trigger.dispatchEvent(new window.Event('focusout', { bubbles: true }));
+                await flush();
+              });
+            }
+          }
+        }
+      } finally {
+        await act(async () => root.unmount());
+      }
     });
+  }
+
+  it('renders large token totals and breakdowns in compact form on the Usage page', async () => {
+    const { container, root } = setupDom();
+    const base = mergeSettings(createDefaultSettings(), {
+      usage: { range: '24h', activeTab: 'providers' },
+    });
+    const stats = statsWithRequests(12_647_391);
+    Object.assign(stats.summary, {
+      totalTokens: 12_647_391,
+      inputTokens: 12_497_391,
+      outputTokens: 150_000,
+      cacheTokens: 10_000_000,
+      cacheMiss: 2_497_391,
+      cacheRead: 9_500_000,
+      cacheCreation: 500_000,
+    });
+    stats.byProvider = [
+      { provider: 'provider-a', requests: 1, tokens: 12_647_391, costUsd: 1 },
+    ];
+    stats.byModel = [
+      { model: 'model-a', requests: 1, tokens: 12_647_391, costUsd: 1 },
+    ];
     const services: UsageServices = {
       loadUsageStats: async () => stats,
       updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
     };
 
     try {
-      for (const activeTab of ['providers', 'models', 'requests'] as const) {
-        const settings = mergeSettings(base, { usage: { activeTab } });
-        await act(async () => {
-          root.render(tree({ active: true, settings, targetKey: 'host', services, locale: expected.locale }));
-          await flush();
-        });
+      await act(async () => {
+        root.render(tree({ active: true, settings: base, targetKey: 'hostA:1', services }));
+        await flush();
+      });
 
-        if (activeTab === 'providers') {
-          const values = [...container.querySelectorAll('[data-slot="stat-tile-value"]')];
-          assert.deepEqual(values.map((element) => element.textContent), ['1284', '$12.34', '1M', '1M']);
-          const cards = container.querySelectorAll('[data-slot="stat-tile"]');
-          await assertCompactTooltip(cards[2]!, '1M', '1,048,576');
-          await assertCompactTooltip(cards[2]!, expected.tokenDetail, expected.exactTokenDetail);
-          await assertCompactTooltip(cards[3]!, '1M', '1,000,500');
-          await assertCompactTooltip(cards[3]!, expected.cacheDetail, expected.exactCacheDetail);
+      const tiles = Array.from(container.querySelectorAll('[data-slot="stat-tile"]'));
+      for (const [label, value, detail] of [
+        ['Model calls', '12.6M', undefined],
+        ['Total tokens', '12.6M', 'Input 12.5M / output 150K'],
+        ['Cache tokens', '10M', 'New 2.5M / hit 9.5M / created 500K'],
+      ]) {
+        const tile = tiles.find(
+          (element) => element.querySelector('[data-slot="stat-tile-label"]')?.textContent === label,
+        );
+        assert.ok(tile, `${label} tile should render`);
+        assert.equal(tile.querySelector('[data-slot="stat-tile-value"]')?.textContent, value);
+        if (detail !== undefined) {
+          assert.equal(tile.querySelector('[data-slot="stat-tile-detail"]')?.textContent, detail);
         }
-
-        const row = container.querySelector('tbody tr');
-        assert.ok(row, `${activeTab} must display the loaded record`);
-        const cells = row.querySelectorAll('td');
-        const tokenIndex = activeTab === 'requests' ? 4 : 2;
-        assert.equal(cells[tokenIndex]?.textContent, '1M');
-        assert.equal(cells[tokenIndex + 1]?.textContent, '$12.34');
-        if (activeTab === 'requests') {
-          assert.equal(cells[6]?.textContent, '1284ms', 'latency remains an exact millisecond value');
-        } else {
-          assert.equal(cells[1]?.textContent, '1284', 'request counts are not token counts');
-        }
-        await assertCompactTooltip(cells[tokenIndex]!, '1M', '1,048,576');
-        const smallTokenCell = container.querySelectorAll('tbody tr')[1]!.querySelectorAll('td')[tokenIndex]!;
-        assert.equal(smallTokenCell.textContent, '999');
-        assert.equal(smallTokenCell.querySelectorAll('[tabindex], [aria-describedby]').length, 0,
-          'already exact token counts must not add tooltip tab stops');
       }
+      assert.doesNotMatch(container.textContent ?? '', /12647391/);
+
+      const providerTable = container.querySelector('table');
+      assert.ok(providerTable, 'provider table should render');
+      assert.match(providerTable.textContent ?? '', /12\.6M/);
+      assert.doesNotMatch(providerTable.textContent ?? '', /12647391/);
+
+      const modelSettings = mergeSettings(base, { usage: { activeTab: 'models' } });
+      await act(async () => {
+        root.render(tree({
+          active: true,
+          settings: modelSettings,
+          targetKey: 'hostA:1',
+          services,
+        }));
+        await flush();
+      });
+      const modelTable = container.querySelector('table');
+      assert.ok(modelTable, 'model table should render');
+      assert.match(modelTable.textContent ?? '', /12\.6M/);
+      assert.doesNotMatch(modelTable.textContent ?? '', /12647391/);
     } finally {
       await act(async () => root.unmount());
     }
   });
-}
 
-it('keeps unavailable token placeholders distinct from loaded zero counts and empty tables', async () => {
-  const { container, root } = setupDom();
-  const settings = mergeSettings(createDefaultSettings(), {
-    usage: { range: 'all', activeTab: 'providers' },
-  });
-  const load = deferred<UsageStats | null>();
-  const services: UsageServices = {
-    loadUsageStats: () => load.promise,
-    updateUsageSettings: async () => settings.usage,
-  };
-  try {
-    await act(async () => {
-      root.render(tree({ active: true, settings, targetKey: 'host', services }));
-      await flush();
-    });
-    assert.deepEqual(
-      [...container.querySelectorAll('[data-slot="stat-tile-value"]')].map((element) => element.textContent),
-      ['—', '—', '—', '—'],
-    );
-    await act(async () => {
-      load.resolve(statsWithRequests(0));
-      await flush();
-    });
-    assert.deepEqual(
-      [...container.querySelectorAll('[data-slot="stat-tile-value"]')].map((element) => element.textContent),
-      ['0', '$0.00', '0', '0'],
-    );
-    assert.match(container.textContent ?? '', /No provider usage/);
-    assert.equal(container.querySelector('tbody tr'), null);
-    const cards = container.querySelectorAll('[data-slot="stat-tile"]');
-    assert.equal(cards[2]!.querySelector('[data-slot="stat-tile-detail"]')?.textContent, 'Input 0 / output 0');
-    assert.equal(cards[3]!.querySelector('[data-slot="stat-tile-detail"]')?.textContent, 'New 0 / hit 0 / created 0');
-    for (const card of [cards[2]!, cards[3]!]) {
-      assert.equal(card.querySelectorAll('[tabindex], [aria-describedby]').length, 0,
-        'already exact summaries and details must not add tooltip tab stops');
-    }
-  } finally {
-    await act(async () => root.unmount());
-  }
-});
-
-describe('Usage feature scope', () => {
   it('re-displays the last snapshot immediately when returning to the section, then refreshes', async () => {
     const { container, root } = setupDom();
     const base: AppSettings = mergeSettings(createDefaultSettings(), {

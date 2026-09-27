@@ -24,7 +24,7 @@ import { StatTile, type StatTileProps } from '@maka/ui';
 export function MetricCard(props: {
   title: string;
   value: StatTileProps['value'];
-  detail?: StatTileProps['detail'];
+  detail?: string;
 }) {
   return (
     /* One tile language across every settings summary strip: this used to ask
