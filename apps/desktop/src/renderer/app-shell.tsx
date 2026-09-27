@@ -404,6 +404,7 @@ function AppShellContent({
     quotesForSend,
     addQuote,
     clearQuotes,
+    restoreQuotes,
     composerQuoteProps,
     chatViewQuoteProps,
   } = useComposerAttachments({
