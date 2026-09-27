@@ -27,6 +27,10 @@ import {
   responseHeadersFromError,
   retryAfterMs,
 } from './provider-retry-policy.js';
+import {
+  OPENAI_RESPONSES_TRANSPORT_CODES,
+  PROVIDER_BILLING_PROVIDER_CODES,
+} from './provider-error-signals.js';
 
 /**
  * Structured provider error identifiers that mean the INPUT exceeded the
@@ -76,21 +80,6 @@ const RESPONSE_TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
  * represents quota exhaustion and needs different user guidance.
  */
 const PROVIDER_CAPACITY_CODES: ReadonlySet<string> = new Set(['resource-exhausted']);
-
-/**
- * Structured provider error identifiers that mean an ACCOUNT-level usage or
- * billing condition — exhausted credits or a closed plan/quota window —
- * rather than an invalid credential. Providers disagree on which HTTP status
- * travels with them (402, 401/403, even 429); the structured code is the
- * stable evidence, so it outranks every numeric fallback below.
- */
-const PROVIDER_BILLING_PROVIDER_CODES: ReadonlySet<string> = new Set([
-  'insufficient_quota', // OpenAI & OpenAI-compatible: error.code
-  'insufficient_balance', // DeepSeek: error.code
-  'quota_exceeded', // OpenAI-compatible variants: error.code
-  'freeusagelimiterror', // OpenCode Zen free tier exhausted (HTTP 429): error.type
-  'upgrade_required', // Command Code: the plan has no Provider API access (HTTP 403): error.code
-]);
 
 /**
  * Free-text usage/billing wording that overrides a credential-shaped HTTP
@@ -157,12 +146,6 @@ interface ProviderFailureSummary {
 }
 
 const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
-
-/** Codes the incremental Responses transport raises before any HTTP response. */
-const OPENAI_RESPONSES_TRANSPORT_CODES: ReadonlySet<string> = new Set([
-  'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
-  'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
-]);
 
 function providerErrorTarget(error: unknown): unknown {
   return RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
