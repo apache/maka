@@ -63,12 +63,6 @@ test('Agent Graph revision references preserve only exact terminal provenance', 
   assert.deepEqual([...accepted.shared.get(CHILD_SESSION_ID)!.runIds], [CHILD_RUN_ID]);
   assert.deepEqual([...accepted.shared.get(CHILD_SESSION_ID)!.artifactIds], [CHILD_ARTIFACT_ID]);
   assert.equal(accepted.snapshots.size, 0);
-
-  const archived = await prepare({
-    messages: [],
-    archivedResults: [JSON.stringify(linkedResult().content)],
-  });
-  assert.equal(archived.ok, true);
 });
 
 test('only a revision shares Graph children; every other retained child is a snapshot', async () => {
@@ -299,7 +293,6 @@ test('Agent Graph revision admission includes only retained direct and reference
       requests: collectConversationCopyLinkedChildReferences({
         messages: [linkedResult()],
         runtimeEvents: [],
-        archivedResults: [],
       }),
     }),
     [CHILD_SESSION_ID],
@@ -309,7 +302,6 @@ test('Agent Graph revision admission includes only retained direct and reference
 interface PrepareOverrides {
   readonly kind?: 'branch' | 'revision' | 'side_conversation';
   readonly messages?: readonly StoredMessage[];
-  readonly archivedResults?: readonly string[];
   readonly sessionHeaders?: readonly SessionHeader[];
   readonly runs?: readonly RuntimeInvocationRecord[];
   readonly sessionGraphState?: 'absent' | 'live' | 'terminal';
@@ -332,7 +324,6 @@ async function prepare(overrides: PrepareOverrides = {}) {
       requests: collectConversationCopyLinkedChildReferences({
         messages,
         runtimeEvents: [],
-        archivedResults: overrides.archivedResults ?? [],
       }),
     },
     {

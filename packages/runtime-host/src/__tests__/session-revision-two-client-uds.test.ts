@@ -26,6 +26,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import {
+  buildModelProjectionTransition,
+  decodeModelProjectionTransition,
+  MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+} from '@maka/core/model-projection-transition';
+import { compatibilityToolResultProjection } from '@maka/runtime/durable-tool-result-projection';
 import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import {
   seedInvocation,
@@ -1593,7 +1599,7 @@ async function seedSource(
         initialRunId: 'metadata-child-run',
       },
     });
-    const archivedBody = JSON.stringify({
+    const archivedResult = {
       kind: 'subagent',
       agentName: 'Worker',
       turnId: 'archived-owned-child-turn',
@@ -1602,7 +1608,21 @@ async function seedSource(
       permissionMode: 'ask',
       summary: 'done',
       artifactIds: [],
-    });
+    } as const;
+    const archivedResponse = {
+      kind: 'function_response',
+      id: 'archived-owned-tool-call',
+      name: 'subagent',
+      isError: false,
+      result: archivedResult,
+    } as const;
+    const archivedSourceProjection = compatibilityToolResultProjection(
+      archivedResponse,
+      archivedOwnedSource.id,
+    );
+    assert.equal(archivedSourceProjection?.kind, 'json');
+    if (archivedSourceProjection?.kind !== 'json') throw new Error('Expected a JSON projection');
+    const archivedBody = JSON.stringify(archivedSourceProjection.value);
     const archivedBodySha256 = createHash('sha256').update(archivedBody).digest('hex');
     await artifacts.create({
       id: 'archived-owned-result',
@@ -1687,24 +1707,7 @@ async function seedSource(
           ts: 2,
           role: 'tool',
           author: 'tool',
-          content: {
-            kind: 'function_response',
-            id: 'archived-owned-tool-call',
-            name: 'subagent',
-            isError: false,
-            result: {
-              kind: 'maka.archived_tool_result',
-              rewriteVersion: 1,
-              artifactId: 'archived-owned-result',
-              runtimeEventId: 'archived-owned-child-result',
-              toolCallId: 'archived-owned-tool-call',
-              toolName: 'subagent',
-              bodySha256: archivedBodySha256,
-              originalEstimatedTokens: 20,
-              originalBytes: Buffer.byteLength(archivedBody, 'utf8'),
-              reason: 'stale_tool_result_pruned_before_compact',
-            },
-          },
+          content: archivedResponse,
         },
       ),
       runtimeEvent(
@@ -1722,6 +1725,48 @@ async function seedSource(
     for (const event of archivedOwnedRuntimeEvents) {
       await execution.runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
     }
+    // Builds between #4350 and #4987 archived through a projection transition
+    // whose rewriteVersion 1 placeholder names a Session Artifact.
+    const archiveTransition = buildModelProjectionTransition({
+      sessionId: archivedOwnedSource.id,
+      target: {
+        runtimeEventId: 'archived-owned-child-result',
+        part: 'tool_result',
+        toolCallId: 'archived-owned-tool-call',
+        toolName: 'subagent',
+      },
+      sourceProjection: archivedSourceProjection,
+      replacement: {
+        version: 1,
+        kind: 'json',
+        value: {
+          kind: 'maka.archived_tool_result',
+          rewriteVersion: 1,
+          artifactId: 'archived-owned-result',
+          runtimeEventId: 'archived-owned-child-result',
+          toolCallId: 'archived-owned-tool-call',
+          toolName: 'subagent',
+          bodySha256: archivedBodySha256,
+          originalEstimatedTokens: 20,
+          originalBytes: Buffer.byteLength(archivedBody, 'utf8'),
+          reason: 'tool_result_pruned',
+        },
+      },
+      now: 2.6,
+    });
+    await execution.agentRunStore.appendEvent(archivedOwnedSource.id, 'archived-owned-child-run', {
+      type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+      id: archiveTransition.transitionId,
+      runId: 'archived-owned-child-run',
+      sessionId: archivedOwnedSource.id,
+      turnId: 'archived-owned-child-turn',
+      ts: 2.6,
+      data: {
+        runtimeEventId: 'archived-owned-child-result',
+        part: 'tool_result',
+        transition: archiveTransition,
+      },
+    });
     await todos.replaceAll(source.id, [
       { content: 'Retained task', status: 'in_progress' },
       { content: 'Legacy child task', status: 'pending' },
@@ -2031,12 +2076,13 @@ async function verifyDurableBranch(
         (run) => run.turnId === 'archived-owned-child-turn',
       );
       assert.ok(archivedChildRun);
-      const archivedResult = (
+      const archivedResultEvent = (
         await execution.runtimeEventStore.readRuntimeEvents(
           archivedTargetId,
           archivedChildRun.runId,
         )
-      ).find((event) => event.content?.kind === 'function_response')?.content;
+      ).find((event) => event.content?.kind === 'function_response');
+      const archivedResult = archivedResultEvent?.content;
       assert.ok(archivedResult?.kind === 'function_response');
       if (archivedResult?.kind !== 'function_response') {
         assert.fail(`${archivedTargetId} must retain its archived tool result`);
@@ -2057,11 +2103,38 @@ async function verifyDurableBranch(
         summary: 'done',
         artifactIds: [],
       });
-      const archivedArtifacts = await artifacts.listPage(archivedTargetId, {
-        offset: 0,
-        limit: 10,
-      });
-      assert.equal(archivedArtifacts.total, 0);
+      // The copy still hides the result from the model, but through an archive
+      // rebuilt from its own snapshot rather than the source's Artifact body.
+      const copiedTransitions = (
+        await execution.agentRunStore.readEvents(archivedTargetId, archivedChildRun.runId)
+      ).filter((event) => event.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE);
+      assert.equal(copiedTransitions.length, 1);
+      const copiedReplacement = decodeModelProjectionTransition(
+        copiedTransitions[0]!.data?.transition,
+        archivedTargetId,
+      ).replacement;
+      assert.ok(copiedReplacement.kind === 'json');
+      const copiedPlaceholder = copiedReplacement.value as Record<string, unknown>;
+      const copiedProjection = compatibilityToolResultProjection(archivedResult, archivedTargetId);
+      assert.ok(copiedProjection?.kind === 'json');
+      assert.deepEqual(
+        {
+          rewriteVersion: copiedPlaceholder.rewriteVersion,
+          storage: copiedPlaceholder.storage,
+          artifactId: copiedPlaceholder.artifactId,
+          runtimeEventId: copiedPlaceholder.runtimeEventId,
+          bodySha256: copiedPlaceholder.bodySha256,
+        },
+        {
+          rewriteVersion: 2,
+          storage: 'ledger',
+          artifactId: undefined,
+          runtimeEventId: archivedResultEvent?.id,
+          bodySha256: createHash('sha256')
+            .update(JSON.stringify(copiedProjection.value))
+            .digest('hex'),
+        },
+      );
     }
     const graphRevisionMessages = await readLedgerMessages(
       execution.runtimeEventStore,

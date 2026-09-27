@@ -51,7 +51,6 @@ import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
-  archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
   collectConversationCopySessionContextRefIds,
@@ -94,130 +93,6 @@ import {
 } from '../tool-result-archive.js';
 import { testInvocationOpening, testInvocationRecord } from './invocation-fixture.js';
 
-test('archived tool-result copy preflight detects conversation-owned references', () => {
-  const serialized = (value: unknown): string => JSON.stringify(value);
-  assert.equal(
-    archivedToolResultContainsConversationOwnedReferences(
-      serialized({ kind: 'text', text: 'safe result' }),
-      'session-source',
-    ),
-    false,
-  );
-  assert.equal(
-    archivedToolResultContainsConversationOwnedReferences(
-      serialized({
-        kind: 'image',
-        mimeType: 'image/png',
-        ref: {
-          kind: 'session_file',
-          sessionId: 'session-source',
-          relativePath: 'session-source/image.png',
-        },
-      }),
-      'session-source',
-    ),
-    true,
-  );
-  assert.equal(
-    archivedToolResultContainsConversationOwnedReferences(
-      serialized({
-        kind: 'subagent',
-        agentName: 'Researcher',
-        turnId: 'retired-turn',
-        runId: 'retired-run',
-        status: 'completed',
-        permissionMode: 'execute',
-        summary: 'done',
-        artifactIds: [],
-      }),
-      'session-source',
-    ),
-    true,
-  );
-  const linkedChildReferences = new Map([
-    [
-      'child-session',
-      {
-        runIds: new Set(['child-run']),
-        artifactIds: new Set(['child-artifact']),
-      },
-    ],
-  ]);
-  const linkedResult = serialized({
-    kind: 'subagent',
-    childSessionId: 'child-session',
-    agentName: 'Researcher',
-    turnId: 'child-turn',
-    runId: 'child-run',
-    status: 'completed',
-    permissionMode: 'ask',
-    summary: 'done',
-    artifactIds: ['child-artifact'],
-  });
-  assert.equal(
-    archivedToolResultContainsConversationOwnedReferences(
-      linkedResult,
-      'session-source',
-      linkedChildReferences,
-    ),
-    false,
-  );
-  assert.equal(
-    archivedToolResultContainsConversationOwnedReferences(
-      linkedResult,
-      'session-source',
-      new Map([
-        [
-          'child-session',
-          { runIds: new Set(['other-run']), artifactIds: new Set(['child-artifact']) },
-        ],
-      ]),
-    ),
-    true,
-  );
-  assert.equal(
-    archivedToolResultContainsConversationOwnedReferences(
-      serialized({
-        kind: 'subagent',
-        agentName: 'Researcher',
-        turnId: 'turn-child',
-        runId: 'run-child',
-        status: 'completed',
-        permissionMode: 'ask',
-        summary: 'done',
-        artifactIds: [],
-      }),
-      'session-source',
-    ),
-    true,
-  );
-  assert.equal(
-    archivedToolResultContainsConversationOwnedReferences(
-      serialized({
-        kind: 'agent_swarm',
-        status: 'completed',
-        items: [
-          {
-            itemId: 'item-1',
-            index: 0,
-            profile: 'default',
-            started: true,
-            resumedFromRunId: 'run-source',
-            status: 'completed',
-            summary: 'done',
-            artifactIds: [],
-          },
-        ],
-        startedAt: 1,
-        completedAt: 2,
-        durationMs: 1,
-      }),
-      'session-source',
-    ),
-    true,
-  );
-});
-
 test('conversation copy discovers linked children in persisted retired tool results', () => {
   const result = {
     kind: 'subagent',
@@ -252,16 +127,8 @@ test('conversation copy discovers linked children in persisted retired tool resu
     collectConversationCopyLinkedChildReferences({
       messages: [],
       runtimeEvents: [runtimeEvent],
-      archivedResults: [JSON.stringify(result)],
     }),
     [
-      {
-        childSessionId: 'child-session',
-        runId: 'child-run',
-        turnId: 'child-turn',
-        artifactIds: ['child-artifact'],
-        status: 'completed',
-      },
       {
         childSessionId: 'child-session',
         runId: 'child-run',
@@ -344,23 +211,9 @@ test('collectConversationCopySessionFileRefs gathers source-Session refs across 
     sourceSessionId: 'session-source',
     messages,
     runtimeEvents,
-    archivedResults: [
-      JSON.stringify({
-        kind: 'image',
-        mimeType: 'image/png',
-        ref: sourceRef('attachment-archived'),
-      }),
-      // A child-Session archived image must be ignored.
-      JSON.stringify({
-        kind: 'image',
-        mimeType: 'image/png',
-        ref: sourceRef('attachment-archived-child', 'child-session'),
-      }),
-    ],
   });
 
   assert.deepEqual([...refs].sort(), [
-    'attachment-archived',
     'attachment-event',
     'attachment-fn',
     'attachment-tool-result',
@@ -577,69 +430,6 @@ test('conversation copy keeps ordinary archived tool results as references', () 
   });
 });
 
-test('conversation copy inlines archived linked-child results as snapshots', () => {
-  const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
-    type: 'tool_result',
-    id: 'archived-result',
-    turnId: 'turn-1',
-    ts: 1,
-    toolUseId: 'tool-1',
-    isError: false,
-    content: {
-      kind: 'json',
-      value: {
-        kind: 'maka.archived_tool_result',
-        rewriteVersion: 1,
-        artifactId: 'artifact-source',
-        runtimeEventId: 'event-source',
-        toolCallId: 'tool-1',
-        toolName: 'subagent',
-        bodySha256: 'b'.repeat(64),
-        originalEstimatedTokens: 42,
-        originalBytes: 128,
-        reason: 'stale_tool_result_pruned_before_compact',
-      },
-    },
-  };
-  const rewritten = rewriteConversationCopyMessage(message, {
-    sourceSessionId: 'session-source',
-    targetSessionId: 'session-target',
-    artifactIds: new Map([['child-artifact', 'child-artifact-snapshot']]),
-    relativePaths: new Map(),
-    inlinedArchives: new Map([
-      [
-        'artifact-source',
-        JSON.stringify({
-          kind: 'subagent',
-          childSessionId: 'child-session',
-          agentName: 'Researcher',
-          turnId: 'child-turn',
-          runId: 'child-run',
-          status: 'completed',
-          permissionMode: 'ask',
-          summary: 'The archived review found one issue.',
-          artifactIds: ['child-artifact'],
-        }),
-      ],
-    ]),
-    runIds: new Map(),
-    runtimeEventIds: new Map([['event-source', 'event-target']]),
-    providerTraceIds: new Map(),
-  });
-
-  assert.equal(rewritten.type, 'tool_result');
-  if (rewritten.type !== 'tool_result') assert.fail('Expected a tool result');
-  assert.deepEqual(rewritten.content, {
-    kind: 'subagent',
-    agentName: 'Researcher',
-    turnId: 'child-turn',
-    status: 'completed',
-    permissionMode: 'ask',
-    summary: 'The archived review found one issue.',
-    artifactIds: ['child-artifact-snapshot'],
-  });
-});
-
 test('conversation copy slices exact turns on inclusive and exclusive boundaries', () => {
   const messages = [
     { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'first' },
@@ -846,7 +636,6 @@ test('conversation copy rewrites owned references without changing opaque tool p
           },
         }),
       ],
-      archivedResults: [],
     }),
     ['context-selected-event', 'context-source'],
   );
@@ -3365,10 +3154,7 @@ test('conversation copy rebuilds projection transitions against the copied event
       referenceMap: {
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
-        artifactIds: new Map([
-          ['artifact-source-1', 'artifact-target-1'],
-          ['artifact-source-2', 'artifact-target-2'],
-        ]),
+        artifactIds: new Map(),
         relativePaths: new Map(),
       },
       runStore,
@@ -3430,10 +3216,9 @@ test('conversation copy rebuilds projection transitions against the copied event
     const effective = reduced.events.find((event) => event.content?.kind === 'function_response');
     assert.ok(effective?.content?.kind === 'function_response');
     assert.ok(isArchivedToolResultPlaceholder(effective.content.result));
-    assert.equal(effective.content.result.artifactId, 'artifact-target-2');
+    // A legacy Artifact-backed archive is rebuilt over the copied event.
+    assert.equal(effective.content.result.rewriteVersion, 2);
     assert.equal(effective.content.result.runtimeEventId, targetResult.id);
-    // Only the surviving placeholder's archive is reachable; the one it
-    // superseded is not, and cleanup may reclaim it.
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -3570,7 +3355,7 @@ test('conversation copy carries a transition recorded by a later, uncopied run',
       referenceMap: {
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
-        artifactIds: new Map([['artifact-source-1', 'artifact-target-1']]),
+        artifactIds: new Map(),
         relativePaths: new Map(),
       },
       runStore,
@@ -3739,10 +3524,7 @@ test('conversation copy reproduces the source fold rather than re-deciding it', 
       referenceMap: {
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
-        artifactIds: new Map([
-          ['artifact-source-a', 'artifact-target-a'],
-          ['artifact-source-b', 'artifact-target-b'],
-        ]),
+        artifactIds: new Map(),
         relativePaths: new Map(),
       },
       runStore,
@@ -3769,12 +3551,7 @@ test('conversation copy reproduces the source fold rather than re-deciding it', 
     assert.ok(effective?.content?.kind === 'function_response');
     assert.ok(isArchivedToolResultPlaceholder(effective.content.result));
     const sourceWinner = reduceEffectiveModelProjections([resultEvent], rivals).applied[0]!;
-    assert.equal(
-      effective.content.result.artifactId,
-      sourceWinner.transitionId === inCopiedRun.transitionId
-        ? 'artifact-target-a'
-        : 'artifact-target-b',
-    );
+    assert.equal(copied.transitions[0]?.createdAt, sourceWinner.createdAt);
     assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
   } finally {
     await rm(root, { recursive: true, force: true });

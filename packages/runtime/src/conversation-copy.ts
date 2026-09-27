@@ -62,7 +62,6 @@ import {
   parseToolResultEventAddress,
 } from './tool-result-archive-resource.js';
 import {
-  deserializeToolResultArchive,
   isArchivedToolResultPlaceholder,
   type ArchivedToolResultPlaceholder,
   type LedgerArchivedToolResultPlaceholder,
@@ -124,8 +123,6 @@ export interface ConversationCopyArtifactReferenceMap {
    * linked child result is copied as a snapshot without its child identifiers.
    */
   readonly sharedChildren?: ReadonlyMap<string, ConversationCopyExternalChildReferences>;
-  /** Archived tool result bodies, by archive Artifact id, written inline into the copy. */
-  readonly inlinedArchives?: ReadonlyMap<string, string>;
 }
 
 export type ConversationCopyMessageReferenceMap = ConversationCopyArtifactReferenceMap & {
@@ -172,7 +169,6 @@ export interface ConversationRuntimeLedgerCopyPlan {
 interface ConversationCopyStorageReferenceInput {
   readonly messages: readonly StoredMessage[];
   readonly runtimeEvents: readonly RuntimeEvent[];
-  readonly archivedResults: readonly string[];
 }
 
 /** Walks every typed StorageRef site reached by conversation-copy rewriting. */
@@ -205,9 +201,6 @@ function collectConversationCopyStorageRefs(
       addSerialized(event.content.result);
     }
   }
-  for (const serializedResult of input.archivedResults) {
-    addSerialized(deserializeToolResultArchive(serializedResult));
-  }
   return refs;
 }
 
@@ -216,7 +209,6 @@ export function collectConversationCopySessionContextRefIds(input: {
   readonly sourceSessionId: string;
   readonly messages: readonly StoredMessage[];
   readonly runtimeEvents: readonly RuntimeEvent[];
-  readonly archivedResults: readonly string[];
 }): readonly string[] {
   const refIds = new Set<string>();
   for (const ref of collectConversationCopyStorageRefs(input)) {
@@ -1013,54 +1005,6 @@ async function loadConversationCopyRunEvents(
   );
 }
 
-export function archivedToolResultContainsConversationOwnedReferences(
-  serializedResult: string,
-  sourceSessionId: string,
-  sharedChildren?: ReadonlyMap<string, ConversationCopyExternalChildReferences>,
-): boolean {
-  const value = deserializeToolResultArchive(serializedResult);
-  if (isArchivedToolResultPlaceholder(value)) return true;
-
-  let content: ToolResultContent;
-  try {
-    content = decodePersistedToolResultContent(markPersisted<ToolResultContent>(value));
-  } catch {
-    return false;
-  }
-
-  if (content.kind === 'archived_tool_result') return true;
-  if (content.kind === 'image') {
-    return (
-      (content.ref.kind === 'session_file' || content.ref.kind === 'session_context') &&
-      content.ref.sessionId === sourceSessionId
-    );
-  }
-  if (content.kind === 'subagent') {
-    const [linked] = conversationCopyLinkedChildReferences(content);
-    if (linked) {
-      return !isSharedLinkedChild(linked, sharedChildren);
-    }
-    return content.runId !== undefined || content.artifactIds.length > 0;
-  }
-  if (content.kind === 'agent_swarm') {
-    if (
-      content.items.some(
-        (item) =>
-          !item.childSessionId &&
-          (item.runId !== undefined ||
-            item.resumedFromRunId !== undefined ||
-            item.artifactIds.length > 0),
-      )
-    ) {
-      return true;
-    }
-    return conversationCopyLinkedChildReferences(content).some(
-      (linked) => !isSharedLinkedChild(linked, sharedChildren),
-    );
-  }
-  return false;
-}
-
 export function conversationCopyLinkedChildReferences(
   content: ToolResultContent,
 ): readonly ConversationCopyLinkedChildReference[] {
@@ -1098,7 +1042,6 @@ export function conversationCopyLinkedChildReferences(
 export function collectConversationCopyLinkedChildReferences(input: {
   readonly messages: readonly StoredMessage[];
   readonly runtimeEvents: readonly RuntimeEvent[];
-  readonly archivedResults: readonly string[];
 }): readonly ConversationCopyLinkedChildReference[] {
   const references: ConversationCopyLinkedChildReference[] = [];
   const add = (value: unknown): void => {
@@ -1121,9 +1064,6 @@ export function collectConversationCopyLinkedChildReferences(input: {
   for (const event of input.runtimeEvents) {
     if (event.content?.kind === 'function_response') add(event.content.result);
   }
-  for (const serializedResult of input.archivedResults) {
-    add(deserializeToolResultArchive(serializedResult));
-  }
   return references;
 }
 
@@ -1141,7 +1081,6 @@ export function collectConversationCopySessionFileRefs(input: {
   readonly sourceSessionId: string;
   readonly messages: readonly StoredMessage[];
   readonly runtimeEvents: readonly RuntimeEvent[];
-  readonly archivedResults: readonly string[];
 }): ReadonlySet<string> {
   const refs = new Set<string>();
   for (const ref of collectConversationCopyStorageRefs(input)) {
@@ -1316,40 +1255,43 @@ function cloneModelProjectionTransition(
   if (!sourceProjection) {
     throw new Error(`Cannot copy model projection transition ${event.id} onto its target`);
   }
-  let rewritten: ArchivedToolResultPlaceholder;
+  // The copied event already holds the target's rewritten result, so every
+  // archive, including a legacy Artifact-backed one, is rebuilt as a ledger
+  // archive of that event instead of pointing at the source's archived body.
+  const serialized = serializeToolResultProjectionV1(sourceProjection);
+  const rewritten = buildLedgerArchivedToolResultPlaceholder({
+    storage: 'ledger',
+    runtimeEventId: clonedTarget.id,
+    toolCallId: placeholder.toolCallId,
+    toolName: placeholder.toolName,
+    sourceProjectionDigest: durableToolResultProjectionDigest(sourceProjection),
+    bodySha256: createHash('sha256').update(serialized).digest('hex'),
+    originalBytes: Buffer.byteLength(serialized),
+    originalEstimatedTokens: placeholder.originalEstimatedTokens,
+    reason: placeholder.reason,
+    ...(source.previousTransitionId
+      ? {
+          previousTransitionId: requiredMappedId(
+            transitionIds,
+            source.previousTransitionId,
+            'model projection transition',
+          ),
+        }
+      : {}),
+  });
+  if (placeholder.page) {
+    rewritten.page = readToolResultPage(
+      serialized,
+      { path: rewritten.resourceRef! },
+      READ_PAGE_MAX_BYTES - Buffer.byteLength(JSON.stringify(rewritten)) - 32,
+    );
+  }
+  // Earlier Reads of a legacy archive keep naming its copied Artifact.
   if (placeholder.rewriteVersion === 2) {
-    const { previousTransitionId: _previous, ...rest } = placeholder;
-    const serialized = serializeToolResultProjectionV1(sourceProjection);
-    rewritten = buildLedgerArchivedToolResultPlaceholder({
-      ...rest,
-      runtimeEventId: clonedTarget.id,
-      sourceProjectionDigest: durableToolResultProjectionDigest(sourceProjection),
-      bodySha256: createHash('sha256').update(serialized).digest('hex'),
-      originalBytes: Buffer.byteLength(serialized),
-      ...(source.previousTransitionId
-        ? {
-            previousTransitionId: requiredMappedId(
-              transitionIds,
-              source.previousTransitionId,
-              'model projection transition',
-            ),
-          }
-        : {}),
-    });
-    if (rewritten.page) {
-      delete rewritten.page;
-      rewritten.page = readToolResultPage(
-        serialized,
-        { path: rewritten.resourceRef! },
-        READ_PAGE_MAX_BYTES - Buffer.byteLength(JSON.stringify(rewritten)) - 32,
-      );
-    }
     references.ledgerArchives?.set(
       placeholder.resourceRef ?? buildToolResultArchiveResourceRef(placeholder),
       rewritten,
     );
-  } else {
-    rewritten = rewriteArchivedToolResult(placeholder, references);
   }
   const transition = buildModelProjectionTransition({
     sessionId: references.targetSessionId,
@@ -1719,11 +1661,7 @@ function rewriteRuntimeEventReferences(
               }
             : {}),
           ...(event.refs.artifactId
-            ? references.inlinedArchives?.has(event.refs.artifactId)
-              ? {}
-              : {
-                  artifactId: rewriteOwnedArtifactId(event.refs.artifactId, references),
-                }
+            ? { artifactId: rewriteOwnedArtifactId(event.refs.artifactId, references) }
             : {}),
           ...(event.refs.sourceInvocationId
             ? {
@@ -1834,8 +1772,6 @@ function rewriteToolResultContent(
         originalBytes: rewritten.originalBytes,
       };
     }
-    const snapshot = rewriteArchivedSnapshot(content, references);
-    if (snapshot) return snapshot;
     return {
       ...content,
       runtimeEventId: rewriteOwnedId(
@@ -1849,8 +1785,6 @@ function rewriteToolResultContent(
     };
   }
   if (content.kind === 'json' && isArchivedToolResultPlaceholder(content.value)) {
-    const snapshot = rewriteArchivedSnapshot(content.value, references);
-    if (snapshot) return snapshot;
     return {
       ...content,
       value: rewriteArchivedToolResult(content.value, references),
@@ -1911,11 +1845,7 @@ function rewriteRuntimeToolResult(
   value: unknown,
   references: ConversationCopyMessageReferenceMap,
 ): unknown {
-  if (isArchivedToolResultPlaceholder(value)) {
-    const snapshot = rewriteArchivedSnapshot(value, references);
-    if (snapshot) return snapshot;
-    return rewriteArchivedToolResult(value, references);
-  }
+  if (isArchivedToolResultPlaceholder(value)) return rewriteArchivedToolResult(value, references);
   let content: ToolResultContent;
   try {
     content = decodePersistedToolResultContent(markPersisted<ToolResultContent>(value));
@@ -1940,52 +1870,6 @@ function sharedChild(
   references: ConversationCopyMessageReferenceMap,
 ): ConversationCopyExternalChildReferences | undefined {
   return childSessionId === undefined ? undefined : references.sharedChildren?.get(childSessionId);
-}
-
-function rewriteArchivedSnapshot(
-  value:
-    | ArchivedToolResultPlaceholder
-    | Extract<ToolResultContent, { kind: 'archived_tool_result' }>,
-  references: ConversationCopyMessageReferenceMap,
-): ToolResultContent | undefined {
-  const serializedResult =
-    value.artifactId === undefined ? undefined : references.inlinedArchives?.get(value.artifactId);
-  if (serializedResult === undefined) return undefined;
-  const archived = deserializeToolResultArchive(serializedResult);
-  if (isArchivedToolResultPlaceholder(archived)) {
-    return unavailableArchivedToolResult(value, references);
-  }
-  try {
-    const decoded = decodePersistedToolResultContent(markPersisted<ToolResultContent>(archived));
-    return decoded.kind === 'archived_tool_result'
-      ? unavailableArchivedToolResult(value, references)
-      : rewriteToolResultContent(decoded, references);
-  } catch {
-    return unavailableArchivedToolResult(value, references);
-  }
-}
-
-function unavailableArchivedToolResult(
-  value:
-    | ArchivedToolResultPlaceholder
-    | Extract<ToolResultContent, { kind: 'archived_tool_result' }>,
-  references: ConversationCopyMessageReferenceMap,
-): Extract<ToolResultContent, { kind: 'archived_tool_result' }> {
-  return {
-    kind: 'archived_tool_result',
-    status: 'missing',
-    runtimeEventId: rewriteOwnedId(
-      value.runtimeEventId,
-      references.runtimeEventIds,
-      'RuntimeEvent',
-    ),
-    toolCallId: value.toolCallId,
-    toolName: value.toolName,
-    originalEstimatedTokens: value.originalEstimatedTokens,
-    originalBytes: value.originalBytes,
-    rewriteVersion: value.rewriteVersion,
-    reason: value.reason,
-  };
 }
 
 function rewriteLinkedRunId(
@@ -2026,20 +1910,6 @@ function preserveExternalId(
     throw new Error(`Conversation copy is missing external ${kind} ${sourceId}`);
   }
   return sourceId;
-}
-
-function isSharedLinkedChild(
-  linked: ConversationCopyLinkedChildReference,
-  sharedChildren?: ReadonlyMap<string, ConversationCopyExternalChildReferences>,
-): boolean {
-  const external = sharedChildren?.get(linked.childSessionId);
-  return (
-    external !== undefined &&
-    [linked.runId, linked.resumedFromRunId]
-      .filter((id): id is string => !!id)
-      .every((runId) => external.runIds.has(runId)) &&
-    linked.artifactIds.every((artifactId) => external.artifactIds.has(artifactId))
-  );
 }
 
 function rewriteStorageRef(
