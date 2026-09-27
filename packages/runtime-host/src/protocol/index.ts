@@ -113,6 +113,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 196 as const;
 // 194: Session catalog live run state may carry the runtime's run epoch, which
 // lets clients order same-revision reads. Epoch-193 peers reject the unknown
 // key, so a newer Desktop against an older Host loses session catalog reads.
+// 193: Queue reorder requests require at least one entry identity. Epoch-192
+// peers can send an empty reorder request that the current Host rejects.
 // 192: Message quotes carry an optional annotation written by the user, which
 // the model reads beside the excerpt. An epoch-191 peer rejects the field.
 // 191: Session catalog change frames can carry attention events.
