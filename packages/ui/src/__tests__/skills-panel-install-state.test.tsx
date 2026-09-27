@@ -48,15 +48,22 @@ test('an available bundled skill is offered in Discover with an install action',
   assert.match(markup, /aria-label="Install Computer Use"/);
 });
 
-test('an installed bundled skill leaves Discover', () => {
-  const markup = renderDiscover({ bundledSkillCatalog: [{ ...computerUse, installed: true }] });
-  assert.doesNotMatch(markup, /Computer Use/);
+test('an installed bundled skill is listed once, under Installed', () => {
+  const markup = renderDiscover({
+    skills: [{ id: 'computer-use', name: 'Computer Use', description: 'Operate desktop applications.', path: '/skills/computer-use', sourceType: 'bundled', enabled: true, runtimeStatus: 'enabled' }],
+    bundledSkillCatalog: [{ ...computerUse, installed: true }],
+  });
+  assert.equal(markup.match(/>Computer Use</g)?.length, 1);
+  assert.match(markup.split('>Installed<')[1] ?? '', />Computer Use</);
+  assert.doesNotMatch(markup, /Install Computer Use/);
 });
 
-test('a skill offered both built in and by a source is one Discover entry', () => {
+test('a skill offered both built in and by a source is one Discover entry, the built-in one', () => {
   const markup = renderDiscover({
     bundledSkillCatalog: [{ ...computerUse, installed: false }],
     managedSkillSources: [{ id: 'computer-use', name: 'Computer Use', description: 'From a source.', category: '效率工具', sourceType: 'local' }],
   });
   assert.equal(markup.match(/aria-label="Install Computer Use"/g)?.length, 1);
+  assert.match(markup, /Operate desktop applications\./);
+  assert.doesNotMatch(markup, /From a source\./);
 });
