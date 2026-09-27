@@ -31,9 +31,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from eval_framework import selected
+from eval_framework import current_framework
 
-framework = selected()
+framework = current_framework()
 if framework == "harbor":
     from harbor.agents.base import BaseAgent
 else:

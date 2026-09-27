@@ -117,14 +117,16 @@ def publish_ready_task(namespace: Path, target: Path) -> None:
 
 
 async def run_trial(framework: str, expected_version: str, config_file: Path) -> None:
-    from eval_framework import selected_framework
+    from eval_framework import framework_scope
 
-    with selected_framework(framework):
+    with framework_scope(framework):
         await _run_selected_trial(framework, expected_version, config_file)
 
 
 async def _run_selected_trial(framework: str, expected_version: str, config_file: Path) -> None:
-    distribution = {"harbor": "harbor", "pier": "datacurve-pier"}[framework]
+    from eval_framework import framework_distribution
+
+    distribution = framework_distribution(framework)
     if importlib.metadata.version(distribution) != expected_version:
         raise FrameworkVersionMismatch
     try:
@@ -188,10 +190,10 @@ async def create_harbor_trial(trial_type: type, config: object) -> object:
 
 
 async def main() -> None:
-    from eval_framework import selected_framework
+    from eval_framework import framework_scope
 
     framework, expected_version, config_path = sys.argv[1:]
-    with selected_framework(framework):
+    with framework_scope(framework):
         await _run_main(framework, expected_version, config_path)
 
 

@@ -35,9 +35,9 @@ class BaseAgent:
 
 
 def load_relay():
-    from eval_framework import install
+    from eval_framework import activate
 
-    install("harbor")
+    activate("harbor")
     package = types.ModuleType("harbor")
     agents = types.ModuleType("harbor.agents")
     base = types.ModuleType("harbor.agents.base")

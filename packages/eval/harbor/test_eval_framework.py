@@ -21,62 +21,77 @@ import unittest
 from pathlib import Path
 
 
-class EvalFrameworkTest(unittest.TestCase):
-    def test_selected_fails_closed_before_install(self) -> None:
-        module = self._load_fresh()
+def fresh_authority():
+    source = Path(__file__).with_name("eval_framework.py")
+    spec = importlib.util.spec_from_file_location("isolated_eval_framework", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FrameworkAuthorityTest(unittest.TestCase):
+    def test_unbound_context_has_no_implicit_default(self) -> None:
+        authority = fresh_authority()
+
         with self.assertRaisesRegex(RuntimeError, "not installed"):
-            module.selected()
+            authority.current_framework()
 
-    def test_invalid_framework_fails_closed(self) -> None:
-        module = self._load_fresh()
-        with self.assertRaisesRegex(RuntimeError, "harbor or pier"):
-            module.install("other")
-        with self.assertRaisesRegex(RuntimeError, "not installed"):
-            module.selected()
+    def test_supported_names_and_distributions_are_explicit(self) -> None:
+        authority = fresh_authority()
+        expected = {"harbor": "harbor", "pier": "datacurve-pier"}
 
-    def test_install_selects_harbor_and_pier(self) -> None:
-        module = self._load_fresh()
-        module.install("harbor")
-        self.assertEqual(module.selected(), "harbor")
-        module.install("pier")
-        self.assertEqual(module.selected(), "pier")
+        for name, distribution in expected.items():
+            with self.subTest(name=name):
+                authority.activate(name)
+                self.assertEqual(authority.current_framework(), name)
+                self.assertEqual(authority.framework_distribution(name), distribution)
 
-    def test_scoped_selection_restores_prior_framework_after_nested_failure(self) -> None:
-        module = self._load_fresh()
-        module.install("harbor")
+    def test_invalid_names_cannot_mutate_or_enter_the_context(self) -> None:
+        authority = fresh_authority()
+        invalid_operations = (
+            lambda: authority.activate("other"),
+            lambda: authority.framework_distribution("other"),
+            lambda: authority.framework_scope("other").__enter__(),
+        )
+
+        for operation in invalid_operations:
+            with self.subTest(operation=operation):
+                with self.assertRaisesRegex(RuntimeError, "harbor or pier"):
+                    operation()
+                with self.assertRaisesRegex(RuntimeError, "not installed"):
+                    authority.current_framework()
+
+    def test_scope_restores_its_caller_when_work_fails(self) -> None:
+        authority = fresh_authority()
+        authority.activate("harbor")
+
         with self.assertRaisesRegex(ValueError, "trial failed"):
-            with module.selected_framework("pier"):
-                self.assertEqual(module.selected(), "pier")
+            with authority.framework_scope("pier") as selected:
+                self.assertEqual(selected, "pier")
+                self.assertEqual(authority.current_framework(), "pier")
                 raise ValueError("trial failed")
-        self.assertEqual(module.selected(), "harbor")
 
-    def test_concurrent_trials_do_not_share_framework_selection(self) -> None:
-        module = self._load_fresh()
+        self.assertEqual(authority.current_framework(), "harbor")
 
-        async def trial(framework: str, ready: asyncio.Event, peer: asyncio.Event) -> str:
-            module.install(framework)
-            ready.set()
+    def test_each_async_task_owns_its_selection(self) -> None:
+        authority = fresh_authority()
+
+        async def select_after_peer(name: str, own: asyncio.Event, peer: asyncio.Event) -> str:
+            authority.activate(name)
+            own.set()
             await peer.wait()
-            return module.selected()
+            return authority.current_framework()
 
-        async def run() -> list[str]:
+        async def exercise() -> list[str]:
             harbor_ready = asyncio.Event()
             pier_ready = asyncio.Event()
             return await asyncio.gather(
-                trial("harbor", harbor_ready, pier_ready),
-                trial("pier", pier_ready, harbor_ready),
+                select_after_peer("harbor", harbor_ready, pier_ready),
+                select_after_peer("pier", pier_ready, harbor_ready),
             )
 
-        self.assertEqual(asyncio.run(run()), ["harbor", "pier"])
-
-    @staticmethod
-    def _load_fresh():
-        path = Path(__file__).with_name("eval_framework.py")
-        spec = importlib.util.spec_from_file_location("maka_eval_framework_under_test", path)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        self.assertEqual(asyncio.run(exercise()), ["harbor", "pier"])
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Framework selection inherited by imports in the current trial context."""
+"""Context-local framework authority shared by the trial runner and relay."""
 
 from __future__ import annotations
 
@@ -23,29 +23,40 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterator
 
-_FRAMEWORKS = frozenset({"harbor", "pier"})
-_framework: ContextVar[str | None] = ContextVar("eval_framework", default=None)
+_DISTRIBUTIONS = {"harbor": "harbor", "pier": "datacurve-pier"}
+_active: ContextVar[str | None] = ContextVar("maka_eval_active_framework", default=None)
 
 
-def install(framework: str) -> None:
-    if framework not in _FRAMEWORKS:
+def _validate(name: str) -> str:
+    if name not in _DISTRIBUTIONS:
         raise RuntimeError("framework must be harbor or pier")
-    _framework.set(framework)
+    return name
+
+
+def activate(name: str) -> None:
+    """Set the framework for imports executed in the current context."""
+
+    _active.set(_validate(name))
 
 
 @contextmanager
-def selected_framework(framework: str) -> Iterator[None]:
-    if framework not in _FRAMEWORKS:
-        raise RuntimeError("framework must be harbor or pier")
-    token = _framework.set(framework)
+def framework_scope(name: str) -> Iterator[str]:
+    """Temporarily select a framework and restore the caller's selection."""
+
+    selected_name = _validate(name)
+    token = _active.set(selected_name)
     try:
-        yield
+        yield selected_name
     finally:
-        _framework.reset(token)
+        _active.reset(token)
 
 
-def selected() -> str:
-    framework = _framework.get()
-    if framework not in _FRAMEWORKS:
+def current_framework() -> str:
+    name = _active.get()
+    if name is None:
         raise RuntimeError("Eval framework selection is not installed")
-    return framework
+    return _validate(name)
+
+
+def framework_distribution(name: str) -> str:
+    return _DISTRIBUTIONS[_validate(name)]
