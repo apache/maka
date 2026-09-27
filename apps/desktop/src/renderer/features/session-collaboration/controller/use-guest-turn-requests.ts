@@ -66,14 +66,15 @@ export function useGuestTurnRequests(
   const attempts = useRef(new Map<string, TurnRequestAttempt>());
 
   const apply = useCallback(
-    (target: string, result: { canRequestTurns: boolean; requests: readonly SessionTurnAccessRequest[] }) => {
-      setProjection({ sessionId: target, canRequestTurns: result.canRequestTurns, authorityAvailable: true, requests: result.requests });
-      const attempt = attempts.current.get(target);
+    (result: { canRequestTurns: boolean; requests: readonly SessionTurnAccessRequest[] }) => {
+      if (!sessionId) return undefined;
+      setProjection({ sessionId, canRequestTurns: result.canRequestTurns, authorityAvailable: true, requests: result.requests });
+      const attempt = attempts.current.get(sessionId);
       if (!attempt || !result.requests.some((request) => request.intent.turnId === attempt.turnId)) return undefined;
-      attempts.current.delete(target);
+      attempts.current.delete(sessionId);
       return attempt;
     },
-    [],
+    [sessionId],
   );
 
   const markUnavailable = useCallback((target: string) => {
@@ -95,8 +96,8 @@ export function useGuestTurnRequests(
         if (disposed) return;
         // A request whose response was lost can surface here later; its text
         // leaves the draft only if the user has not changed it since.
-        const settled = apply(sessionId, result);
-        if (settled) composerRef.current?.clearDraft(sessionId, settled.text);
+        const settled = apply(result);
+        if (settled) composerRef.current?.clearDraft(sessionId);
       } catch {
         if (!disposed) markUnavailable(sessionId);
       } finally {
@@ -134,7 +135,7 @@ export function useGuestTurnRequests(
         markUnavailable(sessionId);
         return false;
       }
-      if (apply(sessionId, current)) {
+      if (apply(current)) {
         toast.success(copy.turnRequestSent);
         return true;
       }
@@ -147,7 +148,7 @@ export function useGuestTurnRequests(
     if (!sessionId) return;
     try {
       if (withdraw && !(await services.withdrawTurnRequest(sessionId, requestId)).withdrawn) {
-        apply(sessionId, await services.getTurnRequests(sessionId));
+        apply(await services.getTurnRequests(sessionId));
         return;
       }
       if (!withdraw) await services.acknowledgeTurnRequest(sessionId, requestId);

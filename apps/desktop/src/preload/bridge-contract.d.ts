@@ -1284,6 +1284,12 @@ export interface MakaBridge {
         }
       | { ok: false; reason: 'outcome_unknown' }
     >;
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void>;
     queryCancelledMessages(
       sessionId: string,
       messageIds: readonly string[],

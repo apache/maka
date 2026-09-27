@@ -90,7 +90,7 @@ export function useSessionMessageQueue(options: {
     draftContextRestorer.current?.(targetSessionId, draft);
     const handle = composer.current;
     if (!handle || !draft.text.trim()) return;
-    handle.appendDraft(targetSessionId, draft.text);
+    handle.appendDraft?.(targetSessionId, draft.text);
   }, []);
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.

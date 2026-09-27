@@ -64,7 +64,7 @@ interface SendAttempt {
 }
 interface MessagePresentation {
   transientMessages: TransientUserMessageProjection[];
-  messageQueue: { entries: readonly MessageQueueEntryProjection[]; ts?: number };
+  messageQueue: { entries: readonly MessageQueueEntryProjection[]; ts?: number; queueRevision?: number };
 }
 export function useWorkHubController(
   onSubmit: (() => void) | undefined,
@@ -745,6 +745,8 @@ export function useWorkHubController(
     editQueuedEntry: queuedEntryDraft
       ? (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => retractQueuedEntryToDraft(entry, queuedEntryDraft)
       : undefined,
+    updateQueuedEntry: (entryId: string, expectedQueueRevision: number, text: string) =>
+      mutateQueue((target) => services.updateQueueEntry(target, entryId, expectedQueueRevision, text)),
     deleteQueuedEntry,
     promoteQueuedEntry: (entryId: string) => mutateQueue((target) => services.promoteQueueEntry(target, entryId)),
     reorderQueuedEntries: (entryIds: readonly string[], expectedQueueRevision: number) =>

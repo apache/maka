@@ -54,7 +54,11 @@ export function createDesktopConversationServices(
         return () => window.removeEventListener('storage', onStorage);
       },
     },
-    sessions: bridge.sessions,
+    sessions: {
+      ...bridge.sessions,
+      reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds, expectedQueueRevision),
+    },
     runtimeHosts: {
       subscribeChanges: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
     },

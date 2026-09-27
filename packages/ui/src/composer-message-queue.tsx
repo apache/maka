@@ -32,6 +32,10 @@ export interface ComposerMessageQueueHostProps {
   queuedMessages?: readonly MessageQueueEntryProjection[];
   queuedMessageRevision?: number;
   onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
+  /** Compatibility callback for surfaces that still restore a queued entry into the draft. */
+  onEditQueuedEntry?(
+    entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>,
+  ): void | Promise<void>;
   onUpdateQueuedEntry?(
     entryId: string,
     expectedQueueRevision: number,
@@ -58,7 +62,7 @@ export function projectComposerMessageQueue(
   if (pending.length === 0) return queued;
   return [...queued, ...pending.map((message): ComposerQueueEntry => ({
     entryId: message.id, messageId: message.id, content: { text: message.text },
-    placement: message.transientPlacement === 'steering' ? 'current_turn' : 'next_turn', state: 'local', localMessage: message,
+    placement: 'next_turn', state: 'local', localMessage: message,
   }))];
 }
 

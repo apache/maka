@@ -75,17 +75,17 @@ function QueueGroup({ controller, entries, placement, showHelp, ...props }: Queu
   return (
     <section data-queue-placement={placement}>
       <div className="maka-composer-queue-status">
-        <span>{placement === "current_turn" ? copy.steeringPending : copy.followupPending}</span>
+        <span>{placement === "current_turn" ? copy.queuedMessages : copy.queuedMessages}</span>
         {showHelp ? (
           <Tooltip
             alignment="end"
-            content={<span style={{ whiteSpace: "pre-line" }}><PlatformShortcutText {...copy.queueShortcuts} /></span>}
+            content={<span style={{ whiteSpace: "pre-line" }}><PlatformShortcutText apple="⌘ K" other="Ctrl K" /></span>}
           >
             <IconButton
               variant="ghost"
               size="sm"
               type="button"
-              label={copy.queueShortcutsLabel}
+              label={copy.queuedMessages}
               icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />}
             />
           </Tooltip>
@@ -233,8 +233,8 @@ function QueueEditActions(props: {
         size="sm"
         type="button"
         isDisabled={disabled || (props.controller.editing?.text.trim().length ?? 0) === 0}
-        label={props.copy.saveQueuedEntry}
-        tooltip={props.copy.saveQueuedEntry}
+        label={props.copy.quoteCommentSave}
+        tooltip={props.copy.quoteCommentSave}
         onClick={() => void props.controller.commitEdit()}
         icon={<Check size={ICON_SIZE.control} aria-hidden="true" />}
       />
@@ -243,8 +243,8 @@ function QueueEditActions(props: {
         size="sm"
         type="button"
         isDisabled={disabled}
-        label={props.copy.cancelQueuedEntryEdit}
-        tooltip={props.copy.cancelQueuedEntryEdit}
+        label={props.copy.quoteCommentCancel}
+        tooltip={props.copy.quoteCommentCancel}
         onClick={props.controller.cancelEdit}
         icon={<X size={ICON_SIZE.control} aria-hidden="true" />}
       />
