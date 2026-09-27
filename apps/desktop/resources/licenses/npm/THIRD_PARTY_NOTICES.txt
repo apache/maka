@@ -12868,9 +12868,10 @@ Apache License
 
 ================================================================================
 
-Package: opencli-mcp@0.0.18
+Package: opencli-mcp@0.0.22
 Declared license: Apache-2.0
 Selected license: Apache-2.0
+Repository: git+https://github.com/jackwener/opencli-mcp.git
 
 --- LICENSE ---
 Apache License
