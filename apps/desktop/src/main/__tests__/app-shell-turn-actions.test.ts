@@ -105,7 +105,7 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
 test('explains why the Host refused a Branch instead of a generic failure', async () => {
   const copy = getDesktopConversationCopy('en').actions;
   for (const reason of ['session_busy', 'operation_unavailable'] as const) {
-    const errors: Array<{ title: string; description?: string }> = [];
+    const infos: Array<{ title: string; description?: string }> = [];
     const restoreWindow = installWindow(async () => ({ ok: false, reason }));
     try {
       await createAppShellTurnActions({
@@ -116,16 +116,16 @@ test('explains why the Host refused a Branch instead of a generic failure', asyn
         openSessionInChat: () => assert.fail('A refused Branch must not open a Session'),
         refreshSessions: async () => [],
         toastApi: {
-          info() {},
+          info: (title, description) => infos.push({ title, description }),
           success() {},
-          error: (title, description) => errors.push({ title, description }),
+          error: () => assert.fail('A refused Branch is not an unexpected error'),
         },
       }).handleTurnFooterAction('branch-refused-turn', 'branch');
     } finally {
       restoreWindow();
     }
-    assert.deepEqual(errors, [
-      { title: copy.branchFailedTitle, description: copy.branchFailures[reason] },
+    assert.deepEqual(infos, [
+      { title: copy.branchUnavailableTitle, description: copy.copyFailures[reason] },
     ]);
   }
 });

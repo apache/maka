@@ -84,9 +84,16 @@ import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
 
-type BranchFromTurnResult =
+type SessionCopyResult =
   | { readonly ok: true; readonly session: ReturnType<typeof toDesktopHostSessionSummary> }
   | { readonly ok: false; readonly reason: 'session_busy' | 'operation_unavailable' };
+
+function sessionCopyRefusal(error: unknown): Extract<SessionCopyResult, { ok: false }> | undefined {
+  return error instanceof RuntimeHostOperationError &&
+    (error.code === 'session_busy' || error.code === 'operation_unavailable')
+    ? { ok: false, reason: error.code }
+    : undefined;
+}
 
 async function retryDispatchedCommand<T>(
   command: () => Promise<T>,
@@ -877,16 +884,12 @@ export function registerRuntimeHostSessionExecutionIpc(
             )
           : await createBranch();
       } catch (error) {
-        if (
-          error instanceof RuntimeHostOperationError &&
-          (error.code === 'session_busy' || error.code === 'operation_unavailable')
-        ) {
-          if (normalized.sideConversation) {
-            await deps.sessionCopyCleanup.rejectCreation(normalized.copyId);
-          }
-          return { ok: false, reason: error.code } satisfies BranchFromTurnResult;
+        const refusal = sessionCopyRefusal(error);
+        if (!refusal) throw error;
+        if (normalized.sideConversation) {
+          await deps.sessionCopyCleanup.rejectCreation(normalized.copyId);
         }
-        throw error;
+        return refusal;
       }
       if (normalized.name) {
         branch = await deps.client.updateSessionMetadata(branch.id, {
@@ -897,20 +900,30 @@ export function registerRuntimeHostSessionExecutionIpc(
       return {
         ok: true,
         session: toDesktopHostSessionSummary(branch),
-      } satisfies BranchFromTurnResult;
+      } satisfies SessionCopyResult;
     },
   );
   ipcMain.handle(
     "sessions:reviseBeforeTurn",
     async (_event, sessionId: string, input: unknown) => {
       const normalized = normalizeRuntimeHostReviseBeforeTurnInput(input);
-      const revision = await deps.client.copySession("revision", {
-        sourceSessionId: sessionId,
-        targetSessionId: normalized.copyId,
-        sourceTurnId: normalized.sourceTurnId,
-      });
+      let revision;
+      try {
+        revision = await deps.client.copySession("revision", {
+          sourceSessionId: sessionId,
+          targetSessionId: normalized.copyId,
+          sourceTurnId: normalized.sourceTurnId,
+        });
+      } catch (error) {
+        const refusal = sessionCopyRefusal(error);
+        if (!refusal) throw error;
+        return refusal;
+      }
       deps.emitSessionsChanged("created", revision.id);
-      return toDesktopHostSessionSummary(revision);
+      return {
+        ok: true,
+        session: toDesktopHostSessionSummary(revision),
+      } satisfies SessionCopyResult;
     },
   );
   return async (sessionId) => {

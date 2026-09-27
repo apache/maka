@@ -97,9 +97,7 @@ export function createAppShellTurnActions(deps: {
         copyAttempt.complete();
         if (!result.ok) {
           if (selectionIsCurrent()) {
-            toastApi.error(copy.branchFailedTitle, copy.branchFailures[result.reason], undefined, {
-              sessionId,
-            });
+            toastApi.info(copy.branchUnavailableTitle, copy.copyFailures[result.reason]);
           }
           return;
         }

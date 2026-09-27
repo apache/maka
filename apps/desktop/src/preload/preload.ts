@@ -54,7 +54,7 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   DesktopBranchFromTurnInput,
-  DesktopBranchFromTurnResult,
+  DesktopSessionCopyResult,
   DesktopSessionStopResult,
   DesktopReviseBeforeTurnInput,
   AppUpdateInstallRequest,
@@ -774,19 +774,15 @@ async function invokeSessionUpdate(
     : result;
 }
 
-async function invokeBranchFromTurn(
+async function invokeSessionCopy(
+  channel: 'sessions:branchFromTurn' | 'sessions:reviseBeforeTurn',
   sessionId: string,
-  input: DesktopBranchFromTurnInput,
-): Promise<DesktopBranchFromTurnResult> {
+  input: DesktopBranchFromTurnInput | DesktopReviseBeforeTurnInput,
+): Promise<DesktopSessionCopyResult> {
   const ref = await runtimeHostSessionRef(sessionId);
-  const result = await invokeWhenReady(
-    'sessions:branchFromTurn',
-    ref.scope,
-    ref.sessionId,
-    input,
-  ) as
+  const result = await invokeWhenReady(channel, ref.scope, ref.sessionId, input) as
     | { ok: true; session: DesktopSessionSummaryInput }
-    | Extract<DesktopBranchFromTurnResult, { ok: false }>;
+    | Extract<DesktopSessionCopyResult, { ok: false }>;
   return result.ok
     ? { ok: true, session: projectCreatedSessionSummary(ref.scope, result.session) }
     : result;
@@ -2413,14 +2409,10 @@ const makaBridge = {
     listTurnLandmarks(sessionId, turnId = null) {
       return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);
     },
-    branchFromTurn: invokeBranchFromTurn,
-    async reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary> {
-      const ref = await runtimeHostSessionRef(sessionId);
-      const summary = await invokeWhenReady(
-        'sessions:reviseBeforeTurn', ref.scope, ref.sessionId, input,
-      ) as DesktopSessionSummaryInput;
-      return projectCreatedSessionSummary(ref.scope, summary);
-    },
+    branchFromTurn: (sessionId: string, input: DesktopBranchFromTurnInput) =>
+      invokeSessionCopy('sessions:branchFromTurn', sessionId, input),
+    reviseBeforeTurn: (sessionId: string, input: DesktopReviseBeforeTurnInput) =>
+      invokeSessionCopy('sessions:reviseBeforeTurn', sessionId, input),
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
       return invokeSessionRuntimeHost('sessions:respondToSandboxBoundary', sessionId, response);
     },
