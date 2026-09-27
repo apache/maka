@@ -154,6 +154,8 @@ export interface RuntimeHostMakaSessionDriverInput {
   prospectivePermissionMode?: PermissionMode;
   orchestrationMode?: OrchestrationMode;
   newId?: () => string;
+  /** Prepare client-owned Session capabilities before the Host creates it. */
+  prepareSession?: (sessionId: string) => Promise<void>;
   now?: () => number;
   inspectCwdChanges?: InspectCwdChanges;
   executionLocation?: { readonly kind: 'client_path' } | { readonly kind: 'host' };
@@ -201,6 +203,7 @@ export function createRuntimeHostMakaSessionDriver(
 class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #connection: RuntimeHostSessionDriverConnection;
   readonly #newId: () => string;
+  readonly #prepareSession: ((sessionId: string) => Promise<void>) | undefined;
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
   readonly #executionLocation: NonNullable<RuntimeHostMakaSessionDriverInput['executionLocation']>;
@@ -260,6 +263,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   constructor(input: RuntimeHostMakaSessionDriverInput) {
     this.#connection = input.connection;
     this.#newId = input.newId ?? randomUUID;
+    this.#prepareSession = input.prepareSession;
     this.#now = input.now ?? Date.now;
     this.#inspectCwdChanges = input.inspectCwdChanges ?? inspectGitCwdChanges;
     this.#executionLocation = input.executionLocation ?? { kind: 'client_path' };
@@ -1308,6 +1312,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (!this.#llmConnectionId) {
       throw new Error('Runtime Host Session creation requires an exact Connection identity');
     }
+    await this.#prepareSession?.(sessionId);
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,

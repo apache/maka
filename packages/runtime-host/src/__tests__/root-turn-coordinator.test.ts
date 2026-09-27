@@ -4283,7 +4283,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
   }
 });
 
-test('Client Capability ambiguity fails before durable root admission', async () => {
+test('unrelated Client Capability publishers do not block a root Turn', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
@@ -4306,6 +4306,10 @@ test('Client Capability ambiguity fails before durable root admission', async ()
     {
       send: async () => {},
     },
+  );
+  const observer = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('observer'),
+    { send: async () => {} },
   );
 
   try {
@@ -4343,17 +4347,15 @@ test('Client Capability ambiguity fails before durable root admission', async ()
       {
         sessionId: fixture.sessionId,
         turnId,
-        content: { text: 'must not be admitted' },
+        content: { text: 'start without unrelated MCP tools' },
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
     );
-    assert.equal(started.ok, false);
-    if (!started.ok) assert.equal(started.error.code, 'operation_conflict');
-    assert.equal(
-      await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
-      undefined,
-    );
+    assert.equal(started.ok, true);
+    assert.equal(clientCapabilities.snapshotForSession(fixture.sessionId), undefined);
+    assert.ok(await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId));
   } finally {
+    observer.close();
     first.close();
     second.close();
     await clientCapabilities.close();

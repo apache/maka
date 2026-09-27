@@ -988,7 +988,7 @@ describe('Host Client Capability coordinator', () => {
     await assertLossClassification('after_admission', 'outcome_unknown');
   });
 
-  test('prefers the initiating provider and reports otherwise ambiguous selection', async () => {
+  test('keeps explicit clients isolated and reports Host-originated ambiguity', async () => {
     const coordinator = createCoordinator();
     const first = coordinator.attachConnection(clientCapabilityConnectionIdentity('connection-a'), {
       send: async () => {},
@@ -997,14 +997,19 @@ describe('Host Client Capability coordinator', () => {
       clientCapabilityConnectionIdentity('connection-b'),
       { send: async () => {} },
     );
+    const observer = coordinator.attachConnection(clientCapabilityConnectionIdentity('observer'), {
+      send: async () => {},
+    });
     await replace(coordinator, 'connection-a', 'registration-a', 'first');
     assert.deepEqual(await coordinator.bindSession('sole-session', 'observer'), { ok: true });
     const sole = coordinator.snapshotForSession('sole-session');
-    assert.deepEqual(sole?.registrationIds, ['registration-a']);
-    sole?.release();
+    assert.equal(sole, undefined);
     await replace(coordinator, 'connection-b', 'registration-b', 'first');
 
-    const ambiguous = await coordinator.bindSession('ambiguous-session', 'observer');
+    assert.deepEqual(await coordinator.bindSession('unrelated-session', 'observer'), { ok: true });
+    assert.equal(coordinator.snapshotForSession('unrelated-session'), undefined);
+
+    const ambiguous = await coordinator.bindSession('ambiguous-session', '');
     assert.equal(ambiguous.ok, false);
     if (!ambiguous.ok) assert.match(ambiguous.message, /Multiple Client Capability providers/);
 
@@ -1014,6 +1019,7 @@ describe('Host Client Capability coordinator', () => {
     const snapshot = coordinator.snapshotForSession('selected-session');
     assert.deepEqual(snapshot?.registrationIds, ['registration-b']);
     snapshot?.release();
+    observer.close();
     first.close();
     second.close();
     await coordinator.close();
@@ -1329,7 +1335,7 @@ describe('Host Client Capability coordinator', () => {
       'second_offer',
     );
 
-    assert.deepEqual(await coordinator.bindSession('session-a', 'observer'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
     const snapshot = coordinator.snapshotForSession('session-a');
     assert.ok(snapshot);
     assert.deepEqual([...snapshot.registrationIds].sort(), ['registration-a', 'registration-b']);
@@ -1669,7 +1675,7 @@ describe('Host Client Capability coordinator', () => {
     assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
 
     await replace(coordinator, 'connection-a', 'registration-b', 'inspect', '1');
-    assert.deepEqual(await coordinator.bindSession('session-a', 'observer'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
     const replacement = coordinator.snapshotForSession('session-a');
     assert.deepEqual(replacement?.registrationIds, ['registration-b']);
     replacement?.release();
@@ -1679,7 +1685,7 @@ describe('Host Client Capability coordinator', () => {
       connectionContext('connection-a'),
     );
     assert.equal(unregistered.ok, true);
-    assert.deepEqual(await coordinator.bindSession('session-a', 'observer'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
     assert.equal(coordinator.snapshotForSession('session-a'), undefined);
     connection.close();
     await coordinator.close();
@@ -1742,7 +1748,7 @@ describe('Host Client Capability coordinator', () => {
       'call',
     );
 
-    assert.deepEqual(await coordinator.bindSession('session-a', 'observer'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
     const ambiguous = coordinator.snapshotForSession('session-a');
     assert.ok(ambiguous);
     await assert.rejects(
@@ -1761,7 +1767,7 @@ describe('Host Client Capability coordinator', () => {
     frozen.release();
 
     first.close();
-    assert.deepEqual(await coordinator.bindSession('session-a', 'observer'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
     const sole = coordinator.snapshotForSession('session-a');
     assert.ok(sole);
     assert.deepEqual(await invoke(sole.tools[0]), textResult('second'));
@@ -1798,7 +1804,7 @@ describe('Host Client Capability coordinator', () => {
       'turn',
     );
 
-    assert.deepEqual(await coordinator.bindSession('session-a', 'observer'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
     assert.equal(coordinator.snapshotForSession('session-a'), undefined);
     assert.deepEqual(await coordinator.bindSession('session-a', 'connection-b'), { ok: true });
     const selected = coordinator.snapshotForSession('session-a');
@@ -1806,7 +1812,7 @@ describe('Host Client Capability coordinator', () => {
     selected?.release();
 
     second.close();
-    assert.deepEqual(await coordinator.bindSession('session-a', 'observer'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
     const rebound = coordinator.snapshotForSession('session-a');
     assert.deepEqual(rebound?.registrationIds, ['registration-a']);
     rebound?.release();

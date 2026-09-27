@@ -445,6 +445,12 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     mode: SessionBindingMode,
   ): SessionBindingSelection {
     const initiatingProvider = this.#connections.get(initiatingConnectionId)?.provider;
+    if (initiatingConnectionId && !initiatingProvider) {
+      return {
+        ok: false,
+        message: 'Initiating Client connection is no longer available',
+      };
+    }
     const initiatingScoped = initiatingProvider?.sessionRegistrations.get(sessionId);
     const directProvider =
       initiatingProvider &&
@@ -471,14 +477,11 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       };
     }
     const selectedInitiatingProvider = directProvider ?? associatedProviders[0];
-    // A remote Client must never inherit an unrelated provider merely because
-    // it is the only candidate. Local-owner and recovery flows retain their
-    // existing provider-independent fallback when no provider was selected.
+    // An explicit initiating Client may use only its own publication (or its
+    // authenticated companion). Provider-independent selection is reserved
+    // for Host-originated recovery, which has no initiating connection.
     const initiatingProviderId =
-      selectedInitiatingProvider?.providerId ??
-      (initiatingProvider?.principalKind === 'remote_owner'
-        ? initiatingProvider.providerId
-        : undefined);
+      selectedInitiatingProvider?.providerId ?? initiatingProvider?.providerId;
     const previousState = this.#sessions.get(sessionId);
     const serviceProviderId =
       previousState?.serviceProviderId ??
