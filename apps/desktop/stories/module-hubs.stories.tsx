@@ -1010,10 +1010,28 @@ async function waitForStoryText(canvasElement: HTMLElement, text: string): Promi
   throw new Error(`Story text did not render: ${text}`);
 }
 
+// The page's 添加 menu: its trigger is the one 添加 button that opens a menu.
+async function chooseFromAddMenu(canvasElement: HTMLElement, item: string): Promise<void> {
+  (await waitForStoryButton(
+    canvasElement,
+    (button) => button.textContent?.trim() === '添加' && button.hasAttribute('aria-haspopup') && !button.disabled,
+  )).click();
+  const body = canvasElement.ownerDocument.body;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const entry = Array.from(body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((candidate) => candidate.textContent?.includes(item));
+    if (entry) {
+      entry.click();
+      return;
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error(`添加 menu item did not render: ${item}`);
+}
+
 function expectModuleBodyAlignedWithHeader(canvasElement: HTMLElement): void {
   const heading = canvasElement.querySelector<HTMLElement>('.astryx-layout-header h1');
   const body = canvasElement.querySelector<HTMLElement>(
-    '.maka-module-page-rows, .maka-daily-review-report',
+    '.maka-module-page-section, .maka-module-page-rows, .maka-daily-review-report',
   );
   if (!heading || !body) throw new Error('Module page geometry did not render');
   const headingBounds = heading.getBoundingClientRect();
@@ -1071,29 +1089,20 @@ export const ExtensionsSkillsInstalled: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → 技能 → 更多技能操作 → 技能位置,
+// Real path: sidebar → 扩展 → 技能 → 添加 → 技能位置,
 // with installed copies in the project, compatibility and user directories.
 export const ExtensionsSkillsLocations: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
   play: async ({ canvasElement }) => {
-    const more = await waitForStoryButton(
-      canvasElement,
-      (button) => button.getAttribute('aria-label') === '更多技能操作',
-    );
-    more.click();
-    const body = canvasElement.ownerDocument.body;
-    const submenu = await waitForStorySelector<HTMLElement>(
-      body,
-      '[role="menuitem"][aria-haspopup="menu"]',
-    );
-    submenu.click();
-    await waitForStoryText(body, '/home/maka/.agents/skills');
+    await chooseFromAddMenu(canvasElement, '技能位置');
+    await waitForStoryText(canvasElement.ownerDocument.body, '/home/maka/.agents/skills');
   },
 };
 
-// Real path: sidebar → 扩展 → 技能, with bundled Skills available to install.
+// Real path: sidebar → 扩展 → 技能, with installed Skills above and bundled
+// Skills not yet installed under 发现.
 export const ExtensionsSkillsBundled: Story = {
-  render: () => <ExtensionsSkillsSurface bundledSkillCatalog={BUNDLED_SKILLS} />,
+  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} bundledSkillCatalog={BUNDLED_SKILLS} />,
 };
 
 // Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
@@ -1161,14 +1170,12 @@ export const ExtensionsMcpSetupRequired: Story = {
   decorators: [withEmptyMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    await waitForStoryText(canvasElement, '0 个连接');
     await waitForStoryText(canvasElement, '推荐');
-    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled);
     if (canvasElement.textContent?.includes('已添加')) {
       throw new Error('Empty MCP connections must not push recommendations below an empty section');
     }
-    if ([...canvasElement.querySelectorAll('button')].filter((button) => button.textContent?.trim() === '添加 MCP').length !== 1) {
-      throw new Error('Empty MCP page needs one add action');
+    if ([...canvasElement.querySelectorAll('button[aria-haspopup]')].filter((button) => button.textContent?.trim() === '添加').length !== 1) {
+      throw new Error('Empty MCP page needs one add menu');
     }
     if (canvasElement.querySelector('input[placeholder="搜索连接…"]')) {
       throw new Error('An empty connection list has nothing to search');
@@ -1189,7 +1196,7 @@ export const ExtensionsMcpLoading: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 推荐 → 飞书 +. One click writes the
+// Real path: sidebar → 扩展 → MCP → 推荐 → 飞书 添加. One click writes the
 // official endpoint; the new row opens straight into its login step.
 export const ExtensionsMcpRecommended: Story = {
   decorators: [withConfiguredMcpBridge],
@@ -1208,7 +1215,7 @@ export const ExtensionsMcpRecommended: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 推荐 → Chrome +. The same click sends the
+// Real path: sidebar → 扩展 → MCP → 推荐 → Chrome 添加. The same click sends the
 // user to install the extension; the detail keeps a way back until it connects.
 const chromeConnects: string[] = [];
 export const ExtensionsMcpChrome: Story = {
@@ -1239,20 +1246,19 @@ export const ExtensionsMcpChromeWaiting: Story = {
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, '等待 Chrome');
-    await waitForStoryText(canvasElement, '1 个需要处理');
     if (canvasElement.textContent?.includes('16 个工具')) {
       throw new Error('Chrome must not look ready before its extension connects');
     }
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP, before choosing optional settings.
+// Real path: sidebar → 扩展 → MCP → 添加 → 手动填写, before choosing optional settings.
 export const ExtensionsMcpAdd: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    await chooseFromAddMenu(canvasElement, '手动填写');
     const fields = await waitForStorySelector<HTMLElement>(canvasElement.ownerDocument.body, '.maka-mcp-primary-fields');
     const inputs = fields.querySelectorAll<HTMLInputElement>('input');
     if (inputs.length !== 2 || inputs[1]?.placeholder !== 'https://example.com/mcp') {
@@ -1279,39 +1285,39 @@ export const ExtensionsMcpAdd: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP → 本地命令.
+// Real path: sidebar → 扩展 → MCP → 添加 → 手动填写 → 本地命令.
 export const ExtensionsMcpAddLocal: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    await chooseFromAddMenu(canvasElement, '手动填写');
     const body = canvasElement.ownerDocument.body;
     (await waitForStoryButton(body, (button) => button.textContent?.trim() === '本地命令')).click();
     await waitForStoryText(body, '填写启动命令及参数');
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP → 保存连接 with nothing filled in.
+// Real path: sidebar → 扩展 → MCP → 添加 → 手动填写 → 保存连接 with nothing filled in.
 export const ExtensionsMcpAddValidation: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    await chooseFromAddMenu(canvasElement, '手动填写');
     const body = canvasElement.ownerDocument.body;
     (await waitForStoryButton(body, (button) => button.textContent?.trim() === '保存连接')).click();
     await waitForStoryText(body, '此字段为必填项。');
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP → 高级设置 → OAuth 设置.
+// Real path: sidebar → 扩展 → MCP → 添加 → 手动填写 → 高级设置 → OAuth 设置.
 export const ExtensionsMcpAddAdvanced: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    await chooseFromAddMenu(canvasElement, '手动填写');
     const body = canvasElement.ownerDocument.body;
     (await waitForStoryButton(body, (button) => button.textContent?.trim() === '高级设置')).click();
     (await waitForStoryButton(body, (button) => button.textContent?.trim() === 'OAuth 设置')).click();
@@ -1319,16 +1325,15 @@ export const ExtensionsMcpAddAdvanced: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP → 粘贴 JSON, before pasting a configuration.
+// Real path: sidebar → 扩展 → MCP → 添加 → 粘贴 JSON, before pasting a configuration.
 export const ExtensionsMcpJsonImport: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
     await waitForStoryText(canvasElement, '推荐');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    await chooseFromAddMenu(canvasElement, '粘贴 JSON');
     const body = canvasElement.ownerDocument.body;
-    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '粘贴 JSON')).click();
     const input = await waitForStorySelector<HTMLTextAreaElement>(body, '.maka-mcp-json-field textarea');
     if (input.value !== '') throw new Error('The JSON example must not be submitted as user input');
     const submit = await waitForStoryButton(body, (button) => button.textContent?.trim() === '导入配置');
@@ -1336,16 +1341,15 @@ export const ExtensionsMcpJsonImport: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP → 粘贴 JSON → 导入配置 with text
+// Real path: sidebar → 扩展 → MCP → 添加 → 粘贴 JSON → 导入配置 with text
 // that is not JSON.
 export const ExtensionsMcpJsonImportInvalid: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    await chooseFromAddMenu(canvasElement, '粘贴 JSON');
     const body = canvasElement.ownerDocument.body;
-    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '粘贴 JSON')).click();
     setStoryFieldValue(await waitForStorySelector<HTMLTextAreaElement>(body, '.maka-mcp-json-field textarea'), '{ "mcpServers": ');
     (await waitForStoryButton(body, (button) => button.textContent?.trim() === '导入配置' && !button.disabled)).click();
     await waitForStoryText(body, 'MCP 配置必须是有效的 JSON');
@@ -1359,7 +1363,7 @@ export const ExtensionsMcpConfigured: Story = {
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    await waitForStoryText(canvasElement, '1 个需要处理');
+    await waitForStoryText(canvasElement, '需要登录');
     expectModuleBodyAlignedWithHeader(canvasElement);
     if (canvasElement.querySelector('input[placeholder="搜索连接…"]')) {
       throw new Error('A list that fits on screen has no search field');
@@ -1420,6 +1424,10 @@ export const ExtensionsMcpEditor: Story = {
     row.click();
     (await waitForStoryButton(canvasElement.ownerDocument.body, (button) => button.textContent?.trim() === '编辑')).click();
     await waitForStoryText(canvasElement.ownerDocument.body, '编辑 slack');
+    // The detail dialog may still be animating closed when the editor mounts.
+    for (let attempt = 0; attempt < 50 && canvasElement.ownerDocument.querySelectorAll('dialog[open]').length !== 1; attempt += 1) {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+    }
     if (canvasElement.ownerDocument.querySelectorAll('dialog[open]').length !== 1) {
       throw new Error('The editor must replace the detail dialog, not stack on it');
     }
@@ -1496,7 +1504,8 @@ export const ExtensionsMcpLoginPending: Story = {
 };
 
 // Real path: sidebar → 扩展 → MCP, after an enabled remote server fails to
-// connect: the row says so, the detail carries the error and its output.
+// connect: the row says so, the detail leads with the error and keeps its
+// output one expand away.
 export const ExtensionsMcpConnectionFailed: Story = {
   decorators: [withFailedMcpBridge],
   render: () => <ExtensionsMcpSurface />,
@@ -1509,6 +1518,7 @@ export const ExtensionsMcpConnectionFailed: Story = {
     row.click();
     const body = canvasElement.ownerDocument.body;
     await waitForStoryText(body, '连接超时，请检查服务器地址或网络代理。');
+    (await waitForStorySelector<HTMLButtonElement>(body, 'dialog[open] button[aria-expanded="false"]')).click();
     await waitForStoryText(body, 'request timed out after 30s');
   },
 };

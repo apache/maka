@@ -20,9 +20,11 @@
 // packages/ui/src/primitives/module-page.tsx
 //
 // The ONE shell every module page (定时任务 / 每日回顾 / …) renders into: a
-// centred column of rows, and one dialog for the selected row's detail. A side
-// panel inside a centred column squeezes the rows every time it opens, so the
-// detail never shares the column.
+// centred column of rows, and one dialog for the selected row's detail. A
+// docked side panel squeezes the centred column, so the detail never shares
+// it. Astryx's overlay Drawer (lab only for now, API under review in
+// facebook/astryx#3675) is the better home for a row's detail: switch the
+// dialog to it once it ships in @astryxdesign/core.
 
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { Dialog, DialogHeader, HStack, Heading, StackItem, Text, VStack } from '@astryxdesign/core';
@@ -35,6 +37,9 @@ import { cn } from '../utils.js';
  * pages already use, so every main page shares one measure.
  */
 const MODULE_PAGE_WIDTH = 900;
+
+/** Label column of a detail's facts; fits 固定到技能上下文 on one line. */
+export const DETAIL_LABEL_WIDTH = 120;
 
 export interface ModulePageProps {
   /** Page title. Also the `main` landmark's accessible name. */
@@ -68,6 +73,15 @@ export interface ModulePageDetail {
   startContent?: ReactNode;
   content: ReactNode;
   footer?: ReactNode;
+}
+
+export function ModulePageSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <VStack gap={2} className="maka-module-page-section">
+      <Heading level={2} className="maka-module-section-heading">{title}</Heading>
+      {children}
+    </VStack>
+  );
 }
 
 export function ModulePage({

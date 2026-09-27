@@ -34,15 +34,14 @@ export type McpCopy = {
   remove: { title(id: string): string; description: string; confirm: string; cancel: string };
   page: {
     actionsAria: string; refreshing: string; refresh: string; add: string;
-    metaConnections(count: number): string; metaAttention(count: number): string;
     searchMatches(count: number): string;
-    toolbarAria: string; connections: string; searchPlaceholder: string; searchAria: string;
+    connections: string; searchPlaceholder: string; searchAria: string;
     clearSearch: string; loading: string;
     noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
     recommended: string; addSuggestion(name: string): string;
     suggestions: Record<'chrome' | 'notion' | 'linear' | 'feishu' | 'mcp-docs', { name: string; description: string }>;
   };
-  detail: { enabled: string; address: string; stderr: string; tools: string; chromeDisconnected: string; connectChrome: string };
+  detail: { enabled: string; authorized: string; address: string; tools: string; chromeDisconnected: string; connectChrome: string };
   row: {
     needsAuth: string; login: string; loginPending: string; authorizing: string; cancelLogin: string; logout: string;
     test: string; edit: string;
@@ -82,10 +81,9 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `删除 MCP「${id}」？`, description: '它提供的工具会从下一轮对话中移除；删除后无法自动恢复此连接。', confirm: '删除', cancel: '取消' },
     page: {
-      actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
-      metaConnections: (count) => `${count} 个连接`, metaAttention: (count) => `${count} 个需要处理`,
+      actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加',
       searchMatches: (count) => `${count} 个匹配`,
-      toolbarAria: 'MCP 连接操作', connections: '已添加',
+      connections: '已添加',
       searchPlaceholder: '搜索连接…', searchAria: '搜索 MCP 连接',
       clearSearch: '清空搜索', loading: '正在读取 MCP 连接…',
       noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
@@ -99,7 +97,7 @@ const MCP_COPY = {
       },
     },
     detail: {
-      enabled: '启用', address: '地址', stderr: '错误输出', tools: '工具',
+      enabled: '启用', authorized: '已授权', address: '地址', tools: '工具',
       chromeDisconnected: '还没连上 Chrome。在 Chrome 中添加扩展后，这里会自动更新。', connectChrome: '连接 Chrome',
     },
     row: {
@@ -144,10 +142,9 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `刪除 MCP「${id}」？`, description: '它提供的工具會從下一輪對話中移除；刪除後無法自動恢復此連線。', confirm: '刪除', cancel: '取消' },
     page: {
-      actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增 MCP',
-      metaConnections: (count) => `${count} 個連線`, metaAttention: (count) => `${count} 個需要處理`,
+      actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增',
       searchMatches: (count) => `${count} 個符合`,
-      toolbarAria: 'MCP 連線操作', connections: '已新增',
+      connections: '已新增',
       searchPlaceholder: '搜尋連線…', searchAria: '搜尋 MCP 連線',
       clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…',
       noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
@@ -161,7 +158,7 @@ const MCP_COPY = {
       },
     },
     detail: {
-      enabled: '啟用', address: '位址', stderr: '錯誤輸出', tools: '工具',
+      enabled: '啟用', authorized: '已授權', address: '位址', tools: '工具',
       chromeDisconnected: '尚未連上 Chrome。在 Chrome 中新增擴充功能後，這裡會自動更新。', connectChrome: '連接 Chrome',
     },
     row: {
@@ -206,10 +203,9 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools disappear from the next conversation turn. This connection cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
     page: {
-      actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
-      metaConnections: (count) => `${count} connections`, metaAttention: (count) => `${count} need attention`,
+      actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add',
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
-      toolbarAria: 'MCP connection controls', connections: 'Added',
+      connections: 'Added',
       searchPlaceholder: 'Search connections…', searchAria: 'Search MCP connections',
       clearSearch: 'Clear search', loading: 'Loading MCP connections…',
       noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
@@ -223,7 +219,7 @@ const MCP_COPY = {
       },
     },
     detail: {
-      enabled: 'Enabled', address: 'Address', stderr: 'Error output', tools: 'Tools',
+      enabled: 'Enabled', authorized: 'Signed in', address: 'Address', tools: 'Tools',
       chromeDisconnected: 'Chrome is not connected yet. Add the extension in Chrome and this updates on its own.', connectChrome: 'Connect Chrome',
     },
     row: {
