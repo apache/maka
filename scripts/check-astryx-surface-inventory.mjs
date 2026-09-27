@@ -19,15 +19,20 @@
  */
 
 /** Verify that both committed inventory artifacts equal a fresh render. */
-import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   assertNoAstryxBlockers,
   renderAstryxSurfaceInventory,
 } from './generate-astryx-surface-inventory.mjs';
+import {
+  formatInventoryFailure,
+  inventoryDrift,
+  readCommittedInventory,
+} from './astryx-surface-inventory-contract.mjs';
 
 const root = join(fileURLToPath(new URL('..', import.meta.url)));
+
 // One pre-existing reasoning disclosure owns button semantics on a div. Keep
 // its full diagnostic as the baseline: another control, even in the same file,
 // changes the occurrence count and fails admission.
@@ -38,53 +43,10 @@ const legacyBlockerBaseline = new Map([
   ],
 ]);
 
-export function inventoryDrift(rendered, committed) {
-  const pathMessages = comparePathArtifact(rendered, committed.paths);
-  const markdownMessages =
-    committed.markdown === rendered.markdown
-      ? []
-      : ['docs/astryx-surface-file-inventory.md does not match generator output'];
-  return [...pathMessages, ...markdownMessages];
-}
-
-function nonEmptyLines(text) {
-  return text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function describePaths(label, paths) {
-  if (paths.length === 0) return [];
-  return [`${label} (${paths.length}):\n  ${paths.slice(0, 20).join('\n  ')}`];
-}
-
-function comparePathArtifact(rendered, committedPaths) {
-  if (committedPaths === rendered.paths) return [];
-  const expected = new Set(rendered.files);
-  const actual = new Set(nonEmptyLines(committedPaths));
-  const missing = rendered.files.filter((file) => !actual.has(file));
-  const extra = [...actual].filter((file) => !expected.has(file));
-  return [
-    '.paths does not match generator output',
-    ...describePaths('on disk but not in .paths', missing),
-    ...describePaths('in .paths but not on disk', extra),
-  ];
-}
-
 export function runInventoryCheck(repoRoot = root) {
-  const currentPathsFile = join(repoRoot, 'docs/astryx-surface-file-inventory.paths');
-  const currentMarkdownFile = join(repoRoot, 'docs/astryx-surface-file-inventory.md');
-  if (!existsSync(currentPathsFile) || !existsSync(currentMarkdownFile)) {
-    throw new Error('missing inventory artifacts — run: npm run astryx:surface-inventory:write');
-  }
-
   const rendered = renderAstryxSurfaceInventory(repoRoot);
   assertNoAstryxBlockers(rendered, legacyBlockerBaseline);
-  const details = inventoryDrift(rendered, {
-    markdown: readFileSync(currentMarkdownFile, 'utf8'),
-    paths: readFileSync(currentPathsFile, 'utf8'),
-  });
+  const details = inventoryDrift(rendered, readCommittedInventory(repoRoot));
   return { details, rendered };
 }
 
@@ -95,9 +57,7 @@ function reportInventoryCheck(result, output = console) {
     );
     return 0;
   }
-  output.error(
-    `astryx surface inventory is stale; run: npm run astryx:surface-inventory:write\n${result.details.map((detail) => `- ${detail}`).join('\n')}`,
-  );
+  output.error(formatInventoryFailure(result.details));
   return 1;
 }
 

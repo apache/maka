@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { inventoryDrift } from './check-astryx-surface-inventory.mjs';
+import {
+  comparePathArtifact,
+  inventoryDrift,
+} from './astryx-surface-inventory-contract.mjs';
 
 const rendered = {
   files: ['packages/ui/src/first.tsx', 'packages/ui/src/second.tsx'],
@@ -47,6 +50,17 @@ test('diagnoses missing and extra paths independently of Markdown drift', () => 
       paths: 'packages/ui/src/first.tsx\npackages/ui/src/old.tsx\n',
       markdown: rendered.markdown,
     }),
+    [
+      '.paths does not match generator output',
+      'on disk but not in .paths (1):\n  packages/ui/src/second.tsx',
+      'in .paths but not on disk (1):\n  packages/ui/src/old.tsx',
+    ],
+  );
+});
+
+test('reports path-only drift without parsing Markdown', () => {
+  assert.deepEqual(
+    comparePathArtifact(rendered, 'packages/ui/src/first.tsx\npackages/ui/src/old.tsx\n'),
     [
       '.paths does not match generator output',
       'on disk but not in .paths (1):\n  packages/ui/src/second.tsx',
