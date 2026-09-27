@@ -546,6 +546,10 @@ export function useComposerAttachments(options: {
     updateAttachments(() => ({}));
   }
 
+  /** Clears one draft key's pending attachments. The revision lifecycle uses
+   * this to clean up the source message's refs an edit staged when that edit
+   * is cancelled, under both the source and the branch child keys (#5274
+   * review). */
   return {
     pendingAttachments,
     pendingDirectories,

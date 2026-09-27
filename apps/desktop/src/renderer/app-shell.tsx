@@ -319,7 +319,6 @@ function AppShellContent({
     retiredSessionIds,
     messages,
     transientMessages,
-    setMessages,
     commitTranscript,
     addTransientMessage,
     updateTransientMessage,
@@ -1348,6 +1347,13 @@ function AppShellContent({
     composerRef,
     messages,
     hasPendingAttachments: () => hasPendingContext,
+    stagedContext: () => ({
+      quotes: pendingQuotes,
+      attachments: submittableAttachments ?? [],
+      restoreQuotes,
+      restoreAttachments,
+      clearQuotes,
+    }),
     openSessionInChat,
     refreshSessions,
     commitRevisionDraft,
@@ -1436,26 +1442,14 @@ function AppShellContent({
       if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
       return queued;
     }
-    if (
-      revisionSend &&
-      revision &&
-      text.trim() === revision.originalText.trim() &&
-      !hasPendingContext
-    ) {
-      const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
-      return false;
-    }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (hasPendingContext) {
-        toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
-        return false;
-      }
       if (slashCommand) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
         return false;
       }
+      // The unchanged / mixed-context refusals live inside the revision
+      // lifecycle (prepareRevisionSend), which toasts and stops the send.
       if (!(await prepareRevisionSend(text))) return false;
     }
     if (slashCommand?.kind === 'compact') {
@@ -1603,10 +1597,14 @@ function AppShellContent({
       }
       return ok;
     }
-    const pending = submittableAttachments;
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
+    const pending = submittableAttachments;
+    // The re-key lands the plate's current quotes on the branch child before
+    // this send, so the live read carries exactly what the user staged —
+    // including removals and re-annotations made during the edit (#5274
+    // review).
     const quotes = quotesForSend();
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
@@ -1620,7 +1618,9 @@ function AppShellContent({
     });
     if (ok !== false) {
       clearSubmittedContext(pending);
-      if (quotes) clearQuotes();
+      // A revision's quotes now live under the branch child's bucket; clear
+      // that owner explicitly rather than the stale closure's default key.
+      if (quotes) clearQuotes(expectedRevisionDraft?.draftSessionId);
       settleNewTaskImageNoticeOwner(sessionId);
       if (sessionId) delete retractedWorkspaceReferencesRef.current[sessionId];
     }
