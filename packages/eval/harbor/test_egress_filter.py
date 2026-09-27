@@ -175,6 +175,35 @@ class EgressFilterTest(unittest.TestCase):
                 MODULE.http_connect(allowed)
                 self.assertIsNone(allowed.response, host)
 
+    def test_connect_policy_uses_the_tunnel_target_not_a_spoofed_host_header(self) -> None:
+        class Response:
+            @staticmethod
+            def make(status, body, headers):
+                return {"status": status, "body": body, "headers": headers}
+
+        with tempfile.TemporaryDirectory() as directory:
+            MODULE.http = SimpleNamespace(Response=Response)
+            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
+            flow = SimpleNamespace(
+                request=SimpleNamespace(
+                    host="tbench.ai", pretty_host="example.com", port=443
+                ),
+                response=None,
+            )
+
+            MODULE.http_connect(flow)
+
+            self.assertEqual(flow.response["status"], 451)
+            self.assertEqual(
+                json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])["host"],
+                "tbench.ai",
+            )
+
+            flow.request.host = ""
+            flow.response = None
+            MODULE.http_connect(flow)
+            self.assertEqual(flow.response["status"], 503)
+
     def test_tcp_start_kills_raw_tunnels_and_records_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"

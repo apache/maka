@@ -244,7 +244,7 @@ def apply_http_policy(flow: object, raw_url: str) -> None:
 
 def connect_target_url(flow: object) -> str:
     request = flow.request
-    host = (getattr(request, "pretty_host", None) or getattr(request, "host", "") or "").strip()
+    host = (getattr(request, "host", "") or "").strip()
     if not host:
         raise ValueError("empty CONNECT host")
     if ":" in host and not host.startswith("["):
