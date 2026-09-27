@@ -131,7 +131,7 @@ test('Side Conversation rejects a retained child without a terminal result snaps
   assert.deepEqual(outcome, {
     ok: false,
     code: 'operation_unavailable',
-    message: 'Side Conversation requires a terminal result for every retained linked child',
+    message: 'Conversation copy requires a terminal result for every retained linked child',
   });
 });
 
@@ -251,10 +251,6 @@ test('Agent Graph revision references reject invalid ownership boundaries', asyn
   });
   assert.equal(wrongGraph.ok, false);
   if (!wrongGraph.ok) assert.equal(wrongGraph.code, 'operation_unavailable');
-
-  const branch = await prepare({ kind: 'branch' });
-  assert.equal(branch.ok, false);
-  if (!branch.ok) assert.equal(branch.code, 'operation_unavailable');
 });
 
 test('Agent Graph revision references verify resumed Run lineage', async () => {

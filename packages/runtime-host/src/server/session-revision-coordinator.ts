@@ -564,10 +564,10 @@ export class HostSessionRevisionCoordinator {
         ...(referencedSessionFileIds.size > 0
           ? { includeArtifactIds: [...referencedSessionFileIds] }
           : {}),
-        ...(kind === 'side_conversation' && archivedSnapshotResults.size > 0
+        ...(kind !== 'revision' && archivedSnapshotResults.size > 0
           ? { excludeArtifactIds: [...archivedSnapshotResults.keys()] }
           : {}),
-        ...(kind === 'side_conversation' && linkedReferences.references.size > 0
+        ...(kind !== 'revision' && linkedReferences.references.size > 0
           ? {
               linkedArtifacts: [...linkedReferences.references].map(([sessionId, references]) => ({
                 sessionId,
@@ -586,7 +586,7 @@ export class HostSessionRevisionCoordinator {
           contextCopy.copied.map(({ sourceRefId, targetRefId }) => [sourceRefId, targetRefId]),
         ),
         linkedChildren:
-          kind === 'side_conversation'
+          kind !== 'revision'
             ? {
                 mode: 'snapshot' as const,
                 archivedResults: archivedSnapshotResults,

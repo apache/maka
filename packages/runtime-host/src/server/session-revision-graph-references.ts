@@ -63,8 +63,9 @@ interface MutableExternalChildReferences {
  *
  * A revision remains in the source revision family, so terminal children stay
  * owned by their exact physical parent and are retained by the same lifecycle
- * unit. An ordinary branch has an independent lifecycle and therefore cannot
- * share those child authorities.
+ * unit. Branches and side conversations have an independent lifecycle, so they
+ * never share those child authorities: they keep a snapshot of each terminal
+ * child result instead.
  */
 export async function prepareAgentGraphRevisionReferences(
   input: {
@@ -91,21 +92,10 @@ export async function prepareAgentGraphRevisionReferences(
       retainedTurnIds.has(header.subagentParent.spawnedBy.parentTurnId),
   );
 
-  if (input.kind === 'branch' && (requests.length > 0 || directChildren.length > 0)) {
-    return failure(
-      'operation_unavailable',
-      'Ordinary branches cannot share linked child Session ownership with their source',
-    );
-  }
-  if (input.kind === 'branch') {
-    return { ok: true, references: new Map() };
-  }
+  const snapshot = input.kind !== 'revision';
   const requestedChildIds = new Set(requests.map((request) => request.childSessionId));
   const unrepresentedChildren = directChildren.filter((child) => !requestedChildIds.has(child.id));
-  if (
-    input.kind === 'side_conversation' &&
-    unrepresentedChildren.some((child) => dependencies.isSessionActive(child.id))
-  ) {
+  if (snapshot && unrepresentedChildren.some((child) => dependencies.isSessionActive(child.id))) {
     return failure('session_busy', 'A retained linked child is still active');
   }
   const headersById = new Map(input.sessionHeaders.map((header) => [header.id, header]));
@@ -118,7 +108,7 @@ export async function prepareAgentGraphRevisionReferences(
     referencedGraphs.set(parent.parentSessionId, graphIds);
   };
   for (const request of requests) retainGraph(headersById.get(request.childSessionId));
-  if (input.kind === 'side_conversation') {
+  if (snapshot) {
     for (const child of directChildren) retainGraph(child);
   }
   const retainedSessionGraphFailure = async () => {
@@ -153,7 +143,7 @@ export async function prepareAgentGraphRevisionReferences(
     }
     return undefined;
   };
-  if (input.kind === 'side_conversation') {
+  if (snapshot) {
     const graphFailure = await retainedExactGraphFailure();
     if (graphFailure) return graphFailure;
   }
@@ -166,8 +156,8 @@ export async function prepareAgentGraphRevisionReferences(
   ) {
     return failure(
       'operation_unavailable',
-      input.kind === 'side_conversation'
-        ? 'Side Conversation requires a terminal result for every retained linked child'
+      snapshot
+        ? 'Conversation copy requires a terminal result for every retained linked child'
         : 'Session revision requires a terminal result for every retained Agent Graph child',
     );
   }
