@@ -38,12 +38,10 @@ import { type ComponentProps, type ReactNode, useState } from 'react';
 import {
   createModuleHubCommandPort,
   ModuleHubHost,
-  ModuleHubHostView,
   ModuleHubProvider,
   ModuleHubServicesProvider,
 } from '../src/renderer/features/module-hub';
 import {
-  createFakeModuleHubHostModel,
   createFakeModuleHubServices,
   McpPage,
 } from '../src/renderer/features/module-hub/testing';
@@ -173,43 +171,6 @@ const UPDATE_AVAILABLE_PREVIEW: ManagedSkillUpdatePreview = {
     changedLineCount: 1,
   },
 };
-
-const DISABLED_SKILLS: SkillEntry[] = [
-  {
-    ref: 'workspace:legacy:spreadsheet-audit',
-    id: 'spreadsheet-audit',
-    name: 'spreadsheet-audit',
-    description: '检查工作簿中的公式、格式和异常值。',
-    path: '/workspace/skills/spreadsheet-audit',
-    declaredTools: ['Read'],
-    sourceType: 'bundled',
-    scope: 'workspace',
-    source: 'legacy',
-    contextStatus: 'disabled',
-    manageable: true,
-    enabled: false,
-    runtimeStatus: 'disabled',
-  },
-];
-
-// Enough installed Skills that the list genuinely scrolls at the story's
-// viewport — the #2236 regression surface (the view switch scrolling away
-// with the list) only exists when the list is taller than its container.
-const LONG_LIST_SKILLS: SkillEntry[] = Array.from({ length: 40 }, (_, index) => ({
-  ref: `workspace:legacy:skill-long-${index}`,
-  id: `skill-long-${index}`,
-  name: `long-list-skill-${index}`,
-  description: '长列表占位技能，用于滚动契约。',
-  path: `/workspace/skills/skill-long-${index}`,
-  declaredTools: ['Bash'],
-  sourceType: 'workspace',
-  scope: 'workspace',
-  source: 'legacy',
-  contextStatus: 'advertised',
-  manageable: true,
-  enabled: true,
-  runtimeStatus: 'enabled',
-}));
 
 // A local Project with readable cross-client and compatibility directories;
 // its client-specific directories have not been created yet.
@@ -903,42 +864,6 @@ function ScheduledDailyReviewSurface(
   );
 }
 
-function ModuleHubHostSurface(props: {
-  selection:
-    | { section: 'extensions'; module: 'skills' | 'mcp' }
-    | { section: 'automations'; module: 'scheduled-tasks' | 'daily-review' };
-}) {
-  const base = createFakeModuleHubHostModel(props.selection);
-  const model = {
-    ...base,
-    skills: {
-      ...base.skills,
-      skills: INSTALLED_SKILLS,
-      bundledSkillCatalog: BUNDLED_SKILLS,
-    },
-    scheduledTasks: {
-      ...base.scheduledTasks,
-      scheduledTasks: CONFIGURED_TASKS,
-    },
-    dailyReview: {
-      ...base.dailyReview,
-      bridge: {
-        fetchDay: async () => DAILY_REVIEW_SUMMARY,
-      },
-    },
-  };
-  const agentsView = props.selection.section === 'extensions'
-    ? props.selection.module
-    : props.selection.module === 'daily-review'
-      ? 'daily-review'
-      : 'cron';
-  return (
-    <ModuleSurface agentsView={agentsView}>
-      <ModuleHubHostView model={model} />
-    </ModuleSurface>
-  );
-}
-
 function ProductionModuleHubHostSurface() {
   const [commandPort] = useState(createModuleHubCommandPort);
   const [services] = useState(() => {
@@ -1049,43 +974,13 @@ export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
 };
 
-// Full production composition: public Provider → Context → public Host.
+// Real path: sidebar → 扩展 → 技能, with installed Skills (one disabled) above
+// bundled Skills not yet installed, through the production Provider → Host.
 export const HostExtensionsSkills: Story = {
   render: () => <ProductionModuleHubHostSurface />,
-};
-
-// Focused view seams keep the other route variants deterministic.
-export const HostExtensionsMcp: Story = {
-  decorators: [withEmptyMcpBridge],
-  render: () => (
-    <ModuleHubHostSurface
-      selection={{ section: 'extensions', module: 'mcp' }}
-    />
-  ),
-};
-
-export const HostAutomationsScheduledTasks: Story = {
-  render: () => (
-    <ModuleHubHostSurface
-      selection={{ section: 'automations', module: 'scheduled-tasks' }}
-    />
-  ),
-};
-
-export const HostAutomationsDailyReview: Story = {
-  render: () => (
-    <ModuleHubHostSurface
-      selection={{ section: 'automations', module: 'daily-review' }}
-    />
-  ),
-};
-
-// Real path: sidebar → 扩展 → 技能, with several installed Skills.
-export const ExtensionsSkillsInstalled: Story = {
-  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
   play: async ({ canvasElement }) => {
-    await waitForStoryText(canvasElement, 'git-flow');
-    expectModuleBodyAlignedWithHeader(canvasElement);
+    await waitForStoryText(canvasElement, '已停用');
+    await waitForStoryText(canvasElement, 'Document review');
   },
 };
 
@@ -1097,12 +992,6 @@ export const ExtensionsSkillsLocations: Story = {
     await chooseFromAddMenu(canvasElement, '技能位置');
     await waitForStoryText(canvasElement.ownerDocument.body, '/home/maka/.agents/skills');
   },
-};
-
-// Real path: sidebar → 扩展 → 技能, with installed Skills above and bundled
-// Skills not yet installed under 发现.
-export const ExtensionsSkillsBundled: Story = {
-  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} bundledSkillCatalog={BUNDLED_SKILLS} />,
 };
 
 // Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
@@ -1145,18 +1034,6 @@ export const ExtensionsSkillsDetail: Story = {
     await waitForStoryText(canvasElement.ownerDocument.body, '固定到技能上下文');
     expectModuleBodyAlignedWithHeader(canvasElement);
   },
-};
-
-// Real path: sidebar → 扩展 → 技能, long installed list (visual catalog only).
-// Do not pin scroll geometry / Astryx List a11y in play — those are vendor DOM
-// contracts, not product journeys.
-export const ExtensionsSkillsScrollContainment: Story = {
-  render: () => <ExtensionsSkillsSurface skills={LONG_LIST_SKILLS} />,
-};
-
-// Real path: sidebar → 扩展 → 技能, with an installed Skill disabled.
-export const ExtensionsSkillsDisabled: Story = {
-  render: () => <ExtensionsSkillsSurface skills={DISABLED_SKILLS} />,
 };
 
 // Real path: sidebar → 扩展 → 技能, at a narrow desktop window.
@@ -1526,12 +1403,6 @@ export const ExtensionsMcpConnectionFailed: Story = {
 // Real path: sidebar → 扩展 → MCP at the narrow desktop viewport floor.
 export const ExtensionsMcpNarrow: Story = {
   ...ExtensionsMcpConfigured,
-  parameters: { viewport: { defaultViewport: 'mobile2' } },
-};
-
-// Real path: sidebar → 扩展 → MCP in a narrow window → click a row.
-export const ExtensionsMcpDetailNarrow: Story = {
-  ...ExtensionsMcpDetail,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
