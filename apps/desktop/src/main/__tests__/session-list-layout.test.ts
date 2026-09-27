@@ -19,11 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
-import {
-  createSessionRailLayoutStore,
-  readSessionListViewMode,
-  writeSessionListViewMode,
-} from '../../renderer/features/session-navigation/testing.js';
+import { createSessionRailLayoutStore } from '../../renderer/features/session-navigation/testing.js';
 
 const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
 const WIDTH_KEY = 'maka-chat-list-width-v1';
@@ -73,29 +69,37 @@ describe('session list view mode persistence', () => {
 
   it('defaults to conversation when nothing is stored', () => {
     cleanups.push(installMemoryLocalStorage().restore);
-    assert.equal(readSessionListViewMode(), 'conversation');
+    assert.equal(createSessionRailLayoutStore().getState().viewMode, 'conversation');
   });
 
-  it('round-trips a project grouping through the same key the shell hydrates', () => {
+  it('stores a changed grouping and restores conversation when changed back', () => {
     const memory = installMemoryLocalStorage();
     cleanups.push(memory.restore);
-    writeSessionListViewMode('project');
+    const rail = createSessionRailLayoutStore();
+    rail.setViewMode('project');
     assert.equal(memory.store.get(VIEW_MODE_KEY), 'project');
-    assert.equal(readSessionListViewMode(), 'project');
-  });
-
-  it('keeps conversation when that is what was written', () => {
-    cleanups.push(installMemoryLocalStorage({ [VIEW_MODE_KEY]: 'project' }).restore);
-    writeSessionListViewMode('conversation');
-    assert.equal(readSessionListViewMode(), 'conversation');
+    rail.setViewMode('conversation');
+    assert.equal(memory.store.get(VIEW_MODE_KEY), 'conversation');
+    assert.equal(createSessionRailLayoutStore().getState().viewMode, 'conversation');
   });
 
   it('fails open to conversation for garbage or empty stored values', () => {
     for (const stored of ['', 'time', 'true', 'PROJECT', 'conversation\n']) {
       const memory = installMemoryLocalStorage({ [VIEW_MODE_KEY]: stored });
-      assert.equal(readSessionListViewMode(), 'conversation', stored);
+      assert.equal(createSessionRailLayoutStore().getState().viewMode, 'conversation', stored);
       memory.restore();
     }
+  });
+
+  it('restores the selected grouping when the renderer creates a new rail store', () => {
+    const memory = installMemoryLocalStorage();
+    cleanups.push(memory.restore);
+
+    const beforeReload = createSessionRailLayoutStore();
+    beforeReload.setViewMode('project');
+
+    assert.equal(memory.store.get(VIEW_MODE_KEY), 'project');
+    assert.equal(createSessionRailLayoutStore().getState().viewMode, 'project');
   });
 });
 

@@ -19,7 +19,7 @@
 
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 import type { SessionViewMode } from '@maka/ui';
-import { safeLocalStorageSet } from '../../../browser-storage.js';
+import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { createObservableState } from '../../../application/contracts/session-catalog/observable-state.js';
 import {
   clampSessionListWidth,
@@ -29,6 +29,7 @@ import {
 } from './session-list-layout.js';
 
 const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
+const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
 
 export interface SessionRailLayoutState {
   readonly collapsed: boolean;
@@ -51,10 +52,11 @@ export interface SessionRailLayoutState {
  * instance for it to be an instance of.
  */
 export function createSessionRailLayoutStore() {
+  const storedViewMode = safeLocalStorageGet(VIEW_MODE_KEY);
   const state = createObservableState<SessionRailLayoutState>({
     collapsed: readSessionListCollapsed(),
     width: readSessionListWidth(),
-    viewMode: 'conversation',
+    viewMode: storedViewMode === 'project' ? 'project' : 'conversation',
   });
   const collapseHandleRef: { current: SideNavImperativeCollapseHandle | null } = { current: null };
   let widthPersistHandle: ReturnType<typeof setTimeout> | undefined;
@@ -92,6 +94,7 @@ export function createSessionRailLayoutStore() {
       const current = state.getState();
       if (current.viewMode === next) return;
       state.replaceState({ ...current, viewMode: next });
+      safeLocalStorageSet(VIEW_MODE_KEY, next);
     },
   };
 }
