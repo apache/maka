@@ -355,7 +355,7 @@ export type DesktopBranchFromTurnInput = BranchFromTurnInput & {
   copyId: string;
 };
 
-export type DesktopSideConversationBranchResult =
+export type DesktopBranchFromTurnResult =
   | { ok: true; session: DesktopSessionSummary }
   | { ok: false; reason: 'session_busy' | 'operation_unavailable' };
 
@@ -1325,12 +1325,8 @@ export interface MakaBridge {
     >;
     branchFromTurn(
       sessionId: string,
-      input: DesktopBranchFromTurnInput & { sideConversation: true },
-    ): Promise<DesktopSideConversationBranchResult>;
-    branchFromTurn(
-      sessionId: string,
-      input: DesktopBranchFromTurnInput & { sideConversation?: false },
-    ): Promise<DesktopSessionSummary>;
+      input: DesktopBranchFromTurnInput,
+    ): Promise<DesktopBranchFromTurnResult>;
     reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary>;
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
     respondToClientCapability(

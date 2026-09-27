@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
 import { createAppShellTurnActions } from '../../renderer/app-shell-turn-actions.js';
+import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import { deriveTurnFooterActions } from '../../renderer/application/contracts/turn-footer-actions.js';
 
 test('footer no longer exposes Regenerate', () => {
@@ -54,7 +55,7 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
       throw new Error('Committed response was lost');
     }
     if (navigateDuringBranch) selectionRevision += 1;
-    return session(input.copyId ?? 'missing-copy-id');
+    return { ok: true, session: session(input.copyId ?? 'missing-copy-id') };
   });
   const pending = new Set<string>();
   const opened: string[] = [];
@@ -101,11 +102,42 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
   }
 });
 
+test('explains why the Host refused a Branch instead of a generic failure', async () => {
+  const copy = getDesktopConversationCopy('en').actions;
+  for (const reason of ['session_busy', 'operation_unavailable'] as const) {
+    const errors: Array<{ title: string; description?: string }> = [];
+    const restoreWindow = installWindow(async () => ({ ok: false, reason }));
+    try {
+      await createAppShellTurnActions({
+        uiLocale: 'en',
+        activeIdRef: { current: 'branch-refused-source' },
+        captureSelection: () => () => true,
+        turnActionRegistry: { addKey: () => true, clearKey() {}, keyOf: () => 'key' },
+        openSessionInChat: () => assert.fail('A refused Branch must not open a Session'),
+        refreshSessions: async () => [],
+        toastApi: {
+          info() {},
+          success() {},
+          error: (title, description) => errors.push({ title, description }),
+        },
+      }).handleTurnFooterAction('branch-refused-turn', 'branch');
+    } finally {
+      restoreWindow();
+    }
+    assert.deepEqual(errors, [
+      { title: copy.branchFailedTitle, description: copy.branchFailures[reason] },
+    ]);
+  }
+});
+
 function installWindow(
   branchFromTurn: (
     sessionId: string,
     input: { sourceTurnId: string; copyId?: string },
-  ) => Promise<SessionSummary>,
+  ) => Promise<
+    | { ok: true; session: SessionSummary }
+    | { ok: false; reason: 'session_busy' | 'operation_unavailable' }
+  >,
 ): () => void {
   const target = globalThis as unknown as { window?: unknown };
   const hadWindow = Object.prototype.hasOwnProperty.call(target, 'window');

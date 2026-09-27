@@ -601,8 +601,8 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
       input.channel,
       "source-session",
       input.payload,
-    )) as { id: string };
-    assert.equal(retried.id, input.copyId);
+    )) as { id: string } | { ok: true; session: { id: string } };
+    assert.equal("session" in retried ? retried.session.id : retried.id, input.copyId);
   }
 
   assert.deepEqual(calls, [
@@ -625,8 +625,8 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
   const newBranch = (await ipc.invoke("sessions:branchFromTurn", "source-session", {
     sourceTurnId: "branch-source-turn",
     copyId: "branch-copy-2",
-  })) as { id: string };
-  assert.equal(newBranch.id, "branch-copy-2");
+  })) as { ok: true; session: { id: string } };
+  assert.equal(newBranch.session.id, "branch-copy-2");
   assert.equal(committed.size, 3);
 });
 
@@ -713,8 +713,13 @@ test("sends Side Conversation intent and metadata atomically to Runtime Host", a
   ]);
 });
 
-test('returns structured Side Conversation setup failures across IPC', async () => {
-  for (const reason of ['session_busy', 'operation_unavailable'] as const) {
+test('returns structured Branch and Side Conversation setup failures across IPC', async () => {
+  for (const [reason, sideConversation] of [
+    ['session_busy', true],
+    ['operation_unavailable', true],
+    ['session_busy', false],
+    ['operation_unavailable', false],
+  ] as const) {
     const ipc = ipcHarness();
     const rejectedCreations: string[] = [];
     registerExecutionIpc(
@@ -724,7 +729,7 @@ test('returns structured Side Conversation setup failures across IPC', async () 
             throw new RuntimeHostOperationError(
               'session.branch.create',
               reason,
-              'Side Conversation setup failed',
+              'Branch setup failed',
             );
           },
         }),
@@ -748,12 +753,12 @@ test('returns structured Side Conversation setup failures across IPC', async () 
     assert.deepEqual(
       await ipc.invoke('sessions:branchFromTurn', 'source-session', {
         sourceTurnId: 'source-turn',
-        copyId: `side-copy-${reason}`,
-        sideConversation: true,
+        copyId: `copy-${reason}`,
+        sideConversation,
       }),
       { ok: false, reason },
     );
-    assert.deepEqual(rejectedCreations, [`side-copy-${reason}`]);
+    assert.deepEqual(rejectedCreations, sideConversation ? [`copy-${reason}`] : []);
   }
 });
 

@@ -84,7 +84,7 @@ import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
 
-type SideConversationBranchResult =
+type BranchFromTurnResult =
   | { readonly ok: true; readonly session: ReturnType<typeof toDesktopHostSessionSummary> }
   | { readonly ok: false; readonly reason: 'session_busy' | 'operation_unavailable' };
 
@@ -878,15 +878,13 @@ export function registerRuntimeHostSessionExecutionIpc(
           : await createBranch();
       } catch (error) {
         if (
-          normalized.sideConversation &&
           error instanceof RuntimeHostOperationError &&
           (error.code === 'session_busy' || error.code === 'operation_unavailable')
         ) {
-          await deps.sessionCopyCleanup.rejectCreation(normalized.copyId);
-          return {
-            ok: false,
-            reason: error.code,
-          } satisfies SideConversationBranchResult;
+          if (normalized.sideConversation) {
+            await deps.sessionCopyCleanup.rejectCreation(normalized.copyId);
+          }
+          return { ok: false, reason: error.code } satisfies BranchFromTurnResult;
         }
         throw error;
       }
@@ -896,10 +894,10 @@ export function registerRuntimeHostSessionExecutionIpc(
         });
       }
       deps.emitSessionsChanged("created", branch.id);
-      const summary = toDesktopHostSessionSummary(branch);
-      return normalized.sideConversation
-        ? ({ ok: true, session: summary } satisfies SideConversationBranchResult)
-        : summary;
+      return {
+        ok: true,
+        session: toDesktopHostSessionSummary(branch),
+      } satisfies BranchFromTurnResult;
     },
   );
   ipcMain.handle(

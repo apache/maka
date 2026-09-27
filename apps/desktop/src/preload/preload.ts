@@ -54,7 +54,7 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   DesktopBranchFromTurnInput,
-  DesktopSideConversationBranchResult,
+  DesktopBranchFromTurnResult,
   DesktopSessionStopResult,
   DesktopReviseBeforeTurnInput,
   AppUpdateInstallRequest,
@@ -776,30 +776,20 @@ async function invokeSessionUpdate(
 
 async function invokeBranchFromTurn(
   sessionId: string,
-  input: DesktopBranchFromTurnInput & { sideConversation: true },
-): Promise<DesktopSideConversationBranchResult>;
-async function invokeBranchFromTurn(
-  sessionId: string,
-  input: DesktopBranchFromTurnInput & { sideConversation?: false },
-): Promise<DesktopSessionSummary>;
-async function invokeBranchFromTurn(
-  sessionId: string,
   input: DesktopBranchFromTurnInput,
-): Promise<DesktopSessionSummary | DesktopSideConversationBranchResult> {
+): Promise<DesktopBranchFromTurnResult> {
   const ref = await runtimeHostSessionRef(sessionId);
   const result = await invokeWhenReady(
     'sessions:branchFromTurn',
     ref.scope,
     ref.sessionId,
     input,
-  ) as DesktopSessionSummaryInput | { ok: true; session: DesktopSessionSummaryInput } | { ok: false; reason: string };
-  if (input.sideConversation) {
-    if (!('ok' in result) || result.ok === false) {
-      return result as DesktopSideConversationBranchResult;
-    }
-    return { ok: true, session: projectCreatedSessionSummary(ref.scope, result.session) };
-  }
-  return projectCreatedSessionSummary(ref.scope, result as DesktopSessionSummaryInput);
+  ) as
+    | { ok: true; session: DesktopSessionSummaryInput }
+    | Extract<DesktopBranchFromTurnResult, { ok: false }>;
+  return result.ok
+    ? { ok: true, session: projectCreatedSessionSummary(ref.scope, result.session) }
+    : result;
 }
 
 async function invokeSessionInput<T, I extends { readonly sessionId: string }>(
