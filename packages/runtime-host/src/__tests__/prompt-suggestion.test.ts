@@ -357,6 +357,10 @@ test('continuation cleaning appends only new text and drops echoes, meta and ove
   assert.equal(cleanPromptContinuation('帮我把这个函数改成异步的', '帮我把这个函数'), '改成异步的');
   // English keeps the model's separating space after a whole word ...
   assert.equal(cleanPromptContinuation(' tests first', "Let's add"), ' tests first');
+  // ... completes a word without one ...
+  assert.equal(cleanPromptContinuation('tor the parser', 'Please refac'), 'tor the parser');
+  // ... and always separates a word from sentence punctuation.
+  assert.equal(cleanPromptContinuation('can you add tests', 'Thanks,'), ' can you add tests');
   // ... but never introduces one after CJK text.
   assert.equal(cleanPromptContinuation(' 补测试', '可以，那就先'), '补测试');
   assert.equal(cleanPromptContinuation('“只调整预览区吧”', '可以，那就'), '只调整预览区吧');
