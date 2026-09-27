@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 301 files — blocker 0, reimplementation 0, polish 4, aligned 297.
+**Totals:** 302 files — blocker 0, reimplementation 0, polish 4, aligned 298.
 
 ## Exclusions (explicit)
 
@@ -272,7 +272,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/composer-message-queue.tsx` | shell-chrome-or-panel | Button, IconButton, List, ListItem, Tooltip | raw `<textarea` (API Use-the-System) | polish |
 | `packages/ui/src/composer-model-label.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, ChatComposerDrawer, ChatComposerInput, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, IconButton, Lightbox, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, ChatComposerDrawer, ChatComposerInput, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem) | aligned |
+| `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, ChatComposerDrawer, ChatComposerInput, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, HoverCard, IconButton, Lightbox, Popover, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, ChatComposerDrawer, ChatComposerInput, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem) | aligned |
 | `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, SegmentedControl, SegmentedControlItem, Skeleton, StackItem, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `packages/ui/src/directory-reference-chip.tsx` | ui-composition | Token, Tooltip | aligned — uses Astryx (Token, Tooltip) | aligned |
 | `packages/ui/src/executor-model-picker.tsx` | ui-composition | Button, Popover | aligned — uses Astryx (Button, Popover) | aligned |
@@ -301,7 +301,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/progress-card.tsx` | ui-composition | IconButton | aligned — uses Astryx (IconButton) | aligned |
 | `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | Button, HoverCard | aligned — uses Astryx (Button, HoverCard) | aligned |
 | `packages/ui/src/prompt-suggestion.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `packages/ui/src/quote-ref-chip.tsx` | ui-composition | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
+| `packages/ui/src/quote-comment-panel.tsx` | shell-chrome-or-panel | Button, ChatComposerInput, HStack, VStack | aligned — uses Astryx (Button, ChatComposerInput, HStack, VStack) | aligned |
+| `packages/ui/src/quote-ref-chip.tsx` | ui-composition | Button, HoverCard, MetadataList, MetadataListItem, Text, VStack | aligned — uses Astryx (Button, HoverCard, MetadataList, MetadataListItem, Text, VStack) | aligned |
 | `packages/ui/src/relative-time.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/running-indicator.tsx` | ui-composition | Spinner, Tooltip | aligned — uses Astryx (Spinner, Tooltip) | aligned |
 | `packages/ui/src/sandbox-boundary-prompt.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |

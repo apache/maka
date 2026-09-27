@@ -181,7 +181,6 @@ import {
   useNewTaskChoice,
   useShellChatModel,
 } from './features/conversation/index.js';
-import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import {
   type ComposerMentionsSurfaceInput,
   renderComposerMentionsProvider,
@@ -392,6 +391,13 @@ function AppShellContent({
     removeAttachment,
     clearSubmittedContext,
     imageNoticeLifecycle,
+    pendingQuotes,
+    hasStagedQuotes,
+    quotesForSend,
+    addQuote,
+    clearQuotes,
+    composerQuoteProps,
+    chatViewQuoteProps,
   } = useComposerAttachments({
     draftKey: attachmentDraftKey,
     directoryHostId,
@@ -402,13 +408,6 @@ function AppShellContent({
       notify: toastApi.info,
     },
   });
-  const {
-    pendingQuotes,
-    addQuote: onAddQuote,
-    removeQuote,
-    clearQuotes,
-    restoreQuotes,
-  } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
 
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
@@ -1150,7 +1149,7 @@ function AppShellContent({
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode,
-    onAddQuote,
+    onAddQuote: addQuote,
     pendingQuotes,
   };
 
@@ -1487,7 +1486,7 @@ function AppShellContent({
       }
       if (
         hasPendingContext ||
-        pendingQuotes.length ||
+        hasStagedQuotes ||
         metadata?.workspaceFileReferences?.length
       ) {
         toastApi.info(
@@ -1526,7 +1525,7 @@ function AppShellContent({
         return changed;
       }
       const pending = submittableAttachments;
-      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+      const quotes = quotesForSend();
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...directoryOptions,
@@ -1575,7 +1574,7 @@ function AppShellContent({
         return changed;
       }
       const pending = submittableAttachments;
-      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+      const quotes = quotesForSend();
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...directoryOptions,
@@ -1601,7 +1600,7 @@ function AppShellContent({
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+    const quotes = quotesForSend();
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
       targetSessionId: expectedRevisionDraft?.draftSessionId,
@@ -2372,9 +2371,8 @@ function AppShellContent({
                   slashCommands={desktopSlashCommands}
                   pendingAttachments={pendingAttachments}
                   allowAttachmentOnlySend={canStageComposerContext}
-                  onRemoveAttachment={removeAttachment}                  pendingQuotes={pendingQuotes}
-                  onRemoveQuote={removeQuote}
-                  onPasteAsQuote={canStageComposerContext ? onAddQuote : undefined}
+                  onRemoveAttachment={removeAttachment}
+                  {...composerQuoteProps(canStageComposerContext)}
                   onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
                   onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
                   {...Conversation.executorComposerProps(executor, {activeId, turnActive, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface})}
@@ -2446,6 +2444,7 @@ function AppShellContent({
               >
                 {sessionsSelected ? (
                   <ChatMessageSurface
+                {...chatViewQuoteProps}
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
@@ -2512,7 +2511,7 @@ function AppShellContent({
                   sharedSessionActive
                     ? undefined
                     : (selection) => {
-                        onAddQuote(selection);
+                        addQuote(selection);
                         composerRef.current?.focus();
                       }
                 }

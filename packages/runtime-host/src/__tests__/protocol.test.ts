@@ -21,7 +21,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { QUOTE_COMMENT_MAX_LENGTH, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
@@ -1910,6 +1910,7 @@ describe('Runtime Host bootstrap protocol', () => {
         quotes: Array.from({ length: TURN_MESSAGE_QUOTE_MAX_COUNT }, (_, index) => ({
           text: `excerpt-${index}`,
           label: 'Assistant',
+          comment: 'why this matters',
           sourceTurnId: `turn-${index}`,
         })),
       }),
@@ -1922,6 +1923,8 @@ describe('Runtime Host bootstrap protocol', () => {
       [{ text: 'excerpt', label: 'x'.repeat(TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', sourceTurnId: 'bad/id' }],
       [{ text: 'excerpt', sourceTurnId: 'x'.repeat(129) }],
+      [{ text: 'excerpt', comment: '' }],
+      [{ text: 'excerpt', comment: 'x'.repeat(QUOTE_COMMENT_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', extra: true }],
     ]) {
       assert.throws(() => submit({ text: 'valid', quotes }), isInvalidFrame);

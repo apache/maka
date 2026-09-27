@@ -103,7 +103,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 191 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 192 as const;
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
 // 191: Session catalog change frames can carry attention events.
 // 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
 // 189: Remove form_interaction transcript messages and the transcript_changed close reason.

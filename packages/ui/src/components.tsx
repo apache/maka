@@ -60,6 +60,7 @@ export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
 export {
   ChatView,
   type ChatViewGoalIndicatorProps,
+  type ChatViewHandle,
   type LiveContentActivationSnapshot,
   type TransientUserMessageProjection,
 } from './chat-view.js';
