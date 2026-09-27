@@ -139,9 +139,22 @@ const UNRENDERABLE_ICNS_SLOTS = new Map([
   ['icp5', '32x32'],
   ['icp6', '64x64'],
 ]);
-const RENDERED_ICNS_SLOTS = new Map([
-  ['ic04', '16x16'],
-  ['ic05', '32x32'],
+// Side length of each slot's art. `iconutil` and the builder's toolset both
+// write `ic04`/`ic05` as ARGB planes and every larger size as PNG. The toolset
+// 26.15.3 pinned also put 512px and 1024px art in `ic13`/`ic14`.
+const ARGB_ICNS_SLOTS = new Map([
+  ['ic04', 16],
+  ['ic05', 32],
+]);
+const PNG_ICNS_SLOTS = new Map([
+  ['ic07', 128],
+  ['ic08', 256],
+  ['ic09', 512],
+  ['ic10', 1024],
+  ['ic11', 32],
+  ['ic12', 64],
+  ['ic13', 256],
+  ['ic14', 512],
 ]);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -149,10 +162,20 @@ function readIcnsSlots(icns) {
   if (icns.length < 8 || icns.subarray(0, 4).toString('latin1') !== 'icns') {
     throw new Error('Maka icon is not an ICNS archive.');
   }
+  // A header that disagrees with the file is a truncated or padded archive,
+  // and its entries cannot be trusted to end where they claim.
+  const declared = icns.readUInt32BE(4);
+  if (declared !== icns.length) {
+    throw new Error(`Maka icon declares ${declared} bytes but holds ${icns.length}.`);
+  }
   const slots = new Map();
   // Every entry declares its own length including the 8-byte header, so a zero
   // or truncated length is the difference between a parse error and a loop.
-  for (let offset = 8; offset + 8 <= icns.length; ) {
+  // The entries must account for every byte after the header.
+  for (let offset = 8; offset < icns.length; ) {
+    if (offset + 8 > icns.length) {
+      throw new Error(`Maka icon ends inside an entry header at byte ${offset}.`);
+    }
     const type = icns.subarray(offset, offset + 4).toString('latin1');
     const length = icns.readUInt32BE(offset + 4);
     if (length < 8 || offset + length > icns.length) {
@@ -164,21 +187,73 @@ function readIcnsSlots(icns) {
   return slots;
 }
 
+/**
+ * An `ic04`/`ic05` payload is `ARGB` followed by the alpha, red, green and
+ * blue planes, packed the ICNS way: a control byte below 0x80 copies the next
+ * `control + 1` bytes, and one from 0x80 up repeats the next byte
+ * `control - 0x80 + 3` times. macOS can draw it only if it unpacks to exactly
+ * four `side` × `side` planes with no bytes left over.
+ */
+function isDecodableArgb(payload, side) {
+  if (payload.subarray(0, 4).toString('latin1') !== 'ARGB') return false;
+  const expected = 4 * side * side;
+  let produced = 0;
+  for (let offset = 4; offset < payload.length; ) {
+    const control = payload[offset];
+    const literal = control < 0x80;
+    const count = literal ? control + 1 : control - 0x80 + 3;
+    const consumed = 1 + (literal ? count : 1);
+    if (offset + consumed > payload.length) return false;
+    produced += count;
+    if (produced > expected) return false;
+    offset += consumed;
+  }
+  return produced === expected;
+}
+
+/** Width and height from a PNG's IHDR, or undefined when there is none. */
+function pngSize(payload) {
+  if (payload.length < 24 || payload.subarray(12, 16).toString('latin1') !== 'IHDR') {
+    return undefined;
+  }
+  return { width: payload.readUInt32BE(16), height: payload.readUInt32BE(20) };
+}
+
 export async function assertRenderableAppIcon(resourcesPath, { readIcon = readFile } = {}) {
   const slots = readIcnsSlots(await readIcon(join(resourcesPath, 'icon.icns')));
+  const isPng = (payload) => payload?.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE);
   const unrenderable = [...UNRENDERABLE_ICNS_SLOTS]
-    .filter(([type]) => slots.get(type)?.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE))
+    .filter(([type]) => isPng(slots.get(type)))
     .map(([type, size]) => `${size} (${type})`);
   if (unrenderable.length > 0) {
     throw new Error(
       `Maka icon stores PNG data in ICNS slots macOS does not render: ${unrenderable.join(', ')}.`,
     );
   }
-  const missing = [...RENDERED_ICNS_SLOTS]
+  const missing = [...ARGB_ICNS_SLOTS]
     .filter(([type]) => !slots.has(type))
-    .map(([type, size]) => `${size} (${type})`);
+    .map(([type, side]) => `${side}x${side} (${type})`);
   if (missing.length > 0) {
     throw new Error(`Maka icon is missing the sizes macOS draws smallest: ${missing.join(', ')}.`);
+  }
+  // Presence alone would accept an empty or truncated payload in exactly the
+  // sizes this check exists to protect.
+  const undecodable = [...ARGB_ICNS_SLOTS]
+    .filter(([type, side]) => !isDecodableArgb(slots.get(type), side))
+    .map(([type, side]) => `${side}x${side} (${type})`);
+  if (undecodable.length > 0) {
+    throw new Error(`Maka icon has small sizes macOS cannot decode: ${undecodable.join(', ')}.`);
+  }
+  const misdrawn = [...PNG_ICNS_SLOTS]
+    .filter(([type]) => isPng(slots.get(type)))
+    .flatMap(([type, side]) => {
+      const size = pngSize(slots.get(type));
+      if (size?.width === side && size.height === side) return [];
+      const found = size ? `${size.width}x${size.height}` : 'no readable size';
+      return [`${type} holds ${found} where macOS expects ${side}x${side}`];
+    });
+  if (misdrawn.length > 0) {
+    throw new Error(`Maka icon stores art at the wrong size: ${misdrawn.join('; ')}.`);
   }
 }
 

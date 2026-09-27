@@ -257,10 +257,64 @@ function icnsWith(slots) {
   return Buffer.concat([header, body]);
 }
 
+/** Packs one ARGB plane the ICNS way: runs of 3-130 equal bytes, literals of up to 128. */
+function packIcnsPlane(plane) {
+  const packed = [];
+  for (let i = 0; i < plane.length; ) {
+    let run = 1;
+    while (run < 130 && i + run < plane.length && plane[i + run] === plane[i]) run += 1;
+    if (run >= 3) {
+      packed.push(0x80 + run - 3, plane[i]);
+      i += run;
+      continue;
+    }
+    let end = i + 1;
+    while (
+      end < plane.length &&
+      end - i < 128 &&
+      !(plane[end] === plane[end + 1] && plane[end] === plane[end + 2])
+    ) {
+      end += 1;
+    }
+    packed.push(end - i - 1, ...plane.subarray(i, end));
+    i = end;
+  }
+  return Buffer.from(packed);
+}
+
+/** A real `ic04`/`ic05` payload, which `iconutil` unpacks to a `side` px image:
+ *  a transparent border around opaque gradients, so it holds runs and literals. */
+function argbPayload(side) {
+  const planes = [0, 1, 2, 3].map((channel) => {
+    const plane = Buffer.alloc(side * side);
+    for (let y = 0; y < side; y += 1) {
+      for (let x = 0; x < side; x += 1) {
+        const edge = x === 0 || y === 0 || x === side - 1 || y === side - 1;
+        plane[y * side + x] =
+          channel === 0 ? (edge ? 0 : 255) : (channel * 60 + x * 7 + y * 3) & 0xff;
+      }
+    }
+    return packIcnsPlane(plane);
+  });
+  return Buffer.concat([Buffer.from('ARGB', 'latin1'), ...planes]);
+}
+
+/** The PNG signature and IHDR of a `side` px square, which is all the check reads. */
+function pngHead(side) {
+  const ihdr = Buffer.alloc(25);
+  ihdr.writeUInt32BE(13, 0);
+  ihdr.write('IHDR', 4, 'latin1');
+  ihdr.writeUInt32BE(side, 8);
+  ihdr.writeUInt32BE(side, 12);
+  ihdr.set([8, 6, 0, 0, 0], 16);
+  return Buffer.concat([PNG_SIGNATURE, ihdr]);
+}
+
 const RENDERABLE_ICNS = icnsWith([
-  ['ic04', Buffer.from('ARGBfixture')],
-  ['ic05', Buffer.from('ARGBfixture')],
-  ['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.from('128px')])],
+  ['ic04', argbPayload(16)],
+  ['ic05', argbPayload(32)],
+  ['ic07', pngHead(128)],
+  ['ic13', pngHead(256)],
 ]);
 
 const PTY_PACKAGES = ['@xterm/headless', '@xterm/addon-unicode11'];
@@ -413,9 +467,9 @@ describe('assertRenderableAppIcon', () => {
     const resources = await withIcon(
       t,
       icnsWith([
-        ['icp4', Buffer.concat([PNG_SIGNATURE, Buffer.from('16px')])],
-        ['icp5', Buffer.concat([PNG_SIGNATURE, Buffer.from('32px')])],
-        ['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.from('128px')])],
+        ['icp4', pngHead(16)],
+        ['icp5', pngHead(32)],
+        ['ic07', pngHead(128)],
       ]),
     );
     await assert.rejects(assertRenderableAppIcon(resources), /16x16 \(icp4\), 32x32 \(icp5\)/);
@@ -423,18 +477,92 @@ describe('assertRenderableAppIcon', () => {
 
   test('rejects an icon that carries no small sizes at all', async (t) => {
     const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    const resources = await withIcon(t, icnsWith([['ic07', pngHead(128)]]));
+    await assert.rejects(assertRenderableAppIcon(resources), /missing the sizes/);
+  });
+
+  test('rejects small sizes whose ARGB planes do not unpack to the full image', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    const whole = argbPayload(16);
+    for (const ic04 of [
+      Buffer.alloc(0),
+      Buffer.from([0x80]),
+      Buffer.from('ARGB', 'latin1'),
+      // The last packed token cut short.
+      whole.subarray(0, whole.length - 1),
+      // Bytes left over once all four planes are full.
+      Buffer.concat([whole, Buffer.from([0x00, 0xff])]),
+      // The right planes behind the wrong magic.
+      Buffer.concat([Buffer.from('PNGX', 'latin1'), whole.subarray(4)]),
+    ]) {
+      const resources = await withIcon(
+        t,
+        icnsWith([
+          ['ic04', ic04],
+          ['ic05', argbPayload(32)],
+        ]),
+      );
+      await assert.rejects(
+        assertRenderableAppIcon(resources),
+        /small sizes macOS cannot decode: 16x16 \(ic04\)\./,
+      );
+    }
+    const swapped = await withIcon(
+      t,
+      icnsWith([
+        ['ic04', argbPayload(16)],
+        ['ic05', argbPayload(16)],
+      ]),
+    );
+    await assert.rejects(assertRenderableAppIcon(swapped), /cannot decode: 32x32 \(ic05\)\./);
+  });
+
+  test('rejects PNG art at the wrong size for its slot', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    // The retina slots as the toolset electron-builder 26.15.3 pinned wrote
+    // them, and a PNG slot with no IHDR to read a size from.
     const resources = await withIcon(
       t,
-      icnsWith([['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.from('128px')])]]),
+      icnsWith([
+        ['ic04', argbPayload(16)],
+        ['ic05', argbPayload(32)],
+        ['ic13', pngHead(512)],
+        ['ic14', pngHead(1024)],
+        ['ic07', PNG_SIGNATURE],
+      ]),
     );
-    await assert.rejects(assertRenderableAppIcon(resources), /missing the sizes/);
+    await assert.rejects(
+      assertRenderableAppIcon(resources),
+      new RegExp(
+        'ic07 holds no readable size where macOS expects 128x128; ' +
+          'ic13 holds 512x512 where macOS expects 256x256; ' +
+          'ic14 holds 1024x1024 where macOS expects 512x512\\.',
+      ),
+    );
   });
 
   test('refuses to guess at a truncated entry instead of looping on it', async (t) => {
     const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
-    const icns = icnsWith([['ic04', Buffer.from('ARGBfixture')]]);
+    const icns = icnsWith([['ic04', argbPayload(16)]]);
     icns.writeUInt32BE(0, 12);
     await assert.rejects(assertRenderableAppIcon(await withIcon(t, icns)), /unusable length/);
+  });
+
+  test('rejects an archive whose header does not match its entries', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    const understated = Buffer.from(RENDERABLE_ICNS);
+    understated.writeUInt32BE(8, 4);
+    await assert.rejects(
+      assertRenderableAppIcon(await withIcon(t, understated)),
+      new RegExp(`declares 8 bytes but holds ${understated.length}\\.`),
+    );
+    // Bytes after the last entry that are too few to be another one.
+    const padded = Buffer.concat([RENDERABLE_ICNS, Buffer.from([0, 0, 0])]);
+    padded.writeUInt32BE(padded.length, 4);
+    await assert.rejects(
+      assertRenderableAppIcon(await withIcon(t, padded)),
+      /ends inside an entry header/,
+    );
   });
 });
 
