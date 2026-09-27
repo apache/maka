@@ -20,12 +20,12 @@
 # Grok-assisted contribution review
 
 **Baseline:** `d2f19f400` (2026-09-27). **Status:** all 25 original-commit
-inventories and current behaviors are reviewed, but implementation remediation
-is incomplete. The current branch adds tests, policy boundaries, and narrow
-replacements, while 3,770 of the 3,935 base squash-attributed lines remain at
-the branch head. The retained production implementations and disputed
-dispositions below require another pass. Project and ASF legal acceptance also
-remains open.
+inventories and current behaviors are reviewed. The current branch independently
+reimplements the primary live cores for the nine active implementation entries
+identified below and reduces branch-head squash attribution from 3,935 to 2,015
+lines. The remaining attribution still needs to be split across mixed authorship,
+tests, later edits, removed behavior, and retained supporting slices. Project and
+ASF legal acceptance also remains open.
 
 This is a provenance and engineering inventory, not a legal classification or
 an assertion that these changes must be removed. The scope is merged PRs whose
@@ -130,7 +130,7 @@ follows supersedes path presence as the disposition basis.
 
 The following measurement resolves each mainline squash commit to its full SHA,
 counts lines added by that commit, and uses `git blame -w -M --line-porcelain`
-on `origin/main` at `d2f19f400` and on PR head `d712ae45f`. It is a stronger
+on `origin/main` at `d2f19f400` and on PR head `77d6987e5`. It is a stronger
 survival signal than path presence, but it is not a generated-line classifier:
 mixed-origin PRs are not split by original commit, `-C` copy detection is not
 enabled, and `-M` can reattribute moved lines. Counts can increase after later
@@ -138,21 +138,21 @@ edits or moves, so every exception still needs commit-level review.
 
 | PR | Added lines | Base survival | PR-head survival |
 |---:|---:|---:|---:|
-| #3008 | 180 | 166 | 159 |
-| #2967 | 678 | 651 | 641 |
-| #3048 | 462 | 287 | 270 |
+| #3008 | 180 | 166 | 81 |
+| #2967 | 678 | 651 | 258 |
+| #3048 | 462 | 287 | 175 |
 | #3063 | 0 | 0 | 0 |
-| #3066 | 201 | 129 | 123 |
-| #3070 | 177 | 137 | 111 |
-| #3078 | 114 | 89 | 77 |
+| #3066 | 201 | 129 | 57 |
+| #3070 | 177 | 137 | 24 |
+| #3078 | 114 | 89 | 25 |
 | #3082 | 116 | 66 | 23 |
-| #3099 | 129 | 86 | 75 |
+| #3099 | 129 | 86 | 12 |
 | #3101 | 54 | 42 | 42 |
 | #3102 | 39 | 4 | 4 |
 | #3104 | 20 | 17 | 17 |
 | #3106 | 279 | 139 | 139 |
 | #3111 | 59 | 57 | 73 |
-| #3115 | 429 | 407 | 414 |
+| #3115 | 429 | 407 | 124 |
 | #3117 | 282 | 252 | 252 |
 | #3118 | 0 | 0 | 0 |
 | #3119 | 2 | 1 | 1 |
@@ -160,19 +160,18 @@ edits or moves, so every exception still needs commit-level review.
 | #3069 | 200 | 0 | 0 |
 | #3459 | 288 | 150 | 154 |
 | #3364 | 118 | 111 | 111 |
-| #3544 | 1713 | 1090 | 1061 |
+| #3544 | 1713 | 1090 | 420 |
 | #4345 | 22 | 22 | 18 |
 | #5223 | 43 | 32 | 5 |
 
 The base measurement finds 3,935 surviving squash-attributed lines; the PR
-head retains 3,770. Four entries have no surviving added output: #3063 and
+head retains 2,015. Four entries have no surviving added output: #3063 and
 #3118 are deletion-only, while the only #3123 file and both #3069 files were
-later deleted. The limited reduction shows that the branch's extracted
-boundaries and bug fixes are preparatory work, not completion of the stated
-rewrite goal. The largest surviving concentrations are #3544, #2967, #3115,
-#3048, and #3117; the behavioral and attribution review below handles those
-current boundaries rather than treating
-the blame count as a completion metric.
+later deleted. The reduction records material replacement of the active cores,
+but it is not a completion metric: the largest remaining concentrations are
+#3544, #2967, #3117, #3048, and #3459, and several are mixed-author or test-heavy
+PRs. The behavioral and attribution review below handles those current
+boundaries rather than treating squash blame as a generated-line classifier.
 
 The largest original change, #3544, touched 35 files and changed more than
 2,000 lines; #3117 removed over 1,600 lines. A single wholesale rewrite would
@@ -207,8 +206,8 @@ changes. It does not erase the original history or settle ASF legal questions.
 |---:|---|---|
 | #3082 | Removing the PTY exit reconciliation made the delayed-persist test return `running` instead of `completed`. | Reconcile the control reply after persistence against finalization, then mark terminal observations. Replaced the Grok-authored test with a fresh test that pauses storage and observes driver exit without monkeypatching the driver prototype. Runtime build, shell-run-manager suite (62 pass, 4 platform skips), and Biome passed. |
 | #5223 | Removing the directory check made the regular-file test fail with `Missing expected rejection`. | Check the canonical path's stat before Git discovery and reject non-directories with `TypeError`. Replaced the original test with Git/non-Git file cases, registration non-mutation, and a directory control. Storage build, project-catalog suite (23 pass), and Biome passed. |
-| #3070 | Removing explicit nested-project selection made registration return the parent project's ID and broke relinking to a child directory. | Make resolution intent explicit: selected paths retain a nested folder identity, while historical paths and selected repository roots keep Git identity. Tests pass, but 111 squash-attributed lines remain; treat this as a preparatory behavior fix, not a completed replacement. |
-| #3099 | Disconnecting the migrated rail store's grouping read/write made a fresh store lose the selected grouping (`undefined` persisted value). | Let the rail layout store hydrate and write grouping directly, removing the old standalone read/write helpers. Tests pass, but 75 squash-attributed lines remain; treat this as a preparatory behavior fix, not a completed replacement. |
+| #3070 | Removing explicit nested-project selection made registration return the parent project's ID and broke relinking to a child directory. | Make resolution intent explicit: selected paths retain a nested folder identity, while historical paths and selected repository roots keep Git identity. Tests pass; current-head attribution is 24 lines pending classification. |
+| #3099 | Disconnecting the migrated rail store's grouping read/write made a fresh store lose the selected grouping (`undefined` persisted value). | Keep all rail layout persistence behind one layout module and store. Tests pass; current-head attribution is 12 lines pending classification. |
 
 The #3082 and #5223 revert-state commits are separate from the replacement
 commit to make the failure evidence inspectable. They are not safe to merge
@@ -319,18 +318,12 @@ not an independently rewritten architecture or erasure of the original history.
 
 #3048's first two original commits (Grok-tagged) added catch-up seeding and
 observation-generation gating; the next two (Codex-tagged) added retry and
-ordering assertions. The live seed helper and observation hooks remain, with
-later revisions. The current live-content-seed, observer, and streaming-handoff
-test files passed before a scoped fix (88 tests). A new failing test showed
-that a stale completion for the same Session could mark a newer generation
-ready at the helper boundary. Completion now carries the exact generation
-token through the observation hook and refuses to flush/display a newer seed
-for an older signal. The three test files now pass (89 tests) and Biome passes.
-This is a scoped independent hardening, **not** a replacement for the entire
-two tagged implementations. The full streaming-remount Electron E2E (4 tests)
-and session-local recovery E2E (3 tests) pass. Desktop's full build also
-passes after merging the latest upstream; it initially reported seven
-unrelated implicit-`any` diagnostics.
+ordering assertions. The replacement removes `completeLiveContentSeed` and its
+parallel generation guard from AppShell, and makes the observation attempt the
+single visibility authority. The current live-content, observer, handoff, and
+streaming-remount regressions pass. Squash attribution falls from 287 base lines
+to 175 at the current head; the remainder needs original-commit and later-edit
+classification rather than another blind AppShell rewrite.
 
 #3101's only squash change modified the streaming-remount E2E to sample on
 animation frames instead of body mutations. The current test has since gained
@@ -338,35 +331,26 @@ other assertions; the full file passes in a real Electron window (4 tests).
 This validates the existing assertions, not an independently rewritten test.
 
 #3544's first six original commits are Grok-tagged and the last three are
-Codex-tagged. The per-entry queue still has Host protocol, coordinator, and
-Desktop UI behavior, though the original Desktop action module has since been
-removed. The current Host message-coordinator and protocol suites pass (177
-tests), and the focused protocol suite passes 87 tests. That baseline does not
-constitute a replacement for its 35-file mixed
-change. The Host/protocol/UI slices and Electron workflow need separate
-review; a direct squash revert previously conflicted in 31 paths. A new
-same-members concurrent-reorder test failed because `queue.entries.reorder`
-had no expected queue revision, letting an old client's permutation overwrite
-a newer one. The Host now checks a required revision, and Desktop main,
-preload, WorkHub, and Side Chat pass through the observed revision. Host
-message/protocol tests (175 pass), Desktop main/preload/renderer typechecks,
-Desktop queue tests, and Side Chat/WorkHub Electron E2Es pass after rebuilding
-the preload and renderer. This is a scoped concurrency fix, not a full rewrite
-of the mixed 35-file PR.
+Codex-tagged. The replacement removes the retained per-entry mutation flow and
+rebuilds it around an exact Host-owned queue mutation protocol, one executor,
+queue-state helpers, Desktop IPC actions, and a UI controller. Reorder commands
+carry the drag-start revision to the Host; stale mutations reach the existing
+error path instead of being silently discarded in the Client. Empty reorder
+remains a compatible no-op, so only one protocol epoch is required. Runtime
+Host, UI, Desktop, typecheck, and production renderer builds pass. Squash
+attribution falls from 1,090 base lines to 420 at the current head; because the
+original PR is mixed-tool and test-heavy, those remaining lines require
+commit-level classification rather than treating all 35 files as one authored
+unit.
 
 #3115's rate-limit classification, Host retry projection/continuity, and UI
-countdown remain live. The current Runtime/Host suites pass (97 tests) and
-Core/UI countdown suites pass (8 tests), including remaining-time projection
-after reconnect and reduced-motion display. This is a baseline review only;
-the active Host/UI code has not been independently replaced. A new failing
-classification test showed that a standard `Headers` instance on a provider
-error lost `Retry-After` even though retryability remained true. Header
-extraction now accepts both `Headers` and plain records; the 20 classification
-tests and Biome pass. A second failing test showed a backward Host clock
-adjustment projecting more remaining wait than the original scheduled delay;
-the projector now caps elapsed time at zero. Projector/continuity tests
-(79 pass) and Biome pass. These are scoped parsing and projection fixes, not
-a full #3115 rewrite.
+countdown remain live. The replacement isolates retryability, normalized
+headers, bounded delay parsing, and retry-reason projection in a pure policy;
+Runtime imports that policy directly and the Host projection is rebuilt around
+the policy result. Standard `Headers`, invalid millisecond fallback, reconnect,
+reduced-motion, and clock-rollback regressions pass. Squash attribution falls
+from 407 base lines to 124 at the current head; remaining UI copy and tests need
+classification, not another retry-policy implementation.
 
 #3111's Daily Review fixture still writes through the interactive storage
 authority with nested writer/owner cleanup. Its archive-seeding test passes;
@@ -381,17 +365,13 @@ from explicit nested selection. #3099's renderer reload test survives at
 `apps/desktop/e2e/sidebar-project-reload.spec.ts`; its direct store tests pass,
 and the Electron renderer-reload E2E passes in this branch.
 
-### Further scoped work (not full PR dispositions)
+### Replacement evidence and remaining attribution
 
-- #3066: a new concurrent-trial test failed under the process-global framework
-  selection (`harbor` observed `pier`). Selection now uses a Python `ContextVar`;
-  the next ablation showed that a failed trial leaked its framework into the
-  caller's context. `run_trial` now scopes selection with a `ContextVar` token
-  and restores the caller's framework after success or error. Python 3.13
-  Harbor tests (93 total, 13 skips), Eval TypeScript build, and 19 lifecycle
-  tests passed. The original TypeScript removal of the environment selector
-  remains in place and was verified by the lifecycle suite; it was not
-  reverted just to reproduce an obsolete selector.
+- #3066: framework selection is process-local because the selected relay base
+  class is fixed at module import and each production trial has its own process.
+  `run_trial` installs the argv-selected framework once before framework module
+  imports; the unsupported `ContextVar` isolation claim and duplicate runner
+  scope are removed. The focused Python 3.12 suite passes 58 tests (2 skipped).
 - #3078: the inventory checker now exposes a pure drift comparison, with tests
   for exact bytes, independently stale Markdown, and missing/extra paths. The
   CI planner also recognizes the new test. The current 302-file inventory check
@@ -405,18 +385,13 @@ and the Electron renderer-reload E2E passes in this branch.
   now validates each candidate independently, preferring valid milliseconds
   and falling back to valid seconds or an HTTP date. The new regression failed
   before the change and passed afterward (20 classification tests); Runtime
-  build and Biome passed. This does not change retryability or constitute a
-  full #3115 replacement.
-- #3544: a UI ablation showed Host-admitted rows remained draggable when the
-  queue revision was unavailable, even though editing was disabled. The queue
-  component now gates both the drag affordance and drop submission on a known
-  revision. Another failing ablation showed an old drag could reorder a newer
-  projection after the Host revision changed mid-drag; the drag now retains
-  its starting revision and discards the drop when it differs. Both tests
-  failed before their respective fixes and passed afterward (6 queue
-  component tests); UI build, Desktop build, the Side Chat native-reorder and
-  reconnect Electron E2E, and Biome passed. This is not a complete rewrite
-  of the 35-file mixed-author feature.
+  build and Biome passed. This regression is retained by the later independent
+  retry-policy and Host-projection replacement.
+- #3544: UI dragging requires a known Host revision and always submits the
+  captured revision. The Host, not a client-side projection comparison, decides
+  whether that revision is stale and returns the conflict through the existing
+  action error path. Eight focused UI queue tests and the Desktop queue workflow
+  pass.
 - #2967: a new boundary test showed the audit writer could append a record
   across `MAX_AUDIT_BYTES` without recording `audit_truncated` until another
   event arrived. The writer now checks the encoded record length before
@@ -425,8 +400,9 @@ and the Electron renderer-reload E2E passes in this branch.
   `policy_error`; the artifact reader now decodes each raw line strictly,
   preserving the existing score and missing-log rules. Python 3.13 Harbor
   tests (93 total, 13 skips) and 22 Eval audit artifact tests passed. These
-  are scoped fixes, not an independent replacement of all five original
-  commits; the first Grok-tagged commit predates the selected policy date.
+  regressions are retained by the replacement audit writer/reader boundaries;
+  the first Grok-tagged commit still predates the selected policy date and
+  requires separate attribution.
 - #3008: a new test exposed that CONNECT classification trusted `pretty_host`
   over the actual tunnel destination, allowing a spoofed Host header to hide a
   blocklisted target. It now classifies `request.host`; missing targets fail
@@ -438,29 +414,31 @@ and the Electron renderer-reload E2E passes in this branch.
   because the Docker daemon does not respond. #3017 owns the later raw-TCP
   closure behavior; do not roll that implementation back as part of #3008.
 
-### Preparatory boundary extraction (September 27, 2026)
+### Independent replacement pass (September 27, 2026)
 
-The current branch extracts one small authority per concern and adds focused
-regressions around seven surviving behaviors. The branch-head survival results
-show that this work did not replace most of the retained implementations, so
-these changes are preparatory hardening rather than completed rewrites.
+The current branch replaces the primary live authority for each of the nine
+active implementation entries, removes the superseded paths, and adds focused
+regressions at the new boundaries. Squash attribution still survives in tests,
+mixed-author commits, later-modified orchestration, and supporting code; those
+lines remain review work and are not automatically classified as generated.
 
-| PR | Current preparatory change | Retained boundary and remaining work |
+| PR | Independent replacement | Retained boundary and remaining review |
 |---|---|---|
-| #3008 | CONNECT target normalization is now a pure `(host, port) -> URL` function; the mitmproxy hook only adapts request fields and fails closed. | #3017's raw TCP/TLS layer handling remains authoritative. The live mitmproxy test passes in PR CI. |
-| #2967 | Audit writing has one byte encoder and append/truncate path; TypeScript reading has one strict line decoder and one statistics pass. | Trial attribution and scoring semantics remain unchanged. |
-| #3048 | Live seed state is reduced from two generation counters to one generation token plus one readiness bit. | Observation subscription, transcript publication, and later recovery orchestration remain consumers of the state machine. |
-| #3066 | Both direct trials and the process runner now use the same scoped framework context; runner completion restores its caller's context. | Explicit `install` remains only for modules/tests that intentionally bootstrap `relay_agent` outside the runner. |
-| #3078 | The checker is a pure generated-versus-committed comparison with direct drift tests; the CLI is only file I/O and reporting. | #3883's later fail-closed Astryx dependency parser remains the generator authority. |
-| #3115 | Retryability, header normalization, and bounded `Retry-After` parsing live in an independent pure policy module. | Provider error evidence classification and Host/UI countdown projection consume that policy. |
-| #3544 | Exact queue permutation validation and UI drag movement share a Core policy; Host remains the revision authority and rejects stale mutations. | Later Host admission, receipt durability, WorkHub, Side Chat, and steering behavior remain around the shared order core. |
+| #3008 | CONNECT target normalization is a pure `(host, port) -> URL` function; the mitmproxy hook only adapts request fields and fails closed. | #3017's later raw TCP/TLS handling remains authoritative; classify the 81 surviving squash-attributed lines. |
+| #2967 | Audit writing uses one byte encoder and append/truncate path; reading uses strict line decoding and one statistics pass. | Trial attribution and scoring semantics remain; classify the 258 surviving lines, including the pre-policy original commit. |
+| #3048 | Observation attempts are the single live-content visibility authority; the duplicate AppShell seed completion path is removed. | Transcript publication and later recovery remain consumers; split 175 surviving mixed-tool lines. |
+| #3066 | The runner installs one process-local framework selection before importing relay modules. | Relay modules intentionally bind their base class at import; classify 57 surviving lines. |
+| #3070 | Explicit chooser paths and historical cwd resolution use separate project-location intents. | Classify 24 surviving lines after later catalog changes. |
+| #3078 | The checker is a pure generated-versus-committed comparison with direct drift tests; the CLI only performs I/O and reporting. | #3883's later fail-closed parser remains authoritative; classify 25 surviving lines. |
+| #3099 | All rail layout keys and read/write helpers live behind one layout module and store. | Classify 12 surviving lines after later navigation work. |
+| #3115 | Retryability, header normalization, bounded delay parsing, retry reason, and Host projection consume one pure policy. | Classify 124 surviving UI/test/support lines. |
+| #3544 | Queue mutations use one Host protocol/executor/state path, Desktop actions, and UI controller; drag-start revision is fenced by the Host. | Split 420 surviving lines across mixed Grok/Codex commits, tests, and later queue orchestration. |
 
-The subtraction pass removed the obsolete `readyGeneration`, process-lifetime
-framework installation in the runner, duplicate CONNECT flow parsing,
-classification-local retry tables/header parsing, and separate Host/UI reorder
-algorithms. No compatibility branch or fallback was added, but this subtraction
-does not establish replacement while most squash-attributed implementation
-lines remain.
+The subtraction pass removed the obsolete seed completion path, duplicate
+CONNECT parsing, classification-local retry tables/header parsing, separate
+queue mutation paths, and split rail persistence. No compatibility branch or
+fallback was added. The remaining squash-attributed lines still require
+commit-level attribution and behavior review before final disposition.
 
 Verification after merging `origin/main` at `d2f19f400`:
 
@@ -487,28 +465,31 @@ Verification after merging `origin/main` at `d2f19f400`:
 - Direct root-level Playwright invocations were discarded as invalid evidence:
   they launched Electron with the repository root as `.` and failed during
   fixture setup before product assertions ran.
+- The review-fix pass at `77d6987e5` passes 8 UI queue tests, 57 Runtime retry
+  and classification tests, 24 Storage catalog tests, 89 focused Runtime Host
+  protocol tests, 28 Desktop navigation/queue tests, and 58 Python 3.12 Eval
+  tests (2 skipped). Desktop typechecks, the production renderer build, Biome,
+  ASF headers, and `git diff --check` also pass.
 
-### Remaining 23: current disposition
+### Current disposition after the replacement pass
 
-These are the 25 candidate PRs minus the two narrow replacements above. A
-scoped fix is **not** a whole-PR rewrite, and a removed feature is not a
-reason to restore its old implementation just to revert it again.
+A removed feature is not restored merely to revert it again, and squash-level
+blame is not used to reclassify mixed-author or later-modified lines.
 
 | Disposition | PRs | Next evidence or action |
 |---|---|---|
 | Deleted or superseded original path (6) | #3063, #3118, #3119, #3102, #3104, #3069 | Confirm that the surviving incidental lines do not implement the original behavior. |
 | Disposition reopened (2) | #3117, #3106 | Their branch-head survival counts are unchanged; separate current production behavior, tests, and later-author work before deciding whether they are superseded. |
 | Mixed or uncertain attribution (2) | #3364, #3123 | Keep Maka-authored formatter and required ASF header; resolve #3123 squash-versus-original provenance with maintainers. |
-| Active code with preparatory boundaries or fixes (9) | #3008, #2967, #3048, #3066, #3070, #3078, #3099, #3115, #3544 | Replace the retained production implementations rather than counting extracted helpers and boundary fixes as rewrites. |
+| Reimplemented active cores; remaining attribution review (9) | #3008, #2967, #3048, #3066, #3070, #3078, #3099, #3115, #3544 | Classify the surviving test, mixed-author, later-edit, and supporting slices; run final ablations against the replacements. |
 | Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | Preserve the current test/fixture behavior: #3101's current Electron assertion passes, #3111 now covers owner release on failed publish, and #3459's tagged follow-ups are isolated and tested without reverting its untagged feature commits. |
 | Documentation-only mixed-tool PR (1) | #4345 | Preserve the current document with the factual correction; include it in the project/legal provenance decision. |
 
-The branch is built against `d2f19f400`: `npm run build:with-deps` passes,
-along with the focused suites listed above and six real Electron tests. These
-checks do not substitute for project/legal acceptance of the remediation. The
-live proxy regression and the full Linux, macOS, and Windows PR checks passed
-on the pushed review branch before the final protocol-epoch, upstream-merge,
-and documentation updates; those final updates require one new CI pass.
+The branch is built against `d2f19f400`; the focused suites listed above,
+Desktop production renderer build, typechecks, Biome, ASF headers, and six real
+Electron tests pass. These checks do not substitute for project/legal
+acceptance. CI for the current head is the final cross-platform compatibility
+check.
 
 ## Project, legal, and release handoff
 
@@ -557,9 +538,13 @@ acceptability of any remediation need Apache project/legal review.
 - [x] Implement and locally verify the narrow #3082 and #5223 replacements.
 - [ ] Split mixed-origin, test-only, later-modified, and independently authored
       exceptions from retained production implementation.
-- [ ] Replace the retained production-code slices from #3008, #2967, #3048,
-      #3066, #3070, #3078, #3099, #3115, and #3544 and remove the old
+- [x] Independently replace the primary live cores from #3008, #2967, #3048,
+      #3066, #3070, #3078, #3099, #3115, and #3544 and remove the superseded
       implementation paths.
+- [ ] Classify the 2,015 surviving squash-attributed lines across original
+      commits, tests, later edits, mixed authorship, and retained supporting
+      slices; replace any remaining production implementation that survives
+      that classification.
 - [ ] Re-evaluate #3117 and #3106, whose branch-head survival counts are
       unchanged, and any other disposition unsupported by line/behavior evidence.
 - [x] Run #3008's live mitmproxy regression in PR CI with a responsive Docker
