@@ -2274,6 +2274,7 @@ function AppShellContent({
                         enabled={(activeSessionForView.orchestrationMode ?? 'default') === 'graph'}
                         locale={uiLocale}
                         onOpenSession={openSessionInChat}
+                        backend={window.maka.graphs}
                       />
                     ) : null}
                     {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}

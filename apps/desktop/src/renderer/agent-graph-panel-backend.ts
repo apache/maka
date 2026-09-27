@@ -17,14 +17,20 @@
  * under the License.
  */
 
-export {
-  createAgentGraphPanelModel,
-  isAgentGraphLive,
-  isAgentGraphPanelDismissible,
-  reduceAgentGraphPanelModel,
-  shouldShowAgentGraphPanel,
-  type AgentGraphPanelDismissals,
-  type AgentGraphPanelModelAction,
-  type AgentGraphPanelModelState,
-  type AgentGraphPanelStatus,
-} from './agent-graph-panel-model.js';
+import type {
+  AgentGraphClientSnapshot,
+  AgentGraphClientSnapshotOptions,
+} from '@maka/runtime/stream-graph-read-model';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
+
+/** Renderer-side port for the Runtime Host Agent Graph read model. */
+export interface AgentGraphPanelBackend {
+  listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
+  listCurrentEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
+  getSnapshot(
+    rootSessionId: string,
+    options?: AgentGraphClientSnapshotOptions & { graphId?: string },
+  ): Promise<AgentGraphClientSnapshot>;
+  stop(rootSessionId: string, expectedGraphId: string): Promise<void>;
+  subscribe(rootSessionId: string, handler: () => void): () => void;
+}
