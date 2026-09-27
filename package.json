@@ -127,9 +127,14 @@
     "yaml": "2.9.1"
   },
   "allowScripts": {
-    "esbuild@0.27.7": true,
-    "@jackwener/opencli@1.8.4": true,
-    "node-pty@1.2.0-beta.15": true
+    "@astryxdesign/cli@0.6.2": true,
+    "@astryxdesign/core@0.6.2": true,
+    "@jackwener/opencli@1.8.7": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.28.2": true,
+    "node-pty@1.2.0-beta.15": true,
+    "protobufjs@7.6.5": true,
+    "tree-sitter-javascript@0.25.0": true
   },
   "overrides": {
     "@ai-sdk/code-mode": {
