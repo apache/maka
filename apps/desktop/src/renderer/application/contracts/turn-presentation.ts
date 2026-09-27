@@ -43,14 +43,15 @@ import { deriveTurnLineageBadges } from './derive-turn-lineage-badges.js';
 import { latestInterruptedResumeTurnId } from './interrupted-resume.js';
 
 /** Everything outside the turn list that the per-turn presentation depends on. */
-export interface AppShellTurnPresentationContext {
-  activeId: string | undefined;
-  pendingTurnActions: ReadonlySet<string>;
+export interface ChatTurnPresentationContext {
+  activeId?: string;
+  pendingTurnActions?: ReadonlySet<string>;
+  allowBranch?: boolean;
   uiLocale: UiLocale;
 }
 
-export interface AppShellTurnPresentationDerivation {
-  derive(turns: readonly TurnViewModel[], context: AppShellTurnPresentationContext): TurnPresentation;
+export interface ChatTurnPresentationDerivation {
+  derive(turns: readonly TurnViewModel[], context: ChatTurnPresentationContext): TurnPresentation;
 }
 
 /** What one turn contributes to the presentation; cached against that turn. */
@@ -83,22 +84,24 @@ function isSandboxOnlyToolFailure(turn: TurnViewModel): boolean {
  * object IS the cache key, so a turn the projection did not move costs one
  * `WeakMap` hit and its props come back as the same objects.
  */
-export function createAppShellTurnPresentationDerivation(): AppShellTurnPresentationDerivation {
+export function createChatTurnPresentationDerivation(): ChatTurnPresentationDerivation {
   let cache = new WeakMap<TurnViewModel, { key: string; entry: TurnPresentationEntry }>();
   let lastTurns: readonly TurnViewModel[] | undefined;
   let lastActiveId: string | undefined;
+  let lastAllowBranch: boolean | undefined;
   let lastPendingTurnActions: ReadonlySet<string> | undefined;
   let lastUiLocale: UiLocale | undefined;
   let lastResult: TurnPresentation | undefined;
 
   function derive(
     turns: readonly TurnViewModel[],
-    context: AppShellTurnPresentationContext,
+    context: ChatTurnPresentationContext,
   ): TurnPresentation {
     if (
       lastResult
       && turns === lastTurns
       && context.activeId === lastActiveId
+      && context.allowBranch === lastAllowBranch
       && context.pendingTurnActions === lastPendingTurnActions
       && context.uiLocale === lastUiLocale
     ) {
@@ -125,7 +128,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       for (const id of PENDING_ACTION_IDS) {
         if (
           context.activeId &&
-          context.pendingTurnActions.has(`${context.activeId}:${turn.turnId}:${id}`)
+          context.pendingTurnActions?.has(`${context.activeId}:${turn.turnId}:${id}`)
         ) {
           pendingForTurn.add(id);
         }
@@ -134,6 +137,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       // pointing AT this turn (a later regeneration), whether the turn it
       // points back at is still present, and its own pending actions.
       const key = [
+        context.allowBranch === false ? '0' : '1',
         lineageEntry?.retriedToTurnId ?? '',
         lineageEntry?.regeneratedToTurnId ?? '',
         turn.retriedFromTurnId && existsTurn(turn.retriedFromTurnId) ? '1' : '0',
@@ -151,6 +155,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
           pendingForTurn,
           existsTurn,
           uiLocale: context.uiLocale,
+          allowBranch: context.allowBranch,
         });
         cache.set(turn, { key, entry });
       }
@@ -167,6 +172,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     const resumeCandidateTurnId = latestInterruptedResumeTurnId(turns);
     lastTurns = turns;
     lastActiveId = context.activeId;
+    lastAllowBranch = context.allowBranch;
     lastPendingTurnActions = context.pendingTurnActions;
     lastUiLocale = context.uiLocale;
     lastResult = {
@@ -189,10 +195,12 @@ function deriveTurnPresentationEntry(input: {
   pendingForTurn: ReadonlySet<TurnFooterActionId>;
   existsTurn(id: string): boolean;
   uiLocale: UiLocale;
+  allowBranch?: boolean;
 }): TurnPresentationEntry {
   const { turn, lineageEntry, pendingForTurn, uiLocale } = input;
   const footerActions = deriveTurnFooterActions({
     status: turn.status,
+    allowBranch: input.allowBranch,
     locale: uiLocale,
     hasContent: finalAssistantReplyText(turn).trim().length > 0,
     ...(pendingForTurn.size > 0 ? { pendingActions: pendingForTurn } : {}),
@@ -230,11 +238,11 @@ function deriveTurnPresentationEntry(input: {
  * checks and renders correctly while throwing the cache away every render,
  * which is the entire optimization; use `useAppShellTurnPresentation` there.
  */
-export function deriveAppShellTurnPresentation(
+export function deriveChatTurnPresentation(
   turns: readonly TurnViewModel[],
-  context: AppShellTurnPresentationContext,
+  context: ChatTurnPresentationContext,
 ): TurnPresentation {
-  return createAppShellTurnPresentationDerivation().derive(turns, context);
+  return createChatTurnPresentationDerivation().derive(turns, context);
 }
 
 /**
@@ -246,9 +254,9 @@ export function deriveAppShellTurnPresentation(
  * when the context changes.
  */
 export function useAppShellTurnPresentation(
-  context: AppShellTurnPresentationContext,
+  context: ChatTurnPresentationContext,
 ): (turns: readonly TurnViewModel[]) => TurnPresentation {
-  const derivation = useRef<AppShellTurnPresentationDerivation>(undefined);
-  derivation.current ??= createAppShellTurnPresentationDerivation();
+  const derivation = useRef<ChatTurnPresentationDerivation>(undefined);
+  derivation.current ??= createChatTurnPresentationDerivation();
   return (turns) => derivation.current!.derive(turns, context);
 }

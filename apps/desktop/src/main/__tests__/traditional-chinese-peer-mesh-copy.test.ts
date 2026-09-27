@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getPeerMeshCopy } from '../../renderer/locales/peer-mesh-copy.js';
 import { getSettingsProjectsCopy } from '../../renderer/locales/settings-projects-copy.js';
-import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import { getProviderSettingsCopy } from '../../renderer/features/connection-settings/index.js';
 import { settingsTestResultMessage } from '../../renderer/locales/settings-test-result-copy.js';
 

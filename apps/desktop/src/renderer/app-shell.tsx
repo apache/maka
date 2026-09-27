@@ -120,12 +120,12 @@ import {
   sessionSettingFailureCopy,
 } from './locales/shell-copy';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { SessionSettingsProvider, useSessionSettingIntent } from './features/session-settings';
 import { pendingSessionView } from './pending-session-view';
-import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
+import { useAppShellTurnPresentation } from './application/contracts/turn-presentation';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { readNavigationState, selectNavigation } from './nav-selection';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
@@ -328,6 +328,7 @@ function AppShellContent({
     setMessageLoadPending,
     sessionUiController,
     sessionCatalogController,
+    commitSession,
     activeCatalogSession,
     activeHostSession,
     requestedCatalogSession,
@@ -815,6 +816,7 @@ function AppShellContent({
   // derive these props, so the turn objects the projection kept are also what
   // keeps the props a memoized TurnView reads stable (#2030).
   const deriveTurnPresentation = useAppShellTurnPresentation({
+    allowBranch: !sharedSessionActive,
     activeId,
     pendingTurnActions: turnActionRegistry.keys,
     uiLocale,
@@ -1255,12 +1257,6 @@ function AppShellContent({
     [sessionCatalogController, localProjects],
   );
 
-  const activateSessionForFirstSend = useCallback((sessionId: string): Promise<void> => {
-    setNavSelection({ section: 'sessions' });
-    setActiveId(sessionId);
-    return Promise.resolve();
-  }, [setActiveId, setNavSelection]);
-
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
     refreshSessions,
@@ -1299,7 +1295,11 @@ function AppShellContent({
     isShellSurfaceOwnerActive,
     messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
-    activateSessionForFirstSend,
+    activateSessionForFirstSend: async (session) => {
+      commitSession(session);
+      setNavSelection({ section: 'sessions' });
+      setActiveId(session.id);
+    },
     retireSession: clearSessionRendererState,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     addTransientMessage,
@@ -1721,16 +1721,9 @@ function AppShellContent({
       contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
     toastApi,
-    notifyRunEnded: ({ kind, sessionId, body }) => {
-      if (kind === 'completed' && activeIdRef.current === sessionId)
+    onTurnCompleted: (sessionId) => {
+      if (activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
-      // The live reply text is usually handed to the transcript before
-      // `complete` arrives; the Host commits the row's reply preview first.
-      // Best-effort: swallow any failure so a missed banner never surfaces
-      // as an unhandled promise rejection.
-      refreshChangedSession(sessionId)
-        .then((session) => window.maka.notifications.runEnded({ kind, title: session?.name, body: body ?? session?.lastMessagePreview }))
-        .catch(() => undefined);
     },
   });
 
@@ -2002,6 +1995,7 @@ function AppShellContent({
   const homeSurfaceActive =
     sessionsSelected &&
     messages.length === 0 &&
+    transientMessages.length === 0 &&
     !hasLiveTurnContent &&
     !activeMessageLoadError;
   const commandOptions: AppShellCommandListOptions = {
@@ -2454,12 +2448,6 @@ function AppShellContent({
                 }
               >
                 {sessionsSelected ? (
-                  <SessionCollaboration.SessionGuestTurnActionBoundary
-                    sessionId={sharedSessionActive ? activeId : undefined}
-                    deriveTurnPresentation={deriveTurnPresentation}
-                    ownerTurnFooterAction={handleTurnFooterAction}
-                  >
-                    {(turnActions) => (
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
@@ -2490,8 +2478,8 @@ function AppShellContent({
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
-                deriveTurnPresentation={turnActions.deriveTurnPresentation}
-                onTurnFooterAction={turnActions.onTurnFooterAction}
+                deriveTurnPresentation={deriveTurnPresentation}
+                onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
                 safeResumeAction={!sharedSessionActive && activeId ? {
                   pending: resumePendingSessionId === activeId,
@@ -2586,8 +2574,7 @@ function AppShellContent({
                 }}
                 conversationItems={planConversationItems}
                   />
-                    )}
-                  </SessionCollaboration.SessionGuestTurnActionBoundary>
+
                 ) : null}
               </ChatSurfaceLayout>
             </div>

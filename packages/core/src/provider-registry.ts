@@ -1720,5 +1720,15 @@ export function isRetiredProvider(providerType: string): boolean {
   return providerDefaultsOf(providerType)?.retired === true;
 }
 
+/**
+ * Whether a request on this provider may carry an output-token limit. The
+ * ChatGPT Codex backend answers `max_output_tokens` with HTTP 400
+ * "Unsupported parameter", so no limit can be honoured there: Runtime must not
+ * send one, and settings must not offer one.
+ */
+export function providerAcceptsOutputTokenLimit(providerType: string): boolean {
+  return providerDefaultsOf(providerType)?.runtimeAdapter.kind !== 'openai-codex';
+}
+
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');

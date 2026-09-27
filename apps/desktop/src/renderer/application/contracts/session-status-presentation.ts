@@ -37,7 +37,7 @@ import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-bound
 import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
 import type { ModelRetryDecision } from '@maka/core/model-failure';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
 
 /**

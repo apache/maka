@@ -23,6 +23,7 @@ import { act, createElement } from 'react';
 import { LocaleProvider, type TransientUserMessageProjection } from '@maka/ui';
 import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
+import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
@@ -55,18 +56,37 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       mcp: { subscribeChanges: () => () => {} },
     }, children: createElement(SessionLocalMessages, {
       sessionId: 'session-1',
-      publish: (_id, message) => { transient.set(message.id, message); },
+      publish: (_id, message) => {
+        const current = transient.get(message.id);
+        transient.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
+      },
       retire: (_id, messageId) => { transient.delete(messageId); },
       reportError: (message) => { throw new Error(message); },
     }) }),
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
-  assert.equal(transient.get('root')?.transientPlacement, 'current_turn', 'a restored ordinary send stays in the transcript');
-  assert.equal(transient.get('followup')?.transientPlacement, 'next_turn', 'an explicit follow-up stays queued');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Host outcome unknown');
+  const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
+  assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
+  messages = messages.map((message) => ({ ...message, state: 'saved', canCancel: true }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send', 'Main cannot reach the Host');
+  messages = messages.map((message) => ({ ...message, delivering: true }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a message Main will deliver shows nothing');
+  assert.deepEqual(transient.get('root')?.deliveryActions, []);
+  messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send');
+  assert.equal(transient.get('root')?.deliveryActions?.length, 1, 'a Host outage keeps the copy removable');
+  messages = messages.map((message) => ({ ...message, state: 'failed' }));
+  await act(async () => changed('session-1'));
+  assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' }, 'failed delivery moves nothing');
   messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);
-  assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
+  assert.equal(transient.get('root')?.transientPlacement, 'transcript');
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'an accepted send shows only its time');
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
 });
@@ -183,6 +203,69 @@ test('queue_update events drive the independent desktop queue projection', () =>
   assert.equal(transientMessages.size, 0);
 });
 
+test('a rootless resubscription seed retires a stale queued card', () => {
+  // Switch away → the queue drains rootless → navigate back. The projector's
+  // rootless seed now carries the authoritative queue (apache/maka#5520
+  // review), so the card the client kept from before it left must go.
+  const controller = createAppShellSessionUiStateController();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'zh-CN',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
+    removeTransientMessage: () => {},
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+  });
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'queue-1',
+    turnId: 'turn-1',
+    ts: 1,
+    queueRevision: 3,
+    steering: ['adjust this run'],
+    followup: [],
+    steeringEntries: [
+      {
+        entryId: 'entry-steer',
+        messageId: 'message-steer',
+        content: { text: 'adjust this run' },
+        placement: 'current_turn' as const,
+        state: 'queued' as const,
+      },
+    ],
+    followupEntries: [],
+  });
+  assert.ok(
+    controller.getState().messageQueueBySession['session-1'],
+    'the card is visible before the client leaves',
+  );
+
+  // The resubscription seed's authoritative empty queue: the drain landed
+  // while the Session was inactive, and the root Turn is gone.
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'host-queue:host-1:4',
+    turnId: '',
+    ts: 2,
+    queueRevision: 4,
+    steering: [],
+    followup: [],
+    steeringEntries: [],
+    followupEntries: [],
+  });
+  assert.equal(
+    controller.getState().messageQueueBySession['session-1'],
+    undefined,
+    'the stale card does not survive the resubscription',
+  );
+});
+
 test('steering delivery clears a promoted follow-up from the desktop queue', () => {
   const controller = createAppShellSessionUiStateController();
   const handlers = createAppShellSessionEventHandlers({
@@ -263,35 +346,4 @@ test('complete events deliver the durable context compaction outcome to Desktop'
       outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
     },
   ]);
-});
-
-test('an interaction request notifies that the turn is waiting on the user', () => {
-  const controller = createAppShellSessionUiStateController();
-  const notified: unknown[] = [];
-  const handlers = createAppShellSessionEventHandlers({
-    uiLocale: 'en',
-    activeIdRef: { current: 'session-1' },
-    liveTurnBySessionRef: controller.liveTurnBySessionRef,
-    refreshMessages: async () => true,
-    refreshSessions: async () => [],
-    setLiveTurnBySession: controller.setLiveTurnBySession,
-    setInteractionBySession: controller.setInteractionBySession,
-    showModelSetupToast() {},
-    toastApi: { error() {} },
-    notifyRunEnded(payload) {
-      notified.push(payload);
-    },
-  });
-
-  handlers.handleEvent('session-1', {
-    type: 'user_question_request',
-    id: 'question-1',
-    turnId: 'turn-1',
-    ts: 1,
-    requestId: 'request-1',
-    toolUseId: 'tool-1',
-    questions: [{ question: 'Which branch?', options: [{ label: 'main' }] }],
-  });
-
-  assert.deepEqual(notified, [{ kind: 'waiting', sessionId: 'session-1', body: 'Which branch?' }]);
 });

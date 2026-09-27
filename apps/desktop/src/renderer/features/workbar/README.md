@@ -50,6 +50,17 @@ remounted when the active session changes.
 - `selectors.rightCollapsed` drives the titlebar restore affordance and
   `selectors.hiddenSessionIds` filters ephemeral companion forks from the rail.
 
+## Review comparison preference
+
+`WorkbarServices.reviewBaseBranchPreference` is the feature-owned persistence
+port. It stores only an explicit qualified ref for one Session; `null` leaves
+the comparison unpinned so reads follow the repository default. New Sessions
+start unpinned, and existing choices survive panel remounts and app restarts.
+The panel owns selection and invalid-branch recovery. The Desktop adapter owns
+the localStorage key, JSON format, validation and best-effort error handling.
+Tests and Storybook use an isolated in-memory implementation through the same
+port; they do not persist review choices into the browser profile.
+
 ## Lifecycle invariants
 
 - Review, Work Board, Browser, Files and Inspector tabs are persisted globally.

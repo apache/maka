@@ -20,7 +20,7 @@
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { useUiLocale } from '@maka/ui';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import type { VisibleParentTaskStatus } from '../../model/parent-task-status.js';
 
 const BANNER_STATUS = {

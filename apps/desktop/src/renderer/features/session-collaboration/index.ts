@@ -22,7 +22,6 @@ export { SessionCollaborationDialogRoot } from './ui/session-collaboration-dialo
 export type { SessionCollaborationDialogProjection } from './model/dialog-projection.js';
 export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
 export { SessionCollaborationNavigation } from './ui/session-collaboration-navigation';
-export { SessionGuestTurnActionBoundary } from './ui/session-guest-turn-actions';
 export { SessionTurnRequestComposer } from './ui/session-turn-request-composer';
 export { SessionTurnRequestApprovalForSession } from './ui/session-turn-request-approval';
 export { SessionTurnRequestBadge } from './ui/session-turn-request-badge';

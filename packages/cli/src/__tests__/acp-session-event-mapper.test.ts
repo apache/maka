@@ -630,6 +630,78 @@ describe('ACP Session event mapper', () => {
     assert.equal(notifications.length, 1);
   });
 
+  test('a corrected tool result removes an obsolete Artifact reference', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: false,
+        content: {
+          kind: 'archived_tool_result',
+          status: 'not_loaded',
+          runtimeEventId: 'event-1',
+          toolCallId: 'tool',
+          toolName: 'Read',
+          artifactId: 'artifact-1',
+          originalEstimatedTokens: 1,
+          originalBytes: 1,
+          rewriteVersion: 1,
+          reason: 'tool_result_pruned',
+        },
+      }),
+    );
+    assert.equal(
+      (
+        (toolUpdate(notifications.at(-1)!)._meta?.maka as { artifacts?: unknown[] })?.artifacts ??
+        []
+      ).length,
+      1,
+    );
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: false,
+        content: { kind: 'text', text: 'Corrected result without an Artifact' },
+      }),
+    );
+    assert.equal(
+      (toolUpdate(notifications.at(-1)!)._meta?.maka as { artifacts?: unknown[] })?.artifacts,
+      undefined,
+    );
+  });
+
+  for (const status of ['missing', 'corrupt'] as const) {
+    test(`an ${status} archived result does not advertise a readable Artifact`, async () => {
+      const notifications: SessionNotification[] = [];
+      const mapper = eventMapper(notifications);
+      await mapper.accept(
+        event({
+          type: 'tool_result',
+          toolUseId: 'tool',
+          isError: false,
+          content: {
+            kind: 'archived_tool_result',
+            status,
+            runtimeEventId: 'event-1',
+            toolCallId: 'tool',
+            toolName: 'Read',
+            artifactId: 'artifact-1',
+            originalEstimatedTokens: 1,
+            originalBytes: 1,
+            rewriteVersion: 1,
+            reason: 'tool_result_pruned',
+          },
+        }),
+      );
+      const update = toolUpdate(notifications.at(-1)!);
+      assert.equal((update._meta?.maka as { artifacts?: unknown[] })?.artifacts, undefined);
+      assert.doesNotMatch(toolText(notifications.at(-1)!), /read with _maka\/artifact\/query/);
+    });
+  }
+
   test('interaction updates preserve Host closure reasons without reopening terminal tools', async () => {
     const notifications: SessionNotification[] = [];
     const mapper = eventMapper(notifications);

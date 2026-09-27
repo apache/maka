@@ -116,6 +116,641 @@ const DEFAULT_CONFIG_OPTIONS: Array<Extract<SessionConfigOption, { type: 'select
 ];
 
 describe('ACP Session registry', () => {
+  test('does not replay a dispatched Memory mutation after Host connection loss', async () => {
+    let attempts = 0;
+    let connects = 0;
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-memory',
+      connect: async () => {
+        connects += 1;
+        return fakeConnection({
+          request: async (operation) => {
+            if (operation === 'session.create') return catalogSession('session-memory');
+            if (operation === 'memory.query') return { kind: 'blocked', reason: 'disabled' };
+            if (operation === 'memory.mutate') {
+              attempts += 1;
+              throw new RuntimeHostRequestInterruptedError(
+                'memory.mutate',
+                'command',
+                'dispatched',
+                'connection_lost',
+              );
+            }
+            throw new Error(`Unexpected ${operation}`);
+          },
+        });
+      },
+    });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      await assert.rejects(
+        registry.memoryMutate({
+          kind: 'remember',
+          expectedRevision: SESSION_REVISION,
+          title: 'Memory',
+          content: 'Do not replay',
+          scope: { kind: 'session', sessionId: 'session-memory' },
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof RequestError);
+          assert.deepEqual(error.data, {
+            source: 'runtime_host',
+            operation: 'memory.mutate',
+            code: 'request_interrupted',
+            reason: 'connection_lost',
+            dispatch: 'dispatched',
+          });
+          return true;
+        },
+      );
+      assert.equal(attempts, 1);
+      assert.deepEqual(await registry.memoryQuery({ kind: 'state' }), {
+        kind: 'blocked',
+        reason: 'disabled',
+      });
+      assert.equal(connects, 1);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('close aborts a possibly opened Artifact after its dispatched response is lost', async () => {
+    const requests: string[] = [];
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-lost-upload',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-lost-upload');
+            if (operation === 'artifact.ingest') {
+              const upload = input as { kind: string; uploadId: string };
+              requests.push(upload.kind);
+              if (upload.kind === 'begin') {
+                throw new RuntimeHostRequestInterruptedError(
+                  'artifact.ingest',
+                  'command',
+                  'dispatched',
+                  'connection_lost',
+                );
+              }
+              return { kind: 'upload_aborted', uploadId: upload.uploadId };
+            }
+            throw new Error(`Unexpected ${operation}`);
+          },
+        }),
+    });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      await assert.rejects(
+        registry.artifactIngest({
+          kind: 'begin',
+          sessionId: 'session-lost-upload',
+          uploadId: 'lost-upload',
+          name: 'x.bin',
+          mimeType: 'application/octet-stream',
+          totalBytes: 0,
+          contentSha256: `sha256:${'0'.repeat(64)}`,
+        }),
+        (error: unknown) =>
+          error instanceof RequestError &&
+          (error.data as { dispatch?: string }).dispatch === 'dispatched',
+      );
+      await registry.close({ sessionId: 'session-lost-upload' });
+      assert.deepEqual(requests, ['begin', 'abort']);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('Session close waits for a dispatched Artifact begin and aborts its staged upload', async () => {
+    const opening = deferred<{ kind: 'upload_opened'; uploadId: string; nextOffset: number }>();
+    const requests: string[] = [];
+    let subscriptionOpens = 0;
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-artifact',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-artifact');
+            if (operation === 'artifact.ingest') {
+              const upload = input as { kind: string; uploadId: string };
+              requests.push(upload.kind);
+              if (upload.kind === 'begin') return opening.promise;
+              return { kind: 'upload_aborted', uploadId: upload.uploadId };
+            }
+            throw new Error(`Unexpected ${operation}`);
+          },
+          openSessionSubscription: async () => {
+            subscriptionOpens += 1;
+            throw new Error('Unexpected subscription');
+          },
+        }),
+    });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      const begin = registry.artifactIngest({
+        kind: 'begin',
+        sessionId: 'session-artifact',
+        uploadId: 'upload-1',
+        name: 'x.bin',
+        mimeType: 'application/octet-stream',
+        totalBytes: 1,
+        contentSha256: `sha256:${'0'.repeat(64)}`,
+      });
+      await waitFor(() => requests.includes('begin'));
+      const close = registry.close({ sessionId: 'session-artifact' });
+      await assertInvalidParams(
+        registry.artifactQuery({ kind: 'list_start', sessionId: 'session-artifact' }),
+        { reason: 'unknown_session' },
+      );
+      assert.deepEqual(requests, ['begin']);
+      opening.resolve({ kind: 'upload_opened', uploadId: 'upload-1', nextOffset: 0 });
+      await begin;
+      await close;
+      assert.deepEqual(requests, ['begin', 'abort']);
+      assert.equal(subscriptionOpens, 0);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('a conflicting replay does not hide an earlier open Artifact from Session close', async () => {
+    const requests: string[] = [];
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-replayed-upload',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-replayed-upload');
+            if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+            const upload = input as { kind: string; uploadId: string; name?: string };
+            requests.push(`${upload.kind}:${upload.uploadId}`);
+            if (upload.kind === 'begin' && upload.name === 'conflict.bin') {
+              throw new RuntimeHostOperationError(
+                'artifact.ingest',
+                'operation_conflict',
+                'Upload identity is already in use',
+              );
+            }
+            if (upload.kind === 'begin') {
+              return { kind: 'upload_opened', uploadId: upload.uploadId, nextOffset: 0 };
+            }
+            return { kind: 'upload_aborted', uploadId: upload.uploadId };
+          },
+        }),
+    });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      const original = {
+        kind: 'begin' as const,
+        sessionId: 'session-replayed-upload',
+        uploadId: 'same-upload',
+        name: 'original.bin',
+        mimeType: 'application/octet-stream',
+        totalBytes: 1,
+        contentSha256: `sha256:${'0'.repeat(64)}` as const,
+      };
+      await registry.artifactIngest(original);
+      await assert.rejects(registry.artifactIngest({ ...original, name: 'conflict.bin' }));
+      await registry.close({ sessionId: original.sessionId });
+      assert.deepEqual(requests, ['begin:same-upload', 'begin:same-upload', 'abort:same-upload']);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('a failed concurrent begin does not discard a successful begin with the same ID', async () => {
+    const first = deferred<{ kind: 'upload_opened'; uploadId: string; nextOffset: number }>();
+    const second = deferred<{ kind: 'upload_opened'; uploadId: string; nextOffset: number }>();
+    let begins = 0;
+    let aborts = 0;
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-overlapping-begins',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-overlapping-begins');
+            if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+            const upload = input as { kind: string; uploadId: string };
+            if (upload.kind === 'begin') return ++begins === 1 ? first.promise : second.promise;
+            aborts += 1;
+            return { kind: 'upload_aborted', uploadId: upload.uploadId };
+          },
+        }),
+    });
+    const input = {
+      kind: 'begin' as const,
+      sessionId: 'session-overlapping-begins',
+      uploadId: 'same-upload',
+      name: 'payload.bin',
+      mimeType: 'application/octet-stream',
+      totalBytes: 0,
+      contentSha256: `sha256:${'0'.repeat(64)}` as const,
+    };
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      const failed = registry.artifactIngest(input);
+      const opened = registry.artifactIngest(input);
+      await waitFor(() => begins === 2);
+      second.resolve({ kind: 'upload_opened', uploadId: input.uploadId, nextOffset: 0 });
+      await opened;
+      first.reject(
+        new RuntimeHostOperationError(
+          'artifact.ingest',
+          'operation_conflict',
+          'Upload identity is already in use',
+        ),
+      );
+      await assert.rejects(failed);
+      await registry.close({ sessionId: input.sessionId });
+      assert.equal(aborts, 1);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('failed Artifact commits do not exhaust an adapter-only upload limit', async () => {
+    let begins = 0;
+    let aborts = 0;
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-failed-commits',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-failed-commits');
+            if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+            const upload = input as { kind: string; uploadId: string };
+            if (upload.kind === 'begin') {
+              begins += 1;
+              return { kind: 'upload_opened', uploadId: upload.uploadId, nextOffset: 0 };
+            }
+            if (upload.kind === 'commit') {
+              throw new RuntimeHostOperationError(
+                'artifact.ingest',
+                'operation_conflict',
+                'Attachment content digest does not match',
+              );
+            }
+            aborts += 1;
+            return { kind: 'upload_aborted', uploadId: upload.uploadId };
+          },
+        }),
+    });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      for (let index = 0; index < 65; index += 1) {
+        const uploadId = `failed-${index}`;
+        await registry.artifactIngest({
+          kind: 'begin',
+          sessionId: 'session-failed-commits',
+          uploadId,
+          name: 'payload.bin',
+          mimeType: 'application/octet-stream',
+          totalBytes: 0,
+          contentSha256: `sha256:${'0'.repeat(64)}`,
+        });
+        await assert.rejects(
+          registry.artifactIngest({
+            kind: 'commit',
+            sessionId: 'session-failed-commits',
+            uploadId,
+          }),
+        );
+      }
+      assert.equal(begins, 65);
+      await registry.close({ sessionId: 'session-failed-commits' });
+      assert.equal(aborts, 0);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('definitively rejected Artifact begins do not accumulate for Session close', async () => {
+    let aborts = 0;
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-rejected-begins',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-rejected-begins');
+            if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+            const upload = input as { kind: string; uploadId: string };
+            if (upload.kind === 'begin') {
+              throw new RuntimeHostOperationError(
+                'artifact.ingest',
+                'operation_conflict',
+                'Attachment upload capacity is exhausted',
+              );
+            }
+            aborts += 1;
+            return { kind: 'upload_aborted', uploadId: upload.uploadId };
+          },
+        }),
+    });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      for (let index = 0; index < 65; index += 1) {
+        await assert.rejects(
+          registry.artifactIngest({
+            kind: 'begin',
+            sessionId: 'session-rejected-begins',
+            uploadId: `rejected-${index}`,
+            name: 'payload.bin',
+            mimeType: 'application/octet-stream',
+            totalBytes: 0,
+            contentSha256: `sha256:${'0'.repeat(64)}`,
+          }),
+        );
+      }
+      await registry.close({ sessionId: 'session-rejected-begins' });
+      assert.equal(aborts, 0);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('outcome-unknown Artifact begins remain bounded and are cleaned up on close', async () => {
+    let dispatchedBegins = 0;
+    let aborts = 0;
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-uncertain-begins',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-uncertain-begins');
+            if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+            const upload = input as { kind: string; uploadId: string };
+            if (upload.kind === 'begin') {
+              dispatchedBegins += 1;
+              throw new RuntimeHostRequestInterruptedError(
+                'artifact.ingest',
+                'command',
+                'dispatched',
+                'connection_lost',
+              );
+            }
+            aborts += 1;
+            return { kind: 'upload_aborted', uploadId: upload.uploadId };
+          },
+        }),
+    });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      for (let index = 0; index < 64; index += 1) {
+        await assert.rejects(
+          registry.artifactIngest({
+            kind: 'begin',
+            sessionId: 'session-uncertain-begins',
+            uploadId: `uncertain-${index}`,
+            name: 'payload.bin',
+            mimeType: 'application/octet-stream',
+            totalBytes: 0,
+            contentSha256: `sha256:${'0'.repeat(64)}`,
+          }),
+        );
+      }
+      await assert.rejects(
+        registry.artifactIngest({
+          kind: 'begin',
+          sessionId: 'session-uncertain-begins',
+          uploadId: 'uncertain-64',
+          name: 'payload.bin',
+          mimeType: 'application/octet-stream',
+          totalBytes: 0,
+          contentSha256: `sha256:${'0'.repeat(64)}`,
+        }),
+        (error: unknown) =>
+          error instanceof RequestError &&
+          (error.data as { code?: string }).code === 'upload_tracking_capacity',
+      );
+      assert.equal(dispatchedBegins, 64);
+      await registry.close({ sessionId: 'session-uncertain-begins' });
+      assert.equal(aborts, 64);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  test('expired Artifact identities are aborted before the tracking limit rejects a new upload', async (t) => {
+    let now = Date.now();
+    t.mock.method(Date, 'now', () => now);
+    let begins = 0;
+    let aborts = 0;
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-expired-uploads',
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-expired-uploads');
+            if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+            const upload = input as { kind: string; uploadId: string };
+            if (upload.kind === 'begin') {
+              begins += 1;
+              return { kind: 'upload_opened', uploadId: upload.uploadId, nextOffset: 0 };
+            }
+            aborts += 1;
+            return { kind: 'upload_aborted', uploadId: upload.uploadId };
+          },
+        }),
+    });
+    const begin = (uploadId: string) =>
+      registry.artifactIngest({
+        kind: 'begin',
+        sessionId: 'session-expired-uploads',
+        uploadId,
+        name: 'payload.bin',
+        mimeType: 'application/octet-stream',
+        totalBytes: 0,
+        contentSha256: `sha256:${'0'.repeat(64)}`,
+      });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      for (let index = 0; index < 64; index += 1) await begin(`expired-${index}`);
+      assert.equal(aborts, 0);
+      now += 5 * 60_000 + 30_001;
+      await begin('fresh');
+      assert.equal(begins, 65);
+      assert.equal(aborts, 64);
+      await registry.close({ sessionId: 'session-expired-uploads' });
+      assert.equal(aborts, 65);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
+  for (const mode of [
+    'same_host',
+    'replaced_host',
+    'failed_old_abort',
+    'lost_new_begin',
+  ] as const) {
+    test(`expired-upload cleanup finishes before a concurrent begin reuses that identity (${mode})`, async (t) => {
+      let now = Date.now();
+      t.mock.method(Date, 'now', () => now);
+      const oldAbort = deferred<void>();
+      const requests: string[] = [];
+      let firstOldAbort = true;
+      let availability:
+        | Parameters<
+            NonNullable<AcpSessionRegistryConnection['subscribeConnectionAvailability']>
+          >[0]
+        | undefined;
+      const registry = new AcpSessionRegistry({
+        newSessionId: () => 'session-prune-race',
+        connect: async () =>
+          fakeConnection({
+            subscribeConnectionAvailability: (listener) => {
+              availability = listener;
+              listener({ kind: 'connected', hostEpoch: 'host-1', connectionId: 'connection-1' });
+              return () => undefined;
+            },
+            request: async (operation, input) => {
+              if (operation === 'session.create') return catalogSession('session-prune-race');
+              if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+              const upload = input as { kind: string; uploadId: string };
+              requests.push(`${upload.kind}:${upload.uploadId}`);
+              if (upload.kind === 'abort' && upload.uploadId === 'expired-0' && firstOldAbort) {
+                firstOldAbort = false;
+                await oldAbort.promise;
+              }
+              if (
+                upload.kind === 'begin' &&
+                upload.uploadId === 'fresh' &&
+                mode === 'lost_new_begin'
+              ) {
+                throw new RuntimeHostRequestInterruptedError(
+                  'artifact.ingest',
+                  'command',
+                  'dispatched',
+                  'connection_lost',
+                );
+              }
+              return upload.kind === 'begin'
+                ? { kind: 'upload_opened', uploadId: upload.uploadId, nextOffset: 0 }
+                : { kind: 'upload_aborted', uploadId: upload.uploadId };
+            },
+          }),
+      });
+      const begin = (uploadId: string) =>
+        registry.artifactIngest({
+          kind: 'begin',
+          sessionId: 'session-prune-race',
+          uploadId,
+          name: 'payload.bin',
+          mimeType: 'application/octet-stream',
+          totalBytes: 0,
+          contentSha256: `sha256:${'0'.repeat(64)}`,
+        });
+      try {
+        await registry.create({ cwd: '/workspace', mcpServers: [] });
+        for (let index = 0; index < 64; index += 1) await begin(`expired-${index}`);
+        now += 5 * 60_000 + 30_001;
+        const fresh = begin('fresh');
+        await waitFor(() => requests.includes('abort:expired-0'));
+        if (mode !== 'same_host') {
+          availability?.({ kind: 'unavailable' });
+          availability?.({ kind: 'connected', hostEpoch: 'host-2', connectionId: 'connection-2' });
+        }
+        const replay = begin('expired-0');
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(requests.filter((request) => request === 'begin:expired-0').length, 1);
+        if (mode === 'failed_old_abort') {
+          oldAbort.reject(
+            new RuntimeHostRequestInterruptedError(
+              'artifact.ingest',
+              'command',
+              'not_dispatched',
+              'connection_lost',
+            ),
+          );
+        } else {
+          oldAbort.resolve();
+        }
+        if (mode === 'lost_new_begin') {
+          await assert.rejects(fresh);
+          await replay;
+        } else {
+          await Promise.all([fresh, replay]);
+        }
+        assert.equal(requests.filter((request) => request === 'begin:expired-0').length, 2);
+        await registry.close({ sessionId: 'session-prune-race' });
+        assert.equal(requests.filter((request) => request === 'abort:expired-0').length, 2);
+        if (mode === 'lost_new_begin') {
+          assert.equal(requests.filter((request) => request === 'abort:fresh').length, 1);
+        }
+      } finally {
+        oldAbort.resolve();
+        await registry.dispose();
+      }
+    });
+  }
+
+  test('Host replacement releases upload identities from the previous connection', async () => {
+    let availability:
+      | ((
+          value:
+            | { kind: 'connected'; hostEpoch: string; connectionId: string }
+            | { kind: 'unavailable' },
+        ) => void)
+      | undefined;
+    let begins = 0;
+    const aborts: string[] = [];
+    const registry = new AcpSessionRegistry({
+      newSessionId: () => 'session-replaced-host',
+      connect: async () =>
+        fakeConnection({
+          subscribeConnectionAvailability: (listener) => {
+            availability = listener;
+            listener({ kind: 'connected', hostEpoch: 'host-1', connectionId: 'connection-1' });
+            return () => undefined;
+          },
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession('session-replaced-host');
+            if (operation !== 'artifact.ingest') throw new Error(`Unexpected ${operation}`);
+            const upload = input as { kind: string; uploadId: string };
+            if (upload.kind === 'begin') {
+              begins += 1;
+              if (upload.uploadId !== 'fresh') {
+                throw new RuntimeHostRequestInterruptedError(
+                  'artifact.ingest',
+                  'command',
+                  'dispatched',
+                  'connection_lost',
+                );
+              }
+              return { kind: 'upload_opened', uploadId: upload.uploadId, nextOffset: 0 };
+            }
+            aborts.push(upload.uploadId);
+            return { kind: 'upload_aborted', uploadId: upload.uploadId };
+          },
+        }),
+    });
+    const begin = (uploadId: string) =>
+      registry.artifactIngest({
+        kind: 'begin',
+        sessionId: 'session-replaced-host',
+        uploadId,
+        name: 'payload.bin',
+        mimeType: 'application/octet-stream',
+        totalBytes: 0,
+        contentSha256: `sha256:${'0'.repeat(64)}`,
+      });
+    try {
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      for (let index = 0; index < 64; index += 1) {
+        await assert.rejects(begin(`old-${index}`));
+      }
+      availability?.({ kind: 'unavailable' });
+      availability?.({ kind: 'connected', hostEpoch: 'host-2', connectionId: 'connection-2' });
+      await begin('fresh');
+      assert.equal(begins, 65);
+      await registry.close({ sessionId: 'session-replaced-host' });
+      assert.deepEqual(aborts, ['fresh']);
+    } finally {
+      await registry.dispose();
+    }
+  });
+
   for (const method of ['load', 'resume'] as const) {
     test(`${method} failure before client replacement preserves a live prompt interaction`, async () => {
       const sessionId = `interaction-rollback-${method}`;
@@ -6416,22 +7051,19 @@ function fakeConnection(
     thinkingLevels?: readonly ThinkingLevel[];
     openSessionSubscription?: AcpSessionRegistryConnection['openSessionSubscription'];
     openSessionSubscriptionOnce?: AcpSessionRegistryConnection['openSessionSubscriptionOnce'];
+    subscribeConnectionAvailability?: AcpSessionRegistryConnection['subscribeConnectionAvailability'];
   } = {},
 ): AcpSessionRegistryConnection {
   return {
     reconnecting: true,
     replaceClientCapabilities: async () => ({ registrationId: 'registration-1', revision: 1 }),
     unregisterClientCapabilities: async () => ({ registrationId: 'registration-1', revision: 2 }),
-    subscribeConnectionAvailability: (
-      listener: (availability: {
-        kind: 'connected';
-        hostEpoch: string;
-        connectionId: string;
-      }) => void,
-    ) => {
-      listener({ kind: 'connected', hostEpoch: 'host-1', connectionId: 'connection-1' });
-      return () => undefined;
-    },
+    subscribeConnectionAvailability:
+      overrides.subscribeConnectionAvailability ??
+      ((listener) => {
+        listener({ kind: 'connected', hostEpoch: 'host-1', connectionId: 'connection-1' });
+        return () => undefined;
+      }),
     request: async (operation: string, input: unknown, timeoutMs?: number) =>
       operation === 'connection.catalog.query'
         ? connectionCatalogPage(overrides.thinkingLevels ?? THINKING_LEVELS)

@@ -457,10 +457,16 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   let projection = canonical({
     rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
   });
+  const attention: unknown[] = [];
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => projection,
     new SessionAdmissionGate(),
+    () => undefined,
+    undefined,
+    (sessionId, event) => {
+      if (event) attention.push({ sessionId, ...event });
+    },
   );
   const sink = new RecordingSink();
   const connection = attachTestConnection(coordinator, 'connection-1', sink);
@@ -490,7 +496,51 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
     assert.equal(frame.snapshot.projectionRevision, 2);
     assert.equal(frame.snapshot.rootTurn?.status, 'completed');
   }
+  assert.deepEqual(attention, [
+    {
+      sessionId: SESSION_ID,
+      kind: 'completed',
+      eventId: 'event-terminal',
+    },
+  ]);
   coordinator.close();
+});
+
+test('silent successful Turns and cancellations do not notify, but failures still do', async () => {
+  for (const status of ['completed', 'cancelled', 'failed'] as const) {
+    let projection = canonical();
+    const attention: unknown[] = [];
+    const coordinator = new SessionContinuityCoordinator(
+      HOST_EPOCH,
+      async () => projection,
+      new SessionAdmissionGate(),
+      () => undefined,
+      undefined,
+      (_sessionId, event) => {
+        if (event) attention.push(event);
+      },
+    );
+    await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
+    projection = canonical({
+      rootTurn: {
+        sessionId: SESSION_ID,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        terminalEventId: 'terminal',
+        ...(status === 'failed'
+          ? { status, failureClass: 'provider', failureMessage: 'Unavailable' }
+          : status === 'cancelled'
+            ? { status, abortSource: 'user' }
+            : { status }),
+      },
+    });
+    await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1', undefined, false);
+    assert.deepEqual(
+      attention,
+      status === 'failed' ? [{ kind: 'errored', eventId: 'terminal', body: 'Unavailable' }] : [],
+    );
+    coordinator.close();
+  }
 });
 
 test('detached canonical refreshes coalesce before Store I/O', async () => {
@@ -1134,21 +1184,33 @@ test('open returns a bounded immutable durable tail', async () => {
   coordinator.close();
 });
 
-test('reports a durable bootstrap read failure as unavailable persistence', async () => {
+test('logs a durable bootstrap failure before reporting unavailable persistence', async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  });
+  const failure = new Error(
+    `injected durable bootstrap failure: api_key=sk-secretvalue123\n${'细'.repeat(4096)}`,
+  );
+  const publicationFailures: unknown[] = [];
   const reader: SessionTranscriptReader = {
     ...transcriptReader([]),
     readDurableHighWater: async () => 0,
     readDurablePage: async () => {
-      throw new Error('injected durable bootstrap failure');
+      throw failure;
     },
   };
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
-    undefined,
+    (error) => {
+      assert.equal(logs.length, 1, 'log the cause before the publication-failure hook');
+      publicationFailures.push(error);
+    },
     reader,
   );
+  t.after(() => coordinator.close());
   attachTestConnection(coordinator, 'connection-failed-bootstrap', new RecordingSink());
   const outcome = await coordinator.handlers['subscription.open'](
     {
@@ -1161,7 +1223,16 @@ test('reports a durable bootstrap read failure as unavailable persistence', asyn
     ok: false,
     error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
   });
-  coordinator.close();
+  assert.deepEqual(publicationFailures, [failure]);
+  assert.equal(logs.length, 1);
+  const prefix = '[runtime-host] subscription.open transcript bootstrap failed: ';
+  const diagnostic = logs[0] ?? '';
+  assert.ok(diagnostic.startsWith(prefix));
+  assert.match(diagnostic, /Error: injected durable bootstrap failure/);
+  assert.match(diagnostic, /\[redacted\]/i);
+  assert.doesNotMatch(diagnostic, /sk-secretvalue123/);
+  assert.match(diagnostic, /<diagnostic truncated>$/);
+  assert.ok(Buffer.byteLength(diagnostic.slice(prefix.length), 'utf8') <= 8 * 1024);
 });
 
 test('rejects a subscription open whose connection closes during transcript bootstrap', async () => {
@@ -2282,6 +2353,69 @@ function completionOrder(sink: { frames: SubscriptionFrame[] }): string[] {
       : [],
   );
 }
+
+test('a failed transcript page records the underlying cause before the generic outcome', async () => {
+  const message = assistantMessage('界'.repeat(20_000));
+  const baseReader = transcriptReader([message]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    // The bootstrap request carries no position; a page always does. Throw only
+    // for the page so the subscription still opens.
+    readDurablePage: async (sessionId, request, project) => {
+      if (request.position !== undefined) throw new Error('injected oversized Turn');
+      return baseReader.readDurablePage(sessionId, request, project);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  attachTestConnection(coordinator, 'connection-page-failure', new RecordingSink());
+  const opened = await open(coordinator, 'connection-page-failure', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  const transcript = opened.transcript;
+  const cursor = transcript?.durable.nextCursor;
+  assert.ok(transcript);
+  assert.ok(cursor);
+  if (!transcript || !cursor) {
+    coordinator.close();
+    return;
+  }
+
+  // The generic outcome carries no cause, so the Host has to log one instead.
+  const logged: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => logged.push(values.map(String).join(' '));
+  try {
+    const outcome = await coordinator.handlers['session.transcript.page'](
+      {
+        subscriptionId: opened.subscriptionId,
+        direction: 'older',
+        throughSequence: transcript.durable.throughSequence,
+        cursor,
+        anchorSequence: null,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      },
+      connectionContext('connection-page-failure'),
+    );
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+    });
+  } finally {
+    console.error = originalConsoleError;
+    coordinator.close();
+  }
+
+  assert.equal(logged.length, 1);
+  assert.match(logged[0] ?? '', /session\.transcript\.page failed/);
+  assert.match(logged[0] ?? '', /injected oversized Turn/);
+});
 
 function textCompleteEvent(messageId: string, text: string) {
   return {

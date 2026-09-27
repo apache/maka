@@ -40,11 +40,8 @@ export function deriveMessageQueueProjection(
     entries,
     transientMessages: entries.map((entry) => ({
         id: entry.messageId,
-        transientPlacement: entry.placement,
-        ...(entry.placement === 'current_turn' && {
-          hostTurnId: event.turnId,
-          pendingSteering: true,
-        }),
+        transientPlacement: entry.placement === 'current_turn' ? 'steering' : 'follow_up',
+        ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
         ts: event.ts,
         text: entry.content.displayText ?? entry.content.text,
         ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),

@@ -56,7 +56,7 @@ import {
   type WorkbarLayoutState,
 } from '../src/renderer/features/workbar/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
-import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
+import { deriveChatTurnPresentation } from '../src/renderer/application/contracts/turn-presentation';
 import {
   deriveBranchBanner,
   deriveSessionRail,
@@ -354,6 +354,9 @@ function ComposedShell(props: {
   session?: (Omit<Partial<SessionSummary>, 'id'> & { streaming?: boolean }) | null;
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
+  /** The mainColumn interaction gate and ChatSurfaceLayout visibility in app-shell.tsx. */
+  switchingSession?: boolean;
+  chatHidden?: boolean;
   detailChildren?: ReactNode;
   motionEnabled?: boolean;
   /**
@@ -398,7 +401,7 @@ function ComposedShell(props: {
   // same seam production uses (app-shell.tsx), so a story cannot show footer
   // actions the production rules would not produce for its messages.
   const deriveTurnPresentation = (turns: readonly TurnViewModel[]) =>
-    deriveAppShellTurnPresentation(turns, {
+    deriveChatTurnPresentation(turns, {
       activeId: active?.id,
       pendingTurnActions: new Set<string>(),
       uiLocale: 'zh-CN',
@@ -486,8 +489,9 @@ function ComposedShell(props: {
             // the chat column (app-shell.tsx). `.mainColumn` owns composer
             // padding, so a story without it measures its own box.
             (<div className="maka-detail-with-artifacts">
-              <div className="mainColumn">
+              <div className="mainColumn" inert={props.switchingSession || undefined}>
               <ChatSurfaceLayout
+                hidden={props.chatHidden}
                 composer={
                   <Composer
                     {...baseComposerProps}
@@ -681,21 +685,6 @@ export const RunningStatusDuringToolRun: Story = {
 // the expanded panel's bytes honest.
 const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3\n\n\n> maka@0.2.0 build:test\n> npm run clean && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test\n\n\n> maka@0.2.0 clean\n> node scripts/clean-build.mjs\n\ncleaned packages/core/dist\ncleaned packages/core/tsconfig.tsbuildinfo\ncleaned packages/storage/dist\ncleaned packages/storage/tsconfig.tsbuildinfo\ncleaned packages/mcp/dist\ncleaned packages/mcp/tsconfig.tsbuildinfo\ncleaned packages/runtime/dist\ncleaned packages/runtime/tsconfig.tsbuildinfo\ncleaned packages/runtime-host/dist\ncleaned packages/runtime-host/tsconfig.tsbuildinfo\ncleaned packages/eval/dist\ncleaned packages/eval/tsconfig.tsbuildinfo\ncleaned packages/computer-use/dist\ncleaned packages/computer-use/tsconfig.tsbuildinfo\ncleaned packages/cli/dist\ncleaned packages/cli/tsconfig.tsbuildinfo\ncleaned packages/ui/dist\ncleaned packages/ui/tsconfig.tsbuildinfo\ncleaned apps/desktop/dist\ncleaned apps/desktop/tsconfig.main.tsbuildinfo\ncleaned apps/desktop/tsconfig.renderer.tsbuildinfo\ncleaned 21 path(s).\n\n> @maka/core@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/storage@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/mcp@0.1.0 build\n> tsc -p tsconfig.json\n";
 
-// Real path: run the full test suite → the user hits stop before it returns.
-// Aborting settles the call as a cancelled `terminal` result (isError), and
-// `toolResultActivityStatus` maps a cancelled terminal to `interrupted`. There is
-// no `interrupted` turn status (only running/completed/aborted/failed) — the
-// tool-level state is derived from the settled result, not asserted.
-//
-// `npm test` runs for minutes (build:test then the runner), so a cancel at ~16s is
-// still inside a running process — it settles `cancelled`/130, not `timed_out`/124
-// (which needs the 120s foreground default) and not a `completed` run. The retained
-// stdout is a verbatim prefix of a real run (see NPM_TEST_STDOUT_AT_CANCEL), cut in
-// the build phase so there is no runner interleaving and nothing is truncated.
-//
-// This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
-// story that reaches the interrupted tool row. It goes through the real
-// ChatView → materializeTurns → ToolTrow path, so the row renders inside the
 // Real path: the prompt is admitted, its Turn has not reached the transcript
 // yet. The cue carries no clock until the Turn's own start arrives.
 export const PromptSentBeforeTurnLands: Story = {
@@ -709,7 +698,7 @@ export const PromptSentBeforeTurnLands: Story = {
           id: 'msg-sent',
           text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
           ts: NOW,
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
           hostTurnId: 'turn-sent',
           deliveryStatus: '已接收',
         }],
@@ -722,7 +711,7 @@ export const PromptSentBeforeTurnLands: Story = {
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
     // The pending prompt already sits a Turn's distance below the last Turn,
     // so it does not move when its Turn lands.
-    const pending = canvasElement.querySelector<HTMLElement>('.maka-chat-session-swap + .maka-turn')!;
+    const pending = canvasElement.querySelector('[data-transient-message-id="msg-sent"]')!.closest('.maka-turn')!;
     await waitFor(() => {
       const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
       expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
@@ -733,8 +722,10 @@ export const PromptSentBeforeTurnLands: Story = {
   },
 };
 
-// production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
-// and composer agree with the transcript instead of still reading as active.
+// Real path: stop during `npm test` → cancelled terminal result → interrupted tool row.
+// The stdout fixture above comes from the build phase of a real run. ChatView →
+// materializeTurns → ToolTrow derives the interruption from the result; the
+// aborted Session also settles the sidebar and composer.
 export const InterruptedToolAfterTurnAbort: Story = {
   render: () => (
     <ComposedShell
@@ -1313,8 +1304,96 @@ export const WaitingForPermission: Story = {
 // half and it is not the same screen — see NewChatComposer below — so this
 // story is the one where the composer still binds to a session.
 export const EmptyHome: Story = {
-  render: () => <ComposedShell chat={{ messages: [] }} />,
+  render: () => <EmptyComposerLifecycle />,
+  play: async ({ canvasElement }) => {
+    const editor = canvasElement.querySelector<HTMLElement>('.maka-composer-editor > [contenteditable]')!;
+    const assertLineBox = () => {
+      const style = getComputedStyle(editor);
+      const required = Number.parseFloat(style.lineHeight)
+        + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      // The editable itself must contain a line, not just the placeholder or
+      // outer wrapper. Before #5264 this becomes 8px: padding with no line box.
+      expect(editor.clientHeight).toBeGreaterThanOrEqual(required);
+      expect(canvasElement.querySelector('.maka-composer-editor > [contenteditable]')).toBe(editor);
+    };
+    const transition = async (next: Partial<EmptyComposerState>) => {
+      expect(setEmptyComposerState).toBeDefined();
+      setEmptyComposerState!(next);
+      // Render each hide/inert boundary; collapsing these into one React
+      // commit would skip the browser layout reconstruction being tested.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    };
+    await waitFor(assertLineBox);
+
+    // Reduced WorkHub/sidebar lifecycle: the frame returns while session
+    // switching still makes its parent inert. Keep the same empty editor DOM.
+    for (const draftKey of ['session:caret-b', 'session:caret-a']) {
+      await transition({ switchingSession: true });
+      await transition({ chatHidden: true });
+      expect(editor.getClientRects()).toHaveLength(0);
+      await transition({ chatHidden: false, draftKey });
+      expect(editor.closest('[inert]')).not.toBeNull();
+      assertLineBox();
+      await transition({ switchingSession: false });
+      expect(editor.closest('[inert]')).toBeNull();
+      assertLineBox();
+    }
+
+    await userEvent.click(editor);
+    await userEvent.keyboard('one{Shift>}{Enter}{/Shift}two{Shift>}{Enter}{/Shift}three');
+    const multilineHeight = editor.clientHeight;
+    expect(multilineHeight).toBeGreaterThan(2 * Number.parseFloat(getComputedStyle(editor).lineHeight));
+    await transition({ draftKey: 'session:caret-b' });
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+    await transition({ draftKey: 'session:caret-a' });
+    await waitFor(() => expect(editor).toHaveTextContent('three'));
+    expect(editor.clientHeight).toBe(multilineHeight);
+    await userEvent.clear(editor);
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+    await transition({ disabled: true });
+    expect(editor).toHaveAttribute('contenteditable', 'false');
+    assertLineBox();
+    await transition({ disabled: false });
+    assertLineBox();
+
+    // A minimum must not turn into a fixed height or defeat the existing cap.
+    await userEvent.click(editor);
+    for (let line = 0; line < 12; line += 1) {
+      await userEvent.keyboard(`${line === 0 ? '' : '{Shift>}{Enter}{/Shift}'}line`);
+    }
+    expect(editor.clientHeight).toBe(Number.parseFloat(getComputedStyle(editor).maxHeight));
+    expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
+    await userEvent.clear(editor);
+    await userEvent.type(editor, 'send and clear');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(emptyComposerSend).toHaveBeenCalledWith('send and clear', undefined));
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+  },
 };
+
+type EmptyComposerState = {
+  switchingSession: boolean;
+  chatHidden: boolean;
+  draftKey: string;
+  disabled: boolean;
+};
+let setEmptyComposerState: ((next: Partial<EmptyComposerState>) => void) | undefined;
+const emptyComposerSend = fn();
+function EmptyComposerLifecycle() {
+  const [state, setState] = useState<EmptyComposerState>({
+    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false,
+  });
+  useEffect(() => {
+    emptyComposerSend.mockClear();
+    setEmptyComposerState = (next) => setState((current) => ({ ...current, ...next }));
+    return () => { setEmptyComposerState = undefined; };
+  }, []);
+  return <ComposedShell chat={{ messages: [] }} switchingSession={state.switchingSession}
+    chatHidden={state.chatHidden} composer={{ draftKey: state.draftKey, disabled: state.disabled, onSend: emptyComposerSend }} />;
+}
 
 // Real path: 新任务 → no session exists yet. The composer swaps
 // ChatModelSwitcher for NewChatModelPicker and drops the thinking selector,
@@ -2317,18 +2396,29 @@ export const PartialHistoryNotice: Story = {
 let stopTailStream: (() => void) | undefined;
 let startTailStream: (() => void) | undefined;
 let settleTailTurn: (() => void) | undefined;
+let startHostTurn: (() => void) | undefined;
+let admitTailTurn: (() => void) | undefined;
 
-/** Streams one line per frame into a live Turn. */
-function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean } = {}) {
+/** Streams one line per frame into a live Turn. `hostAhead` lets the play function step through a send. */
+function StreamingTailHarness({ pendingUser = false, hostAhead = false, fresh = false }: { pendingUser?: boolean; hostAhead?: boolean; fresh?: boolean } = {}) {
   const [question, setQuestion] = useState<string>();
   const [settled, setSettled] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [hostStarted, setHostStarted] = useState(!hostAhead);
+  const [admitted, setAdmitted] = useState(!hostAhead);
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [lines, setLines] = useState(1);
   useEffect(() => {
     startTailStream = () => setStreaming(true);
     settleTailTurn = () => setSettled(true);
-    return () => { startTailStream = undefined; settleTailTurn = undefined; };
+    startHostTurn = () => setHostStarted(true);
+    admitTailTurn = () => setAdmitted(true);
+    return () => {
+      startTailStream = undefined;
+      settleTailTurn = undefined;
+      startHostTurn = undefined;
+      admitTailTurn = undefined;
+    };
   }, []);
   useEffect(() => {
     if (!streaming) return;
@@ -2365,17 +2455,18 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
         },
       }}
       chat={{
-        activeTurn: question && !settled ? { turnId: 'turn-tail' } : undefined,
-        transientMessages: pendingUser && question && !settled ? [{
+        activeTurn: question && !settled && hostStarted ? { turnId: 'turn-tail' } : undefined,
+        transientMessages: (pendingUser || !admitted) && question && !settled ? [{
           id: 'msg-tail-1', text: question, ts: NOW - 30_000,
-          transientPlacement: 'current_turn', hostTurnId: 'turn-tail',
-          deliveryStatus: '已接收',
+          transientPlacement: 'transcript', ...(admitted ? { hostTurnId: 'turn-tail' } : {}),
         }] : [],
         viewportNavigation,
         messages: [
-          user('history-question', 'history-turn', 6, '已有问题。'),
-          assistant('history-answer', 'history-turn', 5, TAIL_LINES.slice(0, 40).join('\n\n')),
-          ...(question ? [
+          ...(fresh ? [] : [
+            user('history-question', 'history-turn', 6, '已有问题。'),
+            assistant('history-answer', 'history-turn', 5, TAIL_LINES.slice(0, 40).join('\n\n')),
+          ]),
+          ...(question && admitted ? [
             ...(!pendingUser || settled ? [user('msg-tail-1', 'turn-tail', 3, question)] : []),
             ...(settled ? [assistant('msg-assistant-tail', 'turn-tail', 2, TAIL_LINES.slice(0, lines).join('\n\n'))] : []),
             {
@@ -2387,7 +2478,7 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
             },
           ] : []),
         ],
-        liveTurns: question && !settled ? [{
+        liveTurns: question && !settled && (!hostAhead || streaming) ? [{
           turnId: 'turn-tail',
           steps: [{
             stepId: 'msg-assistant-tail',
@@ -2522,6 +2613,72 @@ export const SubmittedPromptSettlesWithoutReversing: Story = {
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
     expect(tailMetrics().distance).toBeLessThanOrEqual(4);
   },
+};
+
+// Send → Host Turn → transcript → stream → settle: only streaming moves the prompt, and only up.
+async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> {
+  const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
+  if (!input) throw new Error('The composer input is missing');
+  const question = '请简短说明当前提交过程发生了什么。';
+  await userEvent.type(input, question, { delay: null });
+  await painted(10);
+  const tops: number[] = [];
+  const sample = async (frames = 12): Promise<void> => {
+    for (let frame = 0; frame < frames; frame += 1) {
+      await painted(1);
+      // Read after resize observers run, i.e. what was painted.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const prompt = [...tailScroller().querySelectorAll('.maka-user-message')]
+        .find((message) => message.textContent?.includes(question));
+      if (prompt) tops.push(Math.round(prompt.getBoundingClientRect().top));
+    }
+  };
+  const arrival = sample(20);
+  await userEvent.keyboard('{Enter}');
+  await arrival;
+  expect(canvasElement.querySelector('[data-transient-message-id="msg-tail-1"]')).not.toBeNull();
+  startHostTurn?.();
+  await sample();
+  admitTailTurn?.();
+  await sample();
+  expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
+  expect(canvasElement.querySelector('[data-transcript-turn-id="turn-tail"] .maka-turn-processing')).not.toBeNull();
+  expect(new Set(tops).size, JSON.stringify(tops)).toBe(1);
+
+  startTailStream?.();
+  await sample();
+  stopTailStream?.();
+  // Production settles only after the reveal finishes.
+  let height = -1;
+  let still = 0;
+  while (still < 10) {
+    await painted(1);
+    const next = canvasElement.querySelector('[data-transcript-turn-id="turn-tail"]')!.getBoundingClientRect().height;
+    still = next === height ? still + 1 : 0;
+    height = next;
+  }
+  await sample(1);
+  settleTailTurn?.();
+  await sample();
+  const reversal = Math.max(0, ...tops.slice(1).map((top, index) => top - tops[index]!));
+  expect(reversal, JSON.stringify(tops)).toBe(0);
+  expect(new Set(tops.slice(-13)).size, JSON.stringify(tops)).toBe(1);
+  expect(tailMetrics().distance).toBeLessThanOrEqual(4);
+}
+
+// Real path: send in an existing conversation → Host starts → transcript lands → reply streams and settles.
+export const SendKeepsPromptInPlace: Story = {
+  render: () => <StreamingTailHarness hostAhead />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+    await verifySendKeepsPrompt(canvasElement);
+  },
+};
+
+// Real path: first send leaves the empty home → Host starts → transcript lands → reply streams and settles.
+export const FirstSendKeepsPromptInPlace: Story = {
+  render: () => <StreamingTailHarness hostAhead fresh />,
+  play: async ({ canvasElement }) => verifySendKeepsPrompt(canvasElement),
 };
 
 /** Lets a play function drive props React owns. One story renders per page. */

@@ -23,41 +23,12 @@ import { workspaceNameFromCwd } from './workspace-name.js';
 
 import type { StoredMessage } from '@maka/core/session';
 
-export type WorkHubDelegationState =
-  | 'accepted'
-  | 'running'
-  | 'waiting_for_user'
-  | 'completed'
-  | 'failed'
-  | 'aborted'
-  | 'recovering';
-
-export interface WorkHubDelegationReference {
-  readonly id: string;
-  readonly targetSessionId: string;
-  readonly targetMessageId: string;
-  readonly targetTurnId: string;
-}
-
-export interface WorkHubDelegationFeedback {
-  readonly id: string;
-  readonly state: WorkHubDelegationState;
-  readonly resultPreview?: string;
-}
-
 export interface WorkHubLinkedWork {
   readonly id: string;
   readonly coordinationTurnId: string;
   readonly targetSessionId: string;
   readonly targetSessionName: string;
   readonly workspaceName?: string;
-  readonly targetMessageId?: string;
-  readonly targetTurnId?: string;
-  readonly state?: WorkHubDelegationState;
-  readonly resultPreview?: string;
-  readonly operation?: 'stop' | 'resume';
-  readonly operationState?: 'pending' | 'succeeded' | 'failed';
-  readonly operationOutcome?: string;
 }
 
 /** Links come from successful tool results in the same durable conversation. */
@@ -101,9 +72,6 @@ export function workHubLinkedWork(
       if (!target) return [];
       return [{ id: message.id, coordinationTurnId: message.turnId, targetSessionId: target,
         targetSessionName: sessionById.get(target)?.name ?? fallbackName, workspaceName: workspaceName(target),
-        operation: request.operation,
-        operationState: !resultMessage ? 'pending' : resultMessage.isError || result?.disposition !== `${request.operation}_work` || result?.outcome === 'not_owned' ? 'failed' : 'succeeded',
-        operationOutcome: typeof result?.outcome === 'string' ? result.outcome : undefined,
       }];
     }
 
@@ -113,9 +81,6 @@ export function workHubLinkedWork(
       targetSessionId: message.targetSessionId,
       targetSessionName: sessionById.get(message.targetSessionId)?.name ?? message.targetSessionName,
       workspaceName: workspaceName(message.targetSessionId),
-      targetMessageId: message.targetMessageId,
-      targetTurnId: message.targetTurnId,
-      state: 'accepted',
     }];
     if (message.type !== 'tool_result' || message.isError || !taskCalls.has(message.toolUseId)) return [];
     let result: unknown;
@@ -134,16 +99,5 @@ export function workHubLinkedWork(
       targetSessionName: sessionById.get(result.targetSessionKey)?.name ?? fallbackName,
       workspaceName: workspaceName(result.targetSessionKey),
     }];
-  });
-}
-
-export function applyWorkHubDelegationFeedback(
-  assignments: readonly WorkHubLinkedWork[],
-  feedback: readonly WorkHubDelegationFeedback[],
-): WorkHubLinkedWork[] {
-  const byId = new Map(feedback.map((item) => [item.id, item]));
-  return assignments.map((assignment) => {
-    const item = byId.get(assignment.id);
-    return item ? { ...assignment, state: item.state, resultPreview: item.resultPreview } : assignment;
   });
 }

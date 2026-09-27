@@ -52,19 +52,26 @@ export function SessionLocalMessages(props: {
             const action = (operation: () => Promise<void>) => () => {
               void operation().catch(() => reportError(copy.updateError));
             };
+            const status = message.state === 'accepted' || message.state === 'sending'
+              || (message.state === 'saved' && message.delivering && !message.error)
+              ? undefined : copy[message.state];
             publish(sessionId, {
               id: message.messageId,
               text: message.text,
               ts: message.createdAt,
-              transientPlacement: message.turnId ? 'current_turn' : (message.localDisplayPlacement ?? message.placement),
+              // Only an ordinary send records `localDisplayPlacement`.
+              transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn' ? 'transcript'
+                : message.placement === 'current_turn' ? 'steering' : 'follow_up',
               attachments: message.attachments,
               directoryReferences: message.directoryReferences,
               quotes: message.quotes,
               inlineReferences: message.inlineReferences,
               hostTurnId: message.turnId,
-              deliveryStatus: copy[message.state],
+              deliveryStatus: status,
               deliveryDetail: message.error,
-              deliveryActions: message.canCancel
+              deliveryActions: status === undefined
+                ? []
+                : message.canCancel
                 ? [
                     {
                       label: copy.remove,

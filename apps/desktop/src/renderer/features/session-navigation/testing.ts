@@ -21,6 +21,7 @@ import type { SessionNavigationServices } from './ports.js';
 
 export type {
   SessionNavigationPorts,
+  SessionNavigationProjectScope,
   SessionNavigationServices,
   SessionNavigationSession,
   SessionNavigationSessionService,
@@ -43,6 +44,8 @@ export { SessionNavigationProvider } from './ui/session-navigation-provider.js';
 export { sessionMatchesRail } from './model/session-nav-filter.js';
 export { deriveBranchBanner } from './model/branch-banner.js';
 export { deriveSessionRail } from './model/session-rail.js';
+export { deriveSessionNavigationGroups } from './model/session-navigation-groups.js';
+export { sessionMoveTargets } from './model/session-navigation-move-targets.js';
 export { deriveSessionRevisionNavigation } from './model/session-revisions.js';
 export {
   EMPTY_SESSION_SELECTION,

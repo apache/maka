@@ -95,6 +95,7 @@
     "./incognito": "./dist/incognito.js",
     "./backend-types": "./dist/backend-types.js",
     "./codex-model-compatibility": "./dist/codex-model-compatibility.js",
+    "./openai-urls": "./dist/openai-urls.js",
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-registry": "./dist/provider-registry.js",
     "./model-catalog": "./dist/model-catalog.js",

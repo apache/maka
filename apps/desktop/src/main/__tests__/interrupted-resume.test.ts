@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { materializeTurns } from '@maka/ui';
-import { latestInterruptedResumeTurnId } from '../../renderer/interrupted-resume.js';
+import { latestInterruptedResumeTurnId } from '../../renderer/application/contracts/interrupted-resume.js';
 
 describe('latest interrupted resume candidate', () => {
   it('recognizes a timeout after a completed tool result', () => {

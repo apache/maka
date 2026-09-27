@@ -33,7 +33,7 @@ import type {
 } from '@maka/core/work-board';
 import { ListTodo } from '@maka/ui/icons';
 import { useWorkBoard } from './use-work-board.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import {
   workBoardErrorCodeCopy,
 } from './locales/work-board-error-copy.js';

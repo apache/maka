@@ -1,5 +1,5 @@
 {
-  "epoch": 188,
+  "epoch": 189,
   "files": ["packages/runtime-host/src/protocol/index.ts"],
-  "reason": "Against the cumulative protocol through epoch 188, this moves the existing interactive composition ID constant into a lightweight module while preserving the exact protocol export and encoded value"
+  "reason": "Against the cumulative protocol through epoch 189, this moves the existing interactive composition ID constant into a lightweight module while preserving the exact protocol export and encoded value"
 }

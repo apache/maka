@@ -574,7 +574,11 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ...(options.bigToolGroup
       ? { toolAvailability: { groups: [{ id: 'big', toolNames: ['Big'] }] } }
       : {}),
-    ...(options.systemPromptChars ? { systemPrompt: 'S'.repeat(options.systemPromptChars) } : {}),
+    systemPrompt: () => ({
+      ...(options.systemPromptChars ? { text: 'S'.repeat(options.systemPromptChars) } : {}),
+      contexts: [{ name: 'test.request-context', text: 'ACTIVE_REQUEST_CONTEXT' }],
+      sourceRevisions: [],
+    }),
     contextBudget: options.useRuntimeDefaultPolicy
       ? buildDefaultContextBudgetPolicy({
           name: 'runtime-default-mid-turn',
@@ -739,6 +743,18 @@ function promptJson(fixture: MidTurnFixture, call: number): string {
   );
 }
 
+function assertRequestContextPreserved(fixture: MidTurnFixture): void {
+  for (const { prompt } of fixture.model.doStreamCalls) {
+    const texts = prompt.flatMap((message) =>
+      message.role === 'user'
+        ? message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        : [],
+    );
+    assert.equal(texts.filter((text) => text === 'ACTIVE_REQUEST_CONTEXT').length, 1);
+  }
+  assert.doesNotMatch(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
+}
+
 function compactionDecisions(
   fixture: MidTurnFixture,
 ): NonNullable<ContextBudgetDiagnostic['compactionDecisions']> {
@@ -791,6 +807,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     // The turn ran three steps and completed normally.
     assert.equal(fixture.model.doStreamCalls.length, 3);
+    assertRequestContextPreserved(fixture);
     const complete = fixture.events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
 
@@ -1784,6 +1801,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
 
     assert.equal(fixture.model.doStreamCalls.length, 2);
     assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 8_000);
+    assertRequestContextPreserved(fixture);
     assert.notEqual(fixture.model.doStreamCalls[0]?.maxOutputTokens, 1);
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.summarizerCalls, 1);
