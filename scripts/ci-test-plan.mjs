@@ -288,7 +288,8 @@ function isAstryxSurfaceInventoryPath(path) {
     path === 'docs/astryx-surface-file-inventory.md' ||
     path === 'docs/astryx-surface-file-inventory.paths' ||
     path === 'scripts/generate-astryx-surface-inventory.mjs' ||
-    path === 'scripts/check-astryx-surface-inventory.mjs'
+    path === 'scripts/check-astryx-surface-inventory.mjs' ||
+    path === 'scripts/check-astryx-surface-inventory.test.mjs'
   ) {
     return true;
   }

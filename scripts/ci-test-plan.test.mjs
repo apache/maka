@@ -170,6 +170,10 @@ test('the Astryx inventory can run without selecting the code suite', () => {
 
   assert.equal(plan.code, false);
   assert.equal(plan.astryxSurface, true);
+  assert.equal(
+    planTests(['scripts/check-astryx-surface-inventory.test.mjs'], { graph }).astryxSurface,
+    true,
+  );
 });
 
 test('desktop renderer changes retain Electron and Storybook coverage', () => {
