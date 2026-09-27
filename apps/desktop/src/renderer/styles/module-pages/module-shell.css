@@ -117,7 +117,7 @@
 }
 
 .maka-module-section-heading {
-  font: var(--maka-text-heading-4);
+  font: var(--maka-text-heading-3);
 }
 
 /* LayoutContent supplies the page inset, so the header, control bar and rows
@@ -160,7 +160,7 @@
   }
 }
 
-/* MCP mark plate. */
+/* Row mark plate: an MCP brand mark or a Skill initial. */
 .maka-module-market-icon {
   width: 28px;
   height: 28px;

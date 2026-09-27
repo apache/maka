@@ -33,7 +33,6 @@ import {
   HStack,
   IconButton,
   List,
-  ListItem,
   SegmentedControl,
   SegmentedControlItem,
   Skeleton,
@@ -54,6 +53,7 @@ import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList'
 import {
   ModulePage,
   ModulePageSection,
+  ModuleRow,
   DETAIL_LABEL_WIDTH,
   StatusLabel,
   BotBrandLogo,
@@ -331,11 +331,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             {connectionEntries.map(([serverId, server]) => {
               const state = presentStatus(statusById.get(serverId), server.enabled !== false, awaitsChrome(server), copy);
               return (
-                <ListItem
+                <ModuleRow
                   key={serverId}
                   label={serverId}
-                  startContent={<McpMark server={server} isChrome={isChromeServer(server, chrome)} />}
-                  endContent={<StatusLabel status={state.status} label={state.label} />}
+                  description={hostOf(server) ?? endpointFor(server)}
+                  mark={<McpMark server={server} isChrome={isChromeServer(server, chrome)} />}
+                  end={<StatusLabel status={state.status} label={state.label} />}
                   isSelected={selectedServerId === serverId}
                   onClick={() => setSelectedServerId(serverId)}
                 />
@@ -422,12 +423,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 {suggestions.map((suggestion) => {
                   const { name, description } = copy.page.suggestions[suggestion.id];
                   return (
-                    <ListItem
+                    <ModuleRow
                       key={suggestion.id}
                       label={name}
                       description={description}
-                      startContent={<McpMark suggestion={suggestion} />}
-                      endContent={(
+                      mark={<McpMark suggestion={suggestion} />}
+                      end={(
                         <Button
                           variant="secondary"
                           size="sm"
@@ -680,7 +681,8 @@ function McpEditorDialog(props: {
                 )}
               </div>
               <Collapsible
-                trigger={props.copy.editor.advanced}
+                trigger={<Text type="label">{props.copy.editor.advanced}</Text>}
+                chevronPosition="start"
                 isOpen={advancedOpen}
                 onOpenChange={setAdvancedOpen}
               >
@@ -724,7 +726,7 @@ function McpEditorDialog(props: {
                     width="100%"
                   />
                   {props.state.draft.kind === 'remote' && (
-                    <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
+                    <Collapsible trigger={<Text type="label">{props.copy.editor.oauth}</Text>} chevronPosition="start" defaultIsOpen={Boolean(props.state.draft.oauth)}>
                       <VStack gap={3} className="maka-mcp-advanced-fields">
                         <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
                         <TextInput label={props.copy.editor.clientId} value={props.state.draft.oauth?.clientId ?? ''} onChange={(value) => updateOAuth('clientId', value || undefined)} />

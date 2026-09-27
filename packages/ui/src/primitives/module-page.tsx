@@ -27,7 +27,7 @@
 // dialog to it once it ships in @astryxdesign/core.
 
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
-import { Dialog, DialogHeader, HStack, Heading, StackItem, Text, VStack } from '@astryxdesign/core';
+import { Dialog, DialogHeader, HStack, Heading, ListItem, StackItem, Text, VStack } from '@astryxdesign/core';
 import { Layout, LayoutContent, LayoutFooter, LayoutHeader } from '@astryxdesign/core/Layout';
 import { useConfirmOpen } from '../toast.js';
 import { cn } from '../utils.js';
@@ -73,6 +73,30 @@ export interface ModulePageDetail {
   startContent?: ReactNode;
   content: ReactNode;
   footer?: ReactNode;
+}
+
+/**
+ * One row of a module page list. The name leads by weight and the second line
+ * steps down by colour, not size: it is what the item does, read as prose.
+ */
+export function ModuleRow(props: {
+  label: ReactNode;
+  description?: ReactNode;
+  mark?: ReactNode;
+  end?: ReactNode;
+  isSelected?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <ListItem
+      label={<Text weight="medium" maxLines={1}>{props.label}</Text>}
+      description={props.description ? <Text color="secondary" maxLines={1}>{props.description}</Text> : undefined}
+      startContent={props.mark}
+      endContent={props.end}
+      isSelected={props.isSelected}
+      onClick={props.onClick}
+    />
+  );
 }
 
 export function ModulePageSection({ title, children }: { title: string; children: ReactNode }) {

@@ -52,7 +52,6 @@ import {
   EmptyState,
   IconButton,
   List,
-  ListItem,
   Text,
   TextInput,
 } from '@astryxdesign/core';
@@ -61,11 +60,12 @@ import {
   DropdownMenuItem,
   DropdownMenuSubMenu,
 } from '@astryxdesign/core/DropdownMenu';
-import { ModulePage, ModulePageSection } from './primitives/module-page.js';
+import { ModulePage, ModulePageSection, ModuleRow } from './primitives/module-page.js';
 import { StatusLabel } from './status-label.js';
 import { CapabilityAuditStrip, capabilityAuditIssues } from './capability-audit-strip.js';
 import { skillDetail, skillUpdateReviewDetail, type SkillDetailActions } from './skill-detail.js';
 import {
+  formatSkillLibraryDescription,
   skillExceptionalStateLabel,
   skillStatusSemantic,
 } from './skill-status.js';
@@ -346,16 +346,18 @@ export function SkillsModuleMain(props: {
                   ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
                   : copy.context.needsReview;
                 return (
-                  <ListItem
+                  <ModuleRow
                     key={skillRef}
                     label={copy.context.discoverySource(skill.scope ?? 'custom', skill.source ?? 'custom')}
-                    endContent={<StatusLabel status="attention" label={reason} />}
+                    mark={<SkillMark name={skill.source ?? skill.id} />}
+                    end={<StatusLabel status="attention" label={reason} />}
                   />
                 );
               }
               const exceptional = skillExceptionalStateLabel(skill, copy);
+              const description = formatSkillLibraryDescription(skill, copy);
               return (
-                <ListItem
+                <ModuleRow
                   key={skillRef}
                   label={(
                     <span className="maka-skill-row-label">
@@ -365,7 +367,9 @@ export function SkillsModuleMain(props: {
                       )}
                     </span>
                   )}
-                  endContent={exceptional
+                  description={description}
+                  mark={<SkillMark name={skill.name} />}
+                  end={exceptional
                     ? <StatusLabel status={skillStatusSemantic(skill)} label={exceptional} />
                     : skill.enabled ? undefined : <StatusLabel status="neutral" label={copy.status.disabled} />}
                   isSelected={selectedSkillRef === skillRef}
@@ -390,11 +394,12 @@ export function SkillsModuleMain(props: {
           header={category ? <Text type="label" size="sm" color="secondary">{copy.categories[category]}</Text> : undefined}
         >
           {entries.map((entry) => (
-            <ListItem
+            <ModuleRow
               key={entry.id}
               label={entry.name}
               description={entry.description}
-              endContent={(
+              mark={<SkillMark name={entry.name} />}
+              end={(
                 <UiButton
                   variant="secondary"
                   size="sm"
@@ -526,5 +531,14 @@ export function SkillsModuleMain(props: {
         </div>
       </ModulePage>
     </section>
+  );
+}
+
+/** Skills carry no icon of their own; the initial gives each row an anchor. */
+function SkillMark({ name }: { name: string }) {
+  return (
+    <span className="maka-module-market-icon" aria-hidden="true">
+      <span>{Array.from(name.trim())[0]?.toLocaleUpperCase() ?? '?'}</span>
+    </span>
   );
 }
