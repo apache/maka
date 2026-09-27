@@ -352,6 +352,13 @@ test('repairs an existing managed Host with the current setup package and restar
         readonly allowInterruptActiveTasks?: boolean;
       }, onProgress: (phase: 'staging') => void) {
         actions.push('update');
+        if (actions.length > 2) {
+          return {
+            kind: 'error',
+            action: 'update',
+            error: { code: 'target_mismatch', message: 'The installed Runtime Host package changed' },
+          } as never;
+        }
         onProgress('staging');
         assert.equal(input.setupPackage, setupPackage);
         assert.equal(input.target.rootId, rootId);
@@ -389,6 +396,10 @@ test('repairs an existing managed Host with the current setup package and restar
   });
   assert.deepEqual(actions, ['update', 'restart']);
   assert.deepEqual(phases, ['checking', 'staging', 'restart']);
+  await assert.rejects(
+    service.repairManagedStartup({ allowManualUpdate: true }),
+    /installed Runtime Host package changed/u,
+  );
 });
 
 test('preserves service readiness evidence in the managed repair blocker', async (t) => {
@@ -488,6 +499,16 @@ test('replaces a conflicting supervised Host with the requested active-work poli
             update: { kind: 'already_current', version: '0.2.0' },
           } as never;
         }
+        if (policies.length === 4) {
+          return {
+            kind: 'error' as const,
+            action: 'update' as const,
+            error: {
+              code: 'target_mismatch',
+              message: 'This update would downgrade the shared Runtime Host. Update the Client instead.',
+            },
+          } as never;
+        }
         return {
           kind: 'result' as const,
           action: 'update' as const,
@@ -510,7 +531,8 @@ test('replaces a conflicting supervised Host with the requested active-work poli
     replacement.replace('interrupt_active_work'),
     /did not replace the observed Host/u,
   );
-  assert.deepEqual(policies, [undefined, true, true]);
+  await assert.rejects(replacement.replace('interrupt_active_work'), /Update the Client instead/u);
+  assert.deepEqual(policies, [undefined, true, true, true]);
 });
 
 test('does not persist recoverable setup authority before Desktop ownership commits', async (t) => {
