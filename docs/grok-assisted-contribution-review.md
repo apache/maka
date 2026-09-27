@@ -19,11 +19,12 @@
 
 # Grok-assisted contribution review
 
-**Baseline:** `c9a176e10` (2026-09-27; merged into the review branch after
-the initial `d89ccce01` pass). **Status:** all 25 original-commit
-inventories reviewed; four narrow replacements verified locally, seven further
-PRs have scoped fixes, and a mixed-tool architecture document has been
-corrected. Remaining behavior reviews and whole-PR dispositions are open.
+**Baseline:** `3f44315dd` (2026-09-27). **Status:** all 25 original-commit
+inventories, current behaviors, tests, and dispositions are reviewed. Four
+narrow surviving slices and seven active current cores have independently
+reasoned replacements; deleted, superseded, mixed-attribution, test-only, and
+documentation entries have explicit dispositions below. Project and ASF legal
+acceptance remains open.
 
 This is a provenance and engineering inventory, not a legal classification or
 an assertion that these changes must be removed. The scope is merged PRs whose
@@ -63,9 +64,9 @@ which individual lines were generated; a PR without one can still disclose use.
 | #5223 | `aa3f8e538` | Project path validation | PR AI-use disclosure; no Grok trailer |
 
 PR #2956 disclosed Grok but merged on 2026-08-13, before the selected date,
-so it is outside this inventory. Closed, unmerged PRs are not in the current
-mainline and are tracked separately: #4809, #4899, #5102, #5342, #5349,
-#5350, and #5497.
+so it is outside this inventory. Closed, unmerged PRs are also outside the
+current-mainline inventory: #4809, #4899, #5102, #5342, #5349, #5350, and
+#5497.
 
 The original PR commit histories narrow this initial scope further. #2967 has
 five Grok-tagged original commits, starting on 2026-08-13 and continuing
@@ -91,11 +92,10 @@ the xAI discovery/test deletions.
 
 ## First-pass engineering triage
 
-This pass inspected each merge's changed paths and size against the baseline,
-and sampled the active #3118 and #5223 implementation paths. "Present" means
-the path still exists, **not** that the original lines survive or that its
-behavior is unchanged. The detailed line-level and behavioral review is still
-open; these observations are not a replacement decision.
+This pass inspected each merge's changed paths and size against the baseline.
+"Present" means the path still exists, **not** that the original lines survive
+or that its behavior is unchanged. The line-level and behavioral evidence that
+follows supersedes path presence as the disposition basis.
 
 | PR | Changed paths present now | Review target |
 |---:|---:|---|
@@ -125,6 +125,52 @@ open; these observations are not a replacement decision.
 | #4345 | 1/1 | Mixed-tool architecture documentation accuracy |
 | #5223 | 2/2 | Directory type validation still runs in project resolution |
 
+### Squash-line survival on current main
+
+The following measurement resolves each mainline squash commit to its full SHA,
+counts lines added by that commit, and uses `git blame -w -M --line-porcelain`
+on `origin/main` at `ab021efda` to count lines still attributed to it. The
+subsequent `3f44315dd` attachment change does not touch any measured path. It is a
+stronger survival signal than path presence, but it is not a generated-line
+classifier: mixed-origin PRs are not split by original commit, `-C` copy
+detection is not enabled, and `-M` can reattribute moved lines. A later rewrite
+also does not erase the original contribution's provenance.
+
+| PR | Added lines | Surviving on `main` |
+|---:|---:|---:|
+| #3008 | 180 | 166 |
+| #2967 | 678 | 651 |
+| #3048 | 462 | 287 |
+| #3063 | 0 | 0 |
+| #3066 | 201 | 129 |
+| #3070 | 177 | 137 |
+| #3078 | 114 | 89 |
+| #3082 | 116 | 66 |
+| #3099 | 129 | 86 |
+| #3101 | 54 | 42 |
+| #3102 | 39 | 4 |
+| #3104 | 20 | 17 |
+| #3106 | 279 | 139 |
+| #3111 | 59 | 57 |
+| #3115 | 429 | 407 |
+| #3117 | 282 | 252 |
+| #3118 | 0 | 0 |
+| #3119 | 2 | 1 |
+| #3123 | 48 | 0 |
+| #3069 | 200 | 0 |
+| #3459 | 288 | 150 |
+| #3364 | 118 | 111 |
+| #3544 | 1713 | 1090 |
+| #4345 | 22 | 22 |
+| #5223 | 43 | 32 |
+
+The measurement finds 3,935 surviving squash-attributed lines. Four entries
+have no surviving added output: #3063 and #3118 are deletion-only, while the
+only #3123 file and both #3069 files were later deleted. The largest surviving
+concentrations are #3544, #2967, #3115, #3048, and #3117; the behavioral and
+attribution review below handles those current boundaries rather than treating
+the blame count as a completion metric.
+
 The largest original change, #3544, touched 35 files and changed more than
 2,000 lines; #3117 removed over 1,600 lines. A single wholesale rewrite would
 cross separate storage, protocol, Desktop, Eval, and security review boundaries.
@@ -135,8 +181,8 @@ tests and review.
 
 ### Revert feasibility probe
 
-On 2026-09-27, a disposable worktree at `d89ccce01` (then-current
-`origin/main`) attempted `git revert --no-commit dc9d2f0dd` for #3544.
+Before the baseline advanced, a disposable worktree at historical main commit
+`d89ccce01` attempted `git revert --no-commit dc9d2f0dd` for #3544.
 The revert stopped with 31 unmerged paths across Desktop IPC and renderer,
 Runtime Host protocol/coordinator, UI, tests, and two modify/delete cases.
 The probe was aborted and its worktree removed; no revert was committed or
@@ -163,9 +209,10 @@ changes. It does not erase the original history or settle ASF legal questions.
 
 The #3082 and #5223 revert-state commits are separate from the replacement
 commit to make the failure evidence inspectable. They are not safe to merge
-without the following replacement. The remaining 21 entries have **not** been
-reverted or reimplemented; #3364 and #3123 require provenance decisions before
-any broad rollback.
+without the following replacement. The remaining 21 entries are dispositioned
+below: seven active cores were rewritten, eight paths are deleted or
+superseded, two are mixed or uncertain attribution, three are test/fixture or
+mixed-feature regressions, and one is documentation-only.
 
 Eight narrow paths have been traced to a no-code disposition rather than an
 identical revert/reapply. They are reviewed, **not** counted as replacements:
@@ -217,8 +264,9 @@ identical revert/reapply. They are reviewed, **not** counted as replacements:
   and launcher. #3226 later separated the E2E execution entry into a
   `test-only` module and made the production candidate reject that flag. The
   current candidate/desktop tests pass (35 tests), including isolation from
-  test-only modules. Do not restore the old production flag. Other startup and
-  candidate wiring in that squash still needs its own attribution review.
+  test-only modules. Do not restore the old production flag. The surviving
+  startup and candidate wiring was reviewed at its current boundary and needs
+  no replacement of the superseded E2E authority.
 
 Two mixed/uncertain entries require attribution decisions, not a wholesale
 rollback:
@@ -428,17 +476,45 @@ reason to restore its old implementation just to revert it again.
 
 | Disposition | PRs | Next evidence or action |
 |---|---|---|
-| Deleted or superseded original path (8) | #3063, #3118, #3119, #3102, #3104, #3117, #3069, #3106 | Preserve the current replacement/removal; #3117's fixture and #3106's surviving startup behavior remain separately reviewable. |
+| Deleted or superseded original path (8) | #3063, #3118, #3119, #3102, #3104, #3117, #3069, #3106 | Preserve the current replacement/removal; #3117's current fixture and #3106's current startup boundary have focused passing regressions. |
 | Mixed or uncertain attribution (2) | #3364, #3123 | Keep Maka-authored formatter and required ASF header; resolve #3123 squash-versus-original provenance with maintainers. |
-| Active code with rewritten current cores (7) | #3008, #2967, #3048, #3066, #3078, #3115, #3544 | Continue ablation at retained later-dependent boundaries when review exposes a concrete risk; the #3008 live proxy test passes in PR CI. |
-| Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | #3111 now covers owner release on failed publish; decide whether surviving behavior requires replacement, including the tagged follow-ups in #3459. |
-| Documentation-only mixed-tool PR (1) | #4345 | Factual correction made; maintainers decide provenance remedy for the surviving architecture document. |
+| Active code with rewritten current cores (7) | #3008, #2967, #3048, #3066, #3078, #3115, #3544 | Minimal authorities, subtraction/failure-injection ablations, and focused regressions are complete; the #3008 live proxy test passes in PR CI. |
+| Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | Preserve the current test/fixture behavior: #3101's current Electron assertion passes, #3111 now covers owner release on failed publish, and #3459's tagged follow-ups are isolated and tested without reverting its untagged feature commits. |
+| Documentation-only mixed-tool PR (1) | #4345 | Preserve the current document with the factual correction; include it in the project/legal provenance decision. |
 
-The branch has been built against `ab021efda`: `npm run build:with-deps`
+The branch was built against `ab021efda`: `npm run build:with-deps`
 passes, along with the focused suites listed above and six real Electron
-tests. These checks do not substitute for the live proxy test or project/legal
-acceptance of the remediation. No branch push or PR update has been made for
-these local review commits.
+tests. The later `3f44315dd` attachment-only upstream change is merged and the
+affected build/test gates are rerun before the final push. These checks do not
+substitute for the live proxy test or project/legal
+acceptance of the remediation. The live proxy regression and the full Linux,
+macOS, and Windows PR checks passed on the pushed review branch before the
+final protocol-epoch and documentation-only updates.
+
+## Project, legal, and release handoff
+
+This review deliberately does not make a legal determination. The ASF
+[Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html)
+requires terms that do not restrict use of generated output inconsistently
+with the Open Source Definition and directs newly discovered concerns about a
+tool's terms to `legal-private@apache.org`. The ASF
+[Legal Affairs Committee](https://www.apache.org/legal/) also identifies LEGAL
+JIRA and `legal-discuss` as the normal public channels for policy questions.
+The project should choose the appropriate channel and record the resulting
+decision; this PR supplies the engineering inventory and remediation evidence.
+
+Release tag `v0.2.0-incubating-rc2` (`54542021a`) contains all 25 candidate
+squash commits. If the project/legal conclusion accepts the contributions or
+this remediation, that tag needs no code change from this review. If it
+requires different remediation, `main` must first contain the accepted result
+and a later release candidate must be cut from that state; recutting the same
+tree would not change the inventory.
+
+[PR #5746](https://github.com/apache/maka/pull/5746) pauses future
+Grok-generated contributions. Draft PR #5747 and this document review the
+historical merged contributions. Keep this inventory attached to #5747 while
+the decision is pending; after disposition, maintainers can retain the final
+record here or move process tracking to the selected issue/legal channel.
 
 ## Review protocol
 
@@ -455,15 +531,16 @@ acceptability of any remediation need Apache project/legal review.
 - [x] Triage all 25 original changes by path, size, and current path presence.
 - [x] Read original commit trailers and compare branch history with the merged
       diff for the 25 candidate PRs.
-- [ ] Finish the behavior and test tracing for the remaining active changes;
+- [x] Finish the behavior and test tracing for the remaining active changes;
       no-code deletions and mixed-author PRs are tracked separately above.
-- [ ] Record which changes are still material, superseded, or mixed with other work.
+- [x] Record which changes are still material, superseded, or mixed with other work.
 - [ ] Decide the appropriate action with the project and ASF legal discussion.
 - [x] Implement and locally verify #3082, #5223, #3070, and #3099 in reviewable slices.
 - [x] Independently rewrite the current cores retained from #3008, #2967,
       #3048, #3066, #3078, #3115, and #3544 around minimal pure authorities.
 - [x] Run #3008's live mitmproxy regression in PR CI with a responsive Docker
       daemon.
-- [ ] Continue ablation of later-dependent outer orchestration where review or
-      CI exposes a concrete retained risk.
+- [x] Complete selected subtraction and failure-injection ablations at every
+      rewritten core and retain later-dependent orchestration only where its
+      own focused regressions pass.
 - [ ] Converge CI and project/ASF legal review on draft PR #5747.
