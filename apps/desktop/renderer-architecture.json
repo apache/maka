@@ -595,7 +595,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2677
+        "nonTriviaTokens": 2590
       },
       "src/renderer/app-shell-session-ui-state.ts": {
         "importDeclarations": 0,
@@ -689,7 +689,7 @@
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 13,
+          "useRef": 12,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
@@ -788,7 +788,7 @@
           "react": 1
         },
         "importSpecifiers": 92,
-        "nonTriviaTokens": 12373
+        "nonTriviaTokens": 12139
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
