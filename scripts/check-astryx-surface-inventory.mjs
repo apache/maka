@@ -18,16 +18,7 @@
  * under the License.
  */
 
-/**
- * Coverage gate: committed inventory artifacts match a fresh generator run.
- *
- * These files are generated. Hand-editing one half (or leaving a deleted
- * path in the Markdown table) is the failure mode. Regenerating and
- * comparing bytes is the invariant — not a second, hand-written file list.
- *
- * Run: npm run astryx:surface-inventory
- * Fix: npm run astryx:surface-inventory:write
- */
+/** Verify that both committed inventory artifacts equal a fresh render. */
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -37,8 +28,6 @@ import {
 } from './generate-astryx-surface-inventory.mjs';
 
 const root = join(fileURLToPath(new URL('..', import.meta.url)));
-const pathsFile = join(root, 'docs/astryx-surface-file-inventory.paths');
-const mdFile = join(root, 'docs/astryx-surface-file-inventory.md');
 // One pre-existing reasoning disclosure owns button semantics on a div. Keep
 // its full diagnostic as the baseline: another control, even in the same file,
 // changes the occurrence count and fails admission.
@@ -50,62 +39,71 @@ const legacyBlockerBaseline = new Map([
 ]);
 
 export function inventoryDrift(rendered, committed) {
-  const details = [];
-  if (committed.paths !== rendered.paths) {
-    details.push('.paths does not match generator output');
-    const committedPathSet = new Set(
-      committed.paths
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean),
-    );
-    const generatedPathSet = new Set(rendered.files);
-    const missing = rendered.files.filter((file) => !committedPathSet.has(file));
-    const extra = [...committedPathSet].filter((file) => !generatedPathSet.has(file));
-    if (missing.length) {
-      details.push(
-        `on disk but not in .paths (${missing.length}):\n  ${missing.slice(0, 20).join('\n  ')}`,
-      );
-    }
-    if (extra.length) {
-      details.push(
-        `in .paths but not on disk (${extra.length}):\n  ${extra.slice(0, 20).join('\n  ')}`,
-      );
-    }
-  }
-  if (committed.markdown !== rendered.markdown) {
-    details.push('docs/astryx-surface-file-inventory.md does not match generator output');
-  }
-  return details;
+  const pathMessages = comparePathArtifact(rendered, committed.paths);
+  const markdownMessages =
+    committed.markdown === rendered.markdown
+      ? []
+      : ['docs/astryx-surface-file-inventory.md does not match generator output'];
+  return [...pathMessages, ...markdownMessages];
 }
 
-function main() {
-  if (!existsSync(pathsFile) || !existsSync(mdFile)) {
+function nonEmptyLines(text) {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function describePaths(label, paths) {
+  if (paths.length === 0) return [];
+  return [`${label} (${paths.length}):\n  ${paths.slice(0, 20).join('\n  ')}`];
+}
+
+function comparePathArtifact(rendered, committedPaths) {
+  if (committedPaths === rendered.paths) return [];
+  const expected = new Set(rendered.files);
+  const actual = new Set(nonEmptyLines(committedPaths));
+  const missing = rendered.files.filter((file) => !actual.has(file));
+  const extra = [...actual].filter((file) => !expected.has(file));
+  return [
+    '.paths does not match generator output',
+    ...describePaths('on disk but not in .paths', missing),
+    ...describePaths('in .paths but not on disk', extra),
+  ];
+}
+
+export function runInventoryCheck(repoRoot = root) {
+  const currentPathsFile = join(repoRoot, 'docs/astryx-surface-file-inventory.paths');
+  const currentMarkdownFile = join(repoRoot, 'docs/astryx-surface-file-inventory.md');
+  if (!existsSync(currentPathsFile) || !existsSync(currentMarkdownFile)) {
     throw new Error('missing inventory artifacts — run: npm run astryx:surface-inventory:write');
   }
 
-  const rendered = renderAstryxSurfaceInventory(root);
+  const rendered = renderAstryxSurfaceInventory(repoRoot);
   assertNoAstryxBlockers(rendered, legacyBlockerBaseline);
   const details = inventoryDrift(rendered, {
-    markdown: readFileSync(mdFile, 'utf8'),
-    paths: readFileSync(pathsFile, 'utf8'),
+    markdown: readFileSync(currentMarkdownFile, 'utf8'),
+    paths: readFileSync(currentPathsFile, 'utf8'),
   });
-  if (details.length === 0) {
-    console.log(
-      `astryx surface inventory coverage: ok (${rendered.files.length} files, ${rendered.excluded.length} exclusions)`,
-    );
-    return;
-  }
+  return { details, rendered };
+}
 
-  console.error(
-    `astryx surface inventory is stale; run: npm run astryx:surface-inventory:write\n${details.map((line) => `- ${line}`).join('\n')}`,
+function reportInventoryCheck(result, output = console) {
+  if (result.details.length === 0) {
+    output.log(
+      `astryx surface inventory coverage: ok (${result.rendered.files.length} files, ${result.rendered.excluded.length} exclusions)`,
+    );
+    return 0;
+  }
+  output.error(
+    `astryx surface inventory is stale; run: npm run astryx:surface-inventory:write\n${result.details.map((detail) => `- ${detail}`).join('\n')}`,
   );
-  process.exitCode = 1;
+  return 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    main();
+    process.exitCode = reportInventoryCheck(runInventoryCheck());
   } catch (error) {
     console.error(error);
     process.exitCode = 1;

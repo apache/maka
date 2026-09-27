@@ -239,6 +239,14 @@ const STORYBOOK_DRIVING_SCRIPTS = new Set([
 // than "any packages/core change".
 const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
 
+const ASTRYX_INVENTORY_CONTRACT_FILES = new Set([
+  'docs/astryx-surface-file-inventory.md',
+  'docs/astryx-surface-file-inventory.paths',
+  'scripts/check-astryx-surface-inventory.mjs',
+  'scripts/check-astryx-surface-inventory.test.mjs',
+  'scripts/generate-astryx-surface-inventory.mjs',
+]);
+
 function isStorybookCatalogPath(path) {
   if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
     return true;
@@ -284,20 +292,11 @@ function isStorybookPath(path) {
  * or e2e driver changed — not when only packages/ui unit tests changed.
  */
 function isAstryxSurfaceInventoryPath(path) {
-  if (
-    path === 'docs/astryx-surface-file-inventory.md' ||
-    path === 'docs/astryx-surface-file-inventory.paths' ||
-    path === 'scripts/generate-astryx-surface-inventory.mjs' ||
-    path === 'scripts/check-astryx-surface-inventory.mjs' ||
-    path === 'scripts/check-astryx-surface-inventory.test.mjs'
-  ) {
-    return true;
-  }
+  if (ASTRYX_INVENTORY_CONTRACT_FILES.has(path)) return true;
   if (isDocumentation(path)) return false;
-  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
-    return !isPackageTestPath(path);
-  }
-  return isUiProductSourcePath(path);
+  const desktopRenderer =
+    path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/');
+  return desktopRenderer ? !isPackageTestPath(path) : isUiProductSourcePath(path);
 }
 
 /**
