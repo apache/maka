@@ -105,7 +105,6 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
       onRemoveQuote: removeQuote,
       onEditQuoteComment: canStage ? updateQuoteComment : undefined,
       onAnnotateQuote: canStage ? tryAnnotateQuote : undefined,
-      onPasteAsQuote: canStage ? addQuote : undefined,
     }),
     chatViewQuoteProps: {
       handleRef: chatViewRef,

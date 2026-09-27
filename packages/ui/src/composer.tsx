@@ -28,7 +28,6 @@ import {
   useRef,
   useState,
   type ComponentProps,
-  type ClipboardEvent,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -66,7 +65,6 @@ import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helper
 import {
   appendPromptContextDraft,
   deriveComposerModelSwitchAvailability,
-  isReferenceSizedPaste,
   type ComposerModelSwitchAvailability,
 } from './composer-helpers.js';
 import {
@@ -114,7 +112,6 @@ import {
   Lightbox,
   Token,
   Tooltip,
-  useChatPasteAsToken,
   type ChatComposerInputHandle,
   type ChatComposerToken,
   type ChatComposerTrigger,
@@ -398,12 +395,6 @@ export const Composer = forwardRef<
     contextDrawerDefaultCollapsed?: boolean;
     /** Hide the unavailable dot when an inherited model is intentionally read-only. */
     showStaticModelUnavailableStatus?: boolean;
-    /**
-     * Stage a reference-sized paste as a quote chip rather than letting it
-     * flood the textarea. Omitted by hosts that don't compose quotes, in which
-     * case a large paste behaves like any other paste.
-     */
-    onPasteAsQuote?(input: { text: string; label?: string }): void;
     /** Other Sessions available for a read-only, bounded Composer reference. */
     sessionReferences?: ReadonlyArray<ComposerSessionReference>;
     /** Called when the user selects a Session from the `@` picker. */
@@ -1357,28 +1348,6 @@ export const Composer = forwardRef<
     return () => document.removeEventListener('selectionchange', onSelectionChange);
   }, []);
 
-  /**
-   * Reference-sized pastes never flood the input. When the host stages quotes
-   * they keep becoming drawer chips (the send path still carries them as
-   * structured `QuoteRef`s); otherwise Astryx's paste-as-token folds them into
-   * an expandable inline chip instead of dumping the whole blob inline.
-   */
-  const pasteAsInlineToken = useChatPasteAsToken({
-    inputRef: inputHandleRef,
-    threshold: 0,
-    toToken: (pasted) => ({ value: pasted, label: copy.pastedQuoteLabel }),
-  });
-  const pasteAsToken = {
-    onPaste: (event: ClipboardEvent<HTMLDivElement>, pasted: string) => {
-      if (props.disabled || !isReferenceSizedPaste(pasted)) return false;
-      if (props.onPasteAsQuote) {
-        props.onPasteAsQuote({ text: pasted, label: copy.pastedQuoteLabel });
-        return true;
-      }
-      return pasteAsInlineToken.onPaste(event, pasted);
-    },
-  };
-
   useImperativeHandle(
     ref,
     () => ({
@@ -2021,10 +1990,7 @@ export const Composer = forwardRef<
                   // Snapshot quotes stage in the session-references row
                   // below, not as excerpt tokens.
                   if (quote.sourceSessionId) return null;
-                  const label =
-                    quote.label?.trim() ||
-                    stripQuoteHeadingMarkers(quote.text.slice(0, 48)) ||
-                    copy.pastedQuoteLabel;
+                  const label = quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48));
                   const key = `${quote.sourceTurnId ?? 'quote'}-${index}`;
                   const onRemove = props.onRemoveQuote
                     ? () => props.onRemoveQuote?.(index)
@@ -2168,8 +2134,8 @@ export const Composer = forwardRef<
               // the component's own handler is what we need to skip.
               onPasteCapture={(event) => {
                 if (!isChatInputComposing(event, compositionActiveRef.current)) return;
-                // Stand fully down: keep our file-attachment and paste-as-token
-                // handlers off the event, but let the browser complete the
+                // Stand fully down: keep our file-attachment and plain-text
+                // paste handlers off the event, but let the browser complete the
                 // paste itself. Cancelling it here would drop the payload and
                 // disturb the composition the guard exists to protect.
                 event.stopPropagation();
@@ -2229,10 +2195,12 @@ export const Composer = forwardRef<
                   // use-composer-history.ts).
                   hasHistory={false}
                   triggers={triggers}
-                  pasteAsToken={pasteAsToken}
+                  // Astryx folds pastes over 200 characters into a chip by
+                  // default; a paste here is always editable text.
+                  pasteAsToken={false}
                   onPaste={(event, pasted) => {
-                    // Astryx has already offered token-adjacent, file, and
-                    // reference-sized-token pastes before it reaches this seam.
+                    // Astryx has already offered token-adjacent and file
+                    // pastes before it reaches this seam.
                     const plainTextContainer = document.createElement('div');
                     plainTextContainer.textContent = pasted;
                     const menuWasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
