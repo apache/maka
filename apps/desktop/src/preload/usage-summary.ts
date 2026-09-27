@@ -41,9 +41,15 @@ export async function loadSessionUsageSummaryVia(
   session: { readonly scope: unknown; readonly sessionId: string },
 ): Promise<Result<DesktopSessionUsageSummary>> {
   const summaryQuery = { range: 'all' as const, sessionId: session.sessionId };
+  // A rejected secondary invoke (transport/IPC crash rather than an
+  // operation-level failure) must not take the whole overview down with it —
+  // it marks the summary unavailable like any other main-read failure (#5691
+  // review).
   const [summary, main] = (await Promise.all([
     invoke('usage:summary', session.scope, summaryQuery),
-    invoke('usage:summary', session.scope, { ...summaryQuery, callKinds: ['main'] }),
+    invoke('usage:summary', session.scope, { ...summaryQuery, callKinds: ['main'] }).catch(
+      () => ({ ok: false, error: { code: 'persistence_failed', message: 'usage read failed' } }),
+    ),
   ])) as [Result<DesktopSessionUsageSummary>, Result<DesktopSessionUsageSummary>];
   if (!summary.ok) return summary;
   return main.ok

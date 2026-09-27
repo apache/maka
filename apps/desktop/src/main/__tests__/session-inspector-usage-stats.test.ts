@@ -453,6 +453,22 @@ test('marks the overview when the injected preload IPC read of the main loop fai
   if (!outcome.ok) return;
   assert.equal(outcome.data.mainSummary, undefined);
   assert.equal(outcome.data.mainSummaryUnavailable, true);
+
+  // A crashed secondary invoke (rejected promise, not an ok:false result)
+  // must degrade the same way instead of failing the overview (#5691 review).
+  const crashingInvoke: UsageSummaryInvoke = async (_channel, _scope, args) => {
+    if ((args as { callKinds?: readonly string[] }).callKinds) {
+      throw new Error('IPC transport died');
+    }
+    return { ok: true, data: usageSummary() } as Awaited<ReturnType<UsageSummaryInvoke>>;
+  };
+  const degraded = await loadSessionUsageSummaryVia(crashingInvoke, {
+    scope: { profileId: 'profile-1' },
+    sessionId: 'session-1',
+  });
+  assert.equal(degraded.ok, true);
+  if (!degraded.ok) return;
+  assert.equal(degraded.data.mainSummaryUnavailable, true);
   // The second read asked for exactly the agent loop's own calls.
   assert.deepEqual(
     calls.map((args) => (args as { callKinds?: readonly string[] }).callKinds ?? null),

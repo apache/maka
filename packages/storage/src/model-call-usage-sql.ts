@@ -101,6 +101,10 @@ export function countableFilter(
       // the honest translation is a clause that is never true.
       clauses.push('0');
     } else {
+      // Rows written before call_kind was recorded (call_kind IS NULL) are
+      // legacy and cannot be classified: a callKinds filter excludes them on
+      // purpose, so pre-callKind Sessions report only their newer calls
+      // (#5691 review).
       clauses.push(`call_kind IN (${query.callKinds.map(() => '?').join(', ')})`);
       parameters.push(...query.callKinds);
     }
