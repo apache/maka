@@ -91,6 +91,7 @@ import {
 import {
   commitFollowupPromotion,
   commitQueueReorder,
+  checkQueueRevision,
   locateQueuedEntry,
   planQueueReorder,
   removeQueuedEntry,
@@ -1811,7 +1812,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const selected = selectQueuedEntry(state, input.entryId);
     if (selected.kind !== 'found') return queueEntrySelectionFailure(selected);
     const queued = selected.location;
-    if (state.revision !== input.expectedQueueRevision) {
+    if (checkQueueRevision(state.revision, input.expectedQueueRevision).kind === 'stale') {
       return failure('operation_conflict', 'Message queue changed since editing began');
     }
     if (!state.reservedRoot) {
@@ -1907,7 +1908,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const admitted = await this.#openQueueMutation(input.sessionId);
     if (!admitted.ok) return admitted;
     const state = admitted.result;
-    if (state.revision !== input.expectedQueueRevision) {
+    if (checkQueueRevision(state.revision, input.expectedQueueRevision).kind === 'stale') {
       return failure('operation_conflict', 'Message queue changed since the reorder was issued');
     }
     const reorder = planQueueReorder(state, input.entryIds);

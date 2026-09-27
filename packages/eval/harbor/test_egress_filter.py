@@ -193,6 +193,11 @@ class EgressFilterTest(unittest.TestCase):
             self.assertIsNone(valid.response)
 
     def test_connect_target_normalization_is_pure_and_fail_closed(self) -> None:
+        target = MODULE.parse_connect_target("example.com", 8443)
+        self.assertEqual(
+            (target.host, target.port, target.url),
+            ("example.com", 8443, "https://example.com:8443/"),
+        )
         self.assertEqual(MODULE.connect_url("example.com", None), "https://example.com/")
         self.assertEqual(MODULE.connect_url("example.com", 80), "http://example.com/")
         self.assertEqual(MODULE.connect_url("example.com", 8443), "https://example.com:8443/")
@@ -207,6 +212,12 @@ class EgressFilterTest(unittest.TestCase):
             with self.subTest(host=host, port=port):
                 with self.assertRaises(ValueError):
                     MODULE.connect_url(host, port)
+
+    def test_connect_adapter_does_not_accept_url_semantics_from_the_caller(self) -> None:
+        for host in ("https://tbench.ai", "tbench.ai/path", "tbench.ai?query=1"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    MODULE.parse_connect_target(host, 443)
 
     def test_raw_tcp_hooks_erase_payload_close_flow_and_record_peer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

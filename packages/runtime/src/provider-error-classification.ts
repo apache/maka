@@ -22,11 +22,7 @@ import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { isAuthenticationErrorText } from '@maka/core/redaction';
 import type { ModelFailure, ModelFailureKind } from './model-protocol.js';
-import {
-  providerRetryReason,
-  responseHeadersFromError,
-  retryAfterMs,
-} from './provider-retry-policy.js';
+import { providerRetryDecision, responseHeadersFromError } from './provider-retry-policy.js';
 import {
   OPENAI_RESPONSES_TRANSPORT_CODES,
   PROVIDER_BILLING_PROVIDER_CODES,
@@ -212,9 +208,11 @@ function retryMetadataFromFacts(
   // The Codex transport already spent its complete 2/10/30-second budget.
   // Do not let the outer model loop restart that same transport budget.
   if (isTrustedCodexEdgeRejection(facts)) return { retryable: false };
-  if (providerRetryReason(errorClass) === null) return { retryable: false };
-  const delay = retryAfterMs(facts.responseHeaders ?? {});
-  return { retryable: true, ...(delay === undefined ? {} : { retryAfterMs: delay }) };
+  const decision = providerRetryDecision(errorClass, facts.responseHeaders ?? {});
+  return {
+    retryable: decision.reason !== null,
+    ...(decision.retryAfterMs === undefined ? {} : { retryAfterMs: decision.retryAfterMs }),
+  };
 }
 
 /** Collects `code`/`type` strings from a payload and from its `error` wrapper. */

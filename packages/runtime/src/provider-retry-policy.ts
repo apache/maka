@@ -37,8 +37,24 @@ const RETRY_REASON: Record<ModelFailureKind, ProviderRetryReason | null> = {
   unknown: null,
 };
 
+export interface ProviderRetryDecision {
+  readonly reason: ProviderRetryReason | null;
+  readonly retryAfterMs?: number;
+}
+
+/** One pure policy decision consumed by both Runtime retrying and Host projection. */
+export function providerRetryDecision(
+  kind: ModelFailureKind,
+  headers: Readonly<Record<string, string>> = {},
+): ProviderRetryDecision {
+  const reason = RETRY_REASON[kind];
+  if (reason === null) return { reason };
+  const delay = retryAfterMs(headers);
+  return delay === undefined ? { reason } : { reason, retryAfterMs: delay };
+}
+
 export function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason | null {
-  return RETRY_REASON[kind];
+  return providerRetryDecision(kind).reason;
 }
 
 export function responseHeadersFromError(error: unknown): Record<string, string> | undefined {

@@ -26,6 +26,7 @@ import time
 from contextlib import suppress
 from ipaddress import IPv6Address
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import unquote, urlsplit
 
 PINNED_REVISION = "d49e28f1e4ddd13d289e85a5f312a66750951932"
@@ -36,6 +37,14 @@ AUDIT_PATH = Path(
 )
 PERCENT_ESCAPE = re.compile(r"%(?![0-9a-fA-F]{2})")
 TERMINAL_BENCH = re.compile(r"terminal[-_.%/+\s]*bench", re.IGNORECASE)
+
+
+class ConnectTarget(NamedTuple):
+    """Validated CONNECT authority adapted into the URL policy's input shape."""
+
+    host: str
+    port: int | None
+    url: str
 
 
 def contamination_rule(raw_url: str) -> tuple[str, str, str] | None:
@@ -171,10 +180,10 @@ def response(flow: object) -> None:
 def http_connect(flow: object) -> None:
     request = getattr(flow, "request", None)
     try:
-        target = connect_url(
+        target = parse_connect_target(
             getattr(request, "host", None),
             getattr(request, "port", None),
-        )
+        ).url
     except (TypeError, ValueError):
         target = ""
     enforce_url_policy(flow, target)
@@ -243,11 +252,19 @@ def enforce_url_policy(flow: object, raw_url: str) -> None:
 
 
 def connect_url(host: object, port: object) -> str:
+    return parse_connect_target(host, port).url
+
+
+def parse_connect_target(host: object, port: object) -> ConnectTarget:
     normalized_host = _normalize_connect_host(host)
     normalized_port = _normalize_connect_port(port)
     scheme = "http" if normalized_port == 80 else "https"
     authority = normalized_host if normalized_port in (None, 443, 80) else f"{normalized_host}:{normalized_port}"
-    return f"{scheme}://{authority}/"
+    return ConnectTarget(
+        host=normalized_host,
+        port=normalized_port,
+        url=f"{scheme}://{authority}/",
+    )
 
 
 def _normalize_connect_host(host: object) -> str:

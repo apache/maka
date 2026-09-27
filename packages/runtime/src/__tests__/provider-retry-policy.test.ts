@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  providerRetryDecision,
   providerRetryReason,
   responseHeadersFromError,
   retryAfterMs,
@@ -44,4 +45,14 @@ test('a valid Retry-After is used when Retry-After-Ms is invalid', () => {
   assert.equal(retryAfterMs({ 'retry-after-ms': 'invalid', 'retry-after': '4' }), 4_000);
   assert.equal(retryAfterMs({ 'retry-after-ms': '1250', 'retry-after': '4' }), 1_250);
   assert.equal(retryAfterMs({ 'retry-after': '0' }), undefined);
+});
+
+test('retry decision keeps retryability and server delay together', () => {
+  assert.deepEqual(
+    providerRetryDecision('rate_limit', { 'retry-after-ms': 'invalid', 'retry-after': '4' }),
+    { reason: 'rate_limit', retryAfterMs: 4_000 },
+  );
+  assert.deepEqual(providerRetryDecision('provider_billing', { 'retry-after': '4' }), {
+    reason: null,
+  });
 });

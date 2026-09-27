@@ -30,6 +30,17 @@ interface QueueCollections<Entry extends QueueEntryIdentity> {
   readonly inFlight: ReadonlyMap<string, Entry>;
 }
 
+export type QueueRevisionCheck =
+  | { readonly kind: 'current'; readonly revision: number }
+  | { readonly kind: 'stale'; readonly expected: number; readonly actual: number };
+
+/** The Host owns this fence; clients may only propose a mutation against the revision they read. */
+export function checkQueueRevision(actual: number, expected: number): QueueRevisionCheck {
+  return actual === expected
+    ? { kind: 'current', revision: actual }
+    : { kind: 'stale', expected, actual };
+}
+
 export interface QueuedEntryLocation<Entry extends QueueEntryIdentity> {
   readonly lane: 'steering' | 'followup';
   readonly index: number;
@@ -103,11 +114,11 @@ export function planQueueReorder<Entry extends QueueEntryIdentity>(
       readonly changed: boolean;
     }
   | undefined {
-  const lane = state.steering.some((entry) => entry.entryId === entryIds[0])
-    ? 'steering'
-    : 'followup';
-  const reorder = exactQueueReorder(state[lane], entryIds);
-  return reorder ? { lane, entries: reorder.entries, changed: reorder.changed } : undefined;
+  for (const lane of ['steering', 'followup'] as const) {
+    const reorder = exactQueueReorder(state[lane], entryIds);
+    if (reorder) return { lane, entries: reorder.entries, changed: reorder.changed };
+  }
+  return undefined;
 }
 
 export function commitQueueReorder<Entry extends QueueEntryIdentity>(
