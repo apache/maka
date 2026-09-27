@@ -129,8 +129,7 @@ follows supersedes path presence as the disposition basis.
 
 The following measurement resolves each mainline squash commit to its full SHA,
 counts lines added by that commit, and uses `git blame -w -M --line-porcelain`
-on `origin/main` at `ab021efda` to count lines still attributed to it. The
-subsequent `3f44315dd` attachment change does not touch any measured path. It is a
+on `origin/main` at `3f44315dd` to count lines still attributed to it. It is a
 stronger survival signal than path presence, but it is not a generated-line
 classifier: mixed-origin PRs are not split by original commit, `-C` copy
 detection is not enabled, and `-M` can reattribute moved lines. A later rewrite
@@ -333,8 +332,8 @@ This validates the existing assertions, not an independently rewritten test.
 #3544's first six original commits are Grok-tagged and the last three are
 Codex-tagged. The per-entry queue still has Host protocol, coordinator, and
 Desktop UI behavior, though the original Desktop action module has since been
-removed. The current Host message-coordinator and protocol suites pass (165
-tests), and the focused protocol suite passes 86 tests. That baseline does not
+removed. The current Host message-coordinator and protocol suites pass (177
+tests), and the focused protocol suite passes 87 tests. That baseline does not
 constitute a replacement for its 35-file mixed
 change. The Host/protocol/UI slices and Electron workflow need separate
 review; a direct squash revert previously conflicted in 31 paths. A new
@@ -452,15 +451,18 @@ framework installation in the runner, duplicate CONNECT flow parsing,
 classification-local retry tables/header parsing, and separate Host/UI reorder
 algorithms. No compatibility branch or fallback was added.
 
-Verification after merging `origin/main` at `ab021efda`:
+Verification after merging `origin/main` at `3f44315dd`:
 
 - 96 Python Harbor tests pass (13 skipped); 22 egress artifact and 41 Eval
   lifecycle tests pass.
 - 89 Desktop seed/observer/streaming tests, 23 Runtime retry/classification
-  tests, 165 Runtime Host coordinator/protocol tests, 6 UI queue tests, and 3
-  Core order-policy tests pass.
+  tests, 177 Runtime Host coordinator/protocol tests, the focused 87-test
+  protocol suite, 6 UI queue tests, and 3 Core order-policy tests pass.
 - Desktop and all workspace dependencies build; the 301-file inventory gate,
   22 Astryx tests, and 40 CI planner tests pass.
+- The final upstream merge boundary passes 72 selected Desktop main tests and
+  11 UI queue/attachment tests; Desktop preload, main, renderer, and Storybook
+  typechecks pass.
 - The four streaming-remount Electron tests, the Side Chat native reorder /
   reconnect test, and the WorkHub queue/steering lifecycle test pass through
   the Desktop workspace test entrypoint.
@@ -482,14 +484,12 @@ reason to restore its old implementation just to revert it again.
 | Active test, fixture, or mixed feature with passing regression only (3) | #3101, #3111, #3459 | Preserve the current test/fixture behavior: #3101's current Electron assertion passes, #3111 now covers owner release on failed publish, and #3459's tagged follow-ups are isolated and tested without reverting its untagged feature commits. |
 | Documentation-only mixed-tool PR (1) | #4345 | Preserve the current document with the factual correction; include it in the project/legal provenance decision. |
 
-The branch was built against `ab021efda`: `npm run build:with-deps`
-passes, along with the focused suites listed above and six real Electron
-tests. The later `3f44315dd` attachment-only upstream change is merged and the
-affected build/test gates are rerun before the final push. These checks do not
-substitute for the live proxy test or project/legal
-acceptance of the remediation. The live proxy regression and the full Linux,
-macOS, and Windows PR checks passed on the pushed review branch before the
-final protocol-epoch and documentation-only updates.
+The branch is built against `3f44315dd`: `npm run build:with-deps` passes,
+along with the focused suites listed above and six real Electron tests. These
+checks do not substitute for project/legal acceptance of the remediation. The
+live proxy regression and the full Linux, macOS, and Windows PR checks passed
+on the pushed review branch before the final protocol-epoch, upstream-merge,
+and documentation updates; those final updates require one new CI pass.
 
 ## Project, legal, and release handoff
 
