@@ -8221,6 +8221,60 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('discards a retraction that lands after a mid-turn session switch', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // Hold the retraction in flight, switch mid-turn, then release it. The
+    // retraction describes the session we left: its quotes must not stage
+    // into the session we landed on, where the next submit could carry the
+    // abandoned context (#5109 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b[1;3A'); // Alt+Up
+    await waitFor(() => driver.retractCalls === 1);
+    driver.switchSession('session-other');
+    driver.retractGate.resolve();
+    await waitFor(() => driver.retractedQuoteLoads.length === 1);
+    await delay(30);
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.screenOutput()),
+      /quotes:1/,
+      'the abandoned retraction must not stage into the switched-to session',
+    );
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('shows an in-progress notice while the rewind branch is being created', async () => {
     const terminal = new FakeTerminal();
     const driver = new DeferredRewindDriver(
@@ -13664,6 +13718,7 @@ class MidTurnQuotesDriver extends QuotedRewindDriver {
 class RetractingQuotesDriver extends MidTurnQuotesDriver {
   readonly queuedRows: Array<{ messageId: string; text: string; quotes: readonly QuoteRef[] }> = [];
   readonly retractedQuoteLoads: Array<readonly QuoteRef[]> = [];
+  retractGate: ReturnType<typeof deferred<void>> | undefined = undefined;
   #retractCalls = 0;
   #turnStarted = false;
 
@@ -13692,6 +13747,7 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
 
   async retractQueued(): Promise<MakaRetractedMessages> {
     this.#retractCalls += 1;
+    if (this.retractGate) await this.retractGate.promise;
     const quotes = this.queuedRows.flatMap((row) => row.quotes);
     const retracted = {
       text: this.queuedRows.map((row) => row.text).join('\n\n'),
@@ -13701,6 +13757,13 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
     this.queuedRows.length = 0;
     this.retractedQuoteLoads.push(quotes);
     return retracted;
+  }
+
+  override async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    // The base fake leaves `sessionId` alone; a mid-turn switch must move the
+    // driver's session for the retraction-fence scenario to be reachable.
+    this.sessionId = sessionId;
+    return super.switchSession(sessionId);
   }
 }
 

@@ -1309,14 +1309,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // Serializing these operations also preserves that ordering over a Host
     // connection where both calls are asynchronous.
     void (async () => {
+      // Fence the retraction to the session it was asked for: a mid-turn
+      // `/session` landing while the Host call is in flight re-keys the
+      // driver, and neither the retracted text nor its quotes may land in
+      // the session we switched to (#5109 review).
+      const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
       const retracted = (await input.driver.retractQueued?.()) ?? {
         text: '',
         messageIds: [],
         quotes: [],
       };
-      acceptRetraction(retracted);
-      requestRender();
+      if (input.driver.getSessionId() === retractionSessionId) {
+        acceptRetraction(retracted);
+        requestRender();
+      }
       await input.driver.stop();
     })().catch((error) => {
       interruptRequested = false;
@@ -1527,12 +1534,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
     void (async () => {
+      // Same session fence as the interrupt path: a mid-turn `/session` that
+      // lands while the retraction is in flight must not inherit the quotes
+      // or the text of the session we left (#5109 review).
+      const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
       const retracted = (await input.driver.retractQueued?.()) ?? {
         text: '',
         messageIds: [],
         quotes: [],
       };
+      if (input.driver.getSessionId() !== retractionSessionId) return;
       acceptRetraction(retracted);
       requestRender();
     })().catch(reportError);
