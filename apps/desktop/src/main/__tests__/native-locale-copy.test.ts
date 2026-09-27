@@ -22,6 +22,7 @@ import test from 'node:test';
 import { getNativeDiagnosticDialogCopy } from '../native-diagnostic-dialog-copy.js';
 import { getPermissionOverlayCopy } from '../permission-overlay/permission-overlay-copy.js';
 import { buildRuntimeHostActiveQuitDialog } from '../runtime-host-quit-copy.js';
+import { renderStartupProgressHtml } from '../startup-progress-window.js';
 
 function stringify(value: unknown): string {
   return JSON.stringify(value, (_key, item) =>
@@ -49,6 +50,11 @@ test('native copy ships real Korean for every translated surface', () => {
       name: 'runtime host quit dialog',
       en: () => buildRuntimeHostActiveQuitDialog('en'),
       ko: () => buildRuntimeHostActiveQuitDialog('ko'),
+    },
+    {
+      name: 'startup progress window',
+      en: () => renderStartupProgressHtml('en', false),
+      ko: () => renderStartupProgressHtml('ko', false),
     },
   ];
 
