@@ -18,6 +18,41 @@
  */
 
 /* Shell layout — app frame, panels, topbar rail, main column, workspace top actions. */
+[data-agents-page] {
+  --sidebar-width: 240px;
+  position: relative;
+}
+
+.agents-layout-root {
+  height: 100dvh;
+  background: var(--agents-layout-bg);
+}
+
+.agents-layout-body {
+  min-height: 0;
+}
+
+.maka-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Transparent, NOT var(--background): the right panel already paints
+     its own surface (--agents-content-area-bg = #fafafa on darwin
+     glass). A solid white here covered only the chat scroll area, so
+     the composer region below read as a THIRD color band (shell /
+     chat / composer). One panel, one surface. */
+  background: transparent;
+}
+
+.agents-chat-panel,
+.agents-chat-view-root {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .appFrame {
   font: var(--maka-text-body);
   position: relative;

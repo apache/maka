@@ -17,6 +17,14 @@
  * under the License.
  */
 
+/* `.agents-parchment-paper-surface` is reused by the composer body. The bare
+   class drops its border; Astryx ChatComposer owns composer chrome. */
+.agents-parchment-paper-surface {
+  border: 0;
+  background-color: var(--agents-content-area-bg);
+  box-shadow: none;
+}
+
 /* Turn-scoped interactions take over the composer's in-flow slot so the
    conversation and any live browser remain visible while Maka waits. */
 .maka-composer-interaction-slot {

@@ -18,6 +18,15 @@
  */
 
 /* Composer — outer container, controls, pickers, tool buttons, send/workspace/branch/streaming. Composer block merged in from tool-output.css (was misplaced there) — issue #546 PR3. Runtime interaction prompt styles live in interaction-prompts.css. */
+.maka-composer[data-drag-active="true"] .maka-composer-astryx {
+  border-color: oklch(from var(--focus-ring) l c h / 0.46);
+  background: oklch(from var(--focus-ring) 0.98 calc(c * 0.20) h / 0.35);
+  box-shadow:
+    0 0 0 1px oklch(from var(--focus-ring) l c h / 0.22),
+    0 0 0 4px oklch(from var(--focus-ring) l c h / 0.08),
+    0 1px 3px oklch(from var(--foreground) l c h / 0.04);
+}
+
 .composer {
   flex: 0 0 auto;
   display: flex;

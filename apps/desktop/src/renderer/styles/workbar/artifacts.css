@@ -17,6 +17,22 @@
  * under the License.
  */
 
+.maka-code {
+  font: var(--maka-text-code);
+  /* Geist Mono ships programming ligatures on by default, which collapse a
+     run like `=== 目录 ===` into a strikethrough-looking rule. Code and
+     command surfaces read literally, so ligatures stay off. */
+  font-variant-ligatures: none;
+  background: var(--foreground-3);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  padding: var(--space-2) var(--space-2-5);
+  color: var(--foreground);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
 .maka-artifact-pane {
   width: 100%;
   height: 100%;
