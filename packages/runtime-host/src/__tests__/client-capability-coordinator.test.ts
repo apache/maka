@@ -1437,17 +1437,35 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
-  test('forgets initiating Clients when replacement or unregister removes all call-affine offers', async () => {
+  test('retains the initiating Client across temporary loss of call-affine offers', async () => {
     for (const mutation of ['replace', 'unregister'] as const) {
       const coordinator = createCoordinator();
-      const first = coordinator.attachConnection(
-        clientCapabilityConnectionIdentity('connection-a'),
-        { send: async () => {} },
-      );
-      const second = coordinator.attachConnection(
-        clientCapabilityConnectionIdentity('connection-b'),
-        { send: async () => {} },
-      );
+      const attach = (connectionId: string) => {
+        let connection!: ClientCapabilityConnection;
+        connection = coordinator.attachConnection(
+          clientCapabilityConnectionIdentity(connectionId),
+          {
+            send: async (frame) => {
+              if (frame.kind === 'client.capability.call') {
+                connection.accept({
+                  kind: 'client.capability.accepted',
+                  invocationId: frame.invocationId,
+                  admissionEvidence: { kind: 'none' },
+                });
+              } else if (frame.kind === 'client.capability.admitted') {
+                connection.accept({
+                  kind: 'client.capability.result',
+                  invocationId: frame.invocationId,
+                  result: textResult(connectionId),
+                });
+              }
+            },
+          },
+        );
+        return connection;
+      };
+      const first = attach('connection-a');
+      const second = attach('connection-b');
       await replace(
         coordinator,
         'connection-a',
@@ -1497,11 +1515,7 @@ describe('Host Client Capability coordinator', () => {
       );
       const snapshot = coordinator.snapshotForSession('session-a');
       assert.ok(snapshot);
-      await assert.rejects(
-        () => invoke(snapshot.tools[0]),
-        (error: unknown) =>
-          error instanceof ClientCapabilityInvocationError && error.code === 'capability_ambiguous',
-      );
+      assert.deepEqual(await invoke(snapshot.tools[0]), textResult('connection-a'));
       snapshot.release();
       first.close();
       second.close();
@@ -1509,9 +1523,12 @@ describe('Host Client Capability coordinator', () => {
     }
   });
 
-  test('does not retain an initiating Client for a Session with no capability state', async () => {
+  test('keeps Host-originated call offers independent and unattached Clients isolated', async () => {
     const coordinator = createCoordinator();
-    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', ''), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('unattached', 'missing-connection'), {
+      ok: true,
+    });
 
     const first = coordinator.attachConnection(clientCapabilityConnectionIdentity('connection-a'), {
       send: async () => {},
@@ -1541,6 +1558,7 @@ describe('Host Client Capability coordinator', () => {
 
     const snapshot = coordinator.snapshotForSession('session-a');
     assert.ok(snapshot);
+    assert.equal(coordinator.snapshotForSession('unattached'), undefined);
     await assert.rejects(
       () => invoke(snapshot.tools[0]),
       (error: unknown) =>

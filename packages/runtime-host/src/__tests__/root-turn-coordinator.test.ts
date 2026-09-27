@@ -4363,6 +4363,53 @@ test('unrelated Client Capability publishers do not block a root Turn', async ()
   }
 });
 
+test('Host-owned idle message submission starts a Turn without a Client initiator', async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => new FakeBackend(context));
+    },
+  });
+
+  try {
+    const submitted = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'plugin-agent-followup',
+        content: { text: 'Continue the agent task.' },
+        placement: 'current_turn',
+      },
+      {
+        hostEpoch: fixture.hostEpoch,
+        connectionId: 'plugin-agent',
+        principal: 'runtime_host',
+        acquireResidency: fixture.acquireResidency,
+      },
+    );
+    assert.equal(submitted.ok, true, JSON.stringify(submitted));
+    if (!submitted.ok) return;
+    assert.equal(submitted.result.disposition, 'turn_started');
+    if (submitted.result.disposition !== 'turn_started') return;
+    assert.ok(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        submitted.result.turnId,
+      ),
+    );
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+  } finally {
+    await fixture.coordinator.close();
+    await clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
 test('an exact active retry preserves the Client Capability admission binding', {
   timeout: 20_000,
 }, async () => {

@@ -78,6 +78,8 @@ const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_extract',
 ]);
 const DESKTOP_SETTINGS_TOOLS = new Set(['MakaClientSettingsGet', 'MakaClientSettingsUpdate']);
+// Provider IDs are `cc_` digests. This cannot match a registered provider.
+const UNATTACHED_INITIATING_PROVIDER_ID = 'unattached_client';
 
 export { ClientCapabilityInvocationError };
 
@@ -445,12 +447,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     mode: SessionBindingMode,
   ): SessionBindingSelection {
     const initiatingProvider = this.#connections.get(initiatingConnectionId)?.provider;
-    if (initiatingConnectionId && !initiatingProvider) {
-      return {
-        ok: false,
-        message: 'Initiating Client connection is no longer available',
-      };
-    }
     const initiatingScoped = initiatingProvider?.sessionRegistrations.get(sessionId);
     const directProvider =
       initiatingProvider &&
@@ -481,7 +477,9 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     // authenticated companion). Provider-independent selection is reserved
     // for Host-originated recovery, which has no initiating connection.
     const initiatingProviderId =
-      selectedInitiatingProvider?.providerId ?? initiatingProvider?.providerId;
+      selectedInitiatingProvider?.providerId ??
+      initiatingProvider?.providerId ??
+      (initiatingConnectionId ? UNATTACHED_INITIATING_PROVIDER_ID : undefined);
     const previousState = this.#sessions.get(sessionId);
     const serviceProviderId =
       previousState?.serviceProviderId ??
@@ -1667,6 +1665,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       state.sessionBindings.size === 0 &&
       state.turnBindings.size === 0 &&
       !state.serviceProviderId &&
+      state.initiatingProviderId === undefined &&
       !this.#hasCallOffers()
     ) {
       this.#sessions.delete(sessionId);
@@ -1681,7 +1680,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       if (
         state.sessionBindings.size === 0 &&
         state.turnBindings.size === 0 &&
-        !state.serviceProviderId
+        !state.serviceProviderId &&
+        state.initiatingProviderId === undefined
       ) {
         this.#sessions.delete(sessionId);
       }
