@@ -188,9 +188,6 @@
 
 .maka-quote-hover-card { max-width: 360px; }
 .maka-quote-comment-panel { width: 320px; max-width: 100%; }
-/* Ported to the viewport so a transformed ancestor cannot move the containing
-   block; display-only, so it must never catch a click or the selection. */
-.maka-quote-ordinal { position: fixed; z-index: var(--z-sticky, 20); transform: translate(-50%, -110%); pointer-events: none; }
 /* Painted rather than selected: the note input takes the DOM selection. */
 ::highlight(maka-quote-mark) { background-color: var(--selection); }
 

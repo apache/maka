@@ -24,6 +24,7 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type CSSProperties,
@@ -55,8 +56,7 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { createPortal } from 'react-dom';
-import { Badge, Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText } from './materialize.js';
@@ -99,45 +99,20 @@ import {
  */
 const MEASURE_AHEAD_MARGIN = 2000;
 
-/**
- * Height the annotation panel is laid out for, used only to keep it inside the
- * window when the excerpt it hangs from sits near the bottom edge.
- */
-const QUOTE_ANNOTATION_PANEL_HEIGHT = 280;
+/** The note panel at its tallest (the input grows to four rows); decides
+ *  whether it fits below its excerpt. */
+const QUOTE_ANNOTATION_PANEL_HEIGHT = 160;
 // Half the panel's fixed 320px width plus an edge margin — the panel is
 // center-anchored, so x must stay this far inside the window.
 const QUOTE_ANNOTATION_PANEL_HALF = 168;
+/** The note panel hangs centred below its excerpt, or above it when the window
+ *  has no room below, so the text it annotates stays readable. */
+const excerptAnchor = (box: DOMRect) => ({
+  x: box.left + box.width / 2,
+  top: box.top,
+  bottom: box.bottom,
+});
 
-interface QuoteMark {
-  index: number;
-  x: number;
-  y: number;
-}
-
-const sameQuoteMarks = (a: QuoteMark[], b: QuoteMark[]): boolean =>
-  a.length === b.length &&
-  a.every((mark, i) => mark.index === b[i].index && mark.x === b[i].x && mark.y === b[i].y);
-
-/**
- * Viewport position of each excerpt's last line, or nothing when the excerpt
- * has left the transcript's scrollport — a pin parked there would float over
- * the composer or header it does not belong to.
- */
-const quoteMarksAt = (
-  root: HTMLElement | null,
-  found: readonly { index: number; range: Range }[],
-): QuoteMark[] => {
-  const band = root?.getBoundingClientRect();
-  const marks: QuoteMark[] = [];
-  for (const { index, range } of found) {
-    const rects = range.getClientRects();
-    const last = rects[rects.length - 1];
-    if (!last) continue;
-    if (band && (last.bottom < band.top || last.top > band.bottom)) continue;
-    marks.push({ index, x: last.right, y: last.top });
-  }
-  return marks;
-};
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -386,9 +361,7 @@ export function ChatView(props: {
   onQuoteAnnotationSubmit?(index: number, comment: string): void;
   /**
    * The host's staged quotes. Each one whose excerpt still lives in this
-   * transcript keeps a painted highlight and a numbered marker at the
-   * excerpt's end, so several annotations stay distinguishable by position;
-   * a fresh annotation is numbered with the slot it will take.
+   * transcript stays highlighted there.
    */
   pendingQuotes?: readonly QuoteRef[];
 } & ChatViewGoalIndicatorProps) {
@@ -666,7 +639,7 @@ export function ChatView(props: {
     kind: 'annotate' | 'edit';
     text: string;
     turnId: string;
-    anchor: { x: number; y: number };
+    anchor: { x: number; top: number; bottom: number };
   } | null>(null);
   const annotationIndex = !quoteAnnotation
     ? -1
@@ -684,8 +657,7 @@ export function ChatView(props: {
     const index = quoteAnnotation ? orderedTurnIds.indexOf(quoteAnnotation.turnId) : -1;
     if (index !== -1) keepMountedIndexes.add(index);
   }
-  const [quoteMarks, setQuoteMarks] = useState<QuoteMark[]>([]);
-  const quoteMarkRangesRef = useRef<{ index: number; range: Range }[]>([]);
+  const quoteRangesRef = useRef<{ index: number; range: Range }[]>([]);
   const barVisible = selectionQuote !== null && quoteAnnotation === null;
   const panelVisible = quoteAnnotation !== null;
   // The bar and the panel are separate layers on purpose: useLayer maps
@@ -744,7 +716,7 @@ export function ChatView(props: {
     openQuoteAnnotation(index) {
       const root = scrollRef.current;
       const quote = props.pendingQuotes?.[index];
-      const range = quoteMarkRangesRef.current.find((mark) => mark.index === index)?.range;
+      const range = quoteRangesRef.current.find((found) => found.index === index)?.range;
       // Taking over an in-flight annotation would discard the note already
       // typed into it, so the token falls back to its own popover instead.
       if (!root || !quote?.sourceTurnId || !range || quoteAnnotation !== null) return false;
@@ -762,20 +734,18 @@ export function ChatView(props: {
         kind: 'edit',
         text: quote.text,
         turnId: quote.sourceTurnId,
-        anchor: { x: box.left + box.width / 2, y: box.top },
+        anchor: excerptAnchor(box),
       });
       return true;
     },
   }));
 
   // Every excerpt carrying a quote — each staged one and the excerpt a fresh
-  // annotation is written on — keeps a painted highlight plus a numbered pin
-  // at its end. The mark is painted rather than selected because the note
-  // input owns the DOM selection while a note is written. Ranges are
-  // re-found after every commit because the virtualizer remounts turns
-  // underneath us, and positions re-measure on capture-phase scroll because
-  // a scroll that swaps nothing produces no commit.
-  const measureQuoteMarks = (): { index: number; range: Range }[] => {
+  // note is written on — stays painted. It is painted rather than selected
+  // because the note input owns the DOM selection while a note is written.
+  // Ranges are re-found after every commit because the virtualizer remounts
+  // turns underneath us.
+  const measureQuoteRanges = (): { index: number; range: Range }[] => {
     const found: { index: number; range: Range }[] = [];
     const root = scrollRef.current;
     const collect = (index: number, turnId: string | undefined, text: string) => {
@@ -786,7 +756,7 @@ export function ChatView(props: {
     };
     props.pendingQuotes?.forEach((quote, index) => {
       // Cross-session snapshots stage in the references row, not on this
-      // transcript — a colliding turn id must not pin them here.
+      // transcript — a colliding turn id must not paint them here.
       if (!quote.sourceSessionId) collect(index, quote.sourceTurnId, quote.text);
     });
     if (quoteAnnotation?.kind === 'annotate') {
@@ -796,16 +766,14 @@ export function ChatView(props: {
   };
 
   useLayoutEffect(() => {
-    const found = measureQuoteMarks();
-    quoteMarkRangesRef.current = found;
+    const found = measureQuoteRanges();
+    quoteRangesRef.current = found;
     const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
     let highlight: Highlight | null = null;
     if (found.length > 0 && typeof Highlight !== 'undefined' && highlights) {
       highlight = new Highlight(...found.map(({ range }) => range));
       highlights.set('maka-quote-mark', highlight);
     }
-    const marks = quoteMarksAt(scrollRef.current, found);
-    setQuoteMarks((current) => (sameQuoteMarks(current, marks) ? current : marks));
     // The registry is document-global: only remove an entry this ChatView
     // still owns, never one a co-mounted transcript painted over it.
     return () => {
@@ -815,18 +783,19 @@ export function ChatView(props: {
     };
   });
 
+  // A scroll moves the excerpt without a commit; while the panel hangs from
+  // it, re-render so the panel follows.
+  const [, followScroll] = useReducer((tick: number) => tick + 1, 0);
   useEffect(() => {
-    const onScroll = () => {
-      const marks = quoteMarksAt(scrollRef.current, quoteMarkRangesRef.current);
-      setQuoteMarks((current) => (sameQuoteMarks(current, marks) ? current : marks));
-    };
-    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
-    window.addEventListener('resize', onScroll);
+    if (!panelVisible) return;
+    const follow = () => followScroll();
+    document.addEventListener('scroll', follow, { capture: true, passive: true });
+    window.addEventListener('resize', follow);
     return () => {
-      document.removeEventListener('scroll', onScroll, { capture: true });
-      window.removeEventListener('resize', onScroll);
+      document.removeEventListener('scroll', follow, { capture: true });
+      window.removeEventListener('resize', follow);
     };
-  }, [scrollRef]);
+  }, [panelVisible]);
 
   // Removing the edited quote's token, or sending, leaves nothing to save to.
   useLayoutEffect(() => {
@@ -835,12 +804,13 @@ export function ChatView(props: {
 
   // The panel follows the excerpt's measured range, so it tracks scrolling;
   // the stored anchor only covers the commit before the range is measured.
-  const annotationBox = quoteMarkRangesRef.current
-    .find((mark) => mark.index === annotationIndex)
+  const annotationBox = quoteRangesRef.current
+    .find((found) => found.index === annotationIndex)
     ?.range.getBoundingClientRect();
-  const annotationAnchor = annotationBox
-    ? { x: annotationBox.left + annotationBox.width / 2, y: annotationBox.top }
-    : quoteAnnotation?.anchor;
+  const annotationAnchor = annotationBox ? excerptAnchor(annotationBox) : quoteAnnotation?.anchor;
+  const annotationBelow =
+    annotationAnchor !== undefined &&
+    annotationAnchor.bottom + 8 + QUOTE_ANNOTATION_PANEL_HEIGHT <= window.innerHeight - 8;
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -1142,28 +1112,11 @@ export function ChatView(props: {
                   Math.max(annotationAnchor.x, QUOTE_ANNOTATION_PANEL_HALF),
                   Math.max(QUOTE_ANNOTATION_PANEL_HALF, window.innerWidth - QUOTE_ANNOTATION_PANEL_HALF),
                 ),
-                y: Math.min(
-                  Math.max(8, annotationAnchor.y + 12),
-                  Math.max(8, window.innerHeight - QUOTE_ANNOTATION_PANEL_HEIGHT),
-                ),
-                style: { transform: 'translateX(-50%)' },
+                y: annotationBelow
+                  ? Math.max(8, annotationAnchor.bottom + 8)
+                  : Math.max(8 + QUOTE_ANNOTATION_PANEL_HEIGHT, annotationAnchor.top - 8),
+                style: { transform: annotationBelow ? 'translateX(-50%)' : 'translate(-50%, -100%)' },
               },
-            )
-          : null}
-        {quoteMarks.length > 0
-          ? createPortal(
-              <>
-                {quoteMarks.map((mark) => (
-                  <Badge
-                    key={mark.index}
-                    variant="info"
-                    label={mark.index + 1}
-                    className="maka-quote-ordinal"
-                    style={{ left: mark.x, top: mark.y }}
-                  />
-                ))}
-              </>,
-              document.body,
             )
           : null}
         {barVisible
@@ -1186,14 +1139,19 @@ export function ChatView(props: {
                       <Button
                         type="button"
                         label={copy.quoteSelection}
-                        onClick={() =>
+                        onClick={() => {
+                          const selection = window.getSelection();
                           setQuoteAnnotation({
                             kind: 'annotate',
                             text: selectionQuote.text,
                             turnId: selectionQuote.turnId,
-                            anchor: selectionQuote.anchor,
-                          })
-                        }
+                            anchor: excerptAnchor(
+                              selection?.rangeCount
+                                ? selection.getRangeAt(0).getBoundingClientRect()
+                                : new DOMRect(selectionQuote.anchor.x, selectionQuote.anchor.y),
+                            ),
+                          });
+                        }}
                       />
                       <Button
                         type="button"
