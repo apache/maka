@@ -58,7 +58,6 @@ import {
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveChatTurnPresentation } from '../src/renderer/application/contracts/turn-presentation';
 import {
-  deriveBranchBanner,
   deriveSessionRail,
   deriveSessionRevisionNavigation,
   SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
@@ -361,7 +360,7 @@ function ComposedShell(props: {
   motionEnabled?: boolean;
   /**
    * Extra sessions the sidebar shows alongside the fixed catalog. Lineage
-   * states need them: production derives the branch banner and the revision
+   * states need them: production derives the titlebar's parent and the revision
    * navigation from the visible session list, so a story asks for the state by
    * supplying the relatives, not by hand-writing what the helpers would return.
    */
@@ -391,7 +390,6 @@ function ComposedShell(props: {
   // Same helpers the renderer calls (app-shell.tsx). Deriving here rather than
   // letting a story pass a banner or a footer-action list keeps a story from
   // showing lineage the production rules would not produce for its sessions.
-  const branchBanner = deriveBranchBanner(active, sessions);
   const revisionNavigation = deriveSessionRevisionNavigation(sessions, active?.id);
   // Same rail projection as app-shell: revision-tree roots only (linked
   // children stay off the list). Stories include every fixture row.
@@ -441,6 +439,10 @@ function ComposedShell(props: {
                 projectPath: active.cwd,
               });
               return name ? { name, path: active.cwd, onOpenFolder: noop } : undefined;
+            })()}
+            parentSession={(() => {
+              const parent = sessions.find((item) => item.id === active.parentSessionId);
+              return parent ? { name: parent.name, onOpen: noop } : undefined;
             })()}
           />
         )}
@@ -516,7 +518,6 @@ function ComposedShell(props: {
                   activeSession={active}
                   deriveTurnPresentation={deriveTurnPresentation}
                   {...props.chat}
-                  branchBanner={branchBanner}
                   revisionNavigation={revisionNavigation}
                 />
               </ChatSurfaceLayout>
@@ -548,6 +549,10 @@ export const DefaultLayout: Story = {
     expect(trailingInset).toBeGreaterThanOrEqual(0);
     expect(trailingInset).toBeLessThanOrEqual(16);
     expect(getComputedStyle(actions).columnGap).toBe('4px');
+    const titlebarControlHeights = new Set(
+      [...canvasElement.querySelectorAll('.maka-window-titlebar button')].map((button) => button.getBoundingClientRect().height),
+    );
+    expect([...titlebarControlHeights]).toHaveLength(1);
     // Message metadata mirrors across senders: the prompt's time sits left of
     // its actions, the answer's time right of its actions.
     await waitFor(() => expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull());
@@ -1762,8 +1767,8 @@ export const NativeConversation: Story = {
 };
 
 // The relatives that make the active session a branch AND revision 2 of 3.
-// ComposedShell feeds them to the production derive helpers, so the banner and
-// the revision counter appear only if the real rules still produce them.
+// ComposedShell feeds them to the production derive helpers, so the revision
+// counter appears only if the real rules still produce it.
 //
 // The shape follows what `reviseBeforeTurn` actually writes: the root keeps no
 // revision fields and each revision gets all five, which is also what the store
@@ -1828,7 +1833,6 @@ function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicato
         memoryActive: true,
         onOpenMemorySettings: noop,
         goalIndicator: props.goal,
-        onBranchBannerClick: noop,
         onRevisionNavigate: noop,
       }}
     />
@@ -1838,13 +1842,7 @@ function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicato
 // Real path: open a derived revision that is running an autonomous goal with
 // local memory and a legacy research label. Session metadata stays in one context
 // layer above the transcript instead of splitting across header pills and
-// standalone branch/revision rows. The long session name is the point: it is
-// what forces that layer to collapse rather than wrap.
-//
-// The banner reads 分自 without 从中断前: deriveBranchBanner only adds that hint
-// when the caller supplies it, and the renderer deliberately does not until
-// parent-message preloading lands (app-shell.tsx). A story that showed it would
-// be showing a screen the app cannot currently produce.
+// standalone revision rows.
 export const SessionContextLayer: Story = {
   render: () => (
     <GoalContextStory

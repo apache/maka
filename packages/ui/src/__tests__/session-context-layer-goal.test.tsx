@@ -32,7 +32,7 @@ import { SessionContextLayer, type SessionContextGoal } from '../session-context
 function renderGoalChip(goal: SessionContextGoal): string {
   return renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionContextLayer sessionName="Session" goal={goal} />
+      <SessionContextLayer goal={goal} />
     </LocaleProvider>,
   );
 }

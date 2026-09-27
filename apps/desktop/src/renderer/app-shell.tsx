@@ -1210,7 +1210,6 @@ function AppShellContent({
     toastApi,
   };
   const {
-    branchBanner,
     revisionNavigation,
     activeParentSession,
     layout: railLayout,
@@ -2508,8 +2507,6 @@ function AppShellContent({
                   ? (turnId) => transcriptReadingCommands.current?.captureAnchor(turnId)
                   : undefined}
                 scrollBehavior={readScrollMotionBehavior()}
-                branchBanner={branchBanner}
-                onBranchBannerClick={openSessionInChat}
                 revisionNavigation={revisionNavigation}
                 onRevisionNavigate={openSessionInChat}
                 onNew={createSession}

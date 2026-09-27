@@ -340,10 +340,6 @@ describe('useSessionNavigationReads', () => {
     );
     assert.equal(latestRail.activeId, 'root');
     assert.equal(latestReads.activeParentSession?.id, 'root');
-    assert.deepEqual(latestReads.branchBanner, {
-      parentSessionId: 'root',
-      parentSessionName: 'root',
-    });
   });
 });
 
