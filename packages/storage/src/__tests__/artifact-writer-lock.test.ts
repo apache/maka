@@ -164,6 +164,15 @@ test('unleased write authorities in separate processes reload and publish under 
 
       const freshStore = createArtifactStore(stateRoot);
       const records = [...(await listArtifacts(freshStore, 'session-1'))].sort(compareRecordsById);
+      // The already-open reader must observe the other process's commit too.
+      assert.deepEqual(
+        [...(await listArtifacts(parentStore, 'session-1'))].sort(compareRecordsById),
+        records,
+      );
+      assert.deepEqual(await readArtifactText(parentStore, 'child-public'), {
+        ok: true,
+        text: childPayload,
+      });
       assert.deepEqual(
         records,
         [seedRecord, parentRecord, childCreated.record].sort(compareRecordsById),
