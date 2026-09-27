@@ -30,6 +30,7 @@ import { getDesktopConversationCopy } from '../../../../application/contracts/co
 import { SessionTerminalHydration, SessionTerminalRenderQueue } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
 import { scheduleTerminalFrame } from './session-terminal-frame';
+import { loadTerminalWebLinks } from './terminal-web-links';
 import { useWorkbarServices } from '../../services-context.js';
 import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme';
 
@@ -109,6 +110,7 @@ export function SessionTerminalPanel(props: {
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    loadTerminalWebLinks(terminal);
     terminal.open(host);
     terminalRef.current = terminal;
     fitRef.current = fit;
