@@ -25,6 +25,7 @@ import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:
 import { createServer, type Server, type Socket } from 'node:net';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
+import { egressAuditCollection, readEgressAuditEvidence } from './egress-audit.js';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
 import {
   BUNDLED_HARNESS_RELAY_ROOT,
@@ -476,13 +477,7 @@ async function startTrial(
         environment: environmentConfig,
         ...(options.egressProxy
           ? {
-              artifacts: [
-                {
-                  source: '/opt/maka-egress-state/hits.jsonl',
-                  destination: EGRESS_AUDIT_DESTINATION,
-                  service: 'maka-eval-mitmproxy',
-                },
-              ],
+              artifacts: egressAuditCollection(),
             }
           : {}),
       })}\n`,
@@ -718,100 +713,11 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-export const EGRESS_AUDIT_DESTINATION = 'egress-hits.jsonl';
-export const EGRESS_AUDIT_ARTIFACT_PATH = `artifacts/${EGRESS_AUDIT_DESTINATION}`;
-
-interface EgressAuditEvidence {
-  readonly failureReason: string | null;
-  readonly artifacts: readonly JsonObject[];
-}
-
-export function describeEgressAudit(
-  audit: Buffer | undefined,
-  required: boolean,
-): EgressAuditEvidence {
-  if (!required) return { failureReason: null, artifacts: [] };
-  if (audit === undefined) {
-    return {
-      failureReason: 'egress audit log missing',
-      artifacts: [{ kind: 'egress-audit-missing', path: EGRESS_AUDIT_ARTIFACT_PATH }],
-    };
-  }
-  const summary = summarizeEgressAudit(audit);
-  return {
-    failureReason: null,
-    artifacts: [
-      {
-        kind: 'egress-audit',
-        path: EGRESS_AUDIT_ARTIFACT_PATH,
-        bytes: audit.byteLength,
-        sha256: `sha256:${createHash('sha256').update(audit).digest('hex')}`,
-        ...summary,
-      },
-    ],
-  };
-}
-
-function summarizeEgressAudit(audit: Buffer): {
-  readonly truncated: boolean;
-  readonly policyErrorCount: number;
-  readonly malformedLineCount: number;
-} {
-  const summary = { truncated: false, policyErrorCount: 0, malformedLineCount: 0 };
-  for (const line of newlineDelimitedBuffers(audit)) {
-    const ruleId = auditRuleId(line);
-    if (ruleId === undefined) continue;
-    if (ruleId === null) summary.malformedLineCount += 1;
-    else if (ruleId === 'audit_truncated') summary.truncated = true;
-    else if (ruleId === 'policy_error') summary.policyErrorCount += 1;
-  }
-  return summary;
-}
-
-function* newlineDelimitedBuffers(source: Buffer): Generator<Buffer> {
-  for (let offset = 0; offset < source.length; ) {
-    const boundary = source.indexOf(0x0a, offset);
-    const end = boundary < 0 ? source.length : boundary;
-    yield source.subarray(offset, end);
-    offset = boundary < 0 ? source.length : boundary + 1;
-  }
-}
-
-function auditRuleId(line: Buffer): unknown | null | undefined {
-  if (line.length === 0) return undefined;
-  try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(line).trim();
-    if (!text) return undefined;
-    const value: unknown = JSON.parse(text);
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    return (value as { readonly ruleId?: unknown }).ruleId;
-  } catch {
-    return null;
-  }
-}
-
-async function loadEgressAuditEvidence(
-  trialPath: string,
-  required: boolean,
-): Promise<EgressAuditEvidence> {
-  const path = join(trialPath, EGRESS_AUDIT_ARTIFACT_PATH);
-  try {
-    return describeEgressAudit(await readFile(path), required);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (!required || code === 'ENOENT') return describeEgressAudit(undefined, required);
-    return {
-      failureReason: `failed to read egress audit log ${path}${code ? ` (${code})` : ''}`,
-      artifacts: [{ kind: 'egress-audit-unreadable', path: EGRESS_AUDIT_ARTIFACT_PATH }],
-    };
-  }
-}
-
 async function readVerification(
   state: RelayState,
   cell: ExperimentCell,
   framework: HarnessFramework,
-  expectEgressAudit: boolean,
+  auditRequired: boolean,
 ): Promise<ExecutorVerification> {
   const result = JSON.parse(await readFile(join(state.trialPath, 'result.json'), 'utf8')) as {
     exception_info?: { exception_type?: unknown } | null;
@@ -824,24 +730,29 @@ async function readVerification(
   if (result.exception_info && !subjectException) {
     throw new Error('Trial failed outside subject execution');
   }
-  const audit = await loadEgressAuditEvidence(state.trialPath, expectEgressAudit);
+  const audit = await readEgressAuditEvidence(state.trialPath, auditRequired);
   const baseFailure = score === null ? 'verifier produced no reward' : null;
+  const status = verificationStatus(audit.failureReason, score, subjectException);
+  const collectedArtifacts = await collectedArtifactInventory(state.trialPath, framework);
   return {
-    status: audit.failureReason
-      ? 'infra_failed'
-      : score === null
-        ? 'infra_failed'
-        : subjectException
-          ? 'subject_failed'
-          : 'completed',
+    status,
     score,
     failureReason: audit.failureReason ?? baseFailure,
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-      ...(await collectedArtifactInventory(state.trialPath, framework)),
-      ...audit.artifacts,
+      ...collectedArtifacts,
+      ...Array.from(audit.artifacts),
     ],
   };
+}
+
+function verificationStatus(
+  auditFailure: string | null,
+  score: number | null,
+  subjectException: boolean,
+): ExecutorVerification['status'] {
+  if (auditFailure !== null || score === null) return 'infra_failed';
+  return subjectException ? 'subject_failed' : 'completed';
 }
 
 async function collectedArtifactInventory(

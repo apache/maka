@@ -23,6 +23,7 @@ import json
 import os
 import re
 import time
+from contextlib import suppress
 from ipaddress import IPv6Address
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -402,38 +403,45 @@ class AuditJournal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         entry = self._encode(rule_id, host[:255], normalized_path[:4096])
         existing_bytes = self.path.stat().st_size if self.path.exists() else 0
-        if existing_bytes + len(entry) > self.byte_limit:
-            self.mark_full()
+        if existing_bytes + len(entry) <= self.byte_limit:
+            with self.path.open("ab") as stream:
+                stream.write(entry)
             return
-        with self.path.open("ab") as stream:
-            stream.write(entry)
+        self.mark_full()
 
     def mark_full(self) -> None:
         if self.has_full_marker():
             return
-        separator = b""
-        if self.path.exists() and self.path.stat().st_size:
-            with self.path.open("rb") as stream:
-                stream.seek(-1, os.SEEK_END)
-                separator = b"" if stream.read(1) == b"\n" else b"\n"
         with self.path.open("ab") as stream:
-            stream.write(separator + self._encode("audit_truncated", "", ""))
+            stream.write(self._separator() + self._encode("audit_truncated", "", ""))
 
     def has_full_marker(self) -> bool:
-        if not self.path.exists():
-            return False
+        last = self._last_record()
+        return last is not None and last.get("ruleId") == "audit_truncated"
+
+    def _separator(self) -> bytes:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return b""
+        final_offset = self.path.stat().st_size - 1
         with self.path.open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, stream.tell() - 4096))
-            tail = stream.read().decode("utf-8", errors="ignore")
-        records = [line for line in tail.splitlines() if line.strip()]
-        if not records:
-            return False
-        try:
-            last = json.loads(records[-1])
-        except json.JSONDecodeError:
-            return False
-        return isinstance(last, dict) and last.get("ruleId") == "audit_truncated"
+            stream.seek(final_offset)
+            return b"" if stream.read(1) == b"\n" else b"\n"
+
+    def _last_record(self) -> dict[str, object] | None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return None
+        size = self.path.stat().st_size
+        with self.path.open("rb") as stream:
+            stream.seek(max(0, size - 4096))
+            lines = stream.read().decode("utf-8", errors="ignore").splitlines()
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            decoded = None
+            with suppress(json.JSONDecodeError):
+                decoded = json.loads(line)
+            return decoded if isinstance(decoded, dict) else None
+        return None
 
     @staticmethod
     def _encode(rule_id: str, host: str, normalized_path: str) -> bytes:

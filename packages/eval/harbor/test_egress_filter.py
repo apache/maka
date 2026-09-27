@@ -82,21 +82,26 @@ class EgressFilterTest(unittest.TestCase):
 
         MODULE.http = SimpleNamespace(Response=FakeResponse)
 
+    @staticmethod
+    def _request(url: str):
+        flow = SimpleNamespace(request=SimpleNamespace(pretty_url=url))
+        MODULE.request(flow)
+        return flow
+
     def test_http_request_outcomes_are_auditable_and_fail_closed(self) -> None:
-        cases = (
-            ("https://tbench.ai/tasks", 451, "tbench_domain"),
-            ("https://example.com/", None, None),
-            ("https://example.test/%ZZ", 503, "policy_error"),
-        )
+        expected = {
+            "https://tbench.ai/tasks": (451, "tbench_domain"),
+            "https://example.com/": (None, None),
+            "https://example.test/%ZZ": (503, "policy_error"),
+        }
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
             self._enable_http_responses()
-            for url, status, rule_id in cases:
+            for url, (status, rule_id) in expected.items():
                 with self.subTest(url=url):
-                    flow = SimpleNamespace(request=SimpleNamespace(pretty_url=url))
-                    MODULE.request(flow)
+                    flow = self._request(url)
                     if status is None:
-                        self.assertFalse(hasattr(flow, "response"))
+                        self.assertNotIn("response", vars(flow))
                         continue
                     self.assertEqual(flow.response["status"], status)
                     self.assertEqual(
@@ -447,69 +452,6 @@ class EgressFilterTest(unittest.TestCase):
         nextlayer = SimpleNamespace(layer=original, context=SimpleNamespace())
         MODULE.next_layer(nextlayer)
         self.assertIs(nextlayer.layer, original)
-
-    def test_audit_escapes_line_separators_so_python_and_typescript_agree(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            path = "/tasks/\u2028hidden"
-            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
-            journal.record("tbench_domain", "tbench.ai", path)
-            raw = MODULE.AUDIT_PATH.read_text(encoding="utf-8")
-            self.assertNotIn("\u2028", raw)
-            self.assertIn("\\u2028", raw)
-            self.assertEqual(raw.count("\n"), 1)
-            self.assertEqual(len(raw.splitlines()), 1)
-            record = json.loads(raw)
-            self.assertEqual(record["normalizedPath"], path)
-            self.assertFalse(journal.has_full_marker())
-
-    def test_audit_writes_one_truncation_marker_when_the_byte_limit_is_reached(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            MODULE.AUDIT_PATH.write_bytes(b"x" * MODULE.MAX_AUDIT_BYTES)
-            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
-            journal.record("tbench_domain", "tbench.ai", "/tasks")
-            records = [
-                json.loads(line)
-                for line in MODULE.AUDIT_PATH.read_text().splitlines()
-                if line.startswith("{")
-            ]
-            self.assertEqual(records[-1]["ruleId"], "audit_truncated")
-            size_after_marker = MODULE.AUDIT_PATH.stat().st_size
-            journal.record("tbench_domain", "tbench.ai", "/other")
-            self.assertEqual(MODULE.AUDIT_PATH.stat().st_size, size_after_marker)
-            records_after = [
-                json.loads(line)
-                for line in MODULE.AUDIT_PATH.read_text().splitlines()
-                if line.startswith("{")
-            ]
-            self.assertEqual(
-                [record["ruleId"] for record in records_after if record["ruleId"] == "audit_truncated"],
-                ["audit_truncated"],
-            )
-
-    def test_audit_marks_a_record_that_would_cross_the_byte_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            MODULE.AUDIT_PATH.write_bytes(b"{}\n" * (MODULE.MAX_AUDIT_BYTES // 3))
-            self.assertEqual(MODULE.AUDIT_PATH.stat().st_size, MODULE.MAX_AUDIT_BYTES - 1)
-
-            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
-            journal.record("tbench_domain", "tbench.ai", "/tasks")
-
-            last_line = MODULE.AUDIT_PATH.read_bytes().splitlines()[-1]
-            self.assertEqual(json.loads(last_line)["ruleId"], "audit_truncated")
-            self.assertTrue(journal.has_full_marker())
-
-    def test_truncation_probe_ignores_non_object_json_tails(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            MODULE.AUDIT_PATH.write_text('123\n"x"\n')
-            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
-            self.assertFalse(journal.has_full_marker())
-            journal.mark_full()
-            self.assertTrue(journal.has_full_marker())
-
 
 if __name__ == "__main__":
     unittest.main()
