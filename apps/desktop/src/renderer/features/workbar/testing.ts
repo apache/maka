@@ -24,7 +24,6 @@ export type {
   WorkbarServices,
   SessionTracePage,
   SessionUsageSummary,
-  WorkbarIngestInput,
 } from './ports.js';
 
 export * from './model/workbar-tabs.js';
