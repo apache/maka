@@ -19,8 +19,10 @@
 
 # Grok-assisted contribution review
 
-**Baseline:** `d89ccce01` (2026-09-27). **Status:** original-commit inventory
-reviewed; four narrow replacements verified locally; remaining behavior reviews open.
+**Baseline:** `d89ccce01` (2026-09-27). **Status:** all 25 original-commit
+inventories reviewed; four narrow replacements verified locally, four further
+PRs have scoped fixes, and a mixed-tool architecture document has been
+corrected. Remaining behavior reviews and whole-PR dispositions are open.
 
 This is a provenance and engineering inventory, not a legal classification or
 an assertion that these changes must be removed. The scope is merged PRs whose
@@ -164,7 +166,7 @@ without the following replacement. The remaining 21 entries have **not** been
 reverted or reimplemented; #3364 and #3123 require provenance decisions before
 any broad rollback.
 
-Three narrow paths have been traced to a no-code disposition rather than an
+Eight narrow paths have been traced to a no-code disposition rather than an
 identical revert/reapply. They are reviewed, **not** counted as replacements:
 
 - #3063 removed `history-compact-cleanup.ts`; the file and references to it
@@ -180,6 +182,37 @@ identical revert/reapply. They are reviewed, **not** counted as replacements:
   `apps/desktop/src/renderer/locales/plan-mode-copy.ts`. Restoring the removed
   root barrel import would break typecheck; an identical import fix is not an
   independent implementation.
+- #3102 removed unused Desktop bridge/IPC endpoints. The deleted channel names
+  (including `git-review:mutate`, the memory mutations, onboarding milestone
+  clearing, MCP reconnect, artifact get, and skill starter/details) have no
+  present Desktop callers or registered handlers in the source tree. Its
+  original branch also includes an untagged merge and an E2E follow-up. Do not
+  resurrect the discarded IPC authority merely to delete it again; the
+  surviving E2E changes remain a separate test review.
+- #3104 removed a dead `runAgentGraphToQuiescence` loop and its test suite. A
+  current source search finds no call sites for that function; the migrated
+  `stream-graph-dispatch.ts` exports supervisor types still used by the live
+  coordinator and reconciliation code. Restoring an inactive second graph
+  driver would create another execution authority. Its remaining coordinator
+  and protocol test adjustments require focused verification, but the deleted
+  loop itself has no behavior to independently rewrite.
+- #3117 deleted the legacy `llm-connections.json` store. Current storage and
+  Desktop main source has no production reference to that file or
+  `createConnectionStore`; the fixture writes to the Runtime Policy catalog
+  through its current storage authority. Its fixture test passes and asserts
+  the old JSON file is not created. The fixture and related migration edits
+  remain active and require their own review; restoring the removed legacy
+  store just to remove it again is not a remedy.
+- #3069 only added local transcript-search tests; both original test paths
+  were subsequently deleted (#4877 and #5531). Search now uses the Recall
+  pipeline. The current multi-host Recall search tests pass (9 tests), but
+  restoring the old tests would target a retired local-scan implementation.
+- #3106 originally sent `--desktop-e2e` through the production candidate CLI
+  and launcher. #3226 later separated the E2E execution entry into a
+  `test-only` module and made the production candidate reject that flag. The
+  current candidate/desktop tests pass (35 tests), including isolation from
+  test-only modules. Do not restore the old production flag. Other startup and
+  candidate wiring in that squash still needs its own attribution review.
 
 Two mixed/uncertain entries require attribution decisions, not a wholesale
 rollback:
@@ -202,11 +235,88 @@ mitmproxy tests. Reverting the #3008 squash against today's code would also
 unwind later security behavior. Treat the surviving CONNECT validation as a
 separate security review with unit and live-proxy regression checks.
 
+#3459 has two untagged substantive commits that introduced terminal query
+handling. Its three Grok-tagged follow-ups suppress XTVERSION replies, preserve
+cursor-position reports, and mark CLI `/transcript` as local while a turn runs.
+The implementation moved to the workbar terminal feature; the three behaviors
+and their unit tests survive. The Desktop query suite (6 tests) and CLI
+mid-turn `/transcript` test pass. Reverting the squash would remove the
+untagged implementation too. Review the tagged behaviors at their current
+boundaries, not the terminal feature as a wholly Grok-authored change.
+
+#4345 is documentation-only. The first original commit is Grok-tagged and
+describes bot onboarding; a later Codex-tagged commit corrected its claim about
+test coverage. The surviving document was checked against the current
+`BotOnboardingSnapshot`, main-process service, renderer, and tests: its stale
+generic `warning` claim was corrected to `warningCode`/`warningDetail`, and
+`retryHealth`/`errorCode` were documented. This is a scoped factual correction,
+not an independently rewritten architecture or erasure of the original history.
+
+#3048's first two original commits (Grok-tagged) added catch-up seeding and
+observation-generation gating; the next two (Codex-tagged) added retry and
+ordering assertions. The live seed helper and observation hooks remain, with
+later revisions. The current live-content-seed, observer, and streaming-handoff
+test files passed before a scoped fix (88 tests). A new failing test showed
+that a stale completion for the same Session could mark a newer generation
+ready at the helper boundary. Completion now carries the exact generation
+token through the observation hook and refuses to flush/display a newer seed
+for an older signal. The three test files now pass (89 tests) and Biome passes.
+This is a scoped independent hardening, **not** a replacement for the entire
+two tagged implementations. The returning-to-live-conversation Electron E2E
+passes; a separate Host-recovery E2E remains open. Desktop's full main build
+still reports seven unrelated implicit-any errors.
+
+#3101's only squash change modified the streaming-remount E2E to sample on
+animation frames instead of body mutations. The current test has since gained
+other assertions; its returning-to-live-conversation case passes in a real
+Electron window. This validates the existing assertion, not an independently
+rewritten test or the rest of that E2E file.
+
+#3544's first six original commits are Grok-tagged and the last three are
+Codex-tagged. The per-entry queue still has Host protocol, coordinator, and
+Desktop UI behavior, though the original Desktop action module has since been
+removed. The current Host message-coordinator and protocol suites pass (165
+tests). That baseline does not constitute a replacement for its 35-file mixed
+change. The Host/protocol/UI slices and Electron workflow need separate
+review; a direct squash revert previously conflicted in 31 paths.
+
+#3115's rate-limit classification, Host retry projection/continuity, and UI
+countdown remain live. The current Runtime/Host suites pass (97 tests) and
+Core/UI countdown suites pass (8 tests), including remaining-time projection
+after reconnect and reduced-motion display. This is a baseline review only;
+the active classification/Host/UI code has not been independently replaced.
+
+#3111's Daily Review fixture still writes through the interactive storage
+authority with nested writer/owner cleanup. Its current archive-seeding test
+passes, but there is no independent replacement for this live fixture writer;
+the old Desktop archive store was deleted and has no direct current file.
+
 #3070 and #3099 were replaced in the current branch after reviewing their
 migrated implementations. #3070's historical cwd resolution remains distinct
 from explicit nested selection. #3099's renderer reload test survives at
 `apps/desktop/e2e/sidebar-project-reload.spec.ts`; its direct store tests pass,
-but that Electron E2E has not yet been rerun in this branch.
+and the Electron renderer-reload E2E passes in this branch.
+
+### Further scoped work (not full PR dispositions)
+
+- #3066: a new concurrent-trial test failed under the process-global framework
+  selection (`harbor` observed `pier`). Selection now uses a Python `ContextVar`;
+  Python 3.13 Eval tests (88 pass, 12 skips), Eval TypeScript build, and 19
+  lifecycle tests passed. The original TypeScript removal of the environment
+  selector remains in place and was verified by the lifecycle suite; it was
+  not reverted just to reproduce an obsolete selector.
+- #3078: the inventory checker now exposes a pure drift comparison, with tests
+  for exact bytes, independently stale Markdown, and missing/extra paths. The
+  CI planner also recognizes the new test. The real 300-file inventory check,
+  22 Astryx tests, 40 CI planner tests, and Biome passed. The generator and its
+  later fail-closed dependency parser remain unchanged.
+- #3008: a new test exposed that CONNECT classification trusted `pretty_host`
+  over the actual tunnel destination, allowing a spoofed Host header to hide a
+  blocklisted target. It now classifies `request.host`; missing targets fail
+  closed. Python 3.13 Eval tests (90 pass, 13 skips) passed. A live mitmproxy
+  regression was added but not run locally because the Docker daemon did not
+  respond. #3017 owns the later raw-TCP closure behavior; do not roll that
+  implementation back as part of #3008.
 
 ## Review protocol
 
@@ -223,8 +333,8 @@ acceptability of any remediation need Apache project/legal review.
 - [x] Triage all 25 original changes by path, size, and current path presence.
 - [x] Read original commit trailers and compare branch history with the merged
       diff for the 25 candidate PRs.
-- [ ] Trace current lines, behaviors, and tests for 16 further PRs (three
-      no-code dispositions and two mixed/uncertain entries above are traced).
+- [ ] Finish the behavior and test tracing for the remaining active changes;
+      no-code deletions and mixed-author PRs are tracked separately above.
 - [ ] Record which changes are still material, superseded, or mixed with other work.
 - [ ] Decide the appropriate action with the project and ASF legal discussion.
 - [x] Implement and locally verify #3082, #5223, #3070, and #3099 in reviewable slices.
