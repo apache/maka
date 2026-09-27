@@ -169,35 +169,30 @@ def response(flow: object) -> None:
 
 
 def http_connect(flow: object) -> None:
+    request = getattr(flow, "request", None)
     try:
-        tunnel_request = flow.request
         target = connect_url(
-            getattr(tunnel_request, "host", None),
-            getattr(tunnel_request, "port", None),
+            getattr(request, "host", None),
+            getattr(request, "port", None),
         )
-    except Exception:
+    except (TypeError, ValueError):
         target = ""
     enforce_url_policy(flow, target)
 
 
 def tcp_start(flow: object) -> None:
-    # Last resort if a TCPLayer is still admitted (tcp_hosts / ignore).
-    # CONNECT raw is closed by next_layer → CloseRawLayer; HTTP 101 raw is
-    # closed by rawtcp=false. Neither of those paths starts a TCPLayer.
+    # This is a last-resort hook for a raw layer admitted by an override.
     reject_raw_transport(flow)
 
 
 def tcp_message(flow: object) -> None:
     messages = getattr(flow, "messages", None)
-    if messages:
+    if messages and hasattr(messages[-1], "content"):
         messages[-1].content = b""
     close_flow(flow)
 
 
 def next_layer(nextlayer: object) -> None:
-    # Script addons run before the built-in classifier assigns layer. If we
-    # set CloseRawLayer here, NextLayer leaves it in place. Waiting for
-    # isinstance(..., TCPLayer) never fires on the production CONNECT path.
     current = getattr(nextlayer, "layer", None)
     context = getattr(nextlayer, "context", None)
     if current is None:
@@ -212,12 +207,12 @@ def next_layer(nextlayer: object) -> None:
         if not initial_stream_is_raw(nextlayer):
             return
         reject_raw_transport(context, close=False)
-        nextlayer.layer = RejectRawTransport(context)
+        nextlayer.layer = RejectRawTransport(context, proxy_commands)
         return
     if TCPLayer is None or not isinstance(current, TCPLayer):
         return
     reject_raw_transport(context, close=False)
-    closer = RejectRawTransport(context)
+    closer = RejectRawTransport(context, proxy_commands)
     replace_layer(context, current, closer)
     nextlayer.layer = closer
 
@@ -248,22 +243,33 @@ def enforce_url_policy(flow: object, raw_url: str) -> None:
 
 
 def connect_url(host: object, port: object) -> str:
+    normalized_host = _normalize_connect_host(host)
+    normalized_port = _normalize_connect_port(port)
+    scheme = "http" if normalized_port == 80 else "https"
+    authority = normalized_host if normalized_port in (None, 443, 80) else f"{normalized_host}:{normalized_port}"
+    return f"{scheme}://{authority}/"
+
+
+def _normalize_connect_host(host: object) -> str:
     if not isinstance(host, str) or not host or host != host.strip():
         raise ValueError("empty CONNECT host")
     if host.startswith("[") and host.endswith("]"):
         IPv6Address(host[1:-1])
-    elif ":" in host:
+        return host
+    if ":" in host:
         IPv6Address(host)
-        host = f"[{host}]"
-    elif re.search(r"[\s/@?#\\\[\]]", host):
+        return f"[{host}]"
+    if re.search(r"[\s/@?#\\\[\]]", host):
         raise ValueError("invalid CONNECT host")
-    if port is not None and (type(port) is not int or not 1 <= port <= 65535):
+    return host
+
+
+def _normalize_connect_port(port: object) -> int | None:
+    if port is None:
+        return None
+    if type(port) is not int or not 1 <= port <= 65535:
         raise ValueError("invalid CONNECT port")
-    if port in (None, 443):
-        return f"https://{host}/"
-    if port == 80:
-        return f"http://{host}/"
-    return f"https://{host}:{port}/"
+    return port
 
 
 def initial_stream_is_raw(nextlayer: object) -> bool:
@@ -363,7 +369,8 @@ def replace_layer(context: object, current: object, closer: object) -> None:
 
 
 class RejectRawTransport(Layer):
-    def __init__(self, context: object) -> None:
+    def __init__(self, context: object, commands: object) -> None:
+        self._close_connection = getattr(commands, "CloseConnection", None)
         if Layer is object:
             self.context = context
             return
@@ -374,13 +381,13 @@ class RejectRawTransport(Layer):
         super().__init__(context)
 
     def handle_event(self, event: object):
-        if proxy_commands is None:
+        if self._close_connection is None:
             return
             yield
         for name in ("client", "server"):
             connection = getattr(self.context, name, None)
             if connection is not None:
-                yield proxy_commands.CloseConnection(connection)
+                yield self._close_connection(connection)
 
 
 def blocked_response(rule_id: str):
