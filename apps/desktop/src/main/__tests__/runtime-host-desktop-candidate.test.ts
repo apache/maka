@@ -1037,10 +1037,7 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
 test('drops a stale shared Session observation when Guest access is gone', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const firstIpc = ipcHarness();
-  const firstHost = connectionHarness('shared-before-revoke', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-  });
+  const firstHost = connectionHarness('shared-before-revoke', restorableObservation());
   const firstCandidate = await createCandidate(
     firstHost.connection,
     { ...deps(firstIpc), onGuestSessionCatalogChanged: () => undefined },
@@ -1080,10 +1077,7 @@ test('drops a stale shared Session observation when Guest access is gone', async
 test('forgets an observed Session the Host no longer serves instead of blocking every reconnect', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const firstIpc = ipcHarness();
-  const firstHost = connectionHarness('missing-session-source', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-  });
+  const firstHost = connectionHarness('missing-session-source', restorableObservation());
   const firstCandidate = await createDesktopRuntimeHostCandidate(
     firstHost.connection,
     deps(firstIpc),

@@ -402,21 +402,22 @@ export function useActiveSessionEvents(options: {
       let unsubscribeCurrent = () => {
         unsubscribeRequested = true;
       };
+      const handleObservationPhase = (phase: 'pending' | 'ready') => {
+        if (attempt !== observationAttempt) return;
+        controller.observationChanged(phase);
+        if (phase === 'pending') completeObservationSeed = beginObservationSeed(activeId);
+        else {
+          observationFailures = 0;
+          completeObservationSeed();
+        }
+      };
       const unsubscribe = window.maka.sessions.subscribeEvents(
         activeId,
         (event) => {
           if (attempt !== observationAttempt) return;
           handleSessionEvent(activeId, event);
         },
-        (phase) => {
-          if (attempt !== observationAttempt) return;
-          controller.observationChanged(phase);
-          if (phase === 'pending') completeObservationSeed = beginObservationSeed(activeId);
-          else {
-            observationFailures = 0;
-            completeObservationSeed();
-          }
-        },
+        handleObservationPhase,
         () => {
           if (attempt !== observationAttempt) return;
           controller.observationChanged('pending');

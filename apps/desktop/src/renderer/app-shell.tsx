@@ -1757,14 +1757,15 @@ function AppShellContent({
     liveContentSeedRef.current = seed.state;
     holdDisplayEvents(sessionId);
     setLiveContentSeed(seed.state);
-    return function finishObservationSeed() {
+    function finishObservationSeed() {
       if (!liveContent.ownsLiveContentSeed(liveContentSeedRef.current, seed.token)) return;
       releaseDisplayEvents(sessionId);
       const revealed = liveContent.revealLiveContentSeed(liveContentSeedRef.current, seed.token);
       liveContentSeedRef.current = revealed;
       setLiveContentSeed(revealed);
       void retireCancelledTransientMessages(sessionId);
-    };
+    }
+    return finishObservationSeed;
   }
   const observationAuthorityRef = useRef(liveContent.INITIAL_OBSERVATION_AUTHORITY);
   observationAuthorityRef.current = liveContent.reconcileObservationAuthority(

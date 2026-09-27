@@ -2529,10 +2529,7 @@ const makaBridge = {
               onObservationPhase?.('pending');
               return;
             }
-            if (event.type === 'host_execution') {
-              acceptExecution(event);
-              return;
-            }
+            if (event.type === 'host_execution') return void acceptExecution(event);
             if (event.type === 'host_observation_error') {
               onSeedError?.(new Error(event.message));
               return;
