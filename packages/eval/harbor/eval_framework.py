@@ -15,26 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Authoritative Eval harness framework selection.
-
-`run_trial.py` validates the argv framework and installs it here before Harbor,
-Pier, or the shared relay can import. The relay must not read the environment.
-"""
+"""Framework selection inherited by imports in the current trial context."""
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 _FRAMEWORKS = frozenset({"harbor", "pier"})
-_framework: str | None = None
+_framework: ContextVar[str | None] = ContextVar("eval_framework", default=None)
 
 
 def install(framework: str) -> None:
     if framework not in _FRAMEWORKS:
         raise RuntimeError("framework must be harbor or pier")
-    global _framework
-    _framework = framework
+    _framework.set(framework)
 
 
 def selected() -> str:
-    if _framework not in _FRAMEWORKS:
+    framework = _framework.get()
+    if framework not in _FRAMEWORKS:
         raise RuntimeError("Eval framework selection is not installed")
-    return _framework
+    return framework

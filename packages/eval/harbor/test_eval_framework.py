@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import asyncio
 import importlib.util
 import unittest
 from pathlib import Path
@@ -39,6 +40,25 @@ class EvalFrameworkTest(unittest.TestCase):
         self.assertEqual(module.selected(), "harbor")
         module.install("pier")
         self.assertEqual(module.selected(), "pier")
+
+    def test_concurrent_trials_do_not_share_framework_selection(self) -> None:
+        module = self._load_fresh()
+
+        async def trial(framework: str, ready: asyncio.Event, peer: asyncio.Event) -> str:
+            module.install(framework)
+            ready.set()
+            await peer.wait()
+            return module.selected()
+
+        async def run() -> list[str]:
+            harbor_ready = asyncio.Event()
+            pier_ready = asyncio.Event()
+            return await asyncio.gather(
+                trial("harbor", harbor_ready, pier_ready),
+                trial("pier", pier_ready, harbor_ready),
+            )
+
+        self.assertEqual(asyncio.run(run()), ["harbor", "pier"])
 
     @staticmethod
     def _load_fresh():
