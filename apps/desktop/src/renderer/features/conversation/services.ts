@@ -35,7 +35,7 @@ export function ConversationServicesProvider(props: { services: ConversationServ
   const service = useMemo(() => port ? {
     enabled,
     setEnabled: (next: boolean) => { port.writeEnabled(next); setEnabled(next); },
-    generate: (sessionId: string) => port.generate(sessionId),
+    generate: (sessionId: string, prefix?: string) => port.generate(sessionId, prefix),
   } : undefined, [port, enabled]);
   return createElement(context.Provider, { services: props.services },
     createElement(ComposerPromptSuggestionProvider, { service, children: props.children }));

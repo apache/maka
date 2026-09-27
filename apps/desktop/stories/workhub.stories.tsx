@@ -196,7 +196,10 @@ function Surface({ failFirst = false, history = false, colors = false, selectTar
   const [suggestionsEnabled, setSuggestionsEnabled] = useState(suggestions);
   const prediction = useMemo(() => suggestions ? {
     enabled: suggestionsEnabled, setEnabled: setSuggestionsEnabled,
-    generate: async () => '继续补充并发回调、重复投递和异常恢复的测试，确认所有边界条件都能正确处理，然后整理测试结果。',
+    generate: async (_sessionId: string, prefix?: string) => prefix === undefined
+      ? '继续补充并发回调、重复投递和异常恢复的测试，确认所有边界条件都能正确处理，然后整理测试结果。'
+      // A continuation appends to the draft; it never restates it.
+      : prefix === '请继续检查支付' ? '回调的幂等处理' : undefined,
   } : undefined, [suggestions, suggestionsEnabled]);
   return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><ComposerPromptSuggestionProvider service={prediction}><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ComposerPromptSuggestionProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
@@ -723,5 +726,78 @@ export const NextPromptSuggestion: Story = {
     await userEvent.type(input, '请总结验证结果。');
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(suggestion()).not.toBeNull());
+  },
+};
+
+/** Inline continuation (#5703): the steps the stories below share. */
+async function offerContinuation(canvasElement: HTMLElement) {
+  const input = await within(canvasElement).findByRole('textbox');
+  const offer = () => canvasElement.querySelector('.maka-composer-continuation') as HTMLElement | null;
+  await userEvent.click(input);
+  await userEvent.type(input, '请继续检查支付回调。');
+  await userEvent.keyboard('{Enter}');
+  // The reply settles and offers a next message; typing replaces that offer.
+  await waitFor(() => expect(canvasElement.querySelector('.maka-composer-next-prompt')).not.toBeNull());
+  await userEvent.click(input);
+  await userEvent.type(input, '请继续检查支付');
+  await waitFor(() => expect(offer()).not.toBeNull());
+  return { input, offer };
+}
+function glyphRects(element: Element) {
+  const range = document.createRange(); range.selectNodeContents(element);
+  return [...range.getClientRects()].map(({ x, y, width, height }) => ({ x, y, width, height }));
+}
+/** The box around every line of text in an element, however it is split into nodes. */
+function textBox(element: Element) {
+  const rects = glyphRects(element).filter(({ width, height }) => width > 0 && height > 0);
+  const left = Math.min(...rects.map((r) => r.x));
+  const top = Math.min(...rects.map((r) => r.y));
+  return { left, top, right: Math.max(...rects.map((r) => r.x + r.width)), bottom: Math.max(...rects.map((r) => r.y + r.height)) };
+}
+
+/** The offer, drawn after the draft at the caret and not yet accepted. */
+export const DraftContinuationOffer: Story = {
+  render: () => <Surface suggestions />,
+  play: async ({ canvasElement }) => {
+    const { input, offer } = await offerContinuation(canvasElement);
+    expect(offer()!.querySelector('.maka-composer-next-prompt-text')).toHaveTextContent('回调的幂等处理');
+    expect(input).toHaveTextContent('请继续检查支付');
+  },
+};
+
+/**
+ * The offer is laid out after an invisible copy of the draft in the editor's
+ * own grid cell, so it must sit exactly where the accepted text lands. Tab
+ * appends it as one undoable edit; Esc dismisses a later offer untouched.
+ */
+export const DraftContinuation: Story = {
+  render: () => <Surface suggestions />,
+  play: async ({ canvasElement }) => {
+    const { input, offer } = await offerContinuation(canvasElement);
+    expect(getComputedStyle(offer()!).pointerEvents).toBe('none');
+    // The invisible draft lays out exactly like the typed one, so the offer
+    // that follows it starts at the caret.
+    expect(glyphRects(offer()!.querySelector('.maka-composer-continuation-draft')!)).toEqual(glyphRects(input));
+    const offered = textBox(offer()!);
+    await userEvent.keyboard('{Tab}');
+    await waitFor(() => expect(input).toHaveTextContent('请继续检查支付回调的幂等处理'));
+    expect(offer()).toBeNull();
+    // The accepted text occupies exactly the box the offer had drawn.
+    expect(textBox(input)).toEqual(offered);
+    await userEvent.keyboard('{Backspace}{Backspace}{Backspace}{Backspace}{Backspace}{Backspace}{Backspace}');
+    await waitFor(() => expect(offer()).not.toBeNull());
+    await userEvent.keyboard('{Escape}');
+    expect(offer()).toBeNull();
+    expect(input).toHaveTextContent('请继续检查支付');
+  },
+};
+
+/** Right after Tab: the continuation is ordinary draft text, not sent. */
+export const DraftContinuationAccepted: Story = {
+  render: () => <Surface suggestions />,
+  play: async ({ canvasElement }) => {
+    const { input } = await offerContinuation(canvasElement);
+    await userEvent.keyboard('{Tab}');
+    await waitFor(() => expect(input).toHaveTextContent('请继续检查支付回调的幂等处理'));
   },
 };

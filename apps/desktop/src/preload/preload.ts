@@ -2394,9 +2394,11 @@ const makaBridge = {
       ) as TurnRecord[];
       return turns.map((turn) => projectDesktopTurnRecord(session.scope, turn));
     },
-    async generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult> {
+    async generatePromptSuggestion(sessionId: string, prefix?: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult> {
       const session = await runtimeHostSessionRef(sessionId);
-      return invokeWhenReady('sessions:generatePromptSuggestion', session.scope, session.sessionId);
+      return prefix === undefined
+        ? invokeWhenReady('sessions:generatePromptSuggestion', session.scope, session.sessionId)
+        : invokeWhenReady('sessions:generatePromptSuggestion', session.scope, session.sessionId, prefix);
     },
     async readSnapshot(
       sessionId: string,

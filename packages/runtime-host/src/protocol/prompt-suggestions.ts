@@ -17,13 +17,21 @@
  * under the License.
  */
 
-import { requireEntityId, requireExactRecord, requireUtf8String } from './codec.js';
+import { requireEntityId, requireExactRecord, requireRecord, requireUtf8String } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export interface PromptSuggestionInput {
   readonly sessionId: string;
+  /**
+   * The draft the user has typed so far. Present, the Host predicts a short
+   * continuation to append to it; absent, it predicts the whole next message.
+   */
+  readonly prefix?: string;
 }
+
+/** Longest draft, in UTF-8 bytes, a continuation request may carry. */
+export const PROMPT_CONTINUATION_PREFIX_MAX_BYTES = 8_192;
 export type PromptSuggestionResult =
   | { readonly kind: 'none' }
   | {
@@ -45,8 +53,21 @@ export const PROMPT_SUGGESTION_OPERATION_SPECS = {
       'internal_failure',
     ],
     decodeInput: (value: unknown): PromptSuggestionInput => {
-      const input = requireExactRecord(value, 'Prompt suggestion input', ['sessionId']);
-      return { sessionId: requireEntityId(input.sessionId, 'sessionId') };
+      const record = requireRecord(value, 'Prompt suggestion input');
+      const input = requireExactRecord(
+        record,
+        'Prompt suggestion input',
+        Object.hasOwn(record, 'prefix') ? ['sessionId', 'prefix'] : ['sessionId'],
+      );
+      const sessionId = requireEntityId(input.sessionId, 'sessionId');
+      if (input.prefix === undefined) return { sessionId };
+      const prefix = requireUtf8String(
+        input.prefix,
+        'Continuation prefix',
+        PROMPT_CONTINUATION_PREFIX_MAX_BYTES,
+      );
+      if (!prefix.trim()) throw invalidProtocolFrame('Continuation prefix is empty');
+      return { sessionId, prefix };
     },
     decodeOutput: (value: unknown): PromptSuggestionResult => {
       if (typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'none') {

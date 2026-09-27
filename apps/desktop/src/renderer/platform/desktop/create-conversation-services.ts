@@ -32,8 +32,8 @@ export function createDesktopConversationServices(
   return {
     ...bridge.sessionLocal,
     promptSuggestions: {
-      generate: async (sessionId) => {
-        const result = await bridge.sessions.generatePromptSuggestion(sessionId);
+      generate: async (sessionId, prefix) => {
+        const result = await bridge.sessions.generatePromptSuggestion(sessionId, prefix);
         return result.kind === 'generated' ? result.text : undefined;
       },
       // Browser storage belongs to this adapter; legacy renderer helpers cannot

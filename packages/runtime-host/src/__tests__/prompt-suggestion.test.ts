@@ -22,7 +22,9 @@ import test from 'node:test';
 import {
   HostPromptSuggestionCoordinator,
   supportsPromptSuggestion,
+  buildPromptContinuationPrompt,
   buildPromptSuggestionPrompt,
+  cleanPromptContinuation,
   cleanPromptSuggestion,
   type PromptSuggestionSource,
 } from '../server/prompt-suggestion.js';
@@ -347,4 +349,75 @@ test('deadline response does not release residency or close before model cleanup
   } finally {
     clearInterval(keepAlive);
   }
+});
+
+test('continuation cleaning appends only new text and drops echoes, meta and oversized output', () => {
+  assert.equal(cleanPromptContinuation('改成异步的', '帮我把这个函数'), '改成异步的');
+  // A restated draft is removed rather than appended twice.
+  assert.equal(cleanPromptContinuation('帮我把这个函数改成异步的', '帮我把这个函数'), '改成异步的');
+  // English keeps the model's separating space after a whole word ...
+  assert.equal(cleanPromptContinuation(' tests first', "Let's add"), ' tests first');
+  // ... but never introduces one after CJK text.
+  assert.equal(cleanPromptContinuation(' 补测试', '可以，那就先'), '补测试');
+  assert.equal(cleanPromptContinuation('“只调整预览区吧”', '可以，那就'), '只调整预览区吧');
+  for (const raw of ['', 'none', 'NO_SUGGESTION'.toLowerCase(), '无', 'a'.repeat(41), 'x <b>y</b>'])
+    assert.equal(cleanPromptContinuation(raw, '帮我把这个函数'), undefined, raw);
+});
+
+test('continuation prompt carries only the draft and the last reply tail', () => {
+  const messages = [
+    { type: 'user', id: 'u', text: 'refactor the parser' },
+    { type: 'tool_call', id: 't', name: 'Read', input: { secret: 'TOOL_ONLY' } },
+    { type: 'assistant', id: 'a', text: `${'x'.repeat(1_000)}Refactor now or add tests first?` },
+  ] as unknown as StoredMessage[];
+  const prompt = buildPromptContinuationPrompt(messages, "Let's add");
+  assert.match(prompt, /Refactor now or add tests first\?/);
+  assert.match(prompt, /"userDraft":"Let's add"/);
+  assert.doesNotMatch(prompt, /TOOL_ONLY|refactor the parser/);
+  // Only the tail of the reply is sent.
+  assert.ok(!prompt.includes('x'.repeat(401)));
+});
+
+test('protocol accepts a bounded draft prefix and rejects an empty one', () => {
+  const spec = PROMPT_SUGGESTION_OPERATION_SPECS['session.prompt-suggestion.generate'];
+  assert.deepEqual(spec.decodeInput({ sessionId: 's', prefix: '帮我把' }), {
+    sessionId: 's',
+    prefix: '帮我把',
+  });
+  assert.throws(() => spec.decodeInput({ sessionId: 's', prefix: '   ' }));
+  assert.throws(() => spec.decodeInput({ sessionId: 's', prefix: 'x'.repeat(8_193) }));
+  assert.throws(() => spec.decodeInput({ sessionId: 's', prefix: 1 }));
+});
+
+test('a newer draft aborts the in-flight continuation; one call per Session at a time', async () => {
+  const signals: AbortSignal[] = [];
+  const prefixes: (string | undefined)[] = [];
+  const pending: ((text: string) => void)[] = [];
+  const coordinator = new HostPromptSuggestionCoordinator({
+    readSource: async () => source,
+    generate: async (_source, signal, prefix) => {
+      signals.push(signal);
+      prefixes.push(prefix);
+      // Like a real provider call, an aborted request settles.
+      return new Promise<string>((resolve, reject) => {
+        pending.push(resolve);
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+  const first = coordinator.generate('session-1', lease, '帮我把这');
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = coordinator.generate('session-1', lease, '帮我把这个函数');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(prefixes, ['帮我把这', '帮我把这个函数']);
+  assert.equal(signals[0]?.aborted, true, 'the stale draft stops costing a call');
+  assert.equal(signals[1]?.aborted, false);
+  pending[1]?.('改成异步的');
+  assert.deepEqual(await first, { kind: 'none' });
+  assert.equal((await second).kind, 'generated');
+  assert.equal(((await second) as { text: string }).text, '改成异步的');
+  // The same draft again reuses the settled result instead of paying twice.
+  assert.deepEqual(await coordinator.generate('session-1', lease, '帮我把这个函数'), await second);
+  assert.equal(prefixes.length, 2);
+  await coordinator.close();
 });

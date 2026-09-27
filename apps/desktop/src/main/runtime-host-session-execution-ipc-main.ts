@@ -391,8 +391,14 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
 
-  ipcMain.handle('sessions:generatePromptSuggestion', async (_event, sessionId: unknown) =>
-    deps.client.generatePromptSuggestion(requiredId(sessionId, 'Session')),
+  ipcMain.handle(
+    'sessions:generatePromptSuggestion',
+    async (_event, sessionId: unknown, prefix?: unknown) => {
+      if (prefix !== undefined && typeof prefix !== 'string') {
+        throw new Error('Continuation prefix must be a string');
+      }
+      return deps.client.generatePromptSuggestion(requiredId(sessionId, 'Session'), prefix);
+    },
   );
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>

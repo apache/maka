@@ -18,7 +18,7 @@
  */
 
 import { executorCopy, ExecutorModelPicker, type ExecutorModelPickerProps } from './executor-model-picker.js';
-import { usePromptSuggestion } from './prompt-suggestion.js';
+import { usePromptContinuation, usePromptSuggestion } from './prompt-suggestion.js';
 import {
   forwardRef,
   useEffect,
@@ -150,6 +150,18 @@ import {
 
 // Astryx keeps this selection helper internal, so the shell owns its small
 // equivalent instead of importing an unpublished root export.
+/** Whether the caret is collapsed with nothing after it, i.e. an append is at the end. */
+function caretAtEnd(editable: HTMLElement): boolean {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return false;
+  const focus = selection.focusNode;
+  if (!focus || !editable.contains(focus)) return false;
+  const after = document.createRange();
+  after.selectNodeContents(editable);
+  after.setStart(focus, selection.focusOffset);
+  return after.toString().length === 0;
+}
+
 function placeCaretAtEnd(editable: HTMLElement): boolean {
   const selection = window.getSelection();
   if (!selection) return false;
@@ -930,13 +942,52 @@ export const Composer = forwardRef<
   const executorNativeDisabledReason = props.executorPicker?.selection ? executorCopy(locale).nativeOperations : undefined;
   const copy = getConversationCopy(locale).composer;
   const mentionCopy = getConversationCopy(locale).mentions;
+  const suggestionBlocked = Boolean(props.disabled || props.hidden || props.goalActive || props.planModeActive
+    || props.pendingAttachments?.length || props.pendingQuotes?.length || props.pendingSessionReferences?.length);
   const nextPrompt = usePromptSuggestion({
     sessionId: props.activeSession?.id,
     streaming: props.streaming === true,
     text,
-    blocked: Boolean(props.disabled || props.hidden || props.goalActive || props.planModeActive
-      || props.pendingAttachments?.length || props.pendingQuotes?.length || props.pendingSessionReferences?.length),
+    blocked: suggestionBlocked,
   });
+  // Inline continuation (#5703) renders the draft invisibly with the offer after
+  // it, so line breaking places the offer at the caret without measuring. That
+  // only holds for plain text with the caret at the end and nothing scrolled.
+  const continuation = usePromptContinuation({
+    sessionId: props.activeSession?.id,
+    streaming: props.streaming === true,
+    text,
+    blocked: suggestionBlocked,
+    canContinue: () => {
+      const editable = editableNode();
+      return Boolean(
+        editable
+          && !compositionActiveRef.current
+          && editable.getAttribute('aria-expanded') !== 'true'
+          && !editable.querySelector('[data-astryx-token]')
+          && editable.scrollHeight <= editable.clientHeight + 1
+          && caretAtEnd(editable),
+      );
+    },
+  });
+  function acceptContinuation() {
+    const value = continuation.text;
+    const editable = editableNode();
+    if (!value || !editable || compositionActiveRef.current) return;
+    const draft = textPort.getValue();
+    // Accept only onto the exact draft it was predicted for, at its end.
+    if (draft !== continuation.prefix || !caretAtEnd(editable)) {
+      continuation.dismiss();
+      return;
+    }
+    continuation.dismiss();
+    // One native editing transaction, so Undo removes exactly the continuation.
+    if (!document.execCommand('insertText', false, value)) {
+      textPort.setValue(draft + value);
+      saveCurrentDraft(draft + value);
+    }
+    resetPromptHistoryNavigation();
+  }
   const suggestionLabel = copy.promptSuggestionLabel;
   function acceptNextPrompt() {
     if (!nextPrompt.text || compositionActiveRef.current || textPort.getValue().length) return;
@@ -1528,12 +1579,16 @@ export const Composer = forwardRef<
    * the built-in submit clears the editor unconditionally.
    */
   function onInputKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (!event.defaultPrevented && nextPrompt.text && !compositionActiveRef.current
+    if (!event.defaultPrevented && (nextPrompt.text || continuation.text) && !compositionActiveRef.current
       && event.currentTarget.getAttribute('aria-expanded') !== 'true') {
       if (event.key === 'Tab' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault(); acceptNextPrompt(); return;
+        event.preventDefault();
+        if (continuation.text) acceptContinuation(); else acceptNextPrompt();
+        return;
       }
-      if (event.key === 'Escape') { event.preventDefault(); setDragActive(false); nextPrompt.dismiss(); return; }
+      if (event.key === 'Escape') {
+        event.preventDefault(); setDragActive(false); nextPrompt.dismiss(); continuation.dismiss(); return;
+      }
     }
     // Keystrokes made during an IME composition never reach this handler — the
     // native listener above takes them away from React entirely.
@@ -2213,6 +2268,11 @@ export const Composer = forwardRef<
                   <span aria-hidden="true" className="maka-composer-next-prompt" style={{ maxHeight: (props.maxInputRows ?? COMPOSER_MAX_ROWS) * 22 }}>
                     <span className="maka-composer-next-prompt-text">{nextPrompt.text}</span>
                   </span>
+                ) : continuation.text ? (
+                  <span aria-hidden="true" className="maka-composer-next-prompt maka-composer-continuation" style={{ maxHeight: (props.maxInputRows ?? COMPOSER_MAX_ROWS) * 22 }}>
+                    <span className="maka-composer-continuation-draft">{text}</span>
+                    <span className="maka-composer-next-prompt-text">{continuation.text}</span>
+                  </span>
                 ) : null}
                 <ChatComposerInput
                   ref={inputRootRef}
@@ -2262,7 +2322,7 @@ export const Composer = forwardRef<
                   }}
                   onFiles={onInputFiles}
                   onKeyDown={onInputKeyDown}
-                  onCompositionStart={() => { nextPrompt.dismiss(); compositionActiveRef.current = true; }}
+                  onCompositionStart={() => { nextPrompt.dismiss(); continuation.dismiss(); compositionActiveRef.current = true; }}
                   onCompositionEnd={() => { compositionActiveRef.current = false; }}
                 />
               </div>
@@ -2631,7 +2691,7 @@ export const Composer = forwardRef<
                   }}
                 />
               </MakaClientSessionScope>
-              {nextPrompt.text ? <kbd className="maka-composer-next-prompt-key" aria-hidden="true">Tab</kbd> : null}
+              {nextPrompt.text || continuation.text ? <kbd className="maka-composer-next-prompt-key" aria-hidden="true">Tab</kbd> : null}
               {props.footerAccessory}
             </div>
           )}

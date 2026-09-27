@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
+import { buildPromptContinuationPrompt, buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
@@ -405,20 +405,25 @@ export function createHostPromptSuggestionModel(input: HostSessionEffectModelInp
   return async (
     source: import('./prompt-suggestion.js').PromptSuggestionSource,
     abortSignal: AbortSignal,
+    prefix?: string,
   ): Promise<string | undefined> => {
+    const callKind = prefix === undefined ? 'prompt_suggestion' : 'prompt_continuation';
     const result = await runHostAuxiliaryModelCall(authority, {
       transportContextId: source.sessionId,
       telemetrySessionId: source.sessionId,
       header: source.header,
-      callKind: 'prompt_suggestion',
-      callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
+      callKind,
+      callId: `${callKind}_${source.terminalEventId}_${authority.newId()}`,
       abortSignal,
       reasoning: 'least',
       buildRequest: (_target, thinkingLevel) => ({
-        prompt: buildPromptSuggestionPrompt(
-          source.messages,
-          source.header.role === 'workhub_coordination',
-        ),
+        prompt:
+          prefix === undefined
+            ? buildPromptSuggestionPrompt(
+                source.messages,
+                source.header.role === 'workhub_coordination',
+              )
+            : buildPromptContinuationPrompt(source.messages, prefix),
         // Reasoning tokens count against the output budget. A model that cannot
         // turn reasoning off spends some at its lowest effort before the line.
         maxOutputTokens:

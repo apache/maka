@@ -22,7 +22,8 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 export interface ComposerPromptSuggestionService {
   readonly enabled: boolean;
   setEnabled(enabled: boolean): void;
-  generate(sessionId: string): Promise<string | undefined>;
+  /** With `prefix`, a short continuation of that draft; without, the next message. */
+  generate(sessionId: string, prefix?: string): Promise<string | undefined>;
 }
 const Context = createContext<ComposerPromptSuggestionService | undefined>(undefined);
 export function ComposerPromptSuggestionProvider(props: { service?: ComposerPromptSuggestionService; children: ReactNode }) {
@@ -59,6 +60,97 @@ export function usePromptSuggestion(input: {
     service,
     text: service?.enabled && !input.streaming && !input.blocked && !input.text.length
       && offer?.sessionId === input.sessionId ? offer?.text : undefined,
+    dismiss,
+  };
+}
+
+/** Quiet time after the last edit before a continuation is requested. */
+export const PROMPT_CONTINUATION_DEBOUNCE_MS = 350;
+/** Shorter drafts carry too little intent to continue. */
+export const PROMPT_CONTINUATION_MIN_CHARS = 4;
+
+/**
+ * Whether a draft's text can take a continuation. The caller separately checks
+ * what only the editor knows (caret, inline tokens, open menus, composition).
+ */
+export function continuationDraftEligible(text: string): boolean {
+  return (
+    Array.from(text).length >= PROMPT_CONTINUATION_MIN_CHARS &&
+    !/\s$/u.test(text) &&
+    !text.startsWith('/')
+  );
+}
+
+/**
+ * Inline continuation of a partly typed draft (#5703). State changes only on a
+ * new draft or a settled request, never from layout, so no render can feed back
+ * into another. A result is shown only while the draft still equals the prefix
+ * it was requested for; Esc dismisses it until the draft changes again.
+ */
+export function usePromptContinuation(input: {
+  sessionId?: string;
+  streaming: boolean;
+  blocked: boolean;
+  text: string;
+  /** Read once when the pause elapses: caret at end, no tokens, no open menu. */
+  canContinue(): boolean;
+}) {
+  const service = useContext(Context);
+  const [offer, setOffer] = useState<{ sessionId: string; prefix: string; text: string }>();
+  const epoch = useRef(0);
+  const live = useRef(input);
+  live.current = input;
+  const dismiss = () => {
+    epoch.current += 1;
+    setOffer(undefined);
+  };
+  useEffect(() => {
+    const generation = ++epoch.current;
+    if (
+      !service?.enabled ||
+      !input.sessionId ||
+      input.blocked ||
+      input.streaming ||
+      !continuationDraftEligible(input.text)
+    )
+      return;
+    const sessionId = input.sessionId;
+    const prefix = input.text;
+    const timer = setTimeout(() => {
+      if (generation !== epoch.current || !live.current.canContinue()) return;
+      void service
+        .generate(sessionId, prefix)
+        .then((text) => {
+          const now = live.current;
+          if (
+            !text ||
+            generation !== epoch.current ||
+            now.sessionId !== sessionId ||
+            now.text !== prefix ||
+            now.streaming ||
+            now.blocked
+          )
+            return;
+          setOffer({ sessionId, prefix, text });
+        })
+        .catch(() => undefined);
+    }, PROMPT_CONTINUATION_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      epoch.current += 1;
+    };
+  }, [service, input.sessionId, input.streaming, input.blocked, input.text]);
+  return {
+    text:
+      service?.enabled &&
+      !input.streaming &&
+      !input.blocked &&
+      offer !== undefined &&
+      offer.sessionId === input.sessionId &&
+      offer.prefix === input.text
+        ? offer.text
+        : undefined,
+    prefix: offer?.prefix,
     dismiss,
   };
 }

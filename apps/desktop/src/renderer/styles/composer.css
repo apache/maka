@@ -728,3 +728,7 @@
   color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs);
 }
 .maka-composer-next-prompt:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+/* Inline continuation (#5703): the draft is laid out again, invisibly, in the
+   same grid cell and typography as the editor, so the offer that follows it
+   lands exactly after the caret without any measurement. */
+.maka-composer-continuation-draft { visibility: hidden; }

@@ -56,7 +56,8 @@ export interface ConversationServices extends Pick<
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
   readonly promptSuggestions?: {
-    generate(sessionId: string): Promise<string | undefined>;
+    /** With `prefix`, a short continuation of that draft; without, the next message. */
+    generate(sessionId: string, prefix?: string): Promise<string | undefined>;
     readEnabled(): boolean;
     subscribeEnabled?(handler: () => void): () => void;
     writeEnabled(enabled: boolean): void;
