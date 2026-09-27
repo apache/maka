@@ -19,10 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  comparePathArtifact,
-  inventoryDrift,
-} from './astryx-surface-inventory-contract.mjs';
+import { comparePathArtifact, inventoryDrift } from './astryx-surface-inventory-contract.mjs';
 
 const rendered = {
   files: ['packages/ui/src/first.tsx', 'packages/ui/src/second.tsx'],

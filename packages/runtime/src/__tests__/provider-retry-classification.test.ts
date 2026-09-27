@@ -80,7 +80,12 @@ describe('Provider retry classification', () => {
         'rate_limit',
         true,
       ],
-      ['truncated stream', new Error('response stream ended without a finish reason'), 'stream_truncated', true],
+      [
+        'truncated stream',
+        new Error('response stream ended without a finish reason'),
+        'stream_truncated',
+        true,
+      ],
       [
         'stream timeout',
         Object.assign(new Error('model stream stalled'), { code: 'MODEL_STREAM_TIMEOUT' }),
@@ -88,7 +93,12 @@ describe('Provider retry classification', () => {
         true,
       ],
       ['fetch timeout', new DOMException('request timed out', 'TimeoutError'), 'timeout', true],
-      ['invalid key', providerError('Invalid API key provided', { statusCode: 401 }), 'auth', false],
+      [
+        'invalid key',
+        providerError('Invalid API key provided', { statusCode: 401 }),
+        'auth',
+        false,
+      ],
       [
         'exhausted quota',
         providerError('request failed', {
@@ -115,7 +125,12 @@ describe('Provider retry classification', () => {
       ],
       ['bad request', providerError('bad request', { statusCode: 400 }), 'request_rejected', false],
       ['fetch failure', new TypeError('fetch failed'), 'network', true],
-      ['unclassifiable', { type: 'invalid_request_error', message: 'missing required field' }, 'unknown', false],
+      [
+        'unclassifiable',
+        { type: 'invalid_request_error', message: 'missing required field' },
+        'unknown',
+        false,
+      ],
     ];
 
     for (const [label, error, kind, retryable] of cases) {
@@ -171,12 +186,15 @@ describe('Provider retry classification', () => {
     });
     assertRetryProjection(aborted, 'abort', false);
 
-    const exhaustedEdge = Object.assign(new Error('Codex OAuth request failed: HTTP 403 Request rejected'), {
-      name: 'OpenAiCodexEdgeRejectionError',
-      statusCode: 403,
-      data: { error: { code: 'openai_codex_edge_rejection' } },
-      responseHeaders: { 'retry-after': '40' },
-    });
+    const exhaustedEdge = Object.assign(
+      new Error('Codex OAuth request failed: HTTP 403 Request rejected'),
+      {
+        name: 'OpenAiCodexEdgeRejectionError',
+        statusCode: 403,
+        data: { error: { code: 'openai_codex_edge_rejection' } },
+        responseHeaders: { 'retry-after': '40' },
+      },
+    );
     assert.equal(classifyError(exhaustedEdge), 'provider_unavailable');
     assert.equal(providerModelFailure(exhaustedEdge).retryable, false);
     assert.equal(providerModelFailure(exhaustedEdge).retryAfterMs, undefined);

@@ -91,7 +91,15 @@ describe('relative-time contract', () => {
     assert.equal(formatCompactTimestamp(future, NOW, 'en'), 'just now');
     assert.equal(formatSidebarTimestamp(future, NOW, 'en'), 'just now');
 
-    for (const timestamp of [NOW - 60_000, NOW - 60 * 60_000, NOW, future, Infinity, NaN, -Infinity]) {
+    for (const timestamp of [
+      NOW - 60_000,
+      NOW - 60 * 60_000,
+      NOW,
+      future,
+      Infinity,
+      NaN,
+      -Infinity,
+    ]) {
       const delay = nextRelativeRefreshDelay(timestamp, NOW);
       assert.ok(delay === null || (Number.isFinite(delay) && delay > 0 && delay <= 10 * 60_000));
     }

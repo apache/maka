@@ -1920,18 +1920,27 @@ test('entry update preserves queue identity, order, and placement and replays it
   );
 
   const stale = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-2', updateId: 'update-entry-stale', expectedQueueRevision: 3, text: 'stale overwrite',
+    entryId: 'id-2',
+    updateId: 'update-entry-stale',
+    expectedQueueRevision: 3,
+    text: 'stale overwrite',
   });
   assert.equal(stale.ok, false);
   if (!stale.ok) assert.equal(stale.error.code, 'operation_conflict');
 
   const retry = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-2', updateId: 'update-entry-1', expectedQueueRevision: 3, text: 'please first @src/a.ts',
+    entryId: 'id-2',
+    updateId: 'update-entry-1',
+    expectedQueueRevision: 3,
+    text: 'please first @src/a.ts',
   });
   assert.deepEqual(retry, updated);
 
   const conflict = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-3', updateId: 'update-entry-1', expectedQueueRevision: 3, text: 'conflicting retry',
+    entryId: 'id-3',
+    updateId: 'update-entry-1',
+    expectedQueueRevision: 3,
+    text: 'conflicting retry',
   });
   assert.equal(conflict.ok, false);
   if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
@@ -1951,7 +1960,10 @@ test('entry update of an in-flight steering lease conflicts', async () => {
   assert.ok(lease);
 
   const outcome = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-1', updateId: 'update-in-flight', expectedQueueRevision: 2, text: 'too late',
+    entryId: 'id-1',
+    updateId: 'update-in-flight',
+    expectedQueueRevision: 2,
+    text: 'too late',
   });
   assert.equal(outcome.ok, false);
   if (!outcome.ok) assert.equal(outcome.error.code, 'operation_conflict');
@@ -1992,12 +2004,18 @@ test('entry update keeps relocated inline references ordered and non-overlapping
   );
 
   const reordered = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-1', updateId: 'update-reordered-refs', expectedQueueRevision: 2, text: '@src/b @src/a',
+    entryId: 'id-1',
+    updateId: 'update-reordered-refs',
+    expectedQueueRevision: 2,
+    text: '@src/b @src/a',
   });
   assert.equal(reordered.ok, true);
 
   const overlapping = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-2', updateId: 'update-overlapping-refs', expectedQueueRevision: 3, text: '@src/a.ts',
+    entryId: 'id-2',
+    updateId: 'update-overlapping-refs',
+    expectedQueueRevision: 3,
+    text: '@src/a.ts',
   });
   assert.equal(overlapping.ok, true);
 
@@ -2018,7 +2036,8 @@ test('promote changes placement once, replays exactly, and feeds the active owne
   await submit(fixture, 'follow-1', 'first', 'next_turn');
   await submit(fixture, 'follow-2', 'second', 'next_turn');
 
-  const promote = (promoteId: string) => queueMutation(fixture, 'queue.entry.promote', { entryId: 'id-2', promoteId });
+  const promote = (promoteId: string) =>
+    queueMutation(fixture, 'queue.entry.promote', { entryId: 'id-2', promoteId });
   const promoted = await promote('promote-1');
   assert.deepEqual(promoted, { ok: true, result: { queueRevision: 3 } });
   const projection = fixture.coordinator.projection(ROOT.sessionId);
