@@ -20,7 +20,7 @@
 export interface LiveContentSeed {
   readonly sessionId: string | undefined;
   readonly generation: number;
-  readonly readyGeneration: number;
+  readonly ready: boolean;
 }
 
 export interface SessionObservationAuthority {
@@ -61,7 +61,7 @@ export function advanceSessionObservationAuthority(
 export const EMPTY_LIVE_CONTENT_SEED: LiveContentSeed = {
   sessionId: undefined,
   generation: 0,
-  readyGeneration: 0,
+  ready: false,
 };
 
 export function beginLiveContentSeed(
@@ -71,7 +71,7 @@ export function beginLiveContentSeed(
   return {
     sessionId,
     generation: current.generation + 1,
-    readyGeneration: 0,
+    ready: false,
   };
 }
 
@@ -86,7 +86,7 @@ export function completeLiveContentSeed(
   return {
     sessionId,
     generation: current.generation,
-    readyGeneration: current.generation,
+    ready: true,
   };
 }
 
@@ -98,7 +98,7 @@ export function liveContentSeedRevision(
     !activeSessionId
     || seed.sessionId !== activeSessionId
     || seed.generation === 0
-    || seed.readyGeneration !== seed.generation
+    || !seed.ready
   ) {
     return 0;
   }
