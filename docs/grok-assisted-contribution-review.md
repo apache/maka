@@ -286,7 +286,8 @@ This validates the existing assertions, not an independently rewritten test.
 Codex-tagged. The per-entry queue still has Host protocol, coordinator, and
 Desktop UI behavior, though the original Desktop action module has since been
 removed. The current Host message-coordinator and protocol suites pass (165
-tests). That baseline does not constitute a replacement for its 35-file mixed
+tests), and the focused protocol suite passes 86 tests. That baseline does not
+constitute a replacement for its 35-file mixed
 change. The Host/protocol/UI slices and Electron workflow need separate
 review; a direct squash revert previously conflicted in 31 paths. A new
 same-members concurrent-reorder test failed because `queue.entries.reorder`
@@ -463,5 +464,6 @@ acceptability of any remediation need Apache project/legal review.
       #3048, #3066, #3078, #3115, and #3544 around minimal pure authorities.
 - [ ] Run #3008's live mitmproxy regression when a responsive Docker daemon is
       available.
-- [ ] Continue ablation of later-dependent outer orchestration, then push and
-      update the draft PR once the complete branch diff is reviewed.
+- [ ] Continue ablation of later-dependent outer orchestration where review or
+      CI exposes a concrete retained risk.
+- [ ] Converge CI and project/ASF legal review on draft PR #5747.
