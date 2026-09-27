@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -217,6 +218,21 @@ async function mountShell(services: SessionCollaborationServices) {
     },
   };
 }
+
+// The harness below mirrors AppShell's wiring; this pins AppShell to it, since
+// app-shell.tsx is not in the node test build.
+test('AppShell mounts the one ChatComposerRegion inside GuestTurnRequests with no owner/Guest remount', () => {
+  const source = readFileSync(new URL('../../../src/renderer/app-shell.tsx', import.meta.url), 'utf8');
+  const regions = [...source.matchAll(/<ChatComposerRegion\b/g)];
+  assert.equal(regions.length, 1);
+  const open = source.indexOf('<SessionCollaboration.GuestTurnRequests');
+  const close = source.indexOf('</SessionCollaboration.GuestTurnRequests>');
+  assert.ok(open !== -1 && open < regions[0]!.index && regions[0]!.index < close);
+  const slot = source.slice(open, close);
+  assert.doesNotMatch(slot, /\bkey=/);
+  assert.deepEqual(slot.match(/sharedSessionActive[^}]*/g), ['sharedSessionActive ? activeId : undefined'],
+    'only the Guest projection\'s sessionId distinguishes a shared Session');
+});
 
 test('switching to a shared Session and back keeps the one Composer and its owned draft', async () => {
   const shell = await mountShell(guestServices({}));
