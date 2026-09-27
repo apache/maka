@@ -928,7 +928,7 @@ function NetworkProxySection(props: {
               }
               placeholder="metaso.cn, baidu.com"
               label={copy.bypassList}
-              description={`${copy.bypassHelp}${locale === "en" ? " " : ""}${copy.autoBypass(proxyDraft.autoBypassDomains.length)}`}
+              description={copy.bypassHelp(proxyDraft.autoBypassDomains.length)}
               width="100%"
               isDisabled={!props.isInteractive}
             />
