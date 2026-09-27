@@ -169,7 +169,11 @@ def response(flow: object) -> None:
 
 def http_connect(flow: object) -> None:
     try:
-        raw_url = connect_target_url(flow)
+        request = flow.request
+        raw_url = connect_target_url(
+            getattr(request, "host", None),
+            getattr(request, "port", None),
+        )
     except Exception:
         raw_url = ""
     apply_http_policy(flow, raw_url)
@@ -243,9 +247,7 @@ def apply_http_policy(flow: object, raw_url: str) -> None:
             pass
 
 
-def connect_target_url(flow: object) -> str:
-    request = flow.request
-    host = getattr(request, "host", None)
+def connect_target_url(host: object, port: object) -> str:
     if not isinstance(host, str) or not host or host != host.strip():
         raise ValueError("empty CONNECT host")
     if host.startswith("[") and host.endswith("]"):
@@ -255,7 +257,6 @@ def connect_target_url(flow: object) -> str:
         host = f"[{host}]"
     elif re.search(r"[\s/@?#\\\[\]]", host):
         raise ValueError("invalid CONNECT host")
-    port = getattr(request, "port", None)
     if port is not None and (type(port) is not int or not 1 <= port <= 65535):
         raise ValueError("invalid CONNECT port")
     if port in (None, 443):
@@ -393,38 +394,43 @@ def blocked_response(rule_id: str):
 
 def append_audit(rule_id: str, host: str, normalized_path: str) -> None:
     AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    record = {
+    line = encode_audit_record({
         "ts": int(time.time() * 1000),
         "ruleId": rule_id,
         "host": host[:255],
         "normalizedPath": normalized_path[:4096],
-    }
-    line = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
+    })
     size = AUDIT_PATH.stat().st_size if AUDIT_PATH.exists() else 0
-    if size + len(line.encode("utf-8")) > MAX_AUDIT_BYTES:
+    if size + len(line) > MAX_AUDIT_BYTES:
         write_truncation_marker()
         return
-    with AUDIT_PATH.open("a", encoding="utf-8") as stream:
+    with AUDIT_PATH.open("ab") as stream:
         stream.write(line)
+
+
+def encode_audit_record(record: dict[str, object]) -> bytes:
+    return (
+        json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
 
 
 def write_truncation_marker() -> None:
     if audit_already_truncated():
         return
-    record = {
+    marker = encode_audit_record({
         "ts": int(time.time() * 1000),
         "ruleId": "audit_truncated",
         "host": "",
         "normalizedPath": "",
-    }
-    prefix = ""
+    })
+    prefix = b""
     if AUDIT_PATH.exists() and AUDIT_PATH.stat().st_size > 0:
         with AUDIT_PATH.open("rb") as stream:
             stream.seek(-1, os.SEEK_END)
             if stream.read(1) != b"\n":
-                prefix = "\n"
-    with AUDIT_PATH.open("a", encoding="utf-8") as stream:
-        stream.write(prefix + json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+                prefix = b"\n"
+    with AUDIT_PATH.open("ab") as stream:
+        stream.write(prefix + marker)
 
 
 def audit_already_truncated() -> bool:

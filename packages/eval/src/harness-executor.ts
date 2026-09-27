@@ -763,31 +763,36 @@ function inspectEgressAudit(audit: Buffer): {
   let truncated = false;
   let policyErrorCount = 0;
   let malformedLineCount = 0;
-  const decoder = new TextDecoder('utf-8', { fatal: true });
   for (let start = 0; start < audit.length; ) {
     const newline = audit.indexOf(0x0a, start);
     const end = newline === -1 ? audit.length : newline;
     const line = audit.subarray(start, end);
     start = newline === -1 ? audit.length : newline + 1;
-    if (line.length === 0) continue;
-    let record: unknown;
-    try {
-      const text = decoder.decode(line).trim();
-      if (!text) continue;
-      record = JSON.parse(text);
-    } catch {
+    const record = decodeEgressAuditLine(line);
+    if (record === undefined) continue;
+    if (record === null) {
       malformedLineCount += 1;
       continue;
     }
-    if (!record || typeof record !== 'object' || Array.isArray(record)) {
-      malformedLineCount += 1;
-      continue;
-    }
-    const ruleId = (record as { ruleId?: unknown }).ruleId;
+    const ruleId = record.ruleId;
     if (ruleId === 'audit_truncated') truncated = true;
     if (ruleId === 'policy_error') policyErrorCount += 1;
   }
   return { truncated, policyErrorCount, malformedLineCount };
+}
+
+function decodeEgressAuditLine(line: Buffer): { readonly ruleId?: unknown } | null | undefined {
+  if (line.length === 0) return undefined;
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(line).trim();
+    if (!text) return undefined;
+    const value: unknown = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as { readonly ruleId?: unknown })
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 async function readVerification(

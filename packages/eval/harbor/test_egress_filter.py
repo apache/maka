@@ -227,6 +227,22 @@ class EgressFilterTest(unittest.TestCase):
             MODULE.http_connect(valid)
             self.assertIsNone(valid.response)
 
+    def test_connect_target_normalization_is_pure_and_fail_closed(self) -> None:
+        self.assertEqual(MODULE.connect_target_url("example.com", None), "https://example.com/")
+        self.assertEqual(MODULE.connect_target_url("example.com", 80), "http://example.com/")
+        self.assertEqual(MODULE.connect_target_url("example.com", 8443), "https://example.com:8443/")
+        self.assertEqual(MODULE.connect_target_url("2001:db8::1", 443), "https://[2001:db8::1]/")
+        for host, port in (
+            ("user@example.com", 443),
+            ("example.com/path", 443),
+            (" example.com", 443),
+            ("example.com", True),
+            ("example.com", 65536),
+        ):
+            with self.subTest(host=host, port=port):
+                with self.assertRaises(ValueError):
+                    MODULE.connect_target_url(host, port)
+
     def test_tcp_start_kills_raw_tunnels_and_records_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
