@@ -2506,12 +2506,10 @@ const makaBridge = {
         // registry restores this observer on the replacement target. Profile
         // identity admits that replacement without accepting another Host's
         // same-named Session channel.
-        unsubscribeEvents = subscribeEveryRuntimeHostEvent(
-          `sessions:event:${session.sessionId}`,
-          function consumeObservationEvent(
-            scope,
-            event: SessionEvent | SessionObservationMessage,
-          ) {
+        const consumeObservationEvent = (
+          scope: DesktopTargetScope,
+          event: SessionEvent | SessionObservationMessage,
+        ): void => {
             if (disposed) return;
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
             if (event.type === 'host_observation_seed') {
@@ -2538,7 +2536,10 @@ const makaBridge = {
               return;
             }
             handler(projectDesktopSessionEvent(scope, event));
-          },
+        };
+        unsubscribeEvents = subscribeEveryRuntimeHostEvent(
+          `sessions:event:${session.sessionId}`,
+          consumeObservationEvent,
         );
         return {
           completion: invokeWhenReady(
