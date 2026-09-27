@@ -25,15 +25,6 @@ const MAX_QUOTE_CHARS = 32_000;
 
 type PendingQuotes = Record<string, QuoteRef[]>;
 
-// An emptied note removes the field rather than keeping the old one:
-// the excerpt is still staged, it simply carries nothing now.
-function updateQuoteCommentIn(bucket: QuoteRef[], index: number, comment: string): void {
-  const quote = bucket[index];
-  if (!quote) return;
-  const { comment: _previous, ...rest } = quote;
-  bucket[index] = comment ? { ...rest, comment } : rest;
-}
-
 export function useComposerQuotes(options: { readonly draftKey: string }) {
   // Each draft's bucket is mutated in place so a send in the same tick as a
   // staging call already sees the quote; the version bump only re-renders.
@@ -60,31 +51,25 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     const text = input.text.slice(0, MAX_QUOTE_CHARS).trim();
     if (!text) return;
     const comment = input.comment?.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
-    // (text, sourceTurnId) is the identity the transcript's marks and editor
-    // resolve a staged quote by, so staging the same excerpt again only
-    // updates its note.
-    const existing = bucket.findIndex(
-      (quote) => quote.text === text && quote.sourceTurnId === input.turnId,
-    );
-    if (existing !== -1) {
-      if (comment) updateQuoteCommentIn(bucket, existing, comment);
-    } else {
-      bucket.push({
-        text,
-        ...(input.label ? { label: input.label } : {}),
-        ...(comment ? { comment } : {}),
-        ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
-        ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
-        ...(input.sourceSessionName ? { sourceSessionName: input.sourceSessionName } : {}),
-        ...(input.sourceCapturedAt !== undefined ? { sourceCapturedAt: input.sourceCapturedAt } : {}),
-        ...(input.sourceTruncated !== undefined ? { sourceTruncated: input.sourceTruncated } : {}),
-      });
-    }
+    bucket.push({
+      text,
+      ...(input.label ? { label: input.label } : {}),
+      ...(comment ? { comment } : {}),
+      ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
+      ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
+      ...(input.sourceSessionName ? { sourceSessionName: input.sourceSessionName } : {}),
+      ...(input.sourceCapturedAt !== undefined ? { sourceCapturedAt: input.sourceCapturedAt } : {}),
+      ...(input.sourceTruncated !== undefined ? { sourceTruncated: input.sourceTruncated } : {}),
+    });
     publish();
   }, [bucket, publish]);
 
   const updateQuoteComment = useCallback((index: number, comment: string): void => {
-    updateQuoteCommentIn(bucket, index, comment.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim());
+    const quote = bucket[index];
+    if (!quote) return;
+    const { comment: _previous, ...rest } = quote;
+    const note = comment.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
+    bucket[index] = note ? { ...rest, comment: note } : rest;
     publish();
   }, [bucket, publish]);
 

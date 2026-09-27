@@ -256,21 +256,6 @@ test('a staged quote carries its note, and editing the note leaves the quote in 
   assert.equal(probe.latest().pendingQuotes[0]?.comment?.length, QUOTE_COMMENT_MAX_LENGTH);
 });
 
-test('staging the same excerpt from the same turn again updates the staged quote', async () => {
-  const probe = await mountProbe(useComposerQuotes);
-  await probe.render('session-1');
-  await act(() => probe.latest().addQuote({ text: 'the excerpt', turnId: 'turn-1' }));
-  await act(() => probe.latest().addQuote({ text: 'the excerpt', turnId: 'turn-1' }));
-  await act(() =>
-    probe.latest().addQuote({ text: 'the excerpt', turnId: 'turn-1', comment: 'check this' }),
-  );
-  await act(() => probe.latest().addQuote({ text: 'the excerpt', turnId: 'turn-2' }));
-  assert.deepEqual(probe.latest().pendingQuotes, [
-    { text: 'the excerpt', sourceTurnId: 'turn-1', comment: 'check this' },
-    { text: 'the excerpt', sourceTurnId: 'turn-2' },
-  ]);
-});
-
 test('a completing send clears the attachments it submitted', async () => {
   const probe = await mountProbe((options) =>
     useComposerAttachments({

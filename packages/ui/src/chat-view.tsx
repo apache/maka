@@ -339,11 +339,12 @@ export function ChatView(props: {
   onPromptSuggestion?(prompt: string): void;
   /**
    * Codex/Cursor-style "quote this": when set, selecting text in the transcript
-   * surfaces 引用 (open a note panel over the selection) and 直接引用 (stage it
+   * surfaces 引用 (open a note panel under the selection) and 直接引用 (stage it
    * with no note). Either hands the excerpt, its turn and any note to the
-   * host, which stages it on the composer. Omitted by hosts that don't compose
-   * quotes. Only selections that resolve to a turn are offered, so `turnId`
-   * always arrives.
+   * host, which stages it on the composer; an excerpt already in
+   * `pendingQuotes` is never handed over again. Omitted by hosts that don't
+   * compose quotes. Only selections that resolve to a turn are offered, so
+   * `turnId` always arrives.
    */
   onQuoteSelection?(input: { text: string; turnId: string; comment?: string }): void;
   /**
@@ -641,16 +642,19 @@ export function ChatView(props: {
     turnId: string;
     anchor: { x: number; top: number; bottom: number };
   } | null>(null);
+  const stagedQuoteIndex = (text: string, turnId: string): number =>
+    props.pendingQuotes?.findIndex(
+      (quote) => !quote.sourceSessionId && quote.text === text && quote.sourceTurnId === turnId,
+    ) ?? -1;
   const annotationIndex = !quoteAnnotation
     ? -1
     : quoteAnnotation.kind === 'annotate'
       ? (props.pendingQuotes?.length ?? 0)
-      : (props.pendingQuotes?.findIndex(
-          (quote) =>
-            !quote.sourceSessionId &&
-            quote.text === quoteAnnotation.text &&
-            quote.sourceTurnId === quoteAnnotation.turnId,
-        ) ?? -1);
+      : stagedQuoteIndex(quoteAnnotation.text, quoteAnnotation.turnId);
+  // Re-selecting an excerpt that is already staged edits that quote rather
+  // than staging it twice.
+  const selectionStaged =
+    selectionQuote !== null && stagedQuoteIndex(selectionQuote.text, selectionQuote.turnId) !== -1;
   // Once the note input takes the DOM selection, selectionEnds no longer
   // keeps this turn mounted; unmounting it would drop the excerpt mid-write.
   {
@@ -1142,7 +1146,7 @@ export function ChatView(props: {
                         onClick={() => {
                           const selection = window.getSelection();
                           setQuoteAnnotation({
-                            kind: 'annotate',
+                            kind: selectionStaged ? 'edit' : 'annotate',
                             text: selectionQuote.text,
                             turnId: selectionQuote.turnId,
                             anchor: excerptAnchor(
@@ -1157,10 +1161,12 @@ export function ChatView(props: {
                         type="button"
                         label={copy.quoteCommentSkip}
                         onClick={() => {
-                          props.onQuoteSelection?.({
-                            text: selectionQuote.text,
-                            turnId: selectionQuote.turnId,
-                          });
+                          if (!selectionStaged) {
+                            props.onQuoteSelection?.({
+                              text: selectionQuote.text,
+                              turnId: selectionQuote.turnId,
+                            });
+                          }
                           dismissSelectionActions();
                         }}
                       />

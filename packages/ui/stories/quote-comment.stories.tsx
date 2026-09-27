@@ -225,14 +225,14 @@ async function selectExcerpt(turnId: string, needle: string): Promise<void> {
   );
 }
 
-/** The floating 引用 action above the settled selection. */
-async function quoteActionButton(): Promise<HTMLElement> {
+/** A floating action above the settled selection. */
+async function quoteActionButton(label = '引用'): Promise<HTMLElement> {
   // The hook holds the bar back until the selection has been quiet for its
   // full settle window, so this wait needs room well beyond a plain render.
   return waitFor(
     () => {
       const button = [...document.querySelectorAll<HTMLElement>('.maka-quote-actions button')].find(
-        (candidate) => candidate.textContent === '引用',
+        (candidate) => candidate.textContent === label,
       );
       expect(button).toBeTruthy();
       return button as HTMLElement;
@@ -369,6 +369,21 @@ export const TranscriptQuoteGesture: Story = {
     // Submitting keeps the mark: the staged excerpt stays highlighted, so the
     // transcript still shows what was quoted.
     await expectPainted(ASSISTANT_REPLY);
+    // Re-selecting the staged excerpt edits that quote instead of staging it
+    // twice: 引用 reopens its note, 直接引用 changes nothing.
+    await selectExcerpt('turn-3', ASSISTANT_REPLY);
+    await userEvent.click(await quoteActionButton());
+    const restaged = await visiblePanel();
+    expect(
+      restaged.querySelector('[contenteditable="true"]')?.textContent,
+    ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
+    await userEvent.click(panelButton(restaged, '取消'));
+    await selectExcerpt('turn-3', ASSISTANT_REPLY);
+    await userEvent.click(await quoteActionButton('直接引用'));
+    await waitFor(() =>
+      expect(document.querySelector('.maka-quote-actions')?.checkVisibility() ?? false).toBe(false),
+    );
+    expect(document.querySelectorAll('.maka-composer-quote-token').length).toBe(1);
     // The token's editor anchors back at the excerpt — the transcript's
     // layer, not the token's popover — with the note prefilled.
     await userEvent.click(token);
@@ -382,15 +397,7 @@ export const TranscriptQuoteGesture: Story = {
     // 直接引用 stages the excerpt as a token immediately, no panel involved.
     await userEvent.click(panelButton(reopened, '取消'));
     await selectExcerpt('turn-3', '记录显示未送到 Jev');
-    await userEvent.click(
-      await waitFor(() => {
-        const button = [
-          ...document.querySelectorAll<HTMLElement>('.maka-quote-actions button'),
-        ].find((candidate) => candidate.textContent === '直接引用');
-        expect(button).toBeTruthy();
-        return button!;
-      }),
-    );
+    await userEvent.click(await quoteActionButton('直接引用'));
     await waitFor(() =>
       expect(
         document.querySelectorAll('.maka-composer-quote-token').length,
