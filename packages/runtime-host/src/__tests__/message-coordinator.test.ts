@@ -50,6 +50,7 @@ import {
   MESSAGE_QUEUE_MAX_ENTRIES,
   MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
   decodeSessionMessageQueueProjection,
+  type OperationInput,
   type SessionMessageQueueProjection,
   type TurnSnapshot,
 } from '../protocol/index.js';
@@ -67,45 +68,20 @@ const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const
 
 type CoordinatorFixture = ReturnType<typeof createFixture>;
 
-function queueEntryRetract(fixture: CoordinatorFixture, entryId: string, retractId: string) {
-  return fixture.coordinator.handlers['queue.entry.retract'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, entryId, retractId },
-    operationContext(),
-  );
-}
+type QueueMutationOperation =
+  | 'queue.entry.promote'
+  | 'queue.entry.retract'
+  | 'queue.entry.update'
+  | 'queue.entries.reorder'
+  | 'queue.retract';
 
-function queueEntryPromote(fixture: CoordinatorFixture, entryId: string, promoteId: string) {
-  return fixture.coordinator.handlers['queue.entry.promote'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, entryId, promoteId },
-    operationContext(),
-  );
-}
-
-function queueEntryUpdate(
+function queueMutation<K extends QueueMutationOperation>(
   fixture: CoordinatorFixture,
-  input: { entryId: string; updateId: string; expectedQueueRevision: number; text: string },
+  operation: K,
+  input: Omit<OperationInput<K>, 'originHostEpoch' | 'sessionId'>,
 ) {
-  return fixture.coordinator.handlers['queue.entry.update'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, ...input },
-    operationContext(),
-  );
-}
-
-function queueEntriesReorder(
-  fixture: CoordinatorFixture,
-  reorderId: string,
-  expectedQueueRevision: number,
-  entryIds: readonly string[],
-) {
-  return fixture.coordinator.handlers['queue.entries.reorder'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, reorderId, expectedQueueRevision, entryIds },
-    operationContext(),
-  );
-}
-
-function retractAll(fixture: CoordinatorFixture, retractId: string) {
-  return fixture.coordinator.handlers['queue.retract'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId },
+  return fixture.coordinator.handlers[operation](
+    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, ...input } as OperationInput<K>,
     operationContext(),
   );
 }
@@ -1841,7 +1817,7 @@ test('entry retract has one replayable cut and never crosses an in-flight lease'
   await submit(fixture, 'follow-2', 'second', 'next_turn');
 
   const retract = (entryId: string, retractId: string) =>
-    queueEntryRetract(fixture, entryId, retractId);
+    queueMutation(fixture, 'queue.entry.retract', { entryId, retractId });
   const first = await retract('id-2', 'retract-entry-1');
   assert.deepEqual(first, { ok: true, result: { queueRevision: 4 } });
   const projection = fixture.coordinator.projection(ROOT.sessionId);
@@ -1875,7 +1851,7 @@ test('entry retract has one replayable cut and never crosses an in-flight lease'
   assertQueueError(await retract('id-1', 'retract-in-flight'), 'operation_conflict');
   owner.ack([lease.id]);
   owner.release();
-  await retractAll(fixture, 'cleanup-entry');
+  await queueMutation(fixture, 'queue.retract', { retractId: 'cleanup-entry' });
   fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
   assert.equal(fixture.liveResidencies(), 0);
 });
@@ -1912,7 +1888,7 @@ test('entry update preserves queue identity, order, and placement and replays it
     };
   });
 
-  const updated = await queueEntryUpdate(fixture, {
+  const updated = await queueMutation(fixture, 'queue.entry.update', {
     entryId: 'id-2',
     updateId: 'update-entry-1',
     expectedQueueRevision: 3,
@@ -1943,24 +1919,24 @@ test('entry update preserves queue identity, order, and placement and replays it
     [['id-1', 'steer me', 'current_turn']],
   );
 
-  const stale = await queueEntryUpdate(fixture, {
+  const stale = await queueMutation(fixture, 'queue.entry.update', {
     entryId: 'id-2', updateId: 'update-entry-stale', expectedQueueRevision: 3, text: 'stale overwrite',
   });
   assert.equal(stale.ok, false);
   if (!stale.ok) assert.equal(stale.error.code, 'operation_conflict');
 
-  const retry = await queueEntryUpdate(fixture, {
+  const retry = await queueMutation(fixture, 'queue.entry.update', {
     entryId: 'id-2', updateId: 'update-entry-1', expectedQueueRevision: 3, text: 'please first @src/a.ts',
   });
   assert.deepEqual(retry, updated);
 
-  const conflict = await queueEntryUpdate(fixture, {
+  const conflict = await queueMutation(fixture, 'queue.entry.update', {
     entryId: 'id-3', updateId: 'update-entry-1', expectedQueueRevision: 3, text: 'conflicting retry',
   });
   assert.equal(conflict.ok, false);
   if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
 
-  await retractAll(fixture, 'cleanup-update');
+  await queueMutation(fixture, 'queue.retract', { retractId: 'cleanup-update' });
   fixture.coordinator.abandonRootReservation(ROOT);
   await fixture.coordinator.close();
 });
@@ -1974,7 +1950,7 @@ test('entry update of an in-flight steering lease conflicts', async () => {
   const [lease] = await owner.pull();
   assert.ok(lease);
 
-  const outcome = await queueEntryUpdate(fixture, {
+  const outcome = await queueMutation(fixture, 'queue.entry.update', {
     entryId: 'id-1', updateId: 'update-in-flight', expectedQueueRevision: 2, text: 'too late',
   });
   assert.equal(outcome.ok, false);
@@ -2015,12 +1991,12 @@ test('entry update keeps relocated inline references ordered and non-overlapping
     'next_turn',
   );
 
-  const reordered = await queueEntryUpdate(fixture, {
+  const reordered = await queueMutation(fixture, 'queue.entry.update', {
     entryId: 'id-1', updateId: 'update-reordered-refs', expectedQueueRevision: 2, text: '@src/b @src/a',
   });
   assert.equal(reordered.ok, true);
 
-  const overlapping = await queueEntryUpdate(fixture, {
+  const overlapping = await queueMutation(fixture, 'queue.entry.update', {
     entryId: 'id-2', updateId: 'update-overlapping-refs', expectedQueueRevision: 3, text: '@src/a.ts',
   });
   assert.equal(overlapping.ok, true);
@@ -2042,7 +2018,7 @@ test('promote changes placement once, replays exactly, and feeds the active owne
   await submit(fixture, 'follow-1', 'first', 'next_turn');
   await submit(fixture, 'follow-2', 'second', 'next_turn');
 
-  const promote = (promoteId: string) => queueEntryPromote(fixture, 'id-2', promoteId);
+  const promote = (promoteId: string) => queueMutation(fixture, 'queue.entry.promote', { entryId: 'id-2', promoteId });
   const promoted = await promote('promote-1');
   assert.deepEqual(promoted, { ok: true, result: { queueRevision: 3 } });
   const projection = fixture.coordinator.projection(ROOT.sessionId);
@@ -2063,7 +2039,7 @@ test('promote changes placement once, replays exactly, and feeds the active owne
   );
   owner.ack(leases.map((lease) => lease.id));
   owner.release();
-  await retractAll(fixture, 'cleanup-promote');
+  await queueMutation(fixture, 'queue.retract', { retractId: 'cleanup-promote' });
   fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
   assert.equal(fixture.liveResidencies(), 0);
 });
