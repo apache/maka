@@ -24,10 +24,8 @@ import { createObservableState } from '../../../application/contracts/session-ca
 import {
   clampSessionListWidth,
   readSessionListCollapsed,
-  readSessionListViewMode,
   readSessionListWidth,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
-  writeSessionListViewMode,
 } from './session-list-layout.js';
 
 const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
@@ -56,7 +54,7 @@ export function createSessionRailLayoutStore() {
   const state = createObservableState<SessionRailLayoutState>({
     collapsed: readSessionListCollapsed(),
     width: readSessionListWidth(),
-    viewMode: readSessionListViewMode(),
+    viewMode: 'conversation',
   });
   const collapseHandleRef: { current: SideNavImperativeCollapseHandle | null } = { current: null };
   let widthPersistHandle: ReturnType<typeof setTimeout> | undefined;
@@ -94,7 +92,6 @@ export function createSessionRailLayoutStore() {
       const current = state.getState();
       if (current.viewMode === next) return;
       state.replaceState({ ...current, viewMode: next });
-      writeSessionListViewMode(next);
     },
   };
 }
