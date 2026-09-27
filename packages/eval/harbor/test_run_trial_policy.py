@@ -86,6 +86,21 @@ class RunTrialPolicyTest(unittest.TestCase):
                 asyncio.run(MODULE.main())
         self.assertEqual(installed, ["pier"])
 
+    def test_main_restores_the_callers_framework_after_completion(self) -> None:
+        import eval_framework
+
+        async def fake_trial(_framework: str, _version: str, _config: Path) -> None:
+            self.assertEqual(eval_framework.selected(), "harbor")
+
+        async def run() -> None:
+            with eval_framework.selected_framework("pier"):
+                with patch.object(sys, "argv", ["run_trial.py", "harbor", "1.2.3", "config.json"]):
+                    with patch.object(MODULE, "run_trial", fake_trial):
+                        await MODULE.main()
+                self.assertEqual(eval_framework.selected(), "pier")
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()
