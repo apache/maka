@@ -74,106 +74,66 @@ class EgressFilterTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=url):
                 MODULE.contamination_rule(url)
 
-    def _install_response_stub(self) -> None:
-        class Response:
+    def _enable_http_responses(self) -> None:
+        class FakeResponse:
             @staticmethod
             def make(status, body, headers):
                 return {"status": status, "body": body, "headers": headers}
 
-        MODULE.http = SimpleNamespace(Response=Response)
+        MODULE.http = SimpleNamespace(Response=FakeResponse)
 
-    def test_request_blocks_a_contamination_url_and_appends_one_audit_record(self) -> None:
+    def test_http_request_outcomes_are_auditable_and_fail_closed(self) -> None:
+        cases = (
+            ("https://tbench.ai/tasks", 451, "tbench_domain"),
+            ("https://example.com/", None, None),
+            ("https://example.test/%ZZ", 503, "policy_error"),
+        )
         with tempfile.TemporaryDirectory() as directory:
-            self._install_response_stub()
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            flow = type(
-                "Flow",
-                (),
-                {"request": type("Request", (), {"pretty_url": "https://tbench.ai/tasks"})()},
-            )()
-            MODULE.request(flow)
-            self.assertEqual(flow.response["status"], 451)
+            self._enable_http_responses()
+            for url, status, rule_id in cases:
+                with self.subTest(url=url):
+                    flow = SimpleNamespace(request=SimpleNamespace(pretty_url=url))
+                    MODULE.request(flow)
+                    if status is None:
+                        self.assertFalse(hasattr(flow, "response"))
+                        continue
+                    self.assertEqual(flow.response["status"], status)
+                    self.assertEqual(
+                        flow.response["headers"]["X-Maka-Eval-Egress-Rule"], rule_id
+                    )
+            records = [json.loads(line) for line in MODULE.AUDIT_PATH.read_text().splitlines()]
             self.assertEqual(
-                flow.response["headers"]["X-Maka-Eval-Egress-Rule"], "tbench_domain"
+                [record["ruleId"] for record in records],
+                ["tbench_domain", "policy_error"],
             )
-            lines = MODULE.AUDIT_PATH.read_text().splitlines()
-            self.assertEqual(len(lines), 1)
-            record = json.loads(lines[0])
-            self.assertEqual(record["ruleId"], "tbench_domain")
-            self.assertEqual(record["host"], "tbench.ai")
-            self.assertEqual(record["normalizedPath"], "/tasks")
+            self.assertEqual(
+                (records[0]["host"], records[0]["normalizedPath"]),
+                ("tbench.ai", "/tasks"),
+            )
 
-    def test_request_leaves_an_unrelated_url_unanswered(self) -> None:
+    def test_connect_classification_blocks_only_contamination_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            self._install_response_stub()
+            self._enable_http_responses()
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            flow = type(
-                "Flow",
-                (),
-                {"request": type("Request", (), {"pretty_url": "https://example.com/"})()},
-            )()
-            MODULE.request(flow)
-            self.assertFalse(hasattr(flow, "response"))
-            self.assertFalse(MODULE.AUDIT_PATH.exists())
-
-    def test_audit_is_bounded_and_policy_errors_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            self._install_response_stub()
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            flow = type(
-                "Flow",
-                (),
-                {"request": type("Request", (), {"pretty_url": "https://example.test/%ZZ"})()},
-            )()
-            MODULE.request(flow)
-            self.assertEqual(flow.response["status"], 503)
+            for host, expected_status in (
+                ("tbench.ai", 451),
+                ("example.com", None),
+                ("github.com", None),
+                ("ssh.github.com", None),
+            ):
+                with self.subTest(host=host):
+                    flow = SimpleNamespace(
+                        request=SimpleNamespace(host=host, port=443), response=None
+                    )
+                    MODULE.http_connect(flow)
+                    actual = None if flow.response is None else flow.response["status"]
+                    self.assertEqual(actual, expected_status)
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(record["ruleId"], "policy_error")
-            self.assertIn("host", record)
-            self.assertIn("normalizedPath", record)
-
-    def test_http_connect_refuses_blocklisted_hosts_before_the_tunnel_opens(self) -> None:
-        class Response:
-            @staticmethod
-            def make(status, body, headers):
-                return {"status": status, "body": body, "headers": headers}
-
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.http = SimpleNamespace(Response=Response)
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            blocked = type(
-                "Flow",
-                (),
-                {
-                    "request": type(
-                        "Request",
-                        (),
-                        {"pretty_host": "tbench.ai", "host": "tbench.ai", "port": 443},
-                    )()
-                },
-            )()
-            MODULE.http_connect(blocked)
-            self.assertEqual(blocked.response["status"], 451)
-            self.assertEqual(blocked.response["headers"]["X-Maka-Eval-Egress-Rule"], "tbench_domain")
-            record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(record["ruleId"], "tbench_domain")
-            self.assertEqual(record["host"], "tbench.ai")
-
-            for host in ("example.com", "github.com", "ssh.github.com"):
-                allowed = type(
-                    "Flow",
-                    (),
-                    {
-                        "request": type(
-                            "Request",
-                            (),
-                            {"pretty_host": host, "host": host, "port": 443},
-                        )(),
-                        "response": None,
-                    },
-                )()
-                MODULE.http_connect(allowed)
-                self.assertIsNone(allowed.response, host)
+            self.assertEqual(
+                (record["ruleId"], record["host"]),
+                ("tbench_domain", "tbench.ai"),
+            )
 
     def test_connect_policy_uses_the_tunnel_target_not_a_spoofed_host_header(self) -> None:
         class Response:
@@ -205,7 +165,7 @@ class EgressFilterTest(unittest.TestCase):
             self.assertEqual(flow.response["status"], 503)
 
     def test_connect_rejects_malformed_authorities_and_ports(self) -> None:
-        self._install_response_stub()
+        self._enable_http_responses()
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
             for host, port in (
@@ -228,10 +188,10 @@ class EgressFilterTest(unittest.TestCase):
             self.assertIsNone(valid.response)
 
     def test_connect_target_normalization_is_pure_and_fail_closed(self) -> None:
-        self.assertEqual(MODULE.connect_target_url("example.com", None), "https://example.com/")
-        self.assertEqual(MODULE.connect_target_url("example.com", 80), "http://example.com/")
-        self.assertEqual(MODULE.connect_target_url("example.com", 8443), "https://example.com:8443/")
-        self.assertEqual(MODULE.connect_target_url("2001:db8::1", 443), "https://[2001:db8::1]/")
+        self.assertEqual(MODULE.connect_url("example.com", None), "https://example.com/")
+        self.assertEqual(MODULE.connect_url("example.com", 80), "http://example.com/")
+        self.assertEqual(MODULE.connect_url("example.com", 8443), "https://example.com:8443/")
+        self.assertEqual(MODULE.connect_url("2001:db8::1", 443), "https://[2001:db8::1]/")
         for host, port in (
             ("user@example.com", 443),
             ("example.com/path", 443),
@@ -241,33 +201,27 @@ class EgressFilterTest(unittest.TestCase):
         ):
             with self.subTest(host=host, port=port):
                 with self.assertRaises(ValueError):
-                    MODULE.connect_target_url(host, port)
+                    MODULE.connect_url(host, port)
 
-    def test_tcp_start_kills_raw_tunnels_and_records_them(self) -> None:
+    def test_raw_tcp_hooks_erase_payload_close_flow_and_record_peer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            killed: list[str] = []
-            flow = type(
-                "Flow",
-                (),
-                {"server_conn": SimpleNamespace(address=("ssh.github.com", 443))},
-            )()
-            flow.kill = lambda: killed.append("killed")
+            closed: list[str] = []
+            flow = SimpleNamespace(
+                server_conn=SimpleNamespace(address=("ssh.github.com", 443)),
+                messages=[SimpleNamespace(content=b"SSH-2.0-test\r\n")],
+                killable=True,
+            )
+            flow.kill = lambda: closed.append("closed")
             MODULE.tcp_start(flow)
-            self.assertEqual(killed, ["killed"])
+            MODULE.tcp_message(flow)
+            self.assertEqual(closed, ["closed", "closed"])
+            self.assertEqual(flow.messages[-1].content, b"")
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(record["ruleId"], "raw_tunnel")
-            self.assertEqual(record["host"], "ssh.github.com")
-            self.assertEqual(record["normalizedPath"], ":443")
-
-    def test_tcp_message_drops_raw_payloads(self) -> None:
-        message = SimpleNamespace(content=b"SSH-2.0-test\r\n")
-        killed: list[str] = []
-        flow = SimpleNamespace(messages=[message], killable=True)
-        flow.kill = lambda: killed.append("killed")
-        MODULE.tcp_message(flow)
-        self.assertEqual(message.content, b"")
-        self.assertEqual(killed, ["killed"])
+            self.assertEqual(
+                (record["ruleId"], record["host"], record["normalizedPath"]),
+                ("raw_tunnel", "ssh.github.com", ":443"),
+            )
 
     def test_next_layer_closes_raw_tcp_before_the_builtin_classifier(self) -> None:
         class CloseConnection:
@@ -290,7 +244,7 @@ class EgressFilterTest(unittest.TestCase):
                 layer=None, context=context, data_client=data_client, data_server=lambda: b""
             )
             MODULE.next_layer(nextlayer)
-            self.assertIsInstance(nextlayer.layer, MODULE.CloseRawLayer)
+            self.assertIsInstance(nextlayer.layer, MODULE.RejectRawTransport)
             commands = list(nextlayer.layer.handle_event(object()))
             self.assertEqual([command.connection for command in commands], [client, server])
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
@@ -390,7 +344,7 @@ class EgressFilterTest(unittest.TestCase):
                 data_server=lambda: b"",
             )
             MODULE.next_layer(binary)
-            self.assertIsInstance(binary.layer, MODULE.CloseRawLayer)
+            self.assertIsInstance(binary.layer, MODULE.RejectRawTransport)
 
     def test_response_audits_a_non_websocket_101_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -467,7 +421,7 @@ class EgressFilterTest(unittest.TestCase):
             current = FakeTCPLayer(context)
             nextlayer = SimpleNamespace(layer=current, context=context)
             MODULE.next_layer(nextlayer)
-            self.assertIsInstance(nextlayer.layer, MODULE.CloseRawLayer)
+            self.assertIsInstance(nextlayer.layer, MODULE.RejectRawTransport)
             self.assertIsInstance(nextlayer.layer, MODULE.Layer)
             self.assertEqual(context.layers, [sibling, nextlayer.layer])
             self.assertNotIn(current, context.layers)
@@ -498,7 +452,8 @@ class EgressFilterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
             path = "/tasks/\u2028hidden"
-            MODULE.append_audit("tbench_domain", "tbench.ai", path)
+            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
+            journal.record("tbench_domain", "tbench.ai", path)
             raw = MODULE.AUDIT_PATH.read_text(encoding="utf-8")
             self.assertNotIn("\u2028", raw)
             self.assertIn("\\u2028", raw)
@@ -506,13 +461,14 @@ class EgressFilterTest(unittest.TestCase):
             self.assertEqual(len(raw.splitlines()), 1)
             record = json.loads(raw)
             self.assertEqual(record["normalizedPath"], path)
-            self.assertFalse(MODULE.audit_already_truncated())
+            self.assertFalse(journal.has_full_marker())
 
     def test_audit_writes_one_truncation_marker_when_the_byte_limit_is_reached(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
             MODULE.AUDIT_PATH.write_bytes(b"x" * MODULE.MAX_AUDIT_BYTES)
-            MODULE.append_audit("tbench_domain", "tbench.ai", "/tasks")
+            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
+            journal.record("tbench_domain", "tbench.ai", "/tasks")
             records = [
                 json.loads(line)
                 for line in MODULE.AUDIT_PATH.read_text().splitlines()
@@ -520,7 +476,7 @@ class EgressFilterTest(unittest.TestCase):
             ]
             self.assertEqual(records[-1]["ruleId"], "audit_truncated")
             size_after_marker = MODULE.AUDIT_PATH.stat().st_size
-            MODULE.append_audit("tbench_domain", "tbench.ai", "/other")
+            journal.record("tbench_domain", "tbench.ai", "/other")
             self.assertEqual(MODULE.AUDIT_PATH.stat().st_size, size_after_marker)
             records_after = [
                 json.loads(line)
@@ -538,19 +494,21 @@ class EgressFilterTest(unittest.TestCase):
             MODULE.AUDIT_PATH.write_bytes(b"{}\n" * (MODULE.MAX_AUDIT_BYTES // 3))
             self.assertEqual(MODULE.AUDIT_PATH.stat().st_size, MODULE.MAX_AUDIT_BYTES - 1)
 
-            MODULE.append_audit("tbench_domain", "tbench.ai", "/tasks")
+            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
+            journal.record("tbench_domain", "tbench.ai", "/tasks")
 
             last_line = MODULE.AUDIT_PATH.read_bytes().splitlines()[-1]
             self.assertEqual(json.loads(last_line)["ruleId"], "audit_truncated")
-            self.assertTrue(MODULE.audit_already_truncated())
+            self.assertTrue(journal.has_full_marker())
 
     def test_truncation_probe_ignores_non_object_json_tails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
             MODULE.AUDIT_PATH.write_text('123\n"x"\n')
-            self.assertFalse(MODULE.audit_already_truncated())
-            MODULE.write_truncation_marker()
-            self.assertTrue(MODULE.audit_already_truncated())
+            journal = MODULE.AuditJournal(MODULE.AUDIT_PATH, MODULE.MAX_AUDIT_BYTES)
+            self.assertFalse(journal.has_full_marker())
+            journal.mark_full()
+            self.assertTrue(journal.has_full_marker())
 
 
 if __name__ == "__main__":
