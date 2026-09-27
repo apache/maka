@@ -1744,13 +1744,14 @@ function AppShellContent({
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
+    return next.generation;
   };
-  const completeObservationSeed = (sessionId: string) => {
+  const completeObservationSeed = (sessionId: string, generation: number) => {
     const current = activeEventSeedRef.current;
-    if (current.sessionId !== sessionId) return;
+    if (current.sessionId !== sessionId || current.generation !== generation) return;
     flushDisplayEvents(sessionId);
     markDisplayReady(sessionId);
-    const next = liveContent.completeLiveContentSeed(current, sessionId);
+    const next = liveContent.completeLiveContentSeed(current, sessionId, generation);
     activeEventSeedRef.current = next;
     setActiveEventSeed(next);
     void retireCancelledTransientMessages(sessionId);

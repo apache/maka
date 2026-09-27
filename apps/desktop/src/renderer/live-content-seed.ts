@@ -78,8 +78,9 @@ export function beginLiveContentSeed(
 export function completeLiveContentSeed(
   current: LiveContentSeed,
   sessionId: string,
+  generation: number,
 ): LiveContentSeed {
-  if (current.sessionId !== sessionId) {
+  if (current.sessionId !== sessionId || current.generation !== generation) {
     return current;
   }
   return {

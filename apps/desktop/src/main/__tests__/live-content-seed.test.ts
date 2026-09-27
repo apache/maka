@@ -56,17 +56,15 @@ test('withholds live content until the current observation generation is ready',
   const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
   assert.equal(liveContentSeedRevision(first, 'session-a'), 0);
 
-  const ready = completeLiveContentSeed(first, 'session-a');
+  const ready = completeLiveContentSeed(first, 'session-a', first.generation);
   assert.equal(liveContentSeedRevision(ready, 'session-a'), first.generation);
   assert.equal(liveContentSeedRevision(ready, 'session-b'), 0);
 });
 
 test('A → B → A does not reuse the previous ready generation', () => {
-  const firstReady = completeLiveContentSeed(
-    beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a'),
-    'session-a',
-  );
-  assert.equal(liveContentSeedRevision(firstReady, 'session-a'), 1);
+  const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
+  const firstReady = completeLiveContentSeed(first, 'session-a', first.generation);
+  assert.equal(liveContentSeedRevision(firstReady, 'session-a'), first.generation);
 
   const pendingB = beginLiveContentSeed(firstReady, 'session-b');
   assert.equal(liveContentSeedRevision(pendingB, 'session-b'), 0);
@@ -76,18 +74,26 @@ test('A → B → A does not reuse the previous ready generation', () => {
   assert.equal(pendingA.generation, 3);
   assert.equal(liveContentSeedRevision(pendingA, 'session-a'), 0);
 
-  const recovered = completeLiveContentSeed(pendingA, 'session-a');
+  const recovered = completeLiveContentSeed(pendingA, 'session-a', pendingA.generation);
   assert.equal(liveContentSeedRevision(recovered, 'session-a'), 3);
 });
 
 test('a recovery generation only exposes live content after that generation completes', () => {
-  const firstReady = completeLiveContentSeed(
-    beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a'),
-    'session-a',
-  );
+  const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
+  const firstReady = completeLiveContentSeed(first, 'session-a', first.generation);
   const recovering = beginLiveContentSeed(firstReady, 'session-a');
   assert.equal(liveContentSeedRevision(recovering, 'session-a'), 0);
 
-  const ready = completeLiveContentSeed(recovering, 'session-a');
+  const ready = completeLiveContentSeed(recovering, 'session-a', recovering.generation);
   assert.equal(liveContentSeedRevision(ready, 'session-a'), 2);
+});
+
+test('a stale ready signal cannot complete a newer observation of the same Session', () => {
+  const initial = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
+  const recovering = beginLiveContentSeed(initial, 'session-a');
+  const stale = completeLiveContentSeed(recovering, 'session-a', initial.generation);
+  assert.equal(stale, recovering);
+  assert.equal(liveContentSeedRevision(stale, 'session-a'), 0);
+  const ready = completeLiveContentSeed(stale, 'session-a', recovering.generation);
+  assert.equal(liveContentSeedRevision(ready, 'session-a'), recovering.generation);
 });

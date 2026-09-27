@@ -292,8 +292,8 @@ export function useActiveSessionEvents(options: {
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
   setExecution: import('./features/conversation/index.js').AppShellSessionUiStateController['setExecution'];
-  beginObservationSeed: (sessionId: string) => void;
-  completeObservationSeed: (sessionId: string) => void;
+  beginObservationSeed: (sessionId: string) => number;
+  completeObservationSeed: (sessionId: string, generation: number) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   clearMessageLoadError(sessionId: string): void;
   setMessageLoadPending: (pending: boolean) => void;
@@ -399,7 +399,7 @@ export function useActiveSessionEvents(options: {
       applyTranscript(activeId, controller, () => !disposed));
     const subscribeSessionEvents = () => {
       const attempt = ++observationAttempt;
-      beginObservationSeed(activeId);
+      let seedGeneration = beginObservationSeed(activeId);
       let unsubscribeRequested = false;
       let unsubscribeCurrent = () => {
         unsubscribeRequested = true;
@@ -413,10 +413,10 @@ export function useActiveSessionEvents(options: {
         (phase) => {
           if (attempt !== observationAttempt) return;
           controller.observationChanged(phase);
-          if (phase === 'pending') beginObservationSeed(activeId);
+          if (phase === 'pending') seedGeneration = beginObservationSeed(activeId);
           else {
             observationFailures = 0;
-            completeObservationSeed(activeId);
+            completeObservationSeed(activeId, seedGeneration);
           }
         },
         () => {
