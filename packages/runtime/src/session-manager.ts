@@ -4870,15 +4870,23 @@ export class SessionManager {
         // T1 states; generic app-restart repair must never write into them.
         continue;
       }
-      let unknownDispatchedTools: { toolCallId: string; toolName?: string }[] = [];
+      let unknownDispatchedTools: {
+        operationId: string;
+        toolCallId: string;
+        toolName?: string;
+      }[] = [];
       if (!inspected.runtimeEvents.some(isTerminalRuntimeEvent)) {
         const toolRecovery = resolveRuntimeRecovery(inspected.runtimeEvents);
         const indeterminate = toolRecovery.decisions.filter(
           (decision) => decision.status === 'indeterminate',
         );
         unknownDispatchedTools = indeterminate
-          .filter((decision) => decision.reason === 'dispatch_without_response')
-          .map(({ toolCallId, toolName }) => ({
+          .filter(
+            (decision) =>
+              decision.reason === 'dispatch_without_response' && decision.operationId !== undefined,
+          )
+          .map(({ operationId, toolCallId, toolName }) => ({
+            operationId: operationId!,
             toolCallId,
             ...(toolName ? { toolName } : {}),
           }));
@@ -4922,7 +4930,15 @@ export class SessionManager {
           },
         };
       }
-      if (await this.applyAgentRunRecovery(sessionId, decision, inspected, policy)) {
+      if (
+        await this.applyAgentRunRecovery(
+          sessionId,
+          decision,
+          inspected,
+          policy,
+          unknownDispatchedTools.map(({ operationId }) => operationId),
+        )
+      ) {
         recovered = true;
       }
     }
@@ -4944,6 +4960,7 @@ export class SessionManager {
     decision: AgentRunRecoveryDecision,
     inspected: AgentRunInspectModel,
     policy: RecoveryPolicy = { kind: 'best_effort' },
+    unsettledOperationIds: readonly string[] = [],
   ): Promise<boolean> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) return false;
     const ts = this.deps.now();
@@ -4981,6 +4998,7 @@ export class SessionManager {
         terminalEvent,
         ...(failureClass ? { failureClass } : {}),
         ...(abortSource ? { abortSource } : {}),
+        ...(unsettledOperationIds.length > 0 ? { unsettledOperationIds } : {}),
       });
     } catch (error) {
       if (policy.kind === 'strict') throw error;
