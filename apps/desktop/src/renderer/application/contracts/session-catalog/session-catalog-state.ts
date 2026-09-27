@@ -198,9 +198,11 @@ export function waitForCatalogSession(
  * The epoch counter only orders observations of one Host generation.
  * Generations themselves are not ordered, so a read from a different
  * generation is never stale: a restarted Host must take the row over from its
- * predecessor whatever the two counters read, and a patch that lagged behind
- * a restart survives at most until the live generation's next read (#5713
- * review).
+ * predecessor whatever the two counters read (#5713 review). A successful
+ * cross-generation response cannot exist on the wire, either: closing a
+ * connection rejects every in-flight request with `connection_lost`
+ * (client/connection.ts), so a lagging predecessor read never delivers after
+ * the successor's row has landed.
  */
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
   if (prior.revision !== next.revision) return prior.revision > next.revision;
