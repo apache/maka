@@ -205,7 +205,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async register(path: string, options?: ProjectRegistrationOptions): Promise<ProjectRecord> {
-    const resolved = await resolveProjectLocation({ path });
+    const resolved = await resolveProjectLocation({ path, intent: 'selected' });
     if (options?.withinRoot && !isPathWithin(options.withinRoot, resolved.canonicalPath)) {
       throw new ProjectPathBoundaryError(resolved.canonicalPath);
     }
@@ -344,7 +344,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async relink(projectId: string, path: string): Promise<ProjectRecord> {
-    const resolved = await resolveProjectLocation({ path });
+    const resolved = await resolveProjectLocation({ path, intent: 'selected' });
     const timestamp = this.now();
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
@@ -364,7 +364,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     projectId: string,
     path: string,
   ): Promise<{ project: ProjectRecord; updatedSessionIds: readonly string[] }> {
-    const resolved = await resolveProjectLocation({ path });
+    const resolved = await resolveProjectLocation({ path, intent: 'selected' });
     const timestamp = this.now();
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
@@ -859,6 +859,7 @@ export interface ResolvedProjectLocation {
 
 export async function resolveProjectLocation(input: {
   path: string;
+  intent?: 'selected';
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
   const location = await stat(canonicalPath);
@@ -873,6 +874,13 @@ export async function resolveProjectLocation(input: {
     };
   }
   const git = await resolveGitLocation(canonicalPath);
+  if (input.intent === 'selected' && canonicalPath !== git.worktreeRoot) {
+    return {
+      canonicalPath,
+      identity: `folder:${canonicalPath}`,
+      kind: 'folder',
+    };
+  }
   return {
     canonicalPath,
     identity: `git:${git.commonDir}`,

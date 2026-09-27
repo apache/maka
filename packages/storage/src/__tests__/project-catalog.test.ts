@@ -164,6 +164,33 @@ test('a repository and its linked worktree resolve to one project identity', asy
   }
 });
 
+test('explicit selection preserves a subfolder while historical paths retain repository identity', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-selection-intent-'));
+  try {
+    const repository = join(base, 'repository');
+    const linkedWorktree = join(base, 'linked');
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'selection-intent-test');
+    const child = join(linkedWorktree, 'feature');
+    await mkdir(child);
+
+    const selected = await resolveProjectLocation({ path: child, intent: 'selected' });
+    const historical = await resolveProjectLocation({ path: child });
+    const worktree = await resolveProjectLocation({ path: linkedWorktree, intent: 'selected' });
+    const main = await resolveProjectLocation({ path: repository, intent: 'selected' });
+
+    assert.deepEqual(selected, {
+      canonicalPath: await realpath(child),
+      identity: `folder:${await realpath(child)}`,
+      kind: 'folder',
+    });
+    assert.equal(historical.kind, 'git');
+    assert.equal(historical.identity, worktree.identity);
+    assert.equal(worktree.identity, main.identity);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('registering a nested folder keeps that folder instead of the enclosing repository', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-folder-'));
   try {
