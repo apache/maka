@@ -24,7 +24,6 @@ export type {
   WorkbarServices,
   SessionTracePage,
   SessionUsageSummary,
-  WorkbarIngestInput,
 } from './ports.js';
 
 export * from './model/workbar-tabs.js';
@@ -36,7 +35,6 @@ export * from '../../application/contracts/session-inspector/session-inspector-p
 export { SessionReviewPanel } from './tools/review/session-review-panel.js';
 export { SessionReviewBaseBranchPicker } from './tools/review/session-review-base-branch-picker.js';
 export {
-  compactNumberFormatter,
   InspectorCompositionSection,
   RING_ACTIVE_MIN_SWEEP,
   RING_MIN_SWEEP,
@@ -168,7 +166,6 @@ export function createFakeWorkbarServices(
       }),
       retractQueueEntry: async () => undefined,
       promoteQueueEntry: async () => undefined,
-      updateQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
       setPermissionMode: async () => {
         throw new Error('Fake sideChat.setPermissionMode is not configured');

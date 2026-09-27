@@ -40,6 +40,7 @@ import type {
   SessionWorkbarTab,
   SessionWorkbarTabKind,
 } from '../model/workbar-tabs';
+import type { QuoteRef } from '@maka/core/events';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,
@@ -112,6 +113,7 @@ export interface WorkbarHostModel {
   bottomResizable: ResizableProps;
   quotes?: readonly QuoteCompanionPanelState[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+  onRestoreQuotes?: (panelId: string, quotes: readonly QuoteRef[]) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
@@ -237,6 +239,7 @@ export function WorkbarHostView({ model: props, togglePosition = 'edge' }: { mod
               onRequestOpenTab={props.onRequestOpenTab}
               quotes={props.quotes}
               onQuotesConsumed={props.onQuotesConsumed}
+              onRestoreQuotes={props.onRestoreQuotes}
               onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
               onContentStateChange={props.onContentStateChange}

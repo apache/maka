@@ -27,3 +27,4 @@ export {
 } from './transcript-scroll-authority.js';
 
 export { foldTimeline } from './timeline-fold.js';
+export { useSessionRailSelection } from './session-rail-context.js';

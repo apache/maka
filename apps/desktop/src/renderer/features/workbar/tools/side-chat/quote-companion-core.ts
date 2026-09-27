@@ -38,7 +38,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   SideChatSessionPort,
   SideChatSendResult,
-  WorkbarIngestInput,
+  WorkbarSubmittedAttachments,
 } from '../../ports.js';
 import {
   acquireSessionCopyAttempt,
@@ -343,7 +343,7 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   turnId: string;
   text: string;
   quotes: QuoteRef[] | undefined;
-  attachmentItems?: WorkbarIngestInput[];
+  attachments?: WorkbarSubmittedAttachments;
   /** Fired once a fork is ready, so the caller can commit it. */
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */
@@ -388,7 +388,7 @@ export async function performCompanionTurn(
       turnId: deps.turnId,
       text: deps.text,
       ...(deps.quotes ? { quotes: deps.quotes } : {}),
-      ...(deps.attachmentItems ? { attachmentItems: deps.attachmentItems } : {}),
+      ...deps.attachments,
     });
   } catch {
     if (deps.isDisposed()) return { status: 'disposed' };

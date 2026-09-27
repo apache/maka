@@ -24,7 +24,6 @@ import {
   deriveTitlebarProjectName,
   useUiLocale,
   type SessionHistoryGroup,
-  type SessionRailSelection,
 } from '@maka/ui';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
@@ -45,7 +44,6 @@ import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
-import { useSessionSelection } from './use-session-selection.js';
 
 export interface UseSessionNavigationControllerInput {
   /**
@@ -69,7 +67,6 @@ export interface SessionNavigationController {
   layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
-  selection: SessionRailSelection;
 }
 
 /**
@@ -101,6 +98,7 @@ export function useSessionNavigationController(
   // be upstream of the rail, where a single ordinary `function` declaration
   // anywhere in the chain silently undoes the whole thing (#4109).
   const portsRef = useRef(ports);
+  const pendingSessionRowActionsRef = useRef(new Set<string>());
   useLayoutEffect(() => {
     portsRef.current = ports;
   });
@@ -109,9 +107,11 @@ export function useSessionNavigationController(
     () =>
       createSessionNavigationRowActions({
         uiLocale: locale,
+        acquireAutomaticQueryBlock: (sessionIds) =>
+          portsRef.current.acquireAutomaticQueryBlock(sessionIds),
         clearSessionRendererState: (sessionId) =>
           portsRef.current.clearSessionRendererState(sessionId),
-        pendingSessionRowActionsRef: portsRef.current.pendingSessionRowActionsRef,
+        pendingSessionRowActionsRef,
         refreshSessions: () => portsRef.current.refreshSessions(),
         service,
         sessionsRef: portsRef.current.sessionsRef,
@@ -184,14 +184,5 @@ export function useSessionNavigationController(
     [groups, sessionMeta, sessionProjectName, worktreeSessionIds],
   );
 
-  const selection = useSessionSelection({
-    sessions: rail.sessions,
-    commands,
-    activeId: rail.activeRowId,
-  });
-
-  return useMemo(
-    () => ({ layout, selectors, commands, selection }),
-    [commands, layout, selection, selectors],
-  );
+  return useMemo(() => ({ layout, selectors, commands }), [commands, layout, selectors]);
 }

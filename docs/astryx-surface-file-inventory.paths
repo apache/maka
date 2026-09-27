@@ -65,6 +65,7 @@ apps/desktop/src/renderer/features/session-bundle/services-context.tsx
 apps/desktop/src/renderer/features/session-bundle/session-bundle-tasks.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/guest-turn-requests.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-alias-action.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog-root.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog.tsx
@@ -72,7 +73,6 @@ apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboratio
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-navigation.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
-apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-composer.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/session-settings/services-context.tsx
@@ -114,7 +114,6 @@ apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
 apps/desktop/src/renderer/maka-tokens.css
 apps/desktop/src/renderer/onboarding-hero.tsx
 apps/desktop/src/renderer/plan-mode-panel.tsx
-apps/desktop/src/renderer/reference-shell.css
 apps/desktop/src/renderer/remote-project-directory-dialog.tsx
 apps/desktop/src/renderer/settings/about-settings-page.tsx
 apps/desktop/src/renderer/settings/appearance-settings-page.tsx
@@ -177,6 +176,7 @@ apps/desktop/src/renderer/styles/composer.css
 apps/desktop/src/renderer/styles/custom-pet-companion.css
 apps/desktop/src/renderer/styles/daily-review.css
 apps/desktop/src/renderer/styles/desktop-assistant.css
+apps/desktop/src/renderer/styles/document.css
 apps/desktop/src/renderer/styles/error.css
 apps/desktop/src/renderer/styles/help.css
 apps/desktop/src/renderer/styles/hero.css
@@ -196,6 +196,7 @@ apps/desktop/src/renderer/styles/prompt-rail.css
 apps/desktop/src/renderer/styles/prompt-suggestions.css
 apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
+apps/desktop/src/renderer/styles/session-bundle.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/bot.css
 apps/desktop/src/renderer/styles/settings/form.css

@@ -19,6 +19,42 @@
 
 # ACP validation record
 
+## Issue #3132 merged-head integration check — September 27, 2026
+
+Baseline: Apache `main@c171eacd0de7f87b0273abba5d457ad7ca5ab937`, after all
+ten delivered ACP PRs merged. The official ACP SDK, a real stdio child process,
+and an in-process execution Runtime Host were used without an external model
+API key. A local deterministic model endpoint completed a source Turn, then
+both `_maka/session/branch/create` and `_maka/session/revision/create` produced
+targets that completed continuation prompts. For each target, the same ACP
+connection then uploaded and read back exact Artifact bytes, wrote
+Session-scoped Memory, and confirmed that a subsequent target model request
+contained that Memory. The source could not
+read the target Artifact, and the revision target did not consume the branch
+target's Memory. This closes the previously untested cross-feature path.
+
+Local validation on macOS, Node 24.19.0 and npm 11.17.0:
+
+| Check | Result |
+| --- | --- |
+| Root `build:test` and workspace typecheck | Passed. The CLI was rebuilt after the final integration-test assertions. |
+| Final CLI `test:dist` | 1302 passed, 3 skipped, 0 failed. Includes the new cross-feature test. |
+| Root workspace tests, concurrency 2 | All workspaces passed. |
+| Full Desktop `test:dist` | 2930 passed, 0 failed. |
+| Full Runtime Host `test:dist` | 2146 passed, 12 skipped, 0 failed. |
+| Desktop Electron E2E | 34 passed, 0 failed. |
+| Lint, format, ASF headers, CLI third-party notices, E2E budget, diff whitespace | Passed. |
+| Protocol epoch guard | No protocol change against `upstream/main`; epoch 192. All 17 guard tests passed. |
+| Ubuntu full CI | [Run 36312872239](https://github.com/apache/maka/actions/runs/36312872239) passed on the exact `c171eacd0` baseline, including workspace and Runtime Host tests, Desktop E2E, Storybook smoke, and installed CLI release-candidate smoke. The new cross-feature test was added afterward and was not in that CI run. |
+
+The first root `test:dist` run at its default concurrency of three was red in
+two tests outside ACP: Desktop's fake Rive child exceeded a two-second wait,
+and a Runtime Host WorkHub candidate set became stale. Each failing test passed
+alone; each complete workspace suite passed serially, and the full repository
+rerun at concurrency two passed. These first-run failures remain part of the
+record. The earlier PR5/PR6 Zed smoke results are version-bound; no new Zed
+smoke or Windows ACP end-to-end run is claimed for this merged head.
+
 ## PR8 integration with PR7 on main — September 26, 2026
 
 Merged official `apache/maka` main at `8351121086e9023315f68b167eab68ec0d06056f`,

@@ -144,7 +144,7 @@ export interface ChatViewGoalIndicatorProps {
 export interface TransientUserMessageProjection {
   deliveryStatus?: string;
   deliveryDetail?: string;
-  deliveryActions?: readonly { label: string; onClick(): void }[];
+  deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];
   id: string;
   text: string;
   ts: number;
@@ -152,8 +152,8 @@ export interface TransientUserMessageProjection {
   directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
-  /** Steering and follow-ups stay in the composer queue until the Host takes them. */
-  transientPlacement: 'transcript' | 'steering' | 'follow_up';
+  /** Follow-ups stay in the composer queue until the Host takes them. */
+  transientPlacement: 'transcript' | 'follow_up';
   /** The Host Turn this Message is already bound to, once the Host named one. */
   hostTurnId?: string;
 }
@@ -294,26 +294,6 @@ export function ChatView(props: {
   /** Optional identity decorations shared with a host's work navigation. */
   promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'accentBackground' | 'highlighted'>>;
   onPromptRailHighlight?(turnId: string | undefined): void;
-  /**
-   * PR109f: when the active session is a branched session
-   * (`parentSessionId` set on its summary), show a banner above the
-   * chat surface so the user knows they're in a derived conversation
-   * and can jump back to the parent.
-   *
-   * Renderer (main.tsx) resolves the parent name from the connections /
-   * sessions list — @maka/ui never queries the storage layer directly.
-   */
-  branchBanner?: {
-    parentSessionId: string;
-    parentSessionName: string;
-    /**
-     * Set when the branch starting point was an aborted turn. UI shows
-     * "从中断前分支" copy so the user understands the branch starts
-     * from before the cancel point, not from the abort itself.
-     */
-    fromAbortedTurn?: boolean;
-  };
-  onBranchBannerClick?: (parentSessionId: string) => void;
   /** Edit-and-resend versions stay in one conversation slot. */
   revisionNavigation?: {
     current: number;
@@ -945,9 +925,6 @@ export function ChatView(props: {
         aria-label={copy.conversationAriaLabel(props.activeSession.name)}
       >
       <SessionContextLayer
-        sessionName={props.activeSession.name}
-        branch={props.branchBanner}
-        onBranchNavigate={props.onBranchBannerClick}
         revision={props.revisionNavigation}
         onRevisionNavigate={props.onRevisionNavigate}
         memoryActive={props.memoryActive}

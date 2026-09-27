@@ -27,7 +27,8 @@ import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ChatSurfaceLayout, ChatView, LocaleProvider } from '@maka/ui';
-import type { SessionEvent } from '@maka/core/events';
+import type { AttachmentRef, SessionEvent } from '@maka/core/events';
+import type { PendingAttachment } from '@maka/ui/composer-attachments';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { PermissionMode } from '@maka/core/permission';
 import type {
@@ -45,7 +46,6 @@ import {
   WorkbarServicesProvider,
   type CompanionQuoteSnapshot,
   type StagedCompanionQuote,
-  type WorkbarIngestInput,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
@@ -64,11 +64,27 @@ const originalGlobals = {
 let mountedRoot: Root | undefined;
 const SOURCE_SESSION = session('source-session');
 type SideChatStopTarget = Parameters<WorkbarServices['sideChat']['stop']>[1];
+type SendFn = (text: string, attachments?: readonly PendingAttachment[]) => Promise<boolean>;
 type SteerFn = (
   text: string,
-  attachmentItems?: WorkbarIngestInput[],
+  attachments?: readonly PendingAttachment[],
   onAdmitted?: () => void,
 ) => Promise<boolean>;
+
+function approvalAttachment(approvalId: string, name: string): PendingAttachment {
+  return { stagingKey: approvalId, displayName: name, kind: 'other', size: 1, source: { type: 'approval', approvalId, name } };
+}
+
+function retainedAttachment(attachment: AttachmentRef): PendingAttachment {
+  return {
+    stagingKey: `retained:${attachment.name}`,
+    displayName: attachment.name,
+    mimeType: attachment.mimeType,
+    kind: attachment.kind,
+    size: attachment.bytes,
+    source: { type: 'retained', attachment },
+  };
+}
 type QueueUpdate = Extract<SessionEvent, { type: 'queue_update' }>;
 type QueueEntry = NonNullable<QueueUpdate['steeringEntries']>[number];
 
@@ -133,7 +149,7 @@ async function renderProbe(
     sourceSession?: SessionSummary;
     modelChoices?: readonly ChatModelChoice[];
     ready?: (container: Element) => boolean;
-    onSend?: (send: (text: string) => Promise<boolean>) => void;
+    onSend?: (send: SendFn) => void;
     onProjection?: (companion: ReturnType<typeof useQuoteCompanion>) => void;
     onQueue?: (queue: (text: string) => Promise<boolean>) => void;
     onSteer?: (steer: SteerFn) => void;
@@ -220,7 +236,7 @@ async function renderOwnershipProbe(
     onContextCompactionError?: (sessionId: string, error: unknown) => void;
   } = {},
 ) {
-  let send!: (text: string) => Promise<boolean>;
+  let send!: SendFn;
   let projection!: ReturnType<typeof useQuoteCompanion>;
   let queue!: (text: string) => Promise<boolean>;
   let steer!: SteerFn;
@@ -262,10 +278,10 @@ async function renderOwnershipProbe(
   return {
     ...rendered,
     setActive: rendered.setActive,
-    send: (text: string) => send(text),
+    send: (text: string, attachments?: readonly PendingAttachment[]) => send(text, attachments),
     queue: (text: string) => queue(text),
-    steer: (text: string, attachmentItems?: WorkbarIngestInput[], onAdmitted?: () => void) =>
-      steer(text, attachmentItems, onAdmitted),
+    steer: (text: string, attachments?: readonly PendingAttachment[], onAdmitted?: () => void) =>
+      steer(text, attachments, onAdmitted),
     stop: () => stop(),
     deleteQueuedEntry: (entryId: string) => deleteQueuedEntry(entryId),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
@@ -350,7 +366,7 @@ async function rerenderProbeSource(
 function ownershipProbeTree(
   services: WorkbarServices,
   sourceSession: SessionSummary,
-  onSend: (send: (text: string) => Promise<boolean>) => void,
+  onSend: (send: SendFn) => void,
 ) {
   return createElement(WorkbarServicesProvider, {
     services,
@@ -365,7 +381,7 @@ function ownershipProbeTree(
 async function rerenderOwnershipSource(
   rendered: { root: Root; services: WorkbarServices },
   sourceSession: SessionSummary,
-  onSend: (send: (text: string) => Promise<boolean>) => void,
+  onSend: (send: SendFn) => void,
 ) {
   await act(async () => {
     rendered.root.render(ownershipProbeTree(rendered.services, sourceSession, onSend));
@@ -2076,8 +2092,10 @@ test('consumes a steered attachment when the started turn binds the admission', 
   const pendingSteer = deferred<{ kind: 'started'; turnId: string }>();
   let admissionId: string | undefined;
   let admitted = 0;
-  let steerPayload: { attachmentItems?: readonly WorkbarIngestInput[] } | undefined;
-  const attachmentItem: WorkbarIngestInput = { approvalId: 'approval-1', name: 'kept.png' };
+  let steerPayload: Parameters<WorkbarServices['sideChat']['submitFollowUp']>[4];
+  // A retracted edit stages its Host attachment as `retained`; it rides the
+  // same steer as a newly picked file.
+  const restored: AttachmentRef = { kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 4, ref: { kind: 'workspace_file', relativePath: 'brief.txt' } };
   const { container, emit, send, steer, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     submitFollowUp: async (_sessionId, placement, _text, requestedAdmissionId, payload) => {
@@ -2095,7 +2113,7 @@ test('consumes a steered attachment when the started turn binds the admission', 
   });
   let steerResult!: Promise<boolean>;
   await act(async () => {
-    steerResult = steer('steer with the kept image', [attachmentItem], () => {
+    steerResult = steer('steer with the kept image', [approvalAttachment('approval-1', 'kept.png'), retainedAttachment(restored)], () => {
       admitted += 1;
     });
     await Promise.resolve();
@@ -2109,7 +2127,10 @@ test('consumes a steered attachment when the started turn binds the admission', 
   });
 
   // The attachments travel with the steering Message...
-  assert.deepEqual(steerPayload, { attachmentItems: [attachmentItem] });
+  assert.deepEqual(steerPayload, {
+    attachmentItems: [{ approvalId: 'approval-1', name: 'kept.png' }],
+    retainedAttachments: [restored],
+  });
   assert.equal(
     container.firstElementChild?.getAttribute('data-live-turn-id'),
     'steer-started-turn',
@@ -2130,6 +2151,23 @@ test('consumes a steered attachment when the started turn binds the admission', 
     await Promise.resolve();
   });
   assert.equal(admitted, 1, 'the admission echo must not consume a second time');
+});
+
+test('a send carries a restored attachment as a retained Host reference', async () => {
+  const commands: Parameters<WorkbarServices['sideChat']['send']>[1][] = [];
+  const restored: AttachmentRef = { kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 4, ref: { kind: 'workspace_file', relativePath: 'brief.txt' } };
+  const { send } = await renderOwnershipProbe({
+    send: async (_sessionId, command) => {
+      commands.push(command);
+      return { ok: true as const, turnId: 'turn-1' };
+    },
+  });
+  await act(async () => {
+    assert.equal(await send('', [retainedAttachment(restored)]), true);
+  });
+  assert.equal(commands.length, 1);
+  assert.deepEqual(commands[0]!.retainedAttachments, [restored]);
+  assert.equal(commands[0]!.attachmentItems, undefined);
 });
 
 test('retracts a queued Side Conversation message without stopping the active turn', async () => {
@@ -2723,6 +2761,93 @@ test('retires a cancelled queued Side Conversation message after observation res
 
   assert.equal(container.firstElementChild?.getAttribute('data-queue-texts'), '');
   assert.ok(queriedMessageIds.some((messageIds) => messageIds.includes(queuedMessageId as string)));
+});
+
+test('binds a drained queued follow-up to its completed Turn when reseeding', async () => {
+  let queuedMessageId: string | undefined;
+  let markSeeded: (() => void) | undefined;
+  let seedCount = 0;
+  let reconnected = false;
+  const { container, emit, send, queue, hostTurn } = await renderOwnershipProbe({
+    subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      markSeeded = onSeeded;
+      if (seedCount === 0) {
+        seedCount += 1;
+        onSeeded?.();
+      }
+      return () => undefined;
+    },
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      queuedMessageId = messageId;
+      return { kind: 'queued' as const };
+    },
+    readSettledMessages: async () => ({
+      messages: reconnected
+        ? [
+            {
+              type: 'user' as const,
+              id: queuedMessageId as string,
+              turnId: 'successor-turn',
+              ts: 3,
+              text: 'drained while disconnected',
+            },
+            {
+              type: 'assistant' as const,
+              id: 'successor-answer',
+              turnId: 'successor-turn',
+              ts: 4,
+              text: 'successor answer',
+              modelId: 'test-model',
+            },
+            {
+              type: 'turn_state' as const,
+              id: 'successor-done',
+              turnId: 'successor-turn',
+              ts: 5,
+              status: 'completed' as const,
+            },
+          ]
+        : [],
+      settled: true,
+    }),
+    queryMessageExecutions: async (_sessionId, messageIds) => ({
+      resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+    }),
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
+  });
+  await act(async () => {
+    assert.equal(await queue('drained while disconnected'), true);
+    emit(
+      queueUpdateEvent('queued-follow-up', 'old-turn', 2, [], [
+        {
+          entryId: 'follow-up-entry',
+          messageId: queuedMessageId as string,
+          content: { text: 'drained while disconnected' },
+          placement: 'next_turn',
+          state: 'queued',
+        },
+      ]),
+    );
+    await Promise.resolve();
+  });
+  // The Host drained the queue while the panel was disconnected, so the
+  // post-reconnect snapshot lists nothing and the admission events are gone —
+  // only the reseed can bind the completed Turn.
+  await act(async () => {
+    emit(queueUpdateEvent('drained-queue', 'old-turn', 3));
+    reconnected = true;
+    markSeeded?.();
+    await Promise.resolve();
+  });
+  await waitUntil(() =>
+    (container.firstElementChild?.getAttribute('data-message-texts') ?? '')
+      .includes('drained while disconnected|successor answer'));
 });
 
 for (const resolutionState of ['cancelled', 'owned'] as const) {
@@ -3435,6 +3560,7 @@ function QuoteCompanionProbe(props: {
     locale: 'en',
     onQuotesConsumed: () => undefined,
     confirmBypass: props.confirmBypass ?? (async () => true),
+    restoreDraft: () => undefined,
   });
   props.onSetPermissionMode?.(companion.setPermissionMode);
   return createElement('div', {
@@ -3469,6 +3595,7 @@ function QuoteCompanionOwnershipProbe(props: {
     onQuotesConsumed: props.onQuotesConsumed ?? (() => undefined),
     confirmBypass: async () => true,
     onContextCompactionError: props.onContextCompactionError,
+    restoreDraft: () => undefined,
   });
   props.onSend(companion.send);
   props.onProjection?.(companion);
@@ -3668,7 +3795,7 @@ test('a steer with staged attachments consumes them only on confirmed admission'
   const consumed: string[] = [];
   await act(async () => {
     assert.equal(
-      await rendered.steer('', [{ approvalId: 'a-1', name: 'notes.txt' }], () => {
+      await rendered.steer('', [approvalAttachment('a-1', 'notes.txt')], () => {
         consumed.push('admitted');
       }),
       true,
@@ -3714,7 +3841,7 @@ test('an unknown steer outcome that later retracts keeps the staged attachments'
   const consumed: string[] = [];
   await act(async () => {
     assert.equal(
-      await rendered.steer('', [{ approvalId: 'a-1', name: 'notes.txt' }], () => {
+      await rendered.steer('', [approvalAttachment('a-1', 'notes.txt')], () => {
         consumed.push('admitted');
       }),
       true,

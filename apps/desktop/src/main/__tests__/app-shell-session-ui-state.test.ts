@@ -373,6 +373,85 @@ describe('shellSessionRowEqual', () => {
     assert.equal(shellSessionRowEqual(future, row), false);
   });
 
+  it('orders same-revision rows by the live run epoch (#5713)', async () => {
+    const { root } = installReactRenderer();
+    try {
+      const catalog = createSessionCatalogController();
+      catalog.commitSessions([{
+        ...row,
+        revision: 5,
+        runningTurnIds: ['turn-1'],
+        runHostGeneration: 'host-1',
+        runEpoch: 2,
+      }]);
+
+      // A read taken before the turn started lands after the running patch:
+      // same revision, same host generation, older epoch — it must not flip
+      // the row back to idle.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runHostGeneration: 'host-1',
+          runEpoch: 1,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-1'],
+        'the older live state must not overwrite the newer',
+      );
+
+      // A genuinely newer epoch updates the row even at the same revision.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runHostGeneration: 'host-1',
+          runEpoch: 3,
+        });
+      });
+      assert.deepEqual(selectSessionById(catalog.getState(), row.id)?.runningTurnIds, []);
+
+      // A Host restart is a new generation: the previous host is gone, so
+      // its row cannot out-rank the restarted host's first read, whatever
+      // each side's epoch counter reads — a wall clock is not monotonic
+      // across processes (#5713 review round two).
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: ['turn-2'],
+          runHostGeneration: 'host-2',
+          runEpoch: 1,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-2'],
+        'the restarted host must take over the row',
+      );
+
+      // Within the restarted generation the counter orders reads again.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: ['turn-2'],
+          runHostGeneration: 'host-2',
+          runEpoch: 0,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-2'],
+        'the older read of the restarted generation must not win',
+      );
+    } finally { cleanupFakeDom(); }
+  });
+
   it('keeps a catalog row subscriber mounted through rail-only patches', async () => {
     const { root } = installReactRenderer();
     try {

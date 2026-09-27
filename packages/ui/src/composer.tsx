@@ -254,14 +254,17 @@ export interface ComposerHandle {
   appendText(text: string): void;
   /** Read the current input text (inline tokens serialized to their values). */
   getText(): string;
-  /** Clear one persisted draft without affecting another session's. */
-  clearDraft(draftKey: string): void;
+  /**
+   * Clear one session's draft. With `submitted`, clear it only while it still
+   * reads as that sent message, so text typed after the send survives.
+   */
+  clearDraft(draftKey: string, submitted?: string): void;
   /** Write a specific session draft before navigation changes the active key. */
   setDraft(draftKey: string, text: string): void;
   /** Read a specific draft without changing the active input. */
   getDraft(draftKey: string): string;
   /** Append to a specific session draft without replacing newer text. */
-  appendDraft?(draftKey: string, text: string): void;
+  appendDraft(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
   /** Open the active Session's existing account-and-model picker. */
@@ -333,15 +336,10 @@ export const Composer = forwardRef<
     stopPending?: boolean;
     pendingMessages?: readonly import('./chat-view.js').TransientUserMessageProjection[];
     queuedMessages?: readonly MessageQueueEntryProjection[];
-    queuedMessageRevision?: number;
     /** Promote a queued follow-up into the active Turn (调整方向). */
     onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
-    /** Update one queued entry in place without changing its order or placement. */
-    onUpdateQueuedEntry?(
-      entryId: string,
-      expectedQueueRevision: number,
-      text: string,
-    ): void | Promise<void>;
+    /** Take a queued entry out of the queue and hand its content back to the draft. */
+    onEditQueuedEntry?(entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>): void | Promise<void>;
     /** Remove one queued entry without restoring it. */
     onDeleteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Reorder the follow-up queue; entryIds is the full intended order. */
@@ -1369,28 +1367,20 @@ export const Composer = forwardRef<
       getText() {
         return textPort.getValue();
       },
-      clearDraft(draftKey: string) {
-        clearDraft(draftKey);
-        if (activeDraftKey() !== draftKey) return;
-        textPort.setValue('');
-        saveCurrentDraft('');
+      clearDraft(draftKey: string, submitted?: string) {
+        if (submitted === undefined) clearDraft(draftKey);
+        else clearSubmittedDraft(draftKey, submitted);
       },
       setDraft(draftKey: string, nextText: string) {
+        focusIfActive(draftKey);
         setDraft(draftKey, nextText);
-        if (activeDraftKey() !== draftKey) return;
-        resetPromptHistoryNavigation();
-        focusInput();
-        textPort.setValue(nextText);
       },
       getDraft(draftKey: string) {
         return getDraft(draftKey);
       },
       appendDraft(draftKey: string, nextText: string) {
-        const next = appendDraft(draftKey, nextText);
-        if (activeDraftKey() !== draftKey) return;
-        resetPromptHistoryNavigation();
-        focusInput();
-        textPort.setValue(next);
+        focusIfActive(draftKey);
+        appendDraft(draftKey, nextText);
       },
       focus() {
         focusInput();
@@ -1452,22 +1442,21 @@ export const Composer = forwardRef<
     // Save to both local ref and global persistence so the history
     // survives page reloads and is shared across all input surfaces.
     rememberSentEntry(text);
-    // The owner may have changed while onSend awaited (new-session creation,
-    // revision branch, or user navigation). Never erase a foreign draft.
-    if (activeDraftKey() !== submittedDraftKey) {
-      clearDraft(submittedDraftKey);
-      return;
-    }
-    // The user can begin the next message while the send IPC is still
-    // resolving. Clear only the exact draft that was submitted; a newer value
-    // belongs to the next send and must survive this older completion.
-    if (composerWireText(textPort.getValue()) !== text) {
-      saveCurrentDraft(textPort.getValue());
-      return;
-    }
-    clearDraft(submittedDraftKey);
-    textPort.setValue('');
-    saveCurrentDraft('');
+    clearSubmittedDraft(submittedDraftKey, text);
+  }
+
+  // A send completes after its own await: the user may have kept typing or
+  // moved to another Session meanwhile, so only the draft that still reads as
+  // the sent message is cleared, whether or not its Session is on screen.
+  function clearSubmittedDraft(draftKey: string | undefined, submitted: string) {
+    if (composerWireText(getDraft(draftKey)).trim() === submitted.trim()) clearDraft(draftKey);
+  }
+
+  // Focus before the controlled update so the caret lands at the new end.
+  function focusIfActive(draftKey: string) {
+    if (activeDraftKey() !== draftKey) return;
+    resetPromptHistoryNavigation();
+    focusInput();
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -1664,8 +1653,6 @@ export const Composer = forwardRef<
   const stopShown =
     props.streaming === true
     && (props.sendBlocked === true || (!text.trim() && !hasStagedContext));
-  // A Host receipt is not model consumption. Keep steering above the composer
-  // until the host surface retires its transient on steering_message.
   const queuedMessages = projectComposerMessageQueue(props.queuedMessages ?? [], props.pendingMessages ?? []);
   const queueCount = queuedMessages.length;
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
@@ -1903,17 +1890,6 @@ export const Composer = forwardRef<
           />
         </div>
       )}
-      {!props.hidden && queueCount > 0 ? (
-          <ComposerMessageQueue
-            queuedMessages={queuedMessages}
-            queueRevision={props.queuedMessageRevision}
-          copy={copy}
-          onPromoteEntry={props.onPromoteQueuedEntry}
-          onUpdateEntry={props.onUpdateQueuedEntry}
-          onDeleteEntry={props.onDeleteQueuedEntry}
-          onReorderEntries={props.onReorderQueuedEntries}
-        />
-      ) : null}
       <form
         ref={formRef}
         className="maka-composer composer"
@@ -1937,11 +1913,11 @@ export const Composer = forwardRef<
           // render our own into the `sendButton` slot.
           onSubmit={() => {}}
           isDisabled={props.disabled}
-          drawer={drawerTokenCount > 0 ? (
+          drawer={queueCount > 0 || drawerTokenCount > 0 ? (
             <ChatComposerDrawer
               className="maka-composer-drawer"
-              count={drawerTokenCount}
-              label={copy.stagedContext}
+              count={queueCount + drawerTokenCount}
+              label={drawerTokenCount > 0 ? copy.stagedContext : copy.queuedMessages}
               defaultIsCollapsed={props.contextDrawerDefaultCollapsed}
               // The collapse band's tooltip (composer.css ::after) follows the
               // pointer instead of sitting at a fixed offset — on a full-width
@@ -1978,6 +1954,20 @@ export const Composer = forwardRef<
                   ?.style.removeProperty('--maka-drawer-tooltip-x');
               }}
             >
+              {!props.hidden && queueCount > 0 ? (
+                <ComposerMessageQueue
+                  queuedMessages={queuedMessages}
+                  copy={copy}
+                  onPromoteEntry={props.onPromoteQueuedEntry}
+                  onEditEntry={props.onEditQueuedEntry}
+                  onDeleteEntry={props.onDeleteQueuedEntry}
+                  onReorderEntries={props.onReorderQueuedEntries}
+                />
+              ) : null}
+              {queueCount > 0 && drawerTokenCount > 0 ? (
+                <div className="maka-composer-drawer-divider" aria-hidden="true" />
+              ) : null}
+              {drawerTokenCount > 0 ? (
               <div className="maka-composer-context-drawer" role="group" aria-label={copy.stagedContext}>
                 {props.pendingDirectories?.map((reference, index) => (
                   <DirectoryReferenceChip
@@ -2119,6 +2109,7 @@ export const Composer = forwardRef<
                   );
                 })}
               </div>
+              ) : null}
             </ChatComposerDrawer>
           ) : undefined}
           input={(

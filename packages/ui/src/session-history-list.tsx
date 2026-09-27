@@ -38,7 +38,6 @@ import {
   ICON_SIZE,
   AlertTriangle,
   Archive,
-  ArchiveRestore,
   FolderOpen,
   Pencil,
   Pin,
@@ -46,6 +45,7 @@ import {
   Plug,
   Plus,
   SquarePen,
+  Unarchive,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -146,7 +146,6 @@ function useSidebarHoverCardTrigger(
 export interface SessionRowActions {
   onToggleFlag(sessionId: string, next: boolean): void | Promise<void>;
   onArchive(sessionId: string): void | Promise<void>;
-  onUnarchive(sessionId: string): void | Promise<void>;
   onRename(sessionId: string, name: string): void | Promise<void>;
   /**
    * Re-file ONE task under another project (`projectId`), or out of every
@@ -1361,7 +1360,7 @@ function ProjectItemActions(props: {
     ? [
         {
           label: copy.projectRestore,
-          icon: ArchiveRestore,
+          icon: Unarchive,
           onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
         },
       ]
@@ -1553,14 +1552,10 @@ function SessionItemActions(props: {
                 // reachable only for a task already archived, which is the step
                 // that makes the intent deliberate.
                 {
-                  label: props.session.isArchived ? copy.unarchive : copy.archive,
-                  icon: props.session.isArchived ? ArchiveRestore : Archive,
+                  label: copy.archive,
+                  icon: Archive,
                   onClick: () =>
-                    runRowAction('archive', () =>
-                      props.session.isArchived
-                        ? actions.onUnarchive(props.session.id)
-                        : actions.onArchive(props.session.id),
-                    ),
+                    runRowAction('archive', () => actions.onArchive(props.session.id)),
                 },
                 // No submenu to build when the shell has no project authority or
                 // there is nowhere to move the task to. `moveTargets` already

@@ -83,6 +83,14 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [bucket, publish]);
 
+  const restoreQuotes = useCallback((ownerKey: string, quotes: readonly QuoteRef[]): void => {
+    if (quotes.length === 0) return;
+    const ownerBucket = pendingByKeyRef.current[ownerKey] ??
+      (pendingByKeyRef.current[ownerKey] = []);
+    ownerBucket.push(...quotes.map((quote) => ({ ...quote })));
+    publish();
+  }, [publish]);
+
   // The composer's token asks the transcript to open the note editor over the
   // excerpt; a synchronous false means it falls back to its own popover.
   const chatViewRef = useRef<ChatViewHandle>(null);
@@ -99,6 +107,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     updateQuoteComment,
     removeQuote,
     clearQuotes,
+    restoreQuotes,
     quotesForSend,
     composerQuoteProps: (canStage: boolean) => ({
       pendingQuotes: bucket,

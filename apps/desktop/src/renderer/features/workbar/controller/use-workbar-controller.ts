@@ -965,6 +965,17 @@ export function useWorkbarController(
         sideConversations.updatePanel(snapshot.panelId, (panel) =>
           consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,
         ),
+      onRestoreQuotes: (panelId, quotes) =>
+        sideConversations.updatePanel(panelId, (panel) =>
+          quotes.reduce(
+            (current, quote) => stageCompanionQuote(current, {
+              sourceSessionId: panel.sourceSessionId,
+              quote,
+              newId: () => crypto.randomUUID(),
+            }),
+            panel,
+          ),
+        ),
       onRemoveQuote: (target) =>
         sideConversations.updatePanel(target.panelId, (panel) =>
           removeStagedCompanionQuote(panel, target) ?? panel,

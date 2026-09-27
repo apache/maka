@@ -19,6 +19,7 @@
 
 export { useWorkHubController } from './controller/use-workhub-controller.js';
 
+export { WorkHubComposer } from './ui/workhub-composer.js';
 export { WorkHubConversation } from './ui/workhub-conversation.js';
 
 export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';

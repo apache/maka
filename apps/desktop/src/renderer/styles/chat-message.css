@@ -31,6 +31,23 @@
    and bubble chrome; the remaining selectors are product content and actions.
    ============================================================================ */
 
+/* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
+   Its streaming-label sweep is Maka-local: background-position cannot run on
+   the compositor, so upstream's linear timing repaints the glyph-clipped
+   gradient every frame for the whole turn. `steps(60)` holds the same look
+   at ~15fps — measured ~4x cheaper on one label. */
+@keyframes maka-reasoning-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.maka-reasoning-shimmer {
+  background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%);
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: maka-reasoning-shimmer 4s steps(60) infinite;
+}
+
 /* Astryx owns sender-aware row alignment; Maka only declares the product
    reading geometry and the deliberately dense conversation type scale. */
 

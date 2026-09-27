@@ -1026,7 +1026,6 @@ function bridge(options: {
       }),
       retractQueueEntry: async () => undefined,
       promoteQueueEntry: async () => undefined,
-      updateQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
       setPermissionMode: async (_sessionId, mode) => ({
         ...SIDE_CHAT_SESSION,

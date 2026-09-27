@@ -58,7 +58,7 @@ import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import { getShellCopy } from '../../../../locales/shell-copy.js';
 import { createObservableState } from '../../../../application/contracts/session-catalog/observable-state.js';
-import type { WorkbarIngestInput } from '../../ports.js';
+import { toSubmittedAttachments, type PendingAttachment } from '@maka/ui/composer-attachments';
 import {
   abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
@@ -76,8 +76,10 @@ import { deriveMessageQueueProjection } from '../../../../application/contracts/
 import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import {
   mergeTransientMessageProjection,
-  projectQueuedTransientMessages,
   reconcileTransientMessages,
+  retractQueuedEntryToDraft,
+  withQueuedSteeringTransients,
+  type RestoredDraftContent,
 } from '../../../../application/contracts/transient-message-projection.js';
 import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import {
@@ -160,6 +162,8 @@ export interface UseQuoteCompanionInput {
     outcome: ContextCompactionOutcome,
   ) => void;
   onContextCompactionError?: (sessionId: string, error: unknown) => void;
+  /** Returns a retracted message's content to the composer draft for editing. */
+  restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void;
 }
 
 export async function requestPermissionModeWithConfirmation(
@@ -185,7 +189,6 @@ export interface UseQuoteCompanionResult {
   transientMessages: readonly TransientUserMessageProjection[];
   /** Host-authoritative pending steering and follow-up messages. */
   queuedMessages: readonly MessageQueueEntryProjection[];
-  queuedMessageRevision: number | undefined;
   liveTurns: LiveTurnBuffer | undefined;
   activeTurn: ReturnType<typeof chatTurnActivity>;
   streaming: boolean;
@@ -210,7 +213,7 @@ export interface UseQuoteCompanionResult {
    *  can retire submitted attachments on the same boundary as the quotes. */
   send: (
     text: string,
-    attachmentItems?: WorkbarIngestInput[],
+    attachments?: readonly PendingAttachment[],
     onAdmitted?: () => void,
   ) => Promise<boolean>;
   /** Insert text — or a structured-only quote/attachment — into the active
@@ -218,17 +221,13 @@ export interface UseQuoteCompanionResult {
    *  confirmed-admission boundary as `send`. */
   steer: (
     text: string,
-    attachmentItems?: WorkbarIngestInput[],
+    attachments?: readonly PendingAttachment[],
     onAdmitted?: () => void,
   ) => Promise<boolean>;
   /** Queue text for the next companion turn while the current turn continues. */
   queue: (text: string) => Promise<boolean>;
   promoteQueuedEntry: (entryId: string) => Promise<void>;
-  updateQueuedEntry: (
-    entryId: string,
-    expectedQueueRevision: number,
-    text: string,
-  ) => Promise<void>;
+  editQueuedEntry: (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
   reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
@@ -355,8 +354,20 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
   const [messageQueue, setMessageQueue] = useState<{
     readonly entries: readonly MessageQueueEntryProjection[];
-    readonly queueRevision?: number;
+    readonly ts?: number;
   }>({ entries: [] });
+  // Reseed reconciliation reads the queue between React flushes, so every
+  // writer goes through the ref; the state copy exists only for rendering.
+  const messageQueueRef = useRef(messageQueue);
+  const applyMessageQueue = useCallback((next: typeof messageQueue) => {
+    messageQueueRef.current = next;
+    setMessageQueue(next);
+  }, []);
+  // Message ids the Host has admitted to its queue. The queue snapshot is the
+  // presentation authority, but it drains when the Host consumes entries — a
+  // reconnect can miss the admission events that would have bound their
+  // Turns, so reseed resolves ownership through this set instead.
+  const queueOwnedMessageIdsRef = useRef(new Set<string>());
   const [execution, setExecution] = useState<SessionExecutionProjection>();
   const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
   const liveTurnsRef = useRef(liveTurns);
@@ -463,6 +474,19 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     const next = mergeSettledMessages(allMessagesRef.current, messages);
     allMessagesRef.current = next;
     setAllMessages(next);
+    // A persisted message carrying a queue-admitted id proves its own Turn —
+    // the admission events that would have bound it may never reach us.
+    let ownershipChanged = false;
+    for (const message of messages) {
+      if (message.turnId === undefined || !queueOwnedMessageIdsRef.current.delete(message.id)) continue;
+      ownTurnIdsRef.current.add(message.turnId);
+      hasContentRef.current = true;
+      ownershipChanged = true;
+    }
+    if (ownershipChanged) {
+      setHasContent(true);
+      setOwnTurnTick((tick) => tick + 1);
+    }
     setLiveTurns((current) => current ? reconcileLiveTurnBuffer(current, next) : current);
     reconcilePendingUserMessages();
   }, [reconcilePendingUserMessages]);
@@ -476,23 +500,21 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, [syncPendingUserMessages]);
 
   const dropQueuedMessage = useCallback((messageId: string) => {
-    setMessageQueue((current) => {
-      const entries = current.entries.filter((entry) => entry.messageId !== messageId);
-      return entries.length === current.entries.length ? current : { ...current, entries };
-    });
-  }, []);
+    queueOwnedMessageIdsRef.current.delete(messageId);
+    const current = messageQueueRef.current;
+    const entries = current.entries.filter((entry) => entry.messageId !== messageId);
+    if (entries.length !== current.entries.length) applyMessageQueue({ ...current, entries });
+  }, [applyMessageQueue]);
 
   // Bind presentation to canonical ownership before the caller reconciles and
   // publishes the pending Map. Recovery can bind a whole batch in one update.
   const bindPendingMessageTurn = useCallback((messageId: string, turnId: string, startsTurn = false) => {
     const message = pendingUserMessagesRef.current.get(messageId);
     if (!message) return;
-    const movedToSuccessor = message.transientPlacement === 'steering'
-      && message.hostTurnId !== undefined && message.hostTurnId !== turnId;
     pendingUserMessagesRef.current.set(messageId, {
       ...message,
       hostTurnId: turnId,
-      ...((startsTurn || movedToSuccessor || message.transientPlacement === 'follow_up') && {
+      ...((startsTurn || message.transientPlacement === 'follow_up') && {
         transientPlacement: 'transcript',
       }),
     });
@@ -510,11 +532,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const projectMessageQueue = useCallback(
     (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
       const queue = deriveMessageQueueProjection(event);
-      setMessageQueue({ entries: queue.entries, queueRevision: event.queueRevision });
-      projectQueuedTransientMessages(pendingUserMessagesRef.current, queue.transientMessages);
+      applyMessageQueue(queue);
+      for (const entry of queue.entries) {
+        pendingUserMessagesRef.current.delete(entry.messageId);
+        queueOwnedMessageIdsRef.current.add(entry.messageId);
+      }
       syncPendingUserMessages();
     },
-    [syncPendingUserMessages],
+    [applyMessageQueue, syncPendingUserMessages],
   );
 
   const applyOwnedEvent = useCallback(
@@ -683,6 +708,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     );
     if (admittedMessage?.turnId) bindAdmittedTurn(forkId, admittedMessage.turnId);
     const messageIds = new Set(pendingUserMessagesRef.current.keys());
+    // Queue-admitted ids are already retired from the pending map, and the
+    // queue itself may have drained while we were away — resolve every id the
+    // Host admitted so its Turn still registers.
+    for (const id of queueOwnedMessageIdsRef.current) messageIds.add(id);
     if (pendingAdmissionRef.current) messageIds.add(pendingAdmissionRef.current.messageId);
     if (messageIds.size === 0) return;
     try {
@@ -699,8 +728,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         // Host cannot say yet, and that keeps its slot.
         if (resolution.state === 'cancelled' || resolution.state === 'not_admitted') {
           retired.add(resolution.messageId);
+          queueOwnedMessageIdsRef.current.delete(resolution.messageId);
           if (pending?.messageId === resolution.messageId) releaseAdmission(pending);
         } else if (resolution.state === 'owned') {
+          queueOwnedMessageIdsRef.current.delete(resolution.messageId);
           bindPendingMessageTurn(resolution.messageId, resolution.turnId);
           if (pending?.messageId === resolution.messageId) {
             bindAdmittedTurn(forkId, resolution.turnId);
@@ -733,15 +764,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       }
       reconcilePendingUserMessages();
       if (retired.size > 0) {
-        setMessageQueue((current) => ({
+        const current = messageQueueRef.current;
+        applyMessageQueue({
           ...current,
           entries: current.entries.filter((entry) => !retired.has(entry.messageId)),
-        }));
+        });
       }
     } catch {
       // A failed proof query leaves presentation intact until canonical proof arrives.
     }
-  }, [bindAdmittedTurn, bindPendingMessageTurn, mergeDurableMessages, mountedRef, reconcilePendingUserMessages, releaseAdmission, sideChat]);
+  }, [applyMessageQueue, bindAdmittedTurn, bindPendingMessageTurn, mergeDurableMessages, mountedRef, reconcilePendingUserMessages, releaseAdmission, sideChat]);
 
   const reconcileStartedFollowUpTurn = useCallback(async (
     forkId: string,
@@ -970,7 +1002,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           setAllMessages([]);
           pendingUserMessagesRef.current.clear();
           setPendingUserMessages([]);
-          setMessageQueue({ entries: [] });
+          applyMessageQueue({ entries: [] });
+          queueOwnedMessageIdsRef.current.clear();
           onForkVisibilityChangeRef.current?.({
             type: 'cleanup-succeeded',
             sessionId: existing.id,
@@ -1154,7 +1187,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const send = useCallback(
     async (
       text: string,
-      attachmentItems?: WorkbarIngestInput[],
+      attachments?: readonly PendingAttachment[],
       onAdmitted?: () => void,
     ): Promise<boolean> => {
       const trimmed = text.trim();
@@ -1165,7 +1198,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       if (
         !mountedRef.current ||
-        (!trimmed && quoteSnapshot.quotes.length === 0 && !attachmentItems?.length) ||
+        (!trimmed && quoteSnapshot.quotes.length === 0 && !attachments?.length) ||
         submitLockRef.current ||
         compactionRequestInFlightRef.current ||
         activeTurnIdRef.current ||
@@ -1280,7 +1313,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         turnId,
         text: trimmed,
         quotes: quoteSnapshot.quotes.length > 0 ? [...quoteSnapshot.quotes] : undefined,
-        ...(attachmentItems?.length ? { attachmentItems } : {}),
+        ...(attachments?.length ? { attachments: toSubmittedAttachments(attachments) } : {}),
         onForkCreated: () => {},
         onForkCleanupSucceeded: (sessionId) =>
           onForkVisibilityChangeRef.current?.({
@@ -1442,7 +1475,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const submitFollowUp = useCallback(async (
     text: string,
     placement: MessageQueuePlacement,
-    structured?: { attachmentItems?: WorkbarIngestInput[]; onAdmitted?: () => void },
+    structured?: { attachments?: readonly PendingAttachment[]; onAdmitted?: () => void },
   ): Promise<boolean> => {
     const id = companionIdRef.current;
     const trimmed = text.trim();
@@ -1452,7 +1485,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     const quoteSnapshot =
       placement === 'current_turn' ? snapshotCompanionQuotes(panelId, pendingQuotes) : null;
     const hasStructuredContent =
-      (quoteSnapshot?.quotes.length ?? 0) > 0 || (structured?.attachmentItems?.length ?? 0) > 0;
+      (quoteSnapshot?.quotes.length ?? 0) > 0 || (structured?.attachments?.length ?? 0) > 0;
     if (
       !mountedRef.current ||
       !id ||
@@ -1481,7 +1514,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       id: admissionId,
       text: trimmed,
       ts: Date.now(),
-      transientPlacement: placement === 'current_turn' ? 'steering' : 'follow_up',
+      transientPlacement: placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...(placement === 'current_turn' && activeTurnIdRef.current
         ? { hostTurnId: activeTurnIdRef.current }
         : {}),
@@ -1493,9 +1526,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         ...(quoteSnapshot && quoteSnapshot.quotes.length > 0
           ? { quotes: [...quoteSnapshot.quotes] }
           : {}),
-        ...(structured?.attachmentItems?.length
-          ? { attachmentItems: structured.attachmentItems }
-          : {}),
+        ...toSubmittedAttachments(structured?.attachments ?? []),
       });
       if (!mountedRef.current) return false;
       if (placement === 'current_turn' && (await admission.stopPromise) === 'confirmed') {
@@ -1571,9 +1602,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const steer = useCallback(
     (
       text: string,
-      attachmentItems?: WorkbarIngestInput[],
+      attachments?: readonly PendingAttachment[],
       onAdmitted?: () => void,
-    ) => submitFollowUp(text, 'current_turn', { attachmentItems, onAdmitted }),
+    ) => submitFollowUp(text, 'current_turn', { attachments, onAdmitted }),
     [submitFollowUp],
   );
   const queue = useCallback(
@@ -1597,13 +1628,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   const promoteQueuedEntry = useCallback(
     (entryId: string) => runQueueEntryAction((id) => sideChat.promoteQueueEntry(id, entryId)),
-    [runQueueEntryAction, sideChat],
-  );
-  const updateQueuedEntry = useCallback(
-    (entryId: string, expectedQueueRevision: number, text: string) =>
-      runQueueEntryAction((id) =>
-        sideChat.updateQueueEntry(id, entryId, expectedQueueRevision, text),
-      ),
     [runQueueEntryAction, sideChat],
   );
   const deleteQueuedEntry = useCallback(
@@ -1704,7 +1728,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
   );
-  const transientMessages = pendingUserMessages;
+  const queuedEntryDraft = companion
+    ? { retract: deleteQueuedEntry, restoreDraft: (draft: RestoredDraftContent) => input.restoreDraft(companion.id, draft) }
+    : undefined;
+  const transientMessages = queuedEntryDraft
+    ? withQueuedSteeringTransients(pendingUserMessages, messageQueue, { ...queuedEntryDraft, locale: localeRef.current })
+    : pendingUserMessages;
   // Inherited model (read-only): the fork's once created, else the source's.
   const activeModel = companion
     ? { llmConnectionSlug: companion.llmConnectionSlug, model: companion.model }
@@ -1737,7 +1766,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     messages,
     transientMessages,
     queuedMessages: messageQueue.entries,
-    queuedMessageRevision: messageQueue.queueRevision,
     liveTurns,
     activeTurn: chatTurnActivity(execution),
     streaming,
@@ -1755,7 +1783,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     steer,
     queue,
     promoteQueuedEntry,
-    updateQueuedEntry,
+    editQueuedEntry: async (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => {
+      if (queuedEntryDraft) await retractQueuedEntryToDraft(entry, queuedEntryDraft);
+    },
     deleteQueuedEntry,
     reorderQueuedEntries,
     setPermissionMode,
