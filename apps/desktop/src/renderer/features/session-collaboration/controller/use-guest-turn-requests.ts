@@ -96,8 +96,7 @@ export function useGuestTurnRequests(
         // A request whose response was lost can surface here later; its text
         // leaves the draft only if the user has not changed it since.
         const settled = apply(sessionId, result);
-        const composer = composerRef.current;
-        if (settled && composer?.getDraft(sessionId).trim() === settled.text) composer.clearDraft(sessionId);
+        if (settled) composerRef.current?.clearDraft(sessionId, settled.text);
       } catch {
         if (!disposed) markUnavailable(sessionId);
       } finally {

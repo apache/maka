@@ -254,8 +254,11 @@ export interface ComposerHandle {
   appendText(text: string): void;
   /** Read the current input text (inline tokens serialized to their values). */
   getText(): string;
-  /** Clear one persisted draft without affecting another session's. */
-  clearDraft(draftKey: string): void;
+  /**
+   * Clear one session's draft. With `submitted`, clear it only while it still
+   * reads as that sent message, so text typed after the send survives.
+   */
+  clearDraft(draftKey: string, submitted?: string): void;
   /** Write a specific session draft before navigation changes the active key. */
   setDraft(draftKey: string, text: string): void;
   /** Read a specific draft without changing the active input. */
@@ -1364,28 +1367,20 @@ export const Composer = forwardRef<
       getText() {
         return textPort.getValue();
       },
-      clearDraft(draftKey: string) {
-        clearDraft(draftKey);
-        if (activeDraftKey() !== draftKey) return;
-        textPort.setValue('');
-        saveCurrentDraft('');
+      clearDraft(draftKey: string, submitted?: string) {
+        if (submitted === undefined) clearDraft(draftKey);
+        else clearSubmittedDraft(draftKey, submitted);
       },
       setDraft(draftKey: string, nextText: string) {
+        focusIfActive(draftKey);
         setDraft(draftKey, nextText);
-        if (activeDraftKey() !== draftKey) return;
-        resetPromptHistoryNavigation();
-        focusInput();
-        textPort.setValue(nextText);
       },
       getDraft(draftKey: string) {
         return getDraft(draftKey);
       },
       appendDraft(draftKey: string, nextText: string) {
-        const next = appendDraft(draftKey, nextText);
-        if (activeDraftKey() !== draftKey) return;
-        resetPromptHistoryNavigation();
-        focusInput();
-        textPort.setValue(next);
+        focusIfActive(draftKey);
+        appendDraft(draftKey, nextText);
       },
       focus() {
         focusInput();
@@ -1447,22 +1442,21 @@ export const Composer = forwardRef<
     // Save to both local ref and global persistence so the history
     // survives page reloads and is shared across all input surfaces.
     rememberSentEntry(text);
-    // The owner may have changed while onSend awaited (new-session creation,
-    // revision branch, or user navigation). Never erase a foreign draft.
-    if (activeDraftKey() !== submittedDraftKey) {
-      clearDraft(submittedDraftKey);
-      return;
-    }
-    // The user can begin the next message while the send IPC is still
-    // resolving. Clear only the exact draft that was submitted; a newer value
-    // belongs to the next send and must survive this older completion.
-    if (composerWireText(textPort.getValue()) !== text) {
-      saveCurrentDraft(textPort.getValue());
-      return;
-    }
-    clearDraft(submittedDraftKey);
-    textPort.setValue('');
-    saveCurrentDraft('');
+    clearSubmittedDraft(submittedDraftKey, text);
+  }
+
+  // A send completes after its own await: the user may have kept typing or
+  // moved to another Session meanwhile, so only the draft that still reads as
+  // the sent message is cleared, whether or not its Session is on screen.
+  function clearSubmittedDraft(draftKey: string | undefined, submitted: string) {
+    if (composerWireText(getDraft(draftKey)).trim() === submitted.trim()) clearDraft(draftKey);
+  }
+
+  // Focus before the controlled update so the caret lands at the new end.
+  function focusIfActive(draftKey: string) {
+    if (activeDraftKey() !== draftKey) return;
+    resetPromptHistoryNavigation();
+    focusInput();
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {

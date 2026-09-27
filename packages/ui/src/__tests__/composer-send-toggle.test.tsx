@@ -28,11 +28,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { act } from 'react';
+import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
-import { Composer } from '../composer.js';
+import { Composer, type ComposerHandle } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
 import { ICON_SIZE, Search } from '../icons.js';
 
@@ -225,6 +225,41 @@ test('the actual submit waits for Session references and keeps the draft on refu
       await act(async () => { release(ready); await Promise.resolve(); });
       assert.deepEqual(sends, ready ? [''] : []);
     }
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
+test('a send completing after navigation keeps the newer draft it left behind', async () => {
+  const original = { document: globalThis.document, window: globalThis.window, Node: globalThis.Node, HTMLElement: globalThis.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
+  Object.assign(window, { getSelection: () => null });
+  Object.assign(document, { getSelection: () => null });
+  Object.assign(globalThis, { document, window, Node: window.Node, HTMLElement: window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(document.querySelector('#root')!);
+  const handle = createRef<ComposerHandle>();
+  let finish!: (sent: boolean) => void;
+  const render = (draftKey: string) => root.render(
+    <LocaleProvider locale="en">
+      <Composer ref={handle} draftKey={draftKey}
+        onSend={() => new Promise<boolean>((resolve) => { finish = resolve; })}
+        onStop={() => undefined} />
+    </LocaleProvider>,
+  );
+  try {
+    await act(() => render('a'));
+    await act(() => handle.current!.setText('first request'));
+    await act(async () => {
+      document.querySelector('form')!.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    await act(() => handle.current!.setText('second unsent draft'));
+    await act(() => render('b'));
+    await act(async () => { finish(true); await Promise.resolve(); });
+    assert.equal(handle.current!.getDraft('a'), 'second unsent draft');
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);
