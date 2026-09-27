@@ -68,8 +68,8 @@ export function SessionLocalMessages(props: {
               text: message.text,
               ts: message.createdAt,
               // Only an ordinary send records `localDisplayPlacement`.
-              transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn' ? 'transcript'
-                : message.placement === 'current_turn' ? 'steering' : 'follow_up',
+              transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn'
+                || message.placement === 'current_turn' ? 'transcript' : 'follow_up',
               attachments: message.attachments,
               directoryReferences: message.directoryReferences,
               quotes: message.quotes,

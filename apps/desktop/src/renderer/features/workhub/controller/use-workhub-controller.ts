@@ -564,7 +564,7 @@ export function useWorkHubController(
         pendingQueued.current = attempt;
         if (!attempt.observed) setMessagePresentation((previous) => ({ ...previous, transientMessages: [...previous.transientMessages.filter((message) => message.id !== attempt.messageId), {
           id: attempt.messageId, hostTurnId: queuedTurnId, text, attachments: [...attachments],
-          ts: Date.now(), transientPlacement: attempt.placement === 'current_turn' ? 'steering' : 'follow_up',
+          ts: Date.now(), transientPlacement: attempt.placement === 'next_turn' ? 'follow_up' : 'transcript',
         }] }));
         viewportNavigation.followLatest(target);
         const result = await services.enqueueMessage(target, attempt.messageId, text, attachments, attempt.placement);

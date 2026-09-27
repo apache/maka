@@ -516,12 +516,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const bindPendingMessageTurn = useCallback((messageId: string, turnId: string, startsTurn = false) => {
     const message = pendingUserMessagesRef.current.get(messageId);
     if (!message) return;
-    const movedToSuccessor = message.transientPlacement === 'steering'
-      && message.hostTurnId !== undefined && message.hostTurnId !== turnId;
     pendingUserMessagesRef.current.set(messageId, {
       ...message,
       hostTurnId: turnId,
-      ...((startsTurn || movedToSuccessor || message.transientPlacement === 'follow_up') && {
+      ...((startsTurn || message.transientPlacement === 'follow_up') && {
         transientPlacement: 'transcript',
       }),
     });
@@ -1521,7 +1519,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       id: admissionId,
       text: trimmed,
       ts: Date.now(),
-      transientPlacement: placement === 'current_turn' ? 'steering' : 'follow_up',
+      transientPlacement: placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...(placement === 'current_turn' && activeTurnIdRef.current
         ? { hostTurnId: activeTurnIdRef.current }
         : {}),

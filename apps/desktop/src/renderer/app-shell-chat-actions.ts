@@ -249,7 +249,6 @@ export function createAppShellChatActions(deps: {
     >;
     displayText?: string;
     quotes?: readonly QuoteRef[];
-    steering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
@@ -282,8 +281,7 @@ export function createAppShellChatActions(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: result.disposition === 'turn_started' ? 'transcript'
-        : placement === 'next_turn' ? 'follow_up' : input.steering ? 'steering' : 'transcript',
+      transientPlacement: result.disposition !== 'turn_started' && placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', input.quotes ?? []),
@@ -497,7 +495,7 @@ export function createAppShellChatActions(deps: {
     publishTransientUserMessage(sessionId, {
       id: messageId, text, attachments: Conversation.retainedAttachmentRefs(pending ?? []),
       ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
-      transientPlacement: placement === 'current_turn' ? 'steering' : 'follow_up',
+      transientPlacement: placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
       inlineReferences: [],
@@ -509,7 +507,6 @@ export function createAppShellChatActions(deps: {
         sessionId,
         messageId,
         placement,
-        steering: placement === 'current_turn',
         command: {
           text,
           ...copiedArray('attachmentItems', attachmentItems),

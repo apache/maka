@@ -365,20 +365,6 @@ test('keeps Host order visible until the reordered projection arrives', async ()
 });
 
 
-test('a Host-admitted steering entry leaves the plate while an unadmitted local copy stays', () => {
-  const pending = { id: 'steer', text: 'new direction', ts: 1, transientPlacement: 'steering' as const };
-  const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
-  const admitted = parseHTML(`<html><body>${renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-    queuedMessages={[queued]} pendingMessages={[pending]} /></LocaleProvider>)}</body></html>`).document;
-  assert.equal(admitted.querySelector('.maka-composer-queue'), null,
-    'once the Host owns the steering entry its transcript bubble is the row');
-  const unadmitted = parseHTML(`<html><body>${renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-    queuedMessages={[]} pendingMessages={[pending]} /></LocaleProvider>)}</body></html>`).document;
-  assert.equal(unadmitted.querySelectorAll('.maka-composer-queue-text').length, 1,
-    'a steering send the Host never saw keeps its local row in the staging list');
-});
-
-
 test('local sends share the flat staging list with icon-only delivery actions', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
     queuedMessages={[{

@@ -61,7 +61,7 @@ export function projectComposerMessageQueue(
   if (pending.length === 0) return followups;
   return [...followups, ...pending.map((message): ComposerQueueEntry => ({
     entryId: message.id, messageId: message.id, content: { text: message.text },
-    placement: message.transientPlacement === 'steering' ? 'current_turn' : 'next_turn', state: 'local', localMessage: message,
+    placement: 'next_turn', state: 'local', localMessage: message,
   }))];
 }
 
