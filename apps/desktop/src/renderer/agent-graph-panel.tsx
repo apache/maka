@@ -34,7 +34,6 @@ import {
   isAgentGraphPanelDismissible,
   reconcileAgentGraphPanelDismissals,
   shouldShowAgentGraphPanel,
-  type AgentGraphPanelDismissals,
 } from './agent-graph-panel-visibility.js';
 import {
   createAgentGraphRefreshScheduler,
@@ -69,7 +68,7 @@ export function AgentGraphPanel(props: {
     error: false,
   });
   const [collapsed, setCollapsed] = useState<boolean>();
-  const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
+  const [dismissedBySession, setDismissedBySession] = useState<Readonly<Record<string, string>>>({});
   const contentId = useId();
   const refreshRef = useRef<AgentGraphRefreshScheduler>(noopAgentGraphRefreshScheduler);
   const selectedGraphIdRef = useRef<string | undefined>(undefined);

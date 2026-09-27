@@ -19,10 +19,10 @@
 
 import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
 
-export type AgentGraphPanelStatus = AgentGraphClientSnapshot['status'];
-export type AgentGraphPanelDismissals = Readonly<Record<string, string>>;
+type AgentGraphPanelStatus = AgentGraphClientSnapshot['status'];
+type AgentGraphPanelDismissals = Readonly<Record<string, string>>;
 
-export interface AgentGraphPanelModelState {
+interface AgentGraphPanelModelState {
   readonly rootSessionId: string;
   readonly selectedGraphId: string | undefined;
   readonly followCurrent: boolean;
@@ -35,7 +35,7 @@ type AgentGraphPanelSnapshot = Pick<
   'rootSessionId' | 'graphId' | 'status'
 >;
 
-export type AgentGraphPanelModelAction =
+type AgentGraphPanelModelAction =
   | { type: 'enter-session'; rootSessionId: string }
   | { type: 'select-epoch'; graphId: string; current: boolean }
   | { type: 'follow-current' }

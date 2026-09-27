@@ -34,9 +34,4 @@ export {
   reconcileAgentGraphPanelDismissals,
   reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
-  type AgentGraphPanelDismissals,
-  type AgentGraphPanelModelAction,
-  type AgentGraphPanelModelState,
-  type AgentGraphPanelStatus,
 } from './model/agent-graph-panel-model.js';
-export type { AgentGraphPanelBackend } from './model/agent-graph-panel-backend.js';

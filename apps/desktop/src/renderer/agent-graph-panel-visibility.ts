@@ -25,8 +25,4 @@ export {
   reconcileAgentGraphPanelDismissals,
   reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
-  type AgentGraphPanelDismissals,
-  type AgentGraphPanelModelAction,
-  type AgentGraphPanelModelState,
-  type AgentGraphPanelStatus,
 } from './features/overlays/index.js';
