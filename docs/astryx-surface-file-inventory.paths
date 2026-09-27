@@ -65,6 +65,7 @@ apps/desktop/src/renderer/features/session-bundle/services-context.tsx
 apps/desktop/src/renderer/features/session-bundle/session-bundle-tasks.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/guest-turn-requests.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-alias-action.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog-root.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog.tsx
@@ -72,7 +73,6 @@ apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboratio
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-navigation.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
-apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-composer.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/session-settings/services-context.tsx

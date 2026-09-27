@@ -160,8 +160,8 @@ describe('Goals feature boundary', () => {
     for (const [source, required] of [
       [composer, 'ComposerGoalProjectionConsumer,'],
       [composer, '<ComposerGoalProjectionConsumer>'],
-      [composer, 'goalActive={goalProjection.goalActive}'],
-      [composer, 'onSetGoal={goalProjection.onSetGoal}'],
+      [composer, 'goalActive: goalProjection.goalActive,'],
+      [composer, 'onSetGoal: goalProjection.onSetGoal,'],
       [messageSurface, 'ChatViewGoalProjectionConsumer,'],
       [messageSurface, '<ChatViewGoalProjectionConsumer>'],
       [messageSurface, 'goalIndicator={goalProjection.goalIndicator}'],

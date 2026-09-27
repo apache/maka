@@ -487,11 +487,6 @@ dialog:modal {
    its children. A per-button rule (plus a `*` descendant rule for the icons)
    only duplicated that. */
 
-.sessionTurnRequestSurface {
-  border-top: var(--border-width-hairline) solid var(--border);
-  background: var(--background);
-}
-
 .sessionTurnRequestApproval {
   display: grid;
   gap: var(--space-1);
@@ -540,68 +535,8 @@ dialog:modal {
   text-align: end;
 }
 
-.sessionTurnRequestComposer {
-  padding-block-start: var(--space-2);
-}
-
-.sessionTurnRequestReconnectButton {
-  display: inline-flex;
-}
-
 .sessionCollaborationReadOnly {
   padding: var(--space-3);
   color: var(--muted-foreground);
   text-align: center;
-}
-
-.sessionTurnRequestQueue {
-  margin-block-start: var(--space-2);
-  padding: var(--space-1);
-}
-
-.sessionTurnRequestQueueToggle {
-  width: 100%;
-  justify-content: space-between;
-}
-
-.sessionTurnRequestQueueToggle svg {
-  transition: transform var(--duration-fast) var(--ease-standard);
-}
-
-.sessionTurnRequestQueueToggle svg.isExpanded {
-  transform: rotate(180deg);
-}
-
-.sessionTurnRequestHistory {
-  display: grid;
-  max-height: 12rem;
-  overflow-y: auto;
-  margin-block-start: var(--space-1);
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.sessionTurnRequestHistoryRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-2);
-}
-
-.sessionTurnRequestHistoryRow + .sessionTurnRequestHistoryRow {
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.sessionTurnRequestHistoryBody {
-  display: grid;
-  gap: var(--space-0-5);
-  min-width: 0;
-  flex: 1;
-}
-
-.sessionTurnRequestHistoryText {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

@@ -32,6 +32,7 @@ import {
 import type { ComposerHandle } from '@maka/ui';
 export { selectLatestRequestUsage } from './application/contracts/session-inspector/latest-request-usage.js';
 import { useComposerMentionsContext } from './composer-mentions.js';
+import type { GuestComposerProjection } from './features/session-collaboration/index.js';
 import {
   readNewTaskReloadDraft,
   readNewTaskReloadIntent,
@@ -104,6 +105,8 @@ interface ChatComposerRegionProps
     | 'onPickDirectory'
   > {
   composerRef: RefObject<ComposerHandle | null>;
+  /** Set while the active Session is a Guest's: the same Composer sends Turn requests. */
+  guest?: GuestComposerProjection;
   active: boolean;
   onboardingComposerHidden: boolean;
   activeInteraction: ComposerInteraction | undefined;
@@ -161,9 +164,10 @@ interface ChatComposerRegionProps
 
 export function ChatComposerRegion({
   composerRef,
+  guest,
   active,
   onboardingComposerHidden,
-  activeInteraction,
+  activeInteraction: ownerInteraction,
   activeId,
   contextUsageSessionId,
   newTaskDraftKey,
@@ -183,6 +187,8 @@ export function ChatComposerRegion({
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
+  // Interactions answer the owner's Turn; a Guest never sees their prompts.
+  const activeInteraction = guest ? undefined : ownerInteraction;
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeClientCapability =
@@ -271,37 +277,37 @@ export function ChatComposerRegion({
       {(goalProjection) => (
         <Composer
           ref={composerRef}
-          {...composerRest}
-          contextUsage={contextUsage && liveContextUsage
-            ? {
-                ...contextUsage,
-                usageTokens: liveContextUsage.usageTokens,
-                meteredContextWindow: liveContextUsage.contextWindow,
-              }
-            : contextUsage}
-          // AppShell carries staged attachments into both queued and steering
-          // follow-ups. Other Composer hosts remain gated by default because a
-          // text-only running-turn submission would leave attachments behind.
-          allowAttachmentImportWhileStreaming
-          mentionSkills={mentions?.mentionSkills}
-          mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
-          mentionSkillsLoading={mentions?.mentionSkillsLoading}
-          onSearchMentionFiles={mentions?.searchMentionFiles}
-          sessionReferences={mentions?.sessionReferences}
-          onPickSessionReference={mentions?.onPickSessionReference}
-          pendingSessionReferences={mentions?.pendingSessionReferences}
-          onRemovePendingSessionReference={mentions?.onRemovePendingSessionReference}
-          waitForSessionReference={mentions?.waitForSessionReference}
-          {...directoryComposerProps}
-          onPickDirectory={
-            directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
-          }
-          hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
+          {...(guest ? guestComposerProps(composerRest, guest) : {
+            ...composerRest,
+            contextUsage: contextUsage && liveContextUsage
+              ? {
+                  ...contextUsage,
+                  usageTokens: liveContextUsage.usageTokens,
+                  meteredContextWindow: liveContextUsage.contextWindow,
+                }
+              : contextUsage,
+            // AppShell carries staged attachments into both queued and steering
+            // follow-ups. Other Composer hosts remain gated by default because a
+            // text-only running-turn submission would leave attachments behind.
+            allowAttachmentImportWhileStreaming: true,
+            mentionSkills: mentions?.mentionSkills,
+            mentionSkillsUnavailable: mentions?.mentionSkillsUnavailable,
+            mentionSkillsLoading: mentions?.mentionSkillsLoading,
+            onSearchMentionFiles: mentions?.searchMentionFiles,
+            sessionReferences: mentions?.sessionReferences,
+            onPickSessionReference: mentions?.onPickSessionReference,
+            pendingSessionReferences: mentions?.pendingSessionReferences,
+            onRemovePendingSessionReference: mentions?.onRemovePendingSessionReference,
+            waitForSessionReference: mentions?.waitForSessionReference,
+            ...directoryComposerProps,
+            onPickDirectory: directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined,
+            stopPending: activeId ? stopPendingBySession[activeId] === true : false,
+            goalActive: goalProjection.goalActive,
+            onSetGoal: goalProjection.onSetGoal,
+          })}
+          hidden={!active || onboardingComposerHidden || Boolean(activeInteraction) || Boolean(guest && !guest.composer)}
           draftKey={activeId ?? newTaskDraftKey}
           draftPersistence={newTaskDraftPersistence}
-          stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-          goalActive={goalProjection.goalActive}
-          onSetGoal={goalProjection.onSetGoal}
         />
       )}
     </ComposerGoalProjectionConsumer>
@@ -314,7 +320,10 @@ export function ChatComposerRegion({
             the composer would have been — and never over a turn-scoped
             interaction, which already owns the slot and is the more urgent
             thing to answer. */}
-        {boundaryUnreadableNotice && active && !activeInteraction && (
+        {guest?.notice && active && (
+          <div className="sessionCollaborationReadOnly">{guest.notice}</div>
+        )}
+        {boundaryUnreadableNotice && active && !activeInteraction && !guest && (
           <div className="maka-boundary-unreadable-notice">
             <Banner
               status="warning"
@@ -333,7 +342,7 @@ export function ChatComposerRegion({
               />} />
           </div>
         )}
-        {mentions?.sessionReferenceError && active && !onboardingComposerHidden && !activeInteraction && (
+        {mentions?.sessionReferenceError && active && !onboardingComposerHidden && !activeInteraction && !guest && (
           <Banner
             status="warning"
             role="alert"
@@ -382,4 +391,41 @@ export function ChatComposerRegion({
       )}
     </>
   );
+}
+
+type OwnerComposerProps = Pick<
+  ComponentProps<typeof Composer>,
+  | 'activeSession'
+  | 'activeModel'
+  | 'activeModelLabel'
+  | 'activeModelConnectionId'
+  | 'activeModelConnectionSlug'
+  | 'activeProviderType'
+  | 'modelChoices'
+  | 'modelLabel'
+  | 'renderProviderMark'
+>;
+
+/**
+ * A Guest's Composer only sends Turn requests: the Session's model shows
+ * read-only, and no owner control or context picker reaches it.
+ */
+function guestComposerProps(
+  owner: OwnerComposerProps,
+  guest: GuestComposerProjection,
+): ComponentProps<typeof Composer> {
+  return {
+    activeSession: owner.activeSession,
+    activeModel: owner.activeModel,
+    activeModelLabel: owner.activeModelLabel,
+    activeModelConnectionId: owner.activeModelConnectionId,
+    activeModelConnectionSlug: owner.activeModelConnectionSlug,
+    activeProviderType: owner.activeProviderType,
+    modelChoices: owner.modelChoices,
+    modelLabel: owner.modelLabel,
+    renderProviderMark: owner.renderProviderMark,
+    onStop: () => undefined,
+    onSend: async () => false,
+    ...guest.composer,
+  };
 }

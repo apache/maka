@@ -2294,18 +2294,19 @@ function AppShellContent({
                       />
                     ) : null}
                     {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
-                    {sharedSessionActive && activeId ? (
-                      <SessionCollaboration.SessionTurnRequestComposer
-                        sessionId={activeId}
-                      />
-                    ) : (
-                      <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}
-                        activeSession={activeSession}
-                      >
-                        {(workspacePicker) => (
+                    <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}
+                      activeSession={activeSession}
+                    >
+                      {(workspacePicker) => (
+                        <SessionCollaboration.GuestTurnRequests
+                          sessionId={sharedSessionActive ? activeId : undefined}
+                          composerRef={composerRef}
+                        >
+                          {(guest) => (
                           <ChatComposerRegion
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
+                  guest={guest}
                   active={sessionsSelected}
                   onboardingComposerHidden={
                     onboardingComposerHidden
@@ -2417,9 +2418,10 @@ function AppShellContent({
                       : undefined
                   }
                           />
-                        )}
-                      </TaskEntry.TaskEntryWorkspacePickerConsumer>
-                    )}
+                          )}
+                        </SessionCollaboration.GuestTurnRequests>
+                      )}
+                    </TaskEntry.TaskEntryWorkspacePickerConsumer>
                   </>
                 }
               >
