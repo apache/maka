@@ -559,36 +559,32 @@ describe('single live-turn handoff', () => {
       setInteractionBySession: createStateSetter<InteractionQueues>({}).set,
       showModelSetupToast() {},
       toastApi: { error() {} },
-      scheduleFrame(callback) {
-        frameQueue.push(callback);
-      },
-    });
+      scheduleFrame: (callback) => void frameQueue.push(callback),
+    } satisfies Parameters<typeof createAppShellSessionEventHandlers>[0]);
     const renderedText = () => state.get()[sessionId]?.[0]?.steps[0]?.text?.text;
     const emit = (event: SessionEvent) => eventHandlers.handleEvent(sessionId, event);
-
     eventHandlers.holdDisplayEvents(sessionId);
     emit({
       type: 'text_delta', id: 'recovered', turnId: 'turn-1', messageId: 'assistant-1',
       ts: 1, startOffset: 0, text: 'restored prefix',
-    });
+    } satisfies SessionEvent);
     assert.deepEqual(
       { publications: publicationCounts.length, frames: frameQueue.length, text: renderedText() },
-      { publications: 1, frames: 0, text: 'restored prefix' },
+      { publications: 1, frames: 0, text: 'restored prefix' }, 'recovery is immediate',
     );
-
     eventHandlers.releaseDisplayEvents(sessionId);
     emit({
       type: 'text_delta', id: 'continued', turnId: 'turn-1', messageId: 'assistant-1',
       ts: 2, text: ' plus live text',
-    });
+    } satisfies SessionEvent);
     assert.deepEqual(
       { publications: publicationCounts.length, frames: frameQueue.length },
-      { publications: 1, frames: 1 },
+      { publications: 1, frames: 1 }, 'live continuation waits for a frame',
     );
     frameQueue.shift()?.();
     assert.deepEqual(
       { publications: publicationCounts.length, text: renderedText() },
-      { publications: 2, text: 'restored prefix plus live text' },
+      { publications: 2, text: 'restored prefix plus live text' }, 'the frame appends live text',
     );
   }); // Recovery delivery is synchronous only while the hold is active.
 

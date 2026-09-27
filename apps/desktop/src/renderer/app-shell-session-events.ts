@@ -183,18 +183,15 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   const holdDisplayEvents = (sessionId: string): void => void displayBatch.heldSessions.add(sessionId);
-
   const releaseDisplayEvents = (sessionId: string): void => {
     const queued = takePendingDisplayEvents(sessionId);
     if (queued.length > 0) updateLiveTurn(sessionId, queued);
     displayBatch.heldSessions.delete(sessionId);
   };
-
   const discardDisplayEvents = (sessionId: string): void => {
     displayBatch.pendingEvents.delete(sessionId);
     displayBatch.heldSessions.delete(sessionId);
   };
-
   function updateLiveTurn(sessionId: string, events: readonly SessionEvent[]): void {
     setLiveTurnBySession((current) => replaceLiveTurns(current, new Map([[sessionId, events]])));
   }
@@ -400,7 +397,7 @@ export function createAppShellSessionEventHandlers(options: {
     }
   }
 
-  return {
+  return Object.freeze<AppShellSessionEventHandlers>({
     handleEvent: (sessionId, event) => handleEvent(sessionId, event),
     reconcilePersistedMessages: (sessionId, messages) =>
       reconcilePersistedMessages(sessionId, messages),
@@ -409,7 +406,7 @@ export function createAppShellSessionEventHandlers(options: {
     holdDisplayEvents,
     releaseDisplayEvents,
     discardDisplayEvents,
-  };
+  });
 }
 
 function sessionEventDiagnosticDetails(

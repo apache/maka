@@ -1003,13 +1003,13 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
   const registry = new RuntimeHostSessionObservationRegistry();
   t.after(() => registry.close());
   const timeline = createRendererTimeline();
+  const start = (
+    connection: RuntimeHostConnection,
+    candidateDeps: DesktopRuntimeHostCandidateDeps,
+  ) => createDesktopRuntimeHostCandidate(connection, candidateDeps, registry);
   const sourceIpc = ipcHarness(timeline.record);
   const sourceHost = connectionHarness('restore-source', restorableObservation());
-  const sourceCandidate = await createDesktopRuntimeHostCandidate(
-    sourceHost.connection,
-    deps(sourceIpc),
-    registry,
-  );
+  const sourceCandidate = await start(sourceHost.connection, deps(sourceIpc));
   await sourceIpc.invoke('sessions:observe', 'session-1', 'observer-1');
   await sourceCandidate.close();
   timeline.clear();
@@ -1017,37 +1017,29 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
   const rejectedHost = connectionHarness('restore-failure', restorableObservation({
     subscribeFailure: new Error('restore failed'),
   }));
-  const rejectedCandidate = createDesktopRuntimeHostCandidate(
+  const rejectedCandidate = start(
     rejectedHost.connection,
     { ...deps(ipcHarness()), renderer: timeline.renderer },
-    registry,
   );
   await assert.rejects(rejectedCandidate, /restore Session observations: session-1/);
   const failureEvents = timeline.sessionEvents('session-1');
-  assert.deepEqual(
-    [...new Set(failureEvents.map((event) => event.type))].sort(),
-    ['host_observation_error', 'host_observation_pending'],
-  );
   assert.equal(
-    failureEvents.find((event) => event.type === 'host_observation_error')?.message,
-    'restore failed',
+    [...new Set(failureEvents.map((event) => event.type))].sort().join(','),
+    'host_observation_error,host_observation_pending',
   );
+  assert.equal(failureEvents.find((event) => event.type === 'host_observation_error')?.message, 'restore failed');
   timeline.clear();
 
   const replacementHost = connectionHarness('restore-recovered', restorableObservation({
     assistantStreams: [textStream('message-1')],
   }));
-  const replacementCandidate = await createDesktopRuntimeHostCandidate(
+  const replacementCandidate = await start(
     replacementHost.connection,
     { ...deps(ipcHarness()), renderer: timeline.renderer },
-    registry,
   );
   const pendingAt = timeline.sessionEventIndex('session-1', 'host_observation_pending');
   const readyAt = timeline.sessionEventIndex('session-1', 'host_observation_seed');
-  assert.deepEqual(
-    { pendingWasSent: pendingAt >= 0, readyFollowedPending: readyAt > pendingAt },
-    { pendingWasSent: true, readyFollowedPending: true },
-  );
+  assert.equal(pendingAt >= 0 && readyAt > pendingAt, true);
   await replacementCandidate.close();
 }); // A failed replacement leaves the registry available to the next candidate.
 
@@ -1592,7 +1584,7 @@ function restorableObservation(
 
 type RendererRecord = { channel: string; payload: unknown };
 
-function createRendererTimeline() {
+const createRendererTimeline = () => {
   const records: RendererRecord[] = [];
   const record = (channel: string, payload: unknown): void => {
     records.push({ channel, payload });
@@ -1621,8 +1613,7 @@ function createRendererTimeline() {
       );
     },
   };
-}
-
+};
 function pendingQuestion() {
   return {
     schemaVersion: 1 as const,

@@ -235,7 +235,6 @@ export class RuntimeHostSessionObservationRegistry {
 
   observationSessionIds = (): string[] =>
     Array.from(new Set(Array.from(this.#registrations.values(), ({ sessionId }) => sessionId)));
-
   trackedSessionIds(): string[] {
     return [
       ...new Set([
