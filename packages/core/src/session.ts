@@ -409,8 +409,20 @@ export interface SessionSummary {
    * summaries can disagree about `runningTurnIds` — the epoch orders them:
    * the higher epoch is the newer observation (#5713). Present alongside
    * `runningTurnIds` under the same population rules.
+   *
+   * The counter restarts at zero with a fresh Host process, so it only orders
+   * observations of one host generation: summaries whose `runHostGeneration`
+   * differs are not comparable by epoch, and the newer generation's host owns
+   * the row outright.
    */
   runEpoch?: number;
+  /**
+   * Identifies the Host process generation that produced this live-run
+   * observation. Summaries from different generations are not ordered by
+   * `runEpoch` — a restarted Host supersedes every observation its
+   * predecessor published, whatever the epoch counters read (#5713).
+   */
+  runHostGeneration?: string;
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagent?: SessionSubagentProjection;

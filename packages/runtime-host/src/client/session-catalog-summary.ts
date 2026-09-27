@@ -49,6 +49,9 @@ export function projectSessionCatalogSummary(
           ...(session.liveRunState.runEpoch === undefined
             ? {}
             : { runEpoch: session.liveRunState.runEpoch }),
+          ...(session.liveRunState.hostGeneration === undefined
+            ? {}
+            : { runHostGeneration: session.liveRunState.hostGeneration }),
         }),
     ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
     ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),

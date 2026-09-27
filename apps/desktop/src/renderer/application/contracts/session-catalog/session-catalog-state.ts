@@ -194,9 +194,25 @@ export function waitForCatalogSession(
  * starting or ending does not move `revision`, so two same-revision reads can
  * disagree about `runningTurnIds` — the run epoch says which observation is
  * older, and the stale one must not overwrite the fresher (#5713).
+ *
+ * The epoch counter only orders observations of one Host generation.
+ * Generations themselves are not ordered, so a read from a different
+ * generation is never stale: a restarted Host must take the row over from its
+ * predecessor whatever the two counters read, and a patch that lagged behind
+ * a restart survives at most until the live generation's next read (#5713
+ * review).
  */
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
   if (prior.revision !== next.revision) return prior.revision > next.revision;
+  const priorGeneration = prior.runHostGeneration;
+  const nextGeneration = next.runHostGeneration;
+  if (
+    priorGeneration !== undefined &&
+    nextGeneration !== undefined &&
+    priorGeneration !== nextGeneration
+  ) {
+    return false;
+  }
   const priorEpoch = prior.runEpoch;
   const nextEpoch = next.runEpoch;
   if (priorEpoch === undefined || nextEpoch === undefined || priorEpoch === nextEpoch) {

@@ -291,6 +291,31 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     );
   });
 
+  test('each kernel gets its own host generation; epochs restart per process (#5713 review)', () => {
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', () => new BlockingBackend(SESSION_ID, {}));
+    let id = 0;
+    const newId = () => `gen-id-${++id}`;
+    const first = new RuntimeKernel({
+      store: memoryStore(),
+      backends,
+      newId,
+      now: () => 0,
+    });
+    // A second kernel stands in for the restarted Host process: a fresh
+    // generation and epoch counters back to zero, even though the previous
+    // process may have left a higher epoch on a client's catalog row.
+    const second = new RuntimeKernel({
+      store: memoryStore(),
+      backends,
+      newId,
+      now: () => 0,
+    });
+    assert.notEqual(first.sessionHostGeneration(), second.sessionHostGeneration());
+    assert.equal(first.sessionRunEpoch(SESSION_ID), 0);
+    assert.equal(second.sessionRunEpoch(SESSION_ID), 0);
+  });
+
   test('a generation stopped after Run reservation cannot send on the stale backend', async () => {
     const store = memoryStore();
     const backends = new BackendRegistry();

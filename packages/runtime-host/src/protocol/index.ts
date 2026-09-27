@@ -103,7 +103,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 194 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 195 as const;
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
 // 194: Session catalog live run state may carry the runtime's run epoch, which
 // lets clients order same-revision reads. Epoch-193 peers reject the unknown
 // key, so a newer Desktop against an older Host loses session catalog reads.

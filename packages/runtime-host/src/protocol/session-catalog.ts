@@ -71,6 +71,7 @@ export const SESSION_CATALOG_MODEL_MAX_BYTES = SESSION_MODEL_ID_MAX_BYTES;
 export const SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES = 256;
 export const SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION = 1 as const;
 export const SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS = 64;
+export const SESSION_CATALOG_HOST_GENERATION_MAX_CHARS = 128;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -229,9 +230,19 @@ export interface SessionCatalogLiveRunState {
    * The runtime's own order for this live state, bumped on every turn start
    * and end. `revision` does not move for those transitions, so two
    * same-revision reads can disagree about `runningTurnIds` — the epoch says
-   * which read is older (#5713). Absent from hosts that do not track it.
+   * which read is older (#5713). Absent from hosts that do not track it. The
+   * counter is per-process; across a Host restart only `hostGeneration`
+   * orders observations, never the epoch.
    */
   readonly runEpoch?: number;
+  /**
+   * Identifies the Host process generation that produced this live state.
+   * Rows survive a Host restart while the epoch counter restarts at zero, so
+   * clients must not order same-revision reads across generations by epoch —
+   * a restarted Host supersedes every observation its predecessor published.
+   * Absent from hosts that do not track it.
+   */
+  readonly hostGeneration?: string;
 }
 
 export interface SessionCatalogProjection {
@@ -1015,6 +1026,7 @@ function optionalLiveRunState(
     'schemaVersion',
     'runningTurnIds',
     'runEpoch',
+    'hostGeneration',
   ]);
   if (liveRunState.schemaVersion !== SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION) {
     throw invalidProtocolFrame('Unsupported Session catalog live run state schema version');
@@ -1043,11 +1055,23 @@ function optionalLiveRunState(
   ) {
     throw invalidProtocolFrame('Invalid Session catalog run epoch');
   }
+  if (
+    liveRunState.hostGeneration !== undefined &&
+    (typeof liveRunState.hostGeneration !== 'string' ||
+      liveRunState.hostGeneration.length === 0 ||
+      liveRunState.hostGeneration.length > SESSION_CATALOG_HOST_GENERATION_MAX_CHARS ||
+      /[\u0000-\u001f\u007f]/.test(liveRunState.hostGeneration))
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog host generation');
+  }
   return {
     liveRunState: {
       schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
       runningTurnIds,
       ...(liveRunState.runEpoch === undefined ? {} : { runEpoch: liveRunState.runEpoch }),
+      ...(liveRunState.hostGeneration === undefined
+        ? {}
+        : { hostGeneration: liveRunState.hostGeneration }),
     },
   };
 }

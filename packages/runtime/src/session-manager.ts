@@ -924,6 +924,9 @@ export class SessionManager {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
+    // Fixed at construction: a generation that changed per call could never
+    // order observations of this process (#5713).
+    this.#hostGenerationFallback = deps.newId();
     if (deps.publishChildWorkspacePatch && !deps.listArtifactsForTurn) {
       throw new Error('Child workspace patch publication requires Artifact turn listing');
     }
@@ -970,20 +973,38 @@ export class SessionManager {
   /**
    * The live run state's own order, bumped on every turn start and end. Two
    * same-revision catalog reads can disagree about `runningTurnIds`; the epoch
-   * says which one is older (#5713).
+   * says which one is older (#5713). The counter is per-process — pair it with
+   * `sessionHostGeneration` to tell which process an observation came from.
    */
   sessionRunEpoch(sessionId: string): number {
     return this.runtimeKernel.sessionRunEpoch?.(sessionId) ?? 0;
+  }
+
+  /**
+   * Identifies this process's run-epoch generation. Catalog rows survive a
+   * Host restart while the per-process epoch counters restart at zero, so
+   * clients order same-revision reads by generation first, never by epoch
+   * across restarts (#5713). Falls back to an identity fixed at construction
+   * when the kernel does not expose one.
+   */
+  readonly #hostGenerationFallback: string;
+
+  sessionHostGeneration(): string {
+    return this.runtimeKernel.sessionHostGeneration?.() ?? this.#hostGenerationFallback;
   }
 
   #projectLiveRunState(sessions: SessionSummary[]): SessionSummary[] {
     const runningTurnIds = this.runtimeKernel.runningTurnIds?.bind(this.runtimeKernel);
     if (!runningTurnIds) return sessions;
     const sessionRunEpoch = this.runtimeKernel.sessionRunEpoch?.bind(this.runtimeKernel);
+    const sessionHostGeneration = this.runtimeKernel.sessionHostGeneration?.bind(
+      this.runtimeKernel,
+    );
     return sessions.map((session) => ({
       ...session,
       runningTurnIds: runningTurnIds(session.id),
       ...(sessionRunEpoch ? { runEpoch: sessionRunEpoch(session.id) } : {}),
+      ...(sessionHostGeneration ? { runHostGeneration: sessionHostGeneration() } : {}),
     }));
   }
 

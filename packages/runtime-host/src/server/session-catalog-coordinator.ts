@@ -142,6 +142,7 @@ type SessionConfigurationAuthority = Pick<
   | 'relocateSessionWorkspace'
   | 'runningTurnIds'
   | 'sessionRunEpoch'
+  | 'sessionHostGeneration'
 >;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 
@@ -522,6 +523,7 @@ export class HostSessionCatalogCoordinator {
                 projectCatalogLiveRunState(
                   this.#manager.runningTurnIds(record.header.id),
                   this.#manager.sessionRunEpoch(record.header.id),
+                  this.#manager.sessionHostGeneration(),
                 ),
               )
             : null,
@@ -541,6 +543,7 @@ export class HostSessionCatalogCoordinator {
       projectCatalogLiveRunState(
         this.#manager.runningTurnIds(record.header.id),
         this.#manager.sessionRunEpoch(record.header.id),
+        this.#manager.sessionHostGeneration(),
       ),
     );
   }
@@ -1747,6 +1750,7 @@ function projectSharedSessionCatalogRecord(
 function projectCatalogLiveRunState(
   runningTurnIds: readonly string[],
   runEpoch?: number,
+  hostGeneration?: string,
 ): SessionCatalogLiveRunState | undefined {
   const uniqueRunningTurnIds = [...new Set(runningTurnIds)];
   if (uniqueRunningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS) return undefined;
@@ -1754,6 +1758,7 @@ function projectCatalogLiveRunState(
     schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
     runningTurnIds: uniqueRunningTurnIds,
     runEpoch,
+    ...(hostGeneration === undefined ? {} : { hostGeneration }),
   };
 }
 

@@ -149,6 +149,38 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('accepts an optional host generation in the live run state and rejects a bad one', () => {
+    const withGeneration = {
+      ...projection(),
+      liveRunState: {
+        schemaVersion: 1,
+        runningTurnIds: ['turn-1'],
+        runEpoch: 3,
+        hostGeneration: 'host-gen-1',
+      },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withGeneration), withGeneration);
+
+    // Hosts that do not track the generation keep decoding.
+    const withoutGeneration = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withoutGeneration), withoutGeneration);
+
+    for (const hostGeneration of [42, '', `x`.repeat(129), 'gen\u0000-1']) {
+      assert.throws(
+        () =>
+          decodeSessionCatalogItem({
+            ...projection(),
+            liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], hostGeneration },
+          }),
+        isProtocolError,
+        `hostGeneration ${JSON.stringify(hostGeneration)} must be rejected`,
+      );
+    }
+  });
+
   test('bounds the live running-turn collection explicitly', () => {
     const atLimit = Array.from(
       { length: SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS },

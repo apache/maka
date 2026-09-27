@@ -200,9 +200,18 @@ export interface RuntimeKernelLike {
   /**
    * Bumped every time a run enters or leaves the session's active set, so two
    * same-revision catalog reads can be ordered by their live run state even
-   * when a turn started or ended between them (#5713).
+   * when a turn started or ended between them (#5713). The counter belongs to
+   * this process alone; pair it with `sessionHostGeneration` to tell which
+   * process an observation came from.
    */
   sessionRunEpoch?(sessionId: string): number;
+  /**
+   * Identifies this kernel process's run-epoch generation. Catalog rows
+   * survive a Host restart while the per-process epoch counters restart at
+   * zero, so clients must not order rows across generations by epoch — a
+   * restarted Host supersedes every observation its predecessor published.
+   */
+  sessionHostGeneration?(): string;
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
   requestRunHandoff?(
     sessionId: string,
@@ -413,11 +422,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
-    // The per-session run-epoch counters restart at zero with a fresh process,
-    // while Desktop's catalog rows survive Host restarts. Seeding every epoch
-    // with the construction clock keeps a restarted Host's epochs strictly
-    // greater than anything the previous process produced (#5713 review).
-    this.#sessionRunEpochBase = deps.now?.() ?? 0;
+    // One identity per kernel process: catalog rows survive a Host restart
+    // while the per-session epoch counters restart at zero, so clients pair
+    // the generation with the epoch instead of comparing epochs across
+    // processes (#5713 review).
+    this.#hostGeneration = deps.newId();
     this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
@@ -2204,11 +2213,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return [...new Set(this.activeRunsFor(sessionId).map((run) => run.turnId))];
   }
 
-  readonly #sessionRunEpochBase: number;
   readonly #sessionRunEpochs = new Map<string, number>();
+  readonly #hostGeneration: string;
 
   sessionRunEpoch(sessionId: string): number {
-    return this.#sessionRunEpochBase + (this.#sessionRunEpochs.get(sessionId) ?? 0);
+    return this.#sessionRunEpochs.get(sessionId) ?? 0;
+  }
+
+  sessionHostGeneration(): string {
+    return this.#hostGeneration;
   }
 
   #bumpSessionRunEpoch(sessionId: string): void {

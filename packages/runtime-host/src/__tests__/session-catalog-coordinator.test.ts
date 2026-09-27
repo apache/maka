@@ -315,6 +315,7 @@ test('catalog queries project known-empty and running state from Runtime authori
     schemaVersion: 1,
     runningTurnIds: [],
     runEpoch: 0,
+    hostGeneration: 'test-host-generation',
   });
 
   runningTurnIds = ['turn-live'];
@@ -334,6 +335,7 @@ test('catalog queries project known-empty and running state from Runtime authori
     schemaVersion: 1,
     runningTurnIds: ['turn-live'],
     runEpoch: 0,
+    hostGeneration: 'test-host-generation',
   });
 });
 
@@ -382,6 +384,7 @@ test('catalog queries de-duplicate Runtime live turn ids in stable order', async
     schemaVersion: 1,
     runningTurnIds: ['turn-a', 'turn-b'],
     runEpoch: 0,
+    hostGeneration: 'test-host-generation',
   });
 });
 
@@ -2206,6 +2209,7 @@ function createFixture(
   const manager: ConfigurationAuthority = {
     runningTurnIds: () => [],
     sessionRunEpoch: () => 0,
+    sessionHostGeneration: () => 'test-host-generation',
     transitionSessionConfiguration: async (_sessionId, input) => {
       header = {
         ...header,
