@@ -185,17 +185,11 @@ export interface TransientUserMessageProjection {
 
 export interface ChatViewHandle {
   /**
-   * Re-open the note editor over a staged quote's own excerpt in the
-   * transcript, restoring the selection so the gesture lands where the quote
-   * was taken. Returns false when the excerpt is not on screen — the caller
+   * Re-open the note editor for `pendingQuotes[index]` over its own excerpt.
+   * Returns false when the excerpt is not in this transcript — the caller
    * falls back to editing beside the composer's token.
    */
-  openQuoteAnnotation(request: {
-    index: number;
-    text: string;
-    turnId?: string;
-    comment?: string;
-  }): boolean;
+  openQuoteAnnotation(index: number): boolean;
 }
 
 export function ChatView(props: {
@@ -370,13 +364,11 @@ export function ChatView(props: {
   onPromptSuggestion?(prompt: string): void;
   /**
    * Codex/Cursor-style "quote this": when set, selecting text in the transcript
-   * surfaces a floating action that opens this view's annotation panel over the
-   * selection. Submitting hands the excerpt (+ its turn and any note the user
-   * wrote) to the host, which stages it as a quote chip on the composer;
-   * cancelling hands the excerpt over with no note, so quoting stays a
-   * one-click gesture for anyone who does not want to annotate. Omitted by
-   * hosts that don't compose quotes. Only selections that resolve to a turn are
-   * offered, so `turnId` always arrives.
+   * surfaces 引用 (open a note panel over the selection) and 直接引用 (stage it
+   * with no note). Either hands the excerpt, its turn and any note to the
+   * host, which stages it on the composer. Omitted by hosts that don't compose
+   * quotes. Only selections that resolve to a turn are offered, so `turnId`
+   * always arrives.
    */
   onQuoteSelection?(input: { text: string; turnId: string; comment?: string }): void;
   /**
@@ -666,35 +658,34 @@ export function ChatView(props: {
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
   );
-  // The annotation session in flight — either a fresh note held apart from
-  // the live selection so writing cannot move the quote it belongs to, or an
-  // edit of an already-staged quote opened through the handle. `anchor`
-  // covers the settle window before the restored selection produces a live
-  // quote. The two kinds never coexist, so they share one slot.
-  const [quoteAnnotation, setQuoteAnnotation] = useState<
-    | { kind: 'annotate'; text: string; turnId: string; anchor: { x: number; y: number } }
-    | {
-        kind: 'edit';
-        index: number;
-        text: string;
-        turnId?: string;
-        comment?: string;
-        anchor: { x: number; y: number };
-      }
-    | null
-  >(null);
-  // The turn a note is being written on must survive virtualization: once
-  // the note input takes the DOM selection, selectionEnds no longer keeps
-  // that turn mounted, and unmounting it drops the mark and the panel's
-  // excerpt mid-write.
+  // The note being written: on a fresh excerpt (`annotate`) or on a staged
+  // quote reopened through the handle (`edit`). A staged quote is held by
+  // identity, not index, because removing another token shifts the indexes.
+  // `anchor` places the panel until the excerpt's range has been measured.
+  const [quoteAnnotation, setQuoteAnnotation] = useState<{
+    kind: 'annotate' | 'edit';
+    text: string;
+    turnId: string;
+    anchor: { x: number; y: number };
+  } | null>(null);
+  const annotationIndex = !quoteAnnotation
+    ? -1
+    : quoteAnnotation.kind === 'annotate'
+      ? (props.pendingQuotes?.length ?? 0)
+      : (props.pendingQuotes?.findIndex(
+          (quote) =>
+            !quote.sourceSessionId &&
+            quote.text === quoteAnnotation.text &&
+            quote.sourceTurnId === quoteAnnotation.turnId,
+        ) ?? -1);
+  // Once the note input takes the DOM selection, selectionEnds no longer
+  // keeps this turn mounted; unmounting it would drop the excerpt mid-write.
   {
-    const index = quoteAnnotation?.turnId ? orderedTurnIds.indexOf(quoteAnnotation.turnId) : -1;
+    const index = quoteAnnotation ? orderedTurnIds.indexOf(quoteAnnotation.turnId) : -1;
     if (index !== -1) keepMountedIndexes.add(index);
   }
-  // Every staged quote keeps a numbered pin at its own excerpt's end — the
-  // ordinal the composer list shows for it — plus the excerpt a fresh
-  // annotation is about to take.
-  const [quoteMarks, setQuoteMarks] = useState<{ index: number; x: number; y: number }[]>([]);
+  const [quoteMarks, setQuoteMarks] = useState<QuoteMark[]>([]);
+  const quoteMarkRangesRef = useRef<{ index: number; range: Range }[]>([]);
   const barVisible = selectionQuote !== null && quoteAnnotation === null;
   const panelVisible = quoteAnnotation !== null;
   // The bar and the panel are separate layers on purpose: useLayer maps
@@ -721,7 +712,9 @@ export function ChatView(props: {
     if (barVisible) selectionActionsLayer.show();
     else selectionActionsLayer.hide();
   }, [barVisible, selectionActionsLayer.show, selectionActionsLayer.hide]);
-  useEffect(() => {
+  // Layout, not passive: the panel focuses its note input in its own mount
+  // effect, which only lands once the layer is already showing.
+  useLayoutEffect(() => {
     if (panelVisible) annotationLayer.show();
     else annotationLayer.hide();
   }, [panelVisible, annotationLayer.show, annotationLayer.hide]);
@@ -747,54 +740,33 @@ export function ChatView(props: {
     window.getSelection()?.removeAllRanges();
   }
 
-  const openQuoteAnnotation = useCallback(
-    (request: { index: number; text: string; turnId?: string; comment?: string }): boolean => {
+  useImperativeHandle(props.handleRef, () => ({
+    openQuoteAnnotation(index) {
       const root = scrollRef.current;
+      const quote = props.pendingQuotes?.[index];
+      const range = quoteMarkRangesRef.current.find((mark) => mark.index === index)?.range;
       // Taking over an in-flight annotation would discard the note already
-      // typed into it — decline so the token falls back to its own popover
-      // and the draft survives.
-      if (!root || !request.turnId || quoteAnnotation !== null) return false;
-      const escaped =
-        typeof CSS !== 'undefined' && CSS.escape
-          ? CSS.escape(request.turnId)
-          : request.turnId;
-      const turn = root.querySelector(`[data-turn-id="${escaped}"]`);
-      const range = turn ? findQuoteTextRange(turn, request.text) : null;
-      if (!turn || !range) return false;
-      // The panel anchors to the excerpt: if it has scrolled out of the
-      // transcript's band, bring it back first rather than hanging the panel
-      // off-screen.
-      const before = range.getBoundingClientRect();
+      // typed into it, so the token falls back to its own popover instead.
+      if (!root || !quote?.sourceTurnId || !range || quoteAnnotation !== null) return false;
       const band = root.getBoundingClientRect();
-      if (before.top < band.top || before.bottom > band.bottom) {
-        turn.scrollIntoView({ block: 'center' });
-        // A turn taller than the scrollport can leave the excerpt outside the
-        // band even centered — finish the last stretch against the range.
-        const drift = range.getBoundingClientRect();
-        if (drift.top < band.top || drift.bottom > band.bottom) {
-          root.scrollBy({ top: drift.top + drift.height / 2 - (band.top + band.height / 2) });
-        }
+      let box = range.getBoundingClientRect();
+      if (box.top < band.top || box.bottom > band.bottom) {
+        root.scrollBy({
+          top: box.top + box.height / 2 - (band.top + band.height / 2),
+          behavior: 'instant',
+        });
+        box = range.getBoundingClientRect();
       }
-      const box = range.getBoundingClientRect();
       if (box.width === 0 && box.height === 0) return false;
-      // Handing the found range to the real selection puts the whole existing
-      // machine in charge — highlight, anchor, scroll-follow — instead of a
-      // second positioner shadowing it.
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      // A fresh annotation and an edit never coexist: the token click takes
-      // over whichever excerpt the panel was writing on.
       setQuoteAnnotation({
         kind: 'edit',
-        ...request,
+        text: quote.text,
+        turnId: quote.sourceTurnId,
         anchor: { x: box.left + box.width / 2, y: box.top },
       });
       return true;
     },
-    [scrollRef, quoteAnnotation],
-  );
-  useImperativeHandle(props.handleRef, () => ({ openQuoteAnnotation }), [openQuoteAnnotation]);
+  }));
 
   // Every excerpt carrying a quote — each staged one and the excerpt a fresh
   // annotation is written on — keeps a painted highlight plus a numbered pin
@@ -818,12 +790,11 @@ export function ChatView(props: {
       if (!quote.sourceSessionId) collect(index, quote.sourceTurnId, quote.text);
     });
     if (quoteAnnotation?.kind === 'annotate') {
-      collect(props.pendingQuotes?.length ?? 0, quoteAnnotation.turnId, quoteAnnotation.text);
+      collect(annotationIndex, quoteAnnotation.turnId, quoteAnnotation.text);
     }
     return found;
   };
 
-  const quoteMarkRangesRef = useRef<{ index: number; range: Range }[]>([]);
   useLayoutEffect(() => {
     const found = measureQuoteMarks();
     quoteMarkRangesRef.current = found;
@@ -857,52 +828,19 @@ export function ChatView(props: {
     };
   }, [scrollRef]);
 
-  // A staged quote's note can outlive its slot in the composer list: removing
-  // another token splices the bucket, and sending clears it. Re-resolve the
-  // edited quote by identity so submit cannot write onto a different quote —
-  // or keep the panel alive for one that is gone.
+  // Removing the edited quote's token, or sending, leaves nothing to save to.
   useLayoutEffect(() => {
-    if (quoteAnnotation?.kind !== 'edit' || !props.pendingQuotes) return;
-    const staged = props.pendingQuotes[quoteAnnotation.index];
-    if (
-      staged &&
-      staged.text === quoteAnnotation.text &&
-      staged.sourceTurnId === quoteAnnotation.turnId
-    ) {
-      return;
-    }
-    const relocated = props.pendingQuotes.findIndex(
-      (quote) =>
-        !quote.sourceSessionId &&
-        quote.text === quoteAnnotation.text &&
-        quote.sourceTurnId === quoteAnnotation.turnId,
-    );
-    if (relocated === -1) setQuoteAnnotation(null);
-    else if (relocated !== quoteAnnotation.index) {
-      setQuoteAnnotation({ ...quoteAnnotation, index: relocated });
-    }
+    if (quoteAnnotation?.kind === 'edit' && annotationIndex === -1) setQuoteAnnotation(null);
   });
 
-  // The panel hangs from the live quote once the restored selection settles
-  // into one. When the live quote is gone — the excerpt scrolled out of the
-  // measured band — the mark machinery's range still knows where the excerpt
-  // is, so the panel follows it; the open-time anchor is only the pre-measure
-  // placeholder. A selection resolving to a different excerpt never moves it.
-  const annotationMarkIndex =
-    quoteAnnotation?.kind === 'edit' ? quoteAnnotation.index : props.pendingQuotes?.length ?? -1;
-  const annotationRange = quoteAnnotation
-    ? quoteMarkRangesRef.current.find((mark) => mark.index === annotationMarkIndex)?.range
-    : undefined;
-  const annotationRangeBox = annotationRange?.getBoundingClientRect();
-  const annotationAnchor = quoteAnnotation
-    ? selectionQuote &&
-      selectionQuote.turnId === quoteAnnotation.turnId &&
-      selectionQuote.text === quoteAnnotation.text
-      ? selectionQuote.anchor
-      : annotationRangeBox
-        ? { x: annotationRangeBox.left + annotationRangeBox.width / 2, y: annotationRangeBox.top }
-        : quoteAnnotation.anchor
-    : null;
+  // The panel follows the excerpt's measured range, so it tracks scrolling;
+  // the stored anchor only covers the commit before the range is measured.
+  const annotationBox = quoteMarkRangesRef.current
+    .find((mark) => mark.index === annotationIndex)
+    ?.range.getBoundingClientRect();
+  const annotationAnchor = annotationBox
+    ? { x: annotationBox.left + annotationBox.width / 2, y: annotationBox.top }
+    : quoteAnnotation?.anchor;
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -1166,69 +1104,46 @@ export function ChatView(props: {
             </>
           )}
         </ChatMessageList>
-        {annotationAnchor && panelVisible
+        {quoteAnnotation && annotationAnchor
           ? annotationLayer.render(
-              <div
-                className="maka-quote-annotation-layer"
-                // Keep the live/restored selection alive while the note is
-                // written — except inside the note input, where the default
-                // is what places the caret.
-                onMouseDown={(event) => {
-                  if (!(event.target as HTMLElement).closest('[contenteditable]')) {
-                    event.preventDefault();
+              <div className="maka-quote-annotation-layer">
+                <QuoteCommentPanel
+                  comment={
+                    quoteAnnotation.kind === 'edit'
+                      ? props.pendingQuotes?.[annotationIndex]?.comment
+                      : undefined
                   }
-                }}
-              >
-                {quoteAnnotation?.kind === 'edit' ? (
-                  <QuoteCommentPanel
-                    key={quoteAnnotation.text}
-                    comment={quoteAnnotation.comment}
-                    title={conversationCopy.composer.quoteCommentTitle}
-                    submitLabel={conversationCopy.composer.quoteCommentSave}
-                    skipLabel={conversationCopy.composer.quoteCommentCancel}
-                    onSubmit={(comment) => {
-                      props.onQuoteAnnotationSubmit?.(quoteAnnotation.index, comment);
-                      dismissSelectionActions();
-                    }}
-                    onSkip={dismissSelectionActions}
-                  />
-                ) : quoteAnnotation ? (
-                  <QuoteCommentPanel
-                    title={copy.quoteCommentTitle}
-                    submitLabel={copy.quoteSelection}
-                    skipLabel={copy.quoteCommentSkip}
-                    cancelLabel={conversationCopy.composer.quoteCommentCancel}
-                    onSubmit={(comment) => {
+                  title={conversationCopy.composer.quoteCommentTitle}
+                  submitLabel={
+                    quoteAnnotation.kind === 'edit'
+                      ? conversationCopy.composer.quoteCommentSave
+                      : copy.quoteSelection
+                  }
+                  cancelLabel={conversationCopy.composer.quoteCommentCancel}
+                  onSubmit={(comment) => {
+                    if (quoteAnnotation.kind === 'edit') {
+                      props.onQuoteAnnotationSubmit?.(annotationIndex, comment);
+                    } else {
                       props.onQuoteSelection?.({
                         text: quoteAnnotation.text,
                         turnId: quoteAnnotation.turnId,
                         comment,
                       });
-                      dismissSelectionActions();
-                    }}
-                    onSkip={() => {
-                      props.onQuoteSelection?.({
-                        text: quoteAnnotation.text,
-                        turnId: quoteAnnotation.turnId,
-                      });
-                      dismissSelectionActions();
-                    }}
-                    onCancel={dismissSelectionActions}
-                  />
-                ) : null}
+                    }
+                    dismissSelectionActions();
+                  }}
+                  onCancel={dismissSelectionActions}
+                />
               </div>,
               {
-                // Center-anchored on the excerpt, clamped into the window —
-                // the layer dismisses only through its own buttons, so they
-                // must always stay reachable on screen.
+                // The layer closes only through its own buttons, so the whole
+                // panel is clamped into the window.
                 x: Math.min(
                   Math.max(annotationAnchor.x, QUOTE_ANNOTATION_PANEL_HALF),
                   Math.max(QUOTE_ANNOTATION_PANEL_HALF, window.innerWidth - QUOTE_ANNOTATION_PANEL_HALF),
                 ),
-                // Below the excerpt, clamped so the panel's lower edge stays
-                // inside the window when a selection sits near the bottom.
                 y: Math.min(
-                  annotationAnchor.y + 12,
+                  Math.max(8, annotationAnchor.y + 12),
                   Math.max(8, window.innerHeight - QUOTE_ANNOTATION_PANEL_HEIGHT),
                 ),
                 style: { transform: 'translateX(-50%)' },

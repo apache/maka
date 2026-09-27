@@ -19,7 +19,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  Badge,
   Button as UiButton,
   ChatComposerInput,
   HStack,
@@ -31,36 +30,21 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
 export interface QuoteCommentPanelProps {
-  /** The quote's position in the host's staged list. Shown as a 1-based
-   *  ordinal on the panel's corner when there is no excerpt to mark — the
-   *  transcript instead pins the number at the excerpt's own end. */
-  index?: number;
   /** Note already staged. Empty when the panel gates a fresh quote. */
   comment?: string;
   title: string;
-  /** Commits the quote with the note written below. */
+  /** Commits the note as written; an empty note means no annotation. */
   submitLabel: string;
-  /** Commits the quote with no note, discarding whatever is written below. */
-  skipLabel: string;
-  /** Leaves without committing anything — the fresh-annotation exit the two
-   *  commit buttons cannot offer. */
-  cancelLabel?: string;
+  /** Leaves without committing anything. */
+  cancelLabel: string;
   onSubmit(comment: string): void;
-  onSkip(): void;
-  onCancel?(): void;
+  onCancel(): void;
 }
 
 /**
- * Annotation editor for one quote, rendered by the host wherever the gesture
- * happened: below the selection's action bar in the transcript, or in a
- * popover on the staged token in the composer. Both placements submit the same
- * trimmed note, so a quote carries the same annotation whichever way it was
- * made.
- *
- * The panel is content only — each host owns the surface it floats on (the
- * composer's Popover, the transcript's annotation layer), so the same note
- * reads the same wherever it is written. Its own buttons are the only way
- * out; the submit shortcut lives here and nothing else does.
+ * Note editor for one quote. Content only: the host owns the surface it floats
+ * on (the transcript's annotation layer or the composer's Popover), and those
+ * surfaces don't light-dismiss, so the panel's own buttons are the only exits.
  */
 export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -82,13 +66,6 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
       role="group"
       aria-label={props.title}
     >
-      {props.index !== undefined ? (
-        <Badge
-          variant="info"
-          label={props.index + 1}
-          className="maka-quote-comment-index"
-        />
-      ) : null}
       <ChatComposerInput
         handleRef={inputRef}
         label={copy.quoteCommentLabel}
@@ -101,10 +78,7 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
         onSubmit={submit}
       />
       <HStack gap={2} hAlign="end">
-        {props.cancelLabel ? (
-          <UiButton variant="ghost" size="sm" label={props.cancelLabel} onClick={props.onCancel} />
-        ) : null}
-        <UiButton variant="ghost" size="sm" label={props.skipLabel} onClick={props.onSkip} />
+        <UiButton variant="ghost" size="sm" label={props.cancelLabel} onClick={props.onCancel} />
         <UiButton size="sm" label={props.submitLabel} onClick={submit} />
       </HStack>
     </VStack>

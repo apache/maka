@@ -34,66 +34,52 @@ function updateQuoteCommentIn(bucket: QuoteRef[], index: number, comment: string
   bucket[index] = comment ? { ...rest, comment } : rest;
 }
 
-export interface StageQuoteInput {
-  text: string;
-  turnId?: string;
-  label?: string;
-  comment?: string;
-  sourceSessionId?: string;
-  sourceSessionName?: string;
-  sourceCapturedAt?: number;
-  sourceTruncated?: boolean;
-}
-
-export function stageQuoteInBucket(bucket: QuoteRef[], input: StageQuoteInput): void {
-  const text = input.text.slice(0, MAX_QUOTE_CHARS).trim();
-  if (!text) return;
-  const comment = input.comment?.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
-  // (text, sourceTurnId) is the identity the transcript's marks and the
-  // edit re-resolve already assume — a byte-identical second stage can
-  // only steal the first quote's pin and writes, so it folds into the
-  // existing one instead of duplicating.
-  const existing = bucket.findIndex(
-    (quote) => quote.text === text && quote.sourceTurnId === input.turnId,
-  );
-  if (existing !== -1) {
-    if (comment) updateQuoteCommentIn(bucket, existing, comment);
-    return;
-  }
-  const quote: QuoteRef = {
-    text,
-    ...(input.label ? { label: input.label } : {}),
-    ...(comment ? { comment } : {}),
-    ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
-    ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
-    ...(input.sourceSessionName ? { sourceSessionName: input.sourceSessionName } : {}),
-    ...(input.sourceCapturedAt !== undefined ? { sourceCapturedAt: input.sourceCapturedAt } : {}),
-    ...(input.sourceTruncated !== undefined ? { sourceTruncated: input.sourceTruncated } : {}),
-  };
-  bucket.push(quote);
-}
-
 export function useComposerQuotes(options: { readonly draftKey: string }) {
-  // React state triggers rendering, while each bucket is kept mutable so a
-  // send callback from the current render observes a quote selected in the
-  // same tick as the snapshot read. This avoids making AppShell reach into a
-  // second quote getter solely to bridge React's commit timing.
+  // Each draft's bucket is mutated in place so a send in the same tick as a
+  // staging call already sees the quote; the version bump only re-renders.
+  // Consumers must read the contents, never depend on the array identity.
   const [, bumpVersion] = useState(0);
   const pendingByKeyRef = useRef<PendingQuotes>({});
   const bucket = pendingByKeyRef.current[options.draftKey] ??
     (pendingByKeyRef.current[options.draftKey] = []);
-  // This is intentionally a live bucket so a same-tick send can observe a
-  // snapshot selected before React commits the state update. Consumers must
-  // read its contents, not use the array identity as a useMemo/useEffect
-  // dependency; the identity is stable while the bucket is mutated in place.
-  const pendingQuotes = bucket;
 
   const publish = useCallback((): void => {
     bumpVersion((version) => version + 1);
   }, []);
 
-  const addQuote = useCallback((input: StageQuoteInput): void => {
-    stageQuoteInBucket(bucket, input);
+  const addQuote = useCallback((input: {
+    text: string;
+    turnId?: string;
+    label?: string;
+    comment?: string;
+    sourceSessionId?: string;
+    sourceSessionName?: string;
+    sourceCapturedAt?: number;
+    sourceTruncated?: boolean;
+  }): void => {
+    const text = input.text.slice(0, MAX_QUOTE_CHARS).trim();
+    if (!text) return;
+    const comment = input.comment?.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
+    // (text, sourceTurnId) is the identity the transcript's marks and editor
+    // resolve a staged quote by, so staging the same excerpt again only
+    // updates its note.
+    const existing = bucket.findIndex(
+      (quote) => quote.text === text && quote.sourceTurnId === input.turnId,
+    );
+    if (existing !== -1) {
+      if (comment) updateQuoteCommentIn(bucket, existing, comment);
+    } else {
+      bucket.push({
+        text,
+        ...(input.label ? { label: input.label } : {}),
+        ...(comment ? { comment } : {}),
+        ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
+        ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
+        ...(input.sourceSessionName ? { sourceSessionName: input.sourceSessionName } : {}),
+        ...(input.sourceCapturedAt !== undefined ? { sourceCapturedAt: input.sourceCapturedAt } : {}),
+        ...(input.sourceTruncated !== undefined ? { sourceTruncated: input.sourceTruncated } : {}),
+      });
+    }
     publish();
   }, [bucket, publish]);
 
@@ -112,29 +98,17 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [bucket, publish]);
 
-  // Bridge for the composer's annotate action: opening the editor over the
-  // transcript excerpt only works when the turn is still mounted, so the
-  // imperative handle answers synchronously and the token falls back to its
-  // own popover on a miss. The ref is filled by ChatView's handleRef below.
+  // The composer's token asks the transcript to open the note editor over the
+  // excerpt; a synchronous false means it falls back to its own popover.
   const chatViewRef = useRef<ChatViewHandle>(null);
-  const tryAnnotateQuote = (index: number): boolean => {
-    const quote = bucket[index];
-    return (
-      quote !== undefined &&
-      (chatViewRef.current?.openQuoteAnnotation({
-        index,
-        text: quote.text,
-        turnId: quote.sourceTurnId,
-        comment: quote.comment,
-      }) ?? false)
-    );
-  };
+  const tryAnnotateQuote = (index: number): boolean =>
+    chatViewRef.current?.openQuoteAnnotation(index) ?? false;
 
   const quotesForSend = (): QuoteRef[] | undefined =>
     bucket.length ? bucket : undefined;
 
   return {
-    pendingQuotes,
+    pendingQuotes: bucket,
     hasStagedQuotes: bucket.length > 0,
     addQuote,
     updateQuoteComment,
@@ -142,7 +116,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     clearQuotes,
     quotesForSend,
     composerQuoteProps: (canStage: boolean) => ({
-      pendingQuotes,
+      pendingQuotes: bucket,
       onRemoveQuote: removeQuote,
       onEditQuoteComment: canStage ? updateQuoteComment : undefined,
       onAnnotateQuote: canStage ? tryAnnotateQuote : undefined,
@@ -150,7 +124,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     }),
     chatViewQuoteProps: {
       handleRef: chatViewRef,
-      pendingQuotes,
+      pendingQuotes: bucket,
       onQuoteAnnotationSubmit: updateQuoteComment,
     },
   };

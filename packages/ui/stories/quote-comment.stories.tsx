@@ -167,18 +167,7 @@ function TranscriptQuoteLoop(props: {
           pendingQuotes={quotes}
           onRemoveQuote={(index) => setQuotes((current) => current.filter((_, i) => i !== index))}
           onEditQuoteComment={(index, comment) => setQuotes((current) => applyComment(current, index, comment))}
-          onAnnotateQuote={(index) => {
-            const quote = quotes[index];
-            return (
-              quote !== undefined &&
-              (chatViewRef.current?.openQuoteAnnotation({
-                index,
-                text: quote.text,
-                turnId: quote.sourceTurnId,
-                comment: quote.comment,
-              }) ?? false)
-            );
-          }}
+          onAnnotateQuote={(index) => chatViewRef.current?.openQuoteAnnotation(index) ?? false}
         />
       }
     >
@@ -260,13 +249,10 @@ function panelButton(panel: HTMLElement, label: string): HTMLElement {
   return button as HTMLElement;
 }
 
-function typeNote(panel: HTMLElement, note: string) {
-  const field = panel.querySelector('[contenteditable="true"]');
+async function typeNote(panel: HTMLElement, note: string) {
+  const field = panel.querySelector<HTMLElement>('[contenteditable="true"]');
   expect(field).toBeTruthy();
-  // The layer's mousedown preventDefault keeps userEvent's focus-driven
-  // typing from reaching the field; drive the editable's input directly.
-  field!.textContent = note;
-  field!.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  await userEvent.type(field!, note);
 }
 
 /** Ordinals pinned at their excerpts' ends: every staged quote keeps one, and
@@ -373,7 +359,7 @@ export const TranscriptQuoteGesture: Story = {
     await selectExcerpt('turn-3', ASSISTANT_REPLY);
     await userEvent.click(await quoteActionButton());
     const panel = await visiblePanel();
-    typeNote(panel, '按 debug 技能核对限流规则，再判断是否能降速继续。');
+    await typeNote(panel, '按 debug 技能核对限流规则，再判断是否能降速继续。');
     await userEvent.click(panelButton(panel, '引用'));
     const token = await waitFor(() => {
       const el = document.querySelector('.maka-composer-quote-token');
@@ -456,8 +442,9 @@ export const TranscriptTwoAnnotations: Story = {
     await userEvent.click(await quoteActionButton());
     const firstPanel = await visiblePanel();
     await expectOrdinal('1', 1);
-    typeNote(firstPanel, '限流这段先核');
-    await userEvent.click(panelButton(firstPanel, '引用'));
+    await typeNote(firstPanel, '限流这段先核');
+    // Enter submits the note like the panel's 引用 button.
+    await userEvent.keyboard('{Enter}');
     // Staging the first token re-renders the transcript (pendingQuotes); the
     // submitted excerpt keeps its highlight and pin instead of losing the
     // mark with the panel. Select the next excerpt only once that churn has
@@ -490,6 +477,7 @@ export const TranscriptTwoAnnotations: Story = {
     await expectOrdinal('1', 2);
     expect(firstEdit.closest('.maka-quote-annotation-layer')).toBeTruthy();
     expect(firstEdit.querySelector('[contenteditable="true"]')?.textContent).toBe('限流这段先核');
+    await waitFor(() => expect(firstEdit.contains(document.activeElement)).toBe(true));
     await userEvent.click(panelButton(firstEdit, '取消'));
     await userEvent.click(tokens[1]);
     const secondEdit = await visiblePanel();

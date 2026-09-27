@@ -39,10 +39,8 @@
   animation: maka-quote-actions-in var(--duration-quick) var(--ease-out-strong);
 }
 
-/* The annotation panel that replaces the action bar once "引用" is chosen.
-   useLayer positions the overlay but paints nothing, so this wrapper supplies
-   the floating recipe (DESIGN.md §5): the composer's Popover owns the same
-   surface on its side. */
+/* useLayer positions the note panel but paints nothing; this supplies the
+   floating surface (DESIGN.md §5) the composer's Popover draws on its side. */
 .maka-quote-annotation-layer {
   display: block;
   max-width: min(344px, calc(100vw - 16px));

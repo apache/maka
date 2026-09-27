@@ -229,18 +229,16 @@ describe('permission response IPC boundary', () => {
           },
         ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-        quotes: [
-          {
-            text: 'the excerpt',
-            label: 'Assistant',
-            comment: 'why this matters',
-            sourceTurnId: 'turn-9',
-            sourceSessionId: 'source-session',
-            sourceSessionName: 'Research',
-            sourceCapturedAt: 123,
-            sourceTruncated: false,
-          },
-        ],
+        quotes: [{
+          text: 'the excerpt',
+          label: 'Assistant',
+          comment: 'why this matters',
+          sourceTurnId: 'turn-9',
+          sourceSessionId: 'source-session',
+          sourceSessionName: 'Research',
+          sourceCapturedAt: 123,
+          sourceTruncated: false,
+        }],
         workspaceFileReferences: [
           {
             value: '@packages/ui/src/chat turn.tsx',

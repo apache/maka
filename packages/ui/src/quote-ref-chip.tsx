@@ -113,11 +113,9 @@ export function QuoteRefChip(props: { quote: QuoteRef }) {
         className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
         aria-hidden="true"
       />
-      {/* Marks that the excerpt carries a note. The note itself lives in the
-          hover card and the model-facing content, not in the chip's own line. */}
       {props.quote.comment ? (
         <MessageSquareQuote
-          className={cn('maka-quote-chip-comment-icon', expanded && 'maka-quote-chip-icon-expanded')}
+          className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
           aria-hidden="true"
         />
       ) : null}

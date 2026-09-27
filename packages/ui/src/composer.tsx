@@ -1739,30 +1739,12 @@ export const Composer = forwardRef<
     caption: string;
   } | null>(null);
   const [attachmentLightboxOpen, setAttachmentLightboxOpen] = useState(false);
-  /** Which staged quote has its annotation panel open, by staging index. */
-  const [editingQuoteIndex, setEditingQuoteIndex] = useState<number | null>(null);
-  /** The staged quote whose note is being edited over the transcript excerpt —
-   *  its hover card stays down until the pointer leaves, or the token and the
-   *  panel would both describe the same quote at once. */
-  const [annotatedQuoteIndex, setAnnotatedQuoteIndex] = useState<number | null>(null);
-  // The pendingQuotes bucket is mutated in place, so its identity cannot
-  // signal a splice — the staged quotes' own identities can. Either index
-  // state left pointing past a removal or a send would reopen a panel or a
-  // hover suppression onto whatever now occupies that slot. The ref holds a
-  // snapshot: storing the live array would compare it against itself.
-  const stagedQuotesRef = useRef<readonly QuoteRef[]>([]);
-  useEffect(() => {
-    const previous = stagedQuotesRef.current;
-    const next = props.pendingQuotes ?? [];
-    stagedQuotesRef.current = next.slice();
-    const spliced =
-      previous.length !== next.length ||
-      previous.some((quote, index) => quote !== next[index]);
-    if (spliced) {
-      setEditingQuoteIndex(null);
-      setAnnotatedQuoteIndex(null);
-    }
-  });
+  // Staged quotes are held by identity, not index: removing a token or sending
+  // shifts the indexes, and a stale index would reopen onto another quote.
+  const [editingQuote, setEditingQuote] = useState<QuoteRef | null>(null);
+  // The quote whose note is open over the transcript keeps its hover card
+  // down, or the card and the panel would describe it at once.
+  const [annotatedQuote, setAnnotatedQuote] = useState<QuoteRef | null>(null);
   useEffect(() => {
     if (attachmentLightboxOpen || !attachmentLightbox) return;
     // Unmount one commit AFTER the closed render, never in it: child effects
@@ -2043,45 +2025,36 @@ export const Composer = forwardRef<
                     quote.label?.trim() ||
                     stripQuoteHeadingMarkers(quote.text.slice(0, 48)) ||
                     copy.pastedQuoteLabel;
-                  // Without an annotation seam the token is display-only, so it
-                  // stays the plain removable chip it has always been.
+                  const key = `${quote.sourceTurnId ?? 'quote'}-${index}`;
+                  const onRemove = props.onRemoveQuote
+                    ? () => props.onRemoveQuote?.(index)
+                    : undefined;
+                  // Without an annotation seam the token is display-only.
                   if (!props.onEditQuoteComment) {
-                    return (
-                      <Token
-                        key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
-                        size="sm"
-                        label={label}
-                        onRemove={
-                          props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined
-                        }
-                      />
-                    );
+                    return <Token key={key} size="sm" label={label} onRemove={onRemove} />;
                   }
-                  const editing = editingQuoteIndex === index;
+                  const editing = editingQuote === quote;
+                  const cardSuppressed = editing || annotatedQuote === quote;
                   return (
                     <Popover
-                      key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
+                      key={key}
                       isOpen={editing}
-                      onOpenChange={(open) => setEditingQuoteIndex(open ? index : null)}
+                      onOpenChange={(open) => setEditingQuote(open ? quote : null)}
                       label={copy.quoteCommentTitle}
                       placement="above"
-                      // Same rule as the transcript's layer: only the panel's
-                      // own two buttons close it, so a stray click or Escape
-                      // cannot drop a half-written note.
                       hasLightDismiss={false}
                       hasEscapeDismiss={false}
                       content={
                         <QuoteCommentPanel
-                          index={index}
                           comment={quote.comment}
                           title={copy.quoteCommentTitle}
                           submitLabel={copy.quoteCommentSave}
-                          skipLabel={copy.quoteCommentCancel}
+                          cancelLabel={copy.quoteCommentCancel}
                           onSubmit={(comment) => {
                             props.onEditQuoteComment?.(index, comment);
-                            setEditingQuoteIndex(null);
+                            setEditingQuote(null);
                           }}
-                          onSkip={() => setEditingQuoteIndex(null)}
+                          onCancel={() => setEditingQuote(null)}
                         />
                       }
                     >
@@ -2089,13 +2062,11 @@ export const Composer = forwardRef<
                         <HoverCard
                           content={<QuoteHoverCardContent quote={quote} />}
                           focusTrigger="always"
-                          // isEnabled only gates new triggers: a click that
-                          // opens the panel would still let a pending hover
-                          // delay fire the card over it. The controlled
-                          // isOpen=false cancels that show and any card
-                          // already up, then hands control back on close.
-                          isEnabled={!editing && annotatedQuoteIndex !== index}
-                          isOpen={editing || annotatedQuoteIndex === index ? false : undefined}
+                          // isEnabled only gates new triggers; the controlled
+                          // isOpen=false also cancels a pending hover delay
+                          // that would otherwise fire the card over the panel.
+                          isEnabled={!cardSuppressed}
+                          isOpen={cardSuppressed ? false : undefined}
                         >
                           <Token
                             ref={trigger.ref}
@@ -2104,32 +2075,17 @@ export const Composer = forwardRef<
                             label={label}
                             endContent={
                               quote.comment ? (
-                                <MessageSquareQuote
-                                  className="maka-composer-quote-comment-icon"
-                                  aria-hidden="true"
-                                />
+                                <MessageSquareQuote className="maka-quote-chip-icon" aria-hidden="true" />
                               ) : undefined
                             }
-                            onRemove={
-                              props.onRemoveQuote
-                                ? () => {
-                                    // The panel is anchored to this token's
-                                    // position; removing it closes the panel
-                                    // rather than leaving it open over a quote
-                                    // that shifted into this index.
-                                    setEditingQuoteIndex(null);
-                                    props.onRemoveQuote?.(index);
-                                  }
-                                : undefined
-                            }
-                            onPointerLeave={() => setAnnotatedQuoteIndex(null)}
+                            onRemove={onRemove}
+                            onPointerLeave={() => setAnnotatedQuote(null)}
                             onClick={(event) => {
-                              // The transcript owns the edit when it can still
-                              // point at the excerpt; its panel anchors to the
-                              // quote's own text, not this token.
+                              // The transcript owns the edit while it can still
+                              // point at the excerpt; otherwise open the popover.
                               if (props.onAnnotateQuote?.(index)) {
-                                setAnnotatedQuoteIndex(index);
-                                setEditingQuoteIndex(null);
+                                setAnnotatedQuote(quote);
+                                setEditingQuote(null);
                                 return;
                               }
                               trigger.onClick?.(event);
