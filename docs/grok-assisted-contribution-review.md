@@ -181,6 +181,20 @@ identical revert/reapply. They are reviewed, **not** counted as replacements:
   root barrel import would break typecheck; an identical import fix is not an
   independent implementation.
 
+Two mixed/uncertain entries require attribution decisions, not a wholesale
+rollback:
+
+- #3364's original Grok-tagged commit (`e65809320`) added only the ASF header
+  to `packages/core/src/__tests__/relative-time.test.ts`. The relative-time
+  behavior and tests came from Maka-tagged commits, with a later untagged
+  follow-up. Keep the required license header and do not revert the formatter
+  under the squash commit's aggregate Grok trailer.
+- #3123's three original PR commits and PR description do not disclose Grok,
+  despite the squash commit's trailer. Its only changed file,
+  `apps/desktop/e2e/prompt-rail.spec.ts`, was deleted by #4741. The original
+  provenance is unresolved; there is no surviving test file to revert and
+  reimplement mechanically.
+
 #3008 is only partly recognizable in today's Eval egress filter. Its CONNECT
 host classification remains, but #3017 subsequently replaced the raw-TCP
 layer-closing path, added HTTP/TLS prefix handling, and introduced live
@@ -209,8 +223,8 @@ acceptability of any remediation need Apache project/legal review.
 - [x] Triage all 25 original changes by path, size, and current path presence.
 - [x] Read original commit trailers and compare branch history with the merged
       diff for the 25 candidate PRs.
-- [ ] Trace current lines, behaviors, and tests for 18 further PRs (three
-      no-code dispositions above are already traced).
+- [ ] Trace current lines, behaviors, and tests for 16 further PRs (three
+      no-code dispositions and two mixed/uncertain entries above are traced).
 - [ ] Record which changes are still material, superseded, or mixed with other work.
 - [ ] Decide the appropriate action with the project and ASF legal discussion.
 - [x] Implement and locally verify #3082, #5223, #3070, and #3099 in reviewable slices.
