@@ -82,14 +82,19 @@ import {
 } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { LogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
-import { QueuedMutationExecutor, type QueuedMutationKind } from './queued-mutation-executor.js';
+import {
+  QueuedMutationExecutor,
+  type QueuedMutationKind,
+  type QueuedMutationRequest,
+} from './queued-mutation-executor.js';
 import {
   commitFollowupPromotion,
   commitQueueReorder,
-  hasInFlightEntry,
   locateQueuedEntry,
   planQueueReorder,
   removeQueuedEntry,
+  selectQueuedEntry,
+  type QueuedEntrySelection,
 } from './message-queue-state.js';
 
 type MessageOperationErrorCode =
@@ -402,11 +407,46 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     'turn.message.query': (input) => this.queryMessages(input),
     'turn.message.execution.query': (input) => this.queryMessageExecutions(input),
     'turn.message.submit': (input, context) => this.submit(input, context),
-    'queue.retract': (input) => this.retract(input),
-    'queue.entry.retract': (input) => this.retractQueuedEntry(input),
-    'queue.entry.promote': (input) => this.promoteQueuedEntry(input),
-    'queue.entry.update': (input) => this.updateQueuedEntry(input),
-    'queue.entries.reorder': (input) => this.reorderQueuedEntries(input),
+    'queue.retract': (input) => this.#runQueueMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.retract'],
+      kind: 'retract',
+      id: input.retractId,
+      verb: 'Retract',
+      input,
+      execute: () => this.#retractAdmitted(input),
+    }),
+    'queue.entry.retract': (input) => this.#runQueueMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entry.retract'],
+      kind: 'retract_entry',
+      id: input.retractId,
+      verb: 'Retract entry',
+      input,
+      execute: () => this.#retractQueuedEntryAdmitted(input),
+    }),
+    'queue.entry.promote': (input) => this.#runQueueMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entry.promote'],
+      kind: 'promote',
+      id: input.promoteId,
+      verb: 'Promote entry',
+      input,
+      execute: () => this.#promoteQueuedEntryAdmitted(input),
+    }),
+    'queue.entry.update': (input) => this.#runQueueMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entry.update'],
+      kind: 'update_entry',
+      id: input.updateId,
+      verb: 'Update entry',
+      input,
+      execute: () => this.#updateQueuedEntryAdmitted(input),
+    }),
+    'queue.entries.reorder': (input) => this.#runQueueMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entries.reorder'],
+      kind: 'reorder',
+      id: input.reorderId,
+      verb: 'Reorder entries',
+      input,
+      execute: () => this.#reorderQueuedEntriesAdmitted(input),
+    }),
     'turn.interrupt': (input) => this.interrupt(input),
   };
 
@@ -1591,15 +1631,12 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       : this.#sessionAdmission.run(input.sessionId, execute);
   }
 
-  private retract(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
+  #runQueueMutation<I extends { originHostEpoch: string; sessionId: string }, R>(
+    request: Omit<QueuedMutationRequest<I, R>, 'payloadIdentity'>,
+  ): Promise<MessageOutcome<R>> {
     return this.#queueMutations.run({
-      spec: MESSAGE_OPERATION_SPECS['queue.retract'],
-      kind: 'retract',
-      id: input.retractId,
-      verb: 'Retract',
-      input,
-      payloadIdentity: completedPayloadIdentity('retract', input),
-      execute: () => this.#retractAdmitted(input),
+      ...request,
+      payloadIdentity: completedPayloadIdentity(request.kind, request.input),
     });
   }
 
@@ -1637,88 +1674,24 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     return success(result);
   }
 
-  private retractQueuedEntry(
-    input: QueueEntryRetractInput,
-  ): Promise<MessageOutcome<QueueMutationResult>> {
-    return this.#queueMutations.run({
-      spec: MESSAGE_OPERATION_SPECS['queue.entry.retract'],
-      kind: 'retract_entry',
-      id: input.retractId,
-      verb: 'Retract',
-      input,
-      payloadIdentity: completedPayloadIdentity('retract_entry', input),
-      execute: () => this.#retractQueuedEntryAdmitted(input),
-    });
-  }
-
-  private promoteQueuedEntry(
-    input: QueueEntryPromoteInput,
-  ): Promise<MessageOutcome<QueueMutationResult>> {
-    return this.#queueMutations.run({
-      spec: MESSAGE_OPERATION_SPECS['queue.entry.promote'],
-      kind: 'promote',
-      id: input.promoteId,
-      verb: 'Promote',
-      input,
-      payloadIdentity: completedPayloadIdentity('promote', input),
-      execute: () => this.#promoteQueuedEntryAdmitted(input),
-    });
-  }
-
-  private updateQueuedEntry(
-    input: QueueEntryUpdateInput,
-  ): Promise<MessageOutcome<QueueMutationResult>> {
-    return this.#queueMutations.run({
-      spec: MESSAGE_OPERATION_SPECS['queue.entry.update'],
-      kind: 'update_entry',
-      id: input.updateId,
-      verb: 'Update',
-      input,
-      payloadIdentity: completedPayloadIdentity('update_entry', input),
-      execute: () => this.#updateQueuedEntryAdmitted(input),
-    });
-  }
-
-  private reorderQueuedEntries(
-    input: QueueEntriesReorderInput,
-  ): Promise<MessageOutcome<QueueMutationResult>> {
-    return this.#queueMutations.run({
-      spec: MESSAGE_OPERATION_SPECS['queue.entries.reorder'],
-      kind: 'reorder',
-      id: input.reorderId,
-      verb: 'Reorder',
-      input,
-      payloadIdentity: completedPayloadIdentity('reorder', input),
-      execute: () => this.#reorderQueuedEntriesAdmitted(input),
-    });
-  }
-
   async #retractQueuedEntryAdmitted(
     input: QueueEntryRetractInput,
   ): Promise<MessageOutcome<QueueMutationResult>> {
     const admitted = await this.#openQueueMutation(input.sessionId);
     if (!admitted.ok) return admitted;
     const state = admitted.result;
-    const queued = locateQueuedEntry(state, input.entryId);
-    if (!queued) {
-      if (hasInFlightEntry(state, input.entryId)) {
-        return failure('operation_conflict', 'Message entry is already being delivered');
-      }
-      return failure('not_found', 'Message queue entry does not exist');
-    }
-    await this.#admissions.cancelMessageAdmissions(input.sessionId, [queued.entry.messageId]);
-    this.#releaseEntry(removeQueuedEntry(state, queued));
+    const selected = selectQueuedEntry(state, input.entryId);
+    if (selected.kind !== 'found') return queueEntrySelectionFailure(selected);
+    await this.#admissions.cancelMessageAdmissions(input.sessionId, [selected.location.entry.messageId]);
+    this.#releaseEntry(removeQueuedEntry(state, selected.location));
     this.#mutated(state);
     this.#maybeReclaim(input.sessionId, state);
-    const result = { queueRevision: state.revision };
-    this.#rememberCompletedOperation(
+    return this.#completeQueueEntryMutation(
       'retract_entry',
-      input.sessionId,
+      state,
       input.retractId,
       input,
-      result,
     );
-    return success(result);
   }
 
   async #promoteQueuedEntryAdmitted(
@@ -1742,17 +1715,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         'Root state does not match message reservation',
       );
     }
-    const queued = locateQueuedEntry(state, input.entryId);
-    if (!queued || queued.lane !== 'followup') {
-      if (queued?.lane === 'steering') {
-        return failure('operation_conflict', 'Message entry already steers the active Turn');
-      }
-      if (hasInFlightEntry(state, input.entryId)) {
-        return failure('operation_conflict', 'Message entry is already being delivered');
-      }
-      return failure('not_found', 'Message queue entry does not exist');
+    const selected = selectQueuedEntry(state, input.entryId, 'followup');
+    if (selected.kind !== 'found') {
+      return queueEntrySelectionFailure(selected, 'Message entry already steers the active Turn');
     }
-    const entry = queued.entry;
+    const entry = selected.location.entry;
     const promotedSource = {
       ...sourceFromEntry(entry),
       placement: 'current_turn',
@@ -1788,15 +1755,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       skillInvocation: entry.skillInvocation,
       admittedAt: entry.admittedAt,
     });
-    commitFollowupPromotion(state, queued, {
+    commitFollowupPromotion(state, selected.location, {
       ...entry,
       placement: 'current_turn',
       disposition: 'steering',
     });
     this.#mutated(state);
-    const result = { queueRevision: state.revision };
-    this.#rememberCompletedOperation('promote', input.sessionId, input.promoteId, input, result);
-    return success(result);
+    return this.#completeQueueEntryMutation('promote', state, input.promoteId, input);
   }
 
   async #updateQueuedEntryAdmitted(
@@ -1805,13 +1770,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const admitted = await this.#openQueueMutation(input.sessionId);
     if (!admitted.ok) return admitted;
     const state = admitted.result;
-    const queued = locateQueuedEntry(state, input.entryId);
-    if (!queued) {
-      if (hasInFlightEntry(state, input.entryId)) {
-        return failure('operation_conflict', 'Message entry is already being delivered');
-      }
-      return failure('not_found', 'Message queue entry does not exist');
-    }
+    const selected = selectQueuedEntry(state, input.entryId);
+    if (selected.kind !== 'found') return queueEntrySelectionFailure(selected);
+    const queued = selected.location;
     if (state.revision !== input.expectedQueueRevision) {
       return failure('operation_conflict', 'Message queue changed since editing began');
     }
@@ -1899,15 +1860,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     queued.entry.submittedContentDigest = messageContentDigest(content);
     queued.entry.skillInvocation = prepared.skillInvocation;
     this.#mutated(state);
-    const result = { queueRevision: state.revision };
-    this.#rememberCompletedOperation(
-      'update_entry',
-      input.sessionId,
-      input.updateId,
-      input,
-      result,
-    );
-    return success(result);
+    return this.#completeQueueEntryMutation('update_entry', state, input.updateId, input);
   }
 
   async #reorderQueuedEntriesAdmitted(
@@ -1932,8 +1885,17 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       commitQueueReorder(state, reorder.lane, reorder.entries);
       this.#mutated(state);
     }
-    const result = { queueRevision: state.revision };
-    this.#rememberCompletedOperation('reorder', input.sessionId, input.reorderId, input, result);
+    return this.#completeQueueEntryMutation('reorder', state, input.reorderId, input);
+  }
+
+  #completeQueueEntryMutation(
+    kind: Extract<QueuedMutationKind, 'retract_entry' | 'promote' | 'update_entry' | 'reorder'>,
+    state: SessionState,
+    operationId: string,
+    input: object,
+  ): MessageOutcome<QueueMutationResult> {
+    const result: QueueMutationResult = { queueRevision: state.revision };
+    this.#rememberCompletedOperation(kind, state.sessionId, operationId, input, result);
     return success(result);
   }
 
@@ -2510,6 +2472,19 @@ function failure(
   readonly error: { readonly code: MessageOperationErrorCode; readonly message: string };
 } {
   return { ok: false, error: { code, message } };
+}
+
+function queueEntrySelectionFailure(
+  selection: Exclude<QueuedEntrySelection<LiveEntry>, { readonly kind: 'found' }>,
+  wrongLaneMessage = 'Message queue entry is not in the required lane',
+): MessageOutcome<never> {
+  if (selection.kind === 'in_flight') {
+    return failure('operation_conflict', 'Message entry is already being delivered');
+  }
+  if (selection.kind === 'wrong_lane') {
+    return failure('operation_conflict', wrongLaneMessage);
+  }
+  return failure('not_found', 'Message queue entry does not exist');
 }
 
 function operationKey(sessionId: string, operationId: string): string {

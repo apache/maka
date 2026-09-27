@@ -36,6 +36,12 @@ export interface QueuedEntryLocation<Entry extends QueueEntryIdentity> {
   readonly entry: Entry;
 }
 
+export type QueuedEntrySelection<Entry extends QueueEntryIdentity> =
+  | { readonly kind: 'found'; readonly location: QueuedEntryLocation<Entry> }
+  | { readonly kind: 'in_flight' }
+  | { readonly kind: 'wrong_lane'; readonly lane: QueuedEntryLocation<Entry>['lane'] }
+  | { readonly kind: 'missing' };
+
 export function locateQueuedEntry<Entry extends QueueEntryIdentity>(
   state: QueueCollections<Entry>,
   entryId: string,
@@ -53,6 +59,19 @@ export function hasInFlightEntry<Entry extends QueueEntryIdentity>(
   entryId: string,
 ): boolean {
   return [...state.inFlight.values()].some((entry) => entry.entryId === entryId);
+}
+
+export function selectQueuedEntry<Entry extends QueueEntryIdentity>(
+  state: QueueCollections<Entry>,
+  entryId: string,
+  requiredLane?: QueuedEntryLocation<Entry>['lane'],
+): QueuedEntrySelection<Entry> {
+  const location = locateQueuedEntry(state, entryId);
+  if (location && (!requiredLane || location.lane === requiredLane)) {
+    return { kind: 'found', location };
+  }
+  if (location) return { kind: 'wrong_lane', lane: location.lane };
+  return hasInFlightEntry(state, entryId) ? { kind: 'in_flight' } : { kind: 'missing' };
 }
 
 export function removeQueuedEntry<Entry extends QueueEntryIdentity>(
