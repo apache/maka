@@ -32,6 +32,7 @@ import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
   isRetiredProvider,
+  providerAcceptsOutputTokenLimit,
   providerFallbackModelIds,
 } from '../provider-registry.js';
 import { buildConnectionModelCatalogEntries } from '../model-catalog.js';
@@ -329,5 +330,17 @@ describe('provider catalog contract — fallback lifecycle', () => {
       }
     }
     assert.deepEqual(regressed, []);
+  });
+});
+
+describe('providerAcceptsOutputTokenLimit', () => {
+  it('refuses an output limit only where the backend rejects max_output_tokens', () => {
+    // The ChatGPT Codex backend answers max_output_tokens with HTTP 400.
+    assert.equal(providerAcceptsOutputTokenLimit('openai-codex'), false);
+    for (const providerType of ['openai', 'anthropic', 'google', 'kimi-coding-plan'] as const) {
+      assert.equal(providerAcceptsOutputTokenLimit(providerType), true, providerType);
+    }
+    // An unknown provider keeps today's behaviour.
+    assert.equal(providerAcceptsOutputTokenLimit('not-a-provider'), true);
   });
 });

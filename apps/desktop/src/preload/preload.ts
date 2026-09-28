@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { McpIpcResult } from '../shared/mcp-ipc.js';
 import { invokeWhenReady, sendWhenReady } from './bootstrap-invoke.js';
 import { createClientPluginRouting } from './client-plugin-routing.js';
 import type {
@@ -30,14 +31,14 @@ import type {
   WorkHubPrepareAttachmentsResult,
 } from '../shared/workhub-conversation.js';
 import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { workHubControlBridge } from './workhub-control.js';
 import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
 } from '@maka/runtime-host/profile-kind';
-import { AttachmentIngestBlockedError } from '@maka/core/attachments';
+import { AttachmentIngestBlockedError, MAX_ATTACHMENT_DROP_COUNT } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { createRecallSearchClient } from './multi-host-recall-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
@@ -2347,20 +2348,6 @@ const makaBridge = {
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:promoteQueueEntry', sessionId, entryId);
     },
-    updateQueueEntry(
-      sessionId: string,
-      entryId: string,
-      expectedQueueRevision: number,
-      text: string,
-    ): Promise<void> {
-      return invokeSessionRuntimeHost(
-        'sessions:updateQueueEntry',
-        sessionId,
-        entryId,
-        expectedQueueRevision,
-        text,
-      );
-    },
     reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void> {
       return invokeSessionRuntimeHost('sessions:reorderQueueEntries', sessionId, [...entryIds]);
     },
@@ -3184,41 +3171,41 @@ const makaBridge = {
     },
   },
   mcp: {
-    getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+    getConfig(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>> {
       return invokeSelectedRuntimeHost(host, 'mcp:getConfig');
     },
-    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]> {
+    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus[]>> {
       return invokeSelectedRuntimeHost(host, 'mcp:listStatuses');
     },
-    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpConfigImportResult> {
+    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigImportResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:importConfig', source);
     },
-    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult> {
+    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigAddResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:add', serverId, config);
     },
-    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:update', serverId, config, basis);
     },
-    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:setEnabled', serverId, enabled);
     },
-    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>> {
       return invokeSelectedRuntimeHost(host, 'mcp:remove', serverId);
     },
-    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult> {
+    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpTestResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:test', serverId);
     },
     // Same scoped seam as every other MCP method: the handlers live on the
     // Runtime Host's ScopedIpcMain, whose first argument is the host ref —
     // a raw invoke would put serverId in that slot and fail the scope check
     // before the handler ever ran.
-    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>> {
       return invokeSelectedRuntimeHost(host, 'mcp:login', serverId);
     },
-    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean> {
+    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<boolean>> {
       return invokeSelectedRuntimeHost(host, 'mcp:cancelLogin', serverId);
     },
-    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>> {
       return invokeSelectedRuntimeHost(host, 'mcp:logout', serverId);
     },
     chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus> {
@@ -3322,6 +3309,25 @@ const makaBridge = {
   },
   attachments: {
     pickDirectory: () => invokeWhenReady('directories:pick'),
+    // The renderer hands over the dropped or pasted File objects, never paths:
+    // only a File backed by something the user dropped or pasted has a path,
+    // and main answers nothing but whether each one is a directory. The
+    // composer refuses a larger drop before asking, so a longer list is not
+    // from it and gets no per-file work here or in main.
+    detectDirectories(files: readonly File[]): Promise<boolean[]> {
+      if (files.length > MAX_ATTACHMENT_DROP_COUNT) {
+        return Promise.reject(new Error('Too many files to check for folders'));
+      }
+      const paths = files.map((file) => {
+        try {
+          return webUtils.getPathForFile(file);
+        } catch {
+          return '';
+        }
+      });
+      if (!paths.some(Boolean)) return Promise.resolve(paths.map(() => false));
+      return invokeWhenReady('attachments:detectDirectories', paths);
+    },
     pickFiles(): Promise<
       | {
           ok: true;
@@ -3615,21 +3621,6 @@ const makaBridge = {
           return invokeWhenReady('settings:bots:onboarding:open', sessionId);
         },
       },
-    },
-  },
-  notifications: {
-    // Fire-and-forget signal that an agent turn reached a terminal
-    // state or is waiting on the user. `title` is the session name, `body`
-    // the start of the reply, the error message, or the question; main
-    // sanitizes both and falls back to generic copy when blank. Main gates
-    // on the product toggle + window focus before raising a native OS
-    // notification.
-    runEnded(payload: {
-      kind: 'completed' | 'errored' | 'waiting';
-      title?: string;
-      body?: string;
-    }): Promise<void> {
-      return invokeWhenReady('notifications:runEnded', payload);
     },
   },
   inspector: {

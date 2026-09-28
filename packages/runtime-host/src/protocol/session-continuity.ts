@@ -291,7 +291,7 @@ export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
 
 export interface SubscriptionClosedFrame extends SubscriptionEnvelope {
   kind: 'subscription.closed';
-  reason: 'slow_consumer' | 'session_removed' | 'access_revoked' | 'transcript_changed';
+  reason: 'slow_consumer' | 'session_removed' | 'access_revoked';
 }
 
 export type SubscriptionFrame =
@@ -533,8 +533,7 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
     if (
       record.reason !== 'slow_consumer' &&
       record.reason !== 'session_removed' &&
-      record.reason !== 'access_revoked' &&
-      record.reason !== 'transcript_changed'
+      record.reason !== 'access_revoked'
     ) {
       throw invalidProtocolFrame('Invalid subscription close reason');
     }

@@ -22,7 +22,7 @@ import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ProjectRecord } from '@maka/core/project';
-import type { SessionSummary } from '@maka/core/session';
+import type { SessionCatalogSummary, SessionSummary } from '@maka/core/session';
 import { LocaleProvider } from '../locale-context.js';
 import {
   SessionHistoryList,
@@ -66,7 +66,6 @@ const session: SessionSummary = {
 const rowActions: SessionRowActions = {
   onToggleFlag: () => undefined,
   onArchive: () => undefined,
-  onUnarchive: () => undefined,
   onRename: () => undefined,
 };
 
@@ -179,6 +178,61 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   } finally {
     Date.now = originalDateNow;
   }
+});
+
+for (const lastMessageAt of [undefined, Date.UTC(2026, 6, 24)]) {
+  test(`shows a new branch's activity time without newer messages (${lastMessageAt})`, () => {
+    const now = Date.UTC(2026, 7, 24, 12);
+    const originalDateNow = Date.now;
+    Date.now = () => now;
+    try {
+      const branch: SessionCatalogSummary = {
+        ...session,
+        id: 'branch',
+        parentSessionId: session.id,
+        branchOfTurnId: 'turn-1',
+        activityAt: now,
+        lastMessageAt,
+      };
+      const { document } = parseHTML(renderToStaticMarkup(
+        <LocaleProvider locale="en">
+          <Rail sessions={[branch]} />
+        </LocaleProvider>,
+      ));
+
+      assert.equal(document.querySelector('.maka-session-row-time-label')?.textContent, 'just now');
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+}
+
+test('sorts a newly created branch ahead of older conversations by catalog activity', () => {
+  const now = Date.UTC(2026, 7, 24, 12);
+  const source: SessionCatalogSummary = {
+    ...session,
+    activityAt: now - 60_000,
+    lastMessageAt: now - 60_000,
+  };
+  const branch: SessionCatalogSummary = {
+    ...session,
+    id: 'branch',
+    parentSessionId: source.id,
+    branchOfTurnId: 'turn-1',
+    activityAt: now,
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail sessions={[source, branch]} />
+    </LocaleProvider>,
+  ));
+
+  assert.deepEqual(
+    [...document.querySelectorAll('.maka-session-row')].map((row) =>
+      row.getAttribute('data-session-id'),
+    ),
+    [branch.id, source.id],
+  );
 });
 
 test('identifies an external executor in the session rail', () => {
@@ -603,4 +657,42 @@ test('keeps project running totals aligned with renderer-local task streaming', 
   assert.match(markup, /maka-visually-hidden">Responding</);
   assert.ok(description);
   assert.match(description.getAttribute('aria-label') ?? '', /1 running/);
+});
+
+test('names the session location in the hover description only when one is provided', () => {
+  const describe = (markup: string): string => {
+    const { document } = parseHTML(markup);
+    const navigation = document.querySelector<HTMLButtonElement>(
+      '.maka-session-row .astryx-side-nav-item',
+    );
+    const describedBy = navigation?.getAttribute('aria-describedby');
+    return (describedBy ? document.getElementById(describedBy) : null)?.getAttribute(
+      'aria-label',
+    ) ?? '';
+  };
+  const located = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[session]}
+        sessionLocation={() => '/workspace/maka-agent/.worktree/sidebar'}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  const plain = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail sessions={[session]} onSelectSession={() => undefined} />
+    </LocaleProvider>,
+  );
+
+  assert.match(
+    describe(located),
+    /\/workspace\/maka-agent\/\.worktree\/sidebar/,
+    'a multi-location project names the session location',
+  );
+  assert.doesNotMatch(
+    describe(plain),
+    /maka-agent\/\.worktree\/sidebar/,
+    'a single-location project stays quiet about its location',
+  );
 });

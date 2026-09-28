@@ -26,6 +26,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
@@ -104,6 +105,7 @@ export interface MakaPreparePromptOptions {
   modelText?: string;
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
+  origin?: TurnOrigin;
 }
 
 export interface MakaSubmitMessageOptions {

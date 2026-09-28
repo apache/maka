@@ -19,7 +19,7 @@
 
 import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
-import fs, { mkdtemp, readFile, rm } from 'node:fs/promises';
+import fs, { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,7 +34,11 @@ import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
 } from '@maka/storage/mcp-config-store';
-import { createTuiMcpController, type TuiMcpPublicationAvailability } from '../tui-mcp-control.js';
+import {
+  createTuiMcpController,
+  type TuiMcpAction,
+  type TuiMcpPublicationAvailability,
+} from '../tui-mcp-control.js';
 import { waitFor } from './tui-terminal-mock.js';
 
 test('TUI MCP startup stays backgrounded and publishes the discovered snapshot', async () => {
@@ -1410,4 +1414,121 @@ function deferredValue<T>() {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+test('TUI MCP retains only the invalid persisted config path for repair guidance', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tui-mcp-invalid-json-'));
+  const manager = managerHarness(0, []);
+  const connection = connectionHarness();
+  const path = join(root, 'mcp.json');
+  const bytes = 'sk-live-SECRET';
+  assert.throws(
+    () => JSON.parse(bytes),
+    (error) => {
+      assert.ok(error instanceof SyntaxError && error.message.includes(bytes));
+      return true;
+    },
+  );
+  await writeFile(path, bytes);
+  const controller = createTuiMcpController(
+    { workspaceRoot: root, connection: connection.connection },
+    {
+      configStore: createMcpConfigStore(root),
+      manager: manager.manager,
+      createProvider: () => provider('unused'),
+    },
+  );
+  try {
+    await waitFor(
+      () => controller.snapshot().initialization === 'error',
+      'invalid MCP file to fail initialization',
+    );
+    assert.equal(controller.snapshot().invalidConfigPath, path);
+    assert.equal(JSON.stringify(controller.snapshot()).includes(bytes), false);
+    assert.equal(connection.replacements.length, 0);
+    assert.equal(await readFile(path, 'utf8'), bytes);
+  } finally {
+    await controller.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const kind of ['add', 'edit', 'set_enabled', 'remove', 'commit_import'] as const) {
+  test(`TUI MCP ${kind} retains a corrupt file diagnostic without disturbing live state`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'tui-mcp-runtime-corrupt-'));
+    const path = join(root, 'mcp.json');
+    const store = createMcpConfigStore(root);
+    const initial: McpConfigFile = {
+      version: 3,
+      mcpServers: { docs: { enabled: false, url: 'https://docs.example/mcp' } },
+    };
+    await store.transform(() => initial);
+    const order: string[] = [];
+    const connection = connectionHarness();
+    const controller = createTuiMcpController(
+      { workspaceRoot: root, connection: connection.connection },
+      {
+        configStore: store,
+        manager: managementManager(order).manager,
+        createProvider: () => undefined,
+      },
+    );
+    t.after(async () => {
+      await controller.close();
+      await rm(root, { recursive: true, force: true });
+    });
+    await waitFor(
+      () =>
+        controller.snapshot().initialization === 'ready' &&
+        controller.snapshot().publication === 'not_published',
+      'MCP initialization without a capability provider',
+    );
+    const edit = controller.configForEdit('docs');
+    assert.ok(edit);
+    const preview = controller.previewImport('{"new":{"command":"unused"}}');
+    assert.equal(preview.status, 'ready');
+    const actions: Record<typeof kind, TuiMcpAction> = {
+      add: { kind: 'add', serverId: 'new', config: { command: 'unused' } },
+      edit: {
+        kind: 'edit',
+        serverId: 'docs',
+        expectedRevision: edit.revision,
+        config: { command: 'unused' },
+      },
+      set_enabled: { kind: 'set_enabled', serverId: 'docs', enabled: true },
+      remove: { kind: 'remove', serverId: 'docs' },
+      commit_import: { kind: 'commit_import', previewId: preview.preview.previewId },
+    };
+    const before = controller.snapshot();
+    order.length = 0;
+    const bytes = 'sk-live-SECRET';
+    assert.throws(
+      () => JSON.parse(bytes),
+      (error) => {
+        assert.ok(error instanceof SyntaxError && error.message.includes(bytes));
+        return true;
+      },
+    );
+    await writeFile(path, bytes);
+    const result = await controller.execute(actions[kind]);
+    assert.deepEqual(result, { status: 'failed', reason: 'invalid-config-file', path });
+    assert.deepEqual(controller.snapshot(), before);
+    assert.deepEqual(controller.configForEdit('docs'), edit);
+    assert.deepEqual(order, []);
+    assert.equal(connection.unregisters, 0);
+    assert.equal(await readFile(path, 'utf8'), bytes);
+    assert.equal(JSON.stringify(result).includes(bytes), false);
+
+    // An external repair makes the next explicit operation usable without a
+    // controller restart or a stale initialization-error flag.
+    await writeFile(path, JSON.stringify(initial));
+    const repaired = await controller.execute({
+      kind: 'add',
+      serverId: 'repaired',
+      config: { command: 'unused' },
+    });
+    assert.equal(repaired.status, 'applied');
+    assert.equal(controller.snapshot().initialization, 'ready');
+    assert.ok((await store.get()).mcpServers.repaired);
+  });
 }

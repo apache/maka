@@ -44,6 +44,7 @@
     "build:runtime-host-windows-task-launcher": "node native/runtime-host-windows-task-launcher/build.mjs",
     "lint:runtime-host-peer": "cargo clippy --locked --all-targets --manifest-path native/runtime-host-peer/Cargo.toml -- -D warnings",
     "dev": "npm --workspace @maka/desktop run dev:hmr --",
+    "dev:worktree": "npm --workspace @maka/desktop run dev:worktree --",
     "dev:peer": "npm --workspace @maka/desktop run dev:peer --",
     "dev:full": "npm run build && npm --workspace @maka/desktop run start",
     "dev:full:peer": "npm run build && npm --workspace @maka/desktop run start:peer",

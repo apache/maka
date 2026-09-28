@@ -37,6 +37,7 @@ import {
   type AgentGraphChangedFrame,
   type AgentGraphChangedReason,
   type SessionAssistantDelta,
+  type SessionAttention,
   type SessionContinuitySnapshot,
   type SessionDeltaFrame,
   type SessionDomainChange,
@@ -61,6 +62,7 @@ import type {
   SessionContinuityOperationHandlerMap,
 } from './operation-dispatcher.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
   type CanonicalSessionProjection,
@@ -286,7 +288,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly onPublicationFailure: (error: unknown) => void = () => undefined,
     transcriptReader?: SessionTranscriptReader,
-    private readonly onCatalogChanged: (sessionId: string) => void = () => undefined,
+    private readonly onCatalogChanged: (
+      sessionId: string,
+      attention?: SessionAttention,
+    ) => void | Promise<void> = () => undefined,
     sessionAccessAuthority?: Pick<
       RuntimeHostAccessAuthority,
       'activeSessionGrant' | 'subscribeGrantRevocations'
@@ -337,8 +342,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
-  async refreshCanonical(sessionId: string, admission?: SessionAdmissionLease): Promise<void> {
-    this.onCatalogChanged(sessionId);
+  async refreshCanonical(
+    sessionId: string,
+    admission?: SessionAdmissionLease,
+    attention?: SessionAttention,
+  ): Promise<void> {
     await this.#runInSessionLane(
       sessionId,
       async () => {
@@ -353,6 +361,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       },
       admission,
     );
+    await this.onCatalogChanged(sessionId, attention);
   }
 
   /** Safe for synchronous commit hooks: this only schedules and coalesces lane work. */
@@ -638,6 +647,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     turnId: string,
     runId: string,
     admission?: SessionAdmissionLease,
+    publishCompletionAttention = true,
   ): Promise<void> {
     await this.#runInSessionLane(
       sessionId,
@@ -665,7 +675,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
         const nextRevision = state.revision + 1;
         const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
-        this.#invalidateSettledChoiceTranscript(state, canonical);
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
@@ -687,6 +696,18 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.assistantStreams.clear();
         state.toolResultPreviews.clear();
         this.#broadcastProjection(state, snapshot);
+        if (publishCompletionAttention && rootTurn.status === 'completed') {
+          await this.onCatalogChanged(sessionId, {
+            kind: 'completed',
+            eventId: rootTurn.terminalEventId,
+          });
+        } else if (rootTurn.status === 'failed') {
+          await this.onCatalogChanged(sessionId, {
+            kind: 'errored',
+            eventId: rootTurn.terminalEventId,
+            ...(rootTurn.failureMessage ? { body: rootTurn.failureMessage } : {}),
+          });
+        }
         for (const subscriber of state.subscribers.values()) {
           this.#payAssistantBacklog(subscriber, state);
         }
@@ -979,8 +1000,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             transcript = created.state;
             transcriptBootstrap = created.bootstrap;
           } catch (error) {
-            // The client can only retry, but a projection that outgrew its
-            // bounds is a Host defect and has to leave a trace here.
+            // Record the cause before the publication-failure hook can drain the Host.
+            console.error(
+              `[runtime-host] subscription.open transcript bootstrap failed: ${boundedFailureDiagnostic(error)}`,
+            );
             this.onPublicationFailure(error);
             return {
               ok: false as const,
@@ -1134,6 +1157,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             error: { code: 'invalid_request', message: error.message },
           };
         }
+        // The client can only retry, but a transcript page that failed for any
+        // other reason is a Host-side defect: the generic outcome the caller
+        // receives carries none of the cause, so record it here or it is lost.
+        console.error(
+          `[runtime-host] session.transcript.page failed: ${boundedFailureDiagnostic(error)}`,
+        );
         return {
           ok: false,
           error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
@@ -1309,10 +1338,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       );
   }
 
-  #closeSubscriber(
-    subscriber: Subscriber,
-    reason: 'slow_consumer' | 'access_revoked' | 'transcript_changed',
-  ): void {
+  #closeSubscriber(subscriber: Subscriber, reason: 'slow_consumer' | 'access_revoked'): void {
     if (subscriber.phase !== 'open') return;
     subscriber.phase = 'closing';
     const inFlight = subscriber.pumping ? subscriber.queue[0] : undefined;
@@ -1702,7 +1728,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       }
       const nextRevision = state.revision + 1;
       const value = createSessionContinuitySnapshot(canonical, nextRevision);
-      this.#invalidateSettledChoiceTranscript(state, canonical);
       state.canonical = canonical;
       state.revision = nextRevision;
       return { changed, state, value };
@@ -1714,32 +1739,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
-  #invalidateSettledChoiceTranscript(
-    state: SessionProjectionState,
-    next: CanonicalSessionProjection,
-  ): void {
-    const pending = new Set(next.interactions.pending.map((item) => item.interactionId));
-    if (
-      !state.canonical.interactions.pending.some(
-        (item) =>
-          (item.request.kind === 'form' || item.request.kind === 'question') &&
-          !pending.has(item.interactionId),
-      )
-    )
-      return;
-    // Outcomes can settle after their owner's last event. Their historical rows
-    // then lie behind an already-consumed cursor: advancing the event high water
-    // cannot deliver them. Close explicitly so observers rebuild their bounded tail.
-    for (const subscriber of state.subscribers.values()) {
-      if (subscriber.transcript) this.#closeSubscriber(subscriber, 'transcript_changed');
-    }
-  }
-
   #publishCanonical(state: SessionProjectionState, canonical: CanonicalSessionProjection): void {
     if (isDeepStrictEqual(state.canonical, canonical)) return;
     const nextRevision = state.revision + 1;
     const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
-    this.#invalidateSettledChoiceTranscript(state, canonical);
     state.canonical = immutableClone(canonical);
     state.revision = nextRevision;
     this.#broadcastProjection(state, snapshot);

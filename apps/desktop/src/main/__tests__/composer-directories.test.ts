@@ -143,3 +143,13 @@ test('IPC validates directory references without turning them into attachments o
     }), /Invalid directory references/);
   }
 });
+
+test('restoreDirectories stages references under another draft for a later visit', async () => {
+  const probe = await mount();
+  await act(() => probe.state().restoreDirectories('draft-b', [reference]));
+  assert.deepEqual(probe.state().pendingDirectories, [], 'draft-a stays untouched');
+  await probe.render({ draftKey: 'draft-b' });
+  assert.deepEqual(probe.state().pendingDirectories, [reference]);
+  await act(() => probe.state().restoreDirectories('draft-b', [reference, reference]));
+  assert.deepEqual(probe.state().pendingDirectories, [reference], 'duplicates stay out');
+});

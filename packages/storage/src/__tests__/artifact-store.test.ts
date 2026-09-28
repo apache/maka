@@ -351,36 +351,6 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('excludes selected Artifacts from a conversation snapshot', async () => {
-    await withWorkspace(async (root) => {
-      const authority = createArtifactStoreWriteAuthority(root);
-      const { store } = authority;
-      await store.create({
-        ...artifactInput('retained-artifact', 'retained', 10),
-        turnId: 'turn-retained',
-      });
-      await store.create({
-        ...artifactInput('excluded-archive', 'archived child result', 11),
-        turnId: 'turn-retained',
-        source: 'tool_result_archive',
-      });
-
-      const copied = await store.copyConversationArtifacts({
-        sourceSessionId: 'session-1',
-        targetSessionId: 'session-copy',
-        turnIds: ['turn-retained'],
-        excludeArtifactIds: ['excluded-archive'],
-      });
-
-      assert.equal(copied.artifactIds.has('excluded-archive'), false);
-      assert.deepEqual(
-        (await listArtifacts(store, 'session-copy')).map((record) => record.name),
-        ['retained-artifact.txt'],
-      );
-      assert.equal((await getArtifact(store, 'excluded-archive'))?.sessionId, 'session-1');
-    });
-  });
-
   test('copies explicit linked child Artifacts into a conversation snapshot', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);

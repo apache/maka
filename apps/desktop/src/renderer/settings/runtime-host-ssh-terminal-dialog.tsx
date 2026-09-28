@@ -23,6 +23,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Banner, Button, useUiLocale } from '@maka/ui';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
+import { loadTerminalWebLinks } from '../features/workbar';
 import { getTerminalFontSize, subscribeTerminalFontSize } from '../theme';
 import type {
   DesktopRuntimeHostSshTerminalEvent,
@@ -147,6 +148,7 @@ export function RuntimeHostSshTerminalDialog() {
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    loadTerminalWebLinks(terminal);
     terminal.open(host);
     terminalRef.current = terminal;
     if (pendingOutputRef.current) {
