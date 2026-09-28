@@ -59,24 +59,39 @@ function userMessage(turnId: string, text: string, extra: Record<string, unknown
 type StagedLog = {
   restored: Array<{ ownerKey: string; quotes: QuoteRef[] }>;
   cleared: string[];
+  /** The initial active Session's bucket — the plate the hooks bind to. */
   quotes: QuoteRef[];
+  /** Per-owner buckets, so a clear only ever empties the key it names. */
+  buckets: Map<string, QuoteRef[]>;
 };
 
 function emptyStagedLog(): StagedLog {
-  return { restored: [], cleared: [], quotes: [] };
+  const buckets = new Map<string, QuoteRef[]>();
+  const quotes: QuoteRef[] = [];
+  buckets.set('session-1', quotes);
+  return { restored: [], cleared: [], quotes, buckets };
 }
 
 function fakeStaged(log: StagedLog): RevisionStagedContext {
+  const bucketOf = (ownerKey: string): QuoteRef[] => {
+    let bucket = log.buckets.get(ownerKey);
+    if (!bucket) {
+      bucket = [];
+      log.buckets.set(ownerKey, bucket);
+    }
+    return bucket;
+  };
   return {
     quotes: log.quotes,
     attachments: [],
     restoreQuotes: (ownerKey, quotes) => {
+      if (quotes.length === 0) return;
       log.restored.push({ ownerKey, quotes: [...quotes] });
-      log.quotes.push(...quotes);
+      bucketOf(ownerKey).push(...quotes);
     },
     clearQuotes: (ownerKey) => {
       log.cleared.push(ownerKey);
-      log.quotes.length = 0;
+      return bucketOf(ownerKey).splice(0);
     },
   };
 }
@@ -295,6 +310,59 @@ describe('revision lifecycle (#5109)', () => {
     assert.equal(staged.quotes.length, 0, 'nothing stays staged after the cancel');
     assert.equal(h.revisionDraftRef.current, null);
   });
+
+  it('keeps quotes the user added when an edit is cancelled (#5274 review)', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    // Adding quotes during an edit is supported, so cancelling the edit
+    // undoes the edit — not the user's own staging (#5274 review).
+    const added: QuoteRef = { text: 'my own excerpt' };
+    staged.quotes.push(added);
+    await actions.cancelRevisionDraft();
+
+    assert.equal(h.revisionDraftRef.current, null);
+    assert.equal(h.env.composerRef.current?.getText(), '', 'the composer text rolls back');
+    assert.deepEqual(
+      staged.restored.at(-1),
+      { ownerKey: 'session-1', quotes: [added] },
+      'the user-added quote survives the cancel on the source key',
+    );
+  });
+
+  it('keeps a quote added on the branch child when a prepared edit is cancelled', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this')],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('edited text'), true);
+    const added: QuoteRef = { text: 'added while ready to send' };
+    // The plate re-keyed onto the branch child, so the composer the user
+    // stages into now binds to the branch-child bucket.
+    let branchBucket = staged.buckets.get('session-2');
+    if (!branchBucket) {
+      branchBucket = [];
+      staged.buckets.set('session-2', branchBucket);
+    }
+    branchBucket.push(added);
+    await actions.cancelRevisionDraft();
+
+    assert.equal(h.revisionDraftRef.current, null);
+    assert.deepEqual(
+      staged.restored.at(-1),
+      { ownerKey: 'session-1', quotes: [added] },
+      'the branch-child addition is re-keyed onto the source session',
+    );
+  });
 });
 
 describe('revision send gate', () => {
@@ -430,13 +498,28 @@ describe('revision staged-context helpers', () => {
     );
   });
 
-  it('clears the staged quotes under every owner key once', () => {
+  it('clears every owner key once and keeps what the edit did not stage', () => {
     const cleared: string[] = [];
+    const restored: Array<{ ownerKey: string; quotes: readonly QuoteRef[] }> = [];
+    const restoredByEdit = { text: 'restored by the edit' };
+    const addedByUser = { text: 'added during the edit' };
     clearRevisionStagedContext(
-      { clearQuotes: (ownerKey) => cleared.push(ownerKey) },
+      {
+        restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }),
+        clearQuotes: (ownerKey) => {
+          cleared.push(ownerKey);
+          return ownerKey === 'session-1' ? [restoredByEdit] : [addedByUser];
+        },
+      },
       ['session-1', 'session-2', 'session-1'],
+      [restoredByEdit],
     );
     assert.deepEqual(cleared, ['session-1', 'session-2']);
+    assert.deepEqual(
+      restored,
+      [{ ownerKey: 'session-1', quotes: [addedByUser] }],
+      'the user-added quote re-keys onto the source Session',
+    );
   });
 
   it('compares text and quotes for the unchanged retry', () => {

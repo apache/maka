@@ -36,7 +36,9 @@ export type RevisionStagedContext = {
   quotes: readonly QuoteRef[];
   attachments: readonly PendingAttachment[];
   restoreQuotes(ownerKey: string, quotes: readonly QuoteRef[]): void;
-  clearQuotes(ownerKey: string): void;
+  /** Removes and returns what an owner key holds, so the cancel path can
+   *  re-stage the entries the edit did not stage itself (#5274 review). */
+  clearQuotes(ownerKey: string): readonly QuoteRef[];
 };
 
 /** The edit-and-resend source context a staged plate must match verbatim. */
@@ -167,16 +169,35 @@ export function revisionSendGate(
 }
 
 /**
- * Unstage everything the edit staged, wherever the commit left it — the
- * cancel path. The plates hold only the edit's items under the two draft
- * keys (source before the commit, branch child after), because editing is
- * refused while the user has own context staged.
+ * Unstage the edit's staged context from under every draft key — the cancel
+ * path. Entries the edit staged itself (the beginEdit snapshot) are dropped
+ * wherever the commit left them (source key before it, branch child after);
+ * anything else on those plates is the user's own staging, added during the
+ * edit, so it survives — re-keyed onto the first owner key, the source
+ * Session the cancel returns to (#5274 review).
  */
 export function clearRevisionStagedContext(
-  staged: Pick<RevisionStagedContext, 'clearQuotes'>,
+  staged: Pick<RevisionStagedContext, 'clearQuotes' | 'restoreQuotes'>,
   ownerKeys: readonly string[],
+  editOwnedQuotes: readonly QuoteRef[],
 ): void {
-  for (const ownerKey of new Set(ownerKeys)) staged.clearQuotes(ownerKey);
+  const keys = [...new Set(ownerKeys)];
+  const owned = new Map<string, number>();
+  for (const quote of editOwnedQuotes) {
+    const key = quoteKey(quote);
+    owned.set(key, (owned.get(key) ?? 0) + 1);
+  }
+  const removed: QuoteRef[] = [];
+  for (const ownerKey of keys) removed.push(...staged.clearQuotes(ownerKey));
+  const kept: QuoteRef[] = [];
+  for (const quote of removed) {
+    // Past the edit's own per-quote count, every entry is the user's own.
+    const key = quoteKey(quote);
+    const ownedCount = owned.get(key) ?? 0;
+    owned.set(key, ownedCount - 1);
+    if (ownedCount === 0) kept.push(quote);
+  }
+  if (keys.length > 0 && kept.length > 0) staged.restoreQuotes(keys[0], kept);
 }
 
 /** Localized strings an edit-and-resend surface needs from its own catalog. */
@@ -573,10 +594,14 @@ export function createRevisionActions<
     if (cleanupSessionId) await abandonRevisionCopy(draft);
     else env.completeCopyAttempt(revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId), draft.copyId);
     commitRevisionDraft(null);
-    // Unstage everything the edit staged (#5109), under both draft keys: the
-    // plate starts on the source key and the commit re-keys it onto the
-    // branch child. The edit refuses while the user has own context staged.
-    clearRevisionStagedContext(stagedContext(), [draft.sourceSessionId, draft.draftSessionId]);
+    // Unstage the edit's staged context under both draft keys (source before
+    // the commit, branch child after); quotes the user added during the edit
+    // are not the edit's, so they survive on the source key (#5274 review).
+    clearRevisionStagedContext(
+      stagedContext(),
+      [draft.sourceSessionId, draft.draftSessionId],
+      draft.originalQuotes,
+    );
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
     if (draft.draftSessionId !== draft.sourceSessionId) {
       composerRef.current?.clearDraft(draft.draftSessionId);

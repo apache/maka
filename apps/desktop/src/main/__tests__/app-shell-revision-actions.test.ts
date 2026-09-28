@@ -89,7 +89,7 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
       },
       clearQuotes: (ownerKey: string) => {
         staged.clearedKeys.push(ownerKey);
-        staged.quotes.length = 0;
+        return staged.quotes.splice(0, staged.quotes.length);
       },
     }),
     openSessionInChat: (sessionId: string) => {
@@ -323,7 +323,7 @@ describe('revision draft lifecycle over a prepared send', () => {
         quotes: [],
         attachments: [],
         restoreQuotes: (_ownerKey: string, _quotes: unknown[]) => {},
-        clearQuotes: (_ownerKey: string) => {},
+        clearQuotes: (_ownerKey: string) => [],
       }),
       openSessionInChat: (sessionId: string) => {
         selectionRevision += 1;
