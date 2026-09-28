@@ -370,7 +370,7 @@ export const TranscriptQuoteGesture: Story = {
     // transcript still shows what was quoted.
     await expectPainted(ASSISTANT_REPLY);
     // Re-selecting the staged excerpt edits that quote instead of staging it
-    // twice: 引用 reopens its note, 直接引用 changes nothing.
+    // twice: 引用 reopens its note, and 取消 leaves the staged one alone.
     await selectExcerpt('turn-3', ASSISTANT_REPLY);
     await userEvent.click(await quoteActionButton());
     const restaged = await visiblePanel();
@@ -378,11 +378,6 @@ export const TranscriptQuoteGesture: Story = {
       restaged.querySelector('[contenteditable="true"]')?.textContent,
     ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
     await userEvent.click(panelButton(restaged, '取消'));
-    await selectExcerpt('turn-3', ASSISTANT_REPLY);
-    await userEvent.click(await quoteActionButton('直接引用'));
-    await waitFor(() =>
-      expect(document.querySelector('.maka-quote-actions')?.checkVisibility() ?? false).toBe(false),
-    );
     expect(document.querySelectorAll('.maka-composer-quote-token').length).toBe(1);
     // The token's editor anchors back at the excerpt — the transcript's
     // layer, not the token's popover — with the note prefilled.
@@ -393,16 +388,19 @@ export const TranscriptQuoteGesture: Story = {
       reopened.querySelector('[contenteditable="true"]')?.textContent,
     ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
 
-    // The bar keeps the one-click path from before annotations existed:
-    // 直接引用 stages the excerpt as a token immediately, no panel involved.
+    // An empty note is the no-annotation quote: submitting the panel without
+    // typing stages the token directly.
     await userEvent.click(panelButton(reopened, '取消'));
     await selectExcerpt('turn-3', '记录显示未送到 Jev');
-    await userEvent.click(await quoteActionButton('直接引用'));
+    await userEvent.click(await quoteActionButton());
+    const bare = await visiblePanel();
+    await userEvent.click(panelButton(bare, '引用'));
     await waitFor(() =>
       expect(
         document.querySelectorAll('.maka-composer-quote-token').length,
       ).toBe(2),
     );
+    await expectPainted(ASSISTANT_REPLY, '记录显示未送到 Jev');
     expect(document.querySelector('.maka-quote-annotation-layer')).toBeNull();
 
     // 取消 abandons a fresh annotation without staging anything.
