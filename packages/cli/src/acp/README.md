@@ -70,7 +70,10 @@ or reconnection without waiting for the Host to become available.
 | Replacing all MCP configuration | Every load/resume applies its complete stdio list through the existing Session MCP manager and publication. An omitted `session/resume.mcpServers` means an empty list. Equivalent normalized configuration reuses the process; changing or clearing it republishes the Session scope. An attached Session rejects a different configuration while the Host reports an active Turn; retry after that Turn settles. |
 | Artifact query, upload, delete | `_maka/artifact/query`, `_maka/artifact/ingest`, and `_maka/artifact/delete` expose Host Artifact operations. |
 | Memory query and mutation | `_maka/memory/query` and `_maka/memory/mutate` expose the Host bundle contract. |
+| `session/set_mode` | Unsupported and unadvertised. Use `session/set_config_option` for the supported Host-backed configuration values. |
+| Additional workspace directories | Nonempty `additionalDirectories` are rejected; the Session workspace is its `cwd`. |
 | HTTP/SSE/OAuth MCP | Deferred. |
+| ACP v2 and mid-Turn steering | Outside this ACP v1 adapter. Unknown or unimplemented requests return JSON-RPC `-32601`. |
 
 ## Artifact and Memory request extensions
 

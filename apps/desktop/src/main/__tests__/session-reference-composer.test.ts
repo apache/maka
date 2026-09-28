@@ -59,6 +59,12 @@ const readExecutionBoundary = async () => {
   throw new Error('Execution boundary is not used in session reference tests');
 };
 
+const queueStubs = {
+  promoteQueueEntry: async () => undefined,
+  retractQueueEntry: async () => undefined,
+  reorderQueueEntries: async () => undefined,
+};
+
 afterEach(async () => {
   if (root) await act(() => root?.unmount());
   root = undefined;
@@ -110,6 +116,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     sessions: {
       readSnapshot: async () => snapshot,
       readExecutionBoundary,
+      ...queueStubs,
     },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
@@ -249,6 +256,7 @@ test('send resolves the selected Session snapshot at the send boundary', async (
   const services: ConversationServices = {
     ...sessionLocalServices,
     sessions: {
+      ...queueStubs,
       readSnapshot: async () => new Promise<SessionSnapshot>((resolve) => {
         reads += 1;
         queueMicrotask(() => resolve({
@@ -354,6 +362,7 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
   const services: ConversationServices = {
     ...sessionLocalServices,
     sessions: {
+      ...queueStubs,
       readSnapshot: async () => new Promise<SessionSnapshot>((resolve) => {
         release = resolve;
       }),

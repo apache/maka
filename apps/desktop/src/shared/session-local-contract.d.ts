@@ -74,7 +74,7 @@ export interface DesktopSessionLocalBridge {
   /** Release exact recovery approvals owned by this renderer, even after changing Host or Session. */
   releaseRecoveryAttachments(approvalIds: readonly string[]): Promise<void>;
   /** Only an intent that has never been dispatched can be cancelled locally. */
-  cancelMessage(sessionId: string, messageId: string): Promise<void>;
+  cancelMessage(sessionId: string, messageId: string, options?: { restoreDraft: true }): Promise<DesktopLocalMessageDraft | void>;
   /** Reconcile the same immutable command; never turn an unknown outcome into a new execution. */
   reconcileMessage(sessionId: string, messageId: string): Promise<void>;
   readTranscript(sessionId: string): Promise<DesktopCachedTranscript | null>;

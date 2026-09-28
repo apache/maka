@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -30,7 +31,6 @@ import {
   useComposerMentionsContext,
   useComposerQuotes,
   type ComposerMentions,
-  type ConversationServices,
 } from '../../renderer/features/conversation/index.js';
 import {
   createSessionCatalogController,
@@ -71,7 +71,7 @@ async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
   const composerRef: { current: Pick<ComposerHandle, 'getText' | 'setText'> } = {
     current: { getText: () => text, setText(value) { text = value; } },
   };
-  const services: ConversationServices = {
+  const services = stubConversationServices({
     listMessages: async () => [{
       sessionId: 'current', messageId: 'failed', createdAt: 1, state: 'failed',
       text: draft.text, attachments: [], inlineReferences: [], placement: 'next_turn', canCancel: true,
@@ -92,7 +92,7 @@ async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
     newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [],
       searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
     mcp: { subscribeChanges: () => () => {} },
-  };
+  });
   const publish = (_sessionId: string, message: TransientUserMessageProjection) => { messages.set(message.id, message); };
   const copy = getSessionLocalCopy('en');
   function Probe() {
@@ -143,7 +143,7 @@ async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
     removeRecovered: () => act(() => attachments.removeAttachment(0)),
     readCount: () => reads,
     pick: () => mentions.onPickSessionReference!({ id: 'source', name: 'source' }),
-    edit: () => messages.get('failed')!.deliveryActions!.find((action) => action.label === copy.edit)!.onClick(),
+    edit: () => { void messages.get('failed')!.deliveryActions!.find((action) => action.label === copy.edit)!.onClick(); },
     release: () => releaseRead(draft),
     assertComposerUntouched() {
       assert.equal(text, '', 'the read continuation must not overwrite a newly staged draft before React renders');

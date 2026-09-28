@@ -1369,6 +1369,47 @@ test('repeated not_admitted proof refreshes an already failed dispatched row wit
   assert.equal(changed.length, 2, 'removed rows are never recreated or advertised as recoverable');
 });
 
+test('withdrawing a never-dispatched draft snapshots its attachment bytes before deleting the outbox row', async (t) => {
+  const { store } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
+  t.after(() => service.close());
+  const source = store.enqueue(target.partition, intent());
+  assert.throws(() => service.cancelUnsentToDraft(target, 'other-session', source.messageId, 7), /never-dispatched/);
+  assert.ok(store.get(target.partition, source.messageId));
+  const draft = service.cancelUnsentToDraft(target, 'session-1', source.messageId, 7);
+  assert.equal(draft.text, 'hello');
+  assert.equal(draft.stagedAttachments.length, 1);
+  assert.deepEqual(projectLocalMessageDraft(draft), draft, 'only opaque approvals cross the preload boundary');
+  assert.equal(store.get(target.partition, source.messageId), undefined);
+  assert.deepEqual(store.stagedAttachments(target.partition, source.messageId), []);
+  const owner = { senderId: 7, partition: target.partition, scope: target.scope, sessionId: 'session-1' };
+  assert.throws(() => service.attachmentRecovery.prepare({ ...owner, senderId: 8 }, draft.stagedAttachments), AttachmentIngestBlockedError);
+  const prepared = service.attachmentRecovery.prepare(owner, draft.stagedAttachments);
+  assert.deepEqual(prepared.items, intent().staged, 'removing the original row does not lose the recoverable bytes');
+  prepared.commit(() => undefined);
+  prepared.dispose();
+  assert.throws(() => service.attachmentRecovery.prepare(owner, draft.stagedAttachments), AttachmentIngestBlockedError);
+});
+
+test('withdrawing for editing never cancels dispatched or uncertain messages', async (t) => {
+  const { store } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
+  t.after(() => service.close());
+  for (const state of ['saved', 'sending', 'unknown', 'accepted', 'failed'] as const) {
+    const source = store.enqueue(target.partition, intent(state));
+    store.update({ ...source, state, intent: { ...source.intent, originHostEpoch: 'epoch' } });
+    assert.throws(() => service.cancelUnsentToDraft(target, 'session-1', state, 7), /never-dispatched/);
+    assert.ok(store.get(target.partition, state));
+    assert.equal(store.stagedAttachments(target.partition, state).length, 1);
+  }
+});
+
 test('editing a submitted failure retains references and rejects unsettled or differently owned messages', async (t) => {
   const { store } = await database(t);
   const target: DesktopSessionLocalTarget = {

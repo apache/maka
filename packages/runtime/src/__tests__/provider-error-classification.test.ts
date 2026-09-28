@@ -19,7 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createJsonErrorResponseHandler } from '@ai-sdk/provider-utils';
+import { APICallError } from '@ai-sdk/provider';
+import { createJsonErrorResponseHandler, postJsonToApi } from '@ai-sdk/provider-utils';
 import { RetryError } from 'ai';
 import { z } from 'zod/v4';
 
@@ -457,6 +458,181 @@ describe('Provider error classification', () => {
     assert.partialDeepStrictEqual(providerModelFailure(failure), { retryable: true });
   });
 
+  test('classifies a real SDK successful-response handler failure after HTTP headers', async () => {
+    await assert.rejects(
+      postJsonToApi({
+        url: 'https://provider.invalid',
+        body: {},
+        fetch: async () =>
+          new Response(
+            new ReadableStream({
+              pull(controller) {
+                controller.error(
+                  Object.assign(new Error('connection closed'), { code: 'UND_ERR_SOCKET' }),
+                );
+              },
+            }),
+            { status: 200 },
+          ),
+        failedResponseHandler: async () => {
+          throw new Error('unexpected non-2xx response');
+        },
+        successfulResponseHandler: async ({ response }) => {
+          assert.equal(response.status, 200);
+          return { value: await response.text() };
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(APICallError.isInstance(error));
+        assert.equal(error.statusCode, 200);
+        assert.equal(error.message, 'Failed to process successful response');
+        assert.equal(providerModelFailure(error).kind, 'network');
+        assert.deepEqual(providerFailureDiagnostic(error), {
+          errorClass: 'network',
+          httpStatus: 200,
+          retryable: true,
+        });
+        return true;
+      },
+    );
+  });
+
+  for (const statusCode of [200, 201, 204, 206, 299]) {
+    for (const code of [
+      'ECONNRESET',
+      'EPIPE',
+      'ETIMEDOUT',
+      'ECONNABORTED',
+      'UND_ERR_SOCKET',
+      'UND_ERR_BODY_TIMEOUT',
+    ]) {
+      test(`retries HTTP ${statusCode} response processing interrupted by ${code}`, () => {
+        const failure = new APICallError({
+          message: 'Failed to process successful response',
+          url: 'https://provider.invalid',
+          requestBodyValues: {},
+          statusCode,
+          responseHeaders: { 'x-request-id': 'request-5656' },
+          cause: new TypeError('terminated', {
+            cause: Object.assign(new Error('connection closed'), { code }),
+          }),
+        });
+
+        // The SDK's default is false for 2xx; it is not evidence against a
+        // transport failure while consuming an otherwise successful response.
+        assert.equal(failure.isRetryable, false);
+        assert.equal(classifyError(failure), 'network');
+        assert.partialDeepStrictEqual(providerModelFailure(failure), {
+          kind: 'network',
+          retryable: true,
+        });
+        assert.deepEqual(providerFailureDiagnostic(failure), {
+          errorClass: 'network',
+          httpStatus: statusCode,
+          providerRequestId: 'request-5656',
+          retryable: true,
+        });
+      });
+    }
+  }
+
+  test('does not infer a 2xx transport failure from SDK retryability or arbitrary causes', () => {
+    for (const cause of [
+      undefined,
+      new SyntaxError('Unexpected token'),
+      Object.assign(new Error('invalid certificate'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }),
+      Object.assign(new Error('invalid argument'), { code: 'UND_ERR_INVALID_ARG' }),
+      Object.assign(new Error('cancelled'), { code: 'UND_ERR_ABORTED' }),
+      new Error('connection closed without a structured code'),
+    ]) {
+      const failure = new APICallError({
+        message: 'Failed to process successful response',
+        url: 'https://provider.invalid',
+        requestBodyValues: {},
+        statusCode: 200,
+        isRetryable: true,
+        cause,
+      });
+      assert.equal(classifyError(failure), 'unknown');
+      assert.equal(providerModelFailure(failure).retryable, false);
+      assert.equal(providerFailureDiagnostic(failure).retryable, false);
+    }
+  });
+
+  test('keeps explicit HTTP and provider failures ahead of 2xx transport evidence', () => {
+    const cause = Object.assign(new Error('connection closed'), { code: 'ECONNRESET' });
+    for (const [statusCode, kind] of [
+      [400, 'request_rejected'],
+      [401, 'auth'],
+      [403, 'auth'],
+      [413, 'context_overflow'],
+      [429, 'rate_limit'],
+      [503, 'provider_unavailable'],
+    ] as const) {
+      const failure = new APICallError({
+        message: 'request failed',
+        url: 'https://provider.invalid',
+        requestBodyValues: {},
+        statusCode,
+        cause,
+      });
+      assert.equal(classifyError(failure), kind);
+      assert.equal(providerFailureDiagnostic(failure).errorClass, kind);
+    }
+    for (const [code, kind] of [
+      ['insufficient_quota', 'provider_billing'],
+      ['context_length_exceeded', 'context_overflow'],
+    ] as const) {
+      const failure = new APICallError({
+        message: 'Failed to process successful response',
+        url: 'https://provider.invalid',
+        requestBodyValues: {},
+        statusCode: 200,
+        data: { error: { code } },
+        cause,
+      });
+      assert.equal(classifyError(failure), kind);
+      assert.equal(providerModelFailure(failure).retryable, false);
+    }
+  });
+
+  test('bounds 2xx cause inspection and does not retry through cancellation or rejection', () => {
+    const reset = Object.assign(new Error('connection closed'), { code: 'ECONNRESET' });
+    const cycle: { cause?: unknown } = {};
+    cycle.cause = cycle;
+    const throwing = ['cause', 'code', 'statusCode', 'name'].map((field) =>
+      Object.defineProperty(new Error('opaque cause'), field, {
+        get() {
+          throw new Error('must not escape classification');
+        },
+      }),
+    );
+    const tooDeep = { cause: { cause: { cause: { cause: reset } } } };
+    for (const cause of [
+      cycle,
+      ...throwing,
+      tooDeep,
+      Object.assign(new Error('cancelled', { cause: reset }), { name: 'AbortError' }),
+      new APICallError({
+        message: 'rejected',
+        url: 'https://provider.invalid',
+        requestBodyValues: {},
+        statusCode: 401,
+        cause: reset,
+      }),
+    ]) {
+      const failure = new APICallError({
+        message: 'Failed to process successful response',
+        url: 'https://provider.invalid',
+        requestBodyValues: {},
+        statusCode: 200,
+        cause,
+      });
+      assert.equal(providerModelFailure(failure).retryable, false);
+      assert.equal(providerFailureDiagnostic(failure).retryable, false);
+    }
+  });
+
   test('an exhausted free tier on 429 is billing, not a throttle to retry', () => {
     // OpenCode Zen reports the exhausted free allowance as error.type on a 429.
     const freeUsageLimit = Object.assign(new Error('Rate limit exceeded'), {
@@ -721,6 +897,26 @@ describe('Provider error classification', () => {
     assert.equal(classifyError(retried(rateLimit)), 'rate_limit');
     assert.equal(classifyError(retried(unavailable)), 'provider_unavailable');
     assert.equal(classifyError(retried(overflow, 'errorNotRetryable')), 'context_overflow');
+    const interruptedResponse = new APICallError({
+      message: 'Failed to process successful response',
+      url: 'https://provider.invalid',
+      requestBodyValues: {},
+      statusCode: 200,
+      cause: Object.assign(new Error('connection closed'), { code: 'ECONNRESET' }),
+    });
+    assert.equal(classifyError(retried(interruptedResponse)), 'network');
+    assert.deepEqual(providerFailureDiagnostic(retried(interruptedResponse)), {
+      errorClass: 'network',
+      httpStatus: 200,
+      retryable: true,
+    });
+    const cancelledResponse = new RetryError({
+      message: 'Retry stopped',
+      reason: 'abort',
+      errors: [interruptedResponse],
+    });
+    assert.equal(classifyError(cancelledResponse), 'abort');
+    assert.equal(providerModelFailure(cancelledResponse).retryable, false);
     assert.equal(
       classifyError(
         new RetryError({

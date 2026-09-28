@@ -229,6 +229,7 @@ import { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js'
 import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
+import { resolveSafeBoundaryResumePolicy } from './safe-boundary-resume-policy.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { resolveSandboxBoundaryRootSession } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
@@ -1518,6 +1519,9 @@ export async function createExecutionRuntimeHostComposition(
           (connection) => connection.slug === slug,
         ) ?? null,
     });
+    const safeBoundaryResumePolicy = resolveSafeBoundaryResumePolicy(
+      process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME,
+    );
     manager = new SessionManager({
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
@@ -1535,7 +1539,7 @@ export async function createExecutionRuntimeHostComposition(
       },
       newId: randomUUID,
       now: Date.now,
-      safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
+      safeBoundaryResumeEnabled: safeBoundaryResumePolicy.interactive,
       inspectContinuationSafety: createLocalContinuationSafetyInspector({
         readSessionCwd: async (sessionId) =>
           (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
@@ -2343,6 +2347,12 @@ export async function createExecutionRuntimeHostComposition(
               );
             }
             return { outcome: 'resume_started' as const, targetTurnId };
+          }
+          if (!safeBoundaryResumePolicy.automated) {
+            throw new WorkHubActionEffectFailure(
+              'operation_unavailable',
+              'Safe-boundary resume is disabled for this Runtime Host',
+            );
           }
           await validateFreshTarget();
           await prepareTargetExecution?.();
@@ -3161,6 +3171,7 @@ export async function createExecutionRuntimeHostComposition(
         const goalHold = goal?.holdForHandoff();
         const scheduleHold = scheduledTasks?.holdForHandoff();
         const dailyReviewHold = dailyReview?.holdForHandoff();
+        const workHubResultHold = workHubResults?.coordinator.holdForHandoff();
         let root: Awaited<ReturnType<RootTurnCoordinator['prepareHandoff']>>;
         let detached = false;
         const cancel = () => {
@@ -3169,11 +3180,12 @@ export async function createExecutionRuntimeHostComposition(
           goalHold?.release();
           scheduleHold?.release();
           dailyReviewHold?.release();
+          workHubResultHold?.release();
           signal.removeEventListener('abort', cancel);
         };
         signal.addEventListener('abort', cancel, { once: true });
         try {
-          if (!goalHold || !scheduleHold || !dailyReviewHold) {
+          if (!goalHold || !scheduleHold || !dailyReviewHold || !workHubResultHold) {
             cancel();
             return undefined;
           }
@@ -3182,6 +3194,7 @@ export async function createExecutionRuntimeHostComposition(
               goalHold.settled(),
               scheduleHold.settled(),
               dailyReviewHold.settled(),
+              workHubResultHold.settled(),
             ]).then(() => undefined),
             signal,
           );

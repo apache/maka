@@ -43,7 +43,7 @@ import {
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
-import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
+import { isSupportedImagePath, readWorkspaceFile } from './image-file.js';
 import type { ImageMimeType } from './image-file.js';
 import { readTextLineWindow } from './text-line-window.js';
 import { searchFiles, type GrepResult } from './grep-search.js';
@@ -337,11 +337,9 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async readFile(input: WorkspaceReadFileInput): Promise<WorkspaceReadFileResult> {
-    if (isSupportedImagePath(input.path)) {
-      return await readWorkspaceImage(input.path);
-    }
-    const content = await fs.readFile(input.path, 'utf8');
-    return { content: readTextLineWindow(content, input.offset, input.limit) };
+    const file = await readWorkspaceFile(input.path);
+    if ('bytes' in file) return file;
+    return { content: readTextLineWindow(file.content, input.offset, input.limit) };
   }
 
   async writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult> {

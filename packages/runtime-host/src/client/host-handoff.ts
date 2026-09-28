@@ -379,15 +379,15 @@ function projectBlocker(
           ? 'repair_required'
           : !replacement
             ? 'operator_required'
-            : replacement.requiresExplicitSelection
-              ? activeWorkRefused
-                ? 'busy'
-                : 'replacement_required'
-              : !blocker.activity
-                ? 'activity_unknown'
-                : isHostActivityIdle(blocker.activity)
-                  ? 'retry_required'
-                  : 'busy',
+            : activeWorkRefused
+              ? 'busy'
+              : replacement.requiresExplicitSelection
+                ? 'replacement_required'
+                : !blocker.activity
+                  ? 'activity_unknown'
+                  : isHostActivityIdle(blocker.activity)
+                    ? 'retry_required'
+                    : 'busy',
     ...(blocker.activity ? { activity: blocker.activity } : {}),
     mayExitNaturally: blocker.mayExitNaturally,
     ...(blocker.manualRecheck ? { manualRecheck: true } : {}),

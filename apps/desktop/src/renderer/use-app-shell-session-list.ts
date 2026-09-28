@@ -19,11 +19,11 @@
 
 import { useMemo, useRef } from 'react';
 import { useUiLocale } from '@maka/ui';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   normalizeSessionSummaryForDisplay,
-} from './session-status-presentation.js';
+} from './application/contracts/session-status-presentation.js';
 import {
   createSessionListRefresher,
 } from './session-read-state.js';

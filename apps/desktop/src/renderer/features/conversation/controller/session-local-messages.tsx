@@ -21,7 +21,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import { useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
 import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../../../shared/session-local-contract.js';
+import { ICON_SIZE, Pencil, Search, Trash2 } from '@maka/ui/icons';
 import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { useConversationServices } from '../services.js';
 import { useComposerMentionsContext } from '../ui/composer-mentions-provider.js';
 import { localMessagePresentation } from './local-message-presentation.js';
@@ -35,6 +37,8 @@ export function SessionLocalMessages(props: {
   readonly retire: (sessionId: string, messageId: string) => void;
   readonly canRestoreDraft: () => boolean;
   readonly restoreDraft: (draft: DesktopLocalMessageDraft) => void;
+  /** Queue editing retracts first and restores to the original Session's keyed draft. */
+  readonly restoreUnsentDraft?: (sessionId: string, draft: RestoredDraftContent) => boolean | void;
 }): null {
   const services = useConversationServices();
   const locale = useUiLocale();
@@ -109,14 +113,22 @@ export function SessionLocalMessages(props: {
         setBusy(key);
         const owner = generation.current;
         setFeedback((current) => ({ ...current, [key]: '' }));
-        void operation().catch(() => {
+        return operation().catch(() => {
           if (generation.current === owner) setFeedback((current) => ({ ...current, [key]: copy.updateError }));
         }).finally(() => {
           if (pending.current === key) { pending.current = undefined; setBusy(undefined); }
         });
       };
+      const remove = async () => {
+        await services.cancelMessage(sessionId, message.messageId);
+        states.set(message.messageId, 'retired');
+        setSnapshot((current) => current?.sessionId === sessionId
+          ? { ...current, messages: current.messages.filter((item) => item.messageId !== message.messageId) }
+          : current);
+        retire(sessionId, message.messageId);
+      };
       const actions: NonNullable<TransientUserMessageProjection['deliveryActions']>[number][] = [];
-      if (message.state === 'failed') actions.push({ label: copy.edit, disabled: !!busy, onClick: run(async () => {
+      if (message.state === 'failed') actions.push({ label: copy.edit, icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />, disabled: !!busy, onClick: run(async () => {
         const owner = generation.current;
         if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
           setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
@@ -135,18 +147,33 @@ export function SessionLocalMessages(props: {
           if (!restored) await services.releaseRecoveryAttachments(draft.stagedAttachments.map((item) => item.approvalId));
         }
       }) });
-      if (message.canCancel) actions.push({
-        label: message.state === 'failed' ? copy.remove : copy.cancel, disabled: !!busy,
+      const restoreUnsentDraft = props.restoreUnsentDraft;
+      if (message.state === 'saved' && message.canCancel && restoreUnsentDraft) actions.push({
+        label: copy.editUnsent, icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />, disabled: !!busy,
         onClick: run(async () => {
-          await services.cancelMessage(sessionId, message.messageId);
+          const draft = await services.cancelMessage(sessionId, message.messageId, { restoreDraft: true });
+          if (!draft) throw new Error('The withdrawn draft is unavailable');
           states.set(message.messageId, 'retired');
           setSnapshot((current) => current?.sessionId === sessionId
             ? { ...current, messages: current.messages.filter((item) => item.messageId !== message.messageId) }
             : current);
           retire(sessionId, message.messageId);
+          let restored = false;
+          try {
+            if (restoreUnsentDraft(sessionId, draft) === false) return;
+            restored = true;
+          } finally {
+            if (!restored) await services.releaseRecoveryAttachments(draft.stagedAttachments.map((item) => item.approvalId));
+          }
         }),
       });
+      if (message.canCancel && message.state !== 'unknown') actions.push({
+        label: message.state === 'failed' ? copy.remove : copy.removeUnsent, disabled: !!busy,
+        icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
+        onClick: run(remove),
+      });
       if (message.state === 'unknown') actions.push({ label: copy.check, disabled: !!busy || message.checking,
+        icon: <Search size={ICON_SIZE.control} aria-hidden="true" />,
         onClick: run(() => services.reconcileMessage(sessionId, message.messageId)),
       });
       const presentation = localMessagePresentation(message, locale);
@@ -157,8 +184,8 @@ export function SessionLocalMessages(props: {
       project(sessionId, {
         id: message.messageId, text: message.text, ts: message.createdAt,
         // Only an ordinary send records localDisplayPlacement as current_turn.
-        transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn' ? 'transcript'
-          : message.placement === 'current_turn' ? 'steering' : 'follow_up',
+        transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn'
+          || message.placement === 'current_turn' ? 'transcript' : 'follow_up',
         attachments: message.attachments,
         directoryReferences: message.directoryReferences, quotes: message.quotes,
         inlineReferences: message.inlineReferences, hostTurnId: message.turnId,
@@ -170,6 +197,6 @@ export function SessionLocalMessages(props: {
         deliveryActions: presentation.status === undefined ? [] : actions,
       });
     }
-  }, [sessionId, snapshot, services, publish, update, retire, locale, queue, busy, feedback]);
+  }, [sessionId, snapshot, services, publish, update, retire, locale, queue, busy, feedback, props.restoreUnsentDraft]);
   return null;
 }

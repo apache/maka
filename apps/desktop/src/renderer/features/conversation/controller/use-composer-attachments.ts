@@ -19,19 +19,33 @@
 
 import { useUiLocale } from '@maka/ui';
 import { useComposerAttachments as useSharedComposerAttachments } from '@maka/ui/use-composer-attachments';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { useConversationServices } from '../services.js';
+import { useComposerQuotes } from './use-composer-quotes.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 
-/** Desktop services and localization for the shared staging and preview lifecycle. */
+/** Desktop staging surface for everything the composer carries into a send:
+ * attachments, directory picks, and staged transcript quotes. One hook keeps
+ * the quote bucket out of AppShell's hook-call ledger; all three share the
+ * same draft key. */
 export function useComposerAttachments(options: Omit<Parameters<typeof useSharedComposerAttachments>[0], 'copy' | 'formatError' | 'releaseRecoveryAttachments'>) {
   const locale = useUiLocale();
   const services = useConversationServices();
-  return useSharedComposerAttachments({
+  const attachments = useSharedComposerAttachments({
     ...options,
     releaseRecoveryAttachments: services.releaseRecoveryAttachments,
     copy: getDesktopConversationCopy(locale).actions,
     formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
   });
+  const quotes = useComposerQuotes({ draftKey: options.draftKey });
+  const restoreQueuedDraftContext = (ownerKey: string, draft: RestoredDraftContent) => {
+    attachments.restoreMessageContext(ownerKey, undefined, {
+      attachments: draft.attachments ?? [], stagedAttachments: draft.stagedAttachments ?? [],
+      directoryReferences: draft.directoryReferences ?? [],
+    });
+    if (draft.quotes?.length) quotes.restoreQuotes(ownerKey, draft.quotes);
+  };
+  return { ...attachments, ...quotes, restoreQueuedDraftContext };
 }

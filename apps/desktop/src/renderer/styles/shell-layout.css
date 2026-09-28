@@ -18,6 +18,41 @@
  */
 
 /* Shell layout — app frame, panels, topbar rail, main column, workspace top actions. */
+[data-agents-page] {
+  --sidebar-width: 240px;
+  position: relative;
+}
+
+.agents-layout-root {
+  height: 100dvh;
+  background: var(--agents-layout-bg);
+}
+
+.agents-layout-body {
+  min-height: 0;
+}
+
+.maka-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Transparent, NOT var(--background): the right panel already paints
+     its own surface (--agents-content-area-bg = #fafafa on darwin
+     glass). A solid white here covered only the chat scroll area, so
+     the composer region below read as a THIRD color band (shell /
+     chat / composer). One panel, one surface. */
+  background: transparent;
+}
+
+.agents-chat-panel,
+.agents-chat-view-root {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .appFrame {
   font: var(--maka-text-body);
   position: relative;
@@ -416,23 +451,10 @@ dialog:modal {
 .maka-titlebar-identity__rename-input {
   min-width: 2rem;
   max-width: 100%;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  padding: 0;
 }
 
 .maka-titlebar-identity__rename-input input {
-  font: var(--maka-text-body);
-  font-weight: var(--font-weight-medium);
-  color: var(--foreground);
-  background: transparent;
-  border: 0;
-  outline: 0;
-  box-shadow: 0 1px 0 var(--focus-ring);
   field-sizing: content;
-  padding-block: 0;
-  padding-inline: var(--space-1);
   min-width: 2rem;
   max-width: 100%;
 }
@@ -464,20 +486,6 @@ dialog:modal {
    buttons lives inside `.maka-shell-topbar-rail`, which carves out a rect covering
    its children. A per-button rule (plus a `*` descendant rule for the icons)
    only duplicated that. */
-
-
-/* Focus rings inside the titlebar strip go inset (T5 geometry probe): the
-   strip sits 4px under the window edge and body's overflow clips the top
-   pixel of an outward 2px+offset ring. An inset ring paints whole. */
-.maka-window-titlebar :is(button, [role="button"]):focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
-}
-
-.sessionTurnRequestSurface {
-  border-top: var(--border-width-hairline) solid var(--border);
-  background: var(--background);
-}
 
 .sessionTurnRequestApproval {
   display: grid;
@@ -527,67 +535,8 @@ dialog:modal {
   text-align: end;
 }
 
-.sessionTurnRequestComposer {
-  padding-block-start: var(--space-2);
-}
-
-.sessionTurnRequestReconnectButton {
-  display: inline-flex;
-}
-
 .sessionCollaborationReadOnly {
   padding: var(--space-3);
   color: var(--muted-foreground);
   text-align: center;
-}
-
-.sessionTurnRequestQueue {
-  margin-block-start: var(--space-2);
-}
-
-.sessionTurnRequestQueueToggle {
-  width: 100%;
-  justify-content: space-between;
-}
-
-.sessionTurnRequestQueueToggle svg {
-  transition: transform var(--duration-fast) var(--ease-standard);
-}
-
-.sessionTurnRequestQueueToggle svg.isExpanded {
-  transform: rotate(180deg);
-}
-
-.sessionTurnRequestHistory {
-  display: grid;
-  max-height: 12rem;
-  overflow-y: auto;
-  margin-block-start: var(--space-1);
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.sessionTurnRequestHistoryRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-2);
-}
-
-.sessionTurnRequestHistoryRow + .sessionTurnRequestHistoryRow {
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.sessionTurnRequestHistoryBody {
-  display: grid;
-  gap: var(--space-0-5);
-  min-width: 0;
-  flex: 1;
-}
-
-.sessionTurnRequestHistoryText {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

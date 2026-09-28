@@ -19,21 +19,22 @@
 
 import {
   Button,
-  Divider,
   HStack,
   StackItem,
   Switch,
   Text,
   VStack,
 } from '@astryxdesign/core';
+import { Banner } from '@astryxdesign/core/Banner';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import type { ManagedSkillUpdatePreview, SkillEntry } from './module-panel-types.js';
-import type { ModulePageDetail } from './primitives/module-page.js';
+import { DETAIL_LABEL_WIDTH, type ModulePageDetail } from './primitives/module-page.js';
 import {
   formatSkillLibraryDescription,
   formatSkillStatusLabel,
   skillContextStatus,
-  skillStatusDotLabel,
+  skillExceptionalStateLabel,
+  skillStatusSemantic,
 } from './skill-status.js';
 import type { SkillsCopy } from './skills-copy.js';
 
@@ -108,82 +109,83 @@ export function skillUpdateReviewDetail(
 
 export function skillDetail(skill: SkillEntry, copy: SkillsCopy, actions: SkillDetailActions): ModulePageDetail {
   const contextStatus = skillContextStatus(skill);
-  const canToggle =
-    Boolean(actions.onSetEnabled)
-    && skill.runtimeStatus !== 'state_error'
-    && contextStatus !== 'invalid';
+  const broken = skill.runtimeStatus === 'state_error' || contextStatus === 'invalid';
   const reviewableManagedUpdate =
     skill.managedUpdateStatus === 'update_available' || skill.managedUpdateStatus === 'local_modified';
   const tools = skill.declaredTools ?? [];
-  const description = formatSkillLibraryDescription(skill, copy);
+  const exceptional = skillExceptionalStateLabel(skill, copy);
   const canDelete = Boolean(actions.onDelete) && skill.manageable !== false;
 
   return {
     title: skill.name,
-    subtitle: skillStatusDotLabel(skill, copy),
+    subtitle: formatSkillLibraryDescription(skill, copy),
     content: (
-      <VStack gap={4}>
-        {description ? <Text type="body">{description}</Text> : null}
-        <HStack gap={2} vAlign="center" wrap="wrap">
-          {canToggle ? (
-            <StackItem size="fill">
-              <Switch
-                value={skill.enabled}
+      <VStack gap={5}>
+        {exceptional ? (
+          <Banner
+            status={skillStatusSemantic(skill) === 'error' ? 'error' : 'warning'}
+            title={exceptional}
+            endContent={reviewableManagedUpdate && actions.onPreviewUpdate ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                label={actions.reviewing
+                  ? copy.row.reviewing
+                  : skill.managedUpdateStatus === 'local_modified' ? copy.row.viewDiff : copy.row.viewUpdate}
+                onClick={actions.onPreviewUpdate}
                 isDisabled={actions.busy}
-                label={copy.detail.enabled}
-                onChange={(next) => actions.onSetEnabled?.(next)}
               />
-            </StackItem>
-          ) : <StackItem size="fill" />}
-          {actions.onTogglePinned ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              label={skill.pinned ? copy.row.unpinTitle : copy.row.pinTitle}
-              onClick={actions.onTogglePinned}
-              isDisabled={actions.busy || skill.runtimeStatus === 'state_error' || contextStatus === 'invalid'}
-            />
-          ) : null}
-          {reviewableManagedUpdate && actions.onPreviewUpdate ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              label={actions.reviewing
-                ? copy.row.reviewing
-                : skill.managedUpdateStatus === 'local_modified' ? copy.row.viewDiff : copy.row.viewUpdate}
-              onClick={actions.onPreviewUpdate}
-              isDisabled={actions.busy}
-            />
-          ) : null}
-        </HStack>
-        <Divider />
-        <MetadataList columns="single" label={{ position: 'start', width: 88 }}>
-          <MetadataListItem label={copy.detail.idLabel}>
-            <Text type="body"><code>{skill.id}</code></Text>
-          </MetadataListItem>
-          {skill.scope ? (
-            <MetadataListItem label={copy.detail.scopeLabel}>
-              <Text type="body">{copy.context.scope[skill.scope]}</Text>
+            ) : undefined}
+          />
+        ) : null}
+        <MetadataList columns="single" label={{ position: 'start', width: DETAIL_LABEL_WIDTH }}>
+          {actions.onSetEnabled ? (
+            <MetadataListItem label={copy.detail.enabled}>
+                <Switch
+                  size="sm"
+                  label={copy.detail.enabled}
+                  isLabelHidden
+                  value={skill.enabled}
+                  isDisabled={actions.busy || broken}
+                  onChange={(next) => actions.onSetEnabled?.(next)}
+                />
             </MetadataListItem>
           ) : null}
-          <MetadataListItem label={copy.detail.sourceLabel}>
-            <Text type="body">{formatSkillStatusLabel(skill, copy)}</Text>
-          </MetadataListItem>
-          {tools.length > 0 ? (
-            <MetadataListItem label={copy.detail.toolsLabel}>
-              <Text type="body">{tools.join(', ')}</Text>
+          {actions.onTogglePinned ? (
+            <MetadataListItem label={copy.row.pinTitle}>
+                <Switch
+                  size="sm"
+                  label={copy.row.pinTitle}
+                  isLabelHidden
+                  value={Boolean(skill.pinned)}
+                  isDisabled={actions.busy || broken}
+                  onChange={() => actions.onTogglePinned?.()}
+                />
+            </MetadataListItem>
+          ) : null}
+          {skill.id !== skill.name ? (
+            <MetadataListItem label={copy.detail.idLabel}>
+              <Text><code>{skill.id}</code></Text>
             </MetadataListItem>
           ) : null}
           <MetadataListItem label={copy.detail.pathLabel}>
-            <Text type="body"><code>{skill.path}</code></Text>
+            <Text><code>{skill.path}</code></Text>
           </MetadataListItem>
+          <MetadataListItem label={copy.detail.scopeLabel}>
+            <Text>{[skill.scope ? copy.context.scope[skill.scope] : null, skill.sourceType === 'managed' ? copy.status.managed.up_to_date : formatSkillStatusLabel(skill, copy)].filter(Boolean).join(' · ')}</Text>
+          </MetadataListItem>
+          {tools.length > 0 ? (
+            <MetadataListItem label={copy.detail.toolsLabel}>
+              <Text>{tools.join(', ')}</Text>
+            </MetadataListItem>
+          ) : null}
         </MetadataList>
       </VStack>
     ),
     footer: (
       <HStack gap={2} vAlign="center">
         {canDelete ? (
-          <Button variant="destructive" label={copy.row.delete} onClick={actions.onDelete} isDisabled={actions.busy} />
+          <Button variant="ghost" label={copy.row.delete} onClick={actions.onDelete} isDisabled={actions.busy} />
         ) : null}
         <StackItem size="fill" />
         {actions.onOpen ? (

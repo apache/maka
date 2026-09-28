@@ -31,7 +31,7 @@ import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type GitReviewBranchContext, type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, ArrowRight, GitBranch } from '@maka/ui/icons';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 import { SessionReviewBaseBranchPicker } from './session-review-base-branch-picker.js';
 

@@ -17,28 +17,23 @@
  * under the License.
  */
 
-export interface InterruptedResumeTurn {
-  turnId: string;
-  status: string;
-  errorClass?: string;
-  /** Tool activity already has a durable result in the rendered Turn. */
-  tools?: readonly { status: string }[];
-}
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import type { Terminal } from '@xterm/xterm';
 
-export function latestInterruptedResumeTurnId(
-  turns: readonly InterruptedResumeTurn[],
-): string | undefined {
-  const latestTurn = turns.at(-1);
-  if (latestTurn?.status !== 'failed') return undefined;
-  const errorClass = latestTurn.errorClass?.toLowerCase();
-  if (errorClass === 'app_restarted') return latestTurn.turnId;
-  if (
-    errorClass?.includes('timeout') &&
-    latestTurn.tools !== undefined &&
-    latestTurn.tools.length > 0 &&
-    latestTurn.tools.every((tool) => tool.status === 'completed')
-  ) {
-    return latestTurn.turnId;
-  }
-  return undefined;
+import { terminalWebUrl } from './terminal-interaction-policy';
+
+/**
+ * Wires clickable HTTP(S) links into an xterm instance. Renderer-side URL
+ * filtering stays in terminalWebUrl; the main-process external-link guard
+ * remains the final boundary behind window.open. Kept in the feature zone so
+ * legacy terminals can adopt link handling without taking on new debt.
+ */
+export function loadTerminalWebLinks(terminal: Terminal) {
+  const webLinks = new WebLinksAddon((event, value) => {
+    const url = terminalWebUrl(value);
+    if (!url) return;
+    event.preventDefault();
+    window.open(url, '_blank', 'noopener,noreferrer');
+  });
+  terminal.loadAddon(webLinks);
 }

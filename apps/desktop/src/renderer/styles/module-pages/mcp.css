@@ -17,10 +17,6 @@
  * under the License.
  */
 
-.maka-module-row-description code {
-  font: var(--maka-text-supporting);
-}
-
 .maka-mcp-detail-endpoint {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -36,10 +32,6 @@
   background: var(--muted);
   color: var(--muted-foreground);
   white-space: pre-wrap;
-}
-
-.maka-mcp-section-heading {
-  font: var(--maka-text-heading-4);
 }
 
 .maka-mcp-mark {
@@ -59,10 +51,6 @@ svg.maka-mcp-mark {
   width: 20px;
   height: 20px;
   object-fit: contain;
-}
-
-.maka-mcp-status-dot {
-  display: inline-flex;
 }
 
 .maka-mcp-manual-form,

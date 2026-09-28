@@ -17,8 +17,27 @@
  * under the License.
  */
 
-/** Compatibility entry point; quote state now belongs to Conversation. */
-import { useComposerQuotes } from './features/conversation/index.js';
+import { strict as assert } from 'node:assert';
+import { describe, it } from 'node:test';
+import {
+  terminalWebUrl,
+} from '../../renderer/features/workbar/testing.js';
 
-export { useComposerQuotes };
-export const useAppShellComposerQuotes: typeof useComposerQuotes = useComposerQuotes;
+describe('terminalWebUrl', () => {
+  it('accepts only explicit HTTP(S) URLs', () => {
+    assert.equal(terminalWebUrl('https://example.com/a?q=1'), 'https://example.com/a?q=1');
+    assert.equal(terminalWebUrl('http://localhost:3000'), 'http://localhost:3000/');
+  });
+
+  it('rejects non-http(s) and malformed values', () => {
+    for (const url of [
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'mailto:a@b.com',
+      '/tmp/a',
+      'invalid',
+    ]) {
+      assert.equal(terminalWebUrl(url), null);
+    }
+  });
+});

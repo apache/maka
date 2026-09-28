@@ -62,6 +62,7 @@ import type {
   SessionContinuityOperationHandlerMap,
 } from './operation-dispatcher.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
   type CanonicalSessionProjection,
@@ -999,8 +1000,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             transcript = created.state;
             transcriptBootstrap = created.bootstrap;
           } catch (error) {
-            // The client can only retry, but a projection that outgrew its
-            // bounds is a Host defect and has to leave a trace here.
+            // Record the cause before the publication-failure hook can drain the Host.
+            console.error(
+              `[runtime-host] subscription.open transcript bootstrap failed: ${boundedFailureDiagnostic(error)}`,
+            );
             this.onPublicationFailure(error);
             return {
               ok: false as const,
@@ -1154,6 +1157,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             error: { code: 'invalid_request', message: error.message },
           };
         }
+        // The client can only retry, but a transcript page that failed for any
+        // other reason is a Host-side defect: the generic outcome the caller
+        // receives carries none of the cause, so record it here or it is lost.
+        console.error(
+          `[runtime-host] session.transcript.page failed: ${boundedFailureDiagnostic(error)}`,
+        );
         return {
           ok: false,
           error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },

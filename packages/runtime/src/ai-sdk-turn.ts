@@ -130,15 +130,19 @@ import {
 } from './sandbox-boundary-tool.js';
 import {
   buildRuntimeEventModelReplayPlan,
+  appendPriorUnknownToolResponses,
   buildSteeringEnvelope,
   collectToolActivityTurnIds,
   compatibleProviderReasoningReplayEventIds,
   formatTextWithInlineRefs,
+  inspectPriorUnknownToolOutcomes,
   steeringMessagesMissingFromBase,
   steeringModelMessage,
+  type PriorUnknownToolOutcomeProjection,
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
+import type { ContextBudgetPolicy } from './context-budget.js';
 import {
   toolSchemaCharsForDiagnostics,
   requestCompositionToolSchemas,
@@ -857,7 +861,30 @@ export class AiSdkTurn {
     const toolRuntime = this.toolRuntime;
     const turnAbortController = this.abortController;
 
-    const midTurnState = this.deps.compaction.buildMidTurnCapacityCompactState(input);
+    const priorEvents = (input.runtimeContext ?? []).filter(
+      (event) => input.continuation !== undefined || event.turnId !== input.turnId,
+    );
+    const observedPriorUnknownProjection: PriorUnknownToolOutcomeProjection = !input.continuation
+      ? inspectPriorUnknownToolOutcomes(priorEvents, input.runtimeContextInvocations)
+      : { kind: 'none' };
+    if (observedPriorUnknownProjection.kind === 'blocked') {
+      throw new Error(`Cannot use prior tool history: ${observedPriorUnknownProjection.reason}`);
+    }
+    if (
+      observedPriorUnknownProjection.kind === 'projected' &&
+      !input.allowPriorUnknownToolOutcomes
+    ) {
+      throw new Error(
+        'Cannot continue an automated turn while a prior tool outcome is unknown; an explicit user message is required',
+      );
+    }
+    const priorUnknownProjection = input.allowPriorUnknownToolOutcomes
+      ? observedPriorUnknownProjection
+      : { kind: 'none' as const };
+    const preservingUnknownHistory = priorUnknownProjection.kind === 'projected';
+    const midTurnState = preservingUnknownHistory
+      ? undefined
+      : this.deps.compaction.buildMidTurnCapacityCompactState(input);
     const queue = new AsyncEventQueue<SessionEvent>();
     const codeModeExecTool = this.createCodeModeExecTool(queue);
 
@@ -1133,7 +1160,7 @@ export class AiSdkTurn {
     let systemPrompt: string | undefined;
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
-    const priorReplayResult = await this.buildPriorMessages(input);
+    const priorReplayResult = await this.buildPriorMessages(input, priorUnknownProjection);
     if (this.aborted) {
       queue.push({
         type: 'abort',
@@ -1285,6 +1312,10 @@ export class AiSdkTurn {
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
+          // Prior unknown call/result pairs are outside this current-turn event
+          // set and are preserved separately in priorReplay. Continue pruning
+          // new tool results from this turn so one unknown predecessor does not
+          // make an unrelated large result permanently unprunable.
           const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
           if (pruned.stats) {
             contextBudgetForTelemetry = addToolResultPruneStats(
@@ -1470,6 +1501,9 @@ export class AiSdkTurn {
           }
           const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
+            priorUnknownProjection.kind === 'projected'
+              ? priorUnknownProjection.systemNotice
+              : undefined,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
@@ -1948,6 +1982,7 @@ export class AiSdkTurn {
               // nothing left to grant it, so the error is terminal.
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
+                !preservingUnknownHistory &&
                 stepBudgetRemains &&
                 failure.kind === 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
@@ -2678,7 +2713,10 @@ export class AiSdkTurn {
   }
 
   /** Materialize canonical RuntimeEvent history into ai-sdk's message format. */
-  private async buildPriorMessages(input: BackendSendInput): Promise<PriorReplayResult> {
+  private async buildPriorMessages(
+    input: BackendSendInput,
+    priorUnknownProjection: PriorUnknownToolOutcomeProjection,
+  ): Promise<PriorReplayResult> {
     if (!input.runtimeContext) {
       return {
         status: 'ready',
@@ -2696,40 +2734,81 @@ export class AiSdkTurn {
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect
     // content a committed transition removed.
-    const preparedContextBudget = await this.deps.compaction.prepareContextBudgetPolicy(
-      rawPriorRuntimeContext,
-      input.turnId,
-    );
-    const priorRuntimeContext = preparedContextBudget.events;
+    const preservingUnknownHistory = priorUnknownProjection.kind === 'projected';
+    let priorRuntimeContext: RuntimeEvent[];
+    let runtimeContext: RuntimeEvent[];
+    let contextBudget: ContextBudgetPolicy | undefined;
+    let contextBudgetDiagnostic: ContextBudgetDiagnostic | undefined;
+    let projectedHistoryCompactCheckpoint: HistoryCompactCheckpoint | undefined;
+    if (priorUnknownProjection.kind === 'projected') {
+      const preparedContextBudget = await this.deps.compaction.prepareContextBudgetPolicy(
+        rawPriorRuntimeContext,
+        input.turnId,
+      );
+      priorRuntimeContext = preparedContextBudget.events;
+      contextBudget = preparedContextBudget.policy;
+      const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+      const budgetedEvents = budgeted?.events ?? rawPriorRuntimeContext;
+      const preservesUnknownCalls = priorUnknownProjection.outcomes.every((outcome) =>
+        budgetedEvents.some((event) => event.id === outcome.callEventId),
+      );
+      // Existing checkpoints and durable result pruning are safe when they
+      // leave every unknown call available to pair with its temporary result.
+      // Otherwise replay the full effective ledger: a summary that erases T1
+      // would make the request-local T2 orphaned or hide the uncertainty.
+      const selectedEvents = preservesUnknownCalls ? budgetedEvents : rawPriorRuntimeContext;
+      const effectiveEvents = await this.deps.compaction.foldEffectiveModelHistory(
+        selectedEvents,
+        preparedContextBudget.projectionSnapshot,
+      );
+      runtimeContext = appendPriorUnknownToolResponses(effectiveEvents, priorUnknownProjection);
+      if (preservesUnknownCalls) {
+        contextBudgetDiagnostic = budgeted?.diagnostic;
+        projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
+      }
+      if (preparedContextBudget.diagnosticPatch) {
+        contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
+          contextBudgetDiagnostic ??
+            buildContextBudgetDiagnosticShell(priorRuntimeContext, effectiveEvents, contextBudget),
+          preparedContextBudget.diagnosticPatch,
+        );
+      }
+    } else {
+      const preparedContextBudget = await this.deps.compaction.prepareContextBudgetPolicy(
+        rawPriorRuntimeContext,
+        input.turnId,
+      );
+      priorRuntimeContext = preparedContextBudget.events;
+      contextBudget = preparedContextBudget.policy;
+      // Match the durable checkpoint against the RAW ledger prefix: every
+      // creation path (standalone compactHistory and the mid-turn state) pins
+      // its coverage digest on raw events, so matching the folded view here
+      // lets any durable projection transition inside the covered prefix orphan
+      // the checkpoint and silently fail open into a full-history replay
+      // (#4842). The projected [block, tail] is then folded through the
+      // transition reducer before it becomes messages, so a committed
+      // transition still cannot resurrect content for the model (#4283).
+      const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+      runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
+        budgeted?.events ?? rawPriorRuntimeContext,
+        preparedContextBudget.projectionSnapshot,
+      );
+      contextBudgetDiagnostic = budgeted?.diagnostic;
+      projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
+      if (preparedContextBudget.diagnosticPatch) {
+        contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
+          contextBudgetDiagnostic ??
+            buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
+          preparedContextBudget.diagnosticPatch,
+        );
+      }
+    }
     const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
       priorRuntimeContext,
       input.runtimeContextInvocations,
       this.deps.backend.providerStateIdentity,
       this.deps.backend.modelId,
     );
-    let contextBudget = preparedContextBudget.policy;
-    // Match the durable checkpoint against the RAW ledger prefix: every
-    // creation path (standalone compactHistory and the mid-turn state) pins
-    // its coverage digest on raw events, so matching the folded view here
-    // lets any durable projection transition inside the covered prefix orphan
-    // the checkpoint and silently fail open into a full-history replay
-    // (#4842). The projected [block, tail] is then folded through the
-    // transition reducer before it becomes messages, so a committed
-    // transition still cannot resurrect content for the model (#4283).
-    const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
-    let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
-      budgeted?.events ?? rawPriorRuntimeContext,
-      preparedContextBudget.projectionSnapshot,
-    );
-    let contextBudgetDiagnostic = budgeted?.diagnostic;
-    let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
-    if (preparedContextBudget.diagnosticPatch) {
-      contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
-        contextBudgetDiagnostic ??
-          buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
-        preparedContextBudget.diagnosticPatch,
-      );
-    }
 
     // No pre-turn estimate gate: the turn's first request is judged by the
     // request-projection hook from the previous request's real usage, and by

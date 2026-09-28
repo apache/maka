@@ -1,0 +1,71 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { parseHTML } from 'linkedom';
+import type { InlineReference } from '@maka/core/events';
+import { useComposerDraft, type ComposerDraftApi } from '../use-composer-draft.js';
+
+test('keyed draft appends preserve file reference offsets, isolation and clearing', async () => {
+  const originals = { document: globalThis.document, window: globalThis.window, IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(document.querySelector('#root')!);
+  let value = '';
+  let references: readonly InlineReference[] = [];
+  let draft!: ComposerDraftApi;
+  const text = { getValue: () => value, setValue: (next: string) => { value = next; } };
+  function Probe({ draftKey }: { draftKey: string }) {
+    draft = useComposerDraft({ text, draftKey, onDraftKeyChange() {},
+      references: { read: () => references, write: (next) => { references = next; } },
+    });
+    return null;
+  }
+  const render = async (draftKey: string) => act(() => root.render(<Probe draftKey={draftKey} />));
+  try {
+    await render('a');
+    draft.setDraft('a', 'old @old.ts  ', [{ kind: 'workspace_file', value: '@old.ts', label: 'old.ts', start: 4 }]);
+    await render('b');
+    draft.setDraft('b', 'unrelated');
+    draft.appendDraft('a', '  check @src/index.ts  ', [{ kind: 'workspace_file', value: '@src/index.ts', label: 'index.ts', start: 8 }]);
+    assert.equal(value, 'unrelated');
+    assert.deepEqual(references, []);
+    await render('a');
+    assert.equal(value, 'old @old.ts\n\ncheck @src/index.ts');
+    assert.deepEqual(references.map(({ value, start }) => ({ value, start })), [
+      { value: '@old.ts', start: 4 }, { value: '@src/index.ts', start: 19 },
+    ]);
+    draft.clearDraft('a');
+    assert.deepEqual(references, []);
+    await render('b');
+    await render('a');
+    assert.equal(value, '');
+    assert.deepEqual(references, []);
+    // No reference may survive a replacement just because the text matches.
+    draft.appendDraft('a', '@same.ts', [{ kind: 'workspace_file', value: '@same.ts', label: 'same.ts', start: 0 }]);
+    draft.setDraft('a', '@same.ts');
+    assert.deepEqual(references, []);
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, originals);
+  }
+});

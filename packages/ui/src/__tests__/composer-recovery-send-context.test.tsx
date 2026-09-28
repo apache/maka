@@ -84,6 +84,8 @@ async function harness(path: SendPath = 'submit') {
     const staged = useComposerAttachments({
       draftKey,
       copy: {
+        folderNotAttachable: 'Use a folder reference',
+        folderNotAttachableUseReference: 'Attach this folder as a reference instead.',
         attachmentFailedTitle: 'Attachment failed', tryAgain: 'Try again',
         imageAttachmentNotDirectTitle: 'Image', imageAttachmentNotDirectDescription: 'Image context',
       },

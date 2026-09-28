@@ -237,6 +237,30 @@ export class DesktopSessionLocalService {
     if (!record || record.sessionId !== sessionId || record.state !== 'failed') {
       throw new Error('Only a definitively failed message can be edited');
     }
+    return this.#editableDraft(target, record, senderId);
+  }
+
+  cancelUnsentToDraft(
+    target: DesktopSessionLocalTarget, sessionId: string, messageId: string, senderId: number,
+  ): DesktopLocalMessageDraft {
+    const record = this.store.get(target.partition, messageId);
+    if (!record || record.sessionId !== sessionId || record.state !== 'saved' || record.intent.originHostEpoch) {
+      throw new Error('Only a never-dispatched message can be withdrawn for editing');
+    }
+    // Snapshot and cancellation are synchronous: delivery cannot claim the row
+    // between them. If snapshotting fails, the original remains in the outbox.
+    const draft = this.#editableDraft(target, record, senderId);
+    try {
+      this.store.cancel(target.partition, messageId);
+      return draft;
+    } catch (error) {
+      this.attachmentRecovery.release(senderId, draft.stagedAttachments.map((item) => item.approvalId));
+      throw error;
+    }
+  }
+
+  #editableDraft(target: DesktopSessionLocalTarget, record: LocalOutboxRecord, senderId: number): DesktopLocalMessageDraft {
+    const { messageId, sessionId } = record;
     const { command } = record.intent;
     // Recovery uses the original input, never a lossy display summary. Explicit
     // skill selections must remain editable input on the normal send path.
@@ -727,8 +751,14 @@ export function registerDesktopSessionLocalIpc(deps: {
   );
   ipcMain.handle(
     'session-local:cancel',
-    (_event, scope: unknown, sessionId: string, messageId: string) => {
+    (event, scope: unknown, sessionId: string, messageId: string, options?: { restoreDraft?: unknown }) => {
       const target = service.target(scope);
+      if (options?.restoreDraft === true) {
+        const draft = service.cancelUnsentToDraft(target, requiredId(sessionId), requiredId(messageId), event.sender.id);
+        deps.changed(target.scope, sessionId);
+        service.wake();
+        return draft;
+      }
       const record = service.store.get(target.partition, requiredId(messageId));
       if (record && record.sessionId !== sessionId)
         throw new Error('Message belongs to another Session');

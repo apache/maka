@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -26,7 +27,6 @@ import {
   useComposerAttachments,
   ConversationServicesProvider,
   type ComposerAttachmentService,
-  type ConversationServices,
 } from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
@@ -36,7 +36,7 @@ type Picker = NonNullable<ComposerAttachmentService['pickDirectory']>;
 type Options = { draftKey: string; hostId?: string; pick: Picker };
 type State = ReturnType<typeof useComposerAttachments>;
 const reference = { hostId: 'host-a', path: '/workspace/source' };
-const services: ConversationServices = {
+const services = stubConversationServices({
   listMessages: async () => [],
   readFailedMessage: async () => { throw new Error('unused'); },
   releaseRecoveryAttachments: async () => {},
@@ -51,7 +51,7 @@ const services: ConversationServices = {
   newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [],
     searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
   mcp: { subscribeChanges: () => () => {} },
-};
+});
 
 async function mount(initial: Partial<Options> = {}) {
   const { root } = installReactRenderer();
@@ -182,4 +182,14 @@ test('IPC validates directory references without turning them into attachments o
       type: 'send', text: 'inspect', directoryReferences: references,
     }), /Invalid directory references/);
   }
+});
+
+test('restoreDirectories stages references under another draft for a later visit', async () => {
+  const probe = await mount();
+  await act(() => probe.state().restoreDirectories('draft-b', [reference]));
+  assert.deepEqual(probe.state().pendingDirectories, [], 'draft-a stays untouched');
+  await probe.render({ draftKey: 'draft-b' });
+  assert.deepEqual(probe.state().pendingDirectories, [reference]);
+  await act(() => probe.state().restoreDirectories('draft-b', [reference, reference]));
+  assert.deepEqual(probe.state().pendingDirectories, [reference], 'duplicates stay out');
 });
