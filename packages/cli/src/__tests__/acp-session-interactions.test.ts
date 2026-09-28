@@ -901,6 +901,11 @@ function answered(
   const base = { ...pending, revision: 2 as const, status: 'answered' as const };
   const committedAt = 10;
   switch (answer.kind) {
+    case 'terminal_handoff':
+      return {
+        ...base,
+        outcome: { kind: 'terminal_handoff_answer', action: answer.action, committedAt },
+      };
     case 'question':
       return {
         ...base,

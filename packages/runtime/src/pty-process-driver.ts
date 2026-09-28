@@ -44,8 +44,18 @@ export class PtyProcessDriver {
   private readonly subscriptions: IDisposable[];
   private exited = false;
   private disposed = false;
+  // Own the Unix write queue so a control handoff can fence every actual write.
+  // node-pty's void write() only acknowledges admission to its private queue.
+  private readonly writes: Array<{ buffer: Buffer; offset: number }> = [];
+  private queuedBytes = 0;
+  private writeTimer?: ReturnType<typeof setTimeout>;
+  private writeFailure?: Error;
+  private readonly drains = new Set<{ resolve(): void; reject(error: Error): void }>();
+  private readonly onWriteFailure: (error: Error) => void;
+  private readonly writeOwnedInput?: (buffer: Buffer, offset: number, length: number) => number;
 
   constructor(options: PtyProcessDriverOptions) {
+    this.onWriteFailure = options.onInvariantFailure;
     const env = { ...options.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
     const pty = options.stack.spawn(options.file, options.args, {
       cwd: options.cwd,
@@ -57,6 +67,14 @@ export class PtyProcessDriver {
       handleFlowControl: false,
     });
     this.pty = pty;
+    // The pinned node-pty patch owns both the synchronous write and close fence.
+    // fstat metadata cannot identify a PTY master on Linux (/dev/ptmx is shared).
+    const ownedWriter = (
+      pty as IPty & {
+        makaWriteSync?: (buffer: Buffer, offset: number, length: number) => number;
+      }
+    ).makaWriteSync;
+    this.writeOwnedInput = process.platform !== 'win32' ? ownedWriter?.bind(pty) : undefined;
     const subscriptions: IDisposable[] = [];
     try {
       subscriptions.push(
@@ -73,6 +91,7 @@ export class PtyProcessDriver {
         pty.onExit((exit) => {
           if (this.disposed || this.exited) return;
           this.exited = true;
+          this.closeWrites();
           options.onExit(exit);
         }),
       );
@@ -100,7 +119,104 @@ export class PtyProcessDriver {
   }
 
   write(data: string): void {
-    this.pty.write(data);
+    if (this.writeFailure) throw this.writeFailure;
+    if (this.exited || this.disposed) throw new Error('PTY input is closed');
+    if (!this.supportsInputFence) {
+      this.pty.write(data);
+      return;
+    }
+    const buffer = Buffer.from(data, 'utf8');
+    if (this.queuedBytes + buffer.length > 2 * 1024 * 1024) {
+      throw new Error('PTY input queue capacity exceeded');
+    }
+    this.writes.push({ buffer, offset: 0 });
+    this.queuedBytes += buffer.length;
+    this.flushWrites();
+  }
+
+  get supportsInputFence(): boolean {
+    return this.writeOwnedInput !== undefined;
+  }
+
+  /** Wait for admitted bytes to reach the OS, not for the child to consume them. */
+  async drainInput(signal: AbortSignal): Promise<void> {
+    if (this.writeFailure) throw this.writeFailure;
+    if (!this.supportsInputFence)
+      throw new Error('PTY input fencing is unavailable on this platform');
+    if (signal.aborted) throw new Error('PTY input fence cancelled');
+    if (this.exited || this.disposed) throw new Error('PTY input is closed');
+    if (this.writes.length === 0) return;
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        signal.removeEventListener('abort', abort);
+        this.drains.delete(waiter);
+        if (error) reject(error);
+        else resolve();
+      };
+      const abort = () => finish(new Error('PTY input fence cancelled'));
+      const waiter = { resolve: () => finish(), reject: (error: Error) => finish(error) };
+      this.drains.add(waiter);
+      signal.addEventListener('abort', abort, { once: true });
+    });
+  }
+
+  private flushWrites(): void {
+    if (this.writeTimer || this.exited || this.disposed) return;
+    const write = this.writeOwnedInput;
+    if (!write) return;
+    // A synchronous nonblocking write cannot outlive this PTY's fd ownership.
+    // Yield under backpressure and between bounded batches, never in the write.
+    let budget = 64 * 1024;
+    try {
+      while (this.writes.length && budget > 0) {
+        const entry = this.writes[0]!;
+        const length = Math.min(entry.buffer.length - entry.offset, budget);
+        if (length === 0) {
+          this.writes.shift();
+          continue;
+        }
+        const written = write(entry.buffer, entry.offset, length);
+        if (written === 0) break;
+        entry.offset += written;
+        this.queuedBytes -= written;
+        budget -= written;
+        if (entry.offset === entry.buffer.length) this.writes.shift();
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPIPE' || code === 'EIO' || code === 'EBADF') {
+        this.writeFailure = new Error('PTY input is closed');
+        this.closeWrites();
+        return;
+      }
+      if (code !== 'EAGAIN' && code !== 'EWOULDBLOCK' && code !== 'EINTR') {
+        this.failWrites();
+        return;
+      }
+    }
+    if (this.writes.length) {
+      this.writeTimer = setTimeout(() => {
+        this.writeTimer = undefined;
+        this.flushWrites();
+      }, 1);
+    } else {
+      for (const waiter of [...this.drains]) waiter.resolve();
+    }
+  }
+
+  private failWrites(): void {
+    this.writeFailure = new Error('PTY input delivery failed');
+    this.closeWrites();
+    this.onWriteFailure(this.writeFailure);
+  }
+
+  private closeWrites(): void {
+    if (this.writeTimer) clearTimeout(this.writeTimer);
+    this.writeTimer = undefined;
+    this.writes.length = 0;
+    this.queuedBytes = 0;
+    for (const waiter of [...this.drains])
+      waiter.reject(new Error('PTY input closed before delivery'));
   }
 
   resize(cols: number, rows: number): void {
@@ -114,6 +230,7 @@ export class PtyProcessDriver {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.closeWrites();
     for (const subscription of this.subscriptions) {
       try {
         subscription.dispose();

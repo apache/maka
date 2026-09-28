@@ -321,6 +321,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'runtime.resource.controller.acquire',
   'runtime.resource.controller.control',
   'runtime.resource.controller.release',
+  'runtime.resource.handoff',
   'runtime.resource.query',
   'runtime.resource.start',
   'runtime.resource.stop',

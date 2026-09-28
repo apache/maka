@@ -186,7 +186,7 @@ export function useWorkbarController(
     viteEnv?.VITE_MAKA_WORK_BOARD_START_TASK === '1' &&
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
-  const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
+  const { browser, sideChat, terminal, workBoard, review } = useWorkbarServices();
   const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
@@ -495,6 +495,48 @@ export function useWorkbarController(
     },
     [layout.setBottomPanelOpen, layout.setWorkbarCollapsed],
   );
+
+  // One registration owner. Cards await this same promise, including when a
+  // restored child mounts before the controller's passive effect has run.
+  const handoffSurface = useMemo(() => {
+    let pending: Promise<void> | undefined;
+    return {
+      prepare: () => {
+        if (!pending) {
+          const attempt = terminal.handoff!({ action: 'surface', sessionId: activeSessionId!, available: true }).then(() => {});
+          pending = attempt;
+          void attempt.catch(() => { if (pending === attempt) pending = undefined; });
+        }
+        return pending;
+      },
+      reset: () => { pending = undefined; },
+    };
+  }, [activeSessionId, terminal]);
+
+  useEffect(() => {
+    if (!activeSessionId || !terminal.handoff || workspace !== 'session') return;
+    let disposed = false;
+    const advertise = () => {
+      if (!disposed) void handoffSurface.prepare().catch(() => {});
+    };
+    advertise();
+    const unsubscribeResync = terminal.subscribeResync((event) => {
+      if (event.sessionId === activeSessionId) { handoffSurface.reset(); advertise(); }
+    });
+    const unsubscribe = review.subscribeSessionEvents(activeSessionId, (event) => {
+      if (event.type !== 'terminal_handoff_request') return;
+      layout.openDynamicWorkbarTab({ id: terminalSessionWorkbarTabId(event.ref), kind: 'terminal',
+        resourceRef: event.ref, ownerSessionId: activeSessionId, ordinal: reserveOrdinal('terminal') }, 'right');
+      revealPlacement('right');
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      unsubscribeResync();
+      handoffSurface.reset();
+      void terminal.handoff!({ action: 'surface', sessionId: activeSessionId, available: false }).catch(() => {});
+    };
+  }, [activeSessionId, workspace, terminal, review, layout.openDynamicWorkbarTab, reserveOrdinal, revealPlacement, handoffSurface]);
 
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
@@ -934,6 +976,7 @@ export function useWorkbarController(
     host: {
       workspace: workspace,
       activeId: input.available ? activeSessionId : undefined,
+      prepareTerminalHandoff: terminal.handoff && workspace === 'session' ? handoffSurface.prepare : undefined,
       projectId: input.projectId,
       projectAliases: input.projectAliases,
       rightCollapsed: layout.workbarCollapsed,

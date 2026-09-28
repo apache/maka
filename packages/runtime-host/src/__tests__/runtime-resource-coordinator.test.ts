@@ -46,11 +46,418 @@ import {
   type HostRuntimeResourceCoordinatorInput,
 } from '../server/runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import type { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 
 const SESSION_ID = 'session-1';
 const RUNTIME_REF = 'maka://runtime/background-tasks/shell-1';
 
 describe('Host Runtime Resource coordinator', () => {
+  test('a handoff cannot gate or stop a terminal the model is not allowed to read', async () => {
+    const harness = createHarness({
+      humanControl: {
+        preparePtyHandoff: async () => {
+          assert.fail('must validate before preparing');
+        },
+        writePrivatePtyInput: async () => {},
+        readPrivatePtySnapshot: async () => ({
+          text: '',
+        }),
+        resumePtyHandoff: async () => false,
+      },
+      interactionAuthority: () => ({
+        requestTerminalHandoff: async () => {
+          throw new Error('must not request');
+        },
+        closeTerminalHandoff: async () => {},
+      }),
+    });
+    harness.modelReadFailure = new Error('User-owned terminal');
+    await harness.coordinator.handlers['runtime.resource.handoff'](
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('desktop'),
+    );
+    await assert.rejects(
+      harness.coordinator.requestHandoff(RUNTIME_REF, 'Authenticate', {
+        sessionId: SESSION_ID,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        toolCallId: 'tool-1',
+        cwd: '/workspace',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      }),
+      /User-owned/,
+    );
+    assert.equal(harness.stopCount, 0);
+    const lookup = await harness.coordinator.handlers['runtime.resource.handoff'](
+      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection('desktop'),
+    );
+    assert.equal(lookup.ok && lookup.result.status, 'unavailable');
+  });
+
+  test('private handoff fences model writes, deduplicates input and survives controller disconnect', async () => {
+    const published = deferred();
+    const decision = deferred<import('@maka/core/interaction').InteractionCanonicalOutcome>();
+    let request!: Parameters<HostInteractionCoordinator['requestTerminalHandoff']>[0];
+    const inputs: string[] = [];
+    const harness = createHarness({
+      humanControl: {
+        preparePtyHandoff: async () => {},
+        writePrivatePtyInput: async (_session, _ref, input) => {
+          inputs.push(input);
+        },
+        readPrivatePtySnapshot: async () => ({
+          text: 'private',
+        }),
+        resumePtyHandoff: async () => true,
+      },
+      interactionAuthority: () => ({
+        requestTerminalHandoff: async (input) => {
+          request = input;
+          published.resolve();
+          return decision.promise;
+        },
+        closeTerminalHandoff: async () => {
+          await request.apply('cancel');
+          decision.resolve({
+            kind: 'closure',
+            reason: 'producer_cancelled',
+            committedAt: 1,
+          });
+        },
+      }),
+    });
+    const host = harness.coordinator;
+    const control = host.handlers['runtime.resource.handoff'];
+    assert.equal(host.isHandoffAvailable(SESSION_ID), false);
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('desktop'),
+    );
+    const held = deferred();
+    const release = deferred();
+    const admission = harness.sessionAdmission.run(SESSION_ID, async () => {
+      held.resolve();
+      await release.promise;
+    });
+    await held.promise;
+    const handoff = host.requestHandoff(RUNTIME_REF, 'Authenticate', {
+      sessionId: SESSION_ID,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      cwd: '/workspace',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    });
+    const staleWrite = assert.rejects(
+      host.writeStdin({
+        sessionId: SESSION_ID,
+        ref: RUNTIME_REF,
+        input: 'queued before handoff admission',
+      }),
+      /expired/,
+    );
+    release.resolve();
+    await admission;
+    await staleWrite;
+    await published.promise;
+    const identity = {
+      sessionId: SESSION_ID,
+      requestId: request.requestId,
+      controllerId: 'card-1',
+    };
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), false);
+    assert.equal((await control({ ...identity, action: 'ready' }, connection('desktop'))).ok, true);
+    const invalid = await control(
+      { ...identity, action: 'input', sequence: 1, input: 'two\nlines' },
+      connection('desktop'),
+    );
+    assert.equal(invalid.ok && invalid.result.rejection, 'invalid_input');
+    assert.equal(invalid.ok && invalid.result.nextSequence, 1);
+    assert.deepEqual(inputs, []);
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), true);
+    await control(
+      { ...identity, controllerId: 'replacement', action: 'ready' },
+      connection('desktop'),
+    );
+    await assert.rejects(request.apply('resume'), /controller expired before Resume/);
+    await control({ ...identity, action: 'ready' }, connection('desktop'));
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), true);
+    await assert.rejects(
+      host.writeStdin({
+        sessionId: SESSION_ID,
+        ref: RUNTIME_REF,
+        input: 'model write',
+      }),
+      /human/,
+    );
+    assert.equal(
+      (
+        await control(
+          {
+            ...identity,
+            action: 'input',
+            sequence: 1,
+            input: 'fixture-password',
+          },
+          connection('desktop'),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await control(
+          {
+            ...identity,
+            action: 'input',
+            sequence: 1,
+            input: 'must-not-replay',
+          },
+          connection('desktop'),
+        )
+      ).ok,
+      true,
+    );
+    assert.deepEqual(inputs, ['fixture-password\r']);
+    host.releaseConnection('desktop');
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), false);
+    assert.equal(
+      (
+        await control(
+          { ...identity, action: 'input', sequence: 2, input: 'stale' },
+          connection('desktop'),
+        )
+      ).ok,
+      true,
+    );
+    const expired = await control({ ...identity, action: 'observe' }, connection('desktop'));
+    assert.equal(expired.ok && expired.result.rejection, 'controller_expired');
+    assert.equal(expired.ok && expired.result.display, undefined);
+    await assert.rejects(
+      host.writeStdin({
+        sessionId: SESSION_ID,
+        ref: RUNTIME_REF,
+        input: 'model write',
+      }),
+      /human/,
+    );
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('reconnected'),
+    );
+    const reattached = { ...identity, controllerId: 'card-2' };
+    await control({ ...reattached, action: 'ready' }, connection('reconnected'));
+    assert.equal(request.canAnswer('resume', 'reconnected', 'card-2'), true);
+    assert.equal(request.canAnswer('resume', 'reconnected', 'card-1'), false);
+    await control(
+      { ...reattached, action: 'input', sequence: 2, input: 'second-factor' },
+      connection('reconnected'),
+    );
+    await request.apply('resume');
+    decision.resolve({
+      kind: 'terminal_handoff_answer',
+      action: 'resume',
+      committedAt: 2,
+    });
+    assert.equal(JSON.parse(await handoff).outcome, 'resumed');
+    assert.deepEqual(inputs, ['fixture-password\r', 'second-factor\r']);
+    await host.writeStdin({
+      sessionId: SESSION_ID,
+      ref: RUNTIME_REF,
+      input: 'new model write',
+    });
+    assert.equal(harness.writeCount, 1);
+    await control({ ...reattached, action: 'release' }, connection('reconnected'));
+    const afterSwitch = await control(
+      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection('reconnected'),
+    );
+    assert.equal(afterSwitch.ok && afterSwitch.result.phase, 'resumed');
+    await control({ ...reattached, action: 'ready' }, connection('reconnected'));
+    const returned = await control({ ...reattached, action: 'observe' }, connection('reconnected'));
+    assert.equal(returned.ok && returned.result.display?.text, 'private');
+    host.observeShellRunUpdate({
+      ...ptyUpdate(),
+      result: { ...ptySnapshot(), status: 'completed', exitCode: 0 },
+    });
+    const ended = await control({ ...reattached, action: 'observe' }, connection('reconnected'));
+    assert.equal(ended.ok && ended.result.status, 'closed');
+    assert.equal(ended.ok && ended.result.closure, 'exited');
+    assert.equal(ended.ok && ended.result.display, undefined);
+    const closedLookup = await control(
+      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection('reconnected'),
+    );
+    assert.equal(closedLookup.ok && closedLookup.result.request?.requestId, request.requestId);
+    assert.equal(closedLookup.ok && closedLookup.result.closure, 'exited');
+    const released = await control({ ...reattached, action: 'release' }, connection('reconnected'));
+    assert.equal(released.ok && released.result.status, 'closed');
+    const releasedLookup = await control(
+      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection('reconnected'),
+    );
+    assert.equal(releasedLookup.ok && releasedLookup.result.status, 'unavailable');
+    assert.equal(releasedLookup.ok && releasedLookup.result.request, undefined);
+  });
+
+  test('uncertain delivery stays fenced across reconnect and never resends input', async () => {
+    const published = deferred();
+    const decision = deferred<import('@maka/core/interaction').InteractionCanonicalOutcome>();
+    let request!: Parameters<HostInteractionCoordinator['requestTerminalHandoff']>[0];
+    let writes = 0;
+    const inputStarted = deferred();
+    const inputFinished = deferred();
+    const harness = createHarness({
+      humanControl: {
+        preparePtyHandoff: async () => {},
+        writePrivatePtyInput: async () => {
+          writes++;
+          inputStarted.resolve();
+          await inputFinished.promise;
+          throw new Error('partial write');
+        },
+        readPrivatePtySnapshot: async () => ({
+          text: 'private',
+        }),
+        resumePtyHandoff: async () => {
+          assert.fail('must not resume');
+        },
+      },
+      interactionAuthority: () => ({
+        requestTerminalHandoff: async (input) => {
+          request = input;
+          published.resolve();
+          return decision.promise;
+        },
+        closeTerminalHandoff: async () => {},
+      }),
+    });
+    const control = harness.coordinator.handlers['runtime.resource.handoff'];
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('desktop'),
+    );
+    const pending = harness.coordinator.requestHandoff(RUNTIME_REF, 'Authenticate', {
+      sessionId: SESSION_ID,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      cwd: '/workspace',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    });
+    await published.promise;
+    const identity = {
+      sessionId: SESSION_ID,
+      requestId: request.requestId,
+      controllerId: 'card-1',
+    };
+    await control({ ...identity, action: 'ready' }, connection('desktop'));
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), true);
+    const receiptPending = control(
+      { ...identity, action: 'input', sequence: 1, input: 'secret' },
+      connection('desktop'),
+    );
+    await inputStarted.promise;
+    const racedResume = assert.rejects(request.apply('resume'), /uncertain input delivery/);
+    inputFinished.resolve();
+    const receipt = await receiptPending;
+    await racedResume;
+    assert.equal(receipt.ok && receipt.result.status, 'outcome_unknown');
+    await control(
+      { ...identity, action: 'input', sequence: 1, input: 'secret' },
+      connection('desktop'),
+    );
+    harness.coordinator.releaseConnection('desktop');
+    await control({ action: 'surface', sessionId: SESSION_ID, available: true }, connection('new'));
+    const reclaimed = await control({ ...identity, action: 'ready' }, connection('new'));
+    assert.equal(reclaimed.ok && reclaimed.result.status, 'outcome_unknown');
+    assert.equal(request.canAnswer('resume', 'new', 'card-1'), false);
+    assert.equal(
+      (
+        await control(
+          { ...identity, action: 'input', sequence: 2, input: 'secret' },
+          connection('new'),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(writes, 1);
+    await request.apply('cancel');
+    decision.resolve({
+      kind: 'terminal_handoff_answer',
+      action: 'cancel',
+      committedAt: 1,
+    });
+    assert.equal(JSON.parse(await pending).outcome, 'closed');
+    const ended = await control({ ...identity, action: 'observe' }, connection('new'));
+    assert.equal(ended.ok && ended.result.closure, 'cancelled');
+  });
+
+  test('bounds only closed handoffs without evicting live resumed review surfaces', async () => {
+    const harness = createHarness({
+      humanControl: {
+        preparePtyHandoff: async () => {},
+        writePrivatePtyInput: async () => {},
+        readPrivatePtySnapshot: async () => ({ text: 'private' }),
+        resumePtyHandoff: async () => true,
+      },
+      interactionAuthority: () => ({
+        requestTerminalHandoff: async (request) => {
+          await harness.coordinator.handlers['runtime.resource.handoff'](
+            {
+              action: 'ready',
+              sessionId: SESSION_ID,
+              requestId: request.requestId,
+              controllerId: 'card',
+            },
+            connection('desktop'),
+          );
+          assert.equal(request.canAnswer('resume', 'desktop', 'card'), true);
+          await request.apply('resume');
+          return { kind: 'terminal_handoff_answer', action: 'resume', committedAt: 1 };
+        },
+        closeTerminalHandoff: async () => {},
+      }),
+    });
+    const host = harness.coordinator;
+    const control = host.handlers['runtime.resource.handoff'];
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('desktop'),
+    );
+    const refs = Array.from({ length: 130 }, (_, index) => `${RUNTIME_REF}-${index}`);
+    for (const ref of refs) {
+      await host.requestHandoff(ref, 'Authenticate', {
+        sessionId: SESSION_ID,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        toolCallId: ref,
+        cwd: '/workspace',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      });
+    }
+    const lookup = (ref: string) =>
+      control({ action: 'lookup', sessionId: SESSION_ID, ref }, connection('desktop'));
+    const live = await lookup(refs[0]!);
+    assert.equal(live.ok && live.result.phase, 'resumed');
+    for (const ref of refs)
+      host.observeShellRunUpdate({
+        ...ptyUpdate(),
+        result: { ...ptySnapshot(), ref, status: 'completed', exitCode: 0 },
+      });
+    const evicted = await lookup(refs[0]!);
+    const retained = await lookup(refs[2]!);
+    assert.equal(evicted.ok && evicted.result.status, 'unavailable');
+    assert.equal(retained.ok && retained.result.status, 'closed');
+    await host.close();
+  });
+
   test('pages one stable bounded projection and rejects stale continuation revisions', async () => {
     const harness = createHarness();
     harness.updates = Array.from({ length: 65 }, (_, index) => resourceUpdate(index));
@@ -117,7 +524,10 @@ describe('Host Runtime Resource coordinator', () => {
     const compact = compactState(0);
     harness.updates = [
       resourceUpdate(0, {
-        ownership: { kind: 'source_unavailable', sourceSessionId: 'source-session' },
+        ownership: {
+          kind: 'source_unavailable',
+          sourceSessionId: 'source-session',
+        },
         sourceToolCallId: 'call.1/part',
         result: compact,
       }),
@@ -306,7 +716,11 @@ describe('Host Runtime Resource coordinator', () => {
     const harness = createHarness();
     const firstConnection = connection('connection-1');
     const secondConnection = connection('connection-2');
-    const identity = { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' };
+    const identity = {
+      sessionId: SESSION_ID,
+      ref: RUNTIME_REF,
+      controllerId: 'controller-1',
+    };
 
     const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
       identity,
@@ -470,7 +884,11 @@ describe('Host Runtime Resource coordinator', () => {
     const harness = createHarness();
     harness.malformedStartResult = true;
     const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'sleep 3600' },
+      {
+        sessionId: SESSION_ID,
+        launchId: 'user-command-1',
+        command: 'sleep 3600',
+      },
       connection('connection-1'),
     );
 
@@ -503,7 +921,11 @@ describe('Host Runtime Resource coordinator', () => {
     harness.backgroundResult = terminalResult;
 
     const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'user-command-big', command: 'printf big' },
+      {
+        sessionId: SESSION_ID,
+        launchId: 'user-command-big',
+        command: 'printf big',
+      },
       connection('connection-1'),
     );
 
@@ -580,11 +1002,17 @@ describe('Host Runtime Resource coordinator', () => {
       },
     });
 
-    await harness.coordinator.runForegroundBash({ ...backgroundInput(), shell: callerPlan });
+    await harness.coordinator.runForegroundBash({
+      ...backgroundInput(),
+      shell: callerPlan,
+    });
     assert.deepEqual(harness.lastForegroundInput?.shell, callerPlan);
     assert.equal(resolveCalls, 0);
 
-    await harness.coordinator.runBackgroundBash({ ...backgroundInput(), shell: callerPlan });
+    await harness.coordinator.runBackgroundBash({
+      ...backgroundInput(),
+      shell: callerPlan,
+    });
     assert.deepEqual(harness.lastBackgroundInput?.shell, callerPlan);
     assert.equal(resolveCalls, 0);
     harness.finishBackground({ successful: true });
@@ -631,7 +1059,11 @@ describe('Host Runtime Resource coordinator', () => {
   test('starts a one-shot user command in pipes without exposing it to the model', async () => {
     const harness = createHarness();
     const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'printf user-command' },
+      {
+        sessionId: SESSION_ID,
+        launchId: 'user-command-1',
+        command: 'printf user-command',
+      },
       connection('connection-1'),
     );
 
@@ -691,7 +1123,11 @@ describe('Host Runtime Resource coordinator', () => {
     const harness = createHarness();
     const firstConnection = connection('connection-1');
     const secondConnection = connection('connection-2');
-    const identity = { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' };
+    const identity = {
+      sessionId: SESSION_ID,
+      ref: RUNTIME_REF,
+      controllerId: 'controller-1',
+    };
     await harness.coordinator.handlers['runtime.resource.controller.acquire'](
       identity,
       firstConnection,
@@ -869,7 +1305,11 @@ function createHarness(
   options: Partial<
     Pick<
       HostRuntimeResourceCoordinatorInput,
-      'requestDrain' | 'resolveShell' | 'sessionAccessAuthority'
+      | 'requestDrain'
+      | 'resolveShell'
+      | 'sessionAccessAuthority'
+      | 'humanControl'
+      | 'interactionAuthority'
     >
   > = {},
 ) {
@@ -896,6 +1336,7 @@ function createHarness(
     livePty: undefined as ShellRunPtySnapshot | null | undefined,
     inspectCalls: [] as { sessionId: string; ref: string }[],
     inspectFailure: undefined as Error | undefined,
+    modelReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
     lastForegroundInput: undefined as ShellRunBashInput | undefined,
@@ -922,7 +1363,10 @@ function createHarness(
       }
       return state.backgroundResult ?? compactState(0);
     },
-    readRuntimeResource: async () => currentSnapshot,
+    readRuntimeResource: async () => {
+      if (state.modelReadFailure) throw state.modelReadFailure;
+      return currentSnapshot;
+    },
     stopBackgroundTask: async () => {
       state.stopCount += 1;
       return {
@@ -954,7 +1398,12 @@ function createHarness(
           kind: 'pty_control',
           failed: false,
           ...(input.input
-            ? { input: { bytes: Buffer.byteLength(input.input, 'utf8'), queued: true } }
+            ? {
+                input: {
+                  bytes: Buffer.byteLength(input.input, 'utf8'),
+                  queued: true,
+                },
+              }
             : {}),
           ...(input.size
             ? {
@@ -976,7 +1425,10 @@ function createHarness(
             ref,
             sequence: 0,
             buffer: '',
-            size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
+            size: {
+              cols: currentSnapshot.output.cols,
+              rows: currentSnapshot.output.rows,
+            },
           },
     inspectResource: async (sessionId, ref) => {
       state.inspectCalls.push({ sessionId, ref });
@@ -1183,7 +1635,10 @@ test('Runtime Resource pages include output projections and their Session header
   }
   expected.sort((a, b) => a.result.ref.localeCompare(b.result.ref));
   const pages: Extract<RuntimeResourceQueryResult, { kind: 'page' }>[] = [];
-  let input: RuntimeResourceQueryInput = { kind: 'list_start', sessionId: SESSION_ID };
+  let input: RuntimeResourceQueryInput = {
+    kind: 'list_start',
+    sessionId: SESSION_ID,
+  };
   let end = 0;
   do {
     const outcome = await harness.coordinator.handlers['runtime.resource.query'](

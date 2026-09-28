@@ -61,7 +61,7 @@ import {
   shapeTerminalResult,
   withTurnShellGuidance,
 } from './shell-tools.js';
-import type { ShellRunLauncher } from './shell-tools.js';
+import type { ShellRunLauncher, TerminalHandoffToolSupport } from './shell-tools.js';
 import { defaultShellPlan, throwIfShellSetupFailed, type TurnShellPlan } from './shell-detect.js';
 import type {
   BackgroundTaskStopper,
@@ -177,6 +177,7 @@ export interface BuildBuiltinToolsOptions {
   };
   backgroundTasks?: BackgroundTaskStopper;
   ptyControls?: PtyControlWriter;
+  terminalHandoff?: TerminalHandoffToolSupport;
   executor?: WorkspaceExecutor;
   /**
    * Turn-scoped shell resolution that runs Bash commands. Defaults to the
@@ -222,6 +223,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildManagedBashTool(options.shellRuns, {
           executionFacts,
           shell,
+          terminalHandoffAvailable: Boolean(options.terminalHandoff),
           declareSandboxBoundary: options.declareSandboxBoundary !== false,
           ...(options.sandboxManager
             ? {
@@ -267,7 +269,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       ];
   const backgroundTools = [
     ...(options.backgroundTasks ? [buildStopBackgroundTaskTool(options.backgroundTasks)] : []),
-    ...(options.ptyControls ? [buildWriteStdinTool(options.ptyControls)] : []),
+    ...(options.ptyControls
+      ? [buildWriteStdinTool(options.ptyControls, options.terminalHandoff)]
+      : []),
   ];
   const applyPatchTool = {
     name: 'apply_patch',

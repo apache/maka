@@ -119,6 +119,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
     terminal: {
+      handoff: (input) => bridge.shellRuns.handoff(input),
+      answerHandoff: (input) => bridge.shellRuns.answerHandoff(input),
       start: (sessionId) => bridge.shellRuns.start(sessionId),
       stop: (input) => bridge.shellRuns.stop(input),
       attach: (input) => bridge.shellRuns.attach(input),
@@ -128,13 +130,23 @@ export function createDesktopWorkbarServices(
       subscribeResync: (handler) => bridge.shellRuns.subscribeResync(handler),
       recover: async (sessionId) => {
         const recovery = await bridge.shellRuns.recover(sessionId);
-        return { ...recovery, resources: recovery.resources.filter((update) =>
-          isDesktopTerminal(update) && !isTerminalShellRunStatus(update.result.status)),
-        };
+        const retained = await Promise.all(recovery.resources.map(async (update) => {
+          if (isTerminalShellRunStatus(update.result.status)) return null;
+          if (isDesktopTerminal(update)) return update;
+          if (update.ownership.kind !== 'local' || update.result.mode !== 'pty') return null;
+          const handoff = await bridge.shellRuns.handoff({ action: 'lookup', sessionId, ref: update.result.ref }).catch(() => undefined);
+          return handoff?.request ? update : null;
+        }));
+        // Recovered resource tabs are not persisted locally. Restore the task's
+        // private interaction before manual terminals so it remains the default
+        // surface after reload, independent of Host resource enumeration order.
+        const resources = retained.filter((value): value is NonNullable<typeof value> => value !== null)
+          .sort((a, b) => Number(isDesktopTerminal(a)) - Number(isDesktopTerminal(b)));
+        return { ...recovery, resources };
       },
       subscribeCloseChanges: (handler) => bridge.shellRuns.subscribeCloseChanges(handler),
       subscribeUpdates: (handler) => bridge.shellRuns.subscribeUpdates((update) => {
-        if (isDesktopTerminal(update)) handler(update);
+        if (update.ownership.kind === 'local' && update.result.mode === 'pty') handler(update);
       }),
     },
     browser: {
