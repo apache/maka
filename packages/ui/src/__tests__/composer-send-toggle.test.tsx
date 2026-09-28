@@ -223,5 +223,5 @@ test('a locally saved follow-up keeps its delivery status and recovery actions i
       deliveryActions: [{ label: 'Check delivery', icon: <span aria-hidden="true" />, onClick() {} }] }]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
   assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
-  assert.ok([...document.querySelectorAll('.maka-composer-queue-actions button')].some((button) => button.textContent === 'Check delivery'));
+  assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'));
 });
