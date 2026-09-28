@@ -105,8 +105,15 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
   const tryAnnotateQuote = (index: number): boolean =>
     chatViewRef.current?.openQuoteAnnotation(index) ?? false;
 
-  const quotesForSend = (): QuoteRef[] | undefined =>
-    bucket.length ? bucket : undefined;
+  // An in-flight send must not be bound to the render that started it: the
+  // revision lifecycle re-keys the plate onto the branch child mid-send and
+  // empties the source bucket in place (#5274 review), so the resumed send
+  // reads through the re-keyed owner key. The ref is stable across renders
+  // and buckets are mutated in place, never replaced.
+  const quotesForSend = (ownerKey = options.draftKey): QuoteRef[] | undefined => {
+    const target = pendingByKeyRef.current[ownerKey];
+    return target?.length ? target : undefined;
+  };
 
   return {
     pendingQuotes: bucket,

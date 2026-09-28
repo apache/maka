@@ -1583,10 +1583,10 @@ function AppShellContent({
       : undefined;
     const pending = submittableAttachments;
     // The re-key lands the plate's current quotes on the branch child before
-    // this send, so the live read carries exactly what the user staged —
-    // including removals and re-annotations made during the edit (#5274
-    // review).
-    const quotes = quotesForSend();
+    // this send, while this invocation's closure still points at the emptied
+    // source bucket — read the re-keyed owner explicitly so the replacement
+    // carries exactly what the user staged, edits included (#5274 review).
+    const quotes = quotesForSend(expectedRevisionDraft?.draftSessionId);
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
       targetSessionId: expectedRevisionDraft?.draftSessionId,
