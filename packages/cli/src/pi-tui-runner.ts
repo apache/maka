@@ -100,6 +100,7 @@ import {
   type MakaSessionSwitchResult,
   type SessionResumeAvailability,
 } from './session-driver.js';
+import { SESSION_CATALOG_MAX_SCAN_SESSIONS } from './session-catalog-limits.js';
 import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
   appendExpansionCollapseConfirmation,
@@ -538,9 +539,6 @@ function sessionConnectionIdentityNotice(
 }
 
 const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
-// Match the Runtime Host's eight-page, 32-item catalog scan bound so readiness
-// checks do not silently stop before the end of the bounded result.
-const MAX_SESSION_RESUME_CANDIDATES = 256;
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
@@ -3414,7 +3412,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         showSessionCatalogIncompleteNotice();
       });
     let sessions = await readPickerSessionCatalog(
-      options.onlyResumable ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd } : {},
+      options.onlyResumable ? { limit: SESSION_CATALOG_MAX_SCAN_SESSIONS, cwd } : {},
     );
     let sessionTree = projectRevisionLinkedSessionTree(
       sessions,
@@ -3463,7 +3461,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let pickerScope: 'current' | 'all' = options.onlyResumable ? 'current' : sessionListScope;
     const sessionsToCheck = (
       pickerScope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions
-    ).slice(0, MAX_SESSION_RESUME_CANDIDATES);
+    ).slice(0, SESSION_CATALOG_MAX_SCAN_SESSIONS);
     // Maka-session availability and Host source discovery are independent I/O; run
     // them concurrently so the picker's open latency is the slower of the two,
     // not their sum.
@@ -3480,7 +3478,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const ensureAvailabilityForScope = async (scope: 'current' | 'all'): Promise<void> => {
       const scopeSessions = (
         scope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions
-      ).slice(0, MAX_SESSION_RESUME_CANDIDATES);
+      ).slice(0, SESSION_CATALOG_MAX_SCAN_SESSIONS);
       const missingSessions = scopeSessions.filter((session) => !availability.has(session.id));
       if (missingSessions.length === 0) return;
       for (const [sessionId, sessionAvailability] of await Promise.all(
@@ -3589,8 +3587,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             if (options.onlyResumable) {
               sessions = await readPickerSessionCatalog(
                 nextScope === 'current'
-                  ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd }
-                  : { limit: MAX_SESSION_RESUME_CANDIDATES },
+                  ? { limit: SESSION_CATALOG_MAX_SCAN_SESSIONS, cwd }
+                  : { limit: SESSION_CATALOG_MAX_SCAN_SESSIONS },
               );
               sessionTree = projectRevisionLinkedSessionTree(
                 sessions,
@@ -3623,7 +3621,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (!input.driver.getSessionResumeCandidateAvailability) return;
       const sessions = sessionId
         ? undefined
-        : await readSessionCatalog({ limit: MAX_SESSION_RESUME_CANDIDATES, cwd });
+        : await readSessionCatalog({ limit: SESSION_CATALOG_MAX_SCAN_SESSIONS, cwd });
       const session = sessionId
         ? ((await input.driver.getSessionSummary?.(sessionId)) ??
           (await readSessionCatalog()).find((candidate) => candidate.id === sessionId))

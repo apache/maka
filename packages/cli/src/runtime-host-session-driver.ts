@@ -83,6 +83,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
 import type { RuntimeHostSessionChannelOpenResult } from './runtime-host-session-channel.js';
+import { SESSION_CATALOG_MAX_SCAN_PAGES } from './session-catalog-limits.js';
 import {
   getRuntimeHostSession,
   requireRuntimeHostSessionProjection as requireSession,
@@ -124,7 +125,6 @@ const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_CATALOG_ATTEMPTS = 3;
 // Sparse cwd or visibility matches must not turn a bounded lookup into a full Host scan.
-const MAX_SESSION_CATALOG_SCAN_PAGES = 8;
 const MAX_SESSION_CATALOG_READ_ATTEMPTS = 8;
 const SESSION_CATALOG_READ_RETRY_BASE_DELAY_MS = 8;
 const SESSION_CATALOG_READ_RETRY_MAX_DELAY_MS = 64;
@@ -371,7 +371,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         const cursors = new Set<string>();
         let cursor: RuntimeHostSessionCatalogPageCursor | undefined;
         let pagesRead = 0;
-        while (pagesRead < MAX_SESSION_CATALOG_SCAN_PAGES) {
+        while (pagesRead < SESSION_CATALOG_MAX_SCAN_PAGES) {
           const page = await readRuntimeHostSessionCatalogPage(this.#connection, cursor);
           pagesRead += 1;
           for (const item of page.sessions) {
@@ -402,7 +402,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           }
           cursors.add(cursor.cursor);
         }
-        if (cursor !== undefined && pagesRead === MAX_SESSION_CATALOG_SCAN_PAGES) {
+        if (cursor !== undefined && pagesRead === SESSION_CATALOG_MAX_SCAN_PAGES) {
           throw new MakaSessionCatalogIncompleteError(
             pagesRead,
             sessions.map(projectSessionCatalogSummary),
