@@ -23,7 +23,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { NavSelection } from "@maka/ui";
+import type { NavSelection, ToastApi } from "@maka/ui";
 import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
@@ -40,17 +40,6 @@ import {
 import { getShellCopy } from "./locales/shell-copy.js";
 import { memoryOpenFailureMessage } from "./locales/settings-memory-copy.js";
 import { settingsTestResultMessage } from "./locales/settings-test-result-copy.js";
-
-type ToastApi = {
-  success(title: string, description?: string): void;
-  info(title: string, description?: string): void;
-  error(
-    title: string,
-    description?: string,
-    diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string } | { profileId: string },
-  ): void;
-};
 
 type ComposerImportOwner = {
   sessionId: string | undefined;

@@ -369,7 +369,7 @@
           "react": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 2182
+        "nonTriviaTokens": 2136
       },
       "src/renderer/app-shell-context-compaction.ts": {
         "importDeclarations": 0,
