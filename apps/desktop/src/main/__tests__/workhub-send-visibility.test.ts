@@ -884,6 +884,79 @@ test('WorkHub retries an incomplete full-history read after the next ready snaps
   assert.equal(h.controller.error, undefined);
 });
 
+test('WorkHub clears an incomplete-history error when a manual read completes history', async () => {
+  let publishSnapshot!: Parameters<WorkHubServices['openTranscript']>[1];
+  const recent: StoredMessage = {
+    type: 'assistant', id: 'recent', turnId: 'recent-turn', ts: 2,
+    modelId: 'model', text: 'recent answer',
+  };
+  let loads = 0;
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      publishSnapshot = handler;
+      handler({ messages: [recent], ready: true, hasOlder: true, historyComplete: false });
+      return {
+        observationChanged() {},
+        async loadEarlier() {
+          loads += 1;
+          if (loads > 1) {
+            publishSnapshot({ messages: [recent], ready: true, hasOlder: false, historyComplete: true });
+          }
+        },
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+  assert.match(h.controller.error ?? '', /complete task history/);
+
+  await act(async () => { await h.controller.loadEarlier(); });
+
+  assert.equal(h.controller.transcript.historyComplete, true);
+  assert.equal(h.controller.error, undefined);
+});
+
+test('WorkHub retries an uncertain send before an incomplete-history read', async () => {
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      handler({ messages: [], ready: true, hasOlder: true, historyComplete: false });
+      return {
+        observationChanged() {},
+        async loadEarlier() {},
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+  assert.match(h.controller.error ?? '', /complete task history/);
+
+  let sent!: Promise<boolean>;
+  await act(async () => { sent = h.controller.send('retain uncertain send', []); });
+  const turnId = h.requests[0]!.turnId;
+  await act(async () => {
+    h.admission.reject(new RuntimeHostRequestInterruptedError(
+      'workhub.coordination.answer', 'command', 'dispatched', 'connection_lost',
+    ));
+    assert.equal(await sent, true);
+  });
+  assert.doesNotMatch(h.controller.error ?? '', /complete task history/);
+
+  const openCount = h.openCount;
+  const requestCount = h.requests.length;
+  h.resetAdmission();
+  await act(async () => {
+    h.controller.retry();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+  assert.equal(h.openCount, openCount, 'send recovery does not reopen transcript history');
+  assert.equal(h.requests.length, requestCount + 1);
+  await act(async () => {
+    h.admit(turnId);
+    h.admission.resolve({ turnId });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+});
+
 test('follow-up admission before an uncertain response keeps its successor placement', async () => {
   const h = await mountController();
   await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
