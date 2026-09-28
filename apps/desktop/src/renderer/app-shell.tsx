@@ -177,6 +177,7 @@ import {
   desktopSlashCommandPresentation,
   useActiveExecutionBoundary,
   useComposerAttachments,
+  useComposerModelOptions,
   useNewTaskChoice,
   useShellChatModel,
 } from './features/conversation/index.js';
@@ -758,6 +759,32 @@ function AppShellContent({
     openModelPicker: openComposerModelPicker,
     refreshModelChoices: sessionHostConnections.refreshConnections,
     setSessionExecutor,
+  });
+  const composerOptionsModel = activeId
+    ? (activeSessionForModelControls?.llmConnectionId && activeModel
+      ? {
+          connectionId: activeSessionForModelControls.llmConnectionId,
+          slug: activeSessionForModelControls.llmConnectionSlug,
+          model: activeModel,
+        }
+      : undefined)
+    : (newChatModel
+      ? {
+          connectionId: newChatModel.llmConnectionId,
+          slug: newChatModel.llmConnectionSlug,
+          model: newChatModel.model,
+        }
+      : undefined);
+  const composerOptionsHost = activeId && activeSession?.profileId && activeSession.runtimeHostId
+    ? { profileId: activeSession.profileId, hostId: activeSession.runtimeHostId }
+    : newTaskHost;
+  const composerModelOptions = useComposerModelOptions({
+    uiLocale,
+    connections,
+    model: composerOptionsModel,
+    host: composerOptionsHost,
+    refresh: refreshConnectionProjections,
+    reportError: (message) => toastApi.error(message),
   });
   // PR109d-b: turn footer actions per turn. Derived from the
   // materialized turn list (status + lineage descendants) + pending
@@ -2349,6 +2376,7 @@ function AppShellContent({
                     if (activeId) void setSessionThinkingLevel(activeId, level ?? null);
                   }}
                   {...composerModelProps}
+                  onFastChange={composerModelOptions.onFastChange}
                   onPickNewChatModel={(input) => {
                     setPendingNewChatModel(input);
                     if (modelSettingsOwnsComposerHost) saveComposerDefaults({ model: input });

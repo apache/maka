@@ -59,6 +59,7 @@ import {
   NewChatModelPicker,
   ThinkingLevelSelector,
 } from './chat-model-switcher.js';
+import { ComposerOptionsMenu } from './composer-options-menu.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helpers.js';
@@ -443,6 +444,8 @@ export const Composer = forwardRef<
     newChatThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
     newChatThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
     onNewChatThinkingLevelChange?(level: import('@maka/core/model-thinking').ThinkingLevel | undefined): void | Promise<void>;
+    /** Fast service tier, only offered when the current model supports it. */
+    onFastChange?(enabled: boolean): void | Promise<void>;
     /**
      * Home / empty-state composer only (no active session yet): the model
      * the next new chat will start with, and the picker callback. When set,
@@ -1851,6 +1854,45 @@ export const Composer = forwardRef<
         onChange={props.onNewChatThinkingLevelChange}
       />
     );
+  const unifiedModelOptions =
+    (props.pickerPresentation === undefined || props.pickerPresentation === 'popover') &&
+    !props.executorTarget &&
+    (props.modelChoices?.length ?? 0) > 0 &&
+    (props.activeSession ? Boolean(props.onModelChange) : Boolean(props.onPickNewChatModel));
+  const currentModelValue = props.activeSession
+    ? (props.activeModelConnectionId
+      ? exactModelChoiceValue(
+          props.activeModelConnectionId,
+          props.activeModelConnectionSlug ?? props.activeSession.llmConnectionSlug,
+          props.activeModel ?? props.activeSession.model,
+        )
+      : undefined)
+    : (props.newChatModel && !props.executorPicker?.selection
+      ? exactModelChoiceValue(
+          props.newChatModel.llmConnectionId,
+          props.newChatModel.llmConnectionSlug,
+          props.newChatModel.model,
+        )
+      : undefined);
+  const renderComposerOptions = (): ReactNode => (
+    <ComposerOptionsMenu
+      label={(props.activeSession ? props.activeModelLabel?.trim() : undefined) || modelChipLabel}
+      disabled={props.activeSession ? !modelSwitchAvailability.available : false}
+      disabledReason={props.activeSession ? modelSwitcherDisabledReason : undefined}
+      isReadOnly={props.pickersReadOnly}
+      openNonce={modelPickerNonce}
+      choices={props.modelChoices ?? []}
+      currentModelValue={currentModelValue}
+      onModelChange={onNativeModelChange}
+      thinkingLevels={props.activeSession ? props.activeThinkingLevels : props.newChatThinkingLevels}
+      thinkingLevel={props.activeSession ? props.activeThinkingLevel : props.newChatThinkingLevel}
+      onThinkingLevelChange={props.activeSession ? props.onThinkingLevelChange : props.onNewChatThinkingLevelChange}
+      onFastChange={props.onFastChange}
+      hasConversationHistory={props.modelSwitchHasHistory}
+      sessionId={props.activeSession?.id}
+      renderProviderMark={props.renderProviderMark}
+    />
+  );
 
   return (
     <>
@@ -2468,7 +2510,9 @@ export const Composer = forwardRef<
                         onExecutorTargetChange: props.onExecutorTargetChange,
                       }}
                       options={{
-                        fallback: (
+                        fallback: unifiedModelOptions && !props.executorPicker ? (
+                          renderComposerOptions()
+                        ) : (
                           <>
                             {props.activeSession ? (
                               <ChatModelSwitcher

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type ThinkingLevel } from './model-thinking.js';
+import { supportsCustomFastServiceTier, type ThinkingLevel } from './model-thinking.js';
 import {
   offerableCatalogEntries,
   providerDefaultsOf,
@@ -46,6 +46,10 @@ export interface ChatModelChoice {
   contextWindow?: number;
   /** User-declared context target, if this model has one. */
   declaredContextWindow?: number;
+  /** This custom model can request OpenAI's low-latency service tier. */
+  supportsFast?: boolean;
+  /** The saved Fast tier is on for this model. */
+  fastEnabled?: boolean;
 }
 
 export function buildChatModelChoices(
@@ -75,6 +79,10 @@ export function buildChatModelChoices(
         supportsVision: entry.supportsVision,
         ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
         ...(declaredWindow !== undefined ? { declaredContextWindow: declaredWindow } : {}),
+        ...(supportsCustomFastServiceTier(connection, entry.id) ? { supportsFast: true } : {}),
+        ...(connection.modelOverrides?.[entry.id]?.serviceTier === 'fast'
+          ? { fastEnabled: true }
+          : {}),
       });
     }
   }
