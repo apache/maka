@@ -21,7 +21,11 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { link, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readStableBoundedFile, syncDirectory, type StableBoundedFileHandle } from './stable-storage.js';
+import {
+  readStableBoundedFile,
+  syncDirectory,
+  type StableBoundedFileHandle,
+} from './stable-storage.js';
 
 export interface MarkerFileHandle extends StableBoundedFileHandle {
   writeFile(data: string, encoding: 'utf8'): Promise<void>;

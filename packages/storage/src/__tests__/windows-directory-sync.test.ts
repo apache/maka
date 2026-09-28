@@ -32,10 +32,7 @@ import {
 
 test('windowsDirectoryOpenFlags includes backup semantics and write-through (#3898)', () => {
   const flags = windowsDirectoryOpenFlags();
-  assert.equal(
-    (flags & WINDOWS_DIRECTORY_OPEN_FLAG) >>> 0,
-    WINDOWS_DIRECTORY_OPEN_FLAG,
-  );
+  assert.equal((flags & WINDOWS_DIRECTORY_OPEN_FLAG) >>> 0, WINDOWS_DIRECTORY_OPEN_FLAG);
   assert.equal(
     (flags & WINDOWS_DIRECTORY_WRITE_THROUGH_FLAG) >>> 0,
     WINDOWS_DIRECTORY_WRITE_THROUGH_FLAG,
