@@ -915,6 +915,7 @@ const desktopUpdateChannel = app.isPackaged
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
+  nativeUpdater: nativeAutoUpdater,
   updateChannel: desktopUpdateChannel,
   testFeedUrl: updateTestFeed,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
