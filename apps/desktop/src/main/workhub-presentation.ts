@@ -64,6 +64,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let placement: 'docked' | 'floating' = 'docked';
   let shortcutRegistered = false;
   let disposed = false;
+  // The app is closing every window for an update install (#5783): the
+  // floating panel must not veto its close, and a closing Desktop must not
+  // re-parent the conversation into a fresh panel. Cleared when a new Desktop
+  // window attaches, which only happens when the quit did not go through.
+  let releasedForQuit = false;
   let ipcRegistered = false;
   let rendererReady = false;
   let rendererCrashed = false;
@@ -311,7 +316,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     floating.on('show', () => deps.onVisibilityChanged?.());
     floating.on('restore', () => deps.onVisibilityChanged?.());
     floating.on('close', (event) => {
-      if (disposed) return;
+      if (disposed || releasedForQuit) return;
       event.preventDefault();
       ++presentationRevision;
       hideFloating();
@@ -479,9 +484,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function attachMainWindow(main: BrowserWindow): void {
     if (mainListeners.has(main)) return;
+    releasedForQuit = false;
     const contents = main.webContents;
     const onClose = () => {
-      if (disposed || parent !== main || !view) return;
+      if (disposed || releasedForQuit || parent !== main || !view) return;
       cancelFloatingAnimation();
       // BrowserWindow disposal must never own the conversation's lifetime.
       attach(ensureFloating());
@@ -715,6 +721,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (previous && !previous.webContents.isDestroyed()) previous.webContents.close({ waitForBeforeUnload: false });
   }
 
+  function releaseForQuit(): void {
+    releasedForQuit = true;
+  }
+
   function dispose(): void {
     if (disposed) return;
     disposed = true;
@@ -726,5 +736,5 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     floating = undefined;
   }
 
-  return { registerIpc, refreshSettings, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: (turnId?: string) => enqueue(() => prepareControl(turnId)), finishControl: () => { controlTurnId = undefined; }, show: async () => { if (disposed) throw new Error('WorkHub presentation is disposed'); ++presentationRevision; detach(); }, toggle, dispose };
+  return { registerIpc, refreshSettings, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: (turnId?: string) => enqueue(() => prepareControl(turnId)), finishControl: () => { controlTurnId = undefined; }, show: async () => { if (disposed) throw new Error('WorkHub presentation is disposed'); ++presentationRevision; detach(); }, toggle, releaseForQuit, dispose };
 }

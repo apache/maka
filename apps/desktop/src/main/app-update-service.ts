@@ -527,7 +527,12 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       const version = latestVersion() ?? deps.currentVersion;
       publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
       // Subscribe first: when Squirrel already holds the update, the native
-      // updater announces the quit synchronously inside this call.
+      // updater announces the quit synchronously inside this call. No
+      // announcement at all is left alone on purpose: on macOS Squirrel has
+      // yet to finish and every way it gives up reports an updater error; on
+      // Windows a second quitAndInstall after a cancelled quit is ignored by
+      // electron-updater without any signal, which this service cannot tell
+      // apart from a slow installer.
       watchInstallQuit();
       updater.quitAndInstall(false, true);
       const installStatus = currentStatus();

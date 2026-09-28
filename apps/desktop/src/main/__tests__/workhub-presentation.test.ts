@@ -161,7 +161,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
       screen: { getCursorScreenPoint: () => ({ x: pointerDisplay.x, y: pointerDisplay.y }), getDisplayNearestPoint: () => ({ workArea: pointerDisplay }), getDisplayMatching: () => ({ displayFrequency, workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
     } : nodeRequire(name),
   });
-  const main = new FakeWindow();
+  let main = new FakeWindow();
   const controller = module.exports.createWorkHubPresentation({
     mainWindow: () => mainAvailable ? main as unknown as Electron.BrowserWindow : undefined,
     isEnabled: () => enabled,
@@ -175,7 +175,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, containers, get container() { return containers.at(-1)!; }, errors, externalUrls, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { replaceMain: () => { main = new FakeWindow(); return main; }, onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, containers, get container() { return containers.at(-1)!; }, errors, externalUrls, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('hands safe WorkHub links to the OS while keeping the view local', async () => {
@@ -404,6 +404,48 @@ test('animates from the current height, keeps the bottom anchored and survives r
   h.advance(500);
   assert.equal(floating.bounds, hiddenBounds);
   assert.equal(view.webContents.sent.filter(([channel]) => channel.endsWith('viewport-inset')).at(-1)![1], 0, 'hiding clears transient clipping');
+  h.controller.dispose();
+});
+
+test('released for an update quit, the floating panel closes and Desktop does not re-parent into it', async () => {
+  const h = await harness();
+  h.main.show();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
+  await h.command(view.webContents, 'detach');
+  const floating = h.windows[1]!;
+  await h.command(view.webContents, 'dock');
+  assert.ok(h.main.children.has(h.container));
+
+  let prevented = 0;
+  const close = () => floating.emit('close', { preventDefault: () => { prevented++; } });
+  close();
+  assert.equal(prevented, 1, 'a live panel vetoes its own close');
+
+  h.controller.releaseForQuit();
+  close();
+  assert.equal(prevented, 1, 'a released panel lets Electron close it');
+  h.main.emit('close');
+  assert.ok(h.main.children.has(h.container), 'a closing Desktop keeps the conversation instead of re-parenting it');
+  assert.ok(!floating.children.has(h.container));
+  assert.equal(h.windows.length, 2, 'no replacement panel is created');
+
+  // Electron's sweep closed both windows, but the quit did not go through: a
+  // new Desktop window restores normal behaviour.
+  h.main.destroy();
+  floating.destroy();
+  const next = h.replaceMain();
+  h.controller.attachMainWindow(next as unknown as Electron.BrowserWindow);
+  assert.doesNotThrow(() => h.controller.send('settings:changed'));
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  await h.command(next.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
+  await h.command(h.views.at(-1)!.webContents, 'ready');
+  await h.command(h.views.at(-1)!.webContents, 'detach');
+  const panel = h.windows.at(-1)!;
+  assert.notEqual(panel, next, 'detaching opens a fresh panel');
+  panel.emit('close', { preventDefault: () => { prevented++; } });
+  assert.equal(prevented, 2, 'the veto is back once the app carries on');
   h.controller.dispose();
 });
 

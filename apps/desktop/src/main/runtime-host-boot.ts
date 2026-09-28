@@ -2104,13 +2104,14 @@ function wireLifecycle(): void {
   // macOS `quitAndInstall` closes every window and then waits, silently, for
   // the window list to empty before it asks Squirrel to relaunch; only that
   // relaunch reaches `before-quit`. WorkHub survives a main-window close by
-  // re-parenting into its floating panel, and the panel refuses its own close
-  // until the presentation is disposed, so the relaunch never started and the
-  // retired Runtime Host handoff was never released (#5783). Dispose here,
-  // ahead of the sweep, exactly as the regular quit cleanup would.
+  // re-parenting into its floating panel, and the panel refuses its own close,
+  // so the relaunch never started and the retired Runtime Host handoff was
+  // never released (#5783). Let the panel close ahead of the sweep. This is
+  // narrower than the dispose the quit cleanup performs later: if the quit
+  // does not go through, the next Desktop window brings WorkHub back.
   nativeAutoUpdater.on("before-quit-for-update", () => {
     try {
-      workHubPresentation.dispose();
+      workHubPresentation.releaseForQuit();
     } catch (error) {
       console.error("[update] WorkHub release before install failed:", error);
     }
