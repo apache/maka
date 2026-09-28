@@ -730,6 +730,20 @@ async function invokeSessionRuntimeHost<T>(
   return invokeWhenReady(channel, session.scope, session.sessionId, ...args) as Promise<T>;
 }
 
+type QueueMutationChannel =
+  | 'sessions:promoteQueueEntry'
+  | 'sessions:reorderQueueEntries'
+  | 'sessions:retractQueueEntry'
+  | 'sessions:updateQueueEntry';
+
+function invokeQueueMutation(
+  channel: QueueMutationChannel,
+  sessionId: string,
+  ...args: unknown[]
+): Promise<void> {
+  return invokeSessionRuntimeHost(channel, sessionId, ...args);
+}
+
 async function invokeRuntimeHostForSession<T>(
   channel: string,
   sessionId: string,
@@ -2342,15 +2356,26 @@ const makaBridge = {
     queryMessageExecutions(sessionId, messageIds) {
       return invokeSessionRuntimeHost('sessions:queryMessageExecutions', sessionId, messageIds);
     },
-    retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:retractQueueEntry', sessionId, entryId);
+    retractQueueEntry: (sessionId: string, entryId: string) =>
+      invokeQueueMutation('sessions:retractQueueEntry', sessionId, entryId),
+    promoteQueueEntry: (sessionId: string, entryId: string) =>
+      invokeQueueMutation('sessions:promoteQueueEntry', sessionId, entryId),
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void> {
+      return invokeQueueMutation(
+        'sessions:updateQueueEntry',
+        sessionId,
+        entryId,
+        expectedQueueRevision,
+        text,
+      );
     },
-    promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:promoteQueueEntry', sessionId, entryId);
-    },
-    reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:reorderQueueEntries', sessionId, [...entryIds]);
-    },
+    reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>
+      invokeQueueMutation('sessions:reorderQueueEntries', sessionId, [...entryIds], expectedQueueRevision),
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeSessionRuntimeHost('sessions:readExecutionBoundary', sessionId);
     },
@@ -2454,7 +2479,7 @@ const makaBridge = {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onObservationPhase?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
       onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
     ): () => void {
@@ -2478,9 +2503,10 @@ const makaBridge = {
         // registry restores this observer on the replacement target. Profile
         // identity admits that replacement without accepting another Host's
         // same-named Session channel.
-        unsubscribeEvents = subscribeEveryRuntimeHostEvent(
-          `sessions:event:${session.sessionId}`,
-          (scope, event: SessionEvent | SessionObservationMessage) => {
+        const consumeObservationEvent = (
+          scope: DesktopTargetScope,
+          event: SessionEvent | SessionObservationMessage,
+        ): void => {
             if (disposed) return;
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
             if (event.type === 'host_observation_seed') {
@@ -2492,26 +2518,24 @@ const makaBridge = {
                 if (disposed) return;
                 handler(projectDesktopSessionEvent(scope, seededEvent));
               }
-              if (!disposed) onObservationSeed?.('ready');
+              if (!disposed) onObservationPhase?.('ready');
               return;
             }
             if (event.type === 'host_observation_pending') {
               if (lastExecution) lastExecution = { ...lastExecution, available: false };
               onExecution?.(lastExecution);
-              onObservationSeed?.('pending');
+              onObservationPhase?.('pending');
               return;
             }
-            if (event.type === 'host_execution') {
-              acceptExecution(event);
-              return;
-            }
+            if (event.type === 'host_execution') return void acceptExecution(event);
             if (event.type === 'host_observation_error') {
               onSeedError?.(new Error(event.message));
               return;
             }
             handler(projectDesktopSessionEvent(scope, event));
-          },
-        );
+        };
+        const observationChannel = `sessions:event:${session.sessionId}`;
+        unsubscribeEvents = subscribeEveryRuntimeHostEvent(observationChannel, consumeObservationEvent);
         return {
           completion: invokeWhenReady(
             'sessions:observe',
@@ -4190,7 +4214,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   makaBridge.sessions.subscribeEvents = (
     sessionId,
     handler,
-    onObservationSeed,
+    onObservationPhase,
     onSeedError,
     onExecution,
   ) => {
@@ -4201,7 +4225,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       let unsubscribe = () => {};
       void waitForLatch('sessions.observe').then(() => {
         if (!disposed) unsubscribe = subscribeSessionEvents(
-          sessionId, handler, onObservationSeed, onSeedError, onExecution,
+          sessionId, handler, onObservationPhase, onSeedError, onExecution,
         );
       });
       return () => { disposed = true; unsubscribe(); };

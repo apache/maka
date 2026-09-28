@@ -25,38 +25,16 @@
  * useful than a relative label like "300 天前".
  */
 
-import { uiLocaleToIntlLocale, type UiCatalog, type UiLocale } from './ui-locale.js';
-
-/** Maximum age (ms) that still gets a relative bucket. Older → absolute. */
-const RELATIVE_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Age below this stays on one just-now label instead of counting seconds. */
-const JUST_NOW_MS = 60_000;
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-const MONTH_MS = 30 * DAY_MS;
-const YEAR_MS = 12 * MONTH_MS;
-/** Stays below the browser timer ceiling while avoiding needless daily wakes. */
-const MAX_SIDEBAR_REFRESH_MS = 24 * DAY_MS;
-const SIDEBAR_TIME_BUCKETS = [
-  { unitMs: MINUTE_MS, maxValue: 60, suffix: 'min' },
-  { unitMs: HOUR_MS, maxValue: 24, suffix: 'h' },
-  { unitMs: DAY_MS, maxValue: 30, suffix: 'd' },
-  { unitMs: MONTH_MS, maxValue: 12, suffix: 'mo' },
-  { unitMs: YEAR_MS, maxValue: Number.POSITIVE_INFINITY, suffix: 'y' },
-] as const;
-
-const JUST_NOW: UiCatalog<string> = {
-  'zh-CN': '刚刚',
-  'zh-TW': '剛剛',
-  en: 'just now',
-};
-
-/** Future timestamps are treated as age zero and therefore display as just now. */
-function relativeAgeMs(ts: number, now: number): number {
-  return Math.max(0, now - ts);
-}
+import { uiLocaleToIntlLocale, type UiLocale } from './ui-locale.js';
+import {
+  JUST_NOW,
+  JUST_NOW_MS,
+  RELATIVE_HORIZON_MS,
+  relativeAgeMs,
+  nextRelativeRefreshDelay as nextRelativeRefreshDelayPolicy,
+  nextSidebarRefreshDelay as nextSidebarRefreshDelayPolicy,
+  sidebarTimeBucket,
+} from './relative-time-policy.js';
 
 // One cache per formatter. They used to share `cachedLocale` and clear each
 // other on a miss, so alternating relative and absolute reads — which is what
@@ -193,37 +171,9 @@ export function resetRelativeTimeFormatters(): void {
  * past the horizon (never re-render).
  */
 export function nextRelativeRefreshDelay(ts: number, now: number = Date.now()): number | null {
-  const ageMs = relativeAgeMs(ts, now);
-  if (ageMs > RELATIVE_HORIZON_MS) return null;
-  if (ageMs < JUST_NOW_MS) return JUST_NOW_MS - ageMs;
-  if (ageMs < 60 * 60_000) return 60_000;
-  return 10 * 60_000;
+  return nextRelativeRefreshDelayPolicy(ts, now);
 }
 
-function nextRoundedBoundaryDelay(ageMs: number, unitMs: number, value: number): number {
-  return Math.max(1, Math.ceil((value + 0.5) * unitMs - ageMs));
-}
-
-function sidebarTimeBucket(ageMs: number): {
-  value: number;
-  unitMs: number;
-  suffix: (typeof SIDEBAR_TIME_BUCKETS)[number]['suffix'];
-} {
-  for (const bucket of SIDEBAR_TIME_BUCKETS) {
-    const value = Math.round(ageMs / bucket.unitMs);
-    if (value < bucket.maxValue) return { value, unitMs: bucket.unitMs, suffix: bucket.suffix };
-  }
-  throw new Error('Sidebar time buckets must end with an unbounded bucket');
-}
-
-/** Refreshes at the next visible sidebar bucket, capped below the timer ceiling. */
 export function nextSidebarRefreshDelay(ts: number, now: number = Date.now()): number | null {
-  const ageMs = relativeAgeMs(ts, now);
-  if (!Number.isFinite(ageMs)) return null;
-  if (ageMs < JUST_NOW_MS) return JUST_NOW_MS - ageMs;
-  const bucket = sidebarTimeBucket(ageMs);
-  return Math.min(
-    nextRoundedBoundaryDelay(ageMs, bucket.unitMs, bucket.value),
-    MAX_SIDEBAR_REFRESH_MS,
-  );
+  return nextSidebarRefreshDelayPolicy(ts, now);
 }

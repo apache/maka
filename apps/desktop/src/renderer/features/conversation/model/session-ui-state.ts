@@ -45,6 +45,7 @@ export interface AppShellSessionUiState {
 
 export interface MessageQueueUiState {
   readonly ts: number;
+  readonly queueRevision?: number;
   readonly entries: readonly MessageQueueEntryProjection[];
 }
 

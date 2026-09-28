@@ -101,7 +101,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
       subscribeSessionEvents: () => () => {},
       subscribeUsageChanges: () => () => {},
     },
-    retractQueueEntry: async () => {}, promoteQueueEntry: async () => {},
+    retractQueueEntry: async () => {}, promoteQueueEntry: async () => {}, updateQueueEntry: async () => {},
     reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
     queryMessageExecutions: async () => ({ resolutions: [] }),
