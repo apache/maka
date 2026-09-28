@@ -37,6 +37,9 @@ class EgressFilterTest(unittest.TestCase):
             "https://raw.githubusercontent.com/tbench-ai/terminal-bench/main/tests/x": "benchmark_repository",
             "https://huggingface.co/datasets/acme/terminal-bench-traces": "terminal_bench_url",
             "https://github.com/hqeric/maka-eval-trajectories": "public_trajectory",
+            "https://api.github.com/repos/hqeric/maka-eval-trajectories": "public_trajectory",
+            "https://raw.githubusercontent.com/hqeric/maka-eval-trajectories/main/run.json": "public_trajectory",
+            "https://huggingface.co/hqeric/maka-eval-trajectories": "public_trajectory",
             "https://spylab.ai/reference/terminalbench-solution": "terminal_bench_url",
             "https://example.test/patches-terminalbench-task-1.diff": "known_patch_artifact",
             f"https://example.test/archive?revision={MODULE.PINNED_REVISION}": "pinned_revision",
@@ -49,6 +52,7 @@ class EgressFilterTest(unittest.TestCase):
             "https://github.com/harbor-framework/terminal%252Dbench-2-1.git": "benchmark_repository",
             "https://terminal-bench.io/tasks/answers": "terminal_bench_url",
             "https://sub.tbench.ai/x": "tbench_domain",
+            "https://TBENCH.AI./tasks": "tbench_domain",
             # A DNS label is as good a place to name a contamination surface as
             # a path, so every rule searches both fields.
             f"https://{MODULE.PINNED_REVISION}.example.test/archive": "pinned_revision",
@@ -73,6 +77,20 @@ class EgressFilterTest(unittest.TestCase):
         for url in ["", "file:///tmp/terminal-bench.log", "https://example.test/%ZZ"]:
             with self.assertRaises(ValueError, msg=url):
                 MODULE.contamination_rule(url)
+
+    def test_url_normalization_is_bounded_and_preserves_only_http_authorities(self) -> None:
+        self.assertEqual(
+            MODULE.normalize_url("  https://example.test/a%25252Fb  "),
+            "https://example.test/a/b",
+        )
+        for url in (
+            "https://example.test/a%2525252Fb",
+            "mailto:user@example.test",
+            "https:///missing-host",
+            "//example.test/path",
+        ):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                MODULE.normalize_url(url)
 
     def _enable_http_responses(self) -> None:
         class FakeResponse:
@@ -107,6 +125,30 @@ class EgressFilterTest(unittest.TestCase):
                     self.assertEqual(
                         flow.response["headers"]["X-Maka-Eval-Egress-Rule"], rule_id
                     )
+                    if status == 451:
+                        self.assertEqual(
+                            flow.response,
+                            {
+                                "status": 451,
+                                "body": b"Benchmark source or public solution access is blocked during evaluation.\n",
+                                "headers": {
+                                    "Content-Type": "text/plain; charset=utf-8",
+                                    "X-Maka-Eval-Egress-Rule": "tbench_domain",
+                                },
+                            },
+                        )
+                    else:
+                        self.assertEqual(
+                            flow.response,
+                            {
+                                "status": 503,
+                                "body": b"Eval egress policy could not classify this request.\n",
+                                "headers": {
+                                    "Content-Type": "text/plain; charset=utf-8",
+                                    "X-Maka-Eval-Egress-Rule": "policy_error",
+                                },
+                            },
+                        )
             records = [json.loads(line) for line in MODULE.AUDIT_PATH.read_text().splitlines()]
             self.assertEqual(
                 [record["ruleId"] for record in records],
@@ -117,67 +159,55 @@ class EgressFilterTest(unittest.TestCase):
                 ("tbench.ai", "/tasks"),
             )
 
-    def test_connect_classification_blocks_only_contamination_targets(self) -> None:
+    def test_connect_decision_depends_only_on_the_validated_tunnel_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             self._enable_http_responses()
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            for host, expected_status in (
-                ("tbench.ai", 451),
-                ("example.com", None),
-                ("github.com", None),
-                ("ssh.github.com", None),
-            ):
-                with self.subTest(host=host):
+            cases = (
+                ("tbench.ai", "example.com", 451, "tbench_domain"),
+                ("example.com", "tbench.ai", None, None),
+                ("github.com", "tbench.ai", None, None),
+                ("ssh.github.com", "tbench.ai", None, None),
+                ("", "example.com", 503, "policy_error"),
+            )
+            for host, pretty_host, expected_status, expected_rule in cases:
+                with self.subTest(host=host, pretty_host=pretty_host):
                     flow = SimpleNamespace(
-                        request=SimpleNamespace(host=host, port=443), response=None
+                        request=SimpleNamespace(
+                            host=host, pretty_host=pretty_host, port=443
+                        ),
+                        response=None,
                     )
+                    before = len(MODULE.AUDIT_PATH.read_text().splitlines()) if MODULE.AUDIT_PATH.exists() else 0
                     MODULE.http_connect(flow)
-                    actual = None if flow.response is None else flow.response["status"]
-                    self.assertEqual(actual, expected_status)
-            record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(
-                (record["ruleId"], record["host"]),
-                ("tbench_domain", "tbench.ai"),
-            )
+                    actual_status = None if flow.response is None else flow.response["status"]
+                    self.assertEqual(actual_status, expected_status)
+                    records = MODULE.AUDIT_PATH.read_text().splitlines() if MODULE.AUDIT_PATH.exists() else []
+                    self.assertEqual(len(records) - before, int(expected_rule is not None))
+                    if expected_rule is not None:
+                        record = json.loads(records[-1])
+                        self.assertEqual((record["ruleId"], record["host"]), (expected_rule, host))
 
-    def test_connect_policy_uses_the_tunnel_target_not_a_spoofed_host_header(self) -> None:
-        class Response:
-            @staticmethod
-            def make(status, body, headers):
-                return {"status": status, "body": body, "headers": headers}
-
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.http = SimpleNamespace(Response=Response)
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            flow = SimpleNamespace(
-                request=SimpleNamespace(
-                    host="tbench.ai", pretty_host="example.com", port=443
-                ),
-                response=None,
-            )
-
-            MODULE.http_connect(flow)
-
-            self.assertEqual(flow.response["status"], 451)
-            self.assertEqual(
-                json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])["host"],
-                "tbench.ai",
-            )
-
-            flow.request.host = ""
-            flow.response = None
-            MODULE.http_connect(flow)
-            self.assertEqual(flow.response["status"], 503)
+            missing_request = SimpleNamespace(response=None)
+            MODULE.http_connect(missing_request)
+            self.assertEqual(missing_request.response["status"], 503)
 
     def test_connect_rejects_malformed_authorities_and_ports(self) -> None:
         self._enable_http_responses()
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
             for host, port in (
+                (None, 443),
+                (1, 443),
                 ("tbench.ai@safe.example", 443),
                 ("safe.example/path", 443),
+                ("safe example", 443),
+                ("safe.example?query", 443),
+                ("[not-ipv6]", 443),
                 ("safe.example", 0),
                 ("safe.example", 65536),
+                ("safe.example", 1.5),
+                ("safe.example", "443"),
             ):
                 with self.subTest(host=host, port=port):
                     flow = SimpleNamespace(
@@ -201,12 +231,27 @@ class EgressFilterTest(unittest.TestCase):
         self.assertEqual(MODULE.connect_url("example.com", None), "https://example.com/")
         self.assertEqual(MODULE.connect_url("example.com", 80), "http://example.com/")
         self.assertEqual(MODULE.connect_url("example.com", 8443), "https://example.com:8443/")
+        self.assertEqual(MODULE.connect_url("example.com", 1), "https://example.com:1/")
+        self.assertEqual(MODULE.connect_url("example.com", 65535), "https://example.com:65535/")
         self.assertEqual(MODULE.connect_url("2001:db8::1", 443), "https://[2001:db8::1]/")
+        self.assertEqual(MODULE.connect_url("[2001:db8::1]", 443), "https://[2001:db8::1]/")
         for host, port in (
+            (None, 443),
+            (1, 443),
+            ("", 443),
             ("user@example.com", 443),
             ("example.com/path", 443),
+            ("example.com?query", 443),
+            ("example.com#fragment", 443),
+            ("example com", 443),
+            ("[not-ipv6]", 443),
+            ("[2001:db8::1", 443),
             (" example.com", 443),
+            ("example.com ", 443),
             ("example.com", True),
+            ("example.com", 1.5),
+            ("example.com", "443"),
+            ("example.com", 0),
             ("example.com", 65536),
         ):
             with self.subTest(host=host, port=port):
@@ -229,9 +274,10 @@ class EgressFilterTest(unittest.TestCase):
                 killable=True,
             )
             flow.kill = lambda: closed.append("closed")
-            MODULE.tcp_start(flow)
-            MODULE.tcp_message(flow)
-            self.assertEqual(closed, ["closed", "closed"])
+            for hook in (MODULE.tcp_start, MODULE.tcp_message):
+                hook(flow)
+                self.assertEqual(closed[-1], "closed")
+            self.assertEqual(len(closed), 2)
             self.assertEqual(flow.messages[-1].content, b"")
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
             self.assertEqual(
@@ -347,6 +393,52 @@ class EgressFilterTest(unittest.TestCase):
                 MODULE.next_layer(incomplete)
                 self.assertIsNone(incomplete.layer)
 
+    def test_initial_stream_classification_covers_partial_protocol_boundaries(self) -> None:
+        def stream(client: bytes, server: bytes = b""):
+            return SimpleNamespace(
+                data_client=lambda: client,
+                data_server=lambda: server,
+            )
+
+        cases = (
+            (b"", b"", False),
+            (b"\x16", b"", False),
+            (b"\x16\x03", b"", False),
+            (b"\x16\x03\x01", b"", False),
+            (b"G", b"", False),
+            (b"GET / HTTP/1.1\r\n", b"", False),
+            (b"GET / HTTP/1.1\r\n", b"server-banner", True),
+            (b"GET\n", b"", True),
+            (b"\x00", b"", True),
+            (b"", b"server-banner", True),
+            (b"SSH-2.0", b"", True),
+        )
+        for client, server, expected in cases:
+            with self.subTest(client=client, server=server):
+                self.assertEqual(MODULE.initial_stream_is_raw(stream(client, server)), expected)
+
+        self.assertEqual(MODULE._next_layer_bytes(SimpleNamespace(), "missing"), b"")
+        self.assertEqual(
+            MODULE._next_layer_bytes(
+                SimpleNamespace(data_client=lambda: bytearray(b"GET")), "data_client"
+            ),
+            b"GET",
+        )
+        self.assertEqual(
+            MODULE._next_layer_bytes(
+                SimpleNamespace(data_client=lambda: "GET"), "data_client"
+            ),
+            b"",
+        )
+
+        def fail() -> bytes:
+            raise RuntimeError("unavailable")
+
+        self.assertEqual(
+            MODULE._next_layer_bytes(SimpleNamespace(data_client=fail), "data_client"),
+            b"",
+        )
+
     def test_next_layer_closes_bytes_that_cannot_become_http(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
@@ -410,6 +502,9 @@ class EgressFilterTest(unittest.TestCase):
                 "raw_tunnel",
             )
 
+            MODULE.response(SimpleNamespace())
+            self.assertEqual(len(MODULE.AUDIT_PATH.read_text().splitlines()), 2)
+
     def test_next_layer_replaces_raw_tcp_with_a_closer(self) -> None:
         class FakeTCPLayer:
             def __init__(self, context: object) -> None:
@@ -463,6 +558,42 @@ class EgressFilterTest(unittest.TestCase):
         nextlayer = SimpleNamespace(layer=original, context=SimpleNamespace())
         MODULE.next_layer(nextlayer)
         self.assertIs(nextlayer.layer, original)
+
+    def test_raw_transport_helpers_preserve_peer_and_layer_boundaries(self) -> None:
+        self.assertEqual(
+            MODULE.peer_label(
+                SimpleNamespace(server_conn=SimpleNamespace(address=("host.example", 443)))
+            ),
+            ("host.example", ":443"),
+        )
+        self.assertEqual(
+            MODULE.peer_label(SimpleNamespace(server=SimpleNamespace(address=("host",)))),
+            ("host", ""),
+        )
+        self.assertEqual(MODULE.peer_label(SimpleNamespace(server=SimpleNamespace(address=None))), ("", ""))
+
+        calls: list[str] = []
+        MODULE.close_flow(SimpleNamespace(kill=lambda: calls.append("kill"), killable=False))
+        MODULE.close_flow(SimpleNamespace(kill=lambda: calls.append("kill"), killable=True))
+        MODULE.close_flow(SimpleNamespace(kill=lambda: (_ for _ in ()).throw(RuntimeError("closed"))))
+        MODULE.close_flow(SimpleNamespace())
+        self.assertEqual(calls, ["kill"])
+
+        current = object()
+        sibling = object()
+        closer = object()
+        context = SimpleNamespace(layers=[sibling, current, closer])
+        MODULE.replace_layer(context, current, closer)
+        self.assertEqual(context.layers, [sibling, closer])
+
+        missing = object()
+        appended = object()
+        MODULE.replace_layer(context, missing, appended)
+        self.assertEqual(context.layers, [sibling, closer, appended])
+
+        untouched = SimpleNamespace(layers=tuple(context.layers))
+        MODULE.replace_layer(untouched, closer, object())
+        self.assertEqual(untouched.layers, tuple(context.layers))
 
 if __name__ == "__main__":
     unittest.main()

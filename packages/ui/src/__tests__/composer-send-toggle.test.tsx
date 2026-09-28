@@ -203,11 +203,30 @@ test('the actual submit waits for Session references and keeps the draft on refu
 });
 
 test('deduplicates pending steering against Host queue entries and keeps the plate through an empty queue snapshot', () => {
-  const pending = { id: 'steer', text: 'new direction', ts: 1, transientPlacement: 'follow_up' as const };
-  const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
+  const pending = {
+    id: 'steer',
+    text: 'new direction',
+    ts: 1,
+    transientPlacement: 'follow_up' as const,
+  };
+  const queued = {
+    entryId: 'host-entry',
+    messageId: pending.id,
+    placement: 'current_turn' as const,
+    state: 'queued' as const,
+    content: { text: pending.text },
+  };
   for (const entries of [[queued], []]) {
-    const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-      queuedMessages={entries} pendingMessages={[pending]} /></LocaleProvider>);
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Composer
+          onSend={() => undefined}
+          onStop={() => undefined}
+          queuedMessages={entries}
+          pendingMessages={[pending]}
+        />
+      </LocaleProvider>,
+    );
     const document = parseHTML(`<html><body>${markup}</body></html>`).document;
     assert.equal(document.querySelectorAll('.maka-composer-queue-text').length, 1);
     assert.equal(document.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
@@ -217,10 +236,27 @@ test('deduplicates pending steering against Host queue entries and keeps the pla
 
 
 test('a locally saved follow-up keeps its delivery status and recovery actions in the pending list', () => {
-  const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-    pendingMessages={[{ id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'follow_up',
-      deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
-      deliveryActions: [{ label: 'Check delivery', icon: <span aria-hidden="true" />, onClick() {} }] }]} /></LocaleProvider>);
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        onSend={() => undefined}
+        onStop={() => undefined}
+        pendingMessages={[
+          {
+            id: 'local',
+            text: 'offline follow-up',
+            ts: 1,
+            transientPlacement: 'follow_up',
+            deliveryStatus: 'Delivery uncertain',
+            deliveryDetail: 'Connection interrupted',
+            deliveryActions: [
+              { label: 'Check delivery', icon: <span aria-hidden="true" />, onClick() {} },
+            ],
+          },
+        ]}
+      />
+    </LocaleProvider>,
+  );
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
   assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
   assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'));

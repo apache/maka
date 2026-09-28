@@ -24,122 +24,106 @@ import { createSessionRailLayoutStore } from '../../renderer/features/session-na
 const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
 const WIDTH_KEY = 'maka-chat-list-width-v1';
 
-class TestStorage implements Storage {
-  readonly #values: Map<string, string>;
+class MemoryStorage implements Storage {
+  readonly values = new Map<string, string>();
 
-  constructor(seed: Record<string, string>) {
-    this.#values = new Map(Object.entries(seed));
+  constructor(seed: Record<string, string> = {}) {
+    for (const [key, value] of Object.entries(seed)) this.values.set(key, value);
   }
 
-  get length(): number {
-    return this.#values.size;
+  get length() {
+    return this.values.size;
   }
-
-  clear(): void {
-    this.#values.clear();
+  clear() {
+    this.values.clear();
   }
-
-  getItem(key: string): string | null {
-    return this.#values.get(key) ?? null;
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
   }
-
-  key(index: number): string | null {
-    return [...this.#values.keys()][index] ?? null;
+  key(index: number) {
+    return [...this.values.keys()][index] ?? null;
   }
-
-  removeItem(key: string): void {
-    this.#values.delete(key);
+  removeItem(key: string) {
+    this.values.delete(key);
   }
-
-  setItem(key: string, value: string): void {
-    this.#values.set(key, value);
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
   }
 }
 
-function withLocalStorage<T>(seed: Record<string, string>, run: (storage: TestStorage) => T): T {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  const storage = new TestStorage(seed);
+function withStorage<T>(seed: Record<string, string>, run: (storage: MemoryStorage) => T): T {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const storage = new MemoryStorage(seed);
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
   try {
     return run(storage);
   } finally {
-    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor);
+    if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
     else Reflect.deleteProperty(globalThis, 'localStorage');
   }
 }
 
-function withMockedTimeouts(run: () => void): void {
-  mock.timers.enable({ apis: ['setTimeout'] });
-  try {
-    run();
-  } finally {
-    mock.timers.reset();
-  }
-}
-
-describe('session grouping persistence', () => {
-  it('hydrates only the two supported grouping values', () => {
-    const cases = [
-      { expected: 'conversation', stored: undefined },
-      { expected: 'conversation', stored: 'conversation' },
-      { expected: 'project', stored: 'project' },
-      { expected: 'conversation', stored: '' },
-      { expected: 'conversation', stored: 'time' },
-      { expected: 'conversation', stored: 'PROJECT' },
-      { expected: 'conversation', stored: 'conversation\n' },
-    ] as const;
-    for (const { expected, stored } of cases) {
+describe('session rail grouping persistence', () => {
+  it('accepts exactly the serialized public modes', () => {
+    for (const [stored, expected] of [
+      [undefined, 'conversation'],
+      ['conversation', 'conversation'],
+      ['project', 'project'],
+      ['', 'conversation'],
+      ['time', 'conversation'],
+      ['PROJECT', 'conversation'],
+      ['conversation\n', 'conversation'],
+    ] as const) {
       const seed: Record<string, string> = {};
       if (stored !== undefined) seed[VIEW_MODE_KEY] = stored;
-      withLocalStorage(seed, () => {
-        assert.equal(
-          createSessionRailLayoutStore().getState().viewMode,
-          expected,
-          `stored=${JSON.stringify(stored)}`,
-        );
+      withStorage(seed, () => {
+        assert.equal(createSessionRailLayoutStore().getState().viewMode, expected);
       });
     }
   });
 
-  it('persists each change and a new store hydrates the latest grouping', () => {
-    withLocalStorage({}, (storage) => {
-      const current = createSessionRailLayoutStore();
-      current.setViewMode('project');
-      assert.equal(storage.getItem(VIEW_MODE_KEY), 'project');
-      assert.equal(createSessionRailLayoutStore().getState().viewMode, 'project');
-
-      current.setViewMode('conversation');
-      assert.equal(storage.getItem(VIEW_MODE_KEY), 'conversation');
-      assert.equal(createSessionRailLayoutStore().getState().viewMode, 'conversation');
+  it('round-trips every supported mode through a fresh store', () => {
+    withStorage({}, (storage) => {
+      const store = createSessionRailLayoutStore();
+      for (const mode of ['project', 'conversation', 'project'] as const) {
+        store.setViewMode(mode);
+        assert.equal(storage.getItem(VIEW_MODE_KEY), mode);
+        assert.equal(createSessionRailLayoutStore().getState().viewMode, mode);
+      }
     });
   });
 });
 
 describe('session rail width persistence', () => {
-  it('writes a debounced user width', () => {
-    withLocalStorage({}, (storage) => {
-      withMockedTimeouts(() => {
-        const rail = createSessionRailLayoutStore();
-        rail.setWidth(400);
+  it('coalesces a resize burst into the final expanded width', () => {
+    withStorage({}, (storage) => {
+      mock.timers.enable({ apis: ['setTimeout'] });
+      try {
+        const store = createSessionRailLayoutStore();
+        for (const width of [320, 360, 400]) store.setWidth(width);
+        assert.equal(storage.getItem(WIDTH_KEY), null);
         mock.timers.tick(200);
-        assert.equal(rail.getState().width, 400);
+        assert.equal(store.getState().width, 400);
         assert.equal(storage.getItem(WIDTH_KEY), '400');
-      });
+      } finally {
+        mock.timers.reset();
+      }
     });
   });
 
-  it('does not replace the expanded width with the collapse sentinel', () => {
-    withLocalStorage({}, (storage) => {
-      withMockedTimeouts(() => {
-        const rail = createSessionRailLayoutStore();
-        rail.setWidth(400);
+  it('treats collapse width zero as presentation state, not persisted geometry', () => {
+    withStorage({ [WIDTH_KEY]: '400' }, (storage) => {
+      mock.timers.enable({ apis: ['setTimeout'] });
+      try {
+        const store = createSessionRailLayoutStore();
+        store.setCollapsed(true);
+        store.setWidth(0);
         mock.timers.tick(200);
-        rail.setCollapsed(true);
-        rail.setWidth(0);
-        mock.timers.tick(200);
-        assert.equal(rail.getState().width, 400);
+        assert.equal(store.getState().width, 400);
         assert.equal(storage.getItem(WIDTH_KEY), '400');
-      });
+      } finally {
+        mock.timers.reset();
+      }
     });
   });
 });

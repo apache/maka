@@ -111,3 +111,41 @@ test('emits only a changed retry for the same live run', () => {
     'started',
   );
 });
+
+test('scheduled retry time is monotone, bounded, and reconnect-safe', () => {
+  const retry: TurnProviderRetry = {
+    phase: 'scheduled',
+    attempt: 2,
+    maxAttempts: 4,
+    delayMs: 30_000,
+    ts: 12_000,
+    reason: 'rate_limit',
+  };
+  let previous = retry.delayMs;
+  for (const now of [0, 11_999, 12_000, 12_001, 20_000, 42_000, 50_000]) {
+    const event = seedProviderRetry({ ...ROOT, providerRetry: retry }, now);
+    assert.ok(event?.phase === 'scheduled');
+    const remaining = event.remainingMs;
+    assert.equal(typeof remaining, 'number');
+    if (remaining === undefined) continue;
+    assert.ok(remaining >= 0);
+    assert.ok(remaining <= retry.delayMs);
+    assert.ok(remaining <= previous, `remaining time increased at now=${now}`);
+    previous = remaining;
+  }
+});
+
+test('changing only the projection clock never creates a retry transition', () => {
+  const retry: TurnProviderRetry = {
+    phase: 'scheduled',
+    attempt: 1,
+    maxAttempts: 3,
+    delayMs: 1_000,
+    ts: 100,
+    reason: 'timeout',
+  };
+  const snapshot = { ...ROOT, providerRetry: retry };
+  for (const now of [0, 100, 500, 1_100, 2_000]) {
+    assert.equal(projectProviderRetryChange(snapshot, snapshot, now), undefined);
+  }
+});

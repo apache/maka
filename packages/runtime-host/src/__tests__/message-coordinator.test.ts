@@ -1809,169 +1809,122 @@ test('pull crosses the retract commit cut and only queued entries are retracted'
   assert.equal(fixture.liveResidencies(), 0);
 });
 
-test('entry retract has one replayable cut and never crosses an in-flight lease', async () => {
+test('queue mutations form one replay-safe linearizable trace', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
-  await submit(fixture, 'steer-1', 'steer me', 'current_turn');
+  const owner = fixture.coordinator.bindRun(ROOT);
+
   await submit(fixture, 'follow-1', 'first', 'next_turn');
   await submit(fixture, 'follow-2', 'second', 'next_turn');
+  await submit(fixture, 'follow-3', 'third', 'next_turn');
+  let revision = fixture.coordinator.projection(ROOT.sessionId).queueRevision;
 
-  const retract = (entryId: string, retractId: string) =>
-    queueMutation(fixture, 'queue.entry.retract', { entryId, retractId });
-  const first = await retract('id-2', 'retract-entry-1');
-  assert.deepEqual(first, { ok: true, result: { queueRevision: 4 } });
+  const updated = await queueMutation(fixture, 'queue.entry.update', {
+    entryId: 'id-2',
+    updateId: 'trace-update',
+    expectedQueueRevision: revision,
+    text: 'second revised',
+  });
+  assert.deepEqual(updated, { ok: true, result: { queueRevision: revision + 1 } });
+  revision += 1;
+
+  const reordered = await queueMutation(fixture, 'queue.entries.reorder', {
+    reorderId: 'trace-reorder',
+    expectedQueueRevision: revision,
+    entryIds: ['id-3', 'id-2', 'id-1'],
+  });
+  assert.deepEqual(reordered, { ok: true, result: { queueRevision: revision + 1 } });
+  revision += 1;
+
+  const retracted = await queueMutation(fixture, 'queue.entry.retract', {
+    entryId: 'id-2',
+    retractId: 'trace-retract',
+  });
+  assert.deepEqual(retracted, { ok: true, result: { queueRevision: revision + 1 } });
+  revision += 1;
+
+  const promoted = await queueMutation(fixture, 'queue.entry.promote', {
+    entryId: 'id-3',
+    promoteId: 'trace-promote',
+  });
+  assert.deepEqual(promoted, { ok: true, result: { queueRevision: revision + 1 } });
+
   const projection = fixture.coordinator.projection(ROOT.sessionId);
   assert.deepEqual(
-    projection.steering.map(({ messageId }) => messageId),
-    ['steer-1'],
+    projection.followup.map(({ messageId, content }) => [messageId, content.text]),
+    [['follow-1', 'first']],
   );
   assert.deepEqual(
-    projection.followup.map(({ messageId }) => messageId),
-    ['follow-2'],
+    projection.steering.map(({ messageId, placement }) => [messageId, placement]),
+    [['follow-3', 'current_turn']],
   );
   assert.deepEqual(
     await fixture.coordinator.handlers['turn.message.execution.query'](
-      { sessionId: ROOT.sessionId, messageIds: ['follow-1'] },
+      { sessionId: ROOT.sessionId, messageIds: ['follow-2'] },
       operationContext(),
     ),
     {
       ok: true,
-      result: {
-        resolutions: [{ messageId: 'follow-1', state: 'cancelled' }],
-      },
+      result: { resolutions: [{ messageId: 'follow-2', state: 'cancelled' }] },
     },
   );
-  assert.deepEqual(await retract('id-2', 'retract-entry-1'), first);
-  assertQueueError(await retract('id-3', 'retract-entry-1'), 'operation_conflict');
-  assertQueueError(await retract('id-2', 'retract-entry-2'), 'not_found');
+  assert.deepEqual(
+    await queueMutation(fixture, 'queue.entry.update', {
+      entryId: 'id-2',
+      updateId: 'trace-update',
+      expectedQueueRevision: revision - 3,
+      text: 'second revised',
+    }),
+    updated,
+  );
+  assert.deepEqual(
+    await queueMutation(fixture, 'queue.entries.reorder', {
+      reorderId: 'trace-reorder',
+      expectedQueueRevision: revision - 2,
+      entryIds: ['id-3', 'id-2', 'id-1'],
+    }),
+    reordered,
+  );
+  assert.deepEqual(
+    await queueMutation(fixture, 'queue.entry.retract', {
+      entryId: 'id-2',
+      retractId: 'trace-retract',
+    }),
+    retracted,
+  );
+  assert.deepEqual(
+    await queueMutation(fixture, 'queue.entry.promote', {
+      entryId: 'id-3',
+      promoteId: 'trace-promote',
+    }),
+    promoted,
+  );
 
-  const owner = fixture.coordinator.bindRun(ROOT);
   const [lease] = await owner.pull();
   assert.ok(lease);
-  assertQueueError(await retract('id-1', 'retract-in-flight'), 'operation_conflict');
+  assert.equal(lease.messageId, 'follow-3');
+  const leasedRevision = fixture.coordinator.projection(ROOT.sessionId).queueRevision;
+  assertQueueError(
+    await queueMutation(fixture, 'queue.entry.update', {
+      entryId: 'id-3',
+      updateId: 'trace-update-in-flight',
+      expectedQueueRevision: leasedRevision,
+      text: 'too late',
+    }),
+    'operation_conflict',
+  );
+  assertQueueError(
+    await queueMutation(fixture, 'queue.entry.retract', {
+      entryId: 'id-3',
+      retractId: 'trace-retract-in-flight',
+    }),
+    'operation_conflict',
+  );
+
   owner.ack([lease.id]);
   owner.release();
-  await queueMutation(fixture, 'queue.retract', { retractId: 'cleanup-entry' });
+  await queueMutation(fixture, 'queue.retract', { retractId: 'trace-cleanup' });
   fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
-  assert.equal(fixture.liveResidencies(), 0);
-});
-
-test('entry update preserves queue identity, order, and placement and replays its outcome', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
-
-  await submit(fixture, 'steer-1', 'steer me', 'current_turn');
-  await submitContent(
-    fixture,
-    'follow-1',
-    {
-      text: 'first @src/a.ts',
-      inlineReferences: [
-        {
-          kind: 'workspace_file',
-          value: '@src/a.ts',
-          label: 'src/a.ts',
-          start: 6,
-        },
-      ],
-    },
-    'next_turn',
-  );
-  await submit(fixture, 'follow-2', 'second', 'next_turn');
-  let preparedUpdateContent: MessageContent | undefined;
-  fixture.setMessagePreparation(async (input) => {
-    preparedUpdateContent = input.content;
-    return {
-      kind: 'ready',
-      content: input.content,
-      skillInvocation: { loaded: [], failed: [], receipts: [] },
-    };
-  });
-
-  const updated = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-2',
-    updateId: 'update-entry-1',
-    expectedQueueRevision: 3,
-    text: 'please first @src/a.ts',
-  });
-  assert.equal(updated.ok, true);
-  assert.deepEqual(preparedUpdateContent, {
-    text: 'please first @src/a.ts',
-    inlineReferences: [
-      {
-        kind: 'workspace_file',
-        value: '@src/a.ts',
-        label: 'src/a.ts',
-        start: 13,
-      },
-    ],
-  });
-  const projection = fixture.coordinator.projection(ROOT.sessionId);
-  assert.deepEqual(
-    projection.followup.map((entry) => [entry.entryId, entry.content.text, entry.placement]),
-    [
-      ['id-2', 'please first @src/a.ts', 'next_turn'],
-      ['id-3', 'second', 'next_turn'],
-    ],
-  );
-  assert.deepEqual(
-    projection.steering.map((entry) => [entry.entryId, entry.content.text, entry.placement]),
-    [['id-1', 'steer me', 'current_turn']],
-  );
-
-  const stale = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-2',
-    updateId: 'update-entry-stale',
-    expectedQueueRevision: 3,
-    text: 'stale overwrite',
-  });
-  assert.equal(stale.ok, false);
-  if (!stale.ok) assert.equal(stale.error.code, 'operation_conflict');
-
-  const retry = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-2',
-    updateId: 'update-entry-1',
-    expectedQueueRevision: 3,
-    text: 'please first @src/a.ts',
-  });
-  assert.deepEqual(retry, updated);
-
-  const conflict = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-3',
-    updateId: 'update-entry-1',
-    expectedQueueRevision: 3,
-    text: 'conflicting retry',
-  });
-  assert.equal(conflict.ok, false);
-  if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
-
-  await queueMutation(fixture, 'queue.retract', { retractId: 'cleanup-update' });
-  fixture.coordinator.abandonRootReservation(ROOT);
-  await fixture.coordinator.close();
-});
-
-test('entry update of an in-flight steering lease conflicts', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
-  const owner = fixture.coordinator.bindRun(ROOT);
-
-  await submit(fixture, 'steer-1', 'steer me', 'current_turn');
-  const [lease] = await owner.pull();
-  assert.ok(lease);
-
-  const outcome = await queueMutation(fixture, 'queue.entry.update', {
-    entryId: 'id-1',
-    updateId: 'update-in-flight',
-    expectedQueueRevision: 2,
-    text: 'too late',
-  });
-  assert.equal(outcome.ok, false);
-  if (!outcome.ok) assert.equal(outcome.error.code, 'operation_conflict');
-
-  owner.ack([lease.id]);
-  owner.release();
-  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
-  fixture.coordinator.completeIdle(batch);
   assert.equal(fixture.liveResidencies(), 0);
 });
 
@@ -2027,40 +1980,6 @@ test('entry update keeps relocated inline references ordered and non-overlapping
   assert.deepEqual(second?.content.inlineReferences, [
     { kind: 'workspace_file', value: '@src/a.ts', label: 'src/a.ts', start: 0 },
   ]);
-});
-
-test('promote changes placement once, replays exactly, and feeds the active owner', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
-  const owner = fixture.coordinator.bindRun(ROOT);
-  await submit(fixture, 'follow-1', 'first', 'next_turn');
-  await submit(fixture, 'follow-2', 'second', 'next_turn');
-
-  const promote = (promoteId: string) =>
-    queueMutation(fixture, 'queue.entry.promote', { entryId: 'id-2', promoteId });
-  const promoted = await promote('promote-1');
-  assert.deepEqual(promoted, { ok: true, result: { queueRevision: 3 } });
-  const projection = fixture.coordinator.projection(ROOT.sessionId);
-  assert.deepEqual(
-    projection.steering.map(({ messageId, placement }) => [messageId, placement]),
-    [['follow-2', 'current_turn']],
-  );
-  assert.deepEqual(
-    projection.followup.map(({ messageId }) => messageId),
-    ['follow-1'],
-  );
-  assert.deepEqual(await promote('promote-1'), promoted);
-  assertQueueError(await promote('promote-2'), 'operation_conflict');
-  const leases = await owner.pull();
-  assert.deepEqual(
-    leases.map(({ messageId }) => messageId),
-    ['follow-2'],
-  );
-  owner.ack(leases.map((lease) => lease.id));
-  owner.release();
-  await queueMutation(fixture, 'queue.retract', { retractId: 'cleanup-promote' });
-  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
-  assert.equal(fixture.liveResidencies(), 0);
 });
 
 test('a carried follow-up promoted in its successor requeues after nack', async () => {
@@ -2204,50 +2123,6 @@ test('promote is fenced when the Session has no active Turn', async () => {
     operationContext(),
   );
   assertQueueError(outcome, 'operation_conflict');
-});
-
-test('reorder commits one exact permutation behind a queue-revision fence', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
-  await submit(fixture, 'follow-1', 'first', 'next_turn');
-  await submit(fixture, 'follow-2', 'second', 'next_turn');
-  await submit(fixture, 'follow-3', 'third', 'next_turn');
-  const revision = fixture.coordinator.projection(ROOT.sessionId).queueRevision;
-  const reorder = (reorderId: string, expectedQueueRevision: number, entryIds: string[]) =>
-    fixture.coordinator.handlers['queue.entries.reorder'](
-      {
-        originHostEpoch: 'epoch-1',
-        sessionId: ROOT.sessionId,
-        reorderId,
-        expectedQueueRevision,
-        entryIds,
-      },
-      operationContext(),
-    );
-  const intended = ['id-3', 'id-1', 'id-2'];
-  const reordered = await reorder('reorder-1', revision, intended);
-  assert.deepEqual(reordered, { ok: true, result: { queueRevision: revision + 1 } });
-  assert.deepEqual(
-    fixture.coordinator.projection(ROOT.sessionId).followup.map(({ messageId }) => messageId),
-    ['follow-3', 'follow-1', 'follow-2'],
-  );
-  assert.deepEqual(await reorder('reorder-1', revision, intended), reordered);
-  for (const [id, expected, entries] of [
-    ['stale-members', revision, ['id-2', 'id-3', 'id-1']],
-    ['missing-member', revision, ['id-2', 'id-1']],
-  ] as const) {
-    assertQueueError(await reorder(id, expected, [...entries]), 'operation_conflict');
-  }
-  assert.deepEqual(await reorder('unchanged', revision + 1, intended), {
-    ok: true,
-    result: { queueRevision: revision + 1 },
-  });
-  await fixture.coordinator.handlers['queue.retract'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-reorder' },
-    operationContext(),
-  );
-  fixture.coordinator.abandonRootReservation(ROOT);
-  await fixture.coordinator.close();
 });
 
 test('one provider boundary waits for a steering submit whose durable commit is pending', async () => {

@@ -41,6 +41,14 @@ const CANDIDATE_ENTRYPOINT = fileURLToPath(
 const ROOT_ID = 'a'.repeat(64);
 const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
 
+function runCandidate(args: readonly string[]) {
+  return spawnSync(process.execPath, [CANDIDATE_ENTRYPOINT, ...args], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    windowsHide: true,
+  });
+}
+
 test('execution imports happen after local admission and are skipped by losing candidates', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-candidate-import-'));
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
@@ -135,26 +143,24 @@ test('candidate entry does not evaluate the Host kernel or domain composition be
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('classifies invalid candidate arguments as an internal startup failure', () => {
-  const result = spawnSync(
-    process.execPath,
-    [
-      CANDIDATE_ENTRYPOINT,
-      '--root',
-      '/tmp/workspace',
-      '--expected-root-id',
-      ROOT_ID,
-      '--startup-attempt-id',
-      STARTUP_ATTEMPT_ID,
-      '--desktop-e2e',
-      '1',
-    ],
-    { encoding: 'utf8', timeout: 10_000 },
-  );
-
-  assert.equal(result.status, 70, result.stderr);
-  assert.match(result.stderr, /\[runtime-host\] startup failed:/);
-  assert.match(result.stderr, /Invalid Runtime Host candidate argument: --desktop-e2e/);
+test('maps every parser failure to the candidate startup-failure boundary', () => {
+  const base = [
+    '--root',
+    '/tmp/workspace',
+    '--expected-root-id',
+    ROOT_ID,
+    '--startup-attempt-id',
+    STARTUP_ATTEMPT_ID,
+  ];
+  for (const [suffix, message] of [
+    [['--desktop-e2e', '1'], /Invalid Runtime Host candidate argument: --desktop-e2e/],
+    [['--idle-grace-ms'], /Invalid Runtime Host candidate arguments/],
+  ] as const) {
+    const result = runCandidate([...base, ...suffix]);
+    assert.equal(result.status, 70, result.stderr);
+    assert.match(result.stderr, /\[runtime-host\] startup failed:/);
+    assert.match(result.stderr, message);
+  }
 });
 
 test('preserves a valid Candidate invocation failure across the detached stderr boundary', async () => {
@@ -166,19 +172,14 @@ test('preserves a valid Candidate invocation failure across the detached stderr 
   try {
     await resolveStorageRoot({ path: root, kind: 'interactive' });
     await mkdir(controlDirectory, { recursive: true, mode: 0o700 });
-    const result = spawnSync(
-      process.execPath,
-      [
-        CANDIDATE_ENTRYPOINT,
-        '--root',
-        root,
-        '--expected-root-id',
-        mismatchedRootId,
-        '--startup-attempt-id',
-        startupAttemptId,
-      ],
-      { encoding: 'utf8', timeout: 10_000 },
-    );
+    const result = runCandidate([
+      '--root',
+      root,
+      '--expected-root-id',
+      mismatchedRootId,
+      '--startup-attempt-id',
+      startupAttemptId,
+    ]);
 
     assert.equal(result.status, 70, result.stderr);
     const diagnostic = await readCandidateStartupDiagnostic(mismatchedRootId, startupAttemptId);

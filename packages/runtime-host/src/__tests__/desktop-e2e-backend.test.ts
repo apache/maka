@@ -26,61 +26,10 @@ import type { BackendFactoryContext } from '@maka/runtime/session-manager';
 import { createDesktopE2eCheckpoint } from '../test-only/desktop-e2e-checkpoint.js';
 import { DesktopE2eBackend } from '../test-only/desktop-e2e-backend.js';
 
-const input = () => ({
-  turnId: 'turn-1',
-  runId: 'run-1',
-  runtimeContext: [userEvent()],
-});
-
-const context = (overrides: Partial<BackendFactoryContext> = {}): BackendFactoryContext => ({
-  sessionId: 'session-1',
-  workspaceRoot: '/tmp/workspace',
-  header: { model: 'fake-model' } as SessionHeader,
-  store: {} as BackendFactoryContext['store'],
-  ...overrides,
-});
-
-test('rejects compaction when the fixture has no checkpoint sink', async () => {
-  await assert.rejects(
-    new DesktopE2eBackend(context()).compactHistory(input()),
-    /Desktop E2E compaction requires a checkpoint recorder/,
-  );
-});
-
-test('records one deterministic sectioned checkpoint', async () => {
-  const recorded: Array<{ checkpoint: HistoryCompactCheckpoint; turnId: string }> = [];
-  const backend = new DesktopE2eBackend(
-    context({
-      recordHistoryCompactCheckpoint: async (checkpoint, turnId) => {
-        recorded.push({ checkpoint, turnId });
-      },
-    }),
-  );
-
-  const result = await backend.compactHistory(input());
-  assert.equal(recorded.length, 1);
-  assert.equal(recorded[0]?.turnId, 'turn-1');
-  const checkpoint = recorded[0]!.checkpoint;
-  assert.deepEqual(result, {
-    outcome: { kind: 'compacted', checkpointId: checkpoint.checkpointId },
-  });
-  assert.equal(checkpoint.version, 2);
-  assert.match(checkpoint.summary, /^## Goal\nDeterministic Desktop E2E context checkpoint\./);
-  assert.equal(checkpoint.summaryFormat, 'sections_v1');
-});
-
-test('builds the same checkpoint without a backend instance', () => {
-  const checkpoint = createDesktopE2eCheckpoint('session-1', [userEvent()]);
-
-  assert.equal(checkpoint.version, 2);
-  assert.match(checkpoint.summary, /^## Goal\nDeterministic Desktop E2E context checkpoint\./);
-  assert.equal(checkpoint.summaryFormat, 'sections_v1');
-});
-
-function userEvent(): RuntimeEvent {
+function runtimeEvent(text: string, id = 'event-1'): RuntimeEvent {
   return {
-    id: 'evt-1',
-    invocationId: 'inv-1',
+    id,
+    invocationId: 'invocation-1',
     runId: 'run-1',
     sessionId: 'session-1',
     turnId: 'turn-1',
@@ -88,6 +37,61 @@ function userEvent(): RuntimeEvent {
     partial: false,
     role: 'user',
     author: 'user',
-    content: { kind: 'text', text: 'hello' },
+    content: { kind: 'text', text },
   };
 }
+
+function backendContext(
+  record?: (checkpoint: HistoryCompactCheckpoint, turnId: string) => Promise<void>,
+): BackendFactoryContext {
+  return {
+    sessionId: 'session-1',
+    workspaceRoot: '/tmp/workspace',
+    header: { model: 'fake-model' } as SessionHeader,
+    store: {} as BackendFactoryContext['store'],
+    ...(record ? { recordHistoryCompactCheckpoint: record } : {}),
+  };
+}
+
+function compactInput(events: RuntimeEvent[]) {
+  return { turnId: 'turn-1', runId: 'run-1', runtimeContext: events };
+}
+
+test('Desktop E2E compaction requires an explicit persistence boundary', async () => {
+  const backend = new DesktopE2eBackend(backendContext());
+  await assert.rejects(
+    backend.compactHistory(compactInput([runtimeEvent('hello')])),
+    /requires a checkpoint recorder/,
+  );
+});
+
+test('backend and pure factory produce the same checkpoint contract', async () => {
+  const events = [runtimeEvent('hello')];
+  const writes: Array<{ checkpoint: HistoryCompactCheckpoint; turnId: string }> = [];
+  const backend = new DesktopE2eBackend(
+    backendContext(async (checkpoint, turnId) => {
+      writes.push({ checkpoint, turnId });
+    }),
+  );
+  const outcome = await backend.compactHistory(compactInput(events));
+  assert.equal(writes.length, 1);
+  const persisted = writes[0];
+  assert.ok(persisted);
+  assert.equal(persisted.turnId, 'turn-1');
+  assert.deepEqual(persisted.checkpoint, createDesktopE2eCheckpoint('session-1', events));
+  assert.deepEqual(outcome, {
+    outcome: { kind: 'compacted', checkpointId: persisted.checkpoint.checkpointId },
+  });
+});
+
+test('checkpoint envelope stays stable while covered event content changes', () => {
+  const first = createDesktopE2eCheckpoint('session-1', [runtimeEvent('first')]);
+  const second = createDesktopE2eCheckpoint('session-1', [runtimeEvent('second', 'event-2')]);
+
+  for (const checkpoint of [first, second]) {
+    assert.equal(checkpoint.version, 2);
+    assert.equal(checkpoint.summaryFormat, 'sections_v1');
+    assert.match(checkpoint.summary, /^## Goal\nDeterministic Desktop E2E context checkpoint\./);
+  }
+  assert.notEqual(first.checkpointId, second.checkpointId);
+});
