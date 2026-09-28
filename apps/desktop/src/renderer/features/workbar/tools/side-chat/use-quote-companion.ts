@@ -189,6 +189,8 @@ export interface UseQuoteCompanionResult {
   transientMessages: readonly TransientUserMessageProjection[];
   /** Host-authoritative pending steering and follow-up messages. */
   queuedMessages: readonly MessageQueueEntryProjection[];
+  /** Revision fence for Host-authoritative queue mutations. */
+  queuedMessageRevision: number | undefined;
   liveTurns: LiveTurnBuffer | undefined;
   activeTurn: ReturnType<typeof chatTurnActivity>;
   streaming: boolean;
@@ -229,7 +231,10 @@ export interface UseQuoteCompanionResult {
   promoteQueuedEntry: (entryId: string) => Promise<void>;
   editQueuedEntry: (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
-  reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
+  reorderQueuedEntries: (
+    entryIds: readonly string[],
+    expectedQueueRevision: number,
+  ) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   stop: () => Promise<void>;
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
@@ -354,6 +359,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
   const [messageQueue, setMessageQueue] = useState<{
     readonly entries: readonly MessageQueueEntryProjection[];
+    readonly queueRevision?: number;
     readonly ts?: number;
   }>({ entries: [] });
   // Reseed reconciliation reads the queue between React flushes, so every
@@ -1639,8 +1645,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [dropOptimisticUserMessage, messageQueue.entries, runQueueEntryAction, sideChat],
   );
   const reorderQueuedEntries = useCallback(
-    (entryIds: readonly string[]) =>
-      runQueueEntryAction((id) => sideChat.reorderQueueEntries(id, entryIds)),
+    (entryIds: readonly string[], expectedQueueRevision: number) =>
+      runQueueEntryAction((id) =>
+        sideChat.reorderQueueEntries(id, entryIds, expectedQueueRevision)),
     [runQueueEntryAction, sideChat],
   );
 
@@ -1766,6 +1773,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     messages,
     transientMessages,
     queuedMessages: messageQueue.entries,
+    queuedMessageRevision: messageQueue.queueRevision,
     liveTurns,
     activeTurn: chatTurnActivity(execution),
     streaming,

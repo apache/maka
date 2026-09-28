@@ -869,10 +869,8 @@ test('does not release or report a Revision the Host retained during cleanup', a
 test('resyncs Goal, exact interaction, and sidecar state after candidate replacement', async () => {
   const ref = 'maka://runtime/background-tasks/shell-1';
   const observations = new RuntimeHostSessionObservationRegistry();
-  const resyncs: Array<{ channel: string; payload: unknown }> = [];
-  const firstIpc = ipcHarness((channel, payload) => {
-    resyncs.push({ channel, payload });
-  });
+  const timeline = createRendererTimeline();
+  const firstIpc = ipcHarness(timeline.record);
   const firstHost = connectionHarness('first-observer', {
     subscriptionSnapshot: continuitySnapshot({
       interactions: { pending: [pendingQuestion()] },
@@ -903,14 +901,14 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     'before replacement',
   );
   await firstCandidate.close();
-  resyncs.length = 0;
+  timeline.clear();
 
   const secondIpc = ipcHarness();
   const sessionChanges: Array<{ reason: string; sessionId?: string }> = [];
   let terminalReattach: Promise<unknown> | undefined;
   const secondHost = connectionHarness('second-observer', {
     subscriptionSnapshot: continuitySnapshot({ interactions: { pending: [] } }),
-    activeAssistantStreams: [activeText('message-1')],
+    assistantStreams: [textStream('message-1')],
     runtimeResourcePty: ptySnapshot(ref, 'after replacement'),
   });
   const secondCandidate = await createDesktopRuntimeHostCandidate(
@@ -921,7 +919,7 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
         sessionChanges.push({ reason, sessionId }),
       renderer: {
         send(channel, _host, payload) {
-          resyncs.push({ channel, payload });
+          timeline.record(channel, payload);
           if (channel === 'shell-runs:resync') {
             terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
               sessionId: 'session-1',
@@ -934,23 +932,17 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     observations,
   );
 
-  const seedPendingAt = resyncs.findIndex(
-    ({ channel, payload }) =>
-      channel === 'sessions:event:session-1'
-      && (payload as { type?: unknown }).type === 'host_observation_pending',
-  );
-  const seedReadyAt = resyncs.findIndex(
-    ({ channel, payload }) =>
-      channel === 'sessions:event:session-1'
-      && (payload as { type?: unknown }).type === 'host_observation_seed',
-  );
-  assert.ok(seedPendingAt >= 0);
-  assert.ok(seedReadyAt > seedPendingAt);
-  const seed = resyncs[seedReadyAt]!.payload as { execution: { available: boolean }; events: unknown[] };
+  const seedPendingAt = timeline.sessionEventIndex('session-1', 'host_observation_pending');
+  const seedReadyAt = timeline.sessionEventIndex('session-1', 'host_observation_seed');
+  assert.equal(seedPendingAt >= 0 && seedReadyAt > seedPendingAt, true);
+  const seed = timeline.records[seedReadyAt]!.payload as {
+    execution: { available: boolean };
+    events: unknown[];
+  };
   assert.equal(seed.execution.available, true);
   assert.ok(seed.events.length > 0);
   assert.ok(
-    resyncs.some(
+    timeline.records.some(
       ({ channel, payload }) =>
         channel === 'graphs:resync' &&
         (payload as { rootSessionId?: unknown }).rootSessionId === 'session-1',
@@ -963,14 +955,14 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     ),
   );
   assert.ok(
-    resyncs.some(
+    timeline.records.some(
       ({ channel, payload }) =>
         channel === 'shell-runs:resync' &&
         (payload as { sessionId?: unknown }).sessionId === 'session-1',
     ),
   );
   assert.ok(
-    resyncs.some(
+    timeline.records.some(
       ({ channel, payload }) =>
         channel === 'sessions:active-interactions-changed' &&
         (payload as { sessionId?: unknown }).sessionId === 'session-1' &&
@@ -995,7 +987,7 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     data: ' live',
   });
   await waitFor(() =>
-    resyncs.some(
+    timeline.records.some(
       ({ channel, payload }) =>
         channel === 'shell-runs:pty-data' &&
         (payload as { sequence?: unknown }).sequence === 5 &&
@@ -1007,97 +999,45 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
   await observations.close();
 });
 
-test('retries candidate startup when a restored observation cannot seed', async () => {
-  const observations = new RuntimeHostSessionObservationRegistry();
-  const seedEvents: Array<{ channel: string; payload: unknown }> = [];
-  const firstIpc = ipcHarness((channel, payload) => {
-    seedEvents.push({ channel, payload });
-  });
-  const firstHost = connectionHarness('restore-source', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-  });
-  const firstCandidate = await createDesktopRuntimeHostCandidate(
-    firstHost.connection,
-    deps(firstIpc),
-    observations,
-  );
-  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
-  await firstCandidate.close();
-  seedEvents.length = 0;
-
-  const failingHost = connectionHarness('restore-failure', {
-    sessionId: 'session-1',
-    subscriptionError: new Error('restore failed'),
-  });
-  await assert.rejects(
-    () =>
-      createDesktopRuntimeHostCandidate(
-        failingHost.connection,
-        {
-          ...deps(ipcHarness()),
-          renderer: {
-            send(channel, _host, payload) {
-              seedEvents.push({ channel, payload });
-            },
-          },
-        },
-        observations,
-      ),
-    /Failed to restore Session observations: session-1/,
-  );
-  // Restore startup and subscription failure may both invalidate observation.
-  // Neither is evidence that the Host Turn ended or observation became ready.
-  const failureEvents = seedEvents
-    .filter(({ channel }) => channel === 'sessions:event:session-1')
-    .map(({ payload }) => payload as { type?: unknown; message?: unknown });
-  assert.ok(failureEvents.some((event) =>
-    event.type === 'host_observation_error' && event.message === 'restore failed'));
-  assert.ok(failureEvents.some((event) => event.type === 'host_observation_pending'));
-  assert.ok(failureEvents.every((event) =>
-    event.type === 'host_observation_error' || event.type === 'host_observation_pending'));
-  seedEvents.length = 0;
-
-  const recoveredHost = connectionHarness('restore-recovered', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-    activeAssistantStreams: [activeText('message-1')],
-  });
-  const recoveredCandidate = await createDesktopRuntimeHostCandidate(
-    recoveredHost.connection,
-    {
-      ...deps(ipcHarness()),
-      renderer: {
-        send(channel, _host, payload) {
-          seedEvents.push({ channel, payload });
-        },
-      },
-    },
-    observations,
-  );
-  const pendingAt = seedEvents.findIndex(
-    ({ channel, payload }) =>
-      channel === 'sessions:event:session-1'
-      && (payload as { type?: unknown }).type === 'host_observation_pending',
-  );
-  const readyAt = seedEvents.findIndex(
-    ({ channel, payload }) =>
-      channel === 'sessions:event:session-1'
-      && (payload as { type?: unknown }).type === 'host_observation_seed',
-  );
-  assert.ok(pendingAt >= 0);
-  assert.ok(readyAt > pendingAt);
-  await recoveredCandidate.close();
-  await observations.close();
-});
-
+test('keeps a restored observation retryable until replacement seeding succeeds', async (t) => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  t.after(() => registry.close());
+  const timeline = createRendererTimeline();
+  const start = (
+    connection: RuntimeHostConnection,
+    candidateDeps: DesktopRuntimeHostCandidateDeps,
+  ) => createDesktopRuntimeHostCandidate(connection, candidateDeps, registry);
+  const sourceIpc = ipcHarness(timeline.record);
+  const sourceHost = connectionHarness('restore-source', restorableObservation());
+  const sourceCandidate = await start(sourceHost.connection, deps(sourceIpc));
+  await sourceIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await sourceCandidate.close();
+  timeline.clear();
+  const rejectedHost = connectionHarness('restore-failure', restorableObservation({
+    subscribeFailure: new Error('restore failed'),
+  }));
+  const rejectedDeps = { ...deps(ipcHarness()), renderer: timeline.renderer };
+  const rejectedCandidate = start(rejectedHost.connection, rejectedDeps);
+  await assert.rejects(rejectedCandidate, /restore Session observations: session-1/);
+  const failureEvents = timeline.sessionEvents('session-1');
+  const failureTypes = [...new Set(failureEvents.map((event) => event.type))].sort().join(',');
+  assert.equal(failureTypes, 'host_observation_error,host_observation_pending');
+  assert.equal(failureEvents.find((event) => event.type === 'host_observation_error')?.message, 'restore failed');
+  timeline.clear();
+  const replacementHost = connectionHarness('restore-recovered', restorableObservation({
+    assistantStreams: [textStream('message-1')],
+  }));
+  const replacementDeps = { ...deps(ipcHarness()), renderer: timeline.renderer };
+  const replacementCandidate = await start(replacementHost.connection, replacementDeps);
+  const pendingAt = timeline.sessionEventIndex('session-1', 'host_observation_pending');
+  const readyAt = timeline.sessionEventIndex('session-1', 'host_observation_seed');
+  assert.equal(pendingAt >= 0 && readyAt > pendingAt, true);
+  await replacementCandidate.close();
+}); // A failed replacement leaves the registry available to the next candidate.
 test('drops a stale shared Session observation when Guest access is gone', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const firstIpc = ipcHarness();
-  const firstHost = connectionHarness('shared-before-revoke', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-  });
+  const firstHost = connectionHarness('shared-before-revoke', restorableObservation());
   const firstCandidate = await createCandidate(
     firstHost.connection,
     { ...deps(firstIpc), onGuestSessionCatalogChanged: () => undefined },
@@ -1137,10 +1077,7 @@ test('drops a stale shared Session observation when Guest access is gone', async
 test('forgets an observed Session the Host no longer serves instead of blocking every reconnect', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const firstIpc = ipcHarness();
-  const firstHost = connectionHarness('missing-session-source', {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-  });
+  const firstHost = connectionHarness('missing-session-source', restorableObservation());
   const firstCandidate = await createDesktopRuntimeHostCandidate(
     firstHost.connection,
     deps(firstIpc),
@@ -1154,7 +1091,7 @@ test('forgets an observed Session the Host no longer serves instead of blocking 
   const changes: Array<{ reason: string; sessionId?: string }> = [];
   const missingHost = connectionHarness('missing-session-host', {
     sessionId: 'session-1',
-    subscriptionError: new RuntimeHostOperationError(
+    subscribeFailure: new RuntimeHostOperationError(
       'subscription.open',
       'not_found',
       'Runtime Host Session was not found',
@@ -1173,7 +1110,7 @@ test('forgets an observed Session the Host no longer serves instead of blocking 
 
   // The stale active registration is forgotten instead of failing the
   // candidate start, and the renderer is told to drop the Session view.
-  assert.deepEqual(observations.observedSessionIds(), []);
+  assert.deepEqual(observations.observationSessionIds(), []);
   assert.ok(
     changes.some(
       ({ reason, sessionId }) => reason === 'deleted' && sessionId === 'session-1',
@@ -1192,14 +1129,14 @@ test('forgets an observed Session the Host no longer serves instead of blocking 
     observations,
   );
   await thirdIpc.invoke('sessions:observe', 'session-2', 'observer-2');
-  assert.deepEqual(observations.observedSessionIds(), ['session-2']);
+  assert.deepEqual(observations.observationSessionIds(), ['session-2']);
   await thirdCandidate.close();
   await observations.close();
 });
 
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
-function ipcHarness(onSend?: (channel: string, payload: unknown) => void) {
+function ipcHarness(recordSend?: (channel: string, payload: unknown) => void) {
   const handlers = new Map<string, IpcHandler>();
   let epoch = TEST_TARGET_EPOCH;
   const sender = Object.assign(new EventEmitter(), {
@@ -1207,13 +1144,14 @@ function ipcHarness(onSend?: (channel: string, payload: unknown) => void) {
     sent: [] as Array<{ channel: string; hostId?: string; payload: unknown }>,
     send(channel: string, ...args: unknown[]): void {
       const hostId = (args[0] as { hostId?: unknown } | undefined)?.hostId;
-      const payload = args.at(-1);
-      sender.sent.push({
+      const message = args.at(-1);
+      const entry = {
         channel,
         ...(typeof hostId === 'string' ? { hostId } : {}),
-        payload,
-      });
-      onSend?.(channel, payload);
+        payload: message,
+      };
+      sender.sent.push(entry);
+      recordSend?.(entry.channel, entry.payload);
     },
   });
   return {
@@ -1321,8 +1259,8 @@ function connectionHarness(
     sessionId?: string;
     revisionAbandon?: 'abandoned' | 'retained';
     subscriptionSnapshot?: SessionContinuitySnapshot;
-    activeAssistantStreams?: readonly SessionAssistantStreamIdentity[];
-    subscriptionError?: Error;
+    assistantStreams?: readonly SessionAssistantStreamIdentity[];
+    subscribeFailure?: Error;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
     runtimeResourceUpdate?: ShellRunUpdate;
     sharedSessionAvailable?: boolean;
@@ -1464,7 +1402,7 @@ function connectionHarness(
       throw new Error(`Unexpected operation: ${operation}`);
     },
     openSessionSubscription: async ({ sessionId }: { sessionId: string }) => {
-      if (options.subscriptionError) throw options.subscriptionError;
+      if (options.subscribeFailure) throw options.subscribeFailure;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
       // The Host holds a subscription's frames until the subscriber calls
@@ -1501,7 +1439,7 @@ function connectionHarness(
           projectionRevision: 1,
           session: { sessionId },
         },
-        activeAssistantStreams: options.activeAssistantStreams ?? [],
+        activeAssistantStreams: options.assistantStreams ?? [],
         transcriptBootstrap: {
           throughSequence: null,
           durable: emptyPage,
@@ -1610,10 +1548,57 @@ function continuitySnapshot(
   };
 }
 
-function activeText(messageId: string): SessionAssistantStreamIdentity {
-  return { kind: 'text', turnId: 'turn-1', messageId };
+const textStream = (messageId: string): SessionAssistantStreamIdentity => ({
+    kind: 'text',
+    turnId: 'turn-1',
+    messageId,
+});
+
+function restorableObservation(
+  overrides: {
+    assistantStreams?: readonly SessionAssistantStreamIdentity[];
+    subscribeFailure?: Error;
+  } = {},
+) {
+  return {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+    ...overrides,
+  };
 }
 
+type RendererRecord = { channel: string; payload: unknown };
+
+const createRendererTimeline = () => {
+  const records: RendererRecord[] = [];
+  const record = (channel: string, payload: unknown): void => {
+    records.push({ channel, payload });
+  };
+  return {
+    records,
+    record,
+    renderer: {
+      send(channel: string, _host: unknown, payload: unknown): void {
+        record(channel, payload);
+      },
+    },
+    clear(): void {
+      records.length = 0;
+    },
+    sessionEvents(sessionId: string): Array<{ type?: unknown; message?: unknown }> {
+      return records
+        .filter(({ channel }) => channel === `sessions:event:${sessionId}`)
+        .map(({ payload }) => payload as { type?: unknown; message?: unknown });
+    },
+    sessionEventIndex(sessionId: string, type: string): number {
+      return records.findIndex(
+        ({ channel, payload }) =>
+          channel === `sessions:event:${sessionId}`
+          && (payload as { type?: unknown }).type === type,
+      );
+    },
+  };
+};
 function pendingQuestion() {
   return {
     schemaVersion: 1 as const,

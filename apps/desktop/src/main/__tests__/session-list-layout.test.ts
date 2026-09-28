@@ -18,123 +18,128 @@
  */
 
 import assert from 'node:assert/strict';
-import { afterEach, describe, it, mock } from 'node:test';
-import {
-  createSessionRailLayoutStore,
-  readSessionListViewMode,
-  writeSessionListViewMode,
-} from '../../renderer/features/session-navigation/testing.js';
+import { describe, it, mock } from 'node:test';
+import { createSessionRailLayoutStore } from '../../renderer/features/session-navigation/testing.js';
 
 const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
 const WIDTH_KEY = 'maka-chat-list-width-v1';
 
-function installMemoryLocalStorage(initial: Record<string, string> = {}) {
-  const store = new Map<string, string>(Object.entries(initial));
-  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  const memory: Storage = {
-    get length() {
-      return store.size;
-    },
-    clear() {
-      store.clear();
-    },
-    getItem(key) {
-      return store.has(key) ? store.get(key)! : null;
-    },
-    key(index) {
-      return [...store.keys()][index] ?? null;
-    },
-    removeItem(key) {
-      store.delete(key);
-    },
-    setItem(key, value) {
-      store.set(key, String(value));
-    },
-  };
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    writable: true,
-    value: memory,
-  });
-  return {
-    store,
-    restore() {
-      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
-      else Reflect.deleteProperty(globalThis, 'localStorage');
-    },
-  };
+class TestStorage implements Storage {
+  readonly #values: Map<string, string>;
+
+  constructor(seed: Record<string, string>) {
+    this.#values = new Map(Object.entries(seed));
+  }
+
+  get length(): number {
+    return this.#values.size;
+  }
+
+  clear(): void {
+    this.#values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.#values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return [...this.#values.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.#values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.#values.set(key, value);
+  }
 }
 
-describe('session list view mode persistence', () => {
-  const cleanups: Array<() => void> = [];
-  afterEach(() => {
-    while (cleanups.length > 0) cleanups.pop()?.();
-  });
+function withLocalStorage<T>(seed: Record<string, string>, run: (storage: TestStorage) => T): T {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const storage = new TestStorage(seed);
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+  try {
+    return run(storage);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+}
 
-  it('defaults to conversation when nothing is stored', () => {
-    cleanups.push(installMemoryLocalStorage().restore);
-    assert.equal(readSessionListViewMode(), 'conversation');
-  });
+function withMockedTimeouts(run: () => void): void {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    run();
+  } finally {
+    mock.timers.reset();
+  }
+}
 
-  it('round-trips a project grouping through the same key the shell hydrates', () => {
-    const memory = installMemoryLocalStorage();
-    cleanups.push(memory.restore);
-    writeSessionListViewMode('project');
-    assert.equal(memory.store.get(VIEW_MODE_KEY), 'project');
-    assert.equal(readSessionListViewMode(), 'project');
-  });
-
-  it('keeps conversation when that is what was written', () => {
-    cleanups.push(installMemoryLocalStorage({ [VIEW_MODE_KEY]: 'project' }).restore);
-    writeSessionListViewMode('conversation');
-    assert.equal(readSessionListViewMode(), 'conversation');
-  });
-
-  it('fails open to conversation for garbage or empty stored values', () => {
-    for (const stored of ['', 'time', 'true', 'PROJECT', 'conversation\n']) {
-      const memory = installMemoryLocalStorage({ [VIEW_MODE_KEY]: stored });
-      assert.equal(readSessionListViewMode(), 'conversation', stored);
-      memory.restore();
+describe('session grouping persistence', () => {
+  it('hydrates only the two supported grouping values', () => {
+    const cases = [
+      { expected: 'conversation', stored: undefined },
+      { expected: 'conversation', stored: 'conversation' },
+      { expected: 'project', stored: 'project' },
+      { expected: 'conversation', stored: '' },
+      { expected: 'conversation', stored: 'time' },
+      { expected: 'conversation', stored: 'PROJECT' },
+      { expected: 'conversation', stored: 'conversation\n' },
+    ] as const;
+    for (const { expected, stored } of cases) {
+      const seed: Record<string, string> = {};
+      if (stored !== undefined) seed[VIEW_MODE_KEY] = stored;
+      withLocalStorage(seed, () => {
+        assert.equal(
+          createSessionRailLayoutStore().getState().viewMode,
+          expected,
+          `stored=${JSON.stringify(stored)}`,
+        );
+      });
     }
+  });
+
+  it('persists each change and a new store hydrates the latest grouping', () => {
+    withLocalStorage({}, (storage) => {
+      const current = createSessionRailLayoutStore();
+      current.setViewMode('project');
+      assert.equal(storage.getItem(VIEW_MODE_KEY), 'project');
+      assert.equal(createSessionRailLayoutStore().getState().viewMode, 'project');
+
+      current.setViewMode('conversation');
+      assert.equal(storage.getItem(VIEW_MODE_KEY), 'conversation');
+      assert.equal(createSessionRailLayoutStore().getState().viewMode, 'conversation');
+    });
   });
 });
 
 describe('session rail width persistence', () => {
-  const cleanups: Array<() => void> = [];
-  afterEach(() => {
-    mock.timers.reset();
-    while (cleanups.length > 0) cleanups.pop()?.();
+  it('writes a debounced user width', () => {
+    withLocalStorage({}, (storage) => {
+      withMockedTimeouts(() => {
+        const rail = createSessionRailLayoutStore();
+        rail.setWidth(400);
+        mock.timers.tick(200);
+        assert.equal(rail.getState().width, 400);
+        assert.equal(storage.getItem(WIDTH_KEY), '400');
+      });
+    });
   });
 
-  it('persists a width the user dragged to', () => {
-    const memory = installMemoryLocalStorage();
-    cleanups.push(memory.restore);
-    mock.timers.enable({ apis: ['setTimeout'] });
-    const store = createSessionRailLayoutStore();
-
-    store.setWidth(400);
-    mock.timers.tick(200);
-
-    assert.equal(store.getState().width, 400);
-    assert.equal(memory.store.get(WIDTH_KEY), '400');
-  });
-
-  // Astryx reports a collapse as `onSizeChange(0)`. Clamping that to the minimum
-  // and storing it loses the width the user chose: collapse, reload, expand, and
-  // the rail comes back at 180 instead of 400.
-  it("ignores the collapse sentinel instead of storing it as the user's width", () => {
-    const memory = installMemoryLocalStorage();
-    cleanups.push(memory.restore);
-    mock.timers.enable({ apis: ['setTimeout'] });
-    const store = createSessionRailLayoutStore();
-    store.setWidth(400);
-    mock.timers.tick(200);
-
-    store.setCollapsed(true);
-    store.setWidth(0);
-    mock.timers.tick(200);
-
-    assert.equal(store.getState().width, 400);
-    assert.equal(memory.store.get(WIDTH_KEY), '400');
+  it('does not replace the expanded width with the collapse sentinel', () => {
+    withLocalStorage({}, (storage) => {
+      withMockedTimeouts(() => {
+        const rail = createSessionRailLayoutStore();
+        rail.setWidth(400);
+        mock.timers.tick(200);
+        rail.setCollapsed(true);
+        rail.setWidth(0);
+        mock.timers.tick(200);
+        assert.equal(rail.getState().width, 400);
+        assert.equal(storage.getItem(WIDTH_KEY), '400');
+      });
+    });
   });
 });

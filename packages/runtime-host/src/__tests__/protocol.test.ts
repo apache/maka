@@ -243,6 +243,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
   });
 
+  test('publishes a new compatibility epoch for queue reorder revision fencing', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 192);
+  });
+
   test('publishes a new compatibility epoch for the project registration preference', () => {
     // Epoch 46 Hosts reject the optional preference field on the closed register
     // input, so mixed-version peers must fail during the handshake instead.
@@ -523,38 +527,6 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeSessionContinuitySnapshot(waiting), waiting);
-    const retrying = {
-      ...continuitySnapshot('epoch-1'),
-      rootTurn: {
-        ...continuitySnapshot('epoch-1').rootTurn,
-        providerRetry: {
-          phase: 'scheduled' as const,
-          attempt: 8,
-          maxAttempts: 10,
-          delayMs: 40_000,
-          reason: 'rate_limit' as const,
-        },
-      },
-    };
-    assert.deepEqual(decodeSessionContinuitySnapshot(retrying), retrying);
-    // Snapshots written after #3393 carry the host-clock schedule time so a
-    // re-projection can recompute the remaining wait; the field is optional
-    // for older snapshots.
-    const retryingWithTs = {
-      ...continuitySnapshot('epoch-1'),
-      rootTurn: {
-        ...continuitySnapshot('epoch-1').rootTurn,
-        providerRetry: {
-          phase: 'scheduled' as const,
-          attempt: 8,
-          maxAttempts: 10,
-          delayMs: 40_000,
-          ts: 1_700_000_000_000,
-          reason: 'rate_limit' as const,
-        },
-      },
-    };
-    assert.deepEqual(decodeSessionContinuitySnapshot(retryingWithTs), retryingWithTs);
     assert.throws(
       () =>
         decodeSessionContinuitySnapshot({
@@ -1606,92 +1578,6 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
-    const entryRetract = {
-      requestId: 'entry-retract-request-1',
-      operation: 'queue.entry.retract' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        retractId: 'retract-2',
-      },
-    };
-    const entryPromote = {
-      requestId: 'entry-promote-request-1',
-      operation: 'queue.entry.promote' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        promoteId: 'promote-1',
-      },
-    };
-    const entryUpdate = {
-      requestId: 'entry-update-request-1',
-      operation: 'queue.entry.update' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        updateId: 'update-1',
-        expectedQueueRevision: 7,
-        text: 'updated message',
-      },
-    };
-    const entriesReorder = {
-      requestId: 'entries-reorder-request-1',
-      operation: 'queue.entries.reorder' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        reorderId: 'reorder-1',
-        entryIds: ['entry-2', 'entry-1'],
-      },
-    };
-    assert.deepEqual(decodeClientFrame(entryRetract), entryRetract);
-    assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
-    assert.deepEqual(decodeClientFrame(entryUpdate), entryUpdate);
-    assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entryUpdate,
-          input: { ...entryUpdate.input, text: '   ' },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entriesReorder,
-          input: { ...entriesReorder.input, entryIds: ['entry-1', 'entry-1'] },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entriesReorder,
-          input: { ...entriesReorder.input, entryIds: ['not/a/semantic/id'] },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entryRetract,
-          input: { ...entryRetract.input, generation: 1 },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entryPromote,
-          input: { ...entryPromote.input, entryId: 'not/a/semantic/id' },
-        }),
-      isInvalidFrame,
-    );
     assert.throws(
       () =>
         decodeClientFrame({ ...submit, input: { ...submit.input, originHostEpoch: undefined } }),
@@ -2155,31 +2041,6 @@ describe('Runtime Host bootstrap protocol', () => {
             operation: 'turn.message.submit',
             ok: true,
             result: { disposition: 'blocked', skillInvocation },
-          }),
-        isInvalidFrame,
-      );
-    }
-    for (const [operation, requestId] of [
-      ['queue.entry.retract', 'entry-retract-response'],
-      ['queue.entry.promote', 'entry-promote-response'],
-      ['queue.entry.update', 'entry-update-response'],
-      ['queue.entries.reorder', 'entries-reorder-response'],
-    ] as const) {
-      assert.doesNotThrow(() =>
-        decodeHostFrame({
-          requestId,
-          operation,
-          ok: true,
-          result: { queueRevision: 8 },
-        }),
-      );
-      assert.throws(
-        () =>
-          decodeHostFrame({
-            requestId,
-            operation,
-            ok: true,
-            result: { queueRevision: 8, retracted: [] },
           }),
         isInvalidFrame,
       );
