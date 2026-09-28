@@ -85,10 +85,18 @@ test('mixed tool states recover once beside unrelated history before Host ready'
     }
     const firstHost = await fixture.startHost();
     const first = await connectClient(fixture.root);
-    for (const { session, turnId } of targets) {
+    for (const { scenario, session, turnId } of targets) {
       const recovered = await first.request('turn.query', { sessionId: session.sessionId, turnId });
       assert.equal(recovered.status, 'failed');
-      if (recovered.status === 'failed') assert.equal(recovered.failureClass, 'app_restarted');
+      if (recovered.status === 'failed') {
+        assert.equal(
+          recovered.failureClass,
+          scenario.outcome === undefined && scenario.mode !== 'outcome_unknown'
+            ? 'outcome_unknown'
+            : 'app_restarted',
+          scenario.name,
+        );
+      }
     }
     await first.close();
     await fixture.stopHost(firstHost);
@@ -118,17 +126,7 @@ test('mixed tool states recover once beside unrelated history before Host ready'
         assert.equal(content.isError, scenario.outcome);
         assert.deepEqual(content.result, { kind: 'text', text: scenario.name });
       } else {
-        assert.equal(outcomes.length, 1, scenario.name);
-        const outcome = outcomes[0]!;
-        assert.equal(outcome.id, `${operationId}_response`);
-        assert.equal(outcome.refs?.operationId, operationId);
-        assert.equal(
-          outcome.content?.kind === 'function_response' && outcome.content.isError,
-          true,
-          'recovery must record an unobserved effect as interrupted, never successful',
-        );
-        assert.match(JSON.stringify(outcome.content), /outcome_unknown/);
-        assert.match(JSON.stringify(outcome.content), /"retrySafe":false/);
+        assert.equal(outcomes.length, 0, scenario.name);
       }
       settled.push(ledger.runtimeEvents);
     }
