@@ -168,15 +168,6 @@ export class HostChangeFeed {
         this.#subscriptions.delete(connectionId);
         continue;
       }
-      if (
-        closeScopeFor !== undefined &&
-        frame.kind === 'session.catalog.changed' &&
-        subscription.mask.artifact !== true &&
-        subscription.mask.artifact?.sessionId === frame.sessionId &&
-        this.#subscriptions.get(connectionId) === subscription
-      ) {
-        this.#subscriptions.delete(connectionId);
-      }
     }
   }
 }

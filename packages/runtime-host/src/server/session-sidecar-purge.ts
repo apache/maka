@@ -39,9 +39,9 @@ export async function purgeSessionSidecars(
     ...(authority.contextOffload ? [authority.contextOffload.retireSession(sessionId)] : []),
     authority.purgeOperationalState(sessionId),
   ]);
-  // Once Artifacts are purged their previews must stop serving, even when a
-  // sibling sidecar fails and the aggregate error is thrown below.
-  if (artifactPurge.status === 'fulfilled') authority.onArtifactsPurged?.(sessionId);
+  // Invalidation is idempotent and must happen even when the Artifact purge
+  // rejects: a failed purge may have removed only part of the Session's data.
+  authority.onArtifactsPurged?.(sessionId);
   const failures = [artifactPurge, ...sidecarPurges].flatMap((outcome) =>
     outcome.status === 'rejected' ? [outcome.reason] : [],
   );

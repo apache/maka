@@ -200,7 +200,7 @@ describe('Host Session retirement coordinator', () => {
     assert.equal(garbageBatches, 0);
   });
 
-  test('publishes Session Artifact invalidation only when Artifact purge succeeds', async () => {
+  test('publishes Session Artifact invalidation even when a purge partially fails', async () => {
     const purged: string[] = [];
     await purgeSessionSidecars(
       {
@@ -229,7 +229,7 @@ describe('Host Session retirement coordinator', () => {
       ),
       AggregateError,
     );
-    assert.deepEqual(purged, ['session-success']);
+    assert.deepEqual(purged, ['session-success', 'session-artifact-failure']);
 
     await assert.rejects(
       purgeSessionSidecars(
@@ -247,7 +247,11 @@ describe('Host Session retirement coordinator', () => {
       ),
       AggregateError,
     );
-    assert.deepEqual(purged, ['session-success', 'session-other-failure']);
+    assert.deepEqual(purged, [
+      'session-success',
+      'session-artifact-failure',
+      'session-other-failure',
+    ]);
   });
 
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {

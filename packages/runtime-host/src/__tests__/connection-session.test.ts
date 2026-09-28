@@ -137,7 +137,7 @@ test('concurrent responses remain framed and correlated in reverse completion or
   );
 });
 
-test('scopes Session Guest Artifact changes to the shared Session', async () => {
+test('does not expose Artifact invalidations to Session Guests', async () => {
   const pair = await openTransportPair();
   const hostChanges = new HostChangeFeed();
   const session = new RuntimeHostConnectionSession({
@@ -184,11 +184,11 @@ test('scopes Session Guest Artifact changes to the shared Session', async () => 
   try {
     hostChanges.publishArtifactDeleted('session-2', 'artifact-2');
     hostChanges.publishArtifactDeleted('session-1', 'artifact-1');
+    hostChanges.publishSessionCatalog('session-1');
     assert.deepEqual(decodeHostFrame(await pair.clientTransport.read(1_000)), {
-      kind: 'artifact.changed',
-      reason: 'deleted',
+      kind: 'session.catalog.changed',
+      revision: 1,
       sessionId: 'session-1',
-      artifactId: 'artifact-1',
     });
   } finally {
     pair.clientTransport.abort();

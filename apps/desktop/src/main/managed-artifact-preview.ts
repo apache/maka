@@ -24,10 +24,6 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 
 export const PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEWS = 16;
-// Per-Session admission alone cannot bound the Desktop, so one global backstop
-// remains. It evicts the oldest lease instead of rejecting the newest: a global
-// rejection is what let one Session starve every other for a full TTL.
-const MAX_TOTAL_PREVIEWS = 64;
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
 const READ_DEADLINE_MS = 30_000;
 
@@ -81,10 +77,6 @@ export class ManagedArtifactPreview {
     );
     if (sessionLeases.length >= MAX_PREVIEWS) {
       throw new Error('Too many active previews; wait for expiry');
-    }
-    if (this.leases.size >= MAX_TOTAL_PREVIEWS) {
-      const oldest = this.leases.values().next().value as Lease | undefined;
-      if (oldest) void this.release(oldest);
     }
     signal?.throwIfAborted();
     // Reserve before asynchronous reads, so concurrent preparations cannot exceed the bound.

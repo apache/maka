@@ -56,7 +56,10 @@ test('routes each change kind only to subscribed connections', () => {
   );
   feed.attachConnection(
     'other-guest',
-    { sessionCatalog: { sessionId: 'session-1', principalId: 'guest-2' } },
+    {
+      artifact: { sessionId: 'session-1' },
+      sessionCatalog: { sessionId: 'session-1', principalId: 'guest-2' },
+    },
     { send: async (frame) => void otherGuest.push(frame) },
   );
 

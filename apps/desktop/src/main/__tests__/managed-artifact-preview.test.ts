@@ -158,7 +158,7 @@ test('bounds previews per session instead of starving another session', async ()
   }
 });
 
-test('evicts the oldest lease at the global backstop without denying another session', async () => {
+test('does not invalidate existing previews when another session prepares one', async () => {
   const service = new ManagedArtifactPreview();
   try {
     const endpoints = [];
@@ -166,7 +166,7 @@ test('evicts the oldest lease at the global backstop without denying another ses
       endpoints.push(await service.prepare('h', client(`preview-${index}`), `s${index}`, 'a1'));
     }
     const replacement = await service.prepare('h', client('replacement'), 's64', 'a1');
-    await assert.rejects(fetch(endpoints[0]!.url));
+    assert.equal(await (await fetch(endpoints[0]!.url)).text(), 'preview-0');
     assert.equal(await (await fetch(replacement.url)).text(), 'replacement');
   } finally {
     await service.close();
