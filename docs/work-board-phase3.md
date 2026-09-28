@@ -99,8 +99,10 @@ verified the project-item -> resolved Host/project target -> normal first-send
 -> durable link -> restart/reopen mechanism on a development renderer.
 
 Because creation and revisit happened in the same sitting, this run does not
-establish the Phase 1 delayed return-use assumption. The go/stop decision is to
-be recorded by the maintainer in the [Phase 3 update comment on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658).
+establish the Phase 1 delayed return-use assumption. The [Phase 3 update comment
+on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658)
+records the contributor evidence and request; the maintainer go/stop decision
+remains pending on [#2560](https://github.com/apache/maka/issues/2560).
 Phase 2 and Phase 4 remain paused pending that decision and a delayed return-use
 observation.
 
