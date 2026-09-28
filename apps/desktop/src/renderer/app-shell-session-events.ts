@@ -314,10 +314,7 @@ export function createAppShellSessionEventHandlers(options: {
           }
           return {
             ...current,
-            [sessionId]: {
-              queueRevision: event.queueRevision,
-              entries: queue.entries,
-            },
+            [sessionId]: queue,
           };
         });
         break;

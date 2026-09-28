@@ -33,9 +33,11 @@ export function useNewTaskChoice<T>(
   const [choices, setChoices] = useState(() => new Map<string, T>());
   const { handoff, consume } = useNewTaskChoiceProjectHandoff();
   const projectHandoffIdentitiesRef = useRef(new Map<string, string | undefined>());
-  if (!choices.has(targetKey)) {
-    projectHandoffIdentitiesRef.current.set(targetKey, options.projectHandoffIdentity);
-  }
+  useEffect(() => {
+    if (!choices.has(targetKey)) {
+      projectHandoffIdentitiesRef.current.set(targetKey, options.projectHandoffIdentity);
+    }
+  }, [choices, targetKey, options.projectHandoffIdentity]);
   const pendingTargetKey =
     targetKey !== UNRESOLVED_NEW_TASK_DRAFT_KEY && choices.has(UNRESOLVED_NEW_TASK_DRAFT_KEY)
       ? UNRESOLVED_NEW_TASK_DRAFT_KEY

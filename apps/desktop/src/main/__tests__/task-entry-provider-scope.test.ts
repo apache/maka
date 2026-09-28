@@ -19,7 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement, Fragment, type ReactNode } from 'react';
+import { act, createElement, Fragment, StrictMode, type ReactNode } from 'react';
 import { LocaleProvider, ToastProvider, type WorkspacePickerModel } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
@@ -290,6 +290,31 @@ describe('TaskEntryRoot render scope', () => {
     await act(async () => latestTaskEntry?.commands.selectLocalProject('local-project'));
     assert.equal(latestChatModel?.newChatModel?.model, 'm');
     assert.equal(latestChatModel?.pendingNewChatThinkingLevel, undefined);
+  });
+
+  it('retains the inherited model and thinking through consecutive project adds in StrictMode', async () => {
+    const { root } = installReactRenderer();
+    thinkingChoices = [CHOICE, { ...CHOICE, model: 'other', label: 'Other', isDefault: false }];
+    const host = { ...remoteHost(), capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: false } };
+    const projects = [project('project-a')];
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => ({ defaultProfileId: 'remote', hosts: [{ ...host, projects: [...projects] }] }),
+      addProject: async () => {
+        const next = project(`project-${projects.length}`);
+        projects.push(next);
+        return { ok: true, project: next };
+      },
+    } });
+    await act(async () => renderProvider(root, services, createElement(StrictMode, null, createElement(ThinkingShellProbe))));
+    await act(async () => latestChatModel?.setPendingNewChatModel({ llmConnectionId: 'c', llmConnectionSlug: 'c', model: 'other' }));
+    await act(async () => latestChatModel?.setPendingNewChatThinkingLevel('high'));
+    for (const id of ['project-1', 'project-2']) {
+      await act(async () => latestTaskEntry?.commands.addProject());
+      assert.equal(latestTaskEntry?.selectors.target?.projectId, id);
+      assert.equal(latestChatModel?.newChatModel?.model, 'other');
+      assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
+    }
   });
 
   for (const destination of ['existing-choice', 'model-removed'] as const) {

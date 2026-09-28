@@ -18,6 +18,11 @@
  */
 
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import {
+  retractQueuedEntryToDraft,
+  withQueuedSteeringTransients,
+  type RestoredDraftContent,
+} from '../../../application/contracts/transient-message-projection.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -59,9 +64,12 @@ interface SendAttempt {
 }
 interface MessagePresentation {
   transientMessages: TransientUserMessageProjection[];
-  messageQueue: { entries: MessageQueueEntryProjection[]; revision?: number };
+  messageQueue: { entries: readonly MessageQueueEntryProjection[]; ts?: number };
 }
-export function useWorkHubController(onSubmit?: () => void) {
+export function useWorkHubController(
+  onSubmit: (() => void) | undefined,
+  restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void,
+) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
   const localeRef = useRef(locale);
@@ -209,6 +217,37 @@ export function useWorkHubController(onSubmit?: () => void) {
       if (pendingSend.current === attempt && currentSessionId.current === attempt.sessionId) report(reason);
     } finally {
       attempt.reconciling = false;
+    }
+  }
+
+  // An unobserved queued send has no proof of admission or retraction. On
+  // reseed the Host's resolution record is the only authority left — a queue
+  // it already drained cannot answer, and admission events do not replay.
+  async function resolvePendingQueued(): Promise<void> {
+    const queued = pendingQueued.current;
+    if (!queued || queued.observed || queued.sessionId !== currentSessionId.current) return;
+    try {
+      const { resolutions } = await services.queryMessageExecutions(queued.sessionId, [queued.messageId]);
+      if (pendingQueued.current !== queued || queued.observed) return;
+      const resolution = resolutions.find((entry) => entry.messageId === queued.messageId);
+      // `pending` or an omitted identity means the Host cannot say yet —
+      // keep the placeholder until canonical evidence arrives.
+      if (!resolution || resolution.state === 'pending') return;
+      pendingQueued.current = undefined;
+      // `owned` means the message already runs as a Turn; the durable
+      // transcript merge retires its placeholder. `cancelled`/`not_admitted`
+      // prove it never will, so the placeholder drops here.
+      setMessagePresentation((previous) => ({
+        messageQueue: {
+          ...previous.messageQueue,
+          entries: previous.messageQueue.entries.filter((entry) => entry.messageId !== queued.messageId),
+        },
+        transientMessages: resolution.state === 'owned'
+          ? previous.transientMessages
+          : previous.transientMessages.filter((message) => message.id !== queued.messageId),
+      }));
+    } catch {
+      // A failed proof query says nothing about the send — presentation stays.
     }
   }
 
@@ -385,7 +424,7 @@ export function useWorkHubController(onSubmit?: () => void) {
           const ids = new Set(entries.map((entry) => entry.messageId));
           if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
           setMessagePresentation((previous) => ({
-            messageQueue: { entries, revision: event.queueRevision },
+            messageQueue: { entries, ts: event.ts },
             transientMessages: previous.transientMessages.filter((message) => !ids.has(message.id)),
           }));
         }
@@ -443,7 +482,11 @@ export function useWorkHubController(onSubmit?: () => void) {
         if (disposed) return;
         observationPhase = phase;
         handle?.observationChanged(phase);
-        if (phase === 'ready') { refreshInteractions.current(); void recoverSend(); }
+        if (phase === 'ready') {
+          refreshInteractions.current();
+          void recoverSend();
+          void resolvePendingQueued();
+        }
       },
       (projection) => { if (!disposed) setExecution(projection); },
     );
@@ -522,7 +565,7 @@ export function useWorkHubController(onSubmit?: () => void) {
         pendingQueued.current = attempt;
         if (!attempt.observed) setMessagePresentation((previous) => ({ ...previous, transientMessages: [...previous.transientMessages.filter((message) => message.id !== attempt.messageId), {
           id: attempt.messageId, hostTurnId: queuedTurnId, text, attachments: [...attachments],
-          ts: Date.now(), transientPlacement: attempt.placement === 'current_turn' ? 'steering' : 'follow_up',
+          ts: Date.now(), transientPlacement: attempt.placement === 'next_turn' ? 'follow_up' : 'transcript',
         }] }));
         viewportNavigation.followLatest(target);
         const result = await services.enqueueMessage(target, attempt.messageId, text, attachments, attempt.placement);
@@ -672,6 +715,10 @@ export function useWorkHubController(onSubmit?: () => void) {
     try { await action(sessionId); }
     catch (reason) { report(reason); throw reason; }
   }
+  const deleteQueuedEntry = (entryId: string) => mutateQueue((target) => services.retractQueueEntry(target, entryId));
+  const queuedEntryDraft = sessionId
+    ? { retract: deleteQueuedEntry, restoreDraft: (draft: RestoredDraftContent) => restoreDraft(sessionId, draft) }
+    : undefined;
   return {
     services,
     sessionId,
@@ -691,10 +738,14 @@ export function useWorkHubController(onSubmit?: () => void) {
       if (!sessionId) throw new Error('WorkHub Session is unavailable');
       await services.respondToUserQuestion(sessionId, response);
     },
-    transientMessages,
+    transientMessages: queuedEntryDraft
+      ? withQueuedSteeringTransients(transientMessages, messageQueue, { ...queuedEntryDraft, locale })
+      : transientMessages,
     messageQueue,
-    updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
-    deleteQueuedEntry: (entryId: string) => mutateQueue((target) => services.retractQueueEntry(target, entryId)),
+    editQueuedEntry: queuedEntryDraft
+      ? (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => retractQueuedEntryToDraft(entry, queuedEntryDraft)
+      : undefined,
+    deleteQueuedEntry,
     promoteQueuedEntry: (entryId: string) => mutateQueue((target) => services.promoteQueueEntry(target, entryId)),
     reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => services.reorderQueueEntries(target, entryIds)),
     viewportNavigation,

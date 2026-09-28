@@ -18,6 +18,7 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { isHostActivityIdle } from '../protocol/host-status.js';
 import type {
   HostHandoffAction,
   HostHandoffPhase,
@@ -287,7 +288,11 @@ export function formatHostHandoff(
   if (view.recoveryBlocker && view.reason === 'operator_required') {
     description = copy.recoveryGuidance[view.recoveryBlocker];
   }
-  if (view.manualRecheck && view.reason === 'busy') {
+  // An idle snapshot is only projected as busy after the Host refused safe retirement.
+  if (
+    view.reason === 'busy' &&
+    (view.manualRecheck || (view.activity && isHostActivityIdle(view.activity)))
+  ) {
     description = copy.manualBusy;
   }
   if (view.manualRecheck && view.reason === 'operator_required') {

@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
@@ -29,7 +30,10 @@ import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import type { WorkHubAdmittedAction } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import {
+  buildInvocationOpenedEvent,
+  runtimeInvocationOutcome,
+} from '@maka/core/runtime-invocation';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
@@ -61,6 +65,7 @@ import {
 } from '@maka/runtime/test-only/fake-backend';
 import { LOCAL_READ_AGENT_DEFINITION } from '@maka/runtime/agent-catalog';
 import { SessionManager, type BackendFactory } from '@maka/runtime/session-manager';
+import { testInvocationOpening } from '@maka/runtime/test-only/invocation-fixture';
 import { workHubDirectStopAbortSource } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
@@ -82,6 +87,7 @@ import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   HostResidencyRegistry,
   type HostResidencyKind,
@@ -124,6 +130,99 @@ const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
   toolNames: [],
   contextWindow: null,
+});
+
+test('production Host recovery starts with a dispatched tool whose outcome is unknown', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const run = {
+      sessionId: session.id,
+      invocationId: 'unknown-tool-run',
+      runId: 'unknown-tool-run',
+      turnId: 'unknown-tool-turn',
+    };
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      session.id,
+      run.runId,
+      buildInvocationOpenedEvent({
+        id: 'unknown-tool-open',
+        run,
+        openedAt: 10,
+        opening: testInvocationOpening(),
+      }),
+    );
+    await stores.agentRunStore.appendEvent(session.id, run.runId, {
+      type: 'turn_started',
+      id: 'unknown-tool-started',
+      sessionId: session.id,
+      runId: run.runId,
+      turnId: run.turnId,
+      ts: 11,
+    });
+    const args = { path: '/workspace/README.md' };
+    const canonicalArgsHash = canonicalToolArgsHash('Read', args);
+    await stores.runtimeEventStore.commitToolPrepared({
+      operationId: 'unknown-tool-operation',
+      journalEventId: 'unknown-tool-operation_prepared',
+      runtimeEvent: {
+        id: 'unknown-tool-call',
+        ...run,
+        ts: 12,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'unknown-tool-call-id', name: 'Read', args },
+      },
+      dispatchRuntimeEvent: {
+        id: 'unknown-tool-dispatch',
+        ...run,
+        ts: 13,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        actions: {
+          toolDispatch: {
+            protocol: TOOL_BOUNDARY_PROTOCOL_V1,
+            operationId: 'unknown-tool-operation',
+            providerToolCallId: 'unknown-tool-call-id',
+            toolName: 'Read',
+            canonicalArgsHash,
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: { operationId: 'unknown-tool-operation', toolCallId: 'unknown-tool-call-id' },
+      },
+      providerToolCallId: 'unknown-tool-call-id',
+      toolName: 'Read',
+      canonicalArgsHash,
+      recoveryMode: 'replay_safe',
+      committedAt: 13,
+    });
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const [invocation] = await stores.runtimeEventStore.listSessionInvocations(session.id);
+      assert.equal(invocation?.terminalEvent?.status, 'failed');
+      assert.equal(invocation && runtimeInvocationFailureClass(invocation), 'outcome_unknown');
+      assert.deepEqual(await stores.runtimeEventStore.listUnsettledToolOperations(session.id), []);
+      assert.equal(
+        (await stores.runtimeEventStore.readImmutableRuntimeEvents(session.id, run.runId)).some(
+          (event) => event.content?.kind === 'function_response',
+        ),
+        false,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
 });
 
 test('Host bundle recovery repairs terminal tool projections without decoding opaque Session history', {
@@ -1395,6 +1494,141 @@ test('Session capability publication follows durable archive and removal state, 
   });
 });
 
+test('production composition enables an explicit resume after user Stop by default', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    execFileSync('git', ['init', '--quiet'], { cwd: root });
+    await resolveWorkspaceIdentity({ path: root });
+    const backendEntered = deferred<void>();
+    const stopRequested = deferred<void>();
+    const backendFactory: BackendFactory = (context) =>
+      new (class extends FakeBackend {
+        override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          backendEntered.resolve();
+          await stopRequested.promise;
+          yield {
+            type: 'abort',
+            id: `stop-${input.turnId}`,
+            turnId: input.turnId,
+            ts: Date.now(),
+            reason: 'user_stop',
+          };
+          yield {
+            type: 'complete',
+            id: `complete-${input.turnId}`,
+            turnId: input.turnId,
+            ts: Date.now(),
+            stopReason: 'user_stop',
+          };
+        }
+
+        override async stop(): Promise<void> {
+          stopRequested.resolve();
+          await super.stop();
+        }
+      })(context);
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: backendFactory,
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'default-interactive-resume-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    const desktop = composition.clientCapabilities!.attachConnection(
+      clientCapabilityConnectionIdentity(context.connectionId),
+      { send: async () => {} },
+    );
+    try {
+      const registered = await composition.handlers['client.capability.replace'](
+        { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+        context,
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'turn-default-interactive-resume',
+          content: { text: 'stop before any assistant output' },
+        },
+        context,
+      );
+      assert.equal(started.ok, true);
+      if (!started.ok || started.result.kind !== 'started') return;
+      const startedTurn = started.result.turn;
+      await backendEntered.promise;
+      const stopped = await composition.handlers['turn.stop'](
+        {
+          sessionId: session.id,
+          turnId: startedTurn.turnId,
+          runId: startedTurn.runId,
+        },
+        context,
+      );
+      assert.equal(stopped.ok, true);
+      await waitFor(async () =>
+        (await manager.listTurns(session.id)).some(
+          (turn) => turn.turnId === startedTurn.turnId && turn.status === 'aborted',
+        ),
+      );
+
+      const plan = await composition.handlers['turn.resume.query'](
+        { sessionId: session.id },
+        context,
+      );
+      assert.equal(plan.ok, true);
+      if (plan.ok) {
+        assert.equal(plan.result.disposition, 'ready', JSON.stringify(plan.result));
+      }
+    } finally {
+      await desktop.close();
+      await composition.close();
+    }
+  });
+});
+
+test('production composition preserves an explicit interactive resume kill switch', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      safeBoundaryResume: false,
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'disabled-interactive-resume-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const plan = await composition.handlers['turn.resume.query'](
+        { sessionId: session.id },
+        context,
+      );
+      assert.equal(plan.ok, true);
+      assert.deepEqual(plan.ok && plan.result, {
+        sessionId: session.id,
+        disposition: 'parked',
+        reason: 'resume_feature_disabled',
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('default production WorkHub selects and delegates through its durable Host interaction', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
@@ -2190,12 +2424,10 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
   });
 });
 
-test('WorkHub does not record resume while safe-boundary resume is disabled', async () => {
+test('WorkHub does not record resume when only interactive resume is enabled by default', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
-    const { composition, manager } = await createCapturedExecutionComposition(owner, {
-      safeBoundaryResume: false,
-    });
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
     const context = {
       hostEpoch: 'execution-composition-test',
       connectionId: 'workhub-disabled-resume-client',
@@ -3656,7 +3888,9 @@ async function createCapturedExecutionComposition(
   };
   try {
     if (options.safeBoundaryResume === true) process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
-    if (options.safeBoundaryResume === false) delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+    else if (options.safeBoundaryResume === false)
+      process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '0';
+    else delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
     // The production composition no longer registers a test backend of its
     // own; the deterministic one arrives through the same `primaryBackendFactory`
     // seam the Desktop E2E run uses.

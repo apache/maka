@@ -1091,6 +1091,21 @@ test('seeds a context-compaction-started event for a running compaction Turn', (
   assert.equal(seeded[0]?.turnId, 'turn-compact');
 });
 
+test('seeds an empty queue only for a client that renders the queue', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'running' },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  assert.deepEqual(projector.seedActive(false), []);
+  const [cleared] = projector.seedActive(true, { includeEmptyQueue: true });
+  assert.equal(cleared?.type, 'queue_update');
+  if (cleared?.type !== 'queue_update') return;
+  assert.deepEqual([cleared.steeringEntries, cleared.followupEntries], [[], []]);
+});
+
 test('emits a context-compaction-started event when a compaction Turn starts', () => {
   const projector = new RuntimeHostSessionProjector(
     snapshot(),

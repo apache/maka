@@ -134,9 +134,7 @@ test('ordinary sends stay in ChatView while queued prompts stay in the composer'
       'the ordinary prompt remains in the transcript');
   }
 
-  for (const transientPlacement of ['steering', 'follow_up'] as const) {
-    const document = render({ ...OPTIMISTIC_BUBBLE, transientPlacement });
-    assert.ok(document.querySelector('.maka-composer-queue')?.textContent?.includes(OPTIMISTIC_BUBBLE.text));
-    assert.equal(document.querySelector('.maka-user-message'), null, `${transientPlacement} stays out of the transcript`);
-  }
+  const followUp = render({ ...OPTIMISTIC_BUBBLE, transientPlacement: 'follow_up' });
+  assert.ok(followUp.querySelector('.maka-composer-queue')?.textContent?.includes(OPTIMISTIC_BUBBLE.text));
+  assert.equal(followUp.querySelector('.maka-user-message'), null, 'a follow-up stays out of the transcript');
 });

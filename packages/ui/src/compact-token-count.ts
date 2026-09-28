@@ -17,4 +17,23 @@
  * under the License.
  */
 
-export { toComposerIngestItems, type PendingAttachment } from './features/conversation/index.js';
+const COMPACT_TOKEN_UNITS = [
+  { value: 1_000, suffix: 'K' },
+  { value: 1_000_000, suffix: 'M' },
+  { value: 1_000_000_000, suffix: 'B' },
+] as const;
+
+export function formatCompactTokenCount(value: number): string {
+  if (value < 1_000) return String(value);
+
+  let unitIndex = COMPACT_TOKEN_UNITS.length - 1;
+  while (unitIndex > 0 && value < COMPACT_TOKEN_UNITS[unitIndex].value) unitIndex -= 1;
+
+  let compactValue = Math.round((value / COMPACT_TOKEN_UNITS[unitIndex].value) * 10) / 10;
+  if (compactValue >= 1_000 && unitIndex < COMPACT_TOKEN_UNITS.length - 1) {
+    unitIndex += 1;
+    compactValue = 1;
+  }
+
+  return `${compactValue}${COMPACT_TOKEN_UNITS[unitIndex].suffix}`;
+}

@@ -158,7 +158,10 @@ export class RuntimeHostSessionProjector {
     this.#projectMessageAdmissions = true;
   }
 
-  seedActive(includeAssistantText: boolean): SessionEvent[] {
+  seedActive(
+    includeAssistantText: boolean,
+    options: { includeEmptyQueue?: boolean } = {},
+  ): SessionEvent[] {
     const root = this.#snapshot.rootTurn;
     if (!root) {
       // A Session whose root Turn is gone still owns an authoritative queue:
@@ -175,8 +178,13 @@ export class RuntimeHostSessionProjector {
       return [projectQueueUpdate(this.#unplacedQueue(queue), '', this.#now())];
     }
     const events: SessionEvent[] = [];
+    // A queue-rendering client needs the empty seed to clear entries it saw
+    // before re-observing. ACP ignores queue_update, and delivering one after
+    // an output failure would stop the Host Turn it restored.
     const queueEvents =
-      this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
+      options.includeEmptyQueue ||
+      this.#projectMessageAdmissions ||
+      queueHasEntries(this.#snapshot.queue)
         ? [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())]
         : [];
     if (this.#projectMessageAdmissions) {

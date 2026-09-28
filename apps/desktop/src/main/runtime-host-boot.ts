@@ -109,6 +109,7 @@ import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
+import { registerAttachmentDirectoryDetectionIpc } from "./attachment-directory-detection.js";
 import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { DesktopSessionLocalStore } from './session-local-store.js';
 import { createSessionLocalChangedEmitter, DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
@@ -178,6 +179,7 @@ import {
 import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js";
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
 import { buildClientSettingsTools } from "./client-settings-tools.js";
+import { safeSendToRenderer } from "./main-window.js";
 import { createClientSettingsEffects } from "./client-settings-effects.js";
 import { registerClientSettingsIpc } from "./client-settings-ipc-main.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
@@ -847,8 +849,9 @@ const clientSettingsEffects = createClientSettingsEffects({
   systemPrefersDark: () => nativeTheme.shouldUseDarkColors,
   observeLocale: (settings) => desktopLocale.observe(settings),
   emitExternalChanged: () => {
-    mainWindowController.send("settings:clientChanged");
+    const emitted = safeSendToRenderer("settings:clientChanged");
     sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
+    return emitted;
   },
 });
 // An OS appearance flip changes no setting, so nothing else would notice it.
@@ -1972,6 +1975,7 @@ function registerPersistentClientIpc(): void {
       files: attachmentApprovals.issueApprovals(event.sender.id, chosen),
     };
   });
+  registerAttachmentDirectoryDetectionIpc({ ipcMain });
   registerAttachmentPreviewIpc({
     ipcMain,
     approvals: attachmentApprovals,

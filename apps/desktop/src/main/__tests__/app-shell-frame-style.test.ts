@@ -25,15 +25,12 @@ test('every published width stays a <length>, collapsed included', () => {
   const collapsed = appShellFrameStyle({
     sessionListCollapsed: true,
     sessionListWidth: 260,
-    workbarRightWidth: 480,
   }) as Record<string, string>;
   const expanded = appShellFrameStyle({
     sessionListCollapsed: false,
     sessionListWidth: 291,
-    workbarRightWidth: 480,
   }) as Record<string, string>;
 
   assert.equal(collapsed['--maka-sidenav-width'], '0px');
   assert.equal(expanded['--maka-sidenav-width'], '291px');
-  assert.equal(collapsed['--maka-session-workbar-width'], '480px');
 });

@@ -334,6 +334,23 @@ export function useTaskEntryController(
     }
   }, [copy.projectUpdateFailedFallback, copy.projectUpdateFailedTitle, locale, refresh, reportError]);
 
+  const refreshAddedProject = useCallback(async (host: TaskEntryHostRef, projectId: string) => {
+    // Creation already succeeded. Refresh even if navigation moved the draft,
+    // but only offer selection/handoff once the new project is usable.
+    const refreshed = await refresh().catch(() => undefined);
+    const refreshedHost = refreshed?.hosts.find((candidate) =>
+      isReadyTaskEntryHost(candidate) && candidate.profile.id === host.profileId && candidate.hostId === host.hostId);
+    const project = refreshedHost && isReadyTaskEntryHost(refreshedHost)
+      ? findProjectByIdentity(refreshedHost.projects, projectId) : undefined;
+    if (project?.available && project.archivedAt === undefined) return project;
+    reportError({
+      title: copy.projectAddedRefreshFailedTitle,
+      description: copy.projectAddedRefreshFailedDescription,
+      profileId: host.profileId,
+    });
+    return undefined;
+  }, [copy.projectAddedRefreshFailedDescription, copy.projectAddedRefreshFailedTitle, refresh, reportError]);
+
   const openSessionWorkspaceRecovery = useCallback((sessionId: string): void => {
     // A fresh request reopens the menu even if this Session is already being repaired.
     setSessionWorkspaceRecovery({ sessionId });
@@ -439,13 +456,8 @@ export function useTaskEntryController(
         return;
       }
       if (!result.ok) return;
-      if (sourceMatchesHost && !sameTaskEntryTarget(selectedTargetRef.current, sourceTarget)) return;
-      const refreshed = await refreshAfterProjectMutation(host.profile.id);
-      const refreshedHost = refreshed?.hosts.find((candidate) =>
-        isReadyTaskEntryHost(candidate) && candidate.profile.id === host.profile.id && candidate.hostId === host.hostId);
-      const refreshedProject = refreshedHost && isReadyTaskEntryHost(refreshedHost)
-        ? findProjectByIdentity(refreshedHost.projects, result.project.id) : undefined;
-      if (!refreshedProject?.available || refreshedProject.archivedAt !== undefined) return;
+      const refreshedProject = await refreshAddedProject({ profileId: host.profile.id, hostId: host.hostId }, result.project.id);
+      if (!refreshedProject) return;
       if (sourceMatchesHost && !sameTaskEntryTarget(selectedTargetRef.current, sourceTarget)) return;
       setSelectedProfileId(host.profile.id);
       setProjectSelections((current) =>
@@ -461,7 +473,7 @@ export function useTaskEntryController(
       projectMutationPendingRef.current = false;
       setPending(false);
     }
-  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, reportProjectAdded, service]);
+  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAddedProject, reportError, reportProjectAdded, service]);
 
   const chooseProjectForProfile = useCallback(async (profileId: string): Promise<void> => {
     let next: TaskEntryCatalog | undefined;
@@ -514,12 +526,8 @@ export function useTaskEntryController(
         .renameProject(registeredHost, project.id, host.projectName)
         .catch(() => undefined);
     }
-    const refreshed = await refreshAfterProjectMutation(host.profileId);
-    const refreshedHost = refreshed?.hosts.find((candidate) =>
-      isReadyTaskEntryHost(candidate) && candidate.profile.id === host.profileId && candidate.hostId === host.hostId);
-    const refreshedProject = refreshedHost && isReadyTaskEntryHost(refreshedHost)
-      ? findProjectByIdentity(refreshedHost.projects, project.id) : undefined;
-    if (!refreshedProject?.available || refreshedProject.archivedAt !== undefined) return;
+    const refreshedProject = await refreshAddedProject(registeredHost, project.id);
+    if (!refreshedProject) return;
     if (!sameTaskEntryTarget(selectedTargetRef.current, registrationTarget)) return;
     setSelectedProfileId(host.profileId);
     setProjectSelections((current) => new Map(current).set(host.profileId, refreshedProject.id));
@@ -529,7 +537,7 @@ export function useTaskEntryController(
         toKey: taskEntryDraftKey({ ...host.sourceTarget, projectId: refreshedProject.id }),
       });
     }
-  }, [directoryHost, refreshAfterProjectMutation, reportProjectAdded, service]);
+  }, [directoryHost, refreshAddedProject, reportProjectAdded, service]);
 
   const relinkProject = useCallback(async (
     host: ReadyTaskEntryHost,

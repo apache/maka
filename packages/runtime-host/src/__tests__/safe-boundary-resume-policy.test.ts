@@ -19,26 +19,33 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { compactNumberFormatter } from '../../renderer/features/workbar/testing.js';
+import { resolveSafeBoundaryResumePolicy } from '../server/safe-boundary-resume-policy.js';
 
-test('formats context-window capacity with stable K/M units in every UI locale', () => {
-  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
-    const format = compactNumberFormatter(locale);
+test('enables interactive resume by default without enabling automated resume', () => {
+  assert.deepEqual(resolveSafeBoundaryResumePolicy(undefined), {
+    interactive: true,
+    automated: false,
+  });
+  assert.deepEqual(resolveSafeBoundaryResumePolicy(''), {
+    interactive: true,
+    automated: false,
+  });
+});
 
-    assert.equal(format(256_000), '256K');
-    assert.equal(format(1_000_000), '1M');
+test('preserves the existing explicit full opt-in', () => {
+  for (const value of ['1', 'true']) {
+    assert.deepEqual(resolveSafeBoundaryResumePolicy(value), {
+      interactive: true,
+      automated: true,
+    });
   }
 });
 
-test('formats context-window capacity with at most one decimal and promotes rounded K values to M', () => {
-  const format = compactNumberFormatter('en');
-
-  assert.equal(format(999), '999');
-  assert.equal(format(1_000), '1K');
-  assert.equal(format(8_192), '8.2K');
-  assert.equal(format(69_000), '69K');
-  assert.equal(format(69_194), '69.2K');
-  assert.equal(format(990_000), '990K');
-  assert.equal(format(999_950), '1M');
-  assert.equal(format(1_250_000), '1.3M');
+test('explicit disable and invalid values fail closed', () => {
+  for (const value of ['0', 'false', 'unexpected']) {
+    assert.deepEqual(resolveSafeBoundaryResumePolicy(value), {
+      interactive: false,
+      automated: false,
+    });
+  }
 });

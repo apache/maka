@@ -21,11 +21,11 @@ import type {
   MessageQueueEntryProjection,
   QueueUpdateEvent,
 } from '@maka/core/events';
-import type { TransientUserMessageProjection } from '@maka/ui';
 
+/** The last Host queue snapshot a surface renders from. */
 export interface MessageQueueProjection {
+  readonly ts: number;
   readonly entries: readonly MessageQueueEntryProjection[];
-  readonly transientMessages: readonly TransientUserMessageProjection[];
 }
 
 /** One presentation contract for Host queue snapshots in every chat surface. */
@@ -37,21 +37,7 @@ export function deriveMessageQueueProjection(
     ...(event.followupEntries ?? []),
   ].map((entry) => structuredClone(entry));
   return {
+    ts: event.ts,
     entries,
-    transientMessages: entries.map((entry) => ({
-        id: entry.messageId,
-        transientPlacement: entry.placement === 'current_turn' ? 'steering' : 'follow_up',
-        ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
-        ts: event.ts,
-        text: entry.content.displayText ?? entry.content.text,
-        ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
-        ...(entry.content.directoryReferences && {
-          directoryReferences: entry.content.directoryReferences,
-        }),
-        ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
-        ...(entry.content.inlineReferences && {
-          inlineReferences: [...entry.content.inlineReferences],
-        }),
-      })),
   };
 }

@@ -191,6 +191,8 @@ type ShellCopy = {
     selectDirectoryFailedTitle: string;
     selectedPathUnreadable: string;
     directorySwitchedTitle: string;
+    projectAddedRefreshFailedTitle: string;
+    projectAddedRefreshFailedDescription: string;
     projectUpdateFailedTitle: string;
     projectUpdateFailedFallback: string;
     catalogUnavailable: string;
@@ -792,6 +794,8 @@ const SHELL_COPY_BY_LOCALE = {
       selectDirectoryFailedTitle: '选择工作目录失败',
       selectedPathUnreadable: '所选路径不存在或不可读。',
       directorySwitchedTitle: '已切换工作目录',
+      projectAddedRefreshFailedTitle: '项目已添加，暂时无法切换',
+      projectAddedRefreshFailedDescription: '目录列表尚未确认新项目可用。请刷新列表后选择，无需重复添加。',
       projectUpdateFailedTitle: '项目操作失败',
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       catalogUnavailable: 'Runtime Host 暂时不可用',
@@ -1022,6 +1026,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '单个附件超出大小限制。',
+        item_unreadable: '有附件无法读取，可能是文件夹或已被移动。请移除后重新添加。',
         items_invalid: '附件信息无效，请重新选择文件后再发送。',
         count_limit: '一次最多添加 8 个附件。',
         duplicate_source: '附件来源重复，请勿重复添加同一文件。',
@@ -1318,6 +1323,8 @@ const SHELL_COPY_BY_LOCALE = {
       selectDirectoryFailedTitle: '選擇工作目錄失敗',
       selectedPathUnreadable: '所選路徑不存在或不可讀。',
       directorySwitchedTitle: '已切換工作目錄',
+      projectAddedRefreshFailedTitle: '專案已新增，暫時無法切換',
+      projectAddedRefreshFailedDescription: '目錄清單尚未確認新專案可用。請重新整理清單後選擇，無需重複新增。',
       projectUpdateFailedTitle: '專案操作失敗',
       projectUpdateFailedFallback: '暫時無法更新專案，請稍後重試。',
       catalogUnavailable: 'Runtime Host 暫時不可用',
@@ -1548,6 +1555,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '單一附件超出大小限制。',
+        item_unreadable: '有附件無法讀取，可能是資料夾或已被移動。請移除後重新新增。',
         items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
         count_limit: '一次最多新增 8 個附件。',
         duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
@@ -1846,6 +1854,8 @@ const SHELL_COPY_BY_LOCALE = {
       selectDirectoryFailedTitle: 'Could not select working directory',
       selectedPathUnreadable: 'The selected path does not exist or cannot be read.',
       directorySwitchedTitle: 'Working directory changed',
+      projectAddedRefreshFailedTitle: 'Project added, but not ready to select',
+      projectAddedRefreshFailedDescription: 'The catalog has not confirmed that the new project is available. Refresh the list and select it; there is no need to add it again.',
       projectUpdateFailedTitle: 'Could not update project',
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       catalogUnavailable: 'Runtime Hosts unavailable',
@@ -2080,6 +2090,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: 'One attachment exceeds the size limit.',
+        item_unreadable: 'An attachment could not be read. It may be a folder or may have moved. Remove it and add it again.',
         items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
         count_limit: 'At most 8 attachments per message.',
         duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',

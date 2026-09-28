@@ -21,7 +21,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { QUOTE_COMMENT_MAX_LENGTH, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
@@ -132,6 +132,10 @@ describe('Runtime Host bootstrap protocol', () => {
     // Epoch 22 predates the live-run projection and rejects its added catalog
     // field, so mixed-version peers must fail during the handshake instead.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
+  });
+
+  test('publishes a new compatibility epoch for durable external turn origins', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 189);
   });
 
   test('publishes a new compatibility epoch for mandatory submit Skill outcomes', () => {
@@ -1775,6 +1779,49 @@ describe('Runtime Host bootstrap protocol', () => {
     });
   });
 
+  test('allows only cloud activation as an external-message origin on turn.start', () => {
+    const start = {
+      requestId: 'activation-start',
+      operation: 'turn.start' as const,
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-activation',
+        content: { text: 'Inspect the workspace' },
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      },
+    };
+    assert.deepEqual(decodeClientFrame(start), start);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...start,
+          input: { ...start.input, origin: { kind: 'cloud_activation', extra: true } },
+        }),
+      isInvalidFrame,
+    );
+    for (const origin of [
+      { kind: 'goal', goalId: 'goal-1' },
+      { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
+      { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },
+      {
+        kind: 'workhub_result',
+        eventId: 'event-1',
+        actionId: 'action-1',
+        delegationId: 'delegation-1',
+        targetSessionId: 'session-2',
+        targetTurnId: 'turn-2',
+      },
+      { kind: 'legacy_automation', automationId: 'automation-1' },
+      { kind: 'automation', automationId: 'automation-2' },
+    ]) {
+      assert.throws(
+        () => decodeClientFrame({ ...start, input: { ...start.input, origin } }),
+        isInvalidFrame,
+        `external turn.start must reject ${origin.kind}`,
+      );
+    }
+  });
+
   test('bounds turn.start feedback as one transport-safe result', () => {
     const receipt = {
       invocation: 'explicit' as const,
@@ -1910,6 +1957,7 @@ describe('Runtime Host bootstrap protocol', () => {
         quotes: Array.from({ length: TURN_MESSAGE_QUOTE_MAX_COUNT }, (_, index) => ({
           text: `excerpt-${index}`,
           label: 'Assistant',
+          comment: 'why this matters',
           sourceTurnId: `turn-${index}`,
         })),
       }),
@@ -1922,6 +1970,8 @@ describe('Runtime Host bootstrap protocol', () => {
       [{ text: 'excerpt', label: 'x'.repeat(TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', sourceTurnId: 'bad/id' }],
       [{ text: 'excerpt', sourceTurnId: 'x'.repeat(129) }],
+      [{ text: 'excerpt', comment: '' }],
+      [{ text: 'excerpt', comment: 'x'.repeat(QUOTE_COMMENT_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', extra: true }],
     ]) {
       assert.throws(() => submit({ text: 'valid', quotes }), isInvalidFrame);

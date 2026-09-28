@@ -47,7 +47,6 @@ import * as skillFeedback from './skill-invocation-feedback.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 import * as Conversation from './features/conversation/index.js';
-import type { PendingAttachment } from './composer-attachments.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -115,7 +114,7 @@ function copiedArray<K extends string, T>(
 export interface AppShellChatActions {
   send(
     text: string,
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options?: SendOptions,
   ): Promise<boolean>;
   /**
@@ -127,7 +126,7 @@ export interface AppShellChatActions {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options?: MessageContextOptions,
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
@@ -249,7 +248,6 @@ export function createAppShellChatActions(deps: {
     >;
     displayText?: string;
     quotes?: readonly QuoteRef[];
-    steering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
@@ -282,8 +280,7 @@ export function createAppShellChatActions(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: result.disposition === 'turn_started' ? 'transcript'
-        : placement === 'next_turn' ? 'follow_up' : input.steering ? 'steering' : 'transcript',
+      transientPlacement: result.disposition !== 'turn_started' && placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', input.quotes ?? []),
@@ -298,7 +295,7 @@ export function createAppShellChatActions(deps: {
 
   async function send(
     text: string,
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options: SendOptions = {},
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
@@ -339,18 +336,13 @@ export function createAppShellChatActions(deps: {
     };
     try {
       async function submitIntoSession(sessionId: string, messageId: string) {
+        const attachments = Conversation.toSubmittedAttachments(pending ?? []);
         const sendCommand = {
           text,
           localDisplayPlacement: 'current_turn' as const,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray(
-            'attachmentItems',
-            pending && Conversation.toComposerIngestItems(pending),
-          ),
-          ...copiedArray(
-            'retainedAttachments',
-            pending && Conversation.retainedAttachmentRefs(pending),
-          ),
+          ...copiedArray('attachmentItems', attachments.attachmentItems),
+          ...copiedArray('retainedAttachments', attachments.retainedAttachments),
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
@@ -487,29 +479,27 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
     const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
     const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
+    const { attachmentItems, retainedAttachments = [] } = Conversation.toSubmittedAttachments(pending ?? []);
     publishTransientUserMessage(sessionId, {
-      id: messageId, text, attachments: Conversation.retainedAttachmentRefs(pending ?? []),
+      id: messageId, text, attachments: retainedAttachments,
       ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
-      transientPlacement: placement === 'current_turn' ? 'steering' : 'follow_up',
+      transientPlacement: placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
       inlineReferences: [],
     });
     try {
-      const attachmentItems = pending?.length ? Conversation.toComposerIngestItems(pending) : [];
-      const retainedAttachments = pending?.length ? Conversation.retainedAttachmentRefs(pending) : [];
       const submitted = await submitAndProject({
         sessionId,
         messageId,
         placement,
-        steering: placement === 'current_turn',
         command: {
           text,
           ...copiedArray('attachmentItems', attachmentItems),
