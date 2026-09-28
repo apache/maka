@@ -20,6 +20,7 @@
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   type BrowserWindow,
   clipboard,
   ipcMain,
@@ -2098,6 +2099,20 @@ function wireLifecycle(): void {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
     if (process.platform !== "darwin" && !windowsAppTray.hasTray() && !isBrowserMessageBoxPresentationActive()) app.quit();
+  });
+  // macOS `quitAndInstall` closes every window and then waits, silently, for
+  // the window list to empty before it asks Squirrel to relaunch; only that
+  // relaunch reaches `before-quit`. WorkHub survives a main-window close by
+  // re-parenting into its floating panel, and the panel refuses its own close
+  // until the presentation is disposed, so the relaunch never started and the
+  // retired Runtime Host handoff was never released (#5783). Dispose here,
+  // ahead of the sweep, exactly as the regular quit cleanup would.
+  nativeAutoUpdater.on("before-quit-for-update", () => {
+    try {
+      workHubPresentation.dispose();
+    } catch (error) {
+      console.error("[update] WorkHub release before install failed:", error);
+    }
   });
   powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();

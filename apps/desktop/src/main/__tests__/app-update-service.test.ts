@@ -645,5 +645,54 @@ describe('AppUpdateService', () => {
       message: 'signature rejected',
     });
     assert.equal(asynchronousRollbacks, 1);
+    // The installer error released the handoff; the quit watchdog must not
+    // overwrite that error with its own a minute later.
+    assert.equal(asynchronous.clock.pending().length, 0);
+  });
+
+  test('rolls back the Runtime Host handoff when the install quit never happens', async () => {
+    let rollbacks = 0;
+    const { clock, service, updater } = createHarness({
+      prepareInstall: async () => ({
+        kind: 'prepared',
+        rollback: () => {
+          rollbacks += 1;
+        },
+      }),
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+
+    // quitAndInstall neither quits nor reports an error: the quit transaction
+    // was cancelled (or never started) and the process stays alive.
+    assert.deepEqual(await service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: true,
+    });
+    assert.equal(service.getStatus().state, 'installing');
+
+    await clock.runNext();
+    assert.equal(rollbacks, 1);
+    assert.deepEqual(service.getStatus(), {
+      state: 'error',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      operation: 'install',
+      message: 'The app did not restart to install the update',
+    });
+  });
+
+  test('disarms the install quit watchdog on dispose', async () => {
+    const disposed = createHarness();
+    disposed.updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    await disposed.service.installUpdate({ allowInterruptActiveTasks: false });
+    disposed.service.dispose();
+    assert.equal(disposed.clock.pending().length, 0);
   });
 });

@@ -97,6 +97,20 @@ const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
  */
 const UPDATE_CHECK_RETRY_DELAY_MS = 2_000;
 const UPDATE_CHECK_MAX_ATTEMPTS = 2;
+/**
+ * quitAndInstall is not a quit. On macOS it closes every window and waits,
+ * silently, for the window list to empty before Squirrel relaunches; only that
+ * relaunch reaches `before-quit`. A window that refuses to close (#5783)
+ * leaves the process alive with the Runtime Host handoff still held — the
+ * local Host retired and candidate launches paused — so every reconnect is
+ * rejected and the target sits in "reconnecting" until a full restart.
+ * Nothing on that path reports an error, so time is the only signal. The
+ * budget has to cover Squirrel fetching, verifying and unpacking the archive
+ * from the local proxy; a process still running this long after dispatch did
+ * not quit. Release the handoff and surface it. Squirrel keeps its prepared
+ * install, so a late relaunch or the next quit still applies the update.
+ */
+const UPDATE_INSTALL_QUIT_WATCHDOG_MS = 60_000;
 
 /**
  * Harness-only override for the update feed (`MAKA_UPDATE_TEST_FEED`).
@@ -205,6 +219,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
    */
   let checkAttemptsRemaining = 0;
   let installHandoff: { rollback(): void } | undefined;
+  let installQuitWatchdog: unknown;
   let started = false;
   let disposed = false;
   // Resolve Electron's singleton lazily so tests can inject an updater without
@@ -244,9 +259,25 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   });
 
   const rollbackInstallHandoff = (): void => {
+    if (installQuitWatchdog !== undefined) {
+      clock.clearTimeout(installQuitWatchdog);
+      installQuitWatchdog = undefined;
+    }
     const handoff = installHandoff;
     installHandoff = undefined;
     handoff?.rollback();
+  };
+
+  const armInstallQuitWatchdog = (): void => {
+    if (installQuitWatchdog !== undefined) clock.clearTimeout(installQuitWatchdog);
+    installQuitWatchdog = clock.setTimeout(() => {
+      installQuitWatchdog = undefined;
+      // A completed install exits the process long before this fires; reaching
+      // it means the window sweep or the quit never finished.
+      if (disposed || status.state !== 'installing') return;
+      rollbackInstallHandoff();
+      publishError('install', new Error('The app did not restart to install the update'));
+    }, UPDATE_INSTALL_QUIT_WATCHDOG_MS);
   };
 
   const trackAutoDownload = (result: UpdateCheckResult | null): void => {
@@ -436,6 +467,10 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       clock.clearTimeout(checkTimer);
       checkTimer = undefined;
     }
+    if (installQuitWatchdog !== undefined) {
+      clock.clearTimeout(installQuitWatchdog);
+      installQuitWatchdog = undefined;
+    }
     // Deliberately leaves the retry timer running: its callback checks
     // `disposed` and settles the in-flight check, so `checkInFlight` is not
     // left dangling and its .finally cleanup still runs.
@@ -478,6 +513,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       if (installStatus.state === 'error' && installStatus.operation === 'install') {
         return { ok: false, reason: 'install_failed' };
       }
+      armInstallQuitWatchdog();
       return { ok: true };
     } catch (error) {
       rollbackInstallHandoff();
