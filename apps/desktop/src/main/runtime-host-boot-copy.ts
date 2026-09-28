@@ -85,7 +85,7 @@ const STARTUP_RECOVERY_COPY = {
   },
   ko: {
     storageRoot: {
-      title: 'Maka 작업 공간을 복구해야 합니다',
+      title: 'Maka 작업 공간 복구 필요',
       message: 'Maka가 이 작업 공간을 확인할 수 없습니다.',
       detail: (workspaceRoot) =>
         `디스크 식별 정보가 변경되었을 수 있습니다. 이 컴퓨터에 있는 원래 Maka 작업 공간일 때만 복구하세요. 복사된 작업 공간이면 안 됩니다.\n\n${workspaceRoot}`,
