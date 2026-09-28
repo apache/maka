@@ -54,17 +54,21 @@ suffice.
 ## Assumption
 
 We are betting that users will return to the board and start tasks from it.
-The Phase 3 dogfooding spike came back **GO** on 2026-09-28 (see
-`docs/work-board-phase3.md`); resuming Phases 2 and 4 remains a separate
-maintainer roadmap decision.
+The 2026-09-28 run verified the start-task mechanism, but because creation and
+revisit happened in one sitting it has not yet demonstrated delayed return-use.
+The evidence and maintainer go/stop decision are tracked on
+[Work Board delivery #2560](https://github.com/apache/maka/issues/2560).
+Phases 2 and 4 remain paused pending that decision.
 
 ## Sequencing
 
 Per maintainer review, the thin capture -> revisit -> start-as-task loop is
 validated **before** Phase 2 (side-chat capture) and Phase 4 (evidence /
 refinement): a minimal, flag-gated Phase 3 spike wires one hard-coded item ->
-"Start task" -> new Session -> link back, with no polish. Only if the loop
-shows real use do we resume Phases 2 and 4.
+"Start task" -> new Session -> link back, with no polish. The current run
+verifies that mechanism; a delayed return-use run and an explicit go/stop
+decision on [#2560](https://github.com/apache/maka/issues/2560) are still
+required before resuming Phases 2 and 4.
 
 ## Implementation
 
