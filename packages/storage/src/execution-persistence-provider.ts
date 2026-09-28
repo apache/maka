@@ -89,6 +89,7 @@ export const EXECUTION_GRAPH_METHODS = [
   'claimAgentGraphSupervisorWake',
   'beginAgentGraphSupervisorWakeAttempt',
   'completeAgentGraphSupervisorWakeAttempt',
+  'exhaustAgentGraphSupervisorWake',
   'supersedeAgentGraphSupervisorWakes',
   'readAgentGraphSupervisorWake',
   'listAgentGraphSupervisorWakeAttempts',
