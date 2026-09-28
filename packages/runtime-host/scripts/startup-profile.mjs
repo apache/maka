@@ -124,7 +124,11 @@ try {
         {
           sessionId,
           turnId,
-          content: { text: `startup profile turn ${sessionIndex}/${turnIndex} ${'x'.repeat(256)}` },
+          // FakeBackend paces non-steering responses as 9-char chunks with a
+          // 45ms typing sleep per chunk, so a long seed turn spends seconds in
+          // that simulation instead of the anchors this profile measures. A
+          // ~25-char turn still streams a few deltas on the same durable path.
+          content: { text: `startup profile turn ${sessionIndex}/${turnIndex}` },
         },
         operationContext,
       );
