@@ -1108,20 +1108,12 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(failedOpen[0]?.failOpenReason, 'provider_error');
   });
 
-  test('bounds an input-too-large rejection whose retreat finds no safe span (#5790 review)', async () => {
-    // The only proven boundary is a prior-turn reply on this route, which sits
-    // before the head anchor, so the retreat has no mid-turn coverage. The
-    // summarizer was still called and failed, so the Turn must latch it.
+  test('bounds an input-too-large rejection across later steps in the same turn (#5790 review)', async () => {
+    // Mid_turn has no retreat — the proven boundary is a prior-turn reply
+    // before the head anchor — so the rejection is a plain summarizer failure
+    // and the Turn latches it.
     const fixture = buildFixture({
       toolSteps: 3,
-      extraPriorEvents: [
-        {
-          ...runtimeTextEvent('prior-reply', 'turn-0', 'model', 'accepted on this route'),
-          runId: 'run-0',
-          invocationId: 'run-0',
-        },
-      ],
-      priorInvocations: [priorRunInvocation()],
       summarize: () => {
         throw new HistoryCompactSummarizerError('input_too_large');
       },
