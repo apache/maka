@@ -104,7 +104,10 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }
-    isVisible() { return this.visible; }
+    isVisible() {
+      if (this.destroyed) throw new TypeError('Object has been destroyed');
+      return this.visible;
+    }
     isFocused() { return this.visible; }
     isMinimized() { return false; }
     getContentBounds() { return this.bounds; }
@@ -407,7 +410,7 @@ test('animates from the current height, keeps the bottom anchored and survives r
   h.controller.dispose();
 });
 
-test('released for an update quit, the floating panel closes and Desktop does not re-parent into it', async () => {
+test('released for an update quit, a docked conversation goes down with Desktop and comes back on a new window', async () => {
   const h = await harness();
   h.main.show();
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
@@ -419,33 +422,77 @@ test('released for an update quit, the floating panel closes and Desktop does no
   assert.ok(h.main.children.has(h.container));
 
   let prevented = 0;
-  const close = () => floating.emit('close', { preventDefault: () => { prevented++; } });
-  close();
+  const closePanel = (panel: typeof floating) => panel.emit('close', { preventDefault: () => { prevented++; } });
+  closePanel(floating);
   assert.equal(prevented, 1, 'a live panel vetoes its own close');
 
   h.controller.releaseForQuit();
-  close();
+  closePanel(floating);
   assert.equal(prevented, 1, 'a released panel lets Electron close it');
+  assert.equal(view.webContents.destroyed, false, 'a panel that does not carry the conversation leaves it alone');
+  assert.ok(h.main.children.has(h.container));
+  // Electron's sweep closes Desktop first, then the panel.
   h.main.emit('close');
-  assert.ok(h.main.children.has(h.container), 'a closing Desktop keeps the conversation instead of re-parenting it');
-  assert.ok(!floating.children.has(h.container));
   assert.equal(h.windows.length, 2, 'no replacement panel is created');
-
-  // Electron's sweep closed both windows, but the quit did not go through: a
-  // new Desktop window restores normal behaviour.
+  assert.ok(!floating.children.has(h.container), 'the conversation is not re-parented into the panel');
+  assert.equal(view.webContents.destroyed, true, 'the conversation goes down with its window');
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  closePanel(floating);
+  assert.equal(prevented, 1);
   h.main.destroy();
   floating.destroy();
+
+  // The quit did not go through: a new Desktop window starts a fresh
+  // conversation, and closing Desktop keeps it alive in a panel again.
   const next = h.replaceMain();
-  h.controller.attachMainWindow(next as unknown as Electron.BrowserWindow);
-  assert.doesNotThrow(() => h.controller.send('settings:changed'));
-  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  next.show();
   await h.command(next.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
-  await h.command(h.views.at(-1)!.webContents, 'ready');
-  await h.command(h.views.at(-1)!.webContents, 'detach');
+  const fresh = h.views.at(-1)!;
+  assert.notEqual(fresh, view);
+  assert.ok(next.children.has(h.container));
+  await h.command(fresh.webContents, 'ready');
+  next.emit('close');
   const panel = h.windows.at(-1)!;
-  assert.notEqual(panel, next, 'detaching opens a fresh panel');
-  panel.emit('close', { preventDefault: () => { prevented++; } });
+  assert.notEqual(panel, next, 'closing the new Desktop re-parents into a fresh panel');
+  assert.ok(panel.children.has(h.container));
+  assert.equal(fresh.webContents.destroyed, false);
+  closePanel(panel);
   assert.equal(prevented, 2, 'the veto is back once the app carries on');
+  h.controller.dispose();
+});
+
+test('released for an update quit, a floating conversation resets and the shortcut still works afterwards', async () => {
+  const h = await harness();
+  h.main.show();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
+  await h.command(view.webContents, 'detach');
+  const floating = h.windows[1]!;
+  assert.equal(h.controller.getSnapshot().placement, 'floating');
+  assert.equal(floating.visible, true);
+
+  h.controller.releaseForQuit();
+  h.main.emit('close');
+  assert.equal(view.webContents.destroyed, false, 'Desktop closing does not touch a conversation the panel carries');
+  let prevented = 0;
+  floating.emit('close', { preventDefault: () => { prevented++; } });
+  assert.equal(prevented, 0);
+  h.main.destroy();
+  floating.destroy();
+  assert.equal(h.controller.getSnapshot().placement, 'docked', 'a released close leaves the docked resting state');
+  assert.equal(view.webContents.destroyed, true);
+
+  // The quit did not go through and no Desktop dock is shown: the shortcut
+  // alone must bring WorkHub back rather than touch the destroyed panel.
+  h.replaceMain();
+  await h.controller.toggle();
+  const panel = h.windows.at(-1)!;
+  assert.notEqual(panel, floating);
+  assert.equal(h.controller.getSnapshot().placement, 'floating');
+  assert.notEqual(h.views.at(-1), view);
+  panel.emit('close', { preventDefault: () => { prevented++; } });
+  assert.equal(prevented, 1, 'a summoned panel vetoes its close again');
   h.controller.dispose();
 });
 
