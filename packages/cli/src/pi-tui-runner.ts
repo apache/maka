@@ -3387,18 +3387,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showSessionCatalogIncompleteNotice = (): void => {
     const text = pickerCopy.resumeCatalogIncompleteNotice;
-    if (state.entries.some((entry) => entry.kind === 'notice' && entry.text === text)) return;
     state.entries.push({ kind: 'notice', level: 'info', text });
     requestRender();
   };
   const readSessionCatalog = async (
     sessionOptions: MakaSessionListOptions = {},
+    onIncomplete?: () => void,
   ): Promise<SessionSummary[]> => {
     try {
       return await listSessions(sessionOptions);
     } catch (error) {
       if (error instanceof MakaSessionCatalogIncompleteError) {
-        showSessionCatalogIncompleteNotice();
+        onIncomplete?.();
         return [...error.sessions];
       }
       throw error;
@@ -3406,7 +3406,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
-    let sessions = await readSessionCatalog(
+    let catalogIncompleteNoticeShown = false;
+    const readPickerSessionCatalog = (sessionOptions: MakaSessionListOptions) =>
+      readSessionCatalog(sessionOptions, () => {
+        if (catalogIncompleteNoticeShown) return;
+        catalogIncompleteNoticeShown = true;
+        showSessionCatalogIncompleteNotice();
+      });
+    let sessions = await readPickerSessionCatalog(
       options.onlyResumable ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd } : {},
     );
     let sessionTree = projectRevisionLinkedSessionTree(
@@ -3580,7 +3587,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           const nextScope = pickerScope === 'current' ? 'all' : 'current';
           void (async () => {
             if (options.onlyResumable) {
-              sessions = await readSessionCatalog(
+              sessions = await readPickerSessionCatalog(
                 nextScope === 'current'
                   ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd }
                   : { limit: MAX_SESSION_RESUME_CANDIDATES },
