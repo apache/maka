@@ -525,6 +525,41 @@ describe('Agent Graph supervisor wake delivery', () => {
     }
   });
 
+  test('does not drain the Host when a permission waiter reaches the attempt cap', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let turns = 0;
+    let hostErrors = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => {
+        turns += 1;
+        return { kind: 'suspended', turnId: input.turnId, reason: 'permission_required' };
+      },
+      inspectAttempt: async () => 'running',
+      newId: sequentialIds(),
+      maxDeliveryAttempts: 1,
+      onError: () => {
+        hostErrors += 1;
+      },
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 1);
+      assert.equal(hostErrors, 0);
+      const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(wake?.status, 'waiting_permission');
+      assert.equal(wake?.attemptCount, 1);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('retries a parked attempt only after its permission response loses the live waiter', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     let attempt = 0;

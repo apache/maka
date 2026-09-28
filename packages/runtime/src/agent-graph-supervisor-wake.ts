@@ -482,11 +482,13 @@ export class AgentGraphSupervisorWakeCoordinator {
   ): Promise<void> {
     if (wake.status === 'exhausted') return;
     if (wake.attemptCount >= this.#maxDeliveryAttempts) {
-      await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
-        wake.graphId,
-        wake.wakeId,
-        wake.failureReason ?? 'delivery_attempts_exhausted',
-      );
+      if (wake.status === 'retryable_failed') {
+        await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
+          wake.graphId,
+          wake.wakeId,
+          wake.failureReason ?? 'delivery_attempts_exhausted',
+        );
+      }
       return;
     }
     const presentation = (await this.#input.renderWake?.(wake.rootSessionId, snapshot, result)) ?? {
