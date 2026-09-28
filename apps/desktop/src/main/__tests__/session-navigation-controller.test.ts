@@ -19,9 +19,15 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactNode } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
-import { LocaleProvider, useSessionRailData, type SessionRailData } from '@maka/ui';
+import {
+  LocaleProvider,
+  useSessionRailData,
+  type SessionRailData,
+  type SessionRailSelection,
+} from '@maka/ui';
+import { useSessionRailSelection } from '@maka/ui/testing';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeSessionNavigationServices,
@@ -88,6 +94,14 @@ const localProjectScope = {
   },
 };
 
+function localScope(project: ProjectRecord) {
+  return {
+    ...localProjectScope,
+    key: JSON.stringify(['local-host', project.id]),
+    project,
+  };
+}
+
 const hiddenSessionIds = new Set(['hidden']);
 
 const fakeServices = createFakeSessionNavigationServices();
@@ -127,7 +141,7 @@ function ports(
 ): SessionNavigationPorts {
   return {
     sessionsRef: { current: sessions },
-    pendingSessionRowActionsRef: { current: new Set<string>() },
+    acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
     activateSession: (sessionId) => calls.push(`activate:${sessionId ?? 'none'}`),
     clearSessionRendererState: (sessionId) => calls.push(`clear:${sessionId}`),
     refreshSessions: async () => sessions,
@@ -172,10 +186,45 @@ function input(
   };
 }
 
+function navigationTree(
+  catalog: ReturnType<typeof createSessionCatalogController>,
+  shell: { activeSessionId: string; workHubActive: boolean },
+  sibling: ReactNode,
+  child: ReactNode,
+) {
+  return createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(
+      SessionNavigationServicesProvider,
+      { services: fakeServices },
+      sibling,
+      createElement(
+        SessionNavigationProvider,
+        {
+          ...shell,
+          catalog,
+          hiddenSessionIds,
+          projectScopes: [localProjectScope],
+          streamingSessionIds: new Set<string>(),
+          sessionSendOutcomes: {},
+          ports: ports(linkedCatalog, shell.activeSessionId),
+          commandsRef: { current: null },
+          selection: { section: 'sessions' },
+          onSelect: () => undefined,
+          onOpenSettings: () => undefined,
+          onNew: () => undefined,
+          onExitWorkHub: () => undefined,
+          onSelectSession: () => undefined,
+        },
+        child,
+      ),
+    ),
+  });
+}
+
 const linkedCatalog = [
   session('root', { projectId: 'project', cwd: '/repo' }),
   session('child', {
-    parentSessionId: 'root',
     subagentParent: {
       kind: 'subagent',
       parentSessionId: 'root',
@@ -254,6 +303,156 @@ describe('useSessionNavigationController', () => {
 
     assert.equal(controller().commands, first);
   });
+
+  it('names a session location only for a project that has more than one', async () => {
+    const { root } = installReactRenderer();
+    const linked: ProjectRecord = {
+      id: 'linked',
+      name: 'Linked',
+      locations: [
+        { path: '/repo', isWorktree: false },
+        { path: '/repo-feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('main', { projectId: 'linked', cwd: '/repo' }),
+      session('feature', { projectId: 'linked', cwd: '/repo-feature' }),
+      session('elsewhere', { projectId: 'linked', cwd: '/elsewhere' }),
+      session('single', { projectId: 'project', cwd: '/repo' }),
+    ];
+    await act(async () =>
+      renderController(root, {
+        ...input(catalog, 'main'),
+        projectScopes: [localScope(linked), localProjectScope],
+      }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), '/repo');
+    assert.equal(controller().selectors.sessionLocation(catalog[1]!), '/repo-feature');
+    assert.equal(controller().selectors.sessionLocation(catalog[2]!), undefined);
+    assert.equal(controller().selectors.sessionLocation(catalog[3]!), undefined);
+  });
+
+  it('matches Windows locations across mixed separators and case', async () => {
+    const { root } = installReactRenderer();
+    const windows: ProjectRecord = {
+      id: 'windows',
+      name: 'Windows',
+      locations: [
+        { path: 'C:\\Repo', isWorktree: false },
+        { path: 'C:\\Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('main', { projectId: 'windows', cwd: 'c:/repo' }),
+      session('feature', { projectId: 'windows', cwd: 'c:/repo-feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'main'), projectScopes: [localScope(windows)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), 'C:\\Repo');
+    assert.equal(controller().selectors.sessionLocation(catalog[1]!), 'C:\\Repo-Feature');
+    // The worktree mark reads the same comparison, so a forward-slash cwd must
+    // still find the backslash location it names.
+    assert.equal(controller().selectors.worktreeSessionIds.has('feature'), true);
+  });
+
+  it('matches a Windows drive root across case and separators', async () => {
+    const { root } = installReactRenderer();
+    const windows: ProjectRecord = {
+      id: 'windows',
+      name: 'Windows',
+      locations: [
+        { path: 'C:\\', isWorktree: false },
+        { path: 'C:\\Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [session('root', { projectId: 'windows', cwd: 'c:/' })];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'root'), projectScopes: [localScope(windows)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), 'C:\\');
+  });
+
+  it('keeps double-slash POSIX locations case-sensitive', async () => {
+    const { root } = installReactRenderer();
+    const posix: ProjectRecord = {
+      id: 'posix',
+      name: 'POSIX',
+      locations: [
+        { path: '//Repo', isWorktree: false },
+        { path: '//Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('different-case', { projectId: 'posix', cwd: '//repo-feature' }),
+      session('exact-case', { projectId: 'posix', cwd: '//Repo-Feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'exact-case'), projectScopes: [localScope(posix)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), undefined);
+    assert.equal(controller().selectors.worktreeSessionIds.has('different-case'), false);
+    assert.equal(controller().selectors.sessionLocation(catalog[1]!), '//Repo-Feature');
+    assert.equal(controller().selectors.worktreeSessionIds.has('exact-case'), true);
+  });
+
+  it('matches explicit UNC locations against forward-slash session paths', async () => {
+    const { root } = installReactRenderer();
+    const windows: ProjectRecord = {
+      id: 'windows-unc',
+      name: 'Windows UNC',
+      locations: [
+        { path: '\\\\Server\\Repo', isWorktree: false },
+        { path: '\\\\Server\\Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('unc-feature', { projectId: 'windows-unc', cwd: '//server/repo-feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'unc-feature'), projectScopes: [localScope(windows)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), '\\\\Server\\Repo-Feature');
+    assert.equal(controller().selectors.worktreeSessionIds.has('unc-feature'), true);
+  });
+
+  it('does not match a Host-workspace session against local project locations', async () => {
+    const { root } = installReactRenderer();
+    const linked: ProjectRecord = {
+      id: 'linked',
+      name: 'Linked',
+      locations: [
+        { path: '/repo', isWorktree: false },
+        { path: '/repo-feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('remote', {
+        runtimeHostId: 'remote-host',
+        projectId: 'linked',
+        cwd: '/repo-feature',
+        profileId: 'remote-profile',
+        profileName: 'Remote Mac',
+        profileKind: 'remote',
+      }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'remote'), projectScopes: [localScope(linked)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), undefined);
+  });
 });
 
 describe('useSessionNavigationReads', () => {
@@ -281,35 +480,12 @@ describe('useSessionNavigationReads', () => {
     catalog.commitSessions(linkedCatalog);
     await act(async () =>
       root.render(
-        createElement(LocaleProvider, {
-          locale: 'en',
-          children: createElement(
-            SessionNavigationServicesProvider,
-            { services: fakeServices },
-            createElement(ReadsProbe, { catalog, activeSessionId: 'child' }),
-            createElement(
-              SessionNavigationProvider,
-              {
-                catalog,
-                activeSessionId: 'child',
-                hiddenSessionIds,
-                projectScopes: [localProjectScope],
-                streamingSessionIds: new Set<string>(),
-                sessionSendOutcomes: {},
-                ports: ports(linkedCatalog, 'child'),
-                commandsRef: { current: null },
-                selection: { section: 'sessions' },
-                workHubActive: false,
-                onSelect: () => undefined,
-                onOpenSettings: () => undefined,
-                onNew: () => undefined,
-                onExitWorkHub: () => undefined,
-                onSelectSession: () => undefined,
-              },
-              createElement(RailProbe),
-            ),
-          ),
-        }),
+        navigationTree(
+          catalog,
+          { activeSessionId: 'child', workHubActive: false },
+          createElement(ReadsProbe, { catalog, activeSessionId: 'child' }),
+          createElement(RailProbe),
+        ),
       ),
     );
 
@@ -321,10 +497,60 @@ describe('useSessionNavigationReads', () => {
     );
     assert.equal(latestRail.activeId, 'root');
     assert.equal(latestReads.activeParentSession?.id, 'root');
-    assert.deepEqual(latestReads.branchBanner, {
-      parentSessionId: 'root',
-      parentSessionName: 'root',
-    });
+
+    await act(async () =>
+      root.render(
+        navigationTree(
+          catalog,
+          { activeSessionId: 'side-conversation', workHubActive: false },
+          createElement(ReadsProbe, { catalog, activeSessionId: 'side-conversation' }),
+          null,
+        ),
+      ),
+    );
+    assert.equal(latestReads.activeParentSession?.id, 'root');
+  });
+});
+
+describe('SessionNavigationProvider selection', () => {
+  it('drops the picks when WorkHub stops painting the open row', async () => {
+    let latest: SessionRailSelection | null = null;
+    function SelectionProbe() {
+      latest = useSessionRailSelection();
+      return null;
+    }
+    const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const render = (workHubActive: boolean) =>
+      act(async () =>
+        root.render(
+          navigationTree(
+            catalog,
+            { activeSessionId: 'root', workHubActive },
+            null,
+            createElement(SelectionProbe),
+          ),
+        ),
+      );
+    const selection = () => {
+      assert.ok(latest);
+      return latest;
+    };
+
+    await render(false);
+    await act(async () =>
+      selection().commands.pick({
+        sessionId: 'root',
+        pick: 'replace',
+        orderedSessionIds: ['root', 'remote', 'environment'],
+      }),
+    );
+    assert.deepEqual([...selection().selectedIds], ['root']);
+
+    await render(true);
+
+    assert.deepEqual([...selection().selectedIds], []);
   });
 });
 

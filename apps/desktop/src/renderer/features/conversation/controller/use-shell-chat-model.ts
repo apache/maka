@@ -43,7 +43,7 @@ import {
   type SessionHealthNoticeTarget,
 } from '../model/session-health-notice.js';
 type ComposerDefaults = { model: NewChatModelCandidate | null };
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { useNewTaskChoice } from './use-new-task-choice.js';
 
 export type { NewChatModel } from '../model/shell-chat-model-selection.js';

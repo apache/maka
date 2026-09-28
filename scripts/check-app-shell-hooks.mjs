@@ -108,7 +108,6 @@ export const ALLOWED = {
     useActiveExecutionBoundary: 1,
     useActiveSessionEvents: 1,
     useAppShellBootstrapSubscriptions: 1,
-    useAppShellComposerQuotes: 1,
     useAppShellHostEffects: 1,
     useAppShellNavRefSync: 1,
     useAppShellPersistenceEffects: 1,
@@ -153,7 +152,6 @@ export const ALLOWED = {
     // one stays because the shell body reads `keys` to build the turn footer's
     // disabled mask.
     useTurnActionRegistry: 1,
-    useWorkbarController: 1,
   },
 };
 

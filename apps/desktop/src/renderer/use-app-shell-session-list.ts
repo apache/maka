@@ -19,11 +19,11 @@
 
 import { useMemo, useRef } from 'react';
 import { useUiLocale } from '@maka/ui';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   normalizeSessionSummaryForDisplay,
-} from './session-status-presentation.js';
+} from './application/contracts/session-status-presentation.js';
 import {
   createSessionListRefresher,
 } from './session-read-state.js';
@@ -94,12 +94,13 @@ export function useAppShellSessionList(
   const actions = useMemo(() => {
     const drain = createSessionPatchDrain({
       normalize: normalizeSessionSummaryForDisplay,
-      commitPatch: (sessionId, summary) => catalog.commitPatch(sessionId, summary),
+      commitPatch: catalog.commitPatch,
       onReadFailure: () => void refresher.refresh().catch(() => undefined),
     });
     return {
       refreshSessions: () => refresher.refresh(),
       refreshChangedSession: drain.request,
+      commitSession: drain.commit,
       seedSessions(snapshotSessions: readonly DesktopSessionSummary[]) {
         const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
         catalog.commitSessions(next);

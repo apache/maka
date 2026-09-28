@@ -30,7 +30,6 @@ import {
   LocaleProvider,
   type TransientUserMessageProjection,
 } from '@maka/ui';
-import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
 
 // A side conversation forks lazily: its first send arms the optimistic bubble
 // (and, after the delay, the running-status line) BEFORE the fork commits, so
@@ -70,18 +69,18 @@ const OPTIMISTIC_BUBBLE: TransientUserMessageProjection = {
   id: 'turn-1',
   text: 'why does this fail?',
   ts: 1,
-  transientPlacement: 'current_turn',
+  transientPlacement: 'transcript',
 };
 
 test('ChatView renders the optimistic bubble and running status before a session exists', () => {
   const markup = renderChatView({
-    transientMessages: [OPTIMISTIC_BUBBLE],
+    transientMessages: [{ ...OPTIMISTIC_BUBBLE, hostTurnId: 'turn-1' }],
     activeTurn: { turnId: 'turn-1' },
   });
-  // The user's question is on screen immediately, before the fork/session lands.
-  assert.match(markup, /why does this fail\?/);
-  // The running-status line rides alongside it (the no-turn bare-turn fallback).
-  assert.match(markup, /data-live-streaming="true"/);
+  const { document } = parseHTML(markup);
+  const turn = document.querySelector('.maka-pending-turn');
+  assert.ok(turn?.querySelector('.maka-user-message')?.textContent?.includes('why does this fail?'));
+  assert.ok(turn?.querySelector('.maka-turn-processing'));
   // The optimistic content takes over from the empty state.
   assert.doesNotMatch(markup, /empty-state-marker/);
 });
@@ -92,28 +91,25 @@ test('ChatView shows the empty state when there is neither a bubble nor a runnin
     activeTurn: undefined,
   });
   assert.doesNotMatch(markup, /why does this fail\?/);
-  assert.doesNotMatch(markup, /data-live-streaming="true"/);
+  assert.doesNotMatch(markup, /maka-turn-processing/);
   // The empty state (onboarding surface / hero) must still render — the empty
   // optimistic fragments must not suppress it.
   assert.match(markup, /empty-state-marker/);
 });
 
-test('ordinary sends stay in ChatView across local delivery and Host admission', () => {
-  const localOutbox: TransientUserMessageProjection = {
-    ...OPTIMISTIC_BUBBLE,
-    transientPlacement: 'next_turn',
-    deliveryStatus: 'Sending',
-  };
-  const sending = mergeTransientMessageProjection(OPTIMISTIC_BUBBLE, localOutbox);
-  const failed = mergeTransientMessageProjection(sending, {
-    ...localOutbox, deliveryStatus: 'Failed',
-  });
-  const admitted = mergeTransientMessageProjection(sending, {
-    ...localOutbox,
-    transientPlacement: 'current_turn',
-    hostTurnId: 'host-turn',
-    deliveryStatus: 'Accepted',
-  });
+test('a prompt on its way to the Host holds its Turn place beside a copy that did not send', () => {
+  const failed = { ...OPTIMISTIC_BUBBLE, id: 'failed', deliveryStatus: 'Failed' };
+  const render = (transientMessages: TransientUserMessageProjection[]) =>
+    parseHTML(renderChatView({ transientMessages })).document;
+
+  const document = render([failed, { ...OPTIMISTIC_BUBBLE, id: 'fresh' }]);
+  const answer = document.querySelector('.maka-pending-turn[data-awaiting-host] .maka-assistant-answer');
+  assert.ok(answer, 'the answer row is laid out ahead of the Host');
+  assert.doesNotMatch(answer?.getAttribute('aria-label') ?? '', /1970/, 'no answer time is claimed before the Host starts one');
+  assert.equal(render([failed]).querySelector('.maka-pending-turn'), null, 'nothing is on its way');
+});
+
+test('ordinary sends stay in ChatView while queued prompts stay in the composer', () => {
   const render = (message: TransientUserMessageProjection) => parseHTML(renderChatView({
     activeSession: {
       id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
@@ -125,9 +121,12 @@ test('ordinary sends stay in ChatView across local delivery and Host admission',
     pendingMessages: [message], onSend() {}, onStop() {},
   }))).document;
 
-  // Render every admission phase independently: a settled-only assertion
-  // would miss the provisional outbox update that used to mount the plate.
-  for (const message of [OPTIMISTIC_BUBBLE, sending, failed, admitted]) {
+  for (const message of [
+    OPTIMISTIC_BUBBLE,
+    { ...OPTIMISTIC_BUBBLE, deliveryStatus: 'Saved locally' },
+    { ...OPTIMISTIC_BUBBLE, deliveryStatus: 'Failed' },
+    { ...OPTIMISTIC_BUBBLE, hostTurnId: 'host-turn' },
+  ]) {
     const document = render(message);
     assert.equal(Boolean(document.querySelector('.maka-composer-queue')), false,
       `no pending plate during ${message.deliveryStatus ?? 'optimistic send'}`);
@@ -135,20 +134,7 @@ test('ordinary sends stay in ChatView across local delivery and Host admission',
       'the ordinary prompt remains in the transcript');
   }
 
-  // An explicit follow-up starts in the queue; local delivery keeps it there.
-  const explicitFollowUp = mergeTransientMessageProjection({
-    ...OPTIMISTIC_BUBBLE, transientPlacement: 'next_turn',
-  }, localOutbox);
-  const pendingDocument = render(explicitFollowUp);
-  assert.ok(pendingDocument.querySelector('.maka-composer-queue')?.textContent
-    ?.includes(OPTIMISTIC_BUBBLE.text));
-  assert.equal(pendingDocument.querySelector('.maka-user-message'), null);
-
-  // The admission reply omits deliveryStatus; the inherited local status must
-  // not keep a genuine follow-up in the transcript.
-  const queued = mergeTransientMessageProjection(sending, {
-    ...OPTIMISTIC_BUBBLE, transientPlacement: 'next_turn', pendingSteering: false,
-  });
-  assert.ok(render(queued).querySelector('.maka-composer-queue')?.textContent
-    ?.includes(OPTIMISTIC_BUBBLE.text));
+  const followUp = render({ ...OPTIMISTIC_BUBBLE, transientPlacement: 'follow_up' });
+  assert.ok(followUp.querySelector('.maka-composer-queue')?.textContent?.includes(OPTIMISTIC_BUBBLE.text));
+  assert.equal(followUp.querySelector('.maka-user-message'), null, 'a follow-up stays out of the transcript');
 });

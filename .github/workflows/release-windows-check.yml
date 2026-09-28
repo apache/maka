@@ -70,6 +70,7 @@ on:
       # these sources, so changes here must reach the packaged lifecycle gate.
       - 'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs'
       - 'packages/runtime/scripts/build-filesystem-worker.mjs'
+      - 'packages/runtime/src/format-json.ts'
       - 'packages/runtime/src/filesystem-worker/**'
       - 'packages/runtime/src/sandbox/**'
       - 'packages/runtime/src/path-containment.ts'
@@ -157,7 +158,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Install Kache
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: kache@0.16.0
 

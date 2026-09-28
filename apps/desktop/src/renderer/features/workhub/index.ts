@@ -17,11 +17,7 @@
  * under the License.
  */
 
-export {
-  workHubLinkedWork,
-  type WorkHubDelegationReference,
-} from './model/linked-work.js';
-export { projectWorkHubDelegationState, workHubTurnResultPreview } from './model/delegation-feedback.js';
+export { workHubLinkedWork } from './model/linked-work.js';
 export type { WorkHubServices, WorkHubTranscriptSnapshot } from './ports.js';
 export { WorkHubServicesProvider } from './services.js';
 export { WorkHubRoot } from './ui/workhub-root.js';

@@ -74,6 +74,7 @@ import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
 import { MakaClientSlotOutlet, useMakaClientSlotOccupied } from './client-plugin-slots.js';
+import { ProviderRetryNotice } from './provider-retry-notice.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -157,7 +158,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   editDisabled?: boolean;
   editDisabledReason?: string;
   delivery?: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
@@ -212,13 +212,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             dataMessageId={props.messageId}
           />
           {props.delivery?.deliveryActions?.map((action) => (
-            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+            <UiIconButton key={action.label} label={action.label} tooltip={action.label} variant="ghost" size="sm" icon={action.icon} onClick={action.onClick} />
           ))}
-          {props.status ? <span className="maka-message-status-time">
-            {props.status}
-            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
-            {timeOrDelivery}
-          </span> : timeOrDelivery}
+          {timeOrDelivery}
         </>
       }
     />
@@ -281,7 +277,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
@@ -300,7 +295,6 @@ export function TransientUserMessage(props: {
           quotes={message.quotes}
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
-          status={props.status}
           delivery={message}
         />
       </LocalizedChatMessage>
@@ -382,7 +376,6 @@ export const TurnView = memo(function TurnView(props: {
   /** Optional accessible action on each message edge. */
   messageRail?: ReactNode;
   /** Host-owned status of the root prompt, displayed before its timestamp. */
-  promptStatus?: ReactNode;
   transientMessages?: readonly TransientUserMessageProjection[];
   userLabel?: string;
   /**
@@ -486,7 +479,7 @@ export const TurnView = memo(function TurnView(props: {
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   const answerContext = accessibleActionContext(
     turn.user?.text ?? finalReply?.text ?? '',
-    turn.startedAt,
+    turn.startedAt > MIN_PLAUSIBLE_TURN_TS ? turn.startedAt : undefined,
     locale,
   );
   // A recorded conversational terminal turn owns presentation beyond its
@@ -594,7 +587,6 @@ export const TurnView = memo(function TurnView(props: {
           {props.messageRail}
           {props.messageHeader}
           <UserMessageBody
-            status={props.promptStatus}
             messageId={turn.user.id}
             text={turn.user.text}
             ts={turn.user.ts}
@@ -822,6 +814,11 @@ export const TurnView = memo(function TurnView(props: {
               <TurnFooter
                 turnId={turn.turnId}
                 actions={footerActions}
+                safeResumeAction={
+                  statusBarStatus === 'aborted' && turn.abortSource === 'renderer.stop_button'
+                    ? props.safeResumeAction
+                    : undefined
+                }
                 finishedAt={finishedAt}
                 live={!!props.liveStreaming}
                 context={answerContext}
@@ -942,6 +939,33 @@ export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnP
  */
 const MIN_PLAUSIBLE_TURN_TS = 1_000_000_000_000;
 
+// Reserve the same answer and footer rows before the transcript arrives without
+// inventing a Turn or assigning unrelated local prompts to the active Turn.
+export function PendingTurnAnswer(props: {
+  turnId?: string;
+  startedAt?: number;
+  running: boolean;
+  providerRetry?: LiveProviderRetry;
+}) {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+  const startedAt = (props.startedAt ?? 0) > MIN_PLAUSIBLE_TURN_TS ? props.startedAt : undefined;
+  const context = accessibleActionContext('', startedAt, locale);
+  return (
+    <LocalizedChatMessage
+      accessibleLabel={`${copy.assistantAriaLabel} · ${context}`}
+      sender="assistant"
+      className="maka-chat-message maka-assistant-answer"
+    >
+      <div className="maka-assistant-answer-content">
+        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} providerRetry={props.providerRetry} />
+        {props.providerRetry && <ModelProviderRetryIndicator retry={props.providerRetry} />}
+      </div>
+      <TurnFooter turnId={props.turnId} actions={[]} live context={context} />
+    </LocalizedChatMessage>
+  );
+}
+
 /**
  * The turn's one status: the running cue while work is in flight, the settled
  * outcome (word + duration) once the turn ends. Rendered inside the status row
@@ -1002,9 +1026,8 @@ function TurnStatusRow(props: TurnStatusRowProps): ReactNode {
   return <span className="maka-turn-statusbar-text">{label}</span>;
 }
 
-/** Standalone status row for a turn with no process disclosure to carry it —
- *  and for the pre-turn cue before the transcript contains the turn. */
-export function TurnStatusBar(props: TurnStatusRowProps) {
+/** Standalone status row for a turn with no process disclosure to carry it. */
+function TurnStatusBar(props: TurnStatusRowProps) {
   return (
     <div className="maka-turn-statusbar" data-turn-status={props.status}>
       <TurnStatusRow {...props} />
@@ -1015,6 +1038,7 @@ export function TurnStatusBar(props: TurnStatusRowProps) {
 function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
+  safeResumeAction?: { pending: boolean; onResume(): void };
   finishedAt?: number;
   live?: boolean;
   context: string;
@@ -1024,15 +1048,16 @@ function TurnFooter(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const hasSlotContent = useMakaClientSlotOccupied('conversation.turn.footer');
-  const hasActions = props.actions.length > 0 || hasSlotContent;
+  const hasActions = props.actions.length > 0 || hasSlotContent || !!props.safeResumeAction;
   const isToolbar = !props.live && hasActions;
   return (
     <ChatMessageMetadata
       className={markerVariants({ variant: 'footer' })}
       role={isToolbar ? 'toolbar' : undefined}
       aria-label={isToolbar ? copy.answerActionsAriaLabel(props.context) : undefined}
+      // Live: reserves the actions' row.
       footer={
-        hasActions || props.finishedAt !== undefined ? (
+        hasActions || props.finishedAt !== undefined || props.live ? (
         <>
           {props.actions.map((action) =>
             action.id === 'copy' ? (
@@ -1060,6 +1085,17 @@ function TurnFooter(props: {
                 onClick={() => props.onAction?.(action.id)}
               />
             ),
+          )}
+          {props.safeResumeAction && (
+            <UiButton
+              variant="ghost"
+              size="sm"
+              isDisabled={props.safeResumeAction.pending}
+              onClick={props.safeResumeAction.onResume}
+              label={
+                props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
+              }
+            />
           )}
           {hasSlotContent ? (
             <MakaClientSlotOutlet
@@ -1202,17 +1238,11 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
   // is the whole status, the moving text is decoration).
   const scheduledA11y = retry.phase === 'scheduled';
   return (
-    <Banner
+    <ProviderRetryNotice
       ref={rootRef}
-      status="warning"
-      container="section"
-      role="status"
-      className="maka-turn-provider-retry"
-      {...(scheduledA11y
-        ? {
-            'aria-label': `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`,
-          }
-        : {})}
+      accessibleLabel={scheduledA11y
+        ? `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`
+        : undefined}
       title={
         scheduledA11y ? (
           <span aria-hidden="true">

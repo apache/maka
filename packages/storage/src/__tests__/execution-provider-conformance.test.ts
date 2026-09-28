@@ -2226,6 +2226,32 @@ for (const backend of ['Local', 'Memory'] as const) {
       );
     });
   });
+  test(backend + ': unknown-outcome terminal settles dispatched tools atomically', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const { prepared } = toolInputs();
+      await s.commitToolPrepared(prepared);
+      const terminal: RuntimeEvent = {
+        ...prepared.dispatchRuntimeEvent,
+        id: 'unknown-outcome-terminal',
+        status: 'failed',
+        actions: {
+          endInvocation: true,
+          stateDelta: { recovered: true, recoveryReason: 'outcome_unknown' },
+        },
+      };
+      await assert.rejects(
+        s.ensureTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal),
+      );
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      assert.equal((await s.listUnsettledToolOperations('tool-session')).length, 0);
+      assert.equal((await s.readImmutableRuntimeEvents('tool-session', 'tool-run')).length, 3);
+    });
+  });
   for (const stage of ['commitToolPrepared', 'commitToolOutcome'] as const) {
     test(backend + ': ' + stage + ' lost acknowledgement does not duplicate facts', async () => {
       let lost = true;
