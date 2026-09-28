@@ -137,8 +137,8 @@ try {
       turnsMs += performance.now() - turnStart;
     }
 
-    const artifactStart = performance.now();
     for (let artifactIndex = 0; artifactIndex < ARTIFACTS; artifactIndex += 1) {
+      const artifactStart = performance.now();
       const uploadId = randomUUID();
       const ingest = async (input) => {
         const outcome = await seedComposition.handlers['artifact.ingest'](input, operationContext);
