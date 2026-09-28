@@ -21,16 +21,39 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
 import { createAppShellTurnActions } from '../../renderer/app-shell-turn-actions.js';
+import { deriveTurnFooterActions } from '../../renderer/application/contracts/turn-footer-actions.js';
+
+test('footer no longer exposes Regenerate', () => {
+  assert.deepEqual(
+    deriveTurnFooterActions({
+      status: 'completed',
+      hasContent: true,
+      locale: 'en',
+    }).map((action) => action.id),
+    ['branch', 'copy'],
+  );
+  assert.deepEqual(
+    deriveTurnFooterActions({
+      status: 'running',
+      hasContent: false,
+      locale: 'en',
+    }).map((action) => action.id),
+    ['branch', 'copy'],
+  );
+});
 
 test('preserves a Branch copy identity after an ambiguous failure and completes it on success', async () => {
   const calls: Array<{ sourceTurnId: string; copyId?: string }> = [];
   let loseFirstResponse = true;
+  let selectionRevision = 0;
+  let navigateDuringBranch = false;
   const restoreWindow = installWindow(async (_sessionId, input) => {
     calls.push(input);
     if (loseFirstResponse) {
       loseFirstResponse = false;
       throw new Error('Committed response was lost');
     }
+    if (navigateDuringBranch) selectionRevision += 1;
     return session(input.copyId ?? 'missing-copy-id');
   });
   const pending = new Set<string>();
@@ -38,6 +61,10 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
   const actions = createAppShellTurnActions({
     uiLocale: 'en',
     activeIdRef: { current: 'branch-action-source' },
+    captureSelection: () => {
+      const revision = selectionRevision;
+      return () => revision === selectionRevision;
+    },
     turnActionRegistry: {
       addKey: (key) => {
         if (pending.has(key)) return false;
@@ -52,9 +79,7 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
     openSessionInChat: (sessionId) => {
       opened.push(sessionId);
     },
-    refreshMessages: async () => true,
     refreshSessions: async () => [],
-    setMessages: () => undefined,
     toastApi: { info() {}, success() {}, error() {} },
   });
 
@@ -65,8 +90,11 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
     assert.equal(calls[0]?.copyId, calls[1]?.copyId);
     assert.deepEqual(opened, [calls[0]?.copyId]);
 
+    // The display may still be the source while a newer navigation is loading.
+    navigateDuringBranch = true;
     await actions.handleTurnFooterAction('branch-action-turn', 'branch');
     assert.equal(calls.length, 3);
+    assert.equal(opened.length, 1, 'late Branch must not replace the newer selection');
     assert.notEqual(calls[2]?.copyId, calls[1]?.copyId);
   } finally {
     restoreWindow();

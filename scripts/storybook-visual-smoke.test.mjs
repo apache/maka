@@ -19,7 +19,14 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { catalogJobs, storyUrl } from './storybook-visual-smoke.mjs';
+import { runInNewContext } from 'node:vm';
+import {
+  catalogJobs,
+  installStorybookRenderProbe,
+  isExpectedConsoleError,
+  rescuedRenderSummary,
+  storyUrl,
+} from './storybook-visual-smoke.mjs';
 
 const REFERENCE_STORY_ID = 'product-shell-official-appshell--native-conversation';
 const THEME_PALETTES = [
@@ -42,6 +49,7 @@ test('ordinary catalog stories render the default palette in light mode', () => 
       {
         storyId: 'product-settings--memory',
         colorScheme: 'light',
+        forcedColors: 'none',
         palette: 'default',
       },
     ],
@@ -52,8 +60,42 @@ test('dark theme sentinel stories render the default palette in both colour sche
   const storyId = 'product-settings-pages--appearance';
 
   assert.deepEqual(catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES }), [
-    { storyId, colorScheme: 'light', palette: 'default' },
-    { storyId, colorScheme: 'dark', palette: 'default' },
+    { storyId, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
+    { storyId, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
+  ]);
+});
+
+test('long system notes cover both locales at standard and narrow widths', () => {
+  const storyId = 'product-shell-official-appshell--long-system-notes';
+  const jobs = catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES });
+
+  assert.deepEqual(
+    jobs,
+    ['zh-CN', 'en'].flatMap((locale) =>
+      [1280, 720].map((width) => ({
+        storyId,
+        colorScheme: 'light',
+        forcedColors: 'none',
+        palette: 'default',
+        locale,
+        viewport: { width, height: 900 },
+      })),
+    ),
+  );
+  for (const job of jobs) {
+    const url = new URL(storyUrl('http://127.0.0.1:6006', job));
+    assert.equal(
+      url.searchParams.get('globals'),
+      `colorScheme:light;palette:default;locale:${job.locale}`,
+    );
+  }
+});
+
+test('forced-colors stories render under the forced palette', () => {
+  const storyId = 'product-settings-pages--general-forced-colors-focus-ring';
+
+  assert.deepEqual(catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES }), [
+    { storyId, colorScheme: 'light', forcedColors: 'active', palette: 'default' },
   ]);
 });
 
@@ -65,16 +107,18 @@ test('the reference story renders every palette in both colour schemes', () => {
   assert.equal(jobs.length, 22);
   assert.equal(new Set(jobs.map((job) => `${job.colorScheme}/${job.palette}`)).size, 22);
   assert.deepEqual(jobs.slice(0, 4), [
-    { storyId: REFERENCE_STORY_ID, colorScheme: 'light', palette: 'default' },
-    { storyId: REFERENCE_STORY_ID, colorScheme: 'dark', palette: 'default' },
+    { storyId: REFERENCE_STORY_ID, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
+    { storyId: REFERENCE_STORY_ID, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
     {
       storyId: REFERENCE_STORY_ID,
       colorScheme: 'light',
+      forcedColors: 'none',
       palette: 'test-palette-1',
     },
     {
       storyId: REFERENCE_STORY_ID,
       colorScheme: 'dark',
+      forcedColors: 'none',
       palette: 'test-palette-1',
     },
   ]);
@@ -123,4 +167,92 @@ test('story URLs encode the selected colour scheme and palette', () => {
   assert.equal(url.searchParams.get('id'), REFERENCE_STORY_ID);
   assert.equal(url.searchParams.get('viewMode'), 'story');
   assert.equal(url.searchParams.get('globals'), 'colorScheme:dark;palette:tokyo-night');
+});
+
+const errorStory = 'product-settings-pages--general-host-settings-error';
+const expectedError =
+  '[settings] operation failed: Runtime Host settings read failed in this story.';
+
+test('allows the intentional settings read failure only in its error story', () => {
+  assert.equal(isExpectedConsoleError(errorStory, expectedError), true);
+  assert.equal(isExpectedConsoleError('product-settings-pages--general', expectedError), false);
+  assert.equal(
+    isExpectedConsoleError(
+      'product-settings-pages--projects-cached-host-revalidation',
+      expectedError,
+    ),
+    false,
+  );
+});
+
+test('keeps unexpected settings errors fatal, including errors in the error story', () => {
+  const missingBridgeError =
+    "[settings] operation failed: Cannot read properties of undefined (reading 'getSnapshot')";
+  assert.equal(isExpectedConsoleError(errorStory, missingBridgeError), false);
+  assert.equal(
+    isExpectedConsoleError(
+      'product-settings-pages--projects-cached-host-revalidation',
+      missingBridgeError,
+    ),
+    false,
+  );
+  assert.equal(isExpectedConsoleError(errorStory, `${expectedError} unexpected detail`), false);
+  assert.equal(isExpectedConsoleError(errorStory, 'unexpected render failure'), false);
+});
+
+// A gate that goes green leaves nobody reading its output, so what the retry
+// absorbed has to be recorded somewhere a passing run is still read. These pin
+// the record's content: the story id and why it failed, not a bare count.
+test('a rescued render is recorded with its story id and reason', () => {
+  const summary = rescuedRenderSummary([
+    {
+      job: {
+        storyId: 'product-x--y',
+        colorScheme: 'light',
+        palette: 'default',
+        forcedColors: 'none',
+      },
+      message: 'page.waitForFunction: Timeout 15000ms exceeded.',
+    },
+  ]);
+  assert.match(summary, /rescued by isolating a failure/);
+  assert.match(summary, /product-x--y \(light\/default\)/);
+  assert.match(summary, /Timeout 15000ms exceeded/);
+  // The recurrence is the signal, so the record must name the ambiguity it
+  // cannot resolve rather than implying every entry is harmless.
+  assert.match(summary, /load-dependent regression/);
+});
+
+test('a run with no rescued renders records nothing', () => {
+  assert.equal(rescuedRenderSummary([]).includes('- `'), false);
+});
+
+test('a play assertion exception fails the render even if Storybook emits a finished event', () => {
+  const listeners = new Map();
+  const window = {
+    addEventListener() {},
+    __STORYBOOK_PREVIEW__: {
+      channel: {
+        on: (event, handler) => listeners.set(event, handler),
+      },
+    },
+  };
+  runInNewContext(`(${installStorybookRenderProbe.toString()})({storyId: 'example'})`, { window });
+  listeners.get('playFunctionThrewException')({ storyId: 'example', message: 'glyphs moved' });
+  listeners.get('storyFinished')({ storyId: 'example' });
+  assert.equal(window.__makaStorybookSmoke.finished, true);
+  assert.match(window.__makaStorybookSmoke.failures[0], /glyphs moved/);
+});
+
+test('WorkHub suggestion geometry runs at both widths in both themes', () => {
+  const jobs = catalogJobs(storyIndex('product-workhub--next-prompt-suggestion'));
+  assert.deepEqual(
+    jobs.map(({ colorScheme, viewport }) => [colorScheme, viewport.width]),
+    [
+      ['light', 1280],
+      ['light', 720],
+      ['dark', 1280],
+      ['dark', 720],
+    ],
+  );
 });

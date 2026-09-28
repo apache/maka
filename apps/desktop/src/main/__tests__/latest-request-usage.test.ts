@@ -40,7 +40,6 @@ test('reads the newest anchor on the active route', () => {
       { type: 'assistant' },
       usage({ inputTokens: 100, outputTokens: 20, modelId: MODEL, connectionId: 'conn-a' }),
     ],
-    { hasNewer: false },
     MODEL,
     ROUTE,
   );
@@ -56,7 +55,6 @@ test('scans past an anchorless usage row, which is what manual compaction writes
       usage({ inputTokens: 100, outputTokens: 20, modelId: MODEL, connectionId: 'conn-a' }),
       usage(),
     ],
-    { hasNewer: false },
     MODEL,
     ROUTE,
   );
@@ -69,7 +67,6 @@ test('refuses an anchor from another model', () => {
   // request the user is not making.
   const tokens = selectLatestRequestUsage(
     [usage({ inputTokens: 100_000, modelId: 'model-b', connectionId: 'conn-a' })],
-    { hasNewer: false },
     MODEL,
     ROUTE,
   );
@@ -79,7 +76,6 @@ test('refuses an anchor from another model', () => {
 test('refuses an anchor from another connection', () => {
   const tokens = selectLatestRequestUsage(
     [usage({ inputTokens: 100, modelId: MODEL, connectionId: 'conn-b' })],
-    { hasNewer: false },
     MODEL,
     ROUTE,
   );
@@ -89,18 +85,6 @@ test('refuses an anchor from another connection', () => {
 test('refuses an anchor written before anchors carried their route', () => {
   const tokens = selectLatestRequestUsage(
     [usage({ inputTokens: 100, outputTokens: 20 })],
-    { hasNewer: false },
-    MODEL,
-    ROUTE,
-  );
-  assert.equal(tokens, undefined);
-});
-
-test('refuses every anchor while the loaded range is not the session tail', () => {
-  // Browsing history must not report an older range's usage as current.
-  const tokens = selectLatestRequestUsage(
-    [usage({ inputTokens: 100, outputTokens: 20, modelId: MODEL, connectionId: 'conn-a' })],
-    { hasNewer: true },
     MODEL,
     ROUTE,
   );
@@ -109,14 +93,13 @@ test('refuses every anchor while the loaded range is not the session tail', () =
 
 test('refuses when there is no active route yet', () => {
   const anchored = [usage({ inputTokens: 100, modelId: MODEL, connectionId: 'conn-a' })];
-  assert.equal(selectLatestRequestUsage(anchored, undefined, undefined, ROUTE), undefined);
-  assert.equal(selectLatestRequestUsage(anchored, undefined, MODEL, undefined), undefined);
+  assert.equal(selectLatestRequestUsage(anchored, undefined, ROUTE), undefined);
+  assert.equal(selectLatestRequestUsage(anchored, MODEL, undefined), undefined);
 });
 
 test('refuses a non-positive input count', () => {
   const tokens = selectLatestRequestUsage(
     [usage({ inputTokens: 0, modelId: MODEL, connectionId: 'conn-a' })],
-    { hasNewer: false },
     MODEL,
     ROUTE,
   );

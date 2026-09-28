@@ -19,6 +19,12 @@
  */
 // The root sends visitors to the English homepage at once. Astro's own
 // redirect page waits two seconds first, so it is written out by hand.
+// Link-preview crawlers stop here rather than follow the refresh, so the
+// page carries the English homepage's preview tags itself.
+import Preview from '../components/Preview.astro';
+import { en } from '../copy/en';
+
+const home = new URL('/en/', Astro.site);
 ---
 
 <!doctype html>
@@ -27,11 +33,13 @@
     <meta charset="utf-8" />
     <meta http-equiv="refresh" content="0;url=/en/" />
     <meta name="robots" content="noindex" />
-    <link rel="canonical" href="https://maka.apache.org/en/" />
-    <title>Apache Maka (Incubating)</title>
+    <link rel="canonical" href={home} />
+    <title>{en.siteName}</title>
+    <meta name="description" content={en.positioning} />
+    <Preview copy={en} url={home} title={en.siteName} description={en.positioning} />
     <script is:inline>
       location.replace('/en/');
     </script>
   </head>
-  <body><a href="/en/">Apache Maka (Incubating)</a></body>
+  <body><a href="/en/">{en.siteName}</a></body>
 </html>

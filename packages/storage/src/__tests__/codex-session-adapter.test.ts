@@ -18,17 +18,50 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { describe, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import {
+  ExternalSessionCatalogCursorError,
+  ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
+  type ExternalSessionQuery,
+  type ExternalSessionSummary,
+} from '@maka/core/external-session';
 import { decodeCanonicalMessage } from '@maka/core/session';
 import { CodexSessionAdapter } from '../codex-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 
 const CURRENT_FIXTURE = fixturePath('codex-rollout-v0.144.jsonl');
 const ITEM_COMPLETED_FIXTURE = fixturePath('codex-rollout-v0.149-item-completed.jsonl');
+
+async function listSessions(
+  adapter: CodexSessionAdapter,
+  query: ExternalSessionQuery = {},
+): Promise<readonly ExternalSessionSummary[]> {
+  const { offset = 0, limit = Number.MAX_SAFE_INTEGER, ...filters } = query;
+  const summaries: ExternalSessionSummary[] = [];
+  let cursor: string | undefined;
+  while (summaries.length < offset + limit) {
+    const page = await adapter.listSessionPage({ ...filters, cursor, limit: 256 });
+    summaries.push(...page.items.map(({ summary }) => summary));
+    if (!page.hasMore || page.items.length === 0) break;
+    cursor = page.items.at(-1)!.nextCursor;
+  }
+  return summaries.slice(offset, offset + limit);
+}
 
 describe('CodexSessionAdapter', () => {
   test('lists active and archived root Sessions from the newest Codex state database', async () => {
@@ -76,7 +109,7 @@ describe('CodexSessionAdapter', () => {
 
       const adapter = new CodexSessionAdapter({ codexHome });
       assert.equal(await adapter.detect(), true);
-      assert.deepEqual(await adapter.listSessions(), [
+      assert.deepEqual(await listSessions(adapter), [
         {
           id: 'codex-session-1',
           name: 'Named Codex thread',
@@ -87,34 +120,46 @@ describe('CodexSessionAdapter', () => {
         },
       ]);
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true })).map((session) => session.id),
+        (await listSessions(adapter, { includeArchived: true })).map((session) => session.id),
         ['codex-session-1', 'codex-session-archived'],
+      );
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true, offset: 0, limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-1'],
+      );
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true, offset: 1, limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-archived'],
       );
 
       // The same text query the Claude Code adapter honours. A catalog filter
       // that silently worked for one source and not the other would be worse
       // than none — the user cannot see which source dropped their term.
       assert.deepEqual(
-        (await adapter.listSessions({ text: 'named' })).map((session) => session.id),
+        (await listSessions(adapter, { text: 'named' })).map((session) => session.id),
         ['codex-session-1'],
       );
       assert.deepEqual(
-        (await adapter.listSessions({ text: '/workspace/project' })).map((session) => session.id),
+        (await listSessions(adapter, { text: '/workspace/project' })).map((session) => session.id),
         ['codex-session-1'],
       );
-      assert.equal((await adapter.listSessions({ text: 'kubernetes' })).length, 0);
+      assert.equal((await listSessions(adapter, { text: 'kubernetes' })).length, 0);
       // A blank box selects nothing, so it must not filter.
-      assert.equal((await adapter.listSessions({ text: '  ' })).length, 1);
+      assert.equal((await listSessions(adapter, { text: '  ' })).length, 1);
       // Text does not override the archived gate.
-      assert.equal((await adapter.listSessions({ text: 'archived' })).length, 0);
+      assert.equal((await listSessions(adapter, { text: 'archived' })).length, 0);
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true, text: 'archived' })).map(
+        (await listSessions(adapter, { includeArchived: true, text: 'archived' })).map(
           (session) => session.id,
         ),
         ['codex-session-archived'],
       );
       assert.deepEqual(
-        await adapter.listSessions({ includeArchived: true, cwd: '/workspace/archive/' }),
+        await listSessions(adapter, { includeArchived: true, cwd: '/workspace/archive/' }),
         [
           {
             id: 'codex-session-archived',
@@ -129,10 +174,75 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('lists every thread source the foreign-session scanner accepts (#3693)', async () => {
+  test('orders mixed Codex second and millisecond timestamps before paging', async () => {
+    await withCodexHome(async (codexHome) => {
+      const olderPath = await seedMinimalRollout(
+        codexHome,
+        'codex-older-ms',
+        false,
+        '/workspace',
+        'Older milliseconds',
+      );
+      const newerPath = await seedMinimalRollout(
+        codexHome,
+        'codex-newer-seconds',
+        false,
+        '/workspace',
+        'Newer seconds',
+      );
+      const newestPath = await seedMinimalRollout(
+        codexHome,
+        'codex-newest-ms-in-legacy-column',
+        false,
+        '/workspace',
+        'Newest milliseconds in legacy column',
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: 'codex-older-ms',
+          rolloutPath: olderPath,
+          cwd: '/workspace',
+          name: 'Older milliseconds',
+          createdAtMs: 1_700_000_000_000,
+          updatedAtMs: 1_700_000_000_000,
+          archived: false,
+          source: 'cli',
+        },
+        {
+          id: 'codex-newer-seconds',
+          rolloutPath: newerPath,
+          cwd: '/workspace',
+          name: 'Newer seconds',
+          createdAt: 1_800_000_000,
+          updatedAt: 1_800_000_000,
+          archived: false,
+          source: 'cli',
+        },
+        {
+          id: 'codex-newest-ms-in-legacy-column',
+          rolloutPath: newestPath,
+          cwd: '/workspace',
+          name: 'Newest milliseconds in legacy column',
+          createdAt: 1_900_000_000_000,
+          updatedAt: 1_900_000_000_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      assert.deepEqual(
+        (await listSessions(new CodexSessionAdapter({ codexHome }), { limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-newest-ms-in-legacy-column'],
+      );
+    });
+  });
+
+  test('lists every supported Codex thread source (#3693)', async () => {
     // The adapter owned its own token set, so bare `atlas`/`chatgpt` and a
-    // wrapped `{"custom":"cli"}` were dropped here while the scanner in
-    // `@maka/core/foreign-session` listed them. Both gates now share one
+    // wrapped `{"custom":"cli"}` used to drift across readers. Catalog and
+    // import now use the same source eligibility gate.
     // authority, so the catalog and the scan agree on every shape.
     await withCodexHome(async (codexHome) => {
       const sources = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
@@ -175,7 +285,7 @@ describe('CodexSessionAdapter', () => {
       await seedStateDatabase(codexHome, rows);
 
       const listed = new Set(
-        (await new CodexSessionAdapter({ codexHome }).listSessions()).map((session) => session.id),
+        (await listSessions(new CodexSessionAdapter({ codexHome }))).map((session) => session.id),
       );
       for (const source of sources) {
         assert.ok(listed.has(`codex-bare-${source}`), `bare ${source} was dropped`);
@@ -216,13 +326,13 @@ describe('CodexSessionAdapter', () => {
       const adapter = new CodexSessionAdapter({ codexHome });
       for (const cwd of ['C:\\Repo\\App', 'C:/Repo/App', 'c:/repo/app', 'c:\\repo\\app\\']) {
         assert.deepEqual(
-          (await adapter.listSessions({ cwd })).map((session) => session.id),
+          (await listSessions(adapter, { cwd })).map((session) => session.id),
           ['codex-win'],
           `cwd=${cwd}`,
         );
       }
       // A genuinely different project is still excluded.
-      assert.equal((await adapter.listSessions({ cwd: 'C:/Repo/Other' })).length, 0);
+      assert.equal((await listSessions(adapter, { cwd: 'C:/Repo/Other' })).length, 0);
     });
   });
 
@@ -231,7 +341,7 @@ describe('CodexSessionAdapter', () => {
       await seedFixtureRollout(codexHome, 'codex-session-1', false);
       const adapter = new CodexSessionAdapter({ codexHome });
 
-      assert.deepEqual(await adapter.listSessions(), [
+      assert.deepEqual(await listSessions(adapter), [
         {
           id: 'codex-session-1',
           name: 'Fix the parser',
@@ -311,7 +421,7 @@ describe('CodexSessionAdapter', () => {
 
       const adapter = new CodexSessionAdapter({ codexHome });
       assert.deepEqual(
-        (await adapter.listSessions()).map(({ id, name }) => ({ id, name })),
+        (await listSessions(adapter)).map(({ id, name }) => ({ id, name })),
         [{ id: sessionId, name: 'Analyze the image. Use OpenCV.js.' }],
       );
       const session = await adapter.readSession(sessionId);
@@ -384,6 +494,24 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('preserves a terminal row that closes an older interleaved turn', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-interleaved-terminal';
+      await seedRawRollout(codexHome, sessionId, interleavedTerminalRollout(sessionId));
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.deepEqual(
+        session.messages.map((message) => [message.turnId, message.type]),
+        [
+          ['turn-a', 'user'],
+          ['turn-b', 'user'],
+          ['turn-a', 'turn_state'],
+          ['turn-b', 'turn_state'],
+        ],
+      );
+    });
+  });
+
   test('filesystem fallback excludes internal subagent rollouts', async () => {
     await withCodexHome(async (codexHome) => {
       await seedMinimalRollout(
@@ -406,14 +534,444 @@ describe('CodexSessionAdapter', () => {
 
       const adapter = new CodexSessionAdapter({ codexHome });
       assert.deepEqual(
-        (await adapter.listSessions()).map((session) => session.id),
+        (await listSessions(adapter)).map((session) => session.id),
         ['codex-root-fallback'],
       );
-      await assert.rejects(adapter.readSession(subagentId), /not found/);
+      await assert.rejects(adapter.readSession(subagentId), ExternalSessionNotFoundError);
     });
   });
 
-  test('rejects corrupt interior records, tolerates a torn tail, and bounds full reads', async () => {
+  test('filesystem fallback pages globally by rollout mtime across active and archived roots', async () => {
+    await withCodexHome(async (codexHome) => {
+      const staleActive = await seedMinimalRollout(
+        codexHome,
+        'codex-page-z-stale',
+        false,
+        '/workspace/root',
+        'stale active',
+      );
+      const freshActive = await seedMinimalRollout(
+        codexHome,
+        'codex-page-a-fresh',
+        false,
+        '/workspace/root',
+        'fresh active',
+      );
+      const newestArchived = await seedMinimalRollout(
+        codexHome,
+        'codex-page-archived-newest',
+        true,
+        '/workspace/root',
+        'newest archived',
+      );
+      await utimes(staleActive, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-01T00:00:00Z'));
+      await utimes(freshActive, new Date('2026-08-02T00:00:00Z'), new Date('2026-08-02T00:00:00Z'));
+      await utimes(
+        newestArchived,
+        new Date('2026-08-03T00:00:00Z'),
+        new Date('2026-08-03T00:00:00Z'),
+      );
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true, offset: 0, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-archived-newest'],
+      );
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true, offset: 1, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-a-fresh'],
+      );
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true, offset: 2, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-z-stale'],
+      );
+    });
+  });
+
+  test('filesystem fallback fails with a typed limit instead of scanning an unbounded catalog', async () => {
+    await withCodexHome(async (codexHome) => {
+      for (const id of [
+        'codex-catalog-limit-1',
+        'codex-catalog-limit-2',
+        'codex-catalog-limit-3',
+      ]) {
+        await seedMinimalRollout(codexHome, id, false, '/workspace/root', id);
+      }
+      const adapter = new CodexSessionAdapter({ codexHome, maxCatalogCandidates: 2 });
+
+      await assert.rejects(
+        adapter.listSessionPage({ limit: 1 }),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'records' &&
+          error.limit.max === 2,
+      );
+    });
+  });
+
+  test('filesystem keyset paging never repeats a row moved ahead of the cursor', async () => {
+    await withCodexHome(async (codexHome) => {
+      const paths: string[] = [];
+      for (let index = 0; index < 20; index += 1) {
+        const id = `codex-snapshot-${String(index).padStart(2, '0')}`;
+        const path = await seedMinimalRollout(codexHome, id, false, '/workspace/root', id);
+        const time = new Date(Date.UTC(2026, 7, 1, 0, 0, index));
+        await utimes(path, time, time);
+        paths.push(path);
+      }
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage!({ limit: 16 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        Array.from(
+          { length: 16 },
+          (_, index) => `codex-snapshot-${String(19 - index).padStart(2, '0')}`,
+        ),
+      );
+      const cursor = first.items.at(-1)!.nextCursor;
+      assert.ok(Buffer.byteLength(cursor, 'utf8') <= 512);
+      await assert.rejects(
+        adapter.listSessionPage!({ cursor, cwd: '/another/workspace', limit: 16 }),
+        (error: unknown) => error instanceof ExternalSessionCatalogCursorError,
+      );
+
+      const newest = new Date('2026-09-15T00:00:00Z');
+      await utimes(paths[1]!, newest, newest);
+      const second = await adapter.listSessionPage!({
+        cursor,
+        limit: 16,
+      });
+      const ids = [...first.items, ...second.items].map(({ summary }) => summary.id);
+      assert.equal(new Set(ids).size, ids.length);
+      assert.deepEqual(
+        ids,
+        Array.from({ length: 20 }, (_, index) => 19 - index)
+          .filter((index) => index !== 1)
+          .map((index) => `codex-snapshot-${String(index).padStart(2, '0')}`),
+      );
+    });
+  });
+
+  test('filesystem keyset paging uses one digest order across equal-mtime pages', async () => {
+    await withCodexHome(async (codexHome) => {
+      const underscore = await seedMinimalRollout(
+        codexHome,
+        'codex_a',
+        false,
+        '/workspace/root',
+        'underscore',
+      );
+      const hyphen = await seedMinimalRollout(
+        codexHome,
+        'codex-a',
+        false,
+        '/workspace/root',
+        'hyphen',
+      );
+      const tied = new Date('2026-08-08T00:00:00Z');
+      await utimes(underscore, tied, tied);
+      await utimes(hyphen, tied, tied);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      const first = await adapter.listSessionPage!({ limit: 1 });
+      assert.equal(first.items.length, 1);
+      assert.equal(first.hasMore, true);
+      const cursor = first.items[0]!.nextCursor;
+      const [tag, queryHash, timestamp, identity] = cursor.split(':');
+      if (!queryHash || !timestamp || !identity) throw new Error('Expected a filesystem cursor');
+      assert.equal(tag, 'f2');
+      for (const invalidCursor of [
+        `f:${queryHash}:${timestamp}:${identity}`,
+        `f2:${queryHash}:${timestamp}:${identity.slice(0, -1)}`,
+        `f2:${queryHash}:${timestamp}:${identity}A`,
+        `f2:${queryHash}:${timestamp}:${identity.slice(0, -1)}+`,
+      ]) {
+        await assert.rejects(
+          adapter.listSessionPage!({ cursor: invalidCursor, limit: 1 }),
+          ExternalSessionCatalogCursorError,
+        );
+      }
+
+      const second = await adapter.listSessionPage!({
+        cursor,
+        limit: 1,
+      });
+      assert.deepEqual(
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set(['codex_a', 'codex-a']),
+      );
+      assert.equal(second.hasMore, false);
+    });
+  });
+
+  test('filesystem cursor stays wire-bounded for deeply nested rollout paths', async () => {
+    await withCodexHome(async (codexHome) => {
+      const nestedDirectory = join(
+        codexHome,
+        'sessions',
+        ...Array.from({ length: 12 }, (_, index) => `${index}-${'nested'.repeat(8)}`),
+      );
+      await mkdir(nestedDirectory, { recursive: true });
+      const nestedId = 'codex-deep-cursor';
+      const nestedPath = join(nestedDirectory, `rollout-${nestedId}.jsonl`);
+      await writeFile(nestedPath, minimalRollout(nestedId, '/workspace/root', 'deep'));
+      const shallowPath = await seedMinimalRollout(
+        codexHome,
+        'codex-shallow-cursor',
+        false,
+        '/workspace/root',
+        'shallow',
+      );
+      const tied = new Date('2026-08-08T00:00:00Z');
+      await utimes(nestedPath, tied, tied);
+      await utimes(shallowPath, tied, tied);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      const first = await adapter.listSessionPage({ limit: 1 });
+      assert.equal(first.hasMore, true);
+      assert.ok(Buffer.byteLength(first.items[0]!.nextCursor, 'utf8') <= 512);
+      const second = await adapter.listSessionPage({
+        cursor: first.items[0]!.nextCursor,
+        limit: 1,
+      });
+
+      assert.equal(second.hasMore, false);
+      assert.deepEqual(
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set([nestedId, 'codex-shallow-cursor']),
+      );
+    });
+  });
+
+  test('database keyset paging stays on the state generation that issued the cursor', async () => {
+    await withCodexHome(async (codexHome) => {
+      const oldRows: StateRow[] = [];
+      for (let index = 1; index <= 4; index++) {
+        const id = `codex-old-${index}`;
+        oldRows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace', id),
+          cwd: '/workspace',
+          name: id,
+          createdAtMs: index * 1000,
+          updatedAtMs: index * 1000,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, oldRows);
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage!({ limit: 2 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        ['codex-old-4', 'codex-old-3'],
+      );
+      const cursor = first.items.at(-1)?.nextCursor;
+      assert.ok(cursor);
+
+      const newId = 'codex-new-100';
+      await seedStateDatabase(
+        codexHome,
+        [
+          {
+            id: newId,
+            rolloutPath: await seedMinimalRollout(codexHome, newId, false, '/workspace', newId),
+            cwd: '/workspace',
+            name: newId,
+            createdAtMs: 100_000,
+            updatedAtMs: 100_000,
+            archived: false,
+            source: 'cli',
+          },
+        ],
+        'state_6.sqlite',
+      );
+
+      const second = await adapter.listSessionPage!({ cursor, limit: 2 });
+      assert.deepEqual(
+        second.items.map(({ summary }) => summary.id),
+        ['codex-old-2', 'codex-old-1'],
+      );
+    });
+  });
+
+  test('database continuation surfaces source read failures without invalidating the cursor', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rows: StateRow[] = [];
+      for (let index = 1; index <= 3; index++) {
+        const id = `codex-read-failure-${index}`;
+        rows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace', id),
+          cwd: '/workspace',
+          name: id,
+          createdAtMs: index * 1000,
+          updatedAtMs: index * 1000,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, rows);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage({ limit: 1 });
+      const cursor = first.items[0]!.nextCursor;
+      await writeFile(join(codexHome, 'state_5.sqlite'), 'not a sqlite database');
+
+      await assert.rejects(adapter.listSessionPage({ cursor, limit: 1 }), (error: unknown) => {
+        assert.equal(error instanceof ExternalSessionCatalogCursorError, false);
+        return true;
+      });
+    });
+  });
+
+  test('an unreadable newest generation falls through to the rollout scan', async () => {
+    await withCodexHome(async (codexHome) => {
+      // The last bump froze `state_5.sqlite`; `state_6.sqlite` is the live one,
+      // so a read can fail while Codex is rewriting it. `codex-new` was created
+      // after the bump, so it exists only in the unreadable generation and in
+      // its own rollout.
+      const staleRollout = await seedMinimalRollout(
+        codexHome,
+        'codex-stale',
+        false,
+        '/workspace',
+        'stale rollout title',
+      );
+      await seedMinimalRollout(codexHome, 'codex-new', false, '/workspace', 'new rollout title');
+      await seedStateDatabase(codexHome, [
+        {
+          id: 'codex-stale',
+          rolloutPath: staleRollout,
+          cwd: '/workspace',
+          name: 'stale row title',
+          createdAtMs: 1000,
+          updatedAtMs: 1000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+      await writeFile(join(codexHome, 'state_6.sqlite'), 'not a sqlite database');
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const page = await adapter.listSessionPage({ limit: 10 });
+      // Settling for the older generation would answer with `codex-stale`
+      // alone and drop `codex-new` without a word. Only the rollout scan is
+      // still known to cover both.
+      assert.deepEqual(page.items.map(({ summary }) => summary.id).sort(), [
+        'codex-new',
+        'codex-stale',
+      ]);
+      // The titles come off the rollout heads, which is what proves the
+      // `state_5.sqlite` page — whose row says "stale row title" — did not
+      // answer this call.
+      assert.deepEqual(page.items.map(({ summary }) => summary.name).sort(), [
+        'new rollout title',
+        'stale rollout title',
+      ]);
+    });
+  });
+
+  test('an unreadable older generation leaves the newest one in charge', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rolloutPath = await seedMinimalRollout(
+        codexHome,
+        'codex-live',
+        false,
+        '/workspace',
+        'rollout title',
+      );
+      await seedStateDatabase(
+        codexHome,
+        [
+          {
+            id: 'codex-live',
+            rolloutPath,
+            cwd: '/workspace',
+            name: 'live row title',
+            createdAtMs: 2000,
+            updatedAtMs: 2000,
+            archived: false,
+            source: 'cli',
+          },
+        ],
+        'state_6.sqlite',
+      );
+      await writeFile(join(codexHome, 'state_5.sqlite'), 'not a sqlite database');
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const page = await adapter.listSessionPage({ limit: 10 });
+      // A stale generation is never consulted once a newer one answers, so its
+      // read failure must not push this call onto the coarser rollout scan.
+      assert.deepEqual(
+        page.items.map(({ summary }) => summary.name),
+        ['live row title'],
+      );
+    });
+  });
+
+  test('a text-shaped ordering value cannot strand the rest of the catalog', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rows: StateRow[] = [];
+      // The healthy rows were updated well after `codex-text` was created, so
+      // the JS fallback chain below (which skips the unparseable `updated_at_ms`
+      // and lands on `created_at_ms`) computes a key far below theirs.
+      for (const [id, updatedAtMs] of [
+        ['codex-text', 1000],
+        ['codex-a', 5_000_000],
+        ['codex-b', 4_000_000],
+      ] as const) {
+        rows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace', id),
+          cwd: '/workspace',
+          name: id,
+          createdAtMs: 1000,
+          updatedAtMs,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, rows);
+      // `updated_at_ms` is declared INTEGER, but SQLite keeps a value it cannot
+      // convert losslessly with its original type, so anything Codex writes that
+      // does not parse as a number lands as TEXT. SQLite then orders that key
+      // above every number and never applies the `* 1000` branch to it.
+      const { DatabaseSync } = await import('node:sqlite');
+      const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+      try {
+        database
+          .prepare('UPDATE threads SET updated_at_ms = ? WHERE id = ?')
+          .run('2026-08-08T00:00:00Z', 'codex-text');
+      } finally {
+        database.close();
+      }
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      // Bounded, so a page that fails to advance fails here instead of hanging.
+      for (let page = 0; page < 8; page += 1) {
+        const result = await adapter.listSessionPage({ limit: 1, ...(cursor ? { cursor } : {}) });
+        seen.push(...result.items.map(({ summary }) => summary.id));
+        if (!result.hasMore) break;
+        cursor = result.items.at(-1)?.nextCursor;
+        assert.ok(cursor, 'a page that reports hasMore must carry a next cursor');
+      }
+      // The same normalization must determine display time, SQL order, and
+      // cursor position. The ISO value is in 2026, so it precedes the small
+      // numeric fixtures instead of being cast to the number 2026.
+      assert.deepEqual(seen, ['codex-text', 'codex-a', 'codex-b']);
+    });
+  });
+
+  test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
       const corruptId = 'codex-corrupt';
@@ -439,7 +997,215 @@ describe('CodexSessionAdapter', () => {
       assert.equal((await adapter.readSession(tornId)).messages.length, 9);
 
       const bounded = new CodexSessionAdapter({ codexHome, maxRolloutBytes: 100 });
-      await assert.rejects(bounded.readSession(tornId), /exceeds 100 bytes/);
+      await assert.rejects(
+        bounded.readSession(tornId),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'transcript_bytes' &&
+          error.limit.max === 100,
+      );
+    });
+  });
+
+  test('parses a UTF-8 JSONL record split across read buffers', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-cross-buffer-utf8';
+      const meta = `${JSON.stringify({
+        timestamp: '2026-08-08T00:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          session_id: sessionId,
+          id: sessionId,
+          cwd: '/workspace/utf8',
+          source: 'cli',
+        },
+      })}\n`;
+      const prefixBytes = Buffer.byteLength(meta, 'utf8');
+      const eventTemplate = JSON.stringify({
+        timestamp: '2026-08-08T00:00:01.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: '__MESSAGE__' },
+      });
+      const [eventPrefix, eventSuffix] = eventTemplate.split('__MESSAGE__');
+      assert.ok(eventPrefix !== undefined && eventSuffix !== undefined);
+      const paddingBytes = 64 * 1024 - prefixBytes - Buffer.byteLength(eventPrefix, 'utf8') - 1;
+      assert.ok(paddingBytes > 0);
+      const content = `${meta}${eventPrefix}${'x'.repeat(paddingBytes)}你${eventSuffix}\n`;
+      await seedRawRollout(codexHome, sessionId, content);
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.equal(session.messages[0]?.type, 'user');
+      assert.equal(
+        session.messages[0]?.type === 'user' ? session.messages[0].text : undefined,
+        `${'x'.repeat(paddingBytes)}你`,
+      );
+    });
+  });
+
+  test('rejects a short read before the fixed rollout snapshot is complete', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-truncated-during-read';
+      const rolloutPath = await seedRawRollout(
+        codexHome,
+        sessionId,
+        `${minimalRollout(sessionId, '/workspace', 'Keep this message')}${JSON.stringify({
+          timestamp: '2026-08-08T00:00:02.000Z',
+          type: 'world_state',
+          payload: { padding: 'x'.repeat(128 * 1024) },
+        })}\n`,
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: sessionId,
+          rolloutPath,
+          cwd: '/workspace',
+          name: 'Truncated during read',
+          createdAtMs: 1_000,
+          updatedAtMs: 2_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      let readCalls = 0;
+      await withFileReadMock(
+        rolloutPath,
+        async (readOriginal, buffer) => {
+          readCalls += 1;
+          return readCalls === 2 ? { bytesRead: 0, buffer } : readOriginal();
+        },
+        () =>
+          assert.rejects(
+            new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+            /changed while being read/,
+          ),
+      );
+    });
+  });
+
+  test('does not follow records appended after the rollout snapshot is opened', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-appended-during-read';
+      const rolloutPath = await seedRawRollout(
+        codexHome,
+        sessionId,
+        minimalRollout(sessionId, '/workspace', 'Keep this message'),
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: sessionId,
+          rolloutPath,
+          cwd: '/workspace',
+          name: 'Appended during read',
+          createdAtMs: 1_000,
+          updatedAtMs: 2_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      let appended = false;
+      await withFileReadMock(
+        rolloutPath,
+        async (readOriginal) => {
+          const result = await readOriginal();
+          if (!appended) {
+            appended = true;
+            await appendFile(rolloutPath, 'not-json\n');
+          }
+          return result;
+        },
+        async () => {
+          const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+          assert.equal(session.messages[0]?.type, 'user');
+          assert.equal(
+            session.messages[0]?.type === 'user' ? session.messages[0].text : undefined,
+            'Keep this message',
+          );
+        },
+      );
+    });
+  });
+
+  test('rejects an oversized JSONL record without buffering the complete rollout', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-record-limit';
+      await seedMinimalRollout(codexHome, sessionId, false, '/workspace', 'hello');
+      const adapter = new CodexSessionAdapter({ codexHome, maxRecordBytes: 100 });
+
+      await assert.rejects(
+        adapter.readSession(sessionId),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'record_bytes' &&
+          error.limit.max === 100,
+      );
+    });
+  });
+
+  test('rejects converted histories that exceed message count or byte budgets', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-converted-limits';
+      await seedRawRollout(
+        codexHome,
+        sessionId,
+        `${minimalRollout(sessionId, '/workspace', 'hello')}${JSON.stringify({
+          timestamp: '2026-08-08T00:00:02.000Z',
+          type: 'event_msg',
+          payload: { type: 'agent_message', message: 'world' },
+        })}\n`,
+      );
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome, maxMessages: 1 }).readSession(sessionId),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'messages' &&
+          error.limit.max === 1,
+      );
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome, maxConvertedBytes: 10 }).readSession(sessionId),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'converted_bytes' &&
+          error.limit.max === 10,
+      );
+    });
+  });
+
+  test('streams valid rollouts larger than the legacy 64 MiB whole-file limit', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-large-streamed';
+      const rolloutPath = await seedMinimalRollout(
+        codexHome,
+        sessionId,
+        false,
+        '/workspace/large',
+        'Keep this message',
+      );
+      const ignoredRecord = `${JSON.stringify({
+        timestamp: '2026-08-08T00:00:02.000Z',
+        type: 'world_state',
+        payload: { padding: 'x'.repeat(1024 * 1024) },
+      })}\n`;
+      const handle = await open(rolloutPath, 'a');
+      try {
+        for (let index = 0; index < 65; index += 1) await handle.write(ignoredRecord);
+      } finally {
+        await handle.close();
+      }
+      assert.ok((await stat(rolloutPath)).size > 64 * 1024 * 1024);
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.deepEqual(session.messages, [
+        {
+          type: 'user',
+          id: `codex-${sessionId}-user-2`,
+          turnId: `codex-${sessionId}-turn-2`,
+          ts: Date.parse('2026-08-08T00:00:01.000Z'),
+          text: 'Keep this message',
+        },
+      ]);
     });
   });
 
@@ -464,12 +1230,455 @@ describe('CodexSessionAdapter', () => {
         ]);
 
         const adapter = new CodexSessionAdapter({ codexHome });
-        assert.deepEqual(await adapter.listSessions(), []);
-        await assert.rejects(adapter.readSession(id), /not found/);
+        assert.deepEqual(await listSessions(adapter), []);
+        await assert.rejects(adapter.readSession(id), ExternalSessionNotFoundError);
       });
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+
+  test('lists and imports a reverted thread along its history base chain', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-root';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn', 'first draft'],
+      });
+      // Each revert keeps the history up to its base and drops the rest: here
+      // an interrupted turn whose message was then edited and sent again.
+      const second = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['second turn', 'second draft'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '10',
+        sessionId,
+        rolloutId: 'codex-revert-2',
+        base: { rollout: second, keptTurns: 1 },
+        turns: ['third turn'],
+      });
+      // A separate thread whose own id merely looks like a reverted rollout's name.
+      const lookalikeId = `${sessionId}_lookalike`;
+      await seedThreadRollout(codexHome, {
+        day: '11',
+        sessionId: lookalikeId,
+        turns: ['unrelated thread'],
+      });
+
+      // Without a state database the filesystem scan lists each thread once
+      // and, as Codex does, starts from the thread's newest rollout.
+      assert.deepEqual(
+        (await listSessions(new CodexSessionAdapter({ codexHome })))
+          .map((session) => session.id)
+          .sort(),
+        [sessionId, lookalikeId],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(new CodexSessionAdapter({ codexHome }), sessionId)).map(
+          (message) => message.text,
+        ),
+        ['opening turn', 'second turn', 'third turn'],
+      );
+
+      // Codex points the thread row at the rollout its latest revert started.
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await listSessions(adapter)).map((session) => session.id),
+        [sessionId],
+      );
+
+      const users = await importedUserMessages(adapter, sessionId);
+      assert.deepEqual(
+        users.map((message) => message.text),
+        ['opening turn', 'second turn', 'third turn'],
+      );
+      assert.equal(new Set(users.map((message) => message.id)).size, users.length);
+      assert.deepEqual(
+        (await importedUserMessages(adapter, lookalikeId)).map((message) => message.text),
+        ['unrelated thread'],
+      );
+    });
+  });
+
+  test('reads a revert that kept no earlier turn on its own', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-restart';
+      await seedThreadRollout(codexHome, { day: '08', sessionId, turns: ['abandoned turn'] });
+      const restart = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-restart-1',
+        turns: ['fresh start'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, restart.path)]);
+
+      assert.deepEqual(
+        (await importedUserMessages(new CodexSessionAdapter({ codexHome }), sessionId)).map(
+          (message) => message.text,
+        ),
+        ['fresh start'],
+      );
+    });
+  });
+
+  test('reads the rollout the row names and follows an archived chain', async () => {
+    await withCodexHome(async (codexHome) => {
+      const activeId = 'codex-revert-active';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: activeId,
+        turns: ['active opening'],
+      });
+      await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: activeId,
+        rolloutId: 'codex-revert-active-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['never selected'],
+      });
+      const archivedId = 'codex-revert-archived';
+      const archivedOpening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: archivedId,
+        turns: ['archived opening', 'archived draft'],
+        archived: true,
+      });
+      const archivedNewest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: archivedId,
+        rolloutId: 'codex-revert-archived-1',
+        base: { rollout: archivedOpening, keptTurns: 1 },
+        turns: ['archived continuation'],
+        archived: true,
+      });
+      await seedStateDatabase(codexHome, [
+        threadStateRow(activeId, opening.path),
+        { ...threadStateRow(archivedId, archivedNewest.path), archived: true },
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      // The row, not the newest file name, selects the current rollout: a
+      // revert whose switch never landed is not part of the thread.
+      assert.deepEqual(
+        (await importedUserMessages(adapter, activeId)).map((message) => message.text),
+        ['active opening'],
+      );
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true }))
+          .map((session) => session.id)
+          .sort(),
+        [activeId, archivedId],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(adapter, archivedId)).map((message) => message.text),
+        ['archived opening', 'archived continuation'],
+      );
+    });
+  });
+
+  test('stops at a fork history base in its parent thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      const parentId = 'codex-fork-parent';
+      const parent = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: parentId,
+        turns: ['parent turn'],
+      });
+      const forkId = 'codex-fork-child';
+      const fork = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: forkId,
+        base: { rollout: parent, keptTurns: 1 },
+        turns: ['fork turn'],
+      });
+      const revertedForkId = 'codex-fork-reverted';
+      const revertedFork = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: revertedForkId,
+        base: { rollout: parent, keptTurns: 1 },
+        turns: ['fork turn', 'fork draft'],
+      });
+      const revertedForkNewest = await seedThreadRollout(codexHome, {
+        day: '10',
+        sessionId: revertedForkId,
+        rolloutId: 'codex-fork-reverted-1',
+        base: { rollout: revertedFork, keptTurns: 1 },
+        turns: ['fork again'],
+      });
+      await seedStateDatabase(codexHome, [
+        threadStateRow(parentId, parent.path),
+        threadStateRow(forkId, fork.path),
+        threadStateRow(revertedForkId, revertedForkNewest.path),
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      // The parent's history stays the parent's, whether the fork is read
+      // from its opening rollout or reached through a later revert.
+      assert.deepEqual(
+        (await importedUserMessages(adapter, forkId)).map((message) => message.text),
+        ['fork turn'],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(adapter, revertedForkId)).map((message) => message.text),
+        ['fork turn', 'fork again'],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(adapter, parentId)).map((message) => message.text),
+        ['parent turn'],
+      );
+    });
+  });
+
+  test('numbers lines across the lineage and tolerates a torn tail still being written', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-torn';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn', 'reverted draft'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-torn-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['still writing'],
+      });
+      // Codex is still appending to the newest file.
+      await appendFile(newest.path, '{"timestamp":"2026-08-09T00:00:02.000Z","type":"event_');
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await importedUserMessages(adapter, sessionId)).map((message) => message.text),
+        ['opening turn', 'still writing'],
+      );
+
+      // A corrupt record in a finished file is reported at its lineage-wide
+      // line: the two kept lines of the opening rollout, then the newest
+      // file's meta, then this.
+      const content = await readFile(newest.path, 'utf8');
+      const [meta, ...rest] = content.split('\n');
+      await writeFile(newest.path, [meta, 'not json', ...rest].join('\n'));
+      await assert.rejects(adapter.readSession(sessionId), /at line 4:/);
+    });
+  });
+
+  test('spends one rollout byte budget across the kept lineage', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-budget';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn', 'reverted draft'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-budget-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['second turn'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      // The reverted bytes past the base are never read, so they do not count.
+      const lineageBytes = opening.recordEnds[1]! + (await stat(newest.path)).size;
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome, maxRolloutBytes: lineageBytes - 1 }).readSession(
+          sessionId,
+        ),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'transcript_bytes' &&
+          error.limit.max === lineageBytes - 1,
+      );
+      assert.equal(
+        (
+          await importedUserMessages(
+            new CodexSessionAdapter({ codexHome, maxRolloutBytes: lineageBytes }),
+            sessionId,
+          )
+        ).length,
+        2,
+      );
+    });
+  });
+
+  test('refuses a reverted rollout whose session_meta names another thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-foreign';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn'],
+      });
+      const foreign = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-foreign-1',
+        metaId: 'codex-someone-else',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['not this thread'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, foreign.path)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
+  test('refuses an earlier rollout of the chain that names another thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-foreign-base';
+      await seedThreadRollout(codexHome, { day: '08', sessionId, turns: ['opening turn'] });
+      const impostor = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-foreign-base-1',
+        metaId: 'codex-someone-else',
+        turns: ['not this thread'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '10',
+        sessionId,
+        rolloutId: 'codex-revert-foreign-base-2',
+        base: { rollout: impostor, keptTurns: 1 },
+        turns: ['latest turn'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
+  test('fails rather than shortening a thread whose history base is missing or loops', async () => {
+    await withCodexHome(async (codexHome) => {
+      const missingId = 'codex-revert-missing';
+      const gone = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: missingId,
+        turns: ['deleted turn'],
+      });
+      const orphan = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: missingId,
+        rolloutId: 'codex-revert-missing-1',
+        base: { rollout: gone, keptTurns: 1 },
+        turns: ['orphaned turn'],
+      });
+      await rm(gone.path);
+      const loopId = 'codex-revert-loop';
+      const loop = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: loopId,
+        rolloutId: 'codex-revert-loop-1',
+        base: {
+          rollout: { rolloutId: 'codex-revert-loop-1', recordEnds: [1] },
+          keptTurns: 0,
+        },
+        turns: ['looping turn'],
+      });
+      await seedStateDatabase(codexHome, [
+        threadStateRow(missingId, orphan.path),
+        threadStateRow(loopId, loop.path),
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      await assert.rejects(adapter.readSession(missingId), /history base is missing/);
+      await assert.rejects(adapter.readSession(loopId), /loops back on itself/);
+    });
+  });
+
+  test('refuses a history base that ends past its rollout or inside a record', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-bad-offset';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn'],
+      });
+      const cutAt = (endByteOffset: number) =>
+        seedThreadRollout(codexHome, {
+          day: '09',
+          sessionId,
+          rolloutId: 'codex-revert-bad-offset-1',
+          base: { rollout: { ...opening, recordEnds: [endByteOffset] }, keptTurns: 0 },
+          turns: ['second turn'],
+        });
+      const newest = await cutAt((await stat(opening.path)).size + 1);
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      await assert.rejects(adapter.readSession(sessionId), /ends past its rollout/);
+
+      // Rewritten in place, so the row still names it.
+      await cutAt(opening.recordEnds[1]! - 2);
+      await assert.rejects(adapter.readSession(sessionId), /Invalid Codex rollout .* at line 2:/);
+    });
+  });
+
+  test('refuses a row-named rollout that never names its thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      // The opening file's metadata is valid, so a lineage-wide check passes
+      // while the file the state row actually points at proves nothing.
+      const sessionId = 'codex-revert-unnamed';
+      await seedThreadRollout(codexHome, { day: '08', sessionId, turns: ['opening turn'] });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-unnamed-1',
+        turns: ['unproven'],
+      });
+      const withoutMeta = (await readFile(newest.path, 'utf8'))
+        .split('\n')
+        .filter((line) => !line.includes('session_meta'))
+        .join('\n');
+      await writeFile(newest.path, withoutMeta);
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+
+      // The row names this file as the thread's current rollout while the
+      // file says nothing, so the store contradicts itself: refused rather
+      // than imported under the opening file's identity.
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
+  test('refuses a reverted rollout whose records precede its Session metadata', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-late-meta';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-late-meta-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['after the fact'],
+      });
+      const [meta, ...rest] = (await readFile(newest.path, 'utf8')).split('\n');
+      await writeFile(newest.path, [...rest.filter((line) => line !== ''), meta, ''].join('\n'));
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /records precede its Session metadata/,
+      );
+    });
   });
 
   test('is registered by the internal default registry', async () => {
@@ -493,6 +1702,45 @@ async function withCodexHome(run: (codexHome: string) => Promise<void>): Promise
   }
 }
 
+type PositionalRead = (
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+) => Promise<{ bytesRead: number; buffer: Buffer }>;
+
+async function withFileReadMock(
+  path: string,
+  read: (
+    readOriginal: () => ReturnType<PositionalRead>,
+    buffer: Buffer,
+  ) => ReturnType<PositionalRead>,
+  run: () => Promise<void>,
+): Promise<void> {
+  const probe = await open(path, 'r');
+  const fileHandlePrototype = Object.getPrototypeOf(probe) as { read: PositionalRead };
+  const originalRead = fileHandlePrototype.read;
+  await probe.close();
+  const readMock = mock.method(
+    fileHandlePrototype,
+    'read',
+    async function (
+      this: typeof probe,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ) {
+      return read(() => originalRead.call(this, buffer, offset, length, position), buffer);
+    },
+  );
+  try {
+    await run();
+  } finally {
+    readMock.mock.restore();
+  }
+}
+
 async function seedFixtureRollout(
   codexHome: string,
   sessionId: string,
@@ -503,6 +1751,93 @@ async function seedFixtureRollout(
     sessionId,
   );
   return seedRawRollout(codexHome, sessionId, fixture, archived);
+}
+
+interface SeededRollout {
+  rolloutId: string;
+  /** Byte offsets where each record ends: `session_meta`, then one per turn. */
+  recordEnds: readonly number[];
+}
+
+/**
+ * Seeds one rollout of a thread: its opening rollout, or with `rolloutId` one
+ * that `thread/revert` started, whose `history_base` keeps `base.rollout` up
+ * to the end of its `keptTurns`-th turn.
+ */
+async function seedThreadRollout(
+  codexHome: string,
+  options: {
+    day: string;
+    sessionId: string;
+    turns: readonly string[];
+    rolloutId?: string;
+    base?: { rollout: SeededRollout; keptTurns: number };
+    metaId?: string;
+    archived?: boolean;
+  },
+): Promise<SeededRollout & { path: string }> {
+  const directory = options.archived
+    ? join(codexHome, 'archived_sessions')
+    : join(codexHome, 'sessions', '2026', '08', options.day);
+  await mkdir(directory, { recursive: true });
+  const suffix = options.rolloutId ? `_${options.rolloutId}` : '';
+  const path = join(
+    directory,
+    `rollout-2026-08-${options.day}T00-00-00-${options.sessionId}${suffix}.jsonl`,
+  );
+  const metaId = options.metaId ?? options.sessionId;
+  const historyBase = options.base && {
+    thread_id: options.base.rollout.rolloutId,
+    end_ordinal_exclusive: options.base.keptTurns + 1,
+    end_byte_offset: options.base.rollout.recordEnds[options.base.keptTurns],
+  };
+  const lines = [
+    JSON.stringify({
+      timestamp: `2026-08-${options.day}T00:00:00.000Z`,
+      type: 'session_meta',
+      payload: {
+        session_id: metaId,
+        id: metaId,
+        cwd: '/workspace/project',
+        source: 'cli',
+        ...(historyBase ? { history_base: historyBase } : {}),
+      },
+    }),
+    ...options.turns.map((text, index) =>
+      JSON.stringify({
+        timestamp: `2026-08-${options.day}T00:00:${String(index + 1).padStart(2, '0')}.000Z`,
+        type: 'event_msg',
+        payload: { type: 'user_message', message: text },
+      }),
+    ),
+  ];
+  const recordEnds: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    offset += Buffer.byteLength(line, 'utf8') + 1;
+    recordEnds.push(offset);
+  }
+  await writeFile(path, lines.map((line) => `${line}\n`).join(''));
+  return { path, rolloutId: options.rolloutId ?? options.sessionId, recordEnds };
+}
+
+function threadStateRow(id: string, rolloutPath: string): StateRow {
+  return {
+    id,
+    rolloutPath,
+    cwd: '/workspace/project',
+    name: id,
+    createdAtMs: 1000,
+    updatedAtMs: 3000,
+    archived: false,
+    source: 'vscode',
+  };
+}
+
+async function importedUserMessages(adapter: CodexSessionAdapter, sessionId: string) {
+  return (await adapter.readSession(sessionId)).messages.filter(
+    (message) => message.type === 'user',
+  );
 }
 
 async function seedMinimalRollout(
@@ -591,22 +1926,52 @@ function errorSemanticsRollout(sessionId: string): string {
   ].join('\n');
 }
 
+function interleavedTerminalRollout(sessionId: string): string {
+  const event = (second: number, payload: Record<string, unknown>): string =>
+    JSON.stringify({
+      timestamp: `2026-08-08T00:00:${String(second).padStart(2, '0')}.000Z`,
+      type: 'event_msg',
+      payload,
+    });
+  return [
+    JSON.stringify({
+      timestamp: '2026-08-08T00:00:00.000Z',
+      type: 'session_meta',
+      payload: { session_id: sessionId, id: sessionId, cwd: '/workspace', source: 'cli' },
+    }),
+    event(1, { type: 'task_started', turn_id: 'turn-a' }),
+    event(2, { type: 'user_message', message: 'first' }),
+    event(3, { type: 'task_started', turn_id: 'turn-b' }),
+    event(4, { type: 'user_message', message: 'second' }),
+    event(5, { type: 'task_complete', turn_id: 'turn-a' }),
+    event(6, { type: 'task_complete', turn_id: 'turn-b' }),
+    '',
+  ].join('\n');
+}
+
 interface StateRow {
   id: string;
   rolloutPath: string;
   cwd: string;
   name: string;
-  createdAtMs: number;
-  updatedAtMs: number;
+  createdAtMs?: number;
+  updatedAtMs?: number;
+  createdAt?: number;
+  updatedAt?: number;
   archived: boolean;
   source: string;
 }
 
-async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): Promise<void> {
+async function seedStateDatabase(
+  codexHome: string,
+  rows: readonly StateRow[],
+  filename = 'state_5.sqlite',
+): Promise<void> {
   const { DatabaseSync } = await import('node:sqlite');
-  const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+  const database = new DatabaseSync(join(codexHome, filename));
   try {
     database.exec(`
+      PRAGMA journal_mode = WAL;
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
         rollout_path TEXT NOT NULL,
@@ -614,14 +1979,17 @@ async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): 
         name TEXT,
         created_at_ms INTEGER,
         updated_at_ms INTEGER,
+        created_at INTEGER,
+        updated_at INTEGER,
         archived INTEGER,
         source TEXT
       )
     `);
     const insert = database.prepare(`
       INSERT INTO threads (
-        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, archived, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, created_at, updated_at,
+        archived, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const row of rows) {
       insert.run(
@@ -629,8 +1997,10 @@ async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): 
         row.rolloutPath,
         row.cwd,
         row.name,
-        row.createdAtMs,
-        row.updatedAtMs,
+        row.createdAtMs ?? null,
+        row.updatedAtMs ?? null,
+        row.createdAt ?? null,
+        row.updatedAt ?? null,
         row.archived ? 1 : 0,
         row.source,
       );

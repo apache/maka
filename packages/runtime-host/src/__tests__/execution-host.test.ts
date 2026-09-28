@@ -535,7 +535,7 @@ test('two UDS Clients serialize same-provider account creation through one Host 
         const results = await Promise.all(
           [desktop, tui].map((client, index) =>
             client.request('connection.onboarding.save', {
-              target: { kind: 'create', providerType: 'openai-compatible' },
+              target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
               apiKey: secrets[index]!,
               baseUrl: provider.baseUrl,
               enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
@@ -551,10 +551,7 @@ test('two UDS Clients serialize same-provider account creation through one Host 
           };
         });
         assert.notEqual(identities[0]?.connectionId, identities[1]?.connectionId);
-        assert.deepEqual(identities.map(({ slug }) => slug).sort(), [
-          'openai-compatible',
-          'openai-compatible-2',
-        ]);
+        assert.deepEqual(identities.map(({ slug }) => slug).sort(), ['custom', 'custom-2']);
       } finally {
         await Promise.allSettled([desktop.close(), tui.close()]);
         await fixture.stopHost(host);
@@ -568,7 +565,7 @@ test('two UDS Clients serialize same-provider account creation through one Host 
         const catalog = await stores.connectionCatalog.getSnapshot();
         assert.deepEqual(
           catalog.connections
-            .filter(({ providerType }) => providerType === 'openai-compatible')
+            .filter(({ providerType }) => providerType === 'custom')
             .map(({ connectionId, slug }) => ({ connectionId, slug }))
             .sort((left, right) => left.slug.localeCompare(right.slug)),
           [...identities].sort((left, right) => left.slug.localeCompare(right.slug)),
@@ -731,6 +728,7 @@ test('two Clients share one execution after the starting Client disconnects', as
       sessionId: fixture.sessionId,
       transcript: { kind: 'tail', maxBytes: 16 * 1024 },
     });
+    await secondSubscription.ready();
     const transcript = await secondSubscription.loadTranscript(decodeStoredMessage);
     assert.ok(
       transcript.some(
@@ -874,119 +872,6 @@ test('two Clients share one execution after the starting Client disconnects', as
   });
 });
 
-test('regenerate replays the durable source content with one recoverable root identity', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const host = await fixture.startHost();
-    const client = await connectClient(fixture.root);
-    const sourceTurnId = randomUUID();
-    const regeneratedTurnId = randomUUID();
-    try {
-      await client.request(
-        'turn.start',
-        {
-          sessionId: fixture.sessionId,
-          turnId: sourceTurnId,
-          content: quotedContent('repeat this request'),
-        },
-        PROCESS_TIMEOUT_MS,
-      );
-      await waitForTerminalTurn(client, fixture.sessionId, sourceTurnId);
-
-      const started = await client.request(
-        'turn.regenerate',
-        {
-          sessionId: fixture.sessionId,
-          sourceTurnId,
-          turnId: regeneratedTurnId,
-        },
-        PROCESS_TIMEOUT_MS,
-      );
-      const terminal = await waitForTerminalTurn(client, fixture.sessionId, regeneratedTurnId);
-      assert.equal(terminal.runId, started.runId);
-      assert.deepEqual(
-        await client.request('turn.regenerate', {
-          sessionId: fixture.sessionId,
-          sourceTurnId,
-          turnId: regeneratedTurnId,
-        }),
-        terminal,
-      );
-    } finally {
-      await client.close();
-      await fixture.stopHost(host);
-    }
-
-    const ledger = await fixture.readTurn(regeneratedTurnId);
-    assert.equal(ledger.runs.length, 1);
-    assert.equal(ledger.userMessages.length, 1);
-    assert.equal(ledger.runs[0]?.opening.lineage?.parentTurnId, sourceTurnId);
-    assert.equal(ledger.runs[0]?.opening.lineage?.regeneratedFromTurnId, sourceTurnId);
-    assert.deepEqual(
-      {
-        text: ledger.userMessages[0]?.text,
-        quotes: ledger.userMessages[0]?.quotes,
-      },
-      quotedContent('repeat this request'),
-    );
-  });
-});
-
-test('regenerate rejects self-source and legacy target collisions without draining Host', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root);
-    const sourceTurnId = randomUUID();
-    await first.request('turn.start', {
-      sessionId: fixture.sessionId,
-      turnId: sourceTurnId,
-      content: { text: 'source request' },
-    });
-    await waitForTerminalTurn(first, fixture.sessionId, sourceTurnId);
-    await assert.rejects(
-      first.request('turn.regenerate', {
-        sessionId: fixture.sessionId,
-        sourceTurnId,
-        turnId: sourceTurnId,
-      }),
-      operationError('operation_conflict'),
-    );
-    await first.close();
-    await fixture.stopHost(firstHost);
-
-    const legacy = await fixture.seedSafeBoundaryContinuationSource();
-    const secondHost = await fixture.startHost();
-    const second = await connectClient(fixture.root);
-    try {
-      await assert.rejects(
-        second.request('turn.regenerate', {
-          sessionId: fixture.sessionId,
-          sourceTurnId,
-          turnId: legacy.sourceTurnId,
-        }),
-        operationError('operation_conflict'),
-      );
-      const followingTurnId = randomUUID();
-      await second.request('turn.start', {
-        sessionId: fixture.sessionId,
-        turnId: followingTurnId,
-        content: { text: 'Host remains available' },
-      });
-      assert.equal(
-        (await waitForTerminalTurn(second, fixture.sessionId, followingTurnId)).status,
-        'completed',
-      );
-    } finally {
-      await second.close();
-      await fixture.stopHost(secondHost);
-    }
-    assert.deepEqual(await fixture.readTurnFootprint(legacy.sourceTurnId), {
-      admitted: false,
-      runCount: 1,
-      userMessageCount: 0,
-    });
-  });
-});
-
 test('context actions share root admission and expose backend capability honestly', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
@@ -1066,6 +951,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const pending = await waitForPendingInteraction(subscription, probe, started.runId);
     assert.equal(pending.sessionId, fixture.sessionId);
@@ -1166,6 +1052,7 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(

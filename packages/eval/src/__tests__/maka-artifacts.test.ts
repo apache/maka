@@ -85,6 +85,40 @@ test('runtime artifact capture includes committed WAL rows in a standalone datab
   }
 });
 
+test('startup artifacts survive a missing or unreadable runtime database', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-startup-artifacts-'));
+  const stateRoot = join(root, 'state');
+  const destinationRoot = join(root, 'artifacts');
+  await mkdir(stateRoot);
+  try {
+    await writeFile(join(stateRoot, 'runtime-policy.json'), '{"policy":"evidence"}');
+    for (const corrupt of [false, true]) {
+      if (corrupt) await writeFile(join(stateRoot, 'runtime.sqlite'), 'not a database');
+      const manifest = await captureMakaRuntimeArtifacts({
+        stateRoot,
+        destinationRoot,
+        reason: 'settled',
+      });
+      assert.equal(
+        await readFile(join(destinationRoot, 'runtime-policy.json'), 'utf8'),
+        '{"policy":"evidence"}',
+      );
+      assert.equal(
+        manifest.files.some((file) => file.path === 'runtime.sqlite'),
+        false,
+      );
+      if (corrupt) {
+        assert.ok(
+          JSON.parse(await readFile(join(destinationRoot, 'collection-error.json'), 'utf8'))
+            .message,
+        );
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Maka reports the runtime and process artifacts for settled and timed-out executions', async () => {
   for (const termination of ['exited', 'framework_timeout'] as const) {
     const result = await createMakaSubjectAdapter().execute({

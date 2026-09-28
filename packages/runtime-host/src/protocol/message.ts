@@ -138,6 +138,7 @@ export interface TurnMessageExecutionQueryResult {
 export type TurnMessageExecutionResolution =
   | { readonly messageId: string; readonly state: 'pending' }
   | { readonly messageId: string; readonly state: 'cancelled' }
+  | { readonly messageId: string; readonly state: 'not_admitted' }
   | {
       readonly messageId: string;
       readonly state: 'owned';
@@ -401,6 +402,16 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
         state: 'cancelled',
       };
     }
+    if (resolution.state === 'not_admitted') {
+      assertExactKeys(resolution, 'turn.message.execution.query not_admitted resolution', [
+        'messageId',
+        'state',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'not_admitted',
+      };
+    }
     if (resolution.state === 'owned') {
       assertExactKeys(resolution, 'turn.message.execution.query owned resolution', [
         'messageId',
@@ -651,7 +662,7 @@ function decodeMessageQueueEntrySnapshot(value: unknown): MessageQueueEntrySnaps
   const base = {
     entryId: requireEntityId(record.entryId, 'entryId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content),
+    content: decodeMessageAdmissionContent(record.content),
     placement: requireMessagePlacement(record.placement),
   };
   if (record.state === 'queued' || record.state === 'retracted') {

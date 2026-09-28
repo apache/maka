@@ -136,12 +136,12 @@ async function readWorkspaceInstructions(
       const digest = createHash('sha256').update(cleaned).digest('hex');
       if (seenDigests.has(digest)) continue;
       seenDigests.add(digest);
-      const chars = Array.from(cleaned).length;
+      const text = truncateCodepoints(cleaned, MAX_WORKSPACE_INSTRUCTION_FILE_CHARS);
       out.push({
         file,
         scope,
-        text: truncateCodepoints(cleaned, MAX_WORKSPACE_INSTRUCTION_FILE_CHARS),
-        truncated: chars > MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
+        text,
+        truncated: text.length < cleaned.length,
       });
     } catch {
       continue;
@@ -155,7 +155,11 @@ function cleanPromptText(text: string): string {
 }
 
 function truncateCodepoints(text: string, max: number): string {
-  const chars = Array.from(text);
-  if (chars.length <= max) return text;
-  return chars.slice(0, Math.max(0, max)).join('');
+  if (text.length <= max) return text;
+  const chars: string[] = [];
+  for (const char of text) {
+    if (chars.length >= max) return chars.join('');
+    chars.push(char);
+  }
+  return text;
 }

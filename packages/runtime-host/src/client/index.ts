@@ -17,6 +17,8 @@
  * under the License.
  */
 
+export * from './host-handoff.js';
+export { formatHostHandoff, type HostHandoffPresentation } from './host-handoff-copy.js';
 export {
   RuntimeHostManagedActivationError,
   activateRuntimeHostManagedDeployment,
@@ -46,10 +48,8 @@ export {
 } from './host-retirement.js';
 export {
   forceTerminateObservedRegisteredRuntimeHost,
-  forceTerminateRegisteredRuntimeHost,
   type ObservedRegisteredRuntimeHost,
   type ObservedRegisteredRuntimeHostTerminationAuthority,
-  type RegisteredRuntimeHostIdentity,
 } from './registered-host-termination.js';
 export type { RuntimeHostProcessIdentity } from './process-identity.js';
 export {
@@ -111,6 +111,7 @@ export {
 } from './ssh-tunnel.js';
 export {
   RuntimeHostPermanentReconnectError,
+  createRuntimeHostReconnectLifecycle,
   startRuntimeHostReconnectLifecycle,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
@@ -122,6 +123,8 @@ export {
 } from './remote-compatibility-error.js';
 export {
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
+  subscriptionClosedError,
   type DecodedSessionTranscriptPage,
   type RuntimeHostSessionSubscription,
 } from './session-subscription.js';
@@ -154,6 +157,7 @@ export {
   type RuntimeHostConnectionCatalogSnapshot,
 } from './catalog-reader.js';
 export {
+  IDLE_GRACE_MS_ENV_VAR,
   connectOrSpawnRuntimeHost,
   type CandidateExitDetails,
   type ConnectOrSpawnRuntimeHostInput,
@@ -167,7 +171,10 @@ export {
   type RuntimeHostCandidateLaunchBarrier,
 } from './candidate-launch-barrier.js';
 export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
-export { type ClientCapabilityProvider } from './client-capability.js';
+export {
+  type ClientCapabilityProvider,
+  type ClientCapabilityRegistrationOptions,
+} from './client-capability.js';
 export {
   readRuntimeHostAgentGraphEpochs,
   type AgentGraphEpochDirectory,
@@ -187,7 +194,7 @@ export {
   type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
-export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
+export { ensureRuntimeHostPeerIdentity, RuntimeHostPeerError } from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,

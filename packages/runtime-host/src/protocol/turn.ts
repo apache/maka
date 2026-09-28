@@ -21,7 +21,9 @@ import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachmen
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
   DIRECTORY_REFERENCE_MAX_COUNT,
+  hasMeaningfulMessageContent,
   isCanonicalAttachmentRef,
+  QUOTE_COMMENT_MAX_LENGTH,
   type ContextCompactionOutcome,
   type MessageContent,
   type ProviderRetryReason,
@@ -35,6 +37,7 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
+import { decodeTurnOrigin, type CloudActivationOrigin } from '@maka/core/turn-origin';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
@@ -57,6 +60,8 @@ export interface TurnStartInput {
   skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
+  /** Client-originated Runtime Host turns may identify cloud activation only. */
+  origin?: CloudActivationOrigin;
 }
 
 export type TurnStartResult =
@@ -92,12 +97,6 @@ export interface TurnStopInput {
   sessionId: string;
   turnId: string;
   runId: string;
-}
-
-export interface TurnRegenerateInput {
-  sessionId: string;
-  sourceTurnId: string;
-  turnId: string;
 }
 
 export interface TurnResumeQueryInput {
@@ -188,6 +187,14 @@ export type TurnProviderRetry =
 export type LiveTurnSnapshot = TurnSnapshotBase & {
   status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
   providerRetry?: TurnProviderRetry;
+  /**
+   * Set when this live Turn is a host-owned explicit context-compaction run, so
+   * the renderer can show a "compacting" transcript row while it is in flight.
+   * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
+   * emits no assistant text, and this survives a Desktop reconnect because the
+   * Host re-projects the live snapshot.
+   */
+  rootExecutionKind?: 'context_compact';
 };
 
 export type TurnSnapshot =
@@ -261,27 +268,6 @@ export const TURN_OPERATION_SPECS = {
     decodeInput: decodeTurnStopInput,
     decodeOutput: decodeTurnSnapshot,
   }),
-  'turn.regenerate': defineOperation({
-    mode: 'command',
-    availability: 'ready',
-    errors: [
-      'host_not_ready',
-      'host_draining',
-      'operation_unavailable',
-      'not_found',
-      'session_archived',
-      'session_busy',
-      'operation_conflict',
-      'internal_failure',
-    ] as const,
-    decodeInput: decodeTurnRegenerateInput,
-    decodeOutput: decodeTurnSnapshot,
-    assertOutputForInput: (input, output) => {
-      if (input.sessionId !== output.sessionId || input.turnId !== output.turnId) {
-        throw invalidProtocolFrame('Turn regenerate changed operation identity');
-      }
-    },
-  }),
   'turn.resume.query': defineOperation({
     mode: 'query',
     availability: 'ready',
@@ -347,9 +333,14 @@ export function decodeTurnStartInput(value: unknown): TurnStartInput {
     value,
     'turn.start input',
     ['sessionId', 'turnId', 'content'],
-    ['skillIds', 'turnOrchestration', 'maxSteps'],
+    ['skillIds', 'turnOrchestration', 'maxSteps', 'origin'],
   );
   const skillIds = decodeSkillIds(record.skillIds);
+  const decodedOrigin = record.origin === undefined ? undefined : decodeTurnOrigin(record.origin);
+  const origin = decodedOrigin?.kind === 'cloud_activation' ? decodedOrigin : undefined;
+  if (record.origin !== undefined && origin === undefined) {
+    throw invalidProtocolFrame('Invalid turn.start origin');
+  }
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
@@ -361,6 +352,7 @@ export function decodeTurnStartInput(value: unknown): TurnStartInput {
     ...(record.maxSteps !== undefined
       ? { maxSteps: requirePositiveSafeInteger(record.maxSteps, 'maxSteps') }
       : {}),
+    ...(origin !== undefined ? { origin } : {}),
   };
 }
 
@@ -451,6 +443,9 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     if (quote.label !== undefined) {
       requireString(quote.label, 'QuoteRef label', TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH);
     }
+    if (quote.comment !== undefined) {
+      requireString(quote.comment, 'QuoteRef comment', QUOTE_COMMENT_MAX_LENGTH);
+    }
     if (quote.sourceTurnId !== undefined) {
       requireEntityId(quote.sourceTurnId, 'QuoteRef sourceTurnId');
     }
@@ -464,7 +459,15 @@ export function decodeMessageAdmissionContent(
   value: unknown,
   allowEmptyText = false,
 ): MessageContent {
-  const content = decodeMessageContent(value, allowEmptyText);
+  // Structure first with text emptiness unconstrained, then apply the
+  // shared meaningful-content predicate: a quote or an attachment carries
+  // the turn by itself, so empty inline text is admissible when either is
+  // present (#4804). A truly contentless Message still throws, with the
+  // same frame error the text-length rule produced.
+  const content = decodeMessageContent(value, true);
+  if (!allowEmptyText && !hasMeaningfulMessageContent(content)) {
+    throw invalidProtocolFrame('Invalid Message text');
+  }
   if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
     throw invalidProtocolFrame('Session context references are Host-owned');
   }
@@ -513,19 +516,6 @@ function decodeTurnStopInput(value: unknown): TurnStopInput {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
-  };
-}
-
-function decodeTurnRegenerateInput(value: unknown): TurnRegenerateInput {
-  const record = requireExactRecord(value, 'turn.regenerate input', [
-    'sessionId',
-    'sourceTurnId',
-    'turnId',
-  ]);
-  return {
-    sessionId: requireEntityId(record.sessionId, 'sessionId'),
-    sourceTurnId: requireEntityId(record.sourceTurnId, 'sourceTurnId'),
-    turnId: requireEntityId(record.turnId, 'turnId'),
   };
 }
 
@@ -653,6 +643,13 @@ function requirePositiveCount(value: unknown, label: string): number {
   return count;
 }
 
+function requireContextCompactRootExecutionKind(value: unknown): 'context_compact' {
+  if (value !== 'context_compact') {
+    throw invalidProtocolFrame('Invalid Turn rootExecutionKind');
+  }
+  return value;
+}
+
 export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   const record = requireRecord(value, 'Turn snapshot');
   const base = {
@@ -725,13 +722,16 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     record,
     'non-terminal Turn snapshot',
     ['sessionId', 'turnId', 'runId', 'status'],
-    ['providerRetry'],
+    ['providerRetry', 'rootExecutionKind'],
   );
   return {
     ...base,
     status,
     ...(record.providerRetry !== undefined
       ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
+      : {}),
+    ...(record.rootExecutionKind !== undefined
+      ? { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }
       : {}),
   };
 }
@@ -790,6 +790,7 @@ function requireProviderRetryReason(value: unknown): ProviderRetryReason {
     value === 'network' ||
     value === 'provider_capacity' ||
     value === 'provider_unavailable' ||
+    value === 'stream_truncated' ||
     value === 'rate_limit' ||
     value === 'timeout' ||
     value === 'unknown'

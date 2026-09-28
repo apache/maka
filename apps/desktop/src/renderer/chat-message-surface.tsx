@@ -18,11 +18,9 @@
  */
 
 import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
-import { isDeepResearchSession } from '@maka/core/deep-research';
 import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
-import { Skeleton } from '@astryxdesign/core';
 import {
   ChatView,
   ChatViewGoalProjectionConsumer,
@@ -31,14 +29,12 @@ import {
 } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
-import type { SessionHealthNoticeView } from './use-shell-chat-model';
+import type { SessionHealthNoticeView } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
-import { selectLiveTurn } from './use-app-shell-session-ui-reads';
-import { useExternalStoreSelector } from './use-external-store-selector';
-import { useDeepResearchRun } from './use-deep-research-run';
+import { selectLiveTurns } from './features/conversation/index.js';
+import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
 const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
@@ -54,12 +50,12 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
  * is conditionally mounted - the always-mounted Composer lives in a separate
  * region and is not affected by this surface mounting or unmounting.
  */
+
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
-  | 'deepResearchRun'
   | 'emptyOverride'
   | 'initialLiveContentSnapshot'
-  | 'liveTurn'
+  | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
 > {
@@ -81,7 +77,6 @@ interface ChatMessageSurfaceProps extends Omit<
   onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
-  isOnboardingLoading: boolean;
   onOpenSettings: (section?: SettingsSection) => void;
   onOpenConnectionDetail: (connectionSlug: string) => void;
   onAddProvider: (providerType: ProviderType) => void;
@@ -89,11 +84,6 @@ interface ChatMessageSurfaceProps extends Omit<
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
-  hasOlderHistory: boolean;
-  hasNewerHistory: boolean;
-  historyLoadPending: boolean;
-  onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
-  onReturnToLatestHistory: () => Promise<void> | void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -118,7 +108,6 @@ export function ChatMessageSurface({
   onTaskReadinessAction,
   showOnboardingHero,
   onboardingState,
-  isOnboardingLoading,
   onOpenSettings,
   onOpenConnectionDetail,
   onAddProvider,
@@ -126,16 +115,10 @@ export function ChatMessageSurface({
   connections,
   onRefreshConnections,
   onSkip,
-  hasOlderHistory,
-  hasNewerHistory,
-  historyLoadPending,
-  onLoadEarlierHistory,
-  onReturnToLatestHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
-  const transcriptCopy = getDesktopConversationCopy(locale).actions;
   // Configuration notices share the Settings label; identity recovery supplies
   // its own label because it opens the composer's connection-and-model picker.
   const goToModelsLabel = copy.goToModels;
@@ -154,13 +137,9 @@ export function ChatMessageSurface({
         return;
     }
   };
-  const activeSession = chatViewRest.activeSession;
-  const deepResearchRun = useDeepResearchRun(
-    activeSession?.id,
-    isDeepResearchSession(activeSession?.labels),
-  );
-  const liveTurn = useExternalStoreSelector(sessionUiController, selectLiveTurn, activeSessionId);
-  const seededLiveTurn = liveContentSeedRevision > 0 ? liveTurn : undefined;
+  const liveTurns = useExternalStoreSelector(sessionUiController, selectLiveTurns, activeSessionId);
+  const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
+  const seededLiveTurns = liveContentSeedRevision > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
     seedRevision: liveContentSeedRevision,
@@ -178,9 +157,7 @@ export function ChatMessageSurface({
   } else if (
     activation.initialLiveContent
     && (
-      !seededLiveTurn
-      || seededLiveTurn.terminal
-      || seededLiveTurn.turnId !== activation.initialLiveContent.turnId
+      !seededLiveTurns?.some((turn) => turn.turnId === activation.initialLiveContent?.turnId && !turn.terminal)
     )
   ) {
     setActivation({
@@ -216,20 +193,6 @@ export function ChatMessageSurface({
           onSkip={onSkip}
         />
       </div>
-    ) : isOnboardingLoading ? (
-      // Blocks EmptyChatHero from flashing while the first snapshot resolves.
-      // Astryx Skeleton bars (DESIGN.md §10) in the ready card's own frame —
-      // the hand-drawn static ::before/::after bars this replaces never pulsed,
-      // so the first screen a new user saw read as frozen.
-      (<div
-        className="maka-onboarding-loading"
-        role="status"
-        aria-busy="true"
-        aria-label={copy.loading}
-      >
-        <Skeleton width="52%" height={16} radius="rounded" index={0} />
-        <Skeleton width="78%" height={12} radius="rounded" index={1} />
-      </div>)
     ) : undefined;
 
   return (
@@ -238,23 +201,15 @@ export function ChatMessageSurface({
         {(goalProjection) => (
           <ChatView
             {...chatViewRest}
-            liveTurn={seededLiveTurn}
-            // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+            viewportNavigation={sessionUiController.transcriptViewportNavigation}
+            liveTurns={seededLiveTurns}
+              // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
             // the activation reaching the DOM is always this session's.
             initialLiveContentSnapshot={activation.initialLiveContent}
             shellRunUpdates={shellRunUpdates}
-            deepResearchRun={deepResearchRun}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
-            hasOlderHistory={hasOlderHistory}
-            onLoadEarlierHistory={onLoadEarlierHistory}
-            returnToLatest={hasNewerHistory ? {
-              title: transcriptCopy.partialHistoryTitle,
-              label: transcriptCopy.returnLatest,
-              isPending: historyLoadPending,
-              onClick: onReturnToLatestHistory,
-            } : undefined}
           />
         )}
       </ChatViewGoalProjectionConsumer>

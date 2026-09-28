@@ -35,8 +35,6 @@ Date: 2026-08-09
 Branch: `feat/astryx-surface-alignment`  
 Scope: every product surface under `apps/desktop/src/renderer/**` and `packages/ui/src/**` (183 inventory files).
 
-> **Status (verified 2026-09-05):** this is an audit record pinned to the `feat/astryx-surface-alignment` branch as of 2026-08-09; its citations and the 183-file inventory describe that tree. Since then the desktop surface has grown (the exact-head inventory generator reports 247 files at re-verification) and the settings kit was rebuilt — `SettingsSection` now implements open row groups and the memory/health pages use `MoreMenu` and `StatusDot`. The findings below are kept as written.
-
 This pass **read and analyzed** settings pages/modules, shell/chat/workbar/panels, module hubs, packages/ui compositions, and product CSS — not only inventory scripts.
 
 > **Historical audit record.** The 183-file totals, status table, fix list, and backlog below belong to the named branch and date. They are not current coverage or an open-work queue. On 2026-09-05, `npm run astryx:surface-inventory` verified the generated [file-level inventory](./astryx-surface-file-inventory.md) at 249 files, 0 blockers, 0 reimplementations, 1 polish item, and 248 aligned files. The remaining polish row is `packages/ui/src/composer-message-queue.tsx`.

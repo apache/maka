@@ -123,6 +123,7 @@ const coveredExtensions = new Map([
   ['.py', 'hash'],
   ['.rs', 'block'],
   ['.sh', 'hash'],
+  ['.sql', 'block'],
   ['.swift', 'block'],
   ['.toml', 'hash'],
   ['.ts', 'block'],
@@ -187,14 +188,13 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
       'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
       'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
       'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
       'packages/cli/THIRD_PARTY_NOTICES.txt',
+      'patches/run-2.1.4-notices.md',
     ),
   },
   {
@@ -204,6 +204,7 @@ export const exclusionRules = [
     matches: (path) =>
       isOneOf(
         'experiments/windows-sandbox/launcher/Cargo.lock',
+        'patches/run-2.1.4-source.diff',
         // Adapted from opencode under MIT; attribution pinned by #3325.
         'packages/runtime/src/edit-replace.ts',
         'packages/runtime/src/tool-output.ts',
@@ -251,7 +252,6 @@ export const exclusionRules = [
     matches: (path) =>
       isOneOf(
         'packages/storage/src/__tests__/fixtures/codex-rollout-v0.144.jsonl',
-        'packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite',
         'packages/storage/test-fixtures/workflow-schema-v8.sql',
       )(path) || isUnder('docs/eval', '.csv')(path),
   },
@@ -264,8 +264,8 @@ export const exclusionRules = [
   {
     id: 'binary-files',
     justification:
-      'Binary image and database content. There is no text position in these formats where a header could be added without corrupting the file.',
-    matches: hasExtension('.png', '.sqlite'),
+      'Binary image, video, and database content. There is no text position in these formats where a header could be added without corrupting the file.',
+    matches: hasExtension('.png', '.mp4', '.sqlite'),
   },
   {
     id: 'no-creative-content',
@@ -280,6 +280,16 @@ export const exclusionRules = [
         'apps/desktop/build/entitlements.mac.inherit.plist',
         'apps/desktop/build/entitlements.mac.plist',
       )(path),
+  },
+  {
+    id: 'website-machine-readable-entry-points',
+    justification:
+      'Published robots, sitemap, and llms entry points are protocol payloads kept intentionally minimal for crawlers and automated readers; adding an in-band source header would add non-index content to those public files.',
+    matches: isOneOf(
+      'website/public/llms.txt',
+      'website/public/robots.txt',
+      'website/public/sitemap.xml',
+    ),
   },
 ];
 

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -84,6 +84,65 @@ describe('Work Board store', () => {
         assert.equal(moved.revision, 3);
         assert.deepEqual(moved.scope, { kind: 'project', projectId: 'p1' });
         assert.equal(moved.state, 'done');
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('persists an idempotent Host-scoped Session link without changing item state', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const item = await store.create(itemInput(), 100);
+        const link = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-1',
+          linkedAt: 101,
+        };
+        const linked = await store.linkSession(item.id, link, {}, 101);
+        assert.equal(linked.revision, 2);
+        assert.equal(linked.state, 'todo');
+        assert.deepEqual(linked.linkedSessions, [link]);
+        const repeated = await store.linkSession(item.id, link, { expectedRevision: 2 }, 102);
+        assert.equal(repeated.revision, 2);
+        assert.deepEqual(repeated.linkedSessions, [link]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('keeps the single-link contract: a freshly started Session replaces the previous link', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const item = await store.create(itemInput(), 100);
+        const first = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-1',
+          linkedAt: 101,
+        };
+        const linked = await store.linkSession(item.id, first, {}, 101);
+        assert.deepEqual(linked.linkedSessions, [first]);
+        // A later start links a new Session and replaces the old link instead
+        // of appending, so `linkedSessions` stays bounded at one entry.
+        const second = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-2',
+          linkedAt: 102,
+        };
+        const relinked = await store.linkSession(
+          item.id,
+          second,
+          { expectedRevision: linked.revision },
+          102,
+        );
+        assert.deepEqual(relinked.linkedSessions, [second]);
+        assert.equal(relinked.revision, linked.revision + 1);
       } finally {
         store.close();
       }
@@ -671,12 +730,14 @@ describe('Work Board store', () => {
     const databasePath = join(stateRoot, 'runtime.sqlite');
     await mkdir(stateRoot, { recursive: true });
     try {
-      await copyFile(
-        new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sqlite', import.meta.url),
-        databasePath,
-      );
       const v8 = new DatabaseSync(databasePath);
       try {
+        v8.exec(
+          readFileSync(
+            new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sql', import.meta.url),
+            'utf8',
+          ),
+        );
         v8.exec(
           readFileSync(
             new URL('../../test-fixtures/workflow-schema-v8.sql', import.meta.url),

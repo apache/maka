@@ -26,13 +26,14 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { useUiLocale } from '@maka/ui';
+import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
 import { Check, Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
 import type {
   DesktopProjectDirectoryEntry,
   DesktopProjectDirectoryRoot,
   DesktopRuntimeHostRef,
 } from '../preload/bridge-contract.js';
-import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
+import { getShellCopy } from './locales/shell-copy.js';
 
 type DirectoryHost = DesktopRuntimeHostRef & { readonly name?: string };
 type DirectoryLoad =
@@ -43,10 +44,7 @@ type DirectoryLoad =
       readonly root: DesktopProjectDirectoryRoot;
       readonly segments: readonly string[];
     };
-type DirectoryError = {
-  readonly message: string;
-  readonly retryable: boolean;
-};
+type DirectoryError = 'read_failed' | 'registration_failed';
 
 export function RemoteProjectDirectoryDialog(props: {
   host?: DirectoryHost;
@@ -133,10 +131,8 @@ export function RemoteProjectDirectoryDialog(props: {
       setEntries(next);
     } catch (cause) {
       if (request.current !== sequence) return;
-      setError({
-        message: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
-        retryable: true,
-      });
+      reportUnexpectedError('project-directory:list', cause);
+      setError('read_failed');
     } finally {
       if (request.current === sequence) setLoading(false);
     }
@@ -174,10 +170,8 @@ export function RemoteProjectDirectoryDialog(props: {
       props.onRegistered(project, host);
     } catch (cause) {
       if (request.current !== sequence) return;
-      setError({
-        message: localizedShellErrorMessage(cause, copy.projectUpdateFailedFallback, locale),
-        retryable: false,
-      });
+      reportUnexpectedError('project-directory:register', cause);
+      setError('registration_failed');
     } finally {
       if (request.current === sequence) setRegistering(false);
     }
@@ -276,8 +270,12 @@ export function RemoteProjectDirectoryDialog(props: {
               </nav>
               {error ? (
                 <div className="remoteProjectDirectoryError" role="alert">
-                  <Text type="body" color="secondary">{error.message}</Text>
-                  {error.retryable ? (
+                  <Text type="body" color="secondary">
+                    {error === 'read_failed'
+                      ? copy.readPathFailedFallback
+                      : copy.projectUpdateFailedFallback}
+                  </Text>
+                  {error === 'read_failed' ? (
                     <Button label={copy.remoteDirectoryRetry} variant="ghost" onClick={retry} />
                   ) : null}
                 </div>

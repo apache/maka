@@ -20,6 +20,7 @@
 import { stdin, stdout } from 'node:process';
 
 import { executeFilesystemWorkerRequest } from './operations.js';
+import { parseRipgrepEnvironmentArg } from '../ripgrep-guidance.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   FilesystemWorkerRequestSchema,
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   writeResponse(
     await executeFilesystemWorkerRequest(parsed.data, {
       grepExecutable: readOption('--grep-executable'),
+      ripgrepEnvironment: parseRipgrepEnvironmentArg(readOption('--ripgrep-environment')),
       windowsSandboxed: process.env.MAKA_WINDOWS_SANDBOX === '1',
     }),
   );

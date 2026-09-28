@@ -135,12 +135,12 @@ afterEach(() => {
 });
 
 describe('useTaskEntryController', () => {
-  it('projects the canonical target, draft identity, Host defaults, and Workspace Picker', async () => {
+  it('projects the target and keeps draft identity in sync with Workspace Picker selections', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({
       catalog: {
         ...createFakeTaskEntryServices().catalog,
-        getCatalog: async () => catalog(),
+        getCatalog: async () => catalog(readyHost({ selectNoProject: true })),
       },
     });
 
@@ -158,6 +158,72 @@ describe('useTaskEntryController', () => {
     assert.equal(controller().selectors.workspacePicker.branch, 'main');
     assert.equal(controller().selectors.workspacePicker.groups[0]?.selectedProjectId, 'project-a');
     assert.match(controller().selectors.draftKey, /host-local.*project-a/);
+    const projectDraftKey = controller().selectors.draftKey;
+
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.onSelectNoProject!());
+    assert.equal(controller().selectors.target?.projectId, null);
+    assert.notEqual(controller().selectors.draftKey, projectDraftKey);
+    assert.equal(controller().selectors.workspacePicker.groups[0]?.selectedProjectId, null);
+
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.onSelectProject!('project-a'));
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
+    assert.equal(controller().selectors.draftKey, projectDraftKey);
+    assert.equal(controller().selectors.workspacePicker.label, 'project-a');
+  });
+
+  it('keeps same-id Projects scoped to their owning Runtime Host', async () => {
+    const { root } = installReactRenderer();
+    const local = readyHost();
+    const remote = readyRemoteHost('host-remote');
+    const calls: Array<{ action: string; profileId: string; hostId: string }> =
+      [];
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => ({
+          defaultProfileId: 'local',
+          hosts: [local, remote],
+        }),
+        renameProject: async (host) => {
+          calls.push({ action: 'rename', ...host });
+        },
+        archiveProject: async (host) => {
+          calls.push({ action: 'archive', ...host });
+        },
+        restoreProject: async (host) => {
+          calls.push({ action: 'restore', ...host });
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services));
+    const remoteScope = controller().selectors.projectScopes.find(
+      (scope) => scope.hostId === 'host-remote',
+    );
+    assert.ok(remoteScope);
+    await act(async () => {
+      assert.equal(controller().commands.selectProject(remoteScope.key), true);
+    });
+    assert.deepEqual(controller().selectors.target, {
+      profileId: 'remote',
+      hostId: 'host-remote',
+      projectId: 'project-a',
+    });
+
+    await act(async () =>
+      controller().commands.renameProject(remoteScope.key, 'Renamed'),
+    );
+    await act(async () =>
+      controller().commands.archiveProject(remoteScope.key),
+    );
+    await act(async () =>
+      controller().commands.restoreProject(remoteScope.key),
+    );
+    assert.deepEqual(calls, [
+      { action: 'rename', profileId: 'remote', hostId: 'host-remote' },
+      { action: 'archive', profileId: 'remote', hostId: 'host-remote' },
+      { action: 'restore', profileId: 'remote', hostId: 'host-remote' },
+    ]);
   });
 
   it('drains a queued catalog refresh and releases its subscription', async () => {
@@ -250,8 +316,8 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
     });
     assert.equal(addCalls, 1);
     assert.equal(controller().selectors.workspacePicker.pending, true);
@@ -659,7 +725,7 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services, errors));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
       await Promise.resolve();
     });
     assert.equal(controller().selectors.workspacePicker.pending, true);
@@ -670,6 +736,35 @@ describe('useTaskEntryController', () => {
     assert.deepEqual(errors, [{
       title: 'Could not update project',
       description: 'The project could not be updated. Try again later.',
+      profileId: 'local',
+    }]);
+  });
+
+  it('explains that a running Session must settle before workspace recovery', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => catalog(),
+      },
+      sessions: {
+        relocateWorkspace: async () => ({ ok: false, reason: 'session_busy' }),
+      },
+    });
+
+    await act(async () => renderController(root, services, errors));
+    await act(async () => {
+      await controller().commands.relocateSessionWorkspace({
+        sessionId: 'session-1',
+        profileId: 'local',
+        projectId: 'project-a',
+      });
+    });
+
+    assert.deepEqual(errors, [{
+      title: 'Could not move task',
+      description: 'A task is running. Wait for it to finish before moving this one.',
       profileId: 'local',
     }]);
   });

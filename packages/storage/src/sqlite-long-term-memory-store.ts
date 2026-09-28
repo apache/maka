@@ -880,12 +880,11 @@ export class SqliteMemoryItemStore implements MemoryItemStore {
         item_id?: unknown;
       }>;
 
-      return rows.map((row) => {
+      const itemIds = rows.map((row) => {
         if (typeof row.item_id !== 'string') throw new Error('Invalid Memory Item search result');
-        const record = this.#readItemRecord(row.item_id);
-        if (!record) throw new Error(`Memory Item ${row.item_id} disappeared during read`);
-        return record;
+        return row.item_id;
       });
+      return this.#readItemRecords(itemIds);
     });
   }
 
@@ -1102,13 +1101,66 @@ export class SqliteMemoryItemStore implements MemoryItemStore {
          LIMIT ${MAX_SOURCES_PER_ITEM + 1}`,
       )
       .all(itemId) as unknown as MemorySourceRow[];
-    assertChildCardinality('keys', keys.length, MAX_KEYS_PER_ITEM);
-    assertChildCardinality('sources', sources.length, MAX_SOURCES_PER_ITEM);
-    return {
-      item: decodeItem(row),
-      keys: keys.map(decodeKey),
-      sources: sources.map(decodeSource),
-    };
+    return decodeItemRecord(row, keys, sources);
+  }
+
+  #readItemRecords(itemIds: readonly string[]): readonly MemoryItemRecord[] {
+    if (itemIds.length === 0) return [];
+    if (itemIds.length === 1) {
+      const record = this.#readItemRecord(itemIds[0]!);
+      if (!record) throw new Error(`Memory Item ${itemIds[0]} disappeared during read`);
+      return [record];
+    }
+    const rows = this.#database
+      .prepare(`SELECT * FROM memory_items WHERE item_id IN (${placeholders(itemIds.length)})`)
+      .all(...itemIds) as unknown as MemoryItemRow[];
+    const items = new Map(rows.map((row) => [row.item_id, row]));
+    const keys = this.#readItemChildren<MemoryKeyRow>(
+      'keys',
+      itemIds,
+      ([, key_text, normalized_key, key_type, key_origin]) => ({
+        key_text,
+        normalized_key,
+        key_type,
+        key_origin,
+      }),
+    );
+    const sources = this.#readItemChildren<MemorySourceRow>(
+      'sources',
+      itemIds,
+      ([, session_id, run_id, turn_id, event_id]) => ({ session_id, run_id, turn_id, event_id }),
+    );
+    // IN queries need not return search order; preserve the ranked ID sequence.
+    return itemIds.map((itemId) => {
+      const row = items.get(itemId);
+      if (!row) throw new Error(`Memory Item ${itemId} disappeared during read`);
+      return decodeItemRecord(row, keys.get(itemId) ?? [], sources.get(itemId) ?? []);
+    });
+  }
+
+  #readItemChildren<Row>(
+    child: 'keys' | 'sources',
+    itemIds: readonly string[],
+    toRow: (columns: readonly unknown[]) => Row,
+  ): Map<unknown, Row[]> {
+    const statement = this.#database.prepare(buildMemoryChildBatchQuery(child, itemIds.length));
+    // Native array results avoid SQLite's per-column object property construction
+    // for as many as 25,700 sources. Column validation still happens in search order.
+    statement.setReturnArrays(true);
+    const rows = statement.all(...itemIds) as unknown as unknown[][];
+    const grouped = new Map<unknown, Row[]>();
+    let previousItemId: unknown;
+    let children: Row[] | undefined;
+    for (const row of rows) {
+      const itemId = row[0];
+      if (!children || itemId !== previousItemId) {
+        children = [];
+        grouped.set(itemId, children);
+        previousItemId = itemId;
+      }
+      children.push(toRow(row));
+    }
+    return grouped;
   }
 
   #requireItemRecord(itemId: string): MemoryItemRecord {
@@ -1230,6 +1282,34 @@ export function buildSqliteMemoryKeySearchQuery(input: {
       LIMIT ?`,
     parameters,
   };
+}
+
+function buildMemoryChildBatchQuery(child: 'keys' | 'sources', itemCount: number): string {
+  const table = child === 'keys' ? 'memory_item_keys' : 'memory_item_sources';
+  const orderColumn = child === 'keys' ? 'normalized_key' : 'event_id';
+  const columns =
+    child === 'keys'
+      ? 'c.key_text, c.normalized_key, c.key_type, c.key_origin'
+      : 'c.session_id, c.run_id, c.turn_id, c.event_id';
+  const maximum = child === 'keys' ? MAX_KEYS_PER_ITEM : MAX_SOURCES_PER_ITEM;
+
+  // Each composite primary key supplies at most maximum + 1 children per Item,
+  // including the overflow sentinel used by cardinality validation. A missing
+  // sentinel falls back to the last child, keeping corrupt child sets bounded.
+  // Fix Items as the outer loop so both indexes supply order without a temp sort.
+  return `
+    SELECT i.item_id, ${columns}
+    FROM memory_items i
+    CROSS JOIN ${table} c
+      ON c.item_id = i.item_id
+      AND c.${orderColumn} <= COALESCE(
+        (SELECT ${orderColumn} FROM ${table}
+         WHERE item_id = i.item_id ORDER BY ${orderColumn} ASC LIMIT 1 OFFSET ${maximum}),
+        (SELECT ${orderColumn} FROM ${table}
+         WHERE item_id = i.item_id ORDER BY ${orderColumn} DESC LIMIT 1)
+      )
+    WHERE i.item_id IN (${placeholders(itemCount)})
+    ORDER BY i.item_id ASC, c.${orderColumn} ASC`;
 }
 
 function normalizeMutations(
@@ -1581,6 +1661,20 @@ function mutationResult(
     version: item.version,
     lifecycleState: item.lifecycleState,
     outcome,
+  };
+}
+
+function decodeItemRecord(
+  row: MemoryItemRow,
+  keys: readonly MemoryKeyRow[],
+  sources: readonly MemorySourceRow[],
+): MemoryItemRecord {
+  assertChildCardinality('keys', keys.length, MAX_KEYS_PER_ITEM);
+  assertChildCardinality('sources', sources.length, MAX_SOURCES_PER_ITEM);
+  return {
+    item: decodeItem(row),
+    keys: keys.map(decodeKey),
+    sources: sources.map(decodeSource),
   };
 }
 

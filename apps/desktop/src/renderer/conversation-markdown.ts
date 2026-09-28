@@ -43,7 +43,7 @@ import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
  *   export that the user is going to paste somewhere public.
  * - **user text** left untouched (the user typed it, they own it).
  */
-export function renderConversationMarkdown(sessionName: string, messages: StoredMessage[], locale: UiLocale = 'zh-CN'): string {
+export function renderConversationMarkdown(sessionName: string, messages: StoredMessage[], locale: UiLocale): string {
   const copy = getShellRemainingCopy(locale).conversationExport;
   const lines: string[] = [];
   lines.push(`# ${sessionName}`);

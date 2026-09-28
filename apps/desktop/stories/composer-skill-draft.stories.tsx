@@ -148,3 +148,85 @@ export const StagedSkillsSurviveADraftScopeSwitch: Story = {
     await expect(wire).toContain('run it');
   },
 };
+
+// Real path: a CJK IME owns Enter while committing a candidate. The native
+// capture guard must keep that key away from both the composer's send handler
+// and Astryx's trigger menu; the first ordinary Enter afterwards still sends.
+export const ImeCommitDoesNotSend: Story = {
+  play: async ({ canvasElement }) => {
+    const composer = editor(canvasElement);
+    await userEvent.click(composer);
+    await userEvent.keyboard('中文草稿');
+
+    composer.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    composer.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+        // Chromium reports false for the observed regression; the component's
+        // own composition lifecycle is the only guard this story credits.
+        isComposing: false,
+      }),
+    );
+    composer.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    await expect(sent).not.toHaveBeenCalled();
+
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
+    await expect(sent).toHaveBeenCalledWith('中文草稿');
+  },
+};
+
+/**
+ * The chip's box is one line box tall and the pill is centred inside it, so the
+ * chip sits on the text's line. `vertical-align: middle` centred the box on the
+ * x-height midline instead, which left a 20px chip ~1px low beside CJK text.
+ *
+ * Both halves are asserted on the production editor: the box height (the
+ * contract the CSS states) and the resulting centres (what a reader sees). The
+ * same declarations are in the transcript's token wrapper, so a token does not
+ * move when the message is sent.
+ */
+function lineGeometry(composer: HTMLElement, chip: HTMLElement) {
+  const lineHeight = Number.parseFloat(getComputedStyle(composer).lineHeight);
+  const chipRect = chip.getBoundingClientRect();
+  // The text run's own box, centred in its line box by the line height.
+  let textRect: DOMRect | undefined;
+  for (const node of composer.childNodes) {
+    if (node.nodeType !== Node.TEXT_NODE || !(node.textContent ?? '').trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    textRect = range.getClientRects()[0];
+    if (textRect) break;
+  }
+  if (!textRect) throw new Error('the composer has no text to measure against');
+  const lineCenter = textRect.top - (lineHeight - textRect.height) / 2 + lineHeight / 2;
+  return {
+    lineHeight,
+    chipBoxHeight: chipRect.height,
+    chipCenter: (chipRect.top + chipRect.bottom) / 2,
+    lineCenter,
+  };
+}
+
+// Real path: 在 Session 的 composer 里用 `/` 选一个 Skill，然后在 chip 后面接着输入中文。
+export const StagedSkillSitsOnTheTextLine: Story = {
+  play: async ({ canvasElement }) => {
+    const composer = editor(canvasElement);
+    await pickSkill(composer, 'project', /Project Only/);
+    await userEvent.keyboard('测试测试测试');
+    // The chip's label arrives with its portal, one commit after the token.
+    const staged = await waitFor(() => {
+      const found = chip('project-only');
+      if (!found || !(found.textContent ?? '').includes('Project Only')) {
+        throw new Error('the staged chip has not rendered yet');
+      }
+      return found;
+    });
+
+    const geometry = lineGeometry(composer, staged);
+    await expect(Math.abs(geometry.chipBoxHeight - geometry.lineHeight)).toBeLessThan(1);
+    await expect(Math.abs(geometry.chipCenter - geometry.lineCenter)).toBeLessThan(1);
+  },
+};

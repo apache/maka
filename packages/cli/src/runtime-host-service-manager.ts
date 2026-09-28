@@ -35,6 +35,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
@@ -49,13 +50,12 @@ import {
 import {
   resolveRuntimeHostManagedServiceId,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
+  RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostReconciliationProvider,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
-import {
-  withLegacyFileUpdateLockLease,
-  withProcessLifetimeFileUpdateLock,
-} from '@maka/storage/process-lifetime-file-update-lock';
+import { withProcessLifetimeFileUpdateLock } from '@maka/storage/process-lifetime-file-update-lock';
 import {
   discoverMarkedStorageRoot,
   resolveExistingStorageRoot,
@@ -80,6 +80,7 @@ const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
 const SERVICE_OPERATION_LOCK_TIMEOUT_MS = 60_000;
 const SERVICE_READY_TIMEOUT_MS = 45_000;
 const SERVICE_READY_POLL_MS = 50;
+const SERVICE_READINESS_LOG_MAX_BYTES = 1_024;
 
 export interface RuntimeHostManagedServiceConfig {
   readonly schemaVersion: 1 | 2;
@@ -239,6 +240,7 @@ export interface RuntimeHostManagedServiceInput {
   readonly cliPath: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
   readonly expectedConfigFingerprint?: string;
+  readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
   readonly allowInterruptActiveTasks?: boolean;
 }
 
@@ -287,7 +289,8 @@ export type RuntimeHostServiceManagerOverrides = Partial<RuntimeHostServiceManag
 
 export class RuntimeHostServiceManagerError extends Error {
   constructor(
-    readonly code:
+    readonly code: Extract<
+      RuntimeHostServiceErrorCode,
       | 'unsupported_platform'
       | 'service_manager_unavailable'
       | 'linger_disabled'
@@ -302,7 +305,8 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'update_requires_retirement'
       | 'update_incomplete'
       | 'service_manager_operation_failed'
-      | 'uninstall_incomplete',
+      | 'uninstall_incomplete'
+    >,
     message: string,
     options?: ErrorOptions,
   ) {
@@ -330,6 +334,12 @@ export async function manageRuntimeHostService(
   backend: RuntimeHostServiceBackend,
   overrides: Partial<RuntimeHostServiceManagerDeps> = {},
 ): Promise<RuntimeHostManagedServiceResult> {
+  if (input.expectedHost) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'An exact Host fence requires the canonical managed deployment operator',
+    );
+  }
   const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   const configDirectory = dirname(configPath);
@@ -360,32 +370,13 @@ export async function withRuntimeHostManagedServiceLifecycleLock<T>(
 
 export async function withRuntimeHostManagedServiceDeploymentLock<T>(
   clientDataRoot: string,
-  operation: () => Promise<T>,
+  operation: (inheritableLeaseFd?: number) => Promise<T>,
   timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
 ): Promise<T> {
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
   return withProcessLifetimeFileUpdateLock(
     join(clientDataRoot, SERVICE_DEPLOYMENT_LOCK_FILE),
     operation,
-    timeoutMs,
-  );
-}
-
-export async function withRuntimeHostManagedServiceLegacyOperatorLeases<T>(
-  clientDataRoot: string,
-  operation: (inheritedFds: readonly number[]) => Promise<T>,
-  timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
-): Promise<T> {
-  const configPath = resolveRuntimeHostManagedServiceConfigPath(clientDataRoot);
-  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
-  return withLegacyFileUpdateLockLease(
-    join(clientDataRoot, SERVICE_LIFECYCLE_LOCK_FILE),
-    (lifecycleFd) =>
-      withLegacyFileUpdateLockLease(
-        configPath,
-        (configFd) => operation([lifecycleFd, configFd]),
-        timeoutMs,
-      ),
     timeoutMs,
   );
 }
@@ -940,6 +931,34 @@ export function formatRuntimeHostServiceLogs(
     .join('\n');
 }
 
+export function formatRuntimeHostServiceReadinessDiagnostic(input: {
+  readonly lastFailure: string;
+  readonly status?: Pick<
+    RuntimeHostServiceBackendStatus,
+    'state' | 'active' | 'pid' | 'lastExitCode'
+  >;
+  readonly logs?: string;
+}): string {
+  const lines = [`Runtime Host service did not become ready: ${redactSecrets(input.lastFailure)}`];
+  if (input.status) {
+    lines.push(
+      `service state: ${input.status.state}; active: ${String(input.status.active)}; pid: ${input.status.pid ?? 'none'}; last exit code: ${input.status.lastExitCode ?? 'unknown'}`,
+    );
+  }
+  if (input.logs?.trim()) {
+    const safeLogs = takeUtf8Tail(
+      redactSecrets(input.logs.trim()),
+      SERVICE_READINESS_LOG_MAX_BYTES,
+    );
+    lines.push(`service logs (tail):\n${safeLogs}`);
+  }
+  return truncateUtf8(
+    lines.join('\n'),
+    RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
+    '\n<diagnostic truncated>',
+  );
+}
+
 function takeUtf8Tail(value: string, maximumBytes: number): string {
   const encoded = Buffer.from(value);
   if (encoded.byteLength <= maximumBytes) return value;
@@ -1227,10 +1246,6 @@ async function normalizeStateRoot(requestedRoot: string): Promise<string> {
   }
 }
 
-export async function resolveRuntimeHostManagedStateRoot(requestedRoot: string): Promise<string> {
-  return normalizeStateRoot(requestedRoot);
-}
-
 async function normalizeProjectDirectoryRoots(
   roots: readonly { readonly label: string; readonly path: string }[],
 ): Promise<readonly { readonly label: string; readonly path: string }[]> {
@@ -1329,8 +1344,23 @@ export async function verifyRuntimeHostManagedServiceReady(
   }
   throw new RuntimeHostServiceManagerError(
     'service_manager_operation_failed',
-    `Runtime Host service did not become ready: ${lastFailure}`,
+    await formatRuntimeHostServiceReadinessFailure(lastFailure, backend),
   );
+}
+
+async function formatRuntimeHostServiceReadinessFailure(
+  lastFailure: string,
+  backend: RuntimeHostServiceBackend,
+): Promise<string> {
+  const [status, logs] = await Promise.all([
+    backend.status().catch(() => undefined),
+    backend.logs().catch(() => undefined),
+  ]);
+  return formatRuntimeHostServiceReadinessDiagnostic({
+    lastFailure,
+    status,
+    logs,
+  });
 }
 
 async function prepareRuntimeHostRetirement(

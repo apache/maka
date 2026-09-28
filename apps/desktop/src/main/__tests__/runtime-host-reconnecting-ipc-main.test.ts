@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
+import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+import type { ReconnectableReadIpcMain } from '../ipc-reconnect-policy.js';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -32,9 +35,68 @@ import {
 import * as ipcReconnectPolicy from "../ipc-reconnect-policy.js";
 import {
   RuntimeHostHandlerUnavailableError,
+  RuntimeHostHandlerUnsupportedError,
   RuntimeHostReconnectingIpcMain,
   RuntimeHostTargetChangedError,
 } from "../runtime-host-reconnecting-ipc-main.js";
+
+test("unsupported Guest IPC fails immediately while an Owner channel still survives reconnect", { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const owner = router.createTarget("owner");
+  owner.handleReconnectableRead!("onboarding:getSnapshot", async () => "owner");
+  owner.completeRegistration();
+  assert.throws(
+    () => owner.handleReconnectableRead!("late-channel", async () => "late"),
+    /registration is complete/,
+  );
+  router.activate("owner");
+  router.activate("guest");
+  // A request during first connection can wait until its actual surface is known.
+  const early = assert.rejects(
+    ipc.invoke("onboarding:getSnapshot", scope("guest")),
+    RuntimeHostHandlerUnsupportedError,
+  );
+  router.createTarget("guest").completeRegistration();
+  await early;
+  await assert.rejects(
+    ipc.invoke("onboarding:getSnapshot", scope("guest")),
+    RuntimeHostHandlerUnsupportedError,
+  );
+  owner.removeHandler("onboarding:getSnapshot");
+  const recovering = ipc.invoke("onboarding:getSnapshot", scope("owner"));
+  const replacement = router.createTarget("owner");
+  replacement.handleReconnectableRead!("onboarding:getSnapshot", async () => "replacement");
+  replacement.completeRegistration();
+  assert.equal(await recovering, "replacement");
+});
+
+test("reconciliation becomes unavailable when the replacement no longer supports its channel", { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const target = router.createTarget("owner");
+  let dispatches = 0;
+  target.handleReconciledControl!("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+    reconciliationUnavailable: async (context) => ({ kind: "unavailable", context }),
+  });
+  target.completeRegistration();
+  router.activate("owner");
+  const result = ipc.invoke("goal:arm", scope("owner"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  target.removeHandler("goal:arm");
+  router.createTarget("owner").completeRegistration();
+  assert.deepEqual(await result, {
+    kind: "unavailable", context: { sessionId: "session-1" },
+  });
+  assert.equal(dispatches, 1);
+});
 
 test("classifies only dispatched control connection loss for reconciliation", () => {
   const predicate = (
@@ -644,6 +706,55 @@ test("read adapters project ordinary failures without hiding reconnectable failu
       }, "TRACE_FAILED"),
     failure,
   );
+});
+
+test('WorkHub reconciles a lost answer through the replacement IPC owner without a fresh submission', { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const input = { turnId: 'original-turn', text: 'original payload' };
+  const dispatched = deferred<void>();
+  let submissions = 0;
+  const register = (epoch: string) => {
+    const target = router.createTarget('workhub');
+    const channels: string[] = [];
+    // Apply the same scope stripping as the candidate's ScopedIpcMain.
+    const scoped: ReconnectableReadIpcMain = {
+      handle: (channel, listener) => { channels.push(channel); target.handle(channel, (event, _scope, ...args) => listener(event, ...args)); },
+      handleReconciledControl(channel, handlers) {
+        channels.push(channel);
+        target.handleReconciledControl!(channel, {
+          dispatch: (event, _scope, ...args) => handlers.dispatch(event, ...args),
+          reconcile: (context, event, _scope, ...args) => handlers.reconcile(context, event, ...args),
+          reconciliationUnavailable: (context, event, _scope, ...args) => handlers.reconciliationUnavailable(context, event, ...args),
+        });
+      },
+    };
+    registerRuntimeHostWorkHubIpc({
+      hostEpoch: epoch,
+      answerWorkHubCoordination: async (request: Parameters<DesktopRuntimeHostClient['answerWorkHubCoordination']>[0]) => {
+        assert.deepEqual(request, input);
+        submissions++;
+        dispatched.resolve();
+        throw new RuntimeHostRequestInterruptedError('workhub.coordination.answer', 'command', 'dispatched', 'connection_lost');
+      },
+      queryTurn: async (request: Parameters<DesktopRuntimeHostClient['queryTurn']>[0]) => {
+        assert.equal(epoch, 'new-host', 'reconciliation belongs to the replacement client');
+        assert.deepEqual(request, { sessionId: 'maka_workhub_coordination', turnId: input.turnId });
+        throw new RuntimeHostOperationError('turn.query', 'not_found', 'Turn was not admitted');
+      },
+    } as unknown as DesktopRuntimeHostClient, scoped, {});
+    target.completeRegistration();
+    return () => { for (const channel of channels) target.removeHandler(channel); };
+  };
+  const retire = register('old-host');
+  router.activate('workhub');
+  const result = ipc.invoke('workhub:answer', scope('workhub'), input);
+  await dispatched.promise;
+  retire();
+  register('new-host');
+  assert.deepEqual(await result, { kind: 'not_admitted' });
+  assert.equal(submissions, 1);
 });
 
 type IpcHandler = Parameters<IpcMain["handle"]>[1];

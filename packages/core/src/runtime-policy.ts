@@ -24,8 +24,8 @@ import type {
   ModelInfo,
 } from './llm-connections.js';
 import type { ThinkingLevel } from './model-thinking.js';
-import type { ProviderType } from './provider-registry.js';
-import type { RelayModelProfile } from './model-thinking.js';
+import type { ModelApiProtocol, ProviderType } from './provider-registry.js';
+import type { ModelOverride } from './model-thinking.js';
 import {
   networkProxyCredentialTarget,
   type ChatDefaultPermissionMode,
@@ -53,6 +53,7 @@ export {
   decodeCanonicalRuntimePolicy,
   normalizeNetworkProxyCredentialTarget,
   decodeRuntimePolicyV2,
+  decodeRuntimePolicyV3,
   normalizeNetworkProxyUpdate,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
@@ -67,13 +68,15 @@ export {
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionModelId,
   decodeConnectionCredentialTarget,
-  decodeRelayModelProfilesTable,
+  decodeModelOverridesTable,
   decodeConnectionModel,
+  decodeConnectionModels,
   decodeConnectionName,
   decodeConnectionSlug,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  decodeDefaultApiProtocol,
   decodeProviderType,
   normalizeCatalogConnectionBaseUrl,
   normalizeConnectionCatalogEntryDraft,
@@ -126,6 +129,8 @@ export interface RevisionConflict {
 }
 
 export interface RuntimePolicy {
+  /** Optional for compatibility with existing policies; missing means disabled. */
+  readonly jev?: { readonly enabled: boolean };
   readonly networkProxy: {
     readonly enabled: boolean;
     readonly protocol: ProxyProtocol;
@@ -152,7 +157,9 @@ export interface RuntimePolicy {
   };
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
+    /** @deprecated Wire compatibility only; task creation ignores this field. */
     readonly thinkingLevel?: ThinkingLevel;
+    readonly codeModeEnabled?: boolean;
   };
   readonly webSearch: {
     readonly enabled: boolean;
@@ -160,6 +167,7 @@ export interface RuntimePolicy {
   };
   readonly subagents: SubagentSettings;
   readonly shell: ShellSettings;
+  readonly externalAgents: { readonly antigravity: { readonly executable: string } };
 }
 
 export interface RuntimePolicySnapshot {
@@ -176,6 +184,7 @@ export interface AgentRuntimeSettingsPatch {
 }
 
 export type RuntimePolicyMutation =
+  | { readonly kind: 'set_jev'; readonly value: { readonly enabled: boolean } }
   | { readonly kind: 'set_network_proxy'; readonly value: RuntimePolicy['networkProxy'] }
   | { readonly kind: 'set_personalization'; readonly value: RuntimePolicy['personalization'] }
   | { readonly kind: 'set_memory'; readonly value: RuntimePolicy['memory'] }
@@ -187,6 +196,7 @@ export type RuntimePolicyMutation =
   | { readonly kind: 'set_chat_defaults'; readonly value: RuntimePolicy['chatDefaults'] }
   | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
   | { readonly kind: 'set_subagents'; readonly value: RuntimePolicy['subagents'] }
+  | { readonly kind: 'set_external_agents'; readonly value: RuntimePolicy['externalAgents'] }
   | { readonly kind: 'set_shell'; readonly value: RuntimePolicy['shell'] }
   | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
@@ -253,10 +263,11 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     memory: { enabled: true, agentReadEnabled: false },
     workspaceInstructions: { enabled: true },
     privacy: { incognitoActive: false },
-    chatDefaults: { permissionMode: 'ask' },
+    chatDefaults: { permissionMode: 'bypass' },
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
     shell: { preference: 'auto', executable: '' },
+    externalAgents: { antigravity: { executable: '' } },
   };
 }
 
@@ -279,14 +290,12 @@ export interface ConnectionConfiguration {
   readonly name: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
+  /** Required on `custom`, absent elsewhere; fixed at creation. */
+  readonly defaultApiProtocol?: ModelApiProtocol;
   readonly enabled: boolean;
   readonly enabledModelIds: readonly string[];
-  /**
-   * Per-model relay declarations (thinking levels, vision, context window),
-   * as a typed table scoped to `enabledModelIds` — never an extras bag.
-   * Execution paths read it through the shared `relayModelProfile` seam.
-   */
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+  /** Connection-scoped user declarations, independent of the enabled selection. */
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
   readonly requestBodyOverlay?: JsonObject;
 }
 
@@ -297,8 +306,6 @@ export interface ConnectionCatalogEntry extends ConnectionConfiguration {
   readonly modelSource?: ConnectionModelDiscoveryResult['source'];
   readonly modelsFetchedAt?: ConnectionModelDiscoveryResult['fetchedAt'];
   readonly lastTest?: ConnectionTestSummary;
-  /** Digest of the model-facts subset used when `lastTest` was recorded. */
-  readonly lastTestModelFactsFingerprint?: string;
 }
 
 export type ConnectionOnboardingTarget =
@@ -315,6 +322,8 @@ export type ConnectionOnboardingTarget =
        */
       readonly slug?: string;
       readonly name?: string;
+      /** Required when creating a `custom` connection. */
+      readonly defaultApiProtocol?: ModelApiProtocol;
     }
   | {
       readonly kind: 'existing';
@@ -335,7 +344,7 @@ export interface ConnectionCatalogEntryUpdate {
    * against); `null` clears all declarations; a table replaces them wholly.
    * Profile-blind writers simply omit the key and can never clobber.
    */
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>> | null;
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>> | null;
   /** Absent leaves the overlay unchanged; null clears it; an object replaces it. */
   readonly requestBodyOverlay?: JsonObject | null;
 }
@@ -376,22 +385,6 @@ export interface RemoveCatalogConnectionInput {
   readonly expected: ConnectionVersionBasis;
 }
 
-/**
- * Built-in seed evolution as one atomic catalog mutation: a row still exactly
- * matching a historical system seed follows the current seed — enabled ids AND
- * the static inventory — and a system default the migration removes is
- * retargeted in the same document write. Any other inventory is a user
- * selection and is never touched; an already-null default stays null.
- */
-export interface MigrateSystemSeedInput {
-  readonly slug: string;
-  readonly providerType: ProviderType;
-  readonly legacyEnabledModelIds: readonly (readonly string[])[];
-  readonly enabledModelIds: readonly string[];
-  readonly defaultModelId: string;
-  readonly retiredModelIds: readonly string[];
-}
-
 export interface SetDefaultConnectionTargetInput {
   readonly expectedCatalogRevision: Revision;
   readonly target: ConnectionTarget | null;
@@ -412,6 +405,7 @@ export type ConnectionCatalogMutationResult =
   | ConnectionCatalogConflict;
 
 export type CredentialLocator =
+  | { readonly scope: 'jev'; readonly kind: 'api_key' }
   | {
       readonly scope: 'connection';
       readonly connectionId: EntityId;

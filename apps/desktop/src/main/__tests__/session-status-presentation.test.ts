@@ -19,31 +19,56 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { TurnViewModel } from '@maka/ui';
+import { createChatTurnPresentationDerivation, deriveChatTurnPresentation } from '../../renderer/application/contracts/turn-presentation.js';
 import {
   describeFailedTurnExecutionState,
   describeTurnErrorClass,
   deriveFailedTurnSeverity,
-} from '../../renderer/session-status-presentation.js';
+} from '../../renderer/application/contracts/session-status-presentation.js';
 
 const NOTHING_RAN = {
-  partialOutputRetained: false,
   toolActivityCount: 0,
   erroredToolCount: 0,
 };
 
 describe('failed turn presentation', () => {
+  it('changes branch availability without losing the shared failure presentation', () => {
+    const turns: TurnViewModel[] = [{
+      turnId: 'failed', status: 'failed', errorClass: 'auth',
+      tools: [], timeline: [], notes: [], startedAt: 1,
+    }];
+    const derivation = createChatTurnPresentationDerivation();
+    const owner = derivation.derive(turns, { uiLocale: 'en', allowBranch: true });
+    const guest = derivation.derive(turns, { uiLocale: 'en', allowBranch: false });
+    assert.deepEqual(owner.footerActionsByTurn.failed?.map(({ id }) => id), ['branch', 'copy']);
+    assert.deepEqual(guest.footerActionsByTurn.failed?.map(({ id }) => id), ['copy']);
+    assert.deepEqual(guest.failedReasonLabels, owner.failedReasonLabels);
+    assert.equal(derivation.derive(turns, { uiLocale: 'en', allowBranch: true }).footerActionsByTurn.failed?.[0]?.id, 'branch');
+  });
+
   it('presents persisted provider server errors as provider failures', () => {
     assert.match(describeTurnErrorClass('server_error', 'zh-CN'), /模型服务返回错误/);
     assert.match(describeTurnErrorClass('server_error', 'zh-TW'), /模型服務回傳錯誤/);
     assert.match(describeTurnErrorClass('server_error', 'en'), /model service returned an error/i);
+    // Before #3758 the adapter persisted these codes with an unknown kind.
+    assert.equal(describeTurnErrorClass('ECONNRESET', 'en'), describeTurnErrorClass('network', 'en'));
   });
 
-  it('states what to do without promising a resume the UI cannot offer', () => {
-    // The banner offers a button only for `app_restarted`; every other class
-    // has to point at the one action that always exists — send a message.
-    for (const errorClass of ['rate_limit', 'network', 'timeout', 'unknown_failure']) {
-      assert.match(describeTurnErrorClass(errorClass, 'zh-CN'), /重新发消息|再发消息|发消息/);
-    }
+  it('shows the failure cause alongside the recorded retry refusal', () => {
+    const turn: TurnViewModel = {
+      turnId: 't1', status: 'failed', errorClass: 'network',
+      retry: { decision: 'declined', because: 'side_effects' },
+      tools: [], timeline: [], notes: [], startedAt: 1,
+    };
+    const presentation = deriveChatTurnPresentation([turn], {
+      activeId: 'session-1', pendingTurnActions: new Set<string>(), uiLocale: 'zh-CN',
+    });
+    assert.equal(presentation.failedReasonLabels.t1, '网络连接失败，请检查网络。');
+    assert.equal(presentation.failedExecutionStateLabels.t1,
+      '本次已有工具活动，为避免重复操作，未自动重试。请先检查工具结果。');
+    assert.equal(describeTurnErrorClass('rate_limit', 'zh-CN'), '模型请求太频繁被限流了。');
+    assert.equal(describeTurnErrorClass('timeout', 'zh-CN'), '模型请求超时。');
   });
 
   it('grades continuable outcomes below outcomes the user must act on', () => {
@@ -77,24 +102,24 @@ describe('failed turn execution state', () => {
     assert.match(describeFailedTurnExecutionState(state, 'zh-TW') ?? '', /工具執行出錯/);
   });
 
-  it('reports nothing when the turn left nothing to re-read', () => {
+  it('offers no execution guidance for a Turn that ran nothing', () => {
     assert.equal(describeFailedTurnExecutionState(NOTHING_RAN, 'zh-CN'), undefined);
   });
 
   it('prefers the most specific state the turn reached', () => {
-    const all = { partialOutputRetained: true, toolActivityCount: 2, erroredToolCount: 1 };
+    const all = { toolActivityCount: 2, erroredToolCount: 1 };
     assert.match(describeFailedTurnExecutionState(all, 'zh-CN') ?? '', /工具执行出错/);
     assert.match(
       describeFailedTurnExecutionState({ ...all, erroredToolCount: 0 }, 'zh-CN') ?? '',
       /执行过工具/,
     );
-    assert.match(
-      describeFailedTurnExecutionState(
-        { ...NOTHING_RAN, partialOutputRetained: true },
-        'zh-CN',
-      ) ?? '',
-      /部分回答/,
-    );
   });
 
+});
+
+it('does not hide a terminal diagnostic behind a sandbox tool failure or promote a tool failure to a failed turn', () => {
+  const turn: TurnViewModel = { turnId: 't1', status: 'failed', errorClass: 'unknown', failureMessage: 'Provider request failed after the tool result', tools: [{ toolUseId: 'tool-1', toolName: 'Bash', status: 'errored', args: {}, result: { kind: 'text', text: 'Operation not permitted', sandboxDenial: { likely: true } } }], timeline: [], notes: [], startedAt: 1 };
+  const context = { activeId: 'session-1', pendingTurnActions: new Set<string>(), uiLocale: 'en' as const };
+  assert.ok(deriveChatTurnPresentation([turn], context).failedReasonLabels.t1);
+  assert.equal(deriveChatTurnPresentation([{ ...turn, status: 'completed' }], context).failedReasonLabels.t1, undefined);
 });

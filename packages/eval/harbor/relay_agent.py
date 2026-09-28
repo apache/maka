@@ -100,6 +100,7 @@ class RelayAgent(BaseAgent):
         if not isinstance(teardown_timeout_ms, int) or teardown_timeout_ms <= 0:
             raise RuntimeError("Maka Eval teardown timeout is invalid")
         self._teardown_timeout = teardown_timeout_ms / 1000
+        self._subject_owner: str | None = None
 
     @staticmethod
     def name() -> str:
@@ -109,7 +110,35 @@ class RelayAgent(BaseAgent):
         return "1"
 
     async def setup(self, environment: Any) -> None:
-        return None
+        identity = await environment.exec('printf "%s:%s" "$(id -u)" "$(id -g)"')
+        owner = str(identity.stdout or "").strip()
+        if identity.return_code != 0 or re.fullmatch(r"[0-9]+:[0-9]+", owner) is None:
+            raise RuntimeError("Maka Eval could not resolve the task user")
+        prepared = await environment.exec(
+            "mkdir -p /logs/agent /logs/artifacts && "
+            f"chown {owner} /logs/agent /logs/artifacts && "
+            "chmod 700 /logs/agent /logs/artifacts",
+            user="root",
+        )
+        if prepared.return_code != 0:
+            raise RuntimeError("Maka Eval could not prepare task-owned artifact directories")
+        # Storage coordinates by the system account home, not the subject's
+        # temporary HOME. Provision an absent home without changing task identity
+        # or taking ownership of an existing directory.
+        uid = owner.split(":", 1)[0]
+        home_script = (
+            f"set -eu; account=$(getent passwd {uid}); "
+            "task_home=$(printf '%s' \"$account\" | cut -d: -f6) && "
+            'case "$task_home" in /*) ;; *) exit 1 ;; esac; '
+            'if [ ! -e "$task_home" ] && [ ! -L "$task_home" ]; then '
+            f'mkdir -p -- "$task_home" && chown {owner} "$task_home" && '
+            'chmod 700 "$task_home" || exit 1; fi; '
+            'test -d "$task_home"'
+        )
+        prepared_home = await environment.exec(home_script, user="root")
+        if prepared_home.return_code != 0:
+            raise RuntimeError("Maka Eval could not prepare the task account home")
+        self._subject_owner = owner
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         reader, writer = await asyncio.open_connection(self._host, self._port)
@@ -145,7 +174,9 @@ class RelayAgent(BaseAgent):
                 raise RelayTransportClosed("Maka Eval relay transport closed before ready")
             request = await _receive(reader)
             _require_message(request, self._token, "execute")
-            command = await _prepare_command(environment, request, self._token, scope_path)
+            command = await _prepare_command(
+                environment, request, self._token, scope_path, self._subject_owner
+            )
             execution = asyncio.create_task(environment.exec(command, cwd=cwd))
             decision = asyncio.create_task(_receive(reader))
             done, _ = await asyncio.wait({execution, decision}, return_when=asyncio.FIRST_COMPLETED)
@@ -278,6 +309,7 @@ async def _prepare_command(
     request: dict[str, Any],
     token: str,
     scope_path: str,
+    subject_owner: str | None = None,
 ) -> str:
     credentials = request.get("credentials")
     public_environment = request.get("environment", {})
@@ -317,6 +349,14 @@ async def _prepare_command(
             }.items():
                 secret.write(f"export {key}={shlex.quote(value)}\n")
         await environment.upload_file(secret_path, container_path)
+        if subject_owner is not None:
+            prepared = await environment.exec(
+                f"chown {subject_owner} {shlex.quote(container_path)} && "
+                f"chmod 600 {shlex.quote(container_path)}",
+                user="root",
+            )
+            if prepared.return_code != 0:
+                raise RuntimeError("Maka Eval could not prepare task-owned credentials")
     finally:
         if secret_path is not None:
             secret_path.unlink(missing_ok=True)
@@ -324,8 +364,7 @@ async def _prepare_command(
     output_redirect = "" if capture_stdout else " >/dev/null"
     scope_error = shlex.quote(f"{SCOPE_ERROR_PREFIX} {result_token}\\n")
     inner = (
-        "umask 077; "
-        f"{{ echo $$ > {shlex.quote(scope_path)}; }} 2>/dev/null || "
+        f"( umask 077 && echo $$ > {shlex.quote(scope_path)} ) 2>/dev/null || "
         f"{{ printf {scope_error}; exit 111; }}; "
         f". {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; "
         f"exec {subject}{output_redirect}"

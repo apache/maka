@@ -19,7 +19,7 @@
 
 import {
   SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
-  type ShellRunSnapshotResult,
+  type ShellRunStateResult,
   type ShellRunUpdate,
   type ShellRunUpdateOwnership,
 } from '@maka/core/events';
@@ -142,7 +142,6 @@ export interface RuntimeResourceControllerControlInput {
 export interface RuntimeResourceControllerControlResult {
   readonly controllerId: string;
   readonly sequence: number;
-  readonly resource: ShellRunSnapshotResult;
 }
 
 export interface RuntimeResourceControllerReleaseInput {
@@ -169,12 +168,10 @@ export interface RuntimeResourceStartInput {
 }
 
 export interface RuntimeResourceStartResult {
-  readonly resource: ShellRunSnapshotResult;
+  readonly resource: ShellRunStateResult;
 }
 
-export interface RuntimeResourceStopResult {
-  readonly resource: ShellRunSnapshotResult;
-}
+export type RuntimeResourceStopResult = Record<never, never>;
 
 export const RUNTIME_RESOURCE_OPERATION_SPECS = {
   'runtime.resource.query': defineOperation<
@@ -272,7 +269,7 @@ export function decodeRuntimeResourceStartInput(value: unknown): RuntimeResource
 
 export function decodeRuntimeResourceStartResult(value: unknown): RuntimeResourceStartResult {
   const result = requireExactRecord(value, 'Runtime Resource start result', ['resource']);
-  const decoded = { resource: decodeRuntimeResourceSnapshot(result.resource) };
+  const decoded = { resource: decodeRuntimeResourceState(result.resource) };
   requireEncodedByteLimit(
     decoded,
     'Runtime Resource start result',
@@ -455,19 +452,11 @@ export function decodeRuntimeResourceControllerControlResult(
   const result = requireExactRecord(value, 'Runtime Resource controller control result', [
     'controllerId',
     'sequence',
-    'resource',
   ]);
-  const decoded = {
+  return {
     controllerId: requireEntityId(result.controllerId, 'controllerId'),
     sequence: controlSequence(result.sequence, 'controller sequence'),
-    resource: decodeRuntimeResourceSnapshot(result.resource),
   };
-  requireEncodedByteLimit(
-    decoded,
-    'Runtime Resource controller control result',
-    RUNTIME_RESOURCE_RESULT_MAX_BYTES,
-  );
-  return decoded;
 }
 
 export function decodeRuntimeResourceControllerReleaseInput(
@@ -501,14 +490,8 @@ export function decodeRuntimeResourceStopInput(value: unknown): RuntimeResourceS
 }
 
 export function decodeRuntimeResourceStopResult(value: unknown): RuntimeResourceStopResult {
-  const result = requireExactRecord(value, 'Runtime Resource stop result', ['resource']);
-  const decoded = { resource: decodeRuntimeResourceSnapshot(result.resource) };
-  requireEncodedByteLimit(
-    decoded,
-    'Runtime Resource stop result',
-    RUNTIME_RESOURCE_RESULT_MAX_BYTES,
-  );
-  return decoded;
+  requireExactRecord(value, 'Runtime Resource stop result', []);
+  return {};
 }
 
 export function decodeRuntimeResourceUpdate(value: unknown): ShellRunUpdate {
@@ -542,14 +525,6 @@ export function decodeRuntimeResourceState(value: unknown): ShellRunUpdate['resu
     throw invalidProtocolFrame('Invalid Runtime Resource state');
   }
   return decoded.content;
-}
-
-export function decodeRuntimeResourceSnapshot(value: unknown): ShellRunSnapshotResult {
-  const decoded = decodeRuntimeResourceState(value);
-  if (decoded.output === undefined) {
-    throw invalidProtocolFrame('Invalid Runtime Resource snapshot');
-  }
-  return decoded;
 }
 
 function decodeControllerIdentity(

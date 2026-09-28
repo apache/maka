@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { terminateProcessTree } from '@maka/runtime/process-tree-terminator';
 import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
@@ -31,20 +30,9 @@ import {
 
 const TERMINATION_SETTLE_MS = 2_000;
 
-export interface RegisteredRuntimeHostIdentity {
-  readonly rootPath: string;
-  readonly rootId: string;
-  readonly hostEpoch: string;
-  readonly pid: number;
-}
-
 interface RuntimeHostExitDependencies {
   readonly isProcessAlive: (pid: number) => boolean;
   readonly settleMs: number;
-}
-
-interface RegisteredRuntimeHostTerminationDependencies extends RuntimeHostExitDependencies {
-  readonly terminateProcess: typeof terminateProcessTree;
 }
 
 export interface ObservedRegisteredRuntimeHostTerminationAuthority {
@@ -63,12 +51,6 @@ interface ObservedRegisteredRuntimeHostTerminationDependencies extends RuntimeHo
   readonly signalProcess: (pid: number) => boolean;
 }
 
-const defaultDependencies: RegisteredRuntimeHostTerminationDependencies = {
-  terminateProcess: terminateProcessTree,
-  isProcessAlive,
-  settleMs: TERMINATION_SETTLE_MS,
-};
-
 const defaultObservedDependencies: ObservedRegisteredRuntimeHostTerminationDependencies = {
   isProcessAlive,
   readProcessIdentity: readRuntimeHostProcessIdentity,
@@ -82,58 +64,6 @@ const defaultObservedDependencies: ObservedRegisteredRuntimeHostTerminationDepen
  * the expected State Root. Callers must reserve this for explicit recovery
  * and keep their authorization current until the signal is sent.
  */
-export function forceTerminateRegisteredRuntimeHost(
-  identity: RegisteredRuntimeHostIdentity,
-  stillOwnsProcess: () => boolean,
-): Promise<boolean> {
-  return forceTerminateRegisteredRuntimeHostWithDependencies(
-    identity,
-    stillOwnsProcess,
-    defaultDependencies,
-  );
-}
-
-export async function forceTerminateRegisteredRuntimeHostWithDependencies(
-  identity: RegisteredRuntimeHostIdentity,
-  stillOwnsProcess: () => boolean,
-  dependencies: RegisteredRuntimeHostTerminationDependencies,
-): Promise<boolean> {
-  if (!stillOwnsProcess()) return false;
-  const capability = await resolveStorageRoot({ path: identity.rootPath, kind: 'interactive' });
-  if (capability.rootId !== identity.rootId) return false;
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const registered = await readHostRegistration(controlDirectory);
-  if (!registered) return true;
-  if (!matchesIdentity(registered, identity)) return false;
-  if (!dependencies.isProcessAlive(identity.pid)) return true;
-
-  let signalTarget: HostRegistration | undefined = registered;
-  const signaled = await dependencies.terminateProcess({
-    pid: identity.pid,
-    signal: 'SIGKILL',
-    hasExited: () => !dependencies.isProcessAlive(identity.pid),
-    beforeSignal: async () => {
-      // This runs after asynchronous process-tree discovery and immediately
-      // before the OS signal, so neither a successor nor a reused PID can
-      // inherit stale intent.
-      signalTarget = await readHostRegistration(controlDirectory);
-      return matchesIdentity(signalTarget, identity) && stillOwnsProcess();
-    },
-    fallback: () => {
-      try {
-        process.kill(identity.pid, 'SIGKILL');
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  });
-  if (!signalTarget) return true;
-  if (!matchesIdentity(signalTarget, identity)) return false;
-  if (!signaled && dependencies.isProcessAlive(identity.pid)) return false;
-  return waitForExit(identity.pid, dependencies);
-}
-
 /**
  * Stops an ephemeral Host that Desktop did not launch in this process. Unlike
  * the owned-process path above, its authority is limited to the exact root PID
@@ -194,18 +124,6 @@ function matchesObservedRegistration(
     current.pid === observed.pid &&
     current.lifecycleMode === observed.lifecycleMode &&
     current.createdAt === observed.createdAt
-  );
-}
-
-function matchesIdentity(
-  registration: HostRegistration | undefined,
-  identity: RegisteredRuntimeHostIdentity,
-): boolean {
-  return (
-    registration?.rootId === identity.rootId &&
-    registration.hostEpoch === identity.hostEpoch &&
-    registration.pid === identity.pid &&
-    registration.lifecycleMode === 'ephemeral'
   );
 }
 

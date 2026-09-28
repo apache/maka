@@ -24,6 +24,7 @@ import {
   PTY_PARSER_HIGH_WATER_BYTES,
   PTY_SCROLLBACK_ROWS,
   PtyScreenCollector,
+  type PtyScreenCollectorOptions,
 } from '../pty-screen-collector.js';
 import { loadPtyStack } from '../pty-stack.js';
 
@@ -36,6 +37,28 @@ describe('PtyScreenCollector', () => {
 
       collector.accept('\u001b[!p');
       assert.equal((await collector.snapshotAtCut()).output.cursor.visible, true);
+      assert.deepEqual(failures, []);
+    } finally {
+      collector.dispose();
+    }
+  });
+
+  test('coalesces queued parser writes so a cut waits behind bounded work', async () => {
+    const replies: string[] = [];
+    const { collector, failures } = await createCollector({
+      onProtocolReply: (data) => replies.push(data),
+    });
+    try {
+      collector.accept('\u001b[5n');
+      collector.accept('\u001b[5n');
+      collector.accept('\u001b[5n');
+      // Merged admissions share one parser write, so the three DSR replies
+      // arrive in a single batch once the cut drains.
+      await collector.mutateAtCut(() => undefined);
+      assert.deepEqual(replies, ['\u001b[0n\u001b[0n\u001b[0n']);
+      collector.accept('\u001b[5n');
+      await collector.snapshotAtCut();
+      assert.deepEqual(replies, ['\u001b[0n\u001b[0n\u001b[0n', '\u001b[0n']);
       assert.deepEqual(failures, []);
     } finally {
       collector.dispose();
@@ -104,14 +127,16 @@ describe('PtyScreenCollector', () => {
   });
 });
 
-async function createCollector(): Promise<{
+async function createCollector(
+  options: Partial<Pick<PtyScreenCollectorOptions, 'onProtocolReply'>> = {},
+): Promise<{
   collector: PtyScreenCollector;
   failures: Error[];
 }> {
   const failures: Error[] = [];
   const collector = new PtyScreenCollector({
     stack: await loadPtyStack(),
-    onProtocolReply: () => {},
+    onProtocolReply: options.onProtocolReply ?? (() => {}),
     onDirty: () => {},
     onFailure: (error) => failures.push(error),
   });

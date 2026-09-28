@@ -1,0 +1,95 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { StoredMessage, SessionSummary, WorkHubCreateDefaults } from '@maka/core/session';
+import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
+import type { SessionEvent, AttachmentRef, MessageQueuePlacement } from '@maka/core/events';
+import type { OperationInput, OperationOutput, TurnMessageExecutionQueryResult } from '@maka/runtime-host/protocol';
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/workhub-conversation.js';
+import type { WorkHubControlBridge } from '../../../shared/workhub-control.js';
+import type { WorkHubPresentationBridge } from '../../../shared/workhub-presentation.js';
+import type { WorkHubWorkspaceServices } from '../../application/contracts/workhub-workspace/use-workhub-workspace.js';
+
+export interface WorkHubTranscriptSnapshot {
+  readonly messages: readonly StoredMessage[];
+  readonly hasOlder: boolean;
+  readonly ready: boolean;
+}
+export interface WorkHubTranscript {
+  observationChanged(phase: 'pending' | 'ready'): void;
+  loadEarlier(): Promise<void>;
+  close(): Promise<void>;
+}
+export interface WorkHubServices extends WorkHubWorkspaceServices {
+  readonly inspector: import('../../application/contracts/session-inspector/service.js').SessionInspectorService;
+  readonly surface: 'main' | 'workhub';
+  readonly initialLocale: UiLocale;
+  subscribeAppearance(handler: (locale: UiLocale) => void): () => void;
+  readonly presentation: WorkHubPresentationBridge;
+  readonly control: WorkHubControlBridge;
+  bindBrowserSession(sessionId: string | null): void;
+  getSession(sessionId: string): Promise<SessionSummary & { revision: number }>;
+  subscribeSessions(handler: () => void): () => void;
+  listSessions(): Promise<(SessionSummary & { revision: number })[]>;
+  modelChoices(sessionId?: string): Promise<ChatModelChoice[]>;
+  setDefaultModel(input: {
+    llmConnectionSlug: string;
+    model: string;
+  }): Promise<void>;
+  readonly attachments: ComposerAttachmentService;
+  readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
+  prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
+  listActiveInteractions(sessionId: string): Promise<import('@maka/core/events').ActiveInteractionRequestEvent[]>;
+  subscribeActiveInteractions(handler: (event: { sessionId: string; interactions: import('@maka/core/events').ActiveInteractionRequestEvent[] }) => void): () => void;
+  respondToUserForm(sessionId: string, response: import('@maka/core/interaction').InteractionFormResponse): Promise<void>;
+  respondToUserQuestion(sessionId: string, response: import('@maka/core/user-question').UserQuestionResponse): Promise<void>;
+  answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
+  enqueueMessage(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[], placement: MessageQueuePlacement): Promise<'admitted' | 'unknown' | 'rejected'>;
+  queryMessageExecutions(sessionId: string, messageIds: readonly string[]): Promise<TurnMessageExecutionQueryResult>;
+  retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
+  configureModel(
+    sessionId: string,
+    input: OperationInput<'workhub.coordination.configureModel'>,
+  ): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
+  getNewWorkDefaults(sessionId: string): Promise<Omit<WorkHubCreateDefaults, 'permissionMode'>>;
+  setNewWorkDefaults(
+    sessionId: string,
+    defaults: Omit<WorkHubCreateDefaults, 'permissionMode'>,
+  ): Promise<void>;
+  observe(
+    sessionId: string,
+    handler: (event: SessionEvent) => void,
+    onError: (error: unknown) => void,
+    onPhase: (phase: 'pending' | 'ready') => void,
+    onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
+  ): () => void;
+  openTranscript(
+    sessionId: string,
+    handler: (snapshot: WorkHubTranscriptSnapshot) => void,
+    signal: AbortSignal,
+    onError: (error: unknown) => void,
+  ): Promise<WorkHubTranscript>;
+  /** Retracted message IDs, or undefined when the requested Turn was no longer active. */
+  stop(sessionId: string, turnId: string): Promise<readonly string[] | undefined>;
+}

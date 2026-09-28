@@ -24,9 +24,9 @@ import {
   NO_REAL_CONNECTION_CODE,
   parseNoRealConnectionError,
 } from './application/contracts/connection-error-cleaner.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
-import { describeSessionErrorReason } from './session-error-presentation.js';
+import { describeSessionErrorReason } from './application/contracts/session-error-presentation.js';
 
 export function isNoRealConnectionError(error: unknown): boolean {
   return parseNoRealConnectionError(error).matched;
@@ -46,7 +46,7 @@ export function noRealConnectionReasonFromEvent(event: Extract<SessionEvent, { t
   ).reason;
 }
 
-export function noRealConnectionSetupDescription(reason: string | undefined, locale: UiLocale = 'zh-CN'): string {
+export function noRealConnectionSetupDescription(reason: string | undefined, locale: UiLocale): string {
   const copy = getDesktopConversationCopy(locale).model;
   return reason && Object.hasOwn(copy.configurationReason, reason)
     ? copy.configurationReason[reason as ChatConfigurationReason]
@@ -55,7 +55,7 @@ export function noRealConnectionSetupDescription(reason: string | undefined, loc
 
 export function sessionEventErrorMessage(
   event: Extract<SessionEvent, { type: 'error' }>,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): string {
   if (isNoRealConnectionEvent(event)) {
     return noRealConnectionSetupDescription(noRealConnectionReasonFromEvent(event), locale);
@@ -69,7 +69,7 @@ export function sessionEventErrorMessage(
 export function modelSetupToastCopy(
   reason: string | undefined,
   fallback: string,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): { title: string; description: string } {
   const copy = getDesktopConversationCopy(locale).model;
   if (reason === 'connection_missing') {

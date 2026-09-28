@@ -31,7 +31,7 @@ import { isSessionWorkspaceUnavailableError, showSessionWorkspaceUnavailableToas
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 
 export interface RendererAppInfo {
   projectId?: string | null;
@@ -68,7 +68,6 @@ export interface AppShellProjectActions {
   restoreProject(projectId: string): Promise<void>;
   openProjectFolder(): Promise<void>;
   openWorkspaceFolder(): Promise<void>;
-  openSkillsFolder(): Promise<void>;
 }
 
 export function createAppShellProjectActions(deps: {
@@ -322,28 +321,6 @@ export function createAppShellProjectActions(deps: {
     }
   }
 
-  async function openSkillsFolder() {
-    try {
-      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
-        window.maka.app.openPath('skills', undefined, host),
-      );
-      if (!result.ok) {
-        toastApi.error(
-          copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
-          openPathFailureCopy(result.reason, uiLocale),
-          undefined,
-          diagnosticTarget,
-        );
-      }
-    } catch (error) {
-      showDefaultProjectError(
-        copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
-        openPathActionErrorMessage(error, 'skills', uiLocale),
-        error,
-      );
-    }
-  }
-
   async function openProjectFolder() {
     try {
       const { value: result, diagnosticTarget } = sessionId
@@ -411,6 +388,5 @@ export function createAppShellProjectActions(deps: {
     restoreProject,
     openProjectFolder,
     openWorkspaceFolder,
-    openSkillsFolder,
   };
 }

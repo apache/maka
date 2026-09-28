@@ -285,6 +285,9 @@ export class HostOAuthCoordinator {
     if (admitted.kind === 'catalog_full') {
       return operationConflict('OAuth Connection capacity is exhausted');
     }
+    if (admitted.kind === 'slug_taken') {
+      return slugTaken('OAuth Connection slug is already in use');
+    }
     if (admitted.kind === 'attempt_conflict') {
       return invalidRequest('OAuth attemptId is already bound to another connection');
     }
@@ -405,6 +408,9 @@ export class HostOAuthCoordinator {
           attempt.ticket.ticket,
           serializeOAuthSubscriptionTokens(tokens),
         );
+        if (completion.kind === 'slug_taken') {
+          throw new LoginFailure('slug_taken');
+        }
         if (completion.kind !== 'committed') {
           throw new LoginFailure(
             completion.changed.includes('connection') ? 'connection_changed' : 'credential_changed',
@@ -656,7 +662,10 @@ function sameOAuthLoginTarget(actual: OAuthLoginTarget, expected: OAuthLoginTarg
   return (
     actual.kind === expected.kind &&
     (actual.kind === 'create'
-      ? expected.kind === 'create' && actual.providerType === expected.providerType
+      ? expected.kind === 'create' &&
+        actual.providerType === expected.providerType &&
+        actual.slug === expected.slug &&
+        actual.name === expected.name
       : expected.kind === 'existing' && actual.connectionId === expected.connectionId)
   );
 }
@@ -704,6 +713,10 @@ function operationUnavailable(message: string) {
 
 function operationConflict(message: string) {
   return { ok: false, error: { code: 'operation_conflict', message } } as const;
+}
+
+function slugTaken(message: string) {
+  return { ok: false, error: { code: 'slug_taken', message } } as const;
 }
 
 function hostDraining(): OperationOutcome<'oauth.login.start'> {

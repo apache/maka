@@ -18,7 +18,7 @@
  */
 
 import { createReadStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { appendFile, readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,12 +41,12 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-accessibility-runtime-surfaces--remote-project-directory',
   'product-accessibility-runtime-surfaces--runtime-host-ssh-terminal',
   'product-module-hubs--extensions-mcp-editor',
-  'product-module-hubs--extensions-mcp-inspector',
+  'product-module-hubs--extensions-mcp-detail',
   'product-module-hubs--extensions-mcp-narrow',
   'product-module-hubs--extensions-skills-narrow',
   'product-module-hubs--scheduled-daily-review-report',
   'product-module-hubs--scheduled-tasks-narrow',
-  'product-module-hubs--scheduled-tasks-inspector',
+  'product-module-hubs--scheduled-tasks-detail',
   'product-onboarding--narrow-window',
   'product-settings-pages--memory-populated',
   'product-settings-pages--permission-center-diagnostics-expanded',
@@ -65,16 +65,24 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
 // Dark mode currently changes only paint tokens, with no dark-only DOM, layout,
 // or renderer branches; expand this set if that invariant changes.
 const DARK_THEME_SENTINEL_STORY_IDS = new Set([
+  'product-module-hubs--extensions-mcp-editor',
+  'product-module-hubs--extensions-mcp-editor-narrow',
   'design-system-palette-matrix--all-palettes',
   'product-accessibility-dialogs--rename-conversation',
   'product-markdown--rich-assistant-answer',
   'product-settings-pages--appearance',
+  'product-settings-pages--bot-chat-needs-attention',
   'product-shell-official-appshell--default-layout',
+  'product-workhub--standard-composer',
+  'product-workhub--progress-model-picker',
+]);
+const FORCED_COLORS_STORY_IDS = new Set([
+  'product-settings-pages--general-forced-colors-focus-ring',
 ]);
 
 // This is a catalog render and accessibility-tree health check.
 // Story `play` functions do run: many stories reach their named final state
-// only by opening an inspector, dialog, selector, or disclosure. The smoke
+// only by opening a dialog, selector, or disclosure. The smoke
 // waits for Storybook's completion event before reading the AX tree.
 
 function describeBrowserValue(value) {
@@ -83,7 +91,7 @@ function describeBrowserValue(value) {
   return String(value);
 }
 
-function installStorybookRenderProbe({ storyId }) {
+export function installStorybookRenderProbe({ storyId }) {
   const smoke = {
     finished: false,
     failures: [],
@@ -122,7 +130,13 @@ function installStorybookRenderProbe({ storyId }) {
         smoke.finished = true;
       }
     });
-    for (const eventName of ['storyErrored', 'storyThrewException', 'storyMissing']) {
+    for (const eventName of [
+      'storyErrored',
+      'storyThrewException',
+      'storyMissing',
+      'playFunctionThrewException',
+      'unhandledErrorsWhilePlaying',
+    ]) {
       channel.on(eventName, (payload) => {
         if (belongsToStory(payload)) {
           smoke.failures.push(`${eventName}: ${eventMessage(payload)}`);
@@ -151,6 +165,32 @@ export function catalogJobs(
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
     .flatMap((entry) => {
+      // These diagnostics must wrap in both locales at the reading measure
+      // and in a narrow Desktop window; toolbar defaults cover neither matrix.
+      if (entry.id === 'product-shell-official-appshell--long-system-notes') {
+        return ['zh-CN', 'en'].flatMap((locale) =>
+          [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
+            storyId: entry.id,
+            colorScheme: 'light',
+            forcedColors: 'none',
+            palette: 'default',
+            locale,
+            viewport,
+          })),
+        );
+      }
+      if (entry.id === 'product-workhub--next-prompt-suggestion') {
+        return COLOR_SCHEMES.flatMap((colorScheme) =>
+          [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
+            storyId: entry.id,
+            colorScheme,
+            forcedColors: 'none',
+            palette: 'default',
+            locale: 'zh-CN',
+            viewport,
+          })),
+        );
+      }
       const hasFullPaletteCoverage = fullPaletteStoryIds.has(entry.id);
       const entryPalettes = hasFullPaletteCoverage ? palettes : ['default'];
       const colorSchemes =
@@ -161,6 +201,7 @@ export function catalogJobs(
         colorSchemes.map((colorScheme) => ({
           storyId: entry.id,
           colorScheme,
+          forcedColors: FORCED_COLORS_STORY_IDS.has(entry.id) ? 'active' : 'none',
           palette,
         })),
       );
@@ -173,23 +214,42 @@ export function storyUrl(baseUrl, job) {
   const url = new URL('/iframe.html', baseUrl);
   url.searchParams.set('id', job.storyId);
   url.searchParams.set('viewMode', 'story');
-  url.searchParams.set('globals', `colorScheme:${job.colorScheme};palette:${job.palette}`);
+  url.searchParams.set(
+    'globals',
+    `colorScheme:${job.colorScheme};palette:${job.palette}${job.locale ? `;locale:${job.locale}` : ''}`,
+  );
   return url.href;
 }
 
 export function storyViewport(storyId) {
+  // Full desktop width verifies WorkHub reaches the shared transcript measure.
+  if (storyId === 'product-workhub--colored-work-history') return { width: 1600, height: 900 };
+  // The progress card also uses viewport-relative picker sizing inside its
+  // native 360px WebContents; a narrow wrapper alone does not reproduce that.
+  if (storyId === 'product-workhub--progress-model-picker') return { width: 360, height: 900 };
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 
 export function jobLabel(job) {
-  return `${job.storyId} (${job.colorScheme}/${job.palette})`;
+  const forcedColors = job.forcedColors === 'active' ? '/forced-colors' : '';
+  const scenario = job.locale ? `/${job.locale}/${job.viewport.width}px` : '';
+  return `${job.storyId} (${job.colorScheme}/${job.palette}${forcedColors}${scenario})`;
 }
 
-async function smokeStory(page, baseUrl, job, options = {}) {
+export function isExpectedConsoleError(storyId, message) {
+  return (
+    storyId === 'product-settings-pages--general-host-settings-error' &&
+    message === '[settings] operation failed: Runtime Host settings read failed in this story.'
+  );
+}
+
+export async function smokeStory(page, baseUrl, job, options = {}) {
   const prefix = `[${jobLabel(job)}]`;
   const browserFailures = [];
   const onConsole = (message) => {
-    if (message.type() === 'error') browserFailures.push(`console.error: ${message.text()}`);
+    if (message.type() === 'error' && !isExpectedConsoleError(job.storyId, message.text())) {
+      browserFailures.push(`console.error: ${message.text()}`);
+    }
   };
   const onPageError = (error) => {
     browserFailures.push(`uncaught page error: ${describeBrowserValue(error)}`);
@@ -199,8 +259,8 @@ async function smokeStory(page, baseUrl, job, options = {}) {
 
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
-    await page.setViewportSize(storyViewport(job.storyId));
-    await page.emulateMedia({ colorScheme: job.colorScheme });
+    await page.setViewportSize(job.viewport ?? storyViewport(job.storyId));
+    await page.emulateMedia({ colorScheme: job.colorScheme, forcedColors: job.forcedColors });
     await page.goto(storyUrl(baseUrl, job), { waitUntil: 'load' });
 
     try {
@@ -287,7 +347,7 @@ async function runJobs(browser, baseUrl, jobs, concurrency) {
         await smokeStory(page, baseUrl, job);
         process.stdout.write(`✓ ${jobLabel(job)}\n`);
       } catch (error) {
-        failures.push(error instanceof Error ? error.message : String(error));
+        failures.push({ job, message: error instanceof Error ? error.message : String(error) });
         process.stdout.write(`✗ ${jobLabel(job)}\n`);
       } finally {
         await page.close();
@@ -296,6 +356,71 @@ async function runJobs(browser, baseUrl, jobs, concurrency) {
   });
   await Promise.all(workers);
   return failures;
+}
+
+/**
+ * Re-run each failed render ONCE, with nothing else in flight.
+ *
+ * The failures this absorbs are `waitForFunction` timeouts and animation-timing
+ * assertions, so the property doing the work is not "real defect vs flake" but
+ * **load-dependent vs load-independent**. A story that fails while four pages
+ * share the machine and passes alone is load-dependent; one that fails both
+ * times is not, and still fails the gate.
+ *
+ * What that leaves through is worth naming, because this gate is the best place
+ * to catch it: a **performance regression** is load-dependent by construction —
+ * it fails under contention and passes alone — so isolation retries it away.
+ * The absolution is therefore only for contention victims; the class it cannot
+ * tell apart from one is reported on every run (see the step summary below).
+ */
+async function retryAlone(browser, baseUrl, failures) {
+  const survivors = [];
+  const passedAlone = [];
+  for (const failure of failures) {
+    const page = await browser.newPage();
+    try {
+      await smokeStory(page, baseUrl, failure.job);
+      passedAlone.push(failure);
+      process.stdout.write(`↻ ${jobLabel(failure.job)} passed alone; not a failure\n`);
+    } catch (error) {
+      survivors.push(error instanceof Error ? error.message : String(error));
+    } finally {
+      await page.close();
+    }
+  }
+  // A gate that goes green leaves nobody reading its output, so a rescued render
+  // reported only on stdout is a signal that stops existing. The step summary is
+  // where a green run is still read, and a story family that keeps appearing here
+  // is the recurrence #5500 asked about — countable rather than buried.
+  if (passedAlone.length > 0) await appendStepSummary(passedAlone);
+  return survivors;
+}
+
+/**
+ * The record of what the retry absorbed, in the place a GREEN run is still read.
+ * Split from the write so its content is testable: the names and reasons here
+ * are the countable signal, and they must not drift into a bare count.
+ */
+export function rescuedRenderSummary(passedAlone) {
+  return [
+    '## Storybook smoke: renders rescued by isolating a failure',
+    '',
+    'These failed with 4 renders in flight and passed alone. Each is a',
+    'contention victim **or** a load-dependent regression (a slower path that',
+    'only misses its budget under load) — the retry cannot tell the two apart,',
+    'so a name recurring here across runs is worth reading rather than',
+    'dismissing.',
+    '',
+    ...passedAlone.map((failure) => `- \`${jobLabel(failure.job)}\` — ${failure.message}`),
+    '',
+  ].join('\n');
+}
+
+/** Record contention-rescued renders where a passing run is still read. */
+async function appendStepSummary(passedAlone) {
+  const path = process.env.GITHUB_STEP_SUMMARY;
+  if (path === undefined || path === '') return;
+  await appendFile(path, rescuedRenderSummary(passedAlone));
 }
 
 const MIME_TYPES = {
@@ -361,6 +486,7 @@ async function runCli() {
   const requiredStoryIds = new Set([
     ...REQUIRED_COMPUTER_USE_STORY_IDS,
     ...DARK_THEME_SENTINEL_STORY_IDS,
+    ...FORCED_COLORS_STORY_IDS,
   ]);
   const missingRequiredStories = [...requiredStoryIds].filter((storyId) => !storyIds.has(storyId));
   if (missingRequiredStories.length > 0) {
@@ -377,6 +503,13 @@ async function runCli() {
   let problems;
   try {
     problems = await runJobs(browser, server.baseUrl, jobs, 4);
+    if (problems.length > 0) {
+      process.stdout.write(
+        `${problems.length} render(s) failed under 4-way concurrency; retrying each alone.\n`,
+      );
+      // Inside the try: the retry needs the same browser and server.
+      problems = await retryAlone(browser, server.baseUrl, problems);
+    }
   } finally {
     await server.close();
     await browser.close();

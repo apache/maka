@@ -29,6 +29,7 @@ import {
   requireCount,
   requireEntityId,
   requireExactRecord,
+  requireOpaqueIdentity,
   requireRecord,
   requireString,
 } from './codec.js';
@@ -102,6 +103,8 @@ const CLIENT_CAPABILITY_ERRORS = [
   'host_draining',
   'operation_unavailable',
   'invalid_request',
+  'session_busy',
+  'session_binding_conflict',
   'internal_failure',
 ] as const;
 
@@ -110,6 +113,8 @@ export interface ClientCapabilityOffer {
   readonly version: string;
   readonly affinity: ClientCapabilityAffinity;
   readonly hostPathAccess: ClientCapabilityHostPathAccess;
+  /** Request exact MCP tool admission; this does not confer provider trust. */
+  readonly admission?: 'mcp';
   readonly label: string;
   readonly description?: string;
   readonly tools: readonly ClientCapabilityToolDescriptor[];
@@ -122,6 +127,12 @@ export interface ClientCapabilityServiceOffer {
 
 export interface ClientCapabilityReplaceInput {
   readonly registrationId: string;
+  /** Restrict publication to this Session; omission keeps the connection-wide slot. */
+  readonly sessionId?: string;
+  /** Require the target Session to have no active or admitting root Turn at replacement. */
+  readonly requireIdleSession?: boolean;
+  /** Opaque identity of a complete Session configuration; conflicting providers cannot coexist. */
+  readonly sessionConfigurationId?: string;
   readonly offers: readonly ClientCapabilityOffer[];
   readonly services?: readonly ClientCapabilityServiceOffer[];
 }
@@ -300,7 +311,7 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
     record,
     'Client Capability replacement',
     ['registrationId', 'offers'],
-    ['services'],
+    ['services', 'sessionId', 'requireIdleSession', 'sessionConfigurationId'],
   );
   if (!Array.isArray(record.offers) || record.offers.length > CLIENT_CAPABILITY_MAX_OFFERS) {
     throw invalidProtocolFrame('Invalid Client Capability offers');
@@ -309,11 +320,40 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
   if (!Array.isArray(serviceValues) || serviceValues.length > CLIENT_CAPABILITY_MAX_SERVICES) {
     throw invalidProtocolFrame('Invalid Client Capability services');
   }
-  if (record.offers.length === 0 && serviceValues.length === 0) {
+  // An empty Session snapshot clears lost contracts after reconnect and keeps
+  // a bounded registration through which the Host can signal Session retirement.
+  // Connection-wide publications still use unregister for withdrawal.
+  if (record.offers.length === 0 && serviceValues.length === 0 && record.sessionId === undefined) {
     throw invalidProtocolFrame('Client Capability registration is empty');
   }
   const offers = record.offers.map((offer) => decodeClientCapabilityOffer(offer));
   const services = serviceValues.map((service) => decodeClientCapabilityServiceOffer(service));
+  const sessionId =
+    record.sessionId === undefined ? undefined : requireEntityId(record.sessionId, 'sessionId');
+  if (record.requireIdleSession !== undefined && typeof record.requireIdleSession !== 'boolean') {
+    throw invalidProtocolFrame('Invalid Client Capability idle requirement');
+  }
+  if (record.requireIdleSession === true && sessionId === undefined) {
+    throw invalidProtocolFrame('Client Capability idle requirement needs a target Session');
+  }
+  if (
+    record.sessionConfigurationId !== undefined &&
+    (sessionId === undefined ||
+      typeof record.sessionConfigurationId !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/.test(record.sessionConfigurationId))
+  ) {
+    throw invalidProtocolFrame('Invalid Client Capability Session configuration identity');
+  }
+  if (
+    sessionId !== undefined &&
+    (services.length > 0 ||
+      offers.some((offer) => offer.affinity !== 'session' || offer.hostPathAccess !== 'none'))
+  ) {
+    throw invalidProtocolFrame('Session capabilities must be path-independent session tools');
+  }
+  if (offers.some((offer) => offer.admission === 'mcp') && sessionId === undefined) {
+    throw invalidProtocolFrame('MCP admission requires a target Session');
+  }
   const offerIds = new Set<string>();
   const serviceContracts = new Set<string>();
   const toolIdentities = new Set<string>();
@@ -344,6 +384,11 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
   }
   const decoded = {
     registrationId: requireEntityId(record.registrationId, 'registrationId'),
+    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(record.requireIdleSession === true ? { requireIdleSession: true } : {}),
+    ...(record.sessionConfigurationId === undefined
+      ? {}
+      : { sessionConfigurationId: record.sessionConfigurationId }),
     offers,
     ...(record.services === undefined ? {} : { services }),
   };
@@ -580,7 +625,7 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
         arguments: argumentsValue,
         sessionId: requireEntityId(frame.sessionId, 'sessionId'),
         turnId: requireEntityId(frame.turnId, 'turnId'),
-        toolCallId: requireEntityId(frame.toolCallId, 'toolCallId'),
+        toolCallId: requireOpaqueIdentity(frame.toolCallId, 'toolCallId'),
         ...(frame.cwd === undefined ? {} : { cwd: requireString(frame.cwd, 'cwd', 4_096) }),
       };
     }
@@ -707,7 +752,7 @@ function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
     record,
     'Client Capability offer',
     ['offerId', 'version', 'affinity', 'hostPathAccess', 'label', 'tools'],
-    ['description'],
+    ['description', 'admission'],
   );
   if (
     !Array.isArray(record.tools) ||
@@ -716,11 +761,15 @@ function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
   ) {
     throw invalidProtocolFrame('Invalid Client Capability offer tools');
   }
+  if (record.admission !== undefined && record.admission !== 'mcp') {
+    throw invalidProtocolFrame('Invalid Client Capability admission');
+  }
   return {
     offerId: requireEntityId(record.offerId, 'offerId'),
     version: requireString(record.version, 'version', 64),
     affinity: decodeClientCapabilityAffinity(record.affinity),
     hostPathAccess: decodeClientCapabilityHostPathAccess(record.hostPathAccess),
+    ...(record.admission === 'mcp' ? { admission: 'mcp' as const } : {}),
     label: requireString(record.label, 'label', 128),
     ...(record.description === undefined
       ? {}
@@ -810,7 +859,7 @@ const CLIENT_CAPABILITY_SCHEMA_TYPES = new Set([
   'object',
   'string',
 ]);
-const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
+export const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
   '$defs',
   '$ref',
   'additionalItems',
@@ -838,6 +887,7 @@ const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
   'multipleOf',
   'oneOf',
   'pattern',
+  'patternProperties',
   'propertyNames',
   'properties',
   'required',
@@ -846,7 +896,89 @@ const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
   'uniqueItems',
 ]);
 
-function validateToolInputSchema(root: Record<string, unknown>): void {
+const CLIENT_CAPABILITY_SCHEMA_CONTAINER_SHAPES: Record<
+  string,
+  'record' | 'array' | 'single_or_array' | 'single'
+> = {
+  properties: 'record',
+  patternProperties: 'record',
+  additionalItems: 'single',
+  $defs: 'record',
+  definitions: 'record',
+  allOf: 'array',
+  anyOf: 'array',
+  oneOf: 'array',
+  items: 'single_or_array',
+  additionalProperties: 'single',
+  propertyNames: 'single',
+};
+
+/**
+ * Project an external JSON Schema (e.g. from an MCP tool) down to exactly the
+ * keywords the Client Capability protocol admits, recursing into nested schemas
+ * via the same shape table that {@link validateToolInputSchema} uses.
+ *
+ * `$ref` is retained when it resolves locally inside `$defs`/`definitions`;
+ * otherwise upstream callers should omit it first.
+ *
+ * Empty `items`, `allOf`, `anyOf`, and `oneOf` are dropped so the projected
+ * schema never emits a shape the protocol boundary rejects.
+ */
+export function projectToolInputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.hasOwn(schema, 'type') || schema.type !== 'object') {
+    throw new Error('Client Capability tool schema root must be an object');
+  }
+  return projectSchemaNode(schema) as Record<string, unknown>;
+}
+
+function projectSchemaNode(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((entry) => projectSchemaNode(entry));
+  const schema = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(schema)) {
+    if (!CLIENT_CAPABILITY_SCHEMA_KEYWORDS.has(key)) continue;
+    const projected = projectSchemaKeyword(key, val);
+    if (projected !== undefined) {
+      result[key] = projected;
+    }
+  }
+  return result;
+}
+
+function projectSchemaKeyword(key: string, value: unknown): unknown {
+  const shape = CLIENT_CAPABILITY_SCHEMA_CONTAINER_SHAPES[key];
+  if (shape === undefined) return value;
+  switch (shape) {
+    case 'record': {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`Client Capability tool schema ${key} must be an object`);
+      }
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([nestedKey, nestedValue]) => [
+          nestedKey,
+          projectSchemaNode(nestedValue),
+        ]),
+      );
+    }
+    case 'array': {
+      if (!Array.isArray(value) || value.length === 0) return undefined;
+      return value.map((entry) => projectSchemaNode(entry));
+    }
+    case 'single_or_array': {
+      if (Array.isArray(value)) {
+        if (value.length === 0) return undefined;
+        return value.map((entry) => projectSchemaNode(entry));
+      }
+      return projectSchemaNode(value);
+    }
+    case 'single': {
+      return projectSchemaNode(value);
+    }
+  }
+}
+
+export function validateToolInputSchema(root: Record<string, unknown>): void {
   if (!Object.hasOwn(root, 'type') || root.type !== 'object') {
     throw invalidProtocolFrame('Client Capability tool schema root must be an object');
   }
@@ -905,11 +1037,6 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
     if (schema.uniqueItems !== undefined && typeof schema.uniqueItems !== 'boolean') {
       throw invalidProtocolFrame('Invalid Client Capability tool schema uniqueItems');
     }
-    for (const key of ['properties', '$defs', 'definitions'] as const) {
-      if (schema[key] === undefined) continue;
-      const entries = requireRecord(schema[key], `Client Capability tool schema ${key}`);
-      for (const nested of Object.values(entries)) visit(nested);
-    }
     if (schema.required !== undefined) {
       if (
         !Array.isArray(schema.required) ||
@@ -919,30 +1046,42 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
         throw invalidProtocolFrame('Invalid Client Capability tool schema required');
       }
     }
-    for (const key of ['additionalItems', 'additionalProperties'] as const) {
-      if (schema[key] !== undefined && typeof schema[key] !== 'boolean') {
-        visit(schema[key]);
-      }
-    }
-    if (schema.propertyNames !== undefined) {
-      visit(schema.propertyNames);
-    }
-    if (schema.items !== undefined) {
-      if (Array.isArray(schema.items)) {
-        if (schema.items.length === 0) {
-          throw invalidProtocolFrame('Invalid Client Capability tool schema items');
-        }
-        for (const nested of schema.items) visit(nested);
-      } else {
-        visit(schema.items);
-      }
-    }
-    for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
+    for (const [key, shape] of Object.entries(CLIENT_CAPABILITY_SCHEMA_CONTAINER_SHAPES)) {
       if (schema[key] === undefined) continue;
-      if (!Array.isArray(schema[key]) || schema[key].length === 0) {
-        throw invalidProtocolFrame(`Invalid Client Capability tool schema ${key}`);
+      switch (shape) {
+        case 'record': {
+          const entries = requireRecord(schema[key], `Client Capability tool schema ${key}`);
+          if (key === 'patternProperties') {
+            for (const patternKey of Object.keys(entries)) {
+              validateSchemaPattern(patternKey);
+            }
+          }
+          for (const nested of Object.values(entries)) visit(nested);
+          break;
+        }
+        case 'array': {
+          if (!Array.isArray(schema[key]) || (schema[key] as unknown[]).length === 0) {
+            throw invalidProtocolFrame(`Invalid Client Capability tool schema ${key}`);
+          }
+          for (const nested of schema[key] as unknown[]) visit(nested);
+          break;
+        }
+        case 'single_or_array': {
+          if (Array.isArray(schema[key])) {
+            if ((schema[key] as unknown[]).length === 0) {
+              throw invalidProtocolFrame(`Invalid Client Capability tool schema ${key}`);
+            }
+            for (const nested of schema[key] as unknown[]) visit(nested);
+          } else {
+            visit(schema[key]);
+          }
+          break;
+        }
+        case 'single': {
+          visit(schema[key]);
+          break;
+        }
       }
-      for (const nested of schema[key]) visit(nested);
     }
     if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0)) {
       throw invalidProtocolFrame('Invalid Client Capability tool schema enum');
@@ -965,6 +1104,21 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
     if (!resolveLocalSchemaReference(root, reference)) {
       throw invalidProtocolFrame('Client Capability tool schema reference is unresolved');
     }
+  }
+}
+
+function validateSchemaPattern(value: unknown): void {
+  if (typeof value !== 'string') {
+    throw invalidProtocolFrame(
+      'Client Capability tool schema patternProperties key must be a string',
+    );
+  }
+  try {
+    new RegExp(value);
+  } catch {
+    throw invalidProtocolFrame(
+      'Client Capability tool schema patternProperties key is not a valid pattern',
+    );
   }
 }
 

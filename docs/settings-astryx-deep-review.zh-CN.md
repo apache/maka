@@ -35,8 +35,6 @@ owners:
 >
 > 原审计基于 `settings/astryx-refactor` 分支，使用 Storybook 全页截图（中/英 × 亮/暗）、Astryx 官方 `settings` / `settings-dialog` 模板和 `astryx docs` 原文。2026-09-05 复核确认：`SettingsSection` 的开放行组、`SettingsRow` / `SettingsField` / `SettingsActions` 三种行语法，以及以 `StatusDot` + 文本为主的状态表达均已进入当前实现；页面数量、按钮数量和 CSS 行数等下文数字只描述当时快照。
 
-> **状态(2026-09-05 核验):** 这是一份钉在 2026-08-03 `settings/astryx-refactor` 分支头上的评审记录,下文引用的卡片式布局等描述的都是当时的树。此后 `SettingsSection` 已重写为 open row-group 设计,memory/health 页也改用了 `MoreMenu` 与 `StatusDot`。以下发现按原文保留。
-
 ## 一、Astryx 官方设置语言到底是什么
 
 来自 CLI vendor 的官方模板(`@astryxdesign/cli/templates/pages/settings*`)与 `astryx docs principles / layout` 原文:

@@ -20,22 +20,23 @@
 import type { IpcMain } from 'electron';
 import {
   MCP_CONFIG_VERSION,
-  mcpConfigChangeRetiresCredentials,
   type McpConfigAddResult,
   type McpConfigFile,
   type McpConfigImportResult,
+  type McpConfigUpdateResult,
   type McpServerConfig,
   type McpServerStatus,
 } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import {
-  assertMcpEndpointPolicyOnChanges,
+  AtomicFileWriteCommitUnknownError,
   McpServerExistsError,
   McpConfigSourceError,
-  normalizeMcpConfig,
+  updateMcpConfiguration,
   normalizeMcpImport,
   type McpConfigStore,
 } from '@maka/storage/mcp-config-store';
+import type { McpConfigFileFailure } from '../shared/mcp-ipc.js';
 import type { McpOAuthController } from './mcp-oauth-controller.js';
 import {
   redactMcpConfigSecrets,
@@ -48,7 +49,7 @@ export interface McpIpcMainDeps {
   store: McpConfigStore;
   manager: Pick<
     McpClientManager,
-    'sync' | 'statuses' | 'test' | 'cancelConnect' | 'forgetServerCredentials'
+    'sync' | 'statuses' | 'test' | 'forgetServerCredentials'
   >;
   oauth: McpOAuthController;
   /** Shared with the OAuth controller (see createMcpExclusiveLane). Falls
@@ -79,11 +80,23 @@ export function createMcpExclusiveLane(): McpExclusiveLane {
   };
 }
 
-export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
-  const installs = new Map<
-    string,
-    { cancelled: boolean; committed?: string; settled: Promise<void>; settle(): void }
-  >();
+export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
+  const handle = (channel: string, listener: Parameters<IpcMain['handle']>[1]): void => {
+    deps.ipcMain.handle(channel, async (event, ...args) => {
+      try {
+        return await listener(event, ...args);
+      } catch (error) {
+        if (error instanceof McpConfigSourceError && error.reason === 'invalid-json' && error.path !== undefined) {
+          const failure: McpConfigFileFailure = {
+            kind: 'invalid-mcp-config-file',
+            path: error.path.replace(/[\u0000-\u001f\u007f-\u009f]/gu, ''),
+          };
+          return failure;
+        }
+        throw error;
+      }
+    });
+  };
   // Main is the authority on operation exclusivity, not the renderer's
   // advisory locks: while a login round owns a server, a config mutation
   // would race the browser callback against a changed or absent server.
@@ -107,45 +120,61 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   const inMutationLane = deps.exclusiveLane ?? createMcpExclusiveLane();
   const commitConfig = async (
     mutate: (current: McpConfigFile) => McpConfigFile,
-  ): Promise<McpConfigFile> =>
-    deps.store.transform(async (current) => {
-      const next = mutate(current);
-      assertMcpEndpointPolicyOnChanges(current, next);
-      // The authoritative gate: every server this commit semantically touches
-      // is re-checked INSIDE the lane. The handler-entry checks are advisory
-      // fast-fails; this one cannot race a login claim, because claims travel
-      // the same lane.
-      for (const serverId of new Set([
-        ...Object.keys(current.mcpServers),
-        ...Object.keys(next.mcpServers),
-      ])) {
-        const before = current.mcpServers[serverId];
-        const after = next.mcpServers[serverId];
-        if (JSON.stringify(before) !== JSON.stringify(after)) assertNoActiveLogin(serverId);
+  ): Promise<McpConfigFile> => {
+    try {
+      return await updateMcpConfiguration(deps.store, (current) => {
+        const next = mutate(current);
+        // The authoritative gate: every server this commit semantically touches
+        // is re-checked INSIDE the lane. The handler-entry checks are advisory
+        // fast-fails; this one cannot race a login claim, because claims travel
+        // the same lane.
+        for (const serverId of new Set([
+          ...Object.keys(current.mcpServers),
+          ...Object.keys(next.mcpServers),
+        ])) {
+          const before = current.mcpServers[serverId];
+          const after = next.mcpServers[serverId];
+          if (JSON.stringify(before) !== JSON.stringify(after)) assertNoActiveLogin(serverId);
+        }
+        return next;
+      }, (serverId, previous) => deps.manager.forgetServerCredentials(serverId, previous));
+    } catch (error) {
+      if (!(error instanceof AtomicFileWriteCommitUnknownError)) throw error;
+      // Rename has already published a file even though its durability fence
+      // failed. Read the authority again rather than replaying the mutation
+      // or assuming our proposed snapshot is still current. Keep this in the
+      // mutation lane so another local mutation or OAuth claim cannot pass
+      // the reconciliation, and retain the original durability failure.
+      try {
+        const authoritative = await deps.store.get();
+        await deps.manager.sync(authoritative);
+        changed(deps);
+      } catch (reconciliationError) {
+        throw new AggregateError(
+          [error, reconciliationError],
+          'MCP write durability is uncertain and runtime state is out of sync; reload before retrying',
+          { cause: error },
+        );
       }
-      // Erases are per-server and not transactional as a set: if one fails
-      // partway, the commit aborts with the EARLIER servers already logged
-      // out. That partial effect is deliberately in the fail-closed direction
-      // — a re-login is recoverable, a credential outliving its removed or
-      // repointed config is not.
-      for (const serverId of credentialRetirements(current, next)) {
-        await deps.manager.forgetServerCredentials(serverId);
-      }
-      return next;
-    });
+      throw error;
+    }
+  };
   // The renderer is semi-trusted (SECURITY.md §3): every config that crosses
   // toward it leaves with clientSecret replaced by the sentinel, and every
   // config it sends back has sentinels restored from disk before the store
   // and the manager (which needs the real secret) see it.
-  deps.ipcMain.handle('mcp:getConfig', async () => {
+  handle('mcp:getConfig', async () => {
     await deps.ensureReady();
     return redactMcpConfigSecrets(await deps.store.get());
   });
-  deps.ipcMain.handle('mcp:listStatuses', async () => {
+  handle('mcp:listStatuses', async () => {
     await deps.ensureReady();
-    return deps.manager.statuses();
+    return deps.manager.statuses().map((status) => ({
+      ...status,
+      ...(deps.oauth.isActive(status.serverId) ? { authorizationPending: true } : {}),
+    }));
   });
-  deps.ipcMain.handle(
+  handle(
     'mcp:importConfig',
     async (_event, source: string): Promise<McpConfigImportResult> => {
       let imported: McpConfigFile;
@@ -178,7 +207,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       });
     },
   );
-  deps.ipcMain.handle(
+  handle(
     'mcp:add',
     async (_event, serverId: string, config: McpServerConfig): Promise<McpConfigAddResult> => {
       assertNoActiveLogin(serverId);
@@ -208,70 +237,51 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       }
     },
   );
-  deps.ipcMain.handle('mcp:upsert', async (_event, serverId: string, config: McpServerConfig) => {
+  const updateServer = async (
+    serverId: string,
+    change: (current: McpConfigFile, previous: McpServerConfig) => McpServerConfig,
+  ): Promise<McpConfigUpdateResult> => {
     assertNoActiveLogin(serverId);
-    const next = await inMutationLane(() =>
-      commitConfig((current) => ({
-        ...current,
-        mcpServers: {
-          ...current.mcpServers,
-          [serverId]: restoreMcpServerSecret(serverId, config, current),
-        },
-      })),
-    );
-    await deps.manager.sync(next);
-    changed(deps);
-    return redactMcpConfigSecrets(next);
-  });
-  deps.ipcMain.handle('mcp:install', async (_event, serverId: string, config: McpServerConfig) => {
-    assertNoActiveLogin(serverId);
-    if (installs.has(serverId)) throw new Error(`MCP install already in progress: ${serverId}`);
-    let settle!: () => void;
-    const operation = {
-      cancelled: false,
-      committed: undefined as string | undefined,
-      settled: new Promise<void>((resolve) => { settle = resolve; }),
-      settle: () => settle(),
-    };
-    installs.set(serverId, operation);
+    let next: McpConfigFile;
     try {
-      const next = await inMutationLane(() =>
+      next = await inMutationLane(() =>
         commitConfig((current) => {
-          const installed = restoreMcpServerSecret(serverId, config, current);
-          // What THIS install committed, for the cancellation to compare
-          // against: a cancel must only roll back its own write, never a
-          // newer same-id configuration that landed after it. Recorded in
-          // the STORE's normal form — the real store normalizes on write
-          // (key order, defaulted enabled/transport, WHATWG URL), so the
-          // raw restored shape would mismatch its own persisted entry and
-          // the rollback would silently no-op.
-          operation.committed = JSON.stringify(
-            normalizeMcpConfig({
-              version: MCP_CONFIG_VERSION,
-              mcpServers: { [serverId]: installed },
-            }).mcpServers[serverId],
-          );
+          const previous = current.mcpServers[serverId];
+          if (!previous) throw new McpServerChangedError();
           return {
             ...current,
-            mcpServers: { ...current.mcpServers, [serverId]: installed },
+            mcpServers: { ...current.mcpServers, [serverId]: change(current, previous) },
           };
         }),
       );
-      if (operation.cancelled) return redactMcpConfigSecrets(next);
-      // The connect runs OUTSIDE the mutation lane: a cancellation must be
-      // able to interrupt it, and its own removal transaction needs the lane.
-      try {
-        await deps.manager.sync(next);
-      } catch (error) {
-        if (!operation.cancelled) throw error;
-      }
-      if (!operation.cancelled) changed(deps);
-      return redactMcpConfigSecrets(next);
-    } finally {
-      if (installs.get(serverId) === operation) installs.delete(serverId);
-      operation.settle();
+    } catch (error) {
+      if (error instanceof McpServerChangedError) return { status: 'stale' };
+      throw error;
     }
-  });
+    await deps.manager.sync(next);
+    changed(deps);
+    return { status: 'updated', config: redactMcpConfigSecrets(next) };
+  };
+  // `basis` is the server as the renderer last showed it, secrets redacted. A
+  // server that no longer matches it was changed elsewhere (the TUI edits the
+  // same file), and saving over it would silently drop that change.
+  handle(
+    'mcp:update',
+    (_event, serverId: string, config: McpServerConfig, basis: McpServerConfig) =>
+      updateServer(serverId, (current, previous) => {
+        const seen = redactMcpConfigSecrets({
+          version: MCP_CONFIG_VERSION,
+          mcpServers: { [serverId]: previous },
+        }).mcpServers[serverId];
+        if (JSON.stringify(seen) !== JSON.stringify(basis)) throw new McpServerChangedError();
+        return restoreMcpServerSecret(serverId, config, current);
+      }),
+  );
+  // Flips the switch on what is on disk, so a toggle never writes back the
+  // rest of an older copy.
+  handle('mcp:setEnabled', (_event, serverId: string, enabled: boolean) =>
+    updateServer(serverId, (_current, previous) => ({ ...previous, enabled })),
+  );
   const removeServer = async (serverId: string): Promise<McpConfigFile> =>
     inMutationLane(() =>
       commitConfig((current) => {
@@ -279,7 +289,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
         return { ...current, mcpServers };
       }),
     );
-  deps.ipcMain.handle('mcp:remove', async (_event, serverId: string) => {
+  handle('mcp:remove', async (_event, serverId: string) => {
     assertNoActiveLogin(serverId);
     const next = await removeServer(serverId);
     await deps.manager.sync(next);
@@ -288,38 +298,13 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     // servers' secrets must leave as sentinels here too.
     return redactMcpConfigSecrets(next);
   });
-  deps.ipcMain.handle('mcp:cancelInstall', async (_event, serverId: string) => {
-    assertNoActiveLogin(serverId);
-    const operation = installs.get(serverId);
-    if (operation) operation.cancelled = true;
-    deps.manager.cancelConnect(serverId);
-    await operation?.settled;
-    // Roll back only the install's OWN write. While the cancel waited, an
-    // upsert can have replaced the entry with a newer same-id config —
-    // removing whatever is current would delete that newer server and
-    // retire its credentials.
-    const next = await inMutationLane(() =>
-      commitConfig((current) => {
-        const entry = current.mcpServers[serverId];
-        if (entry === undefined) return current;
-        if (operation?.committed !== undefined && JSON.stringify(entry) !== operation.committed) {
-          return current;
-        }
-        const { [serverId]: _removed, ...mcpServers } = current.mcpServers;
-        return { ...current, mcpServers };
-      }),
-    );
-    await deps.manager.sync(next);
-    changed(deps);
-    return redactMcpConfigSecrets(next);
-  });
-  deps.ipcMain.handle('mcp:test', async (_event, serverId: string) => {
+  handle('mcp:test', async (_event, serverId: string) => {
     await deps.ensureReady();
     const result = await deps.manager.test(serverId);
     deps.emitChanged(deps.manager.statuses());
     return result;
   });
-  deps.ipcMain.handle('mcp:login', async (_event, serverId: string) => {
+  handle('mcp:login', async (_event, serverId: string) => {
     // No preflight here: readiness and the callback-port lookup run INSIDE
     // the controller under its round deadline, so a stalled store cannot
     // park this promise (and the renderer's login lock) forever.
@@ -332,14 +317,14 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       changed(deps);
     }
   });
-  deps.ipcMain.handle('mcp:cancelLogin', async (_event, serverId: string) => {
+  handle('mcp:cancelLogin', async (_event, serverId: string) => {
     const cancelled = deps.oauth.cancelLogin(serverId);
     // The round's own rejection path abandons the persisted pending state;
     // the renderer just needs the resulting statuses.
     if (cancelled) changed(deps);
     return cancelled;
   });
-  deps.ipcMain.handle('mcp:logout', async (_event, serverId: string) => {
+  handle('mcp:logout', async (_event, serverId: string) => {
     // Like mcp:login, no preflight here: readiness runs INSIDE the
     // controller under its round deadline, so a stalled store cannot park
     // the renderer's logout lock forever.
@@ -349,23 +334,30 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       changed(deps);
     }
   });
+  // Another process (the TUI, another window) replacing mcp.json is followed
+  // the way a change made here is. A login in flight needs nothing: the
+  // manager binds each round to the URL it started against. This stays off
+  // the mutation lane, where a slow connect would hold up login claims. Changes
+  // apply one at a time, so the last sync is of the last file read.
+  let following = Promise.resolve();
+  return deps.store.subscribeChanges((error) => {
+    if (error) {
+      console.error('[mcp] stopped following mcp.json changes:', error);
+      return;
+    }
+    following = following
+      .then(async () => {
+        await deps.ensureReady();
+        await deps.manager.sync(await deps.store.get());
+      })
+      .then(
+        () => changed(deps),
+        (failure: unknown) => console.error('[mcp] could not apply an mcp.json change:', failure),
+      );
+  });
 }
 
-/** Servers whose stored credentials this commit orphans: removed outright,
- * repointed to a different endpoint, or converted away from remote. An
- * unchanged endpoint keeps its credentials. Removals retire regardless of
- * kind — a stale record under a formerly-remote id must not survive the id
- * being freed for reuse. */
-function credentialRetirements(current: McpConfigFile, next: McpConfigFile): string[] {
-  const retired: string[] = [];
-  for (const [serverId, server] of Object.entries(current.mcpServers)) {
-    const incoming = Object.hasOwn(next.mcpServers, serverId)
-      ? next.mcpServers[serverId]
-      : undefined;
-    if (mcpConfigChangeRetiresCredentials(server, incoming)) retired.push(serverId);
-  }
-  return retired;
-}
+class McpServerChangedError extends Error {}
 
 function changed(deps: McpIpcMainDeps): void {
   deps.emitChanged(deps.manager.statuses());

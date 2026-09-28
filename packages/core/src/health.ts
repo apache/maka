@@ -18,7 +18,11 @@
  */
 
 import type { CapabilityId, CapabilityReadinessState, CapabilitySnapshot } from './capabilities.js';
-import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
+import {
+  connectionEnabledModelIds,
+  type ConnectionTestErrorClass,
+  type LlmConnection,
+} from './llm-connections.js';
 import type { UsageLogRow } from './usage-stats/types.js';
 
 export const HEALTH_SIGNAL_STATUSES = ['ok', 'info', 'warning', 'error', 'unknown'] as const;
@@ -36,15 +40,45 @@ export const HEALTH_SIGNAL_LAYERS = [
 ] as const;
 export type HealthSignalLayer = (typeof HEALTH_SIGNAL_LAYERS)[number];
 
-export type HealthSignalScope = 'app' | 'llm_connection' | 'bot' | 'capability' | 'storage';
+export type HealthSignalScope = 'llm_connection' | 'bot' | 'capability';
 
 export type HealthSignalSource =
   | 'connection_test'
   | 'capability_snapshot'
   | 'permission_snapshot'
   | 'runtime_probe'
-  | 'settings'
-  | 'storage';
+  | 'settings';
+
+export type HealthSignalMessageCode =
+  | 'connection_disabled'
+  | 'awaiting_default_model'
+  | 'validation_passed'
+  | 'needs_reauth'
+  | 'validation_failed'
+  | 'no_models_enabled'
+  | 'not_default_source'
+  | 'awaiting_validation'
+  | 'runtime_probe_pending'
+  | 'send_completed'
+  | 'send_aborted'
+  | 'send_failed'
+  | 'capability_ok'
+  | 'capability_paused'
+  | 'capability_not_configured'
+  | 'capability_denied'
+  | 'capability_degraded';
+
+export type HealthConnectionTestErrorClass = ConnectionTestErrorClass;
+
+export type HealthSignalDetail =
+  | { kind: 'validation_scope_note' }
+  | { kind: 'no_models_enabled_hint' }
+  | { kind: 'not_default_source_hint' }
+  | { kind: 'runtime_probe_layers_note' }
+  | { kind: 'runtime_probe_result'; modelId: string; latencyMs: number; errorClass?: string }
+  | { kind: 'capability_reason'; reason: string }
+  | { kind: 'last_test_error_class'; errorClass: HealthConnectionTestErrorClass }
+  | { kind: 'last_test_message' };
 
 export interface HealthSignal {
   id: string;
@@ -54,8 +88,8 @@ export interface HealthSignal {
   status: HealthSignalStatus;
   source: HealthSignalSource;
   checkedAt: number;
-  message: string;
-  detail?: string;
+  message: HealthSignalMessageCode;
+  detail?: HealthSignalDetail;
   relatedCapabilityId?: CapabilityId;
   blocksSend?: boolean;
   blocksCapability?: boolean;
@@ -151,7 +185,7 @@ export function healthSignalFromConnection(
       status: 'info',
       source: 'settings',
       checkedAt,
-      message: '连接已关闭。',
+      message: 'connection_disabled',
       blocksSend: false,
     };
   }
@@ -165,7 +199,7 @@ export function healthSignalFromConnection(
       status: 'warning',
       source: 'settings',
       checkedAt,
-      message: '等待选择默认模型。',
+      message: 'awaiting_default_model',
       blocksSend: true,
     };
   }
@@ -179,8 +213,8 @@ export function healthSignalFromConnection(
       status: 'ok',
       source: 'connection_test',
       checkedAt: timeFromIso(connection.lastTestAt) ?? checkedAt,
-      message: '凭据与端点验证已通过。',
-      detail: '这是连接验证结果，不代表发送、流式输出或中断通路已经运行通过。',
+      message: 'validation_passed',
+      detail: { kind: 'validation_scope_note' },
       blocksSend: false,
     };
   }
@@ -194,8 +228,10 @@ export function healthSignalFromConnection(
       status: 'error',
       source: 'connection_test',
       checkedAt: timeFromIso(connection.lastTestAt) ?? checkedAt,
-      message: '连接需要重新修复认证。',
-      detail: connection.lastTestMessage,
+      message: 'needs_reauth',
+      ...(connection.lastTestMessage
+        ? { detail: connectionLastTestDetail(connection.lastTestMessage) }
+        : {}),
       blocksSend: true,
     };
   }
@@ -209,8 +245,10 @@ export function healthSignalFromConnection(
       status: 'warning',
       source: 'connection_test',
       checkedAt: timeFromIso(connection.lastTestAt) ?? checkedAt,
-      message: '上次连接验证失败。',
-      detail: connection.lastTestMessage,
+      message: 'validation_failed',
+      ...(connection.lastTestMessage
+        ? { detail: connectionLastTestDetail(connection.lastTestMessage) }
+        : {}),
       blocksSend: true,
     };
   }
@@ -230,8 +268,8 @@ export function healthSignalFromConnection(
         status: 'warning',
         source: 'settings',
         checkedAt,
-        message: '没有启用任何模型。',
-        detail: '在 设置 · 模型 的连接详情里启用至少一个模型后才能使用该连接。',
+        message: 'no_models_enabled',
+        detail: { kind: 'no_models_enabled_hint' },
         blocksSend: false,
       };
     }
@@ -243,8 +281,8 @@ export function healthSignalFromConnection(
       status: 'info',
       source: 'settings',
       checkedAt,
-      message: '不是工作区的默认模型来源。',
-      detail: '在任务中显式选择该连接的模型即可正常使用;新对话的默认模型在 设置 · 通用 配置。',
+      message: 'not_default_source',
+      detail: { kind: 'not_default_source_hint' },
       blocksSend: false,
     };
   }
@@ -257,7 +295,7 @@ export function healthSignalFromConnection(
     status: 'unknown',
     source: 'connection_test',
     checkedAt,
-    message: '等待验证连接。',
+    message: 'awaiting_validation',
     blocksSend: false,
   };
 }
@@ -272,14 +310,14 @@ export function healthSignalFromConnectionRuntime(
   if (!latestRuntimeProbe) {
     return {
       id: `connection:${connection.slug}:runtime`,
-      label: `${connection.name} 运行态`,
+      label: connection.name,
       scope: 'llm_connection',
       layer: 'runtime_probe',
       status: 'unknown',
       source: 'runtime_probe',
       checkedAt,
-      message: '等待完成发送运行态探测。',
-      detail: '凭据验证与真实发送、流式输出、中断通路是两层健康信号。',
+      message: 'runtime_probe_pending',
+      detail: { kind: 'runtime_probe_layers_note' },
       blocksSend: false,
     };
   }
@@ -287,7 +325,7 @@ export function healthSignalFromConnectionRuntime(
   const status = runtimeStatusToHealth(latestRuntimeProbe.status);
   return {
     id: `connection:${connection.slug}:runtime`,
-    label: `${connection.name} 运行态`,
+    label: connection.name,
     scope: 'llm_connection',
     layer: 'runtime_probe',
     status,
@@ -342,41 +380,41 @@ function healthLayerFromCapability(capability: CapabilitySnapshot): HealthSignal
   return 'feature';
 }
 
-function capabilityMessage(readiness: CapabilityReadinessState): string {
+function capabilityMessage(readiness: CapabilityReadinessState): HealthSignalMessageCode {
   switch (readiness) {
     case 'enabled':
-      return '能力门禁已满足。';
+      return 'capability_ok';
     case 'paused':
-      return '能力已关闭或暂停。';
+      return 'capability_paused';
     case 'not_configured':
-      return '等待补齐能力配置。';
+      return 'capability_not_configured';
     case 'denied':
-      return '能力被必要系统权限阻塞。';
+      return 'capability_denied';
     case 'degraded':
-      return '能力运行态探测处于降级状态。';
+      return 'capability_degraded';
   }
 }
 
-function capabilityDetail(capability: CapabilitySnapshot): string | undefined {
-  return userVisibleCapabilityReason(
-    capability.runtimeProbe.reason ?? capability.feature.reason ?? capability.configuration.reason,
-  );
+function capabilityDetail(capability: CapabilitySnapshot): HealthSignalDetail | undefined {
+  const reason = (
+    capability.runtimeProbe.reason ??
+    capability.feature.reason ??
+    capability.configuration.reason
+  )?.trim();
+  return reason ? { kind: 'capability_reason', reason } : undefined;
 }
 
-function userVisibleCapabilityReason(reason: string | undefined): string | undefined {
-  const raw = reason?.trim();
-  if (!raw) return undefined;
-  switch (raw) {
-    case 'disabled':
-      return '该能力当前已关闭。';
-    case 'missing platform credentials':
-      return '等待填写平台凭据。';
-    case 'macOS TCC only':
-      return '仅 macOS 系统权限可探测。';
-    case 'no Electron API for per-target Apple Events TCC status':
-      return '系统未提供可直接读取的授权状态。';
+function connectionLastTestDetail(message: string): HealthSignalDetail {
+  const normalized = message.trim().toLowerCase();
+  switch (normalized) {
+    case 'auth':
+    case 'timeout':
+    case 'provider_unavailable':
+    case 'network':
+    case 'unknown':
+      return { kind: 'last_test_error_class', errorClass: normalized };
     default:
-      return /[\u3400-\u9fff]/.test(raw) ? raw : '状态详情请见对应设置页。';
+      return { kind: 'last_test_message' };
   }
 }
 
@@ -397,19 +435,22 @@ function runtimeStatusToHealth(status: UsageLogRow['status']): HealthSignalStatu
   }
 }
 
-function runtimeProbeMessage(status: UsageLogRow['status']): string {
+function runtimeProbeMessage(status: UsageLogRow['status']): HealthSignalMessageCode {
   switch (status) {
     case 'success':
-      return '最近一次发送已完成。';
+      return 'send_completed';
     case 'aborted':
-      return '最近一次发送已由用户停止。';
+      return 'send_aborted';
     case 'error':
-      return '最近一次发送失败。';
+      return 'send_failed';
   }
 }
 
-function runtimeProbeDetail(row: UsageLogRow): string {
-  const parts = [`模型=${row.modelId}`, `延迟=${row.latencyMs}ms`];
-  if (row.errorClass) parts.push(`错误类型=${row.errorClass}`);
-  return parts.join(' · ');
+function runtimeProbeDetail(row: UsageLogRow): HealthSignalDetail {
+  return {
+    kind: 'runtime_probe_result',
+    modelId: row.modelId,
+    latencyMs: row.latencyMs,
+    ...(row.errorClass ? { errorClass: row.errorClass } : {}),
+  };
 }

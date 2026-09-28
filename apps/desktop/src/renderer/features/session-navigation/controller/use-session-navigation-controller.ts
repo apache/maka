@@ -25,24 +25,30 @@ import {
   deriveTitlebarProjectName,
   useUiLocale,
   type SessionHistoryGroup,
-  type SessionRailSelection,
 } from '@maka/ui';
-import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
+import { runtimeHostProjectKey } from '../../../application/contracts/runtime-host-project-key.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
-import { deriveWorktreeSessionIds } from '../model/session-project-grouping.js';
+import {
+  deriveSessionLocation,
+  deriveWorktreeSessionIds,
+} from '../model/session-project-grouping.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
 import {
   selectRailLayout,
   sessionRailLayoutStore,
   type SessionRailLayoutState,
 } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
+import type {
+  SessionNavigationPorts,
+  SessionNavigationProjectScope,
+  SessionNavigationSession,
+} from '../ports.js';
 import { useSessionNavigationServices } from '../services-context.js';
 import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
-import { useSessionSelection } from './use-session-selection.js';
 
 export interface UseSessionNavigationControllerInput {
   /**
@@ -51,7 +57,7 @@ export interface UseSessionNavigationControllerInput {
    * derivations of one reading.
    */
   rail: SessionRailProjection<SessionNavigationSession>;
-  projects: readonly ProjectRecord[];
+  projectScopes: readonly SessionNavigationProjectScope[];
   ports: SessionNavigationPorts;
 }
 
@@ -59,6 +65,7 @@ export interface SessionNavigationSelectors {
   groups: SessionHistoryGroup[];
   worktreeSessionIds: ReadonlySet<string>;
   sessionProjectName(session: SessionSummary): string | undefined;
+  sessionLocation(session: SessionSummary): string | undefined;
   sessionMeta(session: SessionSummary): string | undefined;
 }
 
@@ -66,7 +73,6 @@ export interface SessionNavigationController {
   layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
-  selection: SessionRailSelection;
 }
 
 /**
@@ -98,6 +104,7 @@ export function useSessionNavigationController(
   // be upstream of the rail, where a single ordinary `function` declaration
   // anywhere in the chain silently undoes the whole thing (#4109).
   const portsRef = useRef(ports);
+  const pendingSessionRowActionsRef = useRef(new Set<string>());
   useLayoutEffect(() => {
     portsRef.current = ports;
   });
@@ -106,15 +113,14 @@ export function useSessionNavigationController(
     () =>
       createSessionNavigationRowActions({
         uiLocale: locale,
-        activeIdRef: portsRef.current.activeIdRef,
-        clearActiveMessages: () => portsRef.current.clearActiveMessages(),
+        acquireAutomaticQueryBlock: (sessionIds) =>
+          portsRef.current.acquireAutomaticQueryBlock(sessionIds),
         clearSessionRendererState: (sessionId) =>
           portsRef.current.clearSessionRendererState(sessionId),
-        pendingSessionRowActionsRef: portsRef.current.pendingSessionRowActionsRef,
+        pendingSessionRowActionsRef,
         refreshSessions: () => portsRef.current.refreshSessions(),
         service,
         sessionsRef: portsRef.current.sessionsRef,
-        setActiveId: (sessionId) => portsRef.current.activateSession(sessionId),
         toastApi: {
           success: (title, description) => portsRef.current.toastApi.success(title, description),
           error: (title, description, details, target) =>
@@ -126,8 +132,9 @@ export function useSessionNavigationController(
   );
 
   const groups = useMemo(
-    () => deriveSessionNavigationGroups(rail.sessions, input.projects, locale),
-    [locale, input.projects, rail.sessions],
+    () =>
+      deriveSessionNavigationGroups(rail.sessions, input.projectScopes, locale),
+    [locale, input.projectScopes, rail.sessions],
   );
   const worktreeSessionIds = useMemo(
     () =>
@@ -135,31 +142,54 @@ export function useSessionNavigationController(
         rail.sessions.filter(
           (session) => !runtimeHostProfileUsesHostWorkspace(session.profileKind),
         ),
-        input.projects,
+        input.projectScopes
+          .filter((scope) => scope.profileKind === 'local')
+          .map((scope) => scope.project),
       ),
-    [input.projects, rail.sessions],
+    [input.projectScopes, rail.sessions],
   );
   const sessionById = useMemo(
     () => new Map(rail.sessions.map((session) => [session.id, session])),
     [rail.sessions],
   );
-  const projectNameByIdentity = useMemo(() => {
-    const names = new Map<string, string>();
-    for (const project of input.projects) {
-      names.set(project.id, project.name);
-      for (const alias of project.aliases ?? []) names.set(alias, project.name);
+  const projectByIdentity = useMemo(() => {
+    const projects = new Map<string, ProjectRecord>();
+    for (const scope of input.projectScopes) {
+      projects.set(runtimeHostProjectKey(scope.hostId, scope.project.id), scope.project);
+      for (const alias of scope.project.aliases ?? []) {
+        projects.set(runtimeHostProjectKey(scope.hostId, alias), scope.project);
+      }
     }
-    return names;
-  }, [input.projects]);
+    return projects;
+  }, [input.projectScopes]);
   const sessionProjectName = useCallback(
-    (session: SessionSummary): string | undefined =>
-      deriveTitlebarProjectName({
-        projectName: session.projectId
-          ? projectNameByIdentity.get(session.projectId)
+    (session: SessionSummary): string | undefined => {
+      const projected = sessionById.get(session.id);
+      return deriveTitlebarProjectName({
+        projectName: projected?.projectId
+          ? projectByIdentity.get(
+              runtimeHostProjectKey(projected.runtimeHostId, projected.projectId),
+            )?.name
           : undefined,
         projectPath: session.cwd,
-      }),
-    [projectNameByIdentity],
+      });
+    },
+    [projectByIdentity, sessionById],
+  );
+  const sessionLocation = useCallback(
+    (session: SessionSummary): string | undefined => {
+      const projected = sessionById.get(session.id);
+      if (!projected || runtimeHostProfileUsesHostWorkspace(projected.profileKind)) {
+        return undefined;
+      }
+      const project = projected.projectId
+        ? projectByIdentity.get(
+            runtimeHostProjectKey(projected.runtimeHostId, projected.projectId),
+          )
+        : undefined;
+      return deriveSessionLocation(projected, project);
+    },
+    [projectByIdentity, sessionById],
   );
   const sessionMeta = useCallback(
     (session: SessionSummary): string | undefined => {
@@ -172,18 +202,9 @@ export function useSessionNavigationController(
   );
 
   const selectors = useMemo<SessionNavigationSelectors>(
-    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionMeta }),
-    [groups, sessionMeta, sessionProjectName, worktreeSessionIds],
+    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionLocation, sessionMeta }),
+    [groups, sessionLocation, sessionMeta, sessionProjectName, worktreeSessionIds],
   );
 
-  const selection = useSessionSelection({
-    sessions: rail.sessions,
-    commands,
-    activeId: rail.activeRowId,
-  });
-
-  return useMemo(
-    () => ({ layout, selectors, commands, selection }),
-    [commands, layout, selection, selectors],
-  );
+  return useMemo(() => ({ layout, selectors, commands }), [commands, layout, selectors]);
 }

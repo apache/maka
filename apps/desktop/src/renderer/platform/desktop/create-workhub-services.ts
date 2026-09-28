@@ -1,0 +1,154 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { createDesktopInspectorService } from './create-workbar-services.js';
+import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
+import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
+import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './document-appearance.js';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import {
+  WorkHubModelConfigurationRequiredError,
+  type WorkHubServices,
+} from '../../features/workhub/index.js';
+import {
+  DesktopTranscriptRangeStore,
+  createDesktopTranscriptRangeController,
+  openDesktopTranscriptHistory,
+} from './desktop-transcript-range-store.js';
+
+export function createDesktopWorkHubServices(
+  bridge: Pick<
+    MakaBridge,
+    | 'browser'
+    | 'inspector'
+    | 'workHub'
+    | 'workHubControl'
+    | 'workHubPresentation'
+    | 'sessions'
+    | 'transcripts'
+    | 'connections'
+    | 'runtimeHostProfiles'
+    | 'settings'
+    | 'attachments'
+  > = window.maka,
+): WorkHubServices {
+  return {
+    inspector: createDesktopInspectorService(bridge),
+    bindBrowserSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
+    surface: new URLSearchParams(window.location.search).get('surface') === 'workhub' ? 'workhub' : 'main',
+    initialLocale: resolveSystemUiLocale(navigator.languages),
+    subscribeAppearance(handler) {
+      let disposed = false;
+      let revision = 0;
+      const media = window.matchMedia('(prefers-color-scheme: dark)');
+      const refresh = () => {
+        const read = ++revision;
+        void bridge.settings.getClient().then((settings) => {
+          if (disposed || read !== revision) return;
+          const dark = settings.appearance.theme === 'dark' || (settings.appearance.theme === 'auto' && media.matches);
+          applyDocumentThemeMode(dark);
+          applyDocumentThemePalette(settings.appearance.palette ?? 'default');
+          applyDocumentUiFontSize(settings.appearance.uiFontSize ?? DEFAULT_UI_FONT_SIZE);
+          handler(resolveUiLocale(settings.personalization.uiLocale ?? 'auto', resolveSystemUiLocale(navigator.languages)));
+        }).catch(() => undefined);
+      };
+      const unsubscribe = bridge.settings.subscribeClientChanged(refresh);
+      media.addEventListener('change', refresh);
+      window.addEventListener('languagechange', refresh);
+      refresh();
+      return () => { disposed = true; unsubscribe(); media.removeEventListener('change', refresh); window.removeEventListener('languagechange', refresh); };
+    },
+    presentation: bridge.workHubPresentation,
+    control: bridge.workHubControl,
+    resolve: async () => {
+      const result = await bridge.workHub.resolveCoordinationSession();
+      if (typeof result !== 'string') throw new WorkHubModelConfigurationRequiredError();
+      return result;
+    },
+    getSession: (sessionId) => bridge.workHub.getSession(sessionId),
+    subscribeHosts: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
+    subscribeAvailability: (handler) => bridge.connections.subscribeEvents(() => handler()),
+    listSessions: () => bridge.sessions.list(),
+    subscribeSessions: (handler) => bridge.sessions.subscribeChanges(handler),
+    modelChoices: async (sessionId) =>
+      (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
+    setDefaultModel: ({ llmConnectionSlug, model }) =>
+      bridge.connections.setDefaultModel({ slug: llmConnectionSlug, model }),
+    attachments: bridge.attachments,
+    readAttachmentBytes: bridge.attachments.readBytes,
+    prepareAttachments: async (sessionId, items) => {
+      const result = await bridge.workHub.prepareAttachments(sessionId, items);
+      if (!result.ok) throw new AttachmentIngestBlockedError(result.code);
+      return result.attachments;
+    },
+    listActiveInteractions: (sessionId) => bridge.sessions.listActiveInteractions(sessionId),
+    subscribeActiveInteractions: (handler) => bridge.sessions.subscribeActiveInteractions(handler),
+    respondToUserForm: (sessionId, response) => bridge.sessions.respondToUserForm(sessionId, response),
+    respondToUserQuestion: (sessionId, response) => bridge.sessions.respondToUserQuestion(sessionId, response),
+    answer: (sessionId, input) => bridge.workHub.answer(sessionId, input),
+    enqueueMessage: async (sessionId, messageId, text, attachments, placement) => {
+      const result = await bridge.sessions.submitMessage(sessionId, placement, {
+        messageId, text, retainedAttachments: attachments,
+      }, { waitForHostAdmission: true });
+      if (result.ok) return result.disposition === (placement === 'current_turn' ? 'steering' : 'followup') ? 'admitted' : 'rejected';
+      return result.reason === 'outcome_unknown' ? 'unknown' : 'rejected';
+    },
+    queryMessageExecutions: (sessionId, messageIds) =>
+      bridge.sessions.queryMessageExecutions(sessionId, messageIds),
+    retractQueueEntry: (sessionId, entryId) => bridge.sessions.retractQueueEntry(sessionId, entryId),
+    promoteQueueEntry: (sessionId, entryId) => bridge.sessions.promoteQueueEntry(sessionId, entryId),
+    reorderQueueEntries: (sessionId, entryIds) => bridge.sessions.reorderQueueEntries(sessionId, entryIds),
+    configureModel: (sessionId, input) => bridge.workHub.configureModel(sessionId, input),
+    getNewWorkDefaults: (sessionId) => bridge.workHub.getNewWorkDefaults(sessionId),
+    setNewWorkDefaults: (sessionId, defaults) =>
+      bridge.workHub.setNewWorkDefaults(sessionId, defaults),
+    observe: (sessionId, handler, onError, onPhase, onExecution) =>
+      bridge.sessions.subscribeEvents(sessionId, handler, onPhase, onError, onExecution),
+    stop: async (sessionId, turnId) => {
+      const result = await bridge.sessions.stop(sessionId, {
+        source: 'stop_button',
+        expectedTurnId: turnId,
+      });
+      return result?.kind === 'interrupted' ? result.retractedMessageIds
+        : result?.kind === 'retracted' ? [result.messageId] : undefined;
+    },
+    async openTranscript(sessionId, handler, cancellation, onError) {
+      const store = new DesktopTranscriptRangeStore(sessionId);
+      const unsubscribe = store.subscribe(() => handler(store.snapshot()));
+      const controller = createDesktopTranscriptRangeController(
+        store,
+        openDesktopTranscriptHistory(bridge.transcripts.open, sessionId, (batch) => store.accept(batch)),
+        { onError },
+      );
+      const cancel = () => { unsubscribe(); void controller.close(); };
+      cancellation.addEventListener('abort', cancel, { once: true });
+      if (cancellation.aborted) cancel();
+      return {
+        observationChanged: controller.observationChanged,
+        loadEarlier: () => controller.loadEarlier(),
+        close: () => {
+          cancellation.removeEventListener('abort', cancel);
+          unsubscribe();
+          return controller.close();
+        },
+      };
+    },
+  };
+}

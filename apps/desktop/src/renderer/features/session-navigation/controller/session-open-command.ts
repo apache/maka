@@ -40,13 +40,15 @@ export interface SessionOpenCommandDeps {
  * factory is what lets the order stay asserted after the controller's call site
  * moved below the shell (#4109).
  */
+let nextNavigation = 0;
+
 export function createSessionOpenCommand(deps: SessionOpenCommandDeps) {
   return (sessionId: string, turnId?: string, sequence?: number): void => {
     deps.exitWorkHub();
     deps.selectSessionSurface();
     deps.activateSession(sessionId);
     deps.setSearchTarget(
-      turnId ? { sessionId, turnId, sequence, nonce: Date.now() } : null,
+      turnId ? { sessionId, turnId, sequence, nonce: ++nextNavigation } : null,
     );
   };
 }

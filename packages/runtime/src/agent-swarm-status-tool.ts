@@ -162,7 +162,6 @@ export function buildAgentSwarmStatusTool(input: {
       'Read compact status-only progress for the asynchronous swarm. This omits child logs, tool activity, reasoning, and partial output.',
     parameters: z.object({}).strip(),
     categoryHint: 'read',
-    nesting: 'direct_only',
     recoveryMode: 'replay_safe',
     impl: async () => projectAgentSwarmStatus(await input.readSnapshot()),
   };

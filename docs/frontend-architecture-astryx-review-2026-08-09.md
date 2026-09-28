@@ -37,18 +37,11 @@ owners:
 **Method:** file-level inventory regen + pattern scan + deep reads of shell/settings/modules/ui; prior art `docs/astryx-full-surface-audit.md`, `DESIGN.md`, `docs/astryx-surface-file-inventory.md`  
 **Original evidence:** the committed audit at `0ad579d33` and follow-up implementation at `d68e9d775`; the scratch scan log named by the original review was not committed.
 
-> **Status (verified 2026-09-05):** this is a review record pinned to the HEAD above; its
-> citations describe that tree. Since then the workbar moved under
-> `apps/desktop/src/renderer/features/workbar/` (so `session-workbar.tsx` /
-> `session-workbar-tabs.ts` / `use-shell-layout.ts` no longer sit at their cited paths)
-> and the Astryx core patch is now `patches/@astryxdesign+core+0.5.2.patch`. The findings
-> tables below are kept as written.
-
 ---
 
 > **Historical review record.** The findings, file sizes, inventory counts, and backlog below describe the audited commit and the follow-up branch, not current `main`. Current file-level coverage is generated in [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md); current renderer ownership is recorded in `apps/desktop/renderer-architecture.json` and the feature README files.
 
-## Current status checked on 2026-09-05
+## Follow-up status checked on 2026-09-05
 
 - The generated inventory now covers **249 files: 0 blockers, 0 reimplementations, 1 polish item, and 248 aligned files**. The remaining polish row is the raw draft editor in `packages/ui/src/composer-message-queue.tsx`.
 - `WorkbarController` is now a real boundary at `apps/desktop/src/renderer/features/workbar/controller/use-workbar-controller.ts`, and `WorkbarHost` owns the rendered surface. The A3 direction below therefore landed; its old `session-workbar*` anchors no longer exist.
@@ -57,7 +50,7 @@ owners:
 - `packages/ui/src/composer.tsx` is now 2,284 lines, so the A5 concentration remains current. The tool-output implementation named in A6 now lives in `packages/ui/src/tool-activity/tool-result-preview.tsx`.
 - Astryx patches are versioned with the installed dependency. `patches/README.md` is the stable authority; do not use the `0.3.0` filename from the historical table as a current path.
 
-Reproduce the current file-level result with `npm run astryx:surface-inventory`.
+Reproduce the latest file-level result with `npm run astryx:surface-inventory`.
 
 ## Executive verdict at the audited commit
 

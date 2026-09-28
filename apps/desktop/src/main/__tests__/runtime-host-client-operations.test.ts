@@ -99,8 +99,6 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   const { client, requests } = clientWithResponses([
     { sessionId: 'maka_workhub_coordination' },
     { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-    { turnId: 'summary-turn' },
   ]);
 
   assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
@@ -110,41 +108,9 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [],
   });
-  assert.deepEqual(
-    await client.actWorkHubCoordination({
-      actionId: 'action',
-      userText: 'Question',
-      proposal: { disposition: 'answer_here' },
-    }),
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-  );
-  assert.deepEqual(
-    await client.recordWorkHubCoordination({
-      turnId: 'summary-turn',
-      userText: 'Request',
-      assistantText: 'Summary',
-    }),
-    { turnId: 'summary-turn' },
-  );
   assert.deepEqual(requests, [
     { operation: 'workhub.coordination.resolve', input: {} },
     { operation: 'workhub.coordination.candidates', input: {} },
-    {
-      operation: 'workhub.coordination.act',
-      input: {
-        actionId: 'action',
-        userText: 'Question',
-        proposal: { disposition: 'answer_here' },
-      },
-    },
-    {
-      operation: 'workhub.coordination.record',
-      input: {
-        turnId: 'summary-turn',
-        userText: 'Request',
-        assistantText: 'Summary',
-      },
-    },
   ]);
 });
 
@@ -428,6 +394,33 @@ test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async 
   );
 });
 
+test('stops a guarded Runtime Policy retry after its semantic basis changes', async () => {
+  const initial = createDefaultRuntimePolicy();
+  const changed = {
+    ...initial,
+    externalAgents: { antigravity: { executable: '/chosen/by/another/client' } },
+  };
+  const { client, requests } = clientWithResponses([
+    { revision: 1, policy: initial },
+    { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 2 },
+    { revision: 2, policy: changed },
+  ]);
+
+  const result = await client.updateRuntimePolicyIf(
+    (policy) => policy.externalAgents.antigravity.executable === '',
+    () => ({
+      kind: 'set_external_agents',
+      value: { antigravity: { executable: '/managed/agent' } },
+    }),
+  );
+
+  assert.deepEqual(result, { revision: 2, policy: changed });
+  assert.equal(
+    requests.filter(({ operation }) => operation === 'runtime.policy.mutate').length,
+    1,
+  );
+});
+
 test('treats empty configuration patches as read-only lookups', async () => {
   const unlocked = session('session-1', 10, { connectionLocked: false });
   const { client, requests } = clientWithResponses([
@@ -452,14 +445,12 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
-
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
     { queueRevision: 3 },
-    { queueRevision: 4 },
     {
-      queueRevision: 5,
+      queueRevision: 4,
       retracted: [],
       turn: {
         sessionId: 'session-1',
@@ -482,13 +473,6 @@ test('binds message controls to the current Host Epoch', async () => {
     sessionId: 'session-1',
     entryId: 'entry-1',
     retractId: 'retract-1',
-  });
-  await client.updateQueueEntry({
-    sessionId: 'session-1',
-    entryId: 'entry-1',
-    updateId: 'update-1',
-    expectedQueueRevision: 3,
-    text: 'Updated steer',
   });
   await client.interruptTurn({
     sessionId: 'session-1',
@@ -514,17 +498,6 @@ test('binds message controls to the current Host Epoch', async () => {
         sessionId: 'session-1',
         entryId: 'entry-1',
         retractId: 'retract-1',
-        originHostEpoch: 'host-current',
-      },
-    },
-    {
-      operation: 'queue.entry.update',
-      input: {
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        updateId: 'update-1',
-        expectedQueueRevision: 3,
-        text: 'Updated steer',
         originHostEpoch: 'host-current',
       },
     },
@@ -912,6 +885,42 @@ interface RecordedRequest {
   operation: OperationKey;
   input: unknown;
 }
+
+test('a relocate conflict is reported, not replayed with a stale directory', async () => {
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'session',
+      session: session('session-1', 1, {
+        workspace: { target: { kind: 'host_path', path: '/old' }, hostCwd: '/old' },
+      }),
+    },
+    { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 2 },
+  ]);
+
+  const current = await client.getSession('session-1');
+  assert.ok(current);
+  await assert.rejects(
+    () =>
+      client.relocateSessionWorkspace('session-1', current.revision, {
+        kind: 'host_path',
+        path: current.workspace.hostCwd,
+      }),
+    /kept changing during relocate/,
+  );
+
+  // One attempt, at the revision the directory was read from. A replay would
+  // commit `/old` under revision 2 — moving the Session back to a directory a
+  // concurrent writer had already left.
+  assert.deepEqual(
+    requests.map(({ operation }) => operation),
+    ['session.catalog.query', 'session.workspace.relocate'],
+  );
+  assert.deepEqual(requests[1]?.input, {
+    sessionId: 'session-1',
+    expectedRevision: 1,
+    workspace: { kind: 'host_path', path: '/old' },
+  });
+});
 
 function clientWithResponses(responses: unknown[]): {
   client: DesktopRuntimeHostClient;

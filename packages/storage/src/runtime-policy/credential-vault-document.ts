@@ -372,7 +372,10 @@ function sameLocator(left: CredentialLocator, right: CredentialLocator): boolean
   if (left.scope === 'web_search' && right.scope === 'web_search') {
     return left.provider === right.provider;
   }
-  return left.scope === 'network_proxy' && right.scope === 'network_proxy';
+  return (
+    (left.scope === 'network_proxy' && right.scope === 'network_proxy') ||
+    (left.scope === 'jev' && right.scope === 'jev')
+  );
 }
 
 function locatorKey(locator: CredentialLocator): string {
@@ -381,6 +384,8 @@ function locatorKey(locator: CredentialLocator): string {
       return `connection:${locator.connectionId}:${locator.kind}`;
     case 'web_search':
       return `web_search:${locator.provider}:api_key`;
+    case 'jev':
+      return 'jev:api_key';
     case 'network_proxy':
       return 'network_proxy:password';
   }

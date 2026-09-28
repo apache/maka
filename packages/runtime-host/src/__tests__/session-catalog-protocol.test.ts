@@ -91,6 +91,96 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('decodes a Session attention payload on a catalog change', () => {
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'session.catalog.changed',
+        revision: 4,
+        sessionId: 'session-1',
+        attention: {
+          kind: 'errored',
+          eventId: 'terminal-1',
+          body: 'Provider request failed',
+        },
+      }),
+      {
+        kind: 'session.catalog.changed',
+        revision: 4,
+        sessionId: 'session-1',
+        attention: {
+          kind: 'errored',
+          eventId: 'terminal-1',
+          body: 'Provider request failed',
+        },
+      },
+    );
+  });
+
+  test('accepts an optional run epoch in the live run state and rejects a bad one', () => {
+    const withEpoch = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: 7 },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withEpoch), withEpoch);
+
+    // A two-field live run state from a host that does not track the epoch
+    // still decodes, and stays two fields.
+    const withoutEpoch = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withoutEpoch), withoutEpoch);
+
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: -1 },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: 1.5 },
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('accepts an optional host generation in the live run state and rejects a bad one', () => {
+    const withGeneration = {
+      ...projection(),
+      liveRunState: {
+        schemaVersion: 1,
+        runningTurnIds: ['turn-1'],
+        runEpoch: 3,
+        hostGeneration: 'host-gen-1',
+      },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withGeneration), withGeneration);
+
+    // Hosts that do not track the generation keep decoding.
+    const withoutGeneration = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withoutGeneration), withoutGeneration);
+
+    for (const hostGeneration of [42, '', `x`.repeat(129), 'gen\u0000-1']) {
+      assert.throws(
+        () =>
+          decodeSessionCatalogItem({
+            ...projection(),
+            liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], hostGeneration },
+          }),
+        isProtocolError,
+        `hostGeneration ${JSON.stringify(hostGeneration)} must be rejected`,
+      );
+    }
+  });
+
   test('bounds the live running-turn collection explicitly', () => {
     const atLimit = Array.from(
       { length: SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS },
@@ -268,6 +358,52 @@ describe('Session catalog protocol', () => {
         },
       },
     );
+
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+          executorConfig: { model: 'account-model' },
+        },
+      }),
+      {
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+          executorConfig: { model: 'account-model' },
+        },
+      },
+    );
+
+    for (const input of [
+      {
+        sessionId: 'session-missing-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+      },
+      {
+        sessionId: 'session-ambiguous-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+        executorId: 'codex',
+        modelTarget: { kind: 'default' },
+      },
+    ]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            requestId: 'request-invalid-executor',
+            operation: 'session.create',
+            input,
+          }),
+        isProtocolError,
+      );
+    }
 
     assert.deepEqual(
       decodeClientFrame({
@@ -465,14 +601,14 @@ describe('Session catalog protocol', () => {
       input: {
         sessionId: 'session-mode',
         workspace: { kind: 'host_path', path: '/workspace' },
-        mode: 'deep_research',
+        mode: 'bot',
         modelTarget: { kind: 'default' },
       },
     });
     if ('kind' in decoded || decoded.operation !== 'session.create') {
       assert.fail('Expected Session create frame');
     }
-    assert.equal(decoded.input.mode, 'deep_research');
+    assert.equal(decoded.input.mode, 'bot');
     assert.throws(
       () =>
         decodeClientFrame({
@@ -481,12 +617,34 @@ describe('Session catalog protocol', () => {
           input: {
             sessionId: 'session-invalid-mode',
             workspace: { kind: 'host_path', path: '/workspace' },
-            mode: 'unknown',
+            mode: 'deep_research',
             modelTarget: { kind: 'default' },
           },
         }),
       isProtocolError,
     );
+  });
+
+  test('distinguishes a model thinking default from an explicit provider default', () => {
+    const decode = (thinkingLevel: 'high' | null | undefined) => {
+      const decoded = decodeClientFrame({
+        requestId: `request-thinking-${String(thinkingLevel)}`,
+        operation: 'session.create',
+        input: {
+          sessionId: `session-thinking-${String(thinkingLevel)}`,
+          workspace: { kind: 'host_path', path: '/workspace' },
+          modelTarget: { kind: 'default' },
+          ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+        },
+      });
+      if ('kind' in decoded || decoded.operation !== 'session.create') {
+        assert.fail('Expected Session create frame');
+      }
+      return decoded.input;
+    };
+    assert.equal(Object.hasOwn(decode(undefined), 'thinkingLevel'), false);
+    assert.equal(decode(null).thinkingLevel, null);
+    assert.equal(decode('high').thinkingLevel, 'high');
   });
 
   test('correlates committed and conflicting update outputs with the request Session', () => {
@@ -646,3 +804,40 @@ function isProtocolError(error: unknown): boolean {
 function isInvalidSessionStatus(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError && error.message === 'Invalid Session status';
 }
+
+test('executor configuration rejects ambiguous routes and malformed values', () => {
+  const base = {
+    sessionId: 'session-executor',
+    workspace: { kind: 'project', projectId: 'project-1' },
+  };
+  for (const executorConfig of [
+    null,
+    { model: '' },
+    { model: 'bad\nvalue' },
+    { mode: 'yolo' },
+    { model: 4 },
+  ]) {
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'r',
+          operation: 'session.create',
+          input: { ...base, executorId: 'remote', executorConfig },
+        }),
+      isProtocolError,
+    );
+  }
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        requestId: 'r',
+        operation: 'session.create',
+        input: { ...base, modelTarget: { kind: 'default' }, executorConfig: { model: 'other' } },
+      }),
+    isProtocolError,
+  );
+  assert.throws(
+    () => decodeSessionCatalogItem({ ...projection(), executorConfig: { model: 'other' } }),
+    isProtocolError,
+  );
+});

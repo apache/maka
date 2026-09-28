@@ -88,7 +88,10 @@ test('applies authoritative replacement once and does not complete it again at T
     ['text_delta'],
   );
   assert.deepEqual(projector.accept(deltaFrame(1, 0, 'final', { reset: true })).events, []);
-  const completed = projector.accept(deltaFrame(2, 5, '', { complete: true })).events;
+  const completed = projector.accept(
+    deltaFrame(2, 5, '', { complete: true, interrupted: true }),
+  ).events;
+  assert.ok(completed[0]?.type === 'text_complete' && completed[0].interrupted === true);
   assert.deepEqual(
     completed.map((event) => [event.type, 'text' in event ? event.text : '']),
     [['text_complete', 'final']],
@@ -320,6 +323,169 @@ test('admits an in-flight message only after its durable Turn ownership is recor
     [{ type: 'message_admission', turnId: 'turn-1', messageId: 'ticket-1' }],
   );
   assert.deepEqual(projector.noteDurableTranscriptMessages([durableMessage]), []);
+});
+
+test('admits and reseeds an ordinary follow-up from its durable root message', () => {
+  const current = snapshot();
+  const message: StoredMessage = {
+    type: 'user',
+    id: 'followup-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'Next question',
+  };
+  const projector = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([], current),
+    () => 10,
+    [],
+    true,
+  );
+  const admissions = (events: readonly SessionEvent[]) =>
+    events
+      .filter((event) => event.type === 'message_admission')
+      .map((event) => ({
+        messageId: event.messageId,
+        turnId: event.turnId,
+        outcome: event.outcome,
+      }));
+  const expected = [{ messageId: 'followup-1', turnId: 'turn-1', outcome: 'admitted' }];
+
+  assert.deepEqual(admissions(projector.noteDurableTranscriptMessages([message])), expected);
+  assert.deepEqual(projector.noteDurableTranscriptMessages([message]), []);
+  const recovered = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([message], current),
+    () => 20,
+    [],
+    true,
+  );
+  assert.deepEqual(admissions(recovered.seedActive(false)), expected);
+});
+
+test('queue disappearance does not prove a follow-up was retracted', () => {
+  const previous = snapshot({
+    queue: {
+      hostEpoch: 'host-1',
+      queueRevision: 1,
+      steering: [],
+      followup: [
+        {
+          entryId: 'entry-1',
+          messageId: 'followup-1',
+          content: { text: 'Next question' },
+          placement: 'next_turn',
+          state: 'queued',
+        },
+      ],
+    },
+  });
+  const projector = new RuntimeHostSessionProjector(
+    previous,
+    createRuntimeHostSessionProjectionSeed([], previous),
+    () => 10,
+    [],
+    true,
+  );
+  const next = snapshot({
+    projectionRevision: 2,
+    rootTurn: { sessionId: 'session-1', turnId: 'turn-2', runId: 'run-2', status: 'running' },
+    queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+  });
+
+  const update = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: next,
+  });
+  assert.deepEqual(
+    update.events.filter((event) => event.type === 'message_admission'),
+    [],
+  );
+});
+
+test('reseeds an empty queue after queued successors completed while disconnected', () => {
+  const current = snapshot({
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-3',
+      runId: 'run-3',
+      status: 'completed',
+      terminalEventId: 'complete-3',
+    },
+    queue: { hostEpoch: 'host-1', queueRevision: 7, steering: [], followup: [] },
+  });
+  const projector = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([], current),
+    () => 10,
+    [],
+    true,
+  );
+  const queue = projector.seedActive(false).find((event) => event.type === 'queue_update');
+  assert.ok(queue, 'a replacement must clear the previously rendered queue');
+  assert.equal(queue.queueRevision, 7);
+  assert.deepEqual(queue.steeringEntries, []);
+  assert.deepEqual(queue.followupEntries, []);
+});
+
+test('projects a queue drain that lands while no root Turn is live', () => {
+  // apache/maka#5520: a drain observed after the root Turn is gone must still
+  // reach the renderer, or a phantom queued card survives whose retract fails
+  // with not_found forever. Seeding stays silent for rootless snapshots — the
+  // Desktop observer pins an empty seed there — because a client that never
+  // observed the session has no stale card to clear.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const drained = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({ projectionRevision: 2, rootTurn: null, queue: queue(3, []) }),
+  });
+  assert.deepEqual(
+    drained.events.map((event) => event.type),
+    ['queue_update'],
+  );
+  const update = drained.events.find(
+    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+      event.type === 'queue_update',
+  );
+  assert.ok(update, 'the drained queue must be projected');
+  assert.deepEqual(update.steering, []);
+  assert.deepEqual(update.followup, []);
+});
+
+test('seeding a rootless snapshot conveys the authoritative queue', () => {
+  // A Desktop that navigates away unsubscribes; if the queue drains while the
+  // Session is inactive, the resubscribing client's stale queued card survives
+  // until a queue_update that the rootless seed never produced (apache/maka
+  // #5520 review). The rootless seed must carry the authoritative queue once.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ rootTurn: null, queue: queue(3, []) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const seeded = projector.seedActive(true);
+  assert.deepEqual(
+    seeded.map((event) => event.type),
+    ['queue_update'],
+  );
+  const update = seeded.find(
+    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+      event.type === 'queue_update',
+  );
+  assert.ok(update);
+  assert.deepEqual(update.steering, []);
+  assert.deepEqual(update.followup, []);
 });
 
 test('reseeds the latest provider retry when the active Turn still carries one', () => {
@@ -684,15 +850,13 @@ test('projects the durable steering echo even when the in-flight queue state was
   });
 });
 
-test('projects a steering message exactly once across both authoritative paths', () => {
-  // The queue in-flight synthesis and the durable session-event echo race;
-  // whichever projects the message first suppresses the other.
-  const inFlightFirst = new RuntimeHostSessionProjector(
+test('leaves an in-flight steering message in the queue until the runtime event places it', () => {
+  const projector = new RuntimeHostSessionProjector(
     snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
     createRuntimeHostSessionProjectionSeed([], snapshot()),
     () => 10,
   );
-  const synthesized = inFlightFirst.accept({
+  const pulled = projector.accept({
     kind: 'subscription.session_projection',
     hostEpoch: 'host-1',
     subscriptionId: 'subscription-1',
@@ -700,42 +864,34 @@ test('projects a steering message exactly once across both authoritative paths',
     snapshot: snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
   });
   assert.deepEqual(
-    synthesized.events.map((event) => event.type),
-    ['steering_message', 'queue_update'],
-  );
-  assert.deepEqual(inFlightFirst.accept(steeringFrame(2)).events, []);
-
-  const echoFirst = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-  assert.equal(echoFirst.accept(steeringFrame(1)).events.length, 1);
-  const suppressed = echoFirst.accept({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 2,
-    snapshot: snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
-  });
-  assert.deepEqual(
-    suppressed.events.map((event) => event.type),
+    pulled.events.map((event) => event.type),
     ['queue_update'],
-  );
-});
-
-test('seeds an unrendered in-flight steering message once on rejoin', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
   );
   assert.deepEqual(
     projector.seedActive(false).map((event) => event.type),
-    ['steering_message', 'queue_update'],
+    ['queue_update'],
   );
-  // A live echo of the same message arriving after the seed is the duplicate.
-  assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
+  // The runtime event takes the entry out of the queue as it places the row…
+  assert.deepEqual(
+    projector
+      .accept(steeringFrame(2))
+      .events.map((event) => (event.type === 'queue_update' ? event.steeringEntries : event.type)),
+    [[], 'steering_message'],
+  );
+  // …and the lease ack can trail it, so a queue revision before the ack keeps it out.
+  const beforeAck = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 3,
+    snapshot: snapshot({ queue: queue(4, [steeringEntry('in_flight')]) }),
+  });
+  assert.deepEqual(
+    beforeAck.events.map((event) =>
+      event.type === 'queue_update' ? event.steeringEntries : event.type,
+    ),
+    [[]],
+  );
 });
 
 test('suppresses the live echo for a steering message already durable in the bootstrap', () => {
@@ -752,10 +908,12 @@ test('suppresses the live echo for a steering message already durable in the boo
     () => 10,
   );
 
-  // Durable and in-flight: no synthesis seed…
+  // Durable and in-flight: the queue no longer lists it…
   assert.deepEqual(
-    projector.seedActive(false).map((event) => event.type),
-    ['queue_update'],
+    projector
+      .seedActive(false)
+      .map((event) => (event.type === 'queue_update' ? event.steeringEntries : event.type)),
+    [[]],
   );
   // …and the late echo of the same message is the duplicate.
   assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
@@ -810,7 +968,7 @@ function deltaFrame(
   sequence: number,
   startOffset: number,
   text: string,
-  flags: { reset?: true; complete?: true } = {},
+  flags: { reset?: true; complete?: true; interrupted?: true } = {},
 ): SubscriptionFrame {
   return {
     kind: 'subscription.session_delta',
@@ -911,4 +1069,144 @@ test('live tool_start keeps intent and argsPreview, and never fabricates args', 
   assert.equal(event.intent, '只读探索:检查渲染入口');
   assert.deepEqual(event.argsPreview, { command: 'git status --porcelain' });
   assert.equal(event.args, undefined);
+});
+
+test('seeds a context-compaction-started event for a running compaction Turn', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const seeded = projector.seedActive(true);
+  assert.equal(seeded.length, 1);
+  assert.equal(seeded[0]?.type, 'context_compaction_started');
+  assert.equal(seeded[0]?.turnId, 'turn-compact');
+});
+
+test('seeds an empty queue only for a client that renders the queue', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'running' },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  assert.deepEqual(projector.seedActive(false), []);
+  const [cleared] = projector.seedActive(true, { includeEmptyQueue: true });
+  assert.equal(cleared?.type, 'queue_update');
+  if (cleared?.type !== 'queue_update') return;
+  assert.deepEqual([cleared.steeringEntries, cleared.followupEntries], [[], []]);
+});
+
+test('emits a context-compaction-started event when a compaction Turn starts', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+  }).events;
+  assert.ok(
+    events.some(
+      (event) => event.type === 'context_compaction_started' && event.turnId === 'turn-compact',
+    ),
+  );
+});
+
+test('emits context-compaction-started on the admitted → running transition at one runId', () => {
+  // The real lifecycle keeps the same runId: `admitted` (no rootExecutionKind)
+  // then `running` / context_compact. Gating on a runId change would miss this
+  // and only surface the row on reconnect.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'admitted',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+  }).events;
+  assert.equal(events.filter((event) => event.type === 'context_compaction_started').length, 1);
+});
+
+test('projects the typed context-compaction outcome onto the completed Turn event', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'completed',
+        terminalEventId: 'terminal-1',
+        contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+      },
+    }),
+  }).events;
+  const complete = events.find((event) => event.type === 'complete');
+  assert.ok(complete);
+  assert.deepEqual(
+    complete && 'contextCompactionOutcome' in complete
+      ? complete.contextCompactionOutcome
+      : undefined,
+    { kind: 'compacted', checkpointId: 'checkpoint-1' },
+  );
 });

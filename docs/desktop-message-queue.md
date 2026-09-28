@@ -33,11 +33,14 @@ Runtime Host already owns the durable message semantics:
 ## Desktop Behavior
 
 - While a turn is active, a composer submit queues a follow-up. There is no mode switch: Send is always Send.
-- `Shift+Enter` steers the draft into the active turn once.
-- Queued messages render in a pending plate above the composer card, in send order (first at the top). Per entry the plate offers:
+- `Cmd+Enter` on macOS (`Ctrl+Enter` on Windows/Linux) steers the draft into the active turn once; while idle it sends normally.
+- `Shift+Enter` and `Alt+Enter` always insert a line break, including during an active turn.
+- Queued follow-ups render in a pending plate above the composer card, in send order (first at the top). Queued steering renders as transcript bubbles instead. Per plate entry:
   - drag the hover grip to reorder the follow-up queue,
-  - promote (立即发送) to steer the entry into the active turn,
-  - retract (收回草稿) to restore the entry into the composer draft.
+  - promote (直接发送 / Send now) to steer the entry into the active turn,
+  - edit, which works the same as on a transcript bubble,
+  - delete to retract the entry.
+- Edit, on a plate entry or a transcript bubble, retracts the entry and restores its full content (text, attachments, directory references, quotes) into the originating Session's composer draft, so a half-edited message can never run; resending queues it at the tail. Delete only retracts.
 - Queue contents and mutations are Runtime Host operations (`turn.message.submit`, `queue.entry.promote`, `queue.entry.retract`, `queue.entries.reorder`); the renderer mirrors the authoritative projection.
 - Identical active toasts reuse one toast instead of stacking duplicates.
 
@@ -47,4 +50,4 @@ Submission routing reads the synchronous live-turn ref and the latest session ca
 
 ## Deliberate Scope
 
-Per-entry queue mutation is limited to reorder, promote-to-steering, and retract-to-draft. Editing a queued entry in place, pausing the queue, and cross-session moves still require separate Runtime Host protocol and durability review.
+Per-entry queue mutation is limited to reorder, promote-to-steering, edit, and retract. Pausing the queue and cross-session moves still require separate Runtime Host protocol and durability review.

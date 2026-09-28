@@ -17,6 +17,14 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  PROJECT_DIRECTORY_PAGE_MAX_BYTES,
+  PROJECT_DIRECTORY_PAGE_MAX_ITEMS,
+  type ProjectDirectoryQueryResult,
+  type ProjectDirectoryQueryInput,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -149,5 +157,66 @@ test('Project directory continuation returns each contained folder once', async 
     );
   } finally {
     await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('Project directory reserves the candidate name even when a null-cursor final page would fit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-directory-budget-'));
+  try {
+    const authority = new HostProjectDirectoryAuthority([{ label: 'Root', path: root }]);
+    const roots = await authority.query({ kind: 'directory_roots' });
+    assert.ok(roots.kind === 'directory_roots');
+    const rootId = roots.roots[0]!.id;
+    const names = Array.from(
+      { length: 128 },
+      (_, index) => `folder-${String(index).padStart(3, '0')}-${'x'.repeat(230)}`,
+    );
+    const finalPage = () => ({
+      kind: 'directory_page',
+      rootId,
+      segments: [],
+      entries: names.map((name) => ({ name })),
+      nextCursor: null,
+    });
+    let padding =
+      PROJECT_DIRECTORY_PAGE_MAX_BYTES - Buffer.byteLength(JSON.stringify(finalPage()), 'utf8');
+    assert.ok(padding > 0);
+    for (let index = 0; index < names.length; index += 1) {
+      const added = Math.min(padding, 255 - names[index]!.length);
+      names[index] += 'x'.repeat(added);
+      padding -= added;
+    }
+    assert.equal(padding, 0);
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(finalPage()), 'utf8'),
+      PROJECT_DIRECTORY_PAGE_MAX_BYTES,
+    );
+    await Promise.all(names.map((name) => mkdir(join(root, name))));
+    const pages: Extract<ProjectDirectoryQueryResult, { kind: 'directory_page' }>[] = [];
+    let input: ProjectDirectoryQueryInput = { kind: 'directory_list_start', rootId, segments: [] };
+    let end = 0;
+    do {
+      const page = await authority.query(input);
+      assert.ok(page.kind === 'directory_page');
+      assert.ok(page.entries.length > 0);
+      pages.push(page);
+      end += page.entries.length;
+      assert.equal(page.nextCursor, end < names.length ? names[end - 1] : null);
+      if (page.nextCursor === null) break;
+      input = { kind: 'directory_list_continue', rootId, segments: [], cursor: page.nextCursor };
+    } while (end < names.length);
+    assert.equal(pages.length, 2);
+    assertMaximalJsonPages(
+      pages,
+      names.map((name) => ({ name })),
+      {
+        maxBytes: PROJECT_DIRECTORY_PAGE_MAX_BYTES,
+        maxItems: PROJECT_DIRECTORY_PAGE_MAX_ITEMS,
+        items: (page) => page.entries,
+        candidate: (page, entries, end) => ({ ...page, entries, nextCursor: names[end - 1] }),
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

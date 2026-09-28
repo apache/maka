@@ -92,8 +92,9 @@ export async function writeConnections(
   const noModels: ConnectionCatalogEntryDraft = {
     slug: 'no-models',
     name: 'No Models Fixture',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     baseUrl: 'https://empty.example.test/v1',
+    defaultApiProtocol: 'openai-chat',
     enabled: true,
     enabledModelIds: [],
   };

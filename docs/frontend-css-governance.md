@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-28
 owners:
   - maka-backend
 ---
@@ -40,11 +40,12 @@ Maka's frontend styling combines Astryx, `@maka/ui` product compositions, and re
 - `apps/desktop/src/renderer/styles.css` is an entry file only.
 - It may contain `@import` and other top-level orchestration statements.
 - New per-surface selector blocks belong in `apps/desktop/src/renderer/styles/**/*.css`.
-- `cascade-layers.css`, `maka-tokens.css`, and `reference-shell.css` are deliberate root-level exceptions. The first declares cascade order, the second owns shared renderer tokens and legacy recipes, and the third carries transitional shell compatibility. Do not add ordinary surface rules to them.
+- `cascade-layers.css` declares cascade order, and `maka-tokens.css` owns shared renderer tokens and the type-role table. Document-level defaults live in `styles/document.css`; ordinary surface rules belong in `styles/**/*.css`.
 
 ### Selector naming
 
 - New selectors shared across renderer surfaces or exported by `@maka/ui` use the kebab-case `.maka-*` dialect.
+- `agents-*` class names are frozen: keep the existing ones, add no new `agents-*` selectors or class names.
 - The established `styles/settings/**` surface uses camelCase `.settings*` selectors. Keep that dialect for settings-local selectors instead of mixing both forms within one surface.
 - Feature-local namespaces already exist, including `.workhub-*`. Keep them local to their feature; do not turn them into a second cross-surface dialect. Legacy `.agents-*` and `.detailPane` names are compatibility debt, not examples for new selectors.
 - Moving existing settings selectors between concern files does not require a repository-wide rename; any future naming migration should be handled as an explicit compatibility change.
@@ -52,7 +53,7 @@ Maka's frontend styling combines Astryx, `@maka/ui` product compositions, and re
 ## 2. Layers
 
 - `apps/desktop/src/renderer/cascade-layers.css` is the single owner of the order: `reset`, `theme`, `base`, `astryx-components`, `astryx-tokens`, then `components`.
-- `styles.css` imports Astryx's neutral component sheet into `astryx-components`, the generated Maka theme into `astryx-tokens`, and `@maka/ui` plus renderer surfaces into `components`. `maka-tokens.css` declares its own `base` and `components` blocks.
+- `styles.css` imports Astryx's neutral component sheet into `astryx-components`, the generated Maka theme into `astryx-tokens`, and `@maka/ui` plus renderer surfaces into `components`. `maka-tokens.css` declares a `base` block for type roles; `styles/document.css` declares its own `base` block and keeps global motion and icon rules unlayered.
 - Keep ordinary product presentation in `components`. Use another existing layer only when that layer owns the rule's semantics.
 - Use `@import "./file.css" layer(components)` only when the build chain explicitly supports it.
 - Do not place `@import` inside an `@layer` block.
@@ -62,7 +63,7 @@ Keep layer ownership at the closest existing seam instead of adding a higher-pri
 ## 3. `!important`
 
 - Default exceptions are accessibility helpers such as `.maka-visually-hidden`, reduced-motion and e2e-fixture overrides, and the centralized native-cursor policy.
-- Narrow compatibility and product overrides remain in `reference-shell.css`, `styles/settings/usage.css`, `styles/shell-layout.css`, `styles/sidebar.css`, and `packages/ui/src/styles.css`. The shell layout override keeps SideNav width following its animated wrapper; sidebar overrides reconcile SideNav spacing and borders with unlayered StyleX rules. They are explicit debt or bounded component fixes, not precedent for another override.
+- Narrow compatibility and product overrides remain in `styles/settings/usage.css`, `styles/shell-layout.css`, `styles/sidebar.css`, and `packages/ui/src/styles.css`. The shell layout override keeps SideNav width following its animated wrapper; sidebar overrides reconcile SideNav appearance and spacing with unlayered StyleX rules. They are explicit debt or bounded component fixes, not precedent for another override.
 - Every new use outside the default exceptions needs an adjacent comment that names the competing rule, explains why the normal component or layer seam cannot express the fix, and states when the override can be removed. `Justified:` is the conventional marker.
 - Prefer fixing the primitive API or semantic class when it can express the behavior directly.
 
@@ -89,7 +90,7 @@ Story prose are not decided by repository-wide regex baselines.
 
 When changing renderer CSS:
 
-1. Move real rule blocks out of `styles.css` into surface files.
+1. Keep `styles.css` as an import entry and place rules in the owning surface file.
 2. Keep generic component chrome in Astryx and product composition in `@maka/ui` or the matching renderer surface.
 3. Remove dead selectors.
 4. Remove remaining `!important` only after primitive and layer ownership is stable.

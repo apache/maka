@@ -35,7 +35,7 @@ import assert from 'node:assert/strict';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 import {
@@ -135,24 +135,6 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
   },
   {
     keys: [
-      'openai-responses-compatible:exact-model-id',
-      'openai-responses-compatible:tool-loop',
-      'openai-responses-compatible:reasoning-replay',
-    ],
-    title: 'Custom OpenAI Responses relay preserves exact model ids and tool results',
-    run: () =>
-      runOpenAIResponsesWire({
-        providerType: 'openai-responses-compatible',
-        slug: 'responses-relay',
-        name: 'Responses Relay',
-        basePath: '/relay/v1',
-        modelId: 'relay-responses-model',
-        apiKey: 'responses-relay-key',
-        statelessReasoning: true,
-      }),
-  },
-  {
-    keys: [
       'volcengine-agent-plan:exact-model-id',
       'volcengine-agent-plan:tool-loop',
       'volcengine-agent-plan:reasoning-replay',
@@ -167,6 +149,24 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         modelId: 'ark-code-latest',
         apiKey: 'volcengine-agent-plan-test-key',
         statelessReasoning: true,
+      }),
+  },
+  {
+    keys: [
+      'moonshot-global:exact-model-id',
+      'moonshot-global:tool-loop',
+      'moonshot-global:reasoning-replay',
+    ],
+    title: 'Moonshot Global replays Kimi summary-only reasoning items across a Responses tool loop',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'moonshot-global',
+        slug: 'moonshot-global',
+        name: 'Moonshot Global',
+        basePath: '/v1',
+        modelId: 'kimi-k3',
+        apiKey: 'moonshot-global-test-key',
+        summaryReasoning: true,
       }),
   },
   {
@@ -331,7 +331,7 @@ async function runCloudflareDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  assert.deepEqual(await fetchProviderModels(connection, 'cloudflare-test-token'), [
+  assert.deepEqual(await discoverModels(connection, 'cloudflare-test-token'), [
     { id: '@cf/meta/llama-text' },
   ]);
 }
@@ -348,12 +348,20 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
     assert.equal(request.headers['x-github-api-version'], '2026-06-01');
     respondJson(response, 200, {
       data: [
-        copilotModel('gpt-5.4', ['/responses']),
+        {
+          ...copilotModel('gpt-5.4', ['/responses']),
+          // Current GitHub clients also accept models with no policy gate.
+          policy: undefined,
+        },
         copilotModel('claude-sonnet-4.6', ['/v1/messages']),
         copilotModel('gemini-3.1-pro-preview', ['/chat/completions']),
         {
           ...copilotModel('disabled-by-policy', ['/chat/completions']),
           policy: { state: 'disabled' },
+        },
+        {
+          ...copilotModel('policy-not-accepted', ['/chat/completions']),
+          policy: { state: 'unconfigured' },
         },
         {
           ...copilotModel('hidden-from-picker', ['/chat/completions']),
@@ -368,7 +376,7 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
     });
   });
 
-  const models = await fetchProviderModels(
+  const models = await discoverModels(
     {
       slug: 'github-copilot',
       name: 'GitHub Copilot',
@@ -514,7 +522,7 @@ async function runGitHubCopilotWire(): Promise<void> {
     createdAt: 1,
     updatedAt: 1,
   };
-  const models = await fetchProviderModels(connection, 'github-account-token');
+  const models = await discoverModels(connection, 'github-account-token');
   connection.models = models;
   const modelFetch = buildSubscriptionModelFetch({
     connection,
@@ -723,7 +731,7 @@ async function runFireworksDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  const models = await fetchProviderModels(connection, 'fireworks-test-key');
+  const models = await discoverModels(connection, 'fireworks-test-key');
   assert.deepEqual(models, [
     {
       id: 'accounts/acme/models/custom-agent',
@@ -855,7 +863,7 @@ async function assertOllamaModelContract(
   };
 
   assert.deepEqual(
-    await fetchProviderModels(connection, ''),
+    await discoverModels(connection, ''),
     discoveredModelIds.map((id) => ({ id })),
   );
 
@@ -983,7 +991,7 @@ async function runCohereDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  const models = await fetchProviderModels(connection, 'cohere-test-key');
+  const models = await discoverModels(connection, 'cohere-test-key');
   assert.deepEqual(models, [
     { id: modelId, contextWindow: 128_000 },
     { id: 'command-a-reasoning-08-2025', contextWindow: 256_000 },
@@ -1041,8 +1049,9 @@ async function runCohereDiscovery(): Promise<void> {
   assert.equal(result.text, 'Echoed hello.');
 }
 
-async function runOpenAIResponsesWire(input: {
+export async function runOpenAIResponsesWire(input: {
   providerType: LlmConnection['providerType'];
+  defaultApiProtocol?: LlmConnection['defaultApiProtocol'];
   slug: string;
   name: string;
   basePath: string;
@@ -1050,9 +1059,12 @@ async function runOpenAIResponsesWire(input: {
   apiKey: string;
   statelessReasoning?: boolean;
   plaintextReasoning?: boolean;
+  /** The provider's real carrier: a reasoning item with summary and no encrypted_content. */
+  summaryReasoning?: boolean;
 }): Promise<void> {
   const {
     providerType,
+    defaultApiProtocol,
     slug,
     name,
     basePath,
@@ -1060,8 +1072,9 @@ async function runOpenAIResponsesWire(input: {
     apiKey,
     statelessReasoning,
     plaintextReasoning,
+    summaryReasoning,
   } = input;
-  const hasReasoning = statelessReasoning || plaintextReasoning;
+  const hasReasoning = statelessReasoning || plaintextReasoning || summaryReasoning;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
@@ -1094,7 +1107,15 @@ async function runOpenAIResponsesWire(input: {
                     content: [{ type: 'reasoning_text', text: 'Use echo.' }],
                   },
                 ]
-              : []),
+              : summaryReasoning
+                ? [
+                    {
+                      type: 'reasoning',
+                      id: 'rs_relay_tool',
+                      summary: [{ type: 'summary_text', text: 'Use echo.' }],
+                    },
+                  ]
+                : []),
           {
             type: 'function_call',
             id: 'fc_relay_echo',
@@ -1130,6 +1151,7 @@ async function runOpenAIResponsesWire(input: {
     slug,
     name,
     providerType,
+    ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
     baseUrl: `${server.url}${basePath}`,
     defaultModel: modelId,
     enabled: true,
@@ -1180,6 +1202,22 @@ async function runOpenAIResponsesWire(input: {
         id: 'rs_relay_tool',
         summary: [],
         content: [{ type: 'reasoning_text', text: 'Use echo.' }],
+      },
+    );
+  }
+  if (summaryReasoning) {
+    // Replay does not depend on server-side retention, so the dialect sends
+    // no `store` field unless a compatibility profile forces one.
+    assert.equal(requestBodies[0]?.store, undefined);
+    assert.equal(requestBodies[1]?.store, undefined);
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_relay_tool',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
       },
     );
   }

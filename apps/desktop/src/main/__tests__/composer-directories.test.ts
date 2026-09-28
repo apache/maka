@@ -25,7 +25,7 @@ import { normalizeSessionSendCommand } from '../permission-response-guard.js';
 import {
   useComposerAttachments,
   type ComposerAttachmentService,
-} from '../../renderer/use-composer-attachments.js';
+} from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
@@ -142,4 +142,14 @@ test('IPC validates directory references without turning them into attachments o
       type: 'send', text: 'inspect', directoryReferences: references,
     }), /Invalid directory references/);
   }
+});
+
+test('restoreDirectories stages references under another draft for a later visit', async () => {
+  const probe = await mount();
+  await act(() => probe.state().restoreDirectories('draft-b', [reference]));
+  assert.deepEqual(probe.state().pendingDirectories, [], 'draft-a stays untouched');
+  await probe.render({ draftKey: 'draft-b' });
+  assert.deepEqual(probe.state().pendingDirectories, [reference]);
+  await act(() => probe.state().restoreDirectories('draft-b', [reference, reference]));
+  assert.deepEqual(probe.state().pendingDirectories, [reference], 'duplicates stay out');
 });

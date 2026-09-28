@@ -26,7 +26,6 @@ import {
 } from '../model-metadata.js';
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import {
-  authorizeConnectionModel,
   effectiveBaseUrl,
   normalizeConnectionBaseUrl,
   providerAuthRequiresSecret,
@@ -34,6 +33,7 @@ import {
   providerAuthSupportsApiKey,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
+  validateSlug,
   type IdentifiedLlmConnection,
   type ProviderType,
 } from '../llm-connections.js';
@@ -57,6 +57,17 @@ function chatModelChoicesFor(
     })),
   );
 }
+
+test('slug validation returns stable issues and preserves format and length boundaries', () => {
+  for (const slug of ['', '  ']) assert.equal(validateSlug(slug), 'required');
+  for (const slug of ['A-slug', 'with space', '-slug', 'slug-', 'a']) {
+    assert.equal(validateSlug(slug), 'format', slug);
+  }
+  assert.equal(validateSlug('a'.repeat(65)), 'too_long');
+  for (const slug of ['ab', 'valid-slug-1', 'a'.repeat(64)]) {
+    assert.equal(validateSlug(slug), null, slug);
+  }
+});
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   assert.equal(validateConnectionBaseUrl(undefined), null);
@@ -123,6 +134,52 @@ test('a fetch never deletes a choice the user made', () => {
   assert.deepEqual(
     reconcileConnectionAfterModelFetch({ defaultModel: 'saved', enabledModelIds: ['saved'] }, []),
     { defaultModel: 'saved', enabledModelIds: ['saved'] },
+  );
+});
+
+test('an authoritative account catalog removes unavailable bootstrap and stale models', () => {
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'fallback-unavailable',
+        enabledModelIds: ['fallback-unavailable', 'account-available'],
+        hasModelInventory: false,
+      },
+      [{ id: 'account-available' }, { id: 'newly-available' }],
+      { authoritative: true },
+    ),
+    {
+      defaultModel: 'account-available',
+      enabledModelIds: ['account-available', 'newly-available'],
+    },
+  );
+  // Once an account inventory exists, a refresh removes withdrawn selections
+  // without automatically opting the user into newly introduced models.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'account-available',
+        enabledModelIds: ['account-available', 'withdrawn'],
+        hasModelInventory: true,
+      },
+      [{ id: 'account-available' }, { id: 'newly-available' }],
+      { authoritative: true },
+    ),
+    { defaultModel: 'account-available', enabledModelIds: ['account-available'] },
+  );
+  // Losing every selected model does not silently opt the user into the first
+  // catalogue entry. A model that later returns remains available but opt-in.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'withdrawn',
+        enabledModelIds: ['withdrawn'],
+        hasModelInventory: true,
+      },
+      [{ id: 'replacement' }],
+      { authoritative: true },
+    ),
+    { defaultModel: '', enabledModelIds: [] },
   );
 });
 
@@ -266,7 +323,7 @@ test('chat model choices project exact vision support for attachment composition
       connectionId: 'connection-vision',
       slug: 'openai-compatible',
       name: 'OpenAI compatible',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabled: true,
       defaultModel: 'text-model',
       enabledModelIds: ['text-model', 'vision-model'],
@@ -294,7 +351,7 @@ test('chat model choices keep provider metadata separate from user context decla
       connectionId: 'connection-context',
       slug: 'openai-compatible',
       name: 'OpenAI compatible',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabled: true,
       defaultModel: 'declared-model',
       enabledModelIds: ['declared-model', 'reported-model'],
@@ -302,7 +359,7 @@ test('chat model choices keep provider metadata separate from user context decla
         { id: 'declared-model', contextWindow: 64_000, inputLimit: 48_000 },
         { id: 'reported-model', contextWindow: 128_000 },
       ],
-      relayModelProfiles: { 'declared-model': { contextWindow: 32_000 } },
+      modelOverrides: { 'declared-model': { compactionThreshold: 32_000 } },
       createdAt: 1,
       updatedAt: 1,
     },
@@ -357,41 +414,18 @@ test('provider recognition does not resolve inherited object members', () => {
   }
 });
 
-test('a quarantined model id is vetoed even when enabled and present in the inventory', () => {
+test('stored OpenCode Free models cannot be selected', () => {
   const connection = {
-    providerType: 'opencode-free' as ProviderType,
-    enabledModelIds: ['nemotron-3-ultra-free', 'muse-spark-1.2-contributor-free'],
-    models: [{ id: 'nemotron-3-ultra-free' }, { id: 'muse-spark-1.2-contributor-free' }],
-  };
-  assert.equal(authorizeConnectionModel(connection, 'muse-spark-1.2-contributor-free'), undefined);
-  assert.deepEqual(authorizeConnectionModel(connection, 'nemotron-3-ultra-free'), {
-    id: 'nemotron-3-ultra-free',
-  });
-});
-
-test('a quarantined stored default is dropped from the picker, not re-added as a missing-default row', () => {
-  // The retired `x-preview-f-free` was picker-visible before the quarantine, so
-  // an upgrade connection can carry it as `defaultModel` and enabled. `models`
-  // and `enabledModelIds` are filtered against `brokenModelIds`, but the raw
-  // `defaultModel` used to pass through unfiltered and `makeMissingDefaultEntry`
-  // re-added it as a selectable `provider_default` row — visible and pickable
-  // while `authorizeConnectionModel` vetoed the same id. The picker and the send
-  // authority must agree: neither offers it, and the live model still renders.
-  const connection = {
-    connectionId: 'connection-opencode-free',
+    connectionId: 'stored-free',
     slug: 'opencode-free',
     name: 'OpenCode Free',
     providerType: 'opencode-free' as ProviderType,
     enabled: true,
-    defaultModel: 'x-preview-f-free',
-    enabledModelIds: ['x-preview-f-free', 'nemotron-3-ultra-free'],
-    models: [{ id: 'x-preview-f-free' }, { id: 'nemotron-3-ultra-free' }],
-    modelSource: 'fetched' as const,
+    defaultModel: 'nemotron-3-ultra-free',
+    enabledModelIds: ['nemotron-3-ultra-free'],
+    models: [{ id: 'nemotron-3-ultra-free' }],
     createdAt: 1,
     updatedAt: 1,
   };
-  const models = chatModelChoicesFor([connection]).map(({ model }) => model);
-  assert.ok(!models.includes('x-preview-f-free'), 'quarantined default must not be offered');
-  assert.ok(models.includes('nemotron-3-ultra-free'), 'live enabled model still renders');
-  assert.equal(authorizeConnectionModel(connection, 'x-preview-f-free'), undefined);
+  assert.deepEqual(chatModelChoicesFor([connection]), []);
 });

@@ -26,6 +26,7 @@
  * writer could set independently of the events.
  */
 
+import type { CloudActivationOrigin, WorkHubResultOrigin } from './turn-origin.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import type {
   RuntimeEvent,
@@ -33,6 +34,14 @@ import type {
   RuntimeInvocationLineage,
 } from './runtime-event.js';
 import { isTerminalRuntimeEvent } from './runtime-event.js';
+import type { WorkHubRoutingDecision } from './workhub-routing.js';
+
+/** Persisted namespace used only by deterministic legacy-transcript conversion runs. */
+export const TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX = 'transcript-' as const;
+
+export function mayBeTranscriptLedgerInvocationId(invocationId: string): boolean {
+  return invocationId.startsWith(TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX);
+}
 
 export interface RuntimeInvocationRecord {
   sessionId: string;
@@ -228,7 +237,7 @@ export function isSessionInlineInvocation(opening: RuntimeEventInvocationOpenedC
   const lineage = opening.lineage;
   return (
     lineage?.parentRunId === undefined ||
-    (opening.source.kind === 'continuation' && lineage.agentId === undefined)
+    (opening.source.kind !== 'fresh' && lineage.agentId === undefined)
   );
 }
 
@@ -237,11 +246,22 @@ export type RootExecutionDescriptor =
       kind: 'external_message';
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
+      /** Caller-authored trigger retained so recovery preserves its authority class. */
+      origin?: CloudActivationOrigin;
     }
   | {
-      /** Tool-free conversational execution admitted only by WorkHub authority. */
+      /** Conversational execution admitted only by WorkHub authority. */
       kind: 'workhub_coordination';
+      /** Host-authenticated Desktop provider identity, including its credential owner. */
+      capabilityBinding?: `sha256:${string}`;
+      operation?: 'action';
+      /** Stable request identity shared by physical action retries. */
+      actionId?: string;
       inputDigest: `sha256:${string}`;
+      /** Model-derived, Policy-owned advice bound before the main Turn starts. */
+      routingDecision?: WorkHubRoutingDecision;
+      /** Host-owned result delivery; never admitted by the public answer endpoint. */
+      feedback?: WorkHubResultOrigin;
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }

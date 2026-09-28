@@ -28,6 +28,7 @@ import { findProjectByIdentity } from '@maka/core/project';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
   RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+  OpenHostHandoffSurface,
 } from '@maka/runtime-host/client';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -49,11 +50,13 @@ import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-
 import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
+  connectRuntimeHostCliConnection,
   readHostChatDefaultPermissionMode,
   resolveRuntimeHostCliTarget,
 } from './runtime-host-cli-context.js';
 import type {
   ConnectionIdentity,
+  MakaExternalSessionSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
@@ -112,18 +115,44 @@ export interface RuntimeHostTuiContext {
   };
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
+  readonly externalSessions: MakaExternalSessionSurface;
   readonly mcp?: TuiMcpManagement;
   readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
 }
 
 export interface CreateRuntimeHostTuiContextInput {
+  readonly handoffSurface?: OpenHostHandoffSurface;
   readonly clientDataRoot: string;
   readonly rootPath: string;
   readonly cwd: string;
   readonly resumeSessionId?: string;
   readonly hostProfileId?: string;
   readonly projectId?: string;
+}
+
+export function createRuntimeHostExternalSessionSurface(
+  connection: RuntimeHostConnection,
+  getCurrentWorkspace: () => WorkspaceTarget | undefined,
+): MakaExternalSessionSurface {
+  return {
+    listScopes: () => (getCurrentWorkspace() ? ['current_workspace', 'all'] : ['all']),
+    listSources: async () =>
+      (await connection.request('external-session.source.query', {})).adapterIds,
+    listSessions: async ({ adapterId, scope, cursor, text }) => {
+      const currentWorkspace = getCurrentWorkspace();
+      if (scope === 'current_workspace' && !currentWorkspace) {
+        throw new Error('The current Session workspace is unavailable');
+      }
+      return connection.request('external-session.catalog.query', {
+        adapterId,
+        ...(scope === 'current_workspace' ? { workspace: currentWorkspace } : {}),
+        ...(cursor ? { cursor } : {}),
+        ...(text ? { text } : {}),
+      });
+    },
+    importSession: (request) => connection.request('external-session.import', request),
+  };
 }
 
 export async function createRuntimeHostTuiContext(
@@ -133,6 +162,7 @@ export async function createRuntimeHostTuiContext(
     clientDataRoot: input.clientDataRoot,
     rootPath: input.rootPath,
     interactiveSsh: true,
+    ...(input.handoffSurface ? { handoffSurface: input.handoffSurface } : {}),
     ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),
   });
   const connection = connected.connection;
@@ -207,6 +237,15 @@ export async function createRuntimeHostTuiContext(
         choice.connectionSlug === selectedTarget.connectionSlug &&
         choice.model === selectedTarget.model,
     )?.contextWindow;
+    const onboarding = createRuntimeHostOnboardingSurface(connection, {
+      connectOAuth: (signal) =>
+        connectRuntimeHostCliConnection({
+          clientDataRoot: input.clientDataRoot,
+          rootPath: input.rootPath,
+          profileId: connected.profile.id,
+          signal,
+        }),
+    });
     return {
       connection,
       driver,
@@ -247,25 +286,37 @@ export async function createRuntimeHostTuiContext(
         ),
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),
-      onboarding: createRuntimeHostOnboardingSurface(connection),
+      onboarding,
+      externalSessions: createRuntimeHostExternalSessionSurface(connection, () =>
+        driver.getWorkspaceTarget(),
+      ),
       ...(mcp ? { mcp } : {}),
       profile: connected.profile,
-      close: () => closeRuntimeHostTuiContext(mcp, owner, connected.close),
+      close: () => closeRuntimeHostTuiContext(onboarding, mcp, owner, connected.close),
     };
   } catch (error) {
-    await closeRuntimeHostTuiContext(mcp, sessionCopyCleanupOwner, connected.close).catch(
-      () => undefined,
-    );
+    await closeRuntimeHostTuiContext(
+      undefined,
+      mcp,
+      sessionCopyCleanupOwner,
+      connected.close,
+    ).catch(() => undefined);
     throw error;
   }
 }
 
 async function closeRuntimeHostTuiContext(
+  onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface> | undefined,
   mcp: TuiMcpController | undefined,
   sessionCopyCleanupOwner: ProcessLifetimeOwner | undefined,
   closeConnection: () => Promise<void>,
 ): Promise<void> {
   const errors: unknown[] = [];
+  try {
+    await onboarding?.close();
+  } catch (error) {
+    errors.push(error);
+  }
   try {
     await mcp?.close();
   } catch (error) {

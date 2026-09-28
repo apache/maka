@@ -78,15 +78,14 @@ export function beginLiveContentSeed(
 export function completeLiveContentSeed(
   current: LiveContentSeed,
   sessionId: string,
-  generation: number,
 ): LiveContentSeed {
-  if (current.sessionId !== sessionId || current.generation !== generation) {
+  if (current.sessionId !== sessionId) {
     return current;
   }
   return {
     sessionId,
-    generation,
-    readyGeneration: generation,
+    generation: current.generation,
+    readyGeneration: current.generation,
   };
 }
 

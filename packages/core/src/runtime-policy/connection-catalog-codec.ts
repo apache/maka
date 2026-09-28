@@ -18,14 +18,16 @@
  */
 
 import {
+  isModelApiProtocol,
   isModelModality,
-  isRelayProviderType,
   effectiveBaseUrl,
   PROVIDER_REGISTRY,
   providerDefaultsOf,
   validateSlug,
+  type ModelApiProtocol,
   type ModelModality,
   type ProviderType,
+  type SlugValidationIssue,
 } from '../llm-connections.js';
 import {
   CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
@@ -35,7 +37,7 @@ import {
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
-  type RelayModelProfile,
+  type ModelOverride,
   type ThinkingLevel,
 } from '../model-thinking.js';
 import type {
@@ -75,8 +77,8 @@ export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
 export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
 /**
- * A resolved entry exists for every stored model, for every enabled id the
- * inventory never listed, for the connection default when it lists none, and —
+ * A resolved entry exists for every stored model and profile, for every enabled
+ * id the inventory never listed, for the connection default when it lists none, and —
  * on a provider with no model-list endpoint — for every model that provider
  * ships, which the resolver prepends rather than substitutes.
  *
@@ -86,7 +88,7 @@ export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
  * rejected on arrival, leaving every client with no models to choose from.
  */
 export const CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION =
-  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION +
+  2 * CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION +
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS +
   MAX_PREPENDED_FALLBACK_MODELS +
   1;
@@ -151,30 +153,31 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
       'name',
       'providerType',
       'baseUrl',
+      'defaultApiProtocol',
       'enabled',
       'enabledModelIds',
-      'relayModelProfiles',
+      'modelOverrides',
       'requestBodyOverlay',
     ],
     ['slug', 'name', 'providerType', 'enabled', 'enabledModelIds'],
   );
   const providerType = decodeProviderType(item.providerType);
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl, providerType);
+  const defaultApiProtocol = decodeDefaultApiProtocol(item.defaultApiProtocol, providerType);
   const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
   const requestBodyOverlay =
     item.requestBodyOverlay === undefined
       ? undefined
       : decodeRequestBodyOverlay(item.requestBodyOverlay);
   const profiles =
-    item.relayModelProfiles === undefined
-      ? {}
-      : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
-  assertProfileFieldsFitProvider(profiles.relayModelProfiles, providerType);
+    item.modelOverrides === undefined ? {} : nonEmptyRelayProfiles(item.modelOverrides);
+  assertProfileFieldsFitProvider(profiles.modelOverrides, providerType);
   return {
     slug: decodeConnectionSlug(item.slug),
     name: decodeConnectionName(item.name),
     providerType,
     ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
     enabled: booleanValue(item.enabled, 'connection enabled'),
     enabledModelIds,
     ...profiles,
@@ -188,7 +191,7 @@ export function normalizeConnectionCatalogEntryUpdate(
   const item = exactRecord(
     value,
     'connection update',
-    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles', 'requestBodyOverlay'],
+    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'modelOverrides', 'requestBodyOverlay'],
     ['name', 'enabled', 'enabledModelIds'],
   );
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl);
@@ -207,22 +210,16 @@ export function normalizeConnectionCatalogEntryUpdate(
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: booleanValue(item.enabled, 'connection enabled'),
     enabledModelIds,
-    ...(item.relayModelProfiles === undefined
-      ? {}
-      : profilesUpdateInstruction(item.relayModelProfiles, enabledModelIds)),
+    ...(item.modelOverrides === undefined ? {} : profilesUpdateInstruction(item.modelOverrides)),
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   };
 }
 
-function profilesUpdateInstruction(
-  value: unknown,
-  enabledModelIds: readonly string[],
-): { readonly relayModelProfiles: Readonly<Record<string, RelayModelProfile>> | null } {
+function profilesUpdateInstruction(value: unknown): {
+  readonly modelOverrides: Readonly<Record<string, ModelOverride>> | null;
+} {
   return {
-    relayModelProfiles:
-      value === null
-        ? null
-        : (nonEmptyRelayProfiles(value, enabledModelIds).relayModelProfiles ?? null),
+    modelOverrides: value === null ? null : (nonEmptyRelayProfiles(value).modelOverrides ?? null),
   };
 }
 
@@ -232,15 +229,13 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
-  assertProfileFieldsFitProvider(update.relayModelProfiles, providerType);
+  assertProfileFieldsFitProvider(update.modelOverrides, providerType);
   return {
     name: update.name,
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: update.enabled,
     enabledModelIds: update.enabledModelIds,
-    ...(update.relayModelProfiles === undefined
-      ? {}
-      : { relayModelProfiles: update.relayModelProfiles }),
+    ...(update.modelOverrides === undefined ? {} : { modelOverrides: update.modelOverrides }),
     ...(update.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: update.requestBodyOverlay }),
@@ -251,16 +246,15 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
  * The relay profiles carried by catalog entries, keyed by model id. Strict
  * on purpose: writers (the settings UI) emit already-normalized tables, so
  * anything malformed here is a corrupt document or a foreign writer, and
- * the catalog fails loudly the way every exactRecord does. Profiles are
- * scoped to `enabledModelIds` — the store prunes them when the selection
- * changes, so a key outside the set marks a document the store never wrote.
+ * the catalog fails loudly the way every exactRecord does. Profiles also
+ * describe disabled models; selection controls use, not configuration.
  */
-export function decodeRelayModelProfilesTable(
-  value: unknown,
-  enabledModelIds: readonly string[],
-): Readonly<Record<string, RelayModelProfile>> {
+export function decodeModelOverridesTable(value: unknown): Readonly<Record<string, ModelOverride>> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw domainError('connection relay model profiles must be a record');
+  }
+  if (Object.keys(value).length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+    throw domainError('too many connection model profiles');
   }
   // fromEntries, not `table[modelId] = declared` on a `{}`: model ids are
   // arbitrary relay-supplied strings, and a literal `obj['__proto__'] = x`
@@ -268,24 +262,32 @@ export function decodeRelayModelProfilesTable(
   // entry would then vanish from Object.entries and JSON.stringify (silent
   // data loss on the persistence roundtrip). fromEntries defines every key
   // as an own data property.
-  const parsed: [string, RelayModelProfile][] = [];
+  const parsed: [string, ModelOverride][] = [];
   for (const [modelId, rawEntry] of Object.entries(value)) {
     decodeConnectionModelId(modelId);
-    if (!enabledModelIds.includes(modelId)) {
-      throw domainError(`relay model profile for ${modelId} is not an enabled model`);
-    }
     const entry = exactRecord(
       rawEntry,
       `relay model profile for ${modelId}`,
-      ['thinkingLevels', 'vision', 'contextWindow', 'serviceTier'],
+      [
+        'thinkingLevels',
+        'defaultThinkingLevel',
+        'vision',
+        'applyPatch',
+        'contextWindow',
+        'serviceTier',
+        'compactionThreshold',
+        'inputLimit',
+        'maxOutputTokens',
+        'displayName',
+        'description',
+        'apiProtocol',
+        'knowledgeCutoff',
+        'capabilities',
+        'modalities',
+      ],
       [],
     );
-    const declared: {
-      thinkingLevels?: readonly ThinkingLevel[];
-      vision?: boolean;
-      contextWindow?: number;
-      serviceTier?: 'fast';
-    } = {};
+    const declared: { -readonly [K in keyof ModelOverride]: ModelOverride[K] } = {};
     if (entry.thinkingLevels !== undefined) {
       if (!Array.isArray(entry.thinkingLevels) || entry.thinkingLevels.length === 0) {
         throw domainError(`declared thinking levels for ${modelId} must be a non-empty array`);
@@ -306,25 +308,51 @@ export function decodeRelayModelProfilesTable(
       }
       declared.thinkingLevels = [...entry.thinkingLevels] as ThinkingLevel[];
     }
+    if (entry.defaultThinkingLevel !== undefined) {
+      if (!isThinkingLevel(entry.defaultThinkingLevel)) {
+        throw domainError(`default thinking level for ${modelId} is invalid`);
+      }
+      declared.defaultThinkingLevel = entry.defaultThinkingLevel;
+    }
     if (entry.vision !== undefined) {
       declared.vision = booleanValue(entry.vision, `declared vision for ${modelId}`);
     }
-    if (entry.contextWindow !== undefined) {
-      declared.contextWindow = integerValue(
-        entry.contextWindow,
-        `declared context window for ${modelId}`,
-        1,
-        Number.MAX_SAFE_INTEGER,
-      );
+    if (entry.applyPatch !== undefined) {
+      declared.applyPatch = booleanValue(entry.applyPatch, `declared ApplyPatch for ${modelId}`);
     }
+    for (const field of [
+      'contextWindow',
+      'compactionThreshold',
+      'inputLimit',
+      'maxOutputTokens',
+    ] as const) {
+      if (entry[field] !== undefined)
+        declared[field] = integerValue(entry[field], `model ${field}`, 1, Number.MAX_SAFE_INTEGER);
+    }
+    for (const field of ['displayName', 'description'] as const) {
+      if (entry[field] !== undefined)
+        declared[field] = stringValue(entry[field], `model ${field}`, 2048);
+    }
+    if (entry.apiProtocol !== undefined) {
+      const model = decodeConnectionModel({ id: modelId, apiProtocol: entry.apiProtocol });
+      declared.apiProtocol = model.apiProtocol;
+    }
+    const facts = decodeConnectionModel({
+      id: modelId,
+      ...(entry.capabilities === undefined ? {} : { capabilities: entry.capabilities }),
+      ...(entry.modalities === undefined ? {} : { modalities: entry.modalities }),
+      ...(entry.knowledgeCutoff === undefined ? {} : { knowledgeCutoff: entry.knowledgeCutoff }),
+    });
+    if (facts.capabilities?.vision !== undefined)
+      throw domainError('Use the model vision override');
+    if (facts.capabilities !== undefined) declared.capabilities = facts.capabilities;
+    if (facts.modalities !== undefined) declared.modalities = facts.modalities;
+    if (facts.knowledgeCutoff !== undefined) declared.knowledgeCutoff = facts.knowledgeCutoff;
     if (entry.serviceTier !== undefined) {
       if (entry.serviceTier !== 'fast') {
         throw domainError(`declared service tier for ${modelId} must be fast`);
       }
       declared.serviceTier = 'fast';
-    }
-    if (Object.keys(declared).length === 0) {
-      throw domainError(`relay model profile for ${modelId} declares nothing`);
     }
     parsed.push([modelId, declared]);
   }
@@ -337,45 +365,50 @@ export function decodeRelayModelProfilesTable(
  * `contextWindow` and `vision` state facts about a model. A user has them when
  * Maka does not — a model newer than the bundled snapshot, or any model on a
  * provider with no model-list endpoint — and that need is not confined to
- * relays (#1584), so they are legal everywhere.
+ * custom connections (#1584), so they are legal everywhere.
  *
- * `thinkingLevels` and `serviceTier` name a wire feature instead. They encode
- * into request shapes only the OpenAI-compatible relays accept —
- * `reasoning_effort` tiers and priority processing — and
- * `supportsRelayFastServiceTier` gates the read side by provider for the same
- * reason. A table carrying them on another provider describes a request Maka
- * would never send: dead state at best, and on a provider whose wire rejects
- * the unknown value, a 400 the user cannot explain.
+ * `thinkingLevels` and `serviceTier` name a wire feature instead. Built-in
+ * providers take thinking levels from model metadata and never send a declared
+ * one; a table carrying them there describes a request Maka would never send.
  */
 function assertProfileFieldsFitProvider(
-  profiles: Readonly<Record<string, RelayModelProfile>> | null | undefined,
+  profiles: Readonly<Record<string, ModelOverride>> | null | undefined,
   providerType: ProviderType,
 ): void {
-  if (!profiles || isRelayProviderType(providerType)) return;
+  if (!profiles || providerType === 'custom') return;
   for (const [modelId, profile] of Object.entries(profiles)) {
     if (profile.thinkingLevels !== undefined) {
-      throw domainError(
-        `declared thinking levels for ${modelId} require an OpenAI-compatible connection`,
-      );
+      throw domainError(`declared thinking levels for ${modelId} require a custom connection`);
     }
     if (profile.serviceTier !== undefined) {
-      throw domainError(
-        `declared service tier for ${modelId} requires an OpenAI-compatible connection`,
-      );
+      throw domainError(`declared service tier for ${modelId} requires a custom connection`);
     }
   }
 }
 
+export function decodeDefaultApiProtocol(
+  value: unknown,
+  providerType: ProviderType,
+): ModelApiProtocol | undefined {
+  if (providerType !== 'custom') {
+    if (value !== undefined) {
+      throw domainError('only a custom connection has a default API protocol');
+    }
+    return undefined;
+  }
+  if (!isModelApiProtocol(value)) {
+    throw domainError('custom connection default API protocol is invalid');
+  }
+  return value;
+}
+
 // An empty table is not a state worth storing: drafts/canonical entries omit
 // the key, and updates treat it as the same instruction as `null` (clear).
-function nonEmptyRelayProfiles(
-  value: unknown,
-  enabledModelIds: readonly string[],
-): {
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+function nonEmptyRelayProfiles(value: unknown): {
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
 } {
-  const table = decodeRelayModelProfilesTable(value, enabledModelIds);
-  return Object.keys(table).length > 0 ? { relayModelProfiles: table } : {};
+  const table = decodeModelOverridesTable(value);
+  return Object.keys(table).length > 0 ? { modelOverrides: table } : {};
 }
 
 export function decodeCanonicalConnectionCatalogEntry(value: unknown): ConnectionCatalogEntry {
@@ -389,15 +422,15 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'name',
       'providerType',
       'baseUrl',
+      'defaultApiProtocol',
       'enabled',
       'enabledModelIds',
-      'relayModelProfiles',
+      'modelOverrides',
       'requestBodyOverlay',
       'models',
       'modelSource',
       'modelsFetchedAt',
       'lastTest',
-      'lastTestModelFactsFingerprint',
     ],
     [
       'connectionId',
@@ -415,25 +448,17 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     name: item.name,
     providerType: item.providerType,
     ...(item.baseUrl === undefined ? {} : { baseUrl: item.baseUrl }),
+    ...(item.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: item.defaultApiProtocol }),
     enabled: item.enabled,
     enabledModelIds: item.enabledModelIds,
-    ...(item.relayModelProfiles === undefined
-      ? {}
-      : { relayModelProfiles: item.relayModelProfiles }),
+    ...(item.modelOverrides === undefined ? {} : { modelOverrides: item.modelOverrides }),
     ...(item.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: item.requestBodyOverlay }),
   });
-  if (
-    !Array.isArray(item.models) ||
-    item.models.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
-  ) {
-    throw domainError('connection models must be a bounded array');
-  }
-  const models = item.models.map(decodeConnectionModel);
-  if (new Set(models.map((model) => model.id)).size !== models.length) {
-    throw domainError('connection model ids must be unique');
-  }
+  const models = decodeConnectionModels(item.models);
   if (
     item.modelSource !== undefined &&
     item.modelSource !== 'fetched' &&
@@ -466,15 +491,6 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.lastTest === undefined
       ? {}
       : { lastTest: decodeConnectionTestSummary(item.lastTest) }),
-    ...(item.lastTestModelFactsFingerprint === undefined
-      ? {}
-      : {
-          lastTestModelFactsFingerprint: stringValue(
-            item.lastTestModelFactsFingerprint,
-            'connection test model facts fingerprint',
-            128,
-          ),
-        }),
   };
   assertCanonicalValue(value, decoded, 'connection catalog entry');
   return decoded;
@@ -577,12 +593,7 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
     ],
     ['id'],
   );
-  if (
-    item.apiProtocol !== undefined &&
-    item.apiProtocol !== 'openai-chat' &&
-    item.apiProtocol !== 'openai-responses' &&
-    item.apiProtocol !== 'anthropic-messages'
-  ) {
+  if (item.apiProtocol !== undefined && !isModelApiProtocol(item.apiProtocol)) {
     throw domainError('connection model API protocol is invalid');
   }
   let capabilities: ConnectionModel['capabilities'];
@@ -724,20 +735,22 @@ export function decodeConnectionTestSummary(value: unknown): ConnectionTestSumma
   };
 }
 
+export function decodeConnectionModels(value: unknown): ConnectionModel[] {
+  if (!Array.isArray(value) || value.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+    throw domainError('connection models must be a bounded array');
+  }
+  const models = value.map(decodeConnectionModel);
+  if (new Set(models.map((model) => model.id)).size !== models.length) {
+    throw domainError('connection model ids must be unique');
+  }
+  return models;
+}
+
 export function normalizeConnectionModelDiscoveryResult(
   value: unknown,
 ): ConnectionModelDiscoveryResult {
   const item = exactRecord(value, 'model discovery result', ['models', 'source', 'fetchedAt']);
-  if (
-    !Array.isArray(item.models) ||
-    item.models.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
-  ) {
-    throw domainError('model discovery models must be a bounded array');
-  }
-  const models = item.models.map(decodeConnectionModel);
-  if (new Set(models.map((model) => model.id)).size !== models.length) {
-    throw domainError('model discovery model ids must be unique');
-  }
+  const models = decodeConnectionModels(item.models);
   if (item.source !== 'fetched' && item.source !== 'fallback') {
     throw domainError('model discovery source is invalid');
   }
@@ -756,7 +769,14 @@ export function normalizeConnectionModelDiscoveryResult(
 export function decodeConnectionSlug(value: unknown): string {
   if (typeof value !== 'string') throw domainError('connection slug must be a string');
   const error = validateSlug(value);
-  if (error) throw domainError(`connection slug: ${error}`);
+  if (error) {
+    const messages = {
+      required: 'Slug is required',
+      format: 'Slug must be lowercase letters, digits, and hyphens',
+      too_long: 'Slug must be 64 characters or fewer',
+    } satisfies Record<SlugValidationIssue, string>;
+    throw domainError(`connection slug: ${messages[error]}`);
+  }
   return value;
 }
 

@@ -31,10 +31,10 @@ let atomicWriteSequence = 0;
 // The checkpoint is read by a different process after this one may have died
 // mid-write, so it is renamed into place rather than written in place: a reader
 // sees either the previous snapshot or the next one, never a truncated file.
-// /logs/agent is created under umask 077, which silently downgrades the
-// writeFile mode to 0600. chmod the temporary file before rename so the
-// published inode is already 0644; a host that races the rename must not see
-// a 0600 file it cannot read.
+// The container runtime picks the subject's umask and this package cannot set
+// it, so writeFile's mode is only a request. chmod the temporary file before
+// rename so the published inode is already 0644; a host that races the rename
+// must not see a file it cannot read.
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.tmp-${process.pid}-${atomicWriteSequence++}`;
   await writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o644 });

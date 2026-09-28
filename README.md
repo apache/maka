@@ -56,7 +56,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 **Apache Releases**: Maka has not made an Apache release yet. When one exists, the signed source archive will be the official release; packages distributed elsewhere are convenience artifacts. See the [downloads page](https://maka.apache.org/en/downloads/) and [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) for candidate criteria, signing procedures, and verification steps.
 
-**Desktop Nightly**: Built daily from `main` for developers and testers, for macOS on Apple Silicon and Intel, Windows x64 and Linux x64 and arm64; the Windows and Linux builds are unsigned previews. It is not an ASF release and is not intended for production use. The [downloads page](https://maka.apache.org/en/downloads/) has the installers and the platform status.
+**Development testing**: To contribute or help test unreleased changes, see [CONTRIBUTING](./CONTRIBUTING.md) and the [development mailing list](https://lists.apache.org/list.html?dev@maka.apache.org). Development builds are not approved Apache releases.
 
 **Build from source**: To compile and run Desktop, the TUI, or the CLI directly from a source checkout, see the [Build from source](#build-from-source) section below.
 
@@ -194,10 +194,11 @@ Workspace data lives under Electron `userData` by default:
   artifacts/
 ```
 
+- When editing `settings.json` or `mcp.json` by hand, save the file as UTF-8 (preferably without a BOM). A UTF-8 BOM is accepted. Maka does not guess other encodings for files without a BOM or automatically convert UTF-16; explicitly convert those files to UTF-8 in your editor before using them.
 - API keys and similar secrets are a local plaintext file (`credential-vault.json`), readable only by your OS account. The renderer never sees them.
 - Tools that write files or run a shell must pass the sandbox boundary first.
 - `runtime.sqlite` is the live record. Older JSONL transcripts and Electron `safeStorage` credential files are not imported; an upgraded workspace can show empty threads, and those credentials must be entered again.
-- Resuming an interrupted turn is off by default. Set `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` only if you want Desktop **Safe resume**, CLI `/resume`, and startup auto-resume — those calls hit the model and use tokens.
+- Explicit interrupted-turn resume is available by default in Desktop and through CLI/TUI `/resume`; a successful continuation calls the model and uses tokens. Set `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` to disable new resume planning, or `=1` to additionally allow automated activation and model-driven WorkHub resume. An activation sent to an existing Session still processes its new stimulus by default. Startup recovery repairs already admitted continuations but does not automatically select an ordinary failed or cancelled turn.
 
 Details: [SECURITY.md](./SECURITY.md), [privacy](./docs/workspace-privacy-context.md), [resume](./docs/architecture/runtime-resume-architecture.md).
 

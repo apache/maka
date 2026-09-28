@@ -25,7 +25,9 @@ import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import {
   SessionCollaborationJoinDialog,
+  SessionCollaborationNavigation,
   SessionCollaborationServicesProvider,
+  createFakeSessionCollaborationServices,
   type SessionCollaborationServices,
 } from '../../renderer/features/session-collaboration/testing.js';
 
@@ -60,6 +62,7 @@ afterEach(async () => {
 test('keeps loading progress visible while an irreversible import settles', async () => {
   let reportProgress: Parameters<SessionCollaborationServices['importInvitation']>[1];
   const services: SessionCollaborationServices = {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async (_input, onProgress) => {
       reportProgress = onProgress;
       return new Promise(() => undefined);
@@ -69,6 +72,9 @@ test('keeps loading progress visible while an irreversible import settles', asyn
     listMounts: async () => [],
     subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
+    retryMount: async () => undefined,
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
     requestTurn: async () => {
       throw new Error('unused');
     },
@@ -121,12 +127,16 @@ test('closes as a retained background recovery instead of reporting a failed joi
   let imported = 0;
   let closed = 0;
   const services: SessionCollaborationServices = {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async () => ({ kind: 'recovering', mountId: 'shared-1' }),
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
     subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
+    retryMount: async () => undefined,
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
     requestTurn: async () => {
       throw new Error('unused');
     },
@@ -176,10 +186,11 @@ test('closes as a retained background recovery instead of reporting a failed joi
 });
 
 test('identifies a retained shared task and its selected peer transport', async () => {
+  let retried: string | undefined;
+  let opened: string | undefined;
   const services: SessionCollaborationServices = {
-    importInvitation: async () => {
-      throw new Error('unused');
-    },
+    ...createFakeSessionCollaborationServices(),
+    importInvitation: async () => ({ kind: 'error', reason: 'incompatible_host', message: 'raw compatibility details' }),
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
     listMounts: async () => [{
@@ -197,9 +208,21 @@ test('identifies a retained shared task and its selected peer transport', async 
         name: 'Shared task',
         status: 'active',
       },
+    }, {
+      mountId: 'offline', name: 'Waiting for Mac', hostId: 'a'.repeat(64),
+      readiness: 'reconnecting', failure: 'peer_path_unavailable',
+    }, {
+      mountId: 'revoked', name: 'Old access', hostId: 'a'.repeat(64),
+      readiness: 'unavailable', failure: 'credential_rejected',
+    }, {
+      mountId: 'incompatible', name: 'Old version', hostId: 'a'.repeat(64),
+      readiness: 'unavailable', failure: 'incompatible_host',
     }],
     subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
+    retryMount: async (mountId) => { retried = mountId; },
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
     requestTurn: async () => {
       throw new Error('unused');
     },
@@ -227,7 +250,8 @@ test('identifies a retained shared task and its selected peer transport', async 
               children: createElement(SessionCollaborationJoinDialog, {
                 copy: testCopy(),
                 onImported: assert.fail,
-                onClose: assert.fail,
+                onClose: () => undefined,
+                onOpenTask: (mount) => { opened = mount.session?.id; },
               }),
             }),
           }),
@@ -238,8 +262,52 @@ test('identifies a retained shared task and its selected peer transport', async 
   });
 
   assert.match(document.body.textContent, /Shared task/u);
-  assert.match(document.body.textContent, /Shared Host · mountConnected/u);
+  assert.match(document.body.textContent, /Shared Host/u);
   assert.match(document.body.textContent, /WebRTC/u);
+  assert.match(document.body.textContent, /Waiting for Mac/u);
+  assert.match(document.body.textContent, /directPathUnavailable/u);
+  assert.match(document.body.textContent, /accessRejected/u);
+  assert.match(document.body.textContent, /incompatibleHost/u);
+  assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent === 'retryConnection').length, 2);
+  await clickButton(document, 'retryConnection');
+  assert.equal(retried, 'offline');
+
+  await setTextArea(document, 'invitation');
+  await clickButton(document, 'join');
+  assert.ok(document.body.textContent.split('incompatibleHost').length - 1 > 1);
+  assert.doesNotMatch(document.body.textContent, /raw compatibility details/u);
+  await clickButton(document, 'openTask');
+  assert.equal(opened, 'session-1');
+
+  const retained = await services.listMounts();
+  let mounts: typeof retained = [];
+  let notify: (() => void) | undefined;
+  const navigationServices: SessionCollaborationServices = {
+    ...services,
+    listMounts: async () => mounts,
+    subscribeMountChanges: (listener) => {
+      notify = listener;
+      return () => { notify = undefined; };
+    },
+  };
+  await act(async () => {
+    mountedRoot?.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(SessionCollaborationServicesProvider, {
+          services: navigationServices,
+          children: createElement(SessionCollaborationNavigation, { onOpenSession: assert.fail }),
+        }),
+      }),
+    }));
+  });
+  assert.equal(document.querySelectorAll('button').length, 0, 'no entry before joining');
+  await act(async () => { mounts = retained; notify?.(); });
+  assert.equal(document.querySelectorAll('button').length, 1, 'joined tasks have an entry');
+  await act(async () => { mounts = retained.filter((mount) => mount.failure === 'credential_rejected'); notify?.(); });
+  assert.equal(document.querySelectorAll('button').length, 1, 'revoked access remains manageable');
+  await act(async () => { mounts = []; notify?.(); });
+  assert.equal(document.querySelectorAll('button').length, 0, 'removing the last access hides the entry');
 });
 
 function installDom(): { document: Document } {

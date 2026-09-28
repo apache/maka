@@ -48,7 +48,3 @@
   gap: var(--space-1-5);
   color: var(--muted-foreground);
 }
-
-.maka-scheduled-task-inspector {
-  min-width: 0;
-}

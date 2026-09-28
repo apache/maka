@@ -18,6 +18,10 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  ResumablePeerStream,
+  PeerResumeRejectedError,
+} from '../transport/resumable-peer-stream.js';
 import { watch } from 'node:fs';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -672,14 +676,54 @@ export async function connectPeerRuntimeHost(input: {
     }
     throw cause;
   }
-  const abort = () => stream.abort();
+  let logical: ResumablePeerStream | undefined;
+  const abort = () => {
+    logical?.abort();
+    stream.abort();
+  };
   input.signal?.addEventListener('abort', abort, { once: true });
   if (input.signal?.aborted) abort();
   let transferred = false;
   try {
     input.signal?.throwIfAborted();
     notifyConnectionPhase(input.onConnectionPhase, 'authenticating');
-    await writeRuntimeHostPeerAuthentication(stream, input.credential);
+    logical = new ResumablePeerStream({
+      peerId,
+      reconnect: async (state, signal, upgrade) => {
+        const candidate = await input.peerClient.connect(
+          {
+            peerId,
+            routeHints: bootstrap?.directRoutes ?? [],
+            coordinationRelays: bootstrap?.coordinationRoutes ?? [],
+            directDeadlineMs: upgrade ? 5_000 : 20_000,
+          },
+          signal,
+        );
+        let attached = false;
+        const abortCandidate = () => candidate.abort();
+        signal.addEventListener('abort', abortCandidate, { once: true });
+        try {
+          signal.throwIfAborted();
+          if (upgrade && candidate.path?.kind !== 'direct') return undefined;
+          await writeRuntimeHostPeerAuthentication(candidate, input.credential, state);
+          const response = await readRuntimeHostPeerAuthenticationResult(candidate, 5_000);
+          signal.throwIfAborted();
+          if (!response.accepted || !response.resume)
+            throw new PeerResumeRejectedError('Host rejected peer session recovery');
+          attached = true;
+          return {
+            stream: candidate,
+            remainder: response.remainder,
+            received: response.resume.received,
+          };
+        } finally {
+          signal.removeEventListener('abort', abortCandidate);
+          if (!attached) candidate.abort();
+        }
+      },
+    });
+    const state = logical.nextAttachment();
+    await writeRuntimeHostPeerAuthentication(stream, input.credential, state);
     const authentication = await readRuntimeHostPeerAuthenticationResult(
       stream,
       handshakeTimeoutMs,
@@ -690,11 +734,16 @@ export async function connectPeerRuntimeHost(input: {
         `Runtime Host profile ${input.profileId} rejected its access credential`,
       );
     }
+    if (!authentication.resume)
+      throw new PeerResumeRejectedError('Host does not support peer session continuity');
+    logical.attach(state.generation, {
+      stream,
+      remainder: authentication.remainder,
+      received: authentication.resume.received,
+    });
     notifyConnectionPhase(input.onConnectionPhase, 'handshaking');
     const result = await connectRuntimeHostMessageTransport({
-      transport: new FramedByteStreamTransport(
-        new RuntimeHostPeerByteStream(stream, authentication.remainder),
-      ),
+      transport: new FramedByteStreamTransport(new RuntimeHostPeerByteStream(logical)),
       expectedRootId: input.expectedRootId,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       protocol: {
@@ -714,6 +763,7 @@ export async function connectPeerRuntimeHost(input: {
         input.onHostStatus?.(status);
       },
       ...(stream.path ? { peerPath: stream.path } : {}),
+      getPeerPath: () => logical?.path,
     });
     input.signal?.throwIfAborted();
     if (result.kind === 'incompatible') {
@@ -735,7 +785,10 @@ export async function connectPeerRuntimeHost(input: {
     return result.connection;
   } finally {
     input.signal?.removeEventListener('abort', abort);
-    if (!transferred) stream.abort();
+    if (!transferred) {
+      logical?.abort();
+      stream.abort();
+    }
   }
 }
 

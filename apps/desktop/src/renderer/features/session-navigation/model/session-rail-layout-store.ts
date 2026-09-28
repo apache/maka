@@ -20,7 +20,7 @@
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 import type { SessionViewMode } from '@maka/ui';
 import { safeLocalStorageSet } from '../../../browser-storage.js';
-import { createObservableState } from '../../../observable-state.js';
+import { createObservableState } from '../../../application/contracts/session-catalog/observable-state.js';
 import {
   clampSessionListWidth,
   readSessionListCollapsed,

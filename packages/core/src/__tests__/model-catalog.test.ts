@@ -26,7 +26,6 @@ import {
   buildConnectionModelCatalogEntries,
   buildModelCatalogEntries,
   resolveConnectionModelCatalog,
-  resolveDraftConnectionModelCatalog,
 } from '../model-catalog.js';
 import {
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
@@ -48,6 +47,43 @@ function verdict(input: BuildModelCatalogInput) {
     : undefined;
   return { ok: entry?.canUseAsChatDefault === true };
 }
+
+test('catalog transport preserves independent limits and their unmodified defaults', () => {
+  const [entry] = buildModelCatalogEntries({
+    providerType: 'custom',
+    models: [{ id: 'custom', contextWindow: 64000, inputLimit: 32000 }],
+    modelOverrides: { custom: { contextWindow: 200000 } },
+  });
+  assert.ok(entry);
+  const decoded = decodeModelCatalogEntry(JSON.parse(JSON.stringify(entry)));
+  assert.equal(decoded.contextWindow, 200000);
+  assert.equal(decoded.inputLimit, 32000);
+  assert.equal(decoded.defaultContextWindow, 64000);
+  assert.equal(decoded.defaultInputLimit, 32000);
+});
+
+test('GPT-6 Sol and Luna use GPT labels and expose supported thinking levels', () => {
+  const models = [{ id: 'gpt-6-sol' }, { id: 'gpt-6-luna' }];
+  for (const providerType of ['openai', 'openai-codex'] as const) {
+    const entries = buildModelCatalogEntries({ providerType, models, modelSource: 'fetched' });
+    assert.deepEqual(
+      entries.map(({ id, displayName, thinkingLevels }) => ({ id, displayName, thinkingLevels })),
+      [
+        {
+          id: 'gpt-6-sol',
+          displayName: 'GPT-6 Sol',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+        {
+          id: 'gpt-6-luna',
+          displayName: 'GPT-6 Luna',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+      ],
+      providerType,
+    );
+  }
+});
 
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
   const input = {
@@ -131,7 +167,7 @@ test('an empty output modality list is not evidence against chat', () => {
   // A provider that declared no output modality and a generator bug that
   // dropped them produce the same shape. Blocking on it would be guessing.
   const undeclared = {
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'relay-quiet',
     models: [{ id: 'relay-quiet', modalities: { input: ['text' as const], output: [] } }],
     modelSource: 'fetched' as const,
@@ -143,7 +179,7 @@ test('an explicit chat capability outranks the declared output modality', () => 
   // A provider that says both is contradicting itself, and the direct claim
   // about chat is the more specific one.
   const contradictory = {
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'relay-omni',
     models: [
       {
@@ -166,7 +202,7 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
       connection: {
         slug: 'relay',
         name: 'Relay',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
         defaultModel: 'custom-default',
         enabled: true,
         models: [{ id: 'relay-static-model' }],
@@ -177,7 +213,7 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
       hasSecret: true,
     });
   const catalog = (modelSource: 'fetched' | 'fallback') => ({
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'custom-default',
     models: [{ id: 'relay-static-model' }],
     modelSource,
@@ -308,7 +344,6 @@ test('catalog provenance follows the projected model facts marker used in produc
           id: 'custom-model',
           contextWindow: 200_000,
           capabilities: { chat: true },
-          factOverriddenFields: ['contextWindow', 'capabilities'],
         },
       ],
       modelSource: 'fetched',
@@ -320,42 +355,40 @@ test('catalog provenance follows the projected model facts marker used in produc
 test('fallback provider catalogs include projected facts-backed models', () => {
   const entries = buildConnectionModelCatalogEntries({
     connection: {
-      slug: 'opencode-free-facts',
-      providerType: 'opencode-free',
-      defaultModel: 'custom-free-model',
+      slug: 'ark-facts',
+      providerType: 'volcengine-ark',
+      defaultModel: 'custom-model',
       models: [
         {
-          id: 'custom-free-model',
+          id: 'custom-model',
           contextWindow: 128_000,
-          factOverriddenFields: ['contextWindow', 'capabilities'],
         },
       ],
       modelSource: 'fallback',
     },
   });
-  const entry = entries.find((candidate) => candidate.id === 'custom-free-model');
+  const entry = entries.find((candidate) => candidate.id === 'custom-model');
   assert.equal(entry?.contextWindow, 128_000);
 });
 
 test('fallback provider catalogs apply facts to known fallback models', () => {
   const entries = buildConnectionModelCatalogEntries({
     connection: {
-      slug: 'opencode-free-known-facts',
-      providerType: 'opencode-free',
-      defaultModel: 'nemotron-3-ultra-free',
+      slug: 'ark-known-facts',
+      providerType: 'volcengine-ark',
+      defaultModel: 'doubao-seed-2-0-pro-260215',
       models: [
         {
-          id: 'nemotron-3-ultra-free',
+          id: 'doubao-seed-2-0-pro-260215',
           contextWindow: 200_000,
           inputLimit: 200_000,
           capabilities: { chat: true },
-          factOverriddenFields: ['contextWindow', 'inputLimit', 'capabilities'],
         },
       ],
       modelSource: 'fallback',
     },
   });
-  const entry = entries.find((candidate) => candidate.id === 'nemotron-3-ultra-free');
+  const entry = entries.find((candidate) => candidate.id === 'doubao-seed-2-0-pro-260215');
   assert.equal(entry?.contextWindow, 200_000);
 });
 
@@ -462,6 +495,9 @@ test('no provider resolves past the wire bound at the storage maxima', () => {
       defaultModel: 'default-the-inventory-never-listed',
       enabledModelIds,
       models,
+      modelOverrides: Object.fromEntries(
+        models.map((_, index) => [`disabled-profile-${index}`, { vision: true }]),
+      ),
       modelSource: 'fetched',
     });
     assert.ok(
@@ -476,83 +512,20 @@ test('no provider resolves past the wire bound at the storage maxima', () => {
   assert.equal(largest, CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION);
 });
 
-test('describedByMetadata reports whether resolved metadata covers a model, and rides the wire (#4496)', () => {
-  // A model the bundled catalog knows: the Host's entry can describe it, so the
-  // renderer trusts the catalog and shows no hand-entry row. The value is the
-  // same question `hasModelMetadata` answers — decided once, on the Host.
-  const known = buildConnectionModelCatalogEntries({
-    connection: {
-      slug: 'alibaba-cn',
-      providerType: 'alibaba-cn',
-      defaultModel: 'qwen3.8-max',
-      modelSource: 'fallback',
-    },
-  }).find((entry) => entry.id === 'qwen3.8-max');
-  assert.equal(known?.describedByMetadata, true);
-  assert.equal(known?.describedByMetadata, hasModelMetadata('alibaba-cn', 'qwen3.8-max'));
-
-  // A bare id no inventory describes — the #1584 case the capability editor
-  // exists for — reports false, so the renderer still asks the user.
-  const [bare] = buildModelCatalogEntries({
-    providerType: 'alibaba-cn',
-    defaultModel: 'made-up-model-4496',
-    models: [{ id: 'made-up-model-4496' }],
-    modelSource: 'fetched',
-  });
-  assert.equal(bare?.describedByMetadata, false);
-  assert.equal(bare?.describedByMetadata, hasModelMetadata('alibaba-cn', 'made-up-model-4496'));
-
-  // The field crosses the wire and is required, so it survives a round-trip and
-  // an entry predating it fails the decoder that now expects it — the
-  // client-Host mismatch the epoch bump gates.
-  assert.ok(known);
-  assert.equal(
-    decodeModelCatalogEntry(JSON.parse(JSON.stringify(known))).describedByMetadata,
-    true,
-  );
-  const { describedByMetadata: _dropped, ...legacy } = known;
-  assert.throws(() => decodeModelCatalogEntry(legacy));
-});
-
-test('a divergent draft keeps the Host metadata-coverage decision for ids it already described (#4496)', () => {
-  // A model the Host learned about after this renderer build was cut: the Host
-  // resolved the connection and marked it described, but the renderer's bundled
-  // table — the stale authority this field stops trusting — has never heard of
-  // it. Editing the model list must not let that stale table overturn the
-  // Host's answer and bring the spurious capability-declaration row back.
-  const stored = {
-    slug: 'alibaba-cn',
-    providerType: 'alibaba-cn' as const,
-    defaultModel: 'future-model-4496',
-    enabledModelIds: ['future-model-4496'],
-    models: [{ id: 'future-model-4496' }],
-    modelSource: 'fetched' as const,
-  };
-  assert.equal(hasModelMetadata('alibaba-cn', 'future-model-4496'), false);
-  const hostEntries = resolveConnectionModelCatalog(stored).map((entry) =>
-    entry.id === 'future-model-4496' ? { ...entry, describedByMetadata: true } : entry,
-  );
-  const connection = { ...stored, catalogEntries: hostEntries };
-
-  // Unedited: the Host's entries are returned verbatim, coverage intact.
-  const unedited = resolveDraftConnectionModelCatalog(connection, {
-    models: stored.models,
-    modelSource: stored.modelSource,
-    enabledModelIds: stored.enabledModelIds,
-  });
-  assert.equal(
-    unedited.find((entry) => entry.id === 'future-model-4496')?.describedByMetadata,
-    true,
-  );
-
-  // Edited — a fresh id the Host has never seen is added, so the draft diverges
-  // and is rebuilt locally. The known id keeps the Host's coverage; only the
-  // brand-new id, which the Host never described, takes the local answer.
-  const edited = resolveDraftConnectionModelCatalog(connection, {
-    models: [...stored.models, { id: 'brand-new-4496' }],
-    modelSource: 'fetched',
-    enabledModelIds: ['future-model-4496', 'brand-new-4496'],
-  });
-  assert.equal(edited.find((entry) => entry.id === 'future-model-4496')?.describedByMetadata, true);
-  assert.equal(edited.find((entry) => entry.id === 'brand-new-4496')?.describedByMetadata, false);
+test('catalog preserves the image default through overrides and the wire', () => {
+  for (const reported of [undefined, false, true]) {
+    for (const declared of [undefined, false, true]) {
+      const [entry] = resolveConnectionModelCatalog({
+        slug: 'relay',
+        providerType: 'custom',
+        defaultModel: 'custom-vision',
+        modelSource: 'fetched',
+        models: [{ id: 'custom-vision', capabilities: { vision: reported } }],
+        modelOverrides: { 'custom-vision': { vision: declared } },
+      });
+      const decoded = decodeModelCatalogEntry(JSON.parse(JSON.stringify(entry)));
+      assert.equal(decoded.defaultSupportsVision, reported ?? false);
+      assert.equal(decoded.supportsVision, declared ?? reported ?? false);
+    }
+  }
 });

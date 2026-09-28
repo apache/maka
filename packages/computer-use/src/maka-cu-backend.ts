@@ -792,7 +792,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
   /** Why each forgotten observation id stopped resolving; see `forgetSnapshot`. */
   const forgotten = new Map<string, 'expired' | 'evicted' | 'spent' | 'superseded'>();
   const begunSessions = new Set<string>();
-  const sessionGenerations = new Map<string, number>();
+  const sessionGenerations = new Map<string, { generation: number; pending: number }>();
   const operationQueues = new Map<string, Promise<void>>();
   let sessionClearReleaseEvents: MakaCuReleaseEvent[] | undefined;
   let disposed = false;
@@ -812,7 +812,8 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     }
     snapshotIdsBySession.delete(sessionId);
     begunSessions.delete(sessionId);
-    sessionGenerations.set(sessionId, (sessionGenerations.get(sessionId) ?? 0) + 1);
+    const active = sessionGenerations.get(sessionId);
+    if (active) active.generation += 1;
   }
 
   function applyServiceRelease(events: readonly MakaCuReleaseEvent[]): void {
@@ -830,7 +831,13 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       ]),
     ];
     for (const sessionId of sessions) {
+      // Unknown cleanup must not create tool-layer state through the observer.
+      const known =
+        begunSessions.has(sessionId) ||
+        snapshotIdsBySession.has(sessionId) ||
+        sessionGenerations.has(sessionId);
       clearLocalSession(sessionId);
+      if (!known) continue;
       try {
         opts.onSessionInvalidated?.({
           sessionId,
@@ -878,8 +885,14 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     // §9 gives the executor per-target lanes; the host queue stays upstream of
     // them so one Maka turn never has two dispatches in flight at once.
     const queueKey = '__executor__';
-    const sessionGeneration =
-      sessionId === undefined ? undefined : (sessionGenerations.get(sessionId) ?? 0);
+    // Queued and in-flight operations own the fence, including before the first await.
+    let active: { generation: number; pending: number } | undefined;
+    if (sessionId !== undefined) {
+      active = sessionGenerations.get(sessionId) ?? { generation: 0, pending: 0 };
+      active.pending += 1;
+      sessionGenerations.set(sessionId, active);
+    }
+    const sessionGeneration = active?.generation;
     const previous = operationQueues.get(queueKey) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -891,10 +904,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     try {
       if (disposed) throw new Error('maka-cu backend disposed');
       if (signal.aborted) throw new Error('aborted');
-      if (
-        sessionId !== undefined &&
-        (sessionGenerations.get(sessionId) ?? 0) !== sessionGeneration
-      ) {
+      if (active?.generation !== sessionGeneration) {
         throw new MakaCuSessionCleared();
       }
       if (!sessionId) return await operation();
@@ -902,6 +912,14 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     } finally {
       release();
       if (operationQueues.get(queueKey) === current) operationQueues.delete(queueKey);
+      if (
+        sessionId !== undefined &&
+        active &&
+        --active.pending === 0 &&
+        sessionGenerations.get(sessionId) === active
+      ) {
+        sessionGenerations.delete(sessionId);
+      }
     }
   }
 

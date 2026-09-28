@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelInfo, ProviderType } from './llm-connections.js';
+import type { ModelInfo, ProviderType, ProviderRuntimeAdapter } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
@@ -34,12 +34,6 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
-  /**
-   * models.dev prices the model at zero input cost. Marks free-tier
-   * candidates (e.g. opencode-free); display names are not a contract for
-   * this, several free models carry no "Free" suffix.
-   */
-  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
@@ -69,15 +63,36 @@ let refreshedMetadata: ModelsDevMetadata | undefined;
  * and read Host-resolved catalog entries rather than their own merge.
  */
 export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | undefined): void {
+  if (metadata !== undefined) assertWireTokenLimits(metadata);
   refreshedMetadata = metadata;
+}
+
+/**
+ * The wire carries a token limit only as a positive integer
+ * (decodeConnectionModel), so a table installed here must already be in that
+ * domain: one model outside it fails the Host's own output validation and
+ * takes the whole catalog page down. Refusing at install keeps the snapshot
+ * this build shipped, with the offending model named.
+ */
+function assertWireTokenLimits(table: ModelsDevMetadata): void {
+  for (const [providerType, models] of Object.entries(table)) {
+    for (const [modelId, metadata] of Object.entries(models)) {
+      for (const key of ['contextWindow', 'inputLimit', 'maxOutputTokens'] as const) {
+        const value = metadata[key];
+        if (value === undefined) continue;
+        if (!Number.isSafeInteger(value) || value < 1) {
+          throw new Error(
+            `model metadata ${providerType}/${modelId} has an invalid ${key}: ${String(value)}`,
+          );
+        }
+      }
+    }
+  }
 }
 
 function activeMetadata(): ModelsDevMetadata {
   return refreshedMetadata ?? bundledModelMetadata;
 }
-const generatedModelProviderOverrides: Partial<
-  Record<ProviderType, Record<string, { npm: string; api?: string }>>
-> = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
 
 /** Access paths that serve a canonical provider's model catalog. */
 const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, ProviderType>> = {
@@ -88,6 +103,11 @@ const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, Provider
 
 function generatedMetadataProviderType(providerType: ProviderType): ProviderType {
   return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
+}
+
+/** Whether discovery is the complete usable model catalog for this account. */
+export function providerReportsCompleteModelCatalog(providerType: ProviderType): boolean {
+  return providerType === 'github-copilot';
 }
 
 /**
@@ -103,6 +123,8 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
   const id = modelId.trim();
   const metadataProviderType = generatedMetadataProviderType(providerType);
   const generated = activeMetadata()[metadataProviderType]?.[id];
+  const providerMetadata =
+    providerType === 'openai-codex' ? withoutInputLimit(generated) : generated;
   const statics = staticModelMetadata();
   const override =
     statics[providerType]?.[id] ??
@@ -111,13 +133,13 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
       : providerType === 'opencode-free'
         ? statics.opencode?.[id]
         : undefined);
-  if (!generated) return override ?? {};
-  if (!override) return generated;
+  if (!providerMetadata) return override ?? {};
+  if (!override) return providerMetadata;
   return {
-    ...generated,
+    ...providerMetadata,
     ...override,
-    capabilities: { ...generated.capabilities, ...override.capabilities },
-    modalities: override.modalities ?? generated.modalities,
+    capabilities: { ...providerMetadata.capabilities, ...override.capabilities },
+    modalities: override.modalities ?? providerMetadata.modalities,
   };
 }
 
@@ -140,20 +162,23 @@ export function modelMetadataIdsForProvider(providerType: ProviderType): string[
   );
 }
 
-export function lookupModelProviderOverride(
+export function lookupModelRuntimeOverride(
   providerType: ProviderType,
   modelId: string,
-): { npm: string; api?: string } | undefined {
-  return generatedModelProviderOverrides[providerType]?.[modelId.trim()];
+): { adapter: ProviderRuntimeAdapter; baseUrl?: string } | undefined {
+  const overrides: Partial<
+    Record<ProviderType, Record<string, { adapter: ProviderRuntimeAdapter; baseUrl?: string }>>
+  > = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
+  return overrides[providerType]?.[modelId.trim()];
 }
 
 /**
  * The request wire a model served over the OpenAI adapter must use.
  *
  * Provider/model routing facts live here even when the concrete Responses SDK
- * and replay policy are delegated to a Runtime profile. This is the single
- * declared source of the default protocol split, expressed through the
- * {@link ModelInfo.apiProtocol} seam.
+ * and replay policy are declared on the provider's `ProviderRuntimeAdapter`.
+ * This is the single declared source of the default protocol split, expressed
+ * through the {@link ModelInfo.apiProtocol} seam.
  */
 export function openAiAdapterApiProtocol(
   modelId: string,
@@ -164,7 +189,7 @@ export function openAiAdapterApiProtocol(
     (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
     ((providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') &&
       id === 'qwen3.8-max') ||
-    /^gpt-5/i.test(id) ||
+    /^gpt-[56]/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
     : 'openai-chat';
@@ -242,15 +267,51 @@ const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
   },
 };
 
+// These models are in the live models.dev OpenAI catalog but not yet in the
+// bundled snapshot. The OpenAI Responses SDK accepts only these five GPT-6
+// efforts on both API and Codex OAuth paths. It discards `none` and the Codex
+// model list's `ultra` for Sol, so do not offer them until the request path
+// can send and handle them.
+const OPENAI_GPT6_THINKING_OPTIONS: ThinkingOptions = {
+  efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+};
+
+const OPENAI_GPT6_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
+  'gpt-6-sol': {
+    displayName: 'GPT-6 Sol',
+    thinkingOptions: OPENAI_GPT6_THINKING_OPTIONS,
+  },
+  'gpt-6-luna': {
+    displayName: 'GPT-6 Luna',
+    thinkingOptions: OPENAI_GPT6_THINKING_OPTIONS,
+  },
+};
+
 // The OAuth path pins its own context windows over whatever the public
 // catalog says. Base facts come from the active table, falling back to the
 // shipped snapshot so a model upstream stops listing keeps a display name.
 function openAiOAuthBase(active: ModelsDevMetadata, modelId: string): ModelMetadata {
-  return active.openai?.[modelId] ?? GENERATED_MODELS_DEV_METADATA.openai[modelId] ?? {};
+  const metadata = active.openai?.[modelId] ?? GENERATED_MODELS_DEV_METADATA.openai[modelId];
+  return withoutInputLimit(metadata) ?? {};
+}
+
+/** OAuth model metadata must not inherit public OpenAI API input limits. */
+function withoutInputLimit(metadata: ModelMetadata | undefined): ModelMetadata | undefined {
+  if (!metadata) return undefined;
+  const { inputLimit: _inputLimit, ...withoutLimit } = metadata;
+  return withoutLimit;
 }
 
 function openAiOAuthModelMetadata(active: ModelsDevMetadata): Record<string, ModelMetadata> {
   return {
+    'gpt-6-sol': {
+      ...openAiOAuthBase(active, 'gpt-6-sol'),
+      ...OPENAI_GPT6_MODEL_OVERRIDES['gpt-6-sol'],
+    },
+    'gpt-6-luna': {
+      ...openAiOAuthBase(active, 'gpt-6-luna'),
+      ...OPENAI_GPT6_MODEL_OVERRIDES['gpt-6-luna'],
+    },
     'gpt-5.6-sol': {
       ...openAiOAuthBase(active, 'gpt-5.6-sol'),
       contextWindow: 372_000,
@@ -360,6 +421,93 @@ function ollamaCloudThinkingModels(active: ModelsDevMetadata): Record<string, Mo
   );
 }
 
+// Command Code declares no reasoning metadata over its API — the public
+// `/provider/v1/models` listing carries only id/object/created/owned_by/name/
+// context_length/supported_endpoints, and `/provider/v1/models/<id>` is not a
+// route. The selectable `reasoning_effort` levels therefore live only in the
+// official CLI's bundled model table, which the MIT `pi-commandcode-provider`
+// project and its derivative `Mars-Sea/dsh-commandcode-provider`
+// (`src/capabilities.ts`, `KNOWN_EFFORTS`) are the traceable extraction of.
+//
+// Ported from `dsh-commandcode-provider`'s `KNOWN_EFFORTS`, which was
+// re-verified against `command-code@1.53.0` (`dist/cli.mjs`'s provider effort
+// map). The reference keeps a running changelog of which CLI release added or
+// removed each line; that history is summarized here per entry. We pin
+// `command-code@1.54.0`, so a future re-sync should re-read that release's
+// bundle — a wrong effort word is refused by the wire or ignored by the model,
+// it is not silently mis-billed.
+//
+// Two rules from the reference that must survive re-syncs:
+//  - Models that reason automatically under a depth Command Code chooses
+//    (Tencent Hy3/Hy4 without levels, GLM-5/5.1/5.2-Fast, and the previews in
+//    the reference's `KNOWN_THINKING_MODELS`) carry no selectable effort, so
+//    they are absent here and the picker offers no selector for them.
+//  - Only the Provider-API table is authoritative for this route. Do not add
+//    levels observed on the OAuth (anthropic/openai) tables.
+const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
+  'Qwen/Qwen3.8-Max': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'Qwen/Qwen3.8-Max-0902': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'Qwen/Qwen3.8-27B': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'Qwen/Qwen3.8-Flash': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'claude-fable-5-1': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-fable-5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-opus-4-7': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-opus-4-8': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-opus-5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-sonnet-4-6': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-sonnet-5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  // 1.39.0 added the model; 1.39.1 dropped `medium`; 1.39.2 ships this set.
+  'deepseek/deepseek-v4-flash-fast': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  // 1.53.0 added DeepSeek V4.1 Flash with this set.
+  'deepseek/deepseek-v4.1-flash': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  'deepseek/deepseek-v4-flash': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'deepseek/deepseek-v4-flash-vision-exp': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'deepseek/deepseek-v4-pro': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'google/gemini-3.1-flash-lite': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.5-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.5-flash-lite': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.6-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.7-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  // 1.43.0 added Gemini 3.8 Flash with the family's three-level set.
+  'google/gemini-3.8-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'gpt-5.3-codex': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'gpt-5.4': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'gpt-5.4-mini': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'gpt-5.5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'gpt-5.6-luna': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'gpt-5.6-sol': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'gpt-5.6-terra': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  // 1.39.3 gained selectable levels (previously thought automatically).
+  'moonshotai/Kimi-K3': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  'sakana/fugu-ultra': { thinkingOptions: { efforts: ['high', 'xhigh'] } },
+  // 1.38.0 gained selectable levels (previously thought automatically).
+  'tencent/hy4-preview': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'xai/grok-4.5': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'xai/grok-4.6': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  // Successor of `stealth/ox-alpha`, removed in 1.34.0 with the same set.
+  'z-ai/glm-5.3-flash': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  'zai-org/GLM-5.2': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'zai-org/GLM-5.3': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  // Muse Spark gained selectable levels in 1.45.0; 1.48.0 added `max` to 1.3
+  // only, so 1.3 and 1.3-contributor now differ.
+  'meta/muse-spark-1.1': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'meta/muse-spark-1.2': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'meta/muse-spark-1.2-contributor': {
+    thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+  },
+  'meta/muse-spark-1.3': {
+    thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  },
+  'meta/muse-spark-1.3-contributor': {
+    thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+  },
+  // 1.49.0 added GPT-6 Astra with the five-level set.
+  'gpt-6-astra': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  // 1.51.3 gave MiniMax M3 selectable levels (read from the bundle; the
+  // 1.51.1–1.51.3 changelog had not been published at extraction time).
+  'MiniMaxAI/MiniMax-M3': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+};
+
 // Facts that models.dev cannot express: provider wire controls and
 // access-path-specific aliases/limits. Standard model facts stay generated.
 //
@@ -368,7 +516,10 @@ function ollamaCloudThinkingModels(active: ModelsDevMetadata): Record<string, Mo
 function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata {
   return {
     anthropic: ANTHROPIC_MODEL_OVERRIDES,
+    openai: OPENAI_GPT6_MODEL_OVERRIDES,
     'claude-subscription': claudeSubscriptionModelMetadata(active),
+    // The Command Code Provider-API plan rides the same effort table.
+    commandcode: COMMAND_CODE_MODEL_METADATA,
     'alibaba-token-plan-cn': {
       'qwen3.8-max': {
         thinkingOptions: { efforts: ['none', 'low', 'medium', 'xhigh'], toggle: true },

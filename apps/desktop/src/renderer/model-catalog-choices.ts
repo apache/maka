@@ -48,7 +48,7 @@ export function buildCatalogRecommendedDefaultModel(providerType: ProviderType):
 export function buildCatalogDailyReviewModelOptions(
   connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[],
   currentModelKey: string,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): Array<readonly [string, string]> {
   const current = parseDailyReviewModelKey(currentModelKey);
   const candidates: Array<{ key: string; label: string; safeSourceLabel: string }> = [];

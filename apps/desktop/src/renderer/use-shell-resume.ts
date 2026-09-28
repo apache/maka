@@ -34,12 +34,13 @@ type ToastApi = {
 
 /**
  * Owns the #1223 safe-boundary resume cluster: the in-flight `resumePendingSessionId`
- * guard and the per-session parked-diagnostic descriptions surfaced on the
- * interrupted-turn banner, plus the `resumeInterruptedSession` handler that drives
+ * guard and the per-session parked-diagnostic descriptions surfaced on eligible
+ * failure banners, plus the `resumeInterruptedSession` handler shared by those
+ * banners and the user-Stop status notice. The handler drives
  * `sessions.resumeLatest`. `activeId` is injected (the handler snapshots it as
  * `sessionId` so a session switch mid-resume settles the ORIGINAL session's pending
  * flag) alongside `toastApi` / `shellCopy` / `uiLocale`. The two state values are
- * returned raw so AppShell's banner JSX keeps its exact `resumePendingSessionId ===
+ * returned raw so AppShell's action wiring keeps its exact `resumePendingSessionId ===
  * activeId` / `resumeParkDescriptionBySession[activeId]` reads; the wiring
  * (`safeResumeAction=` element) stays in AppShell. Pure move — zero behavior change.
  */

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -37,6 +37,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const PROCESS_TIMEOUT_MS = 90_000;
+const HOST_STARTUP_TIMEOUT_MS = 10_000;
+const SHUTDOWN_KILL_AFTER_MS = 15_000;
+const HOST_LIVENESS_MS = 1_500;
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_TARBALL_BYTES = 64 * 1024 * 1024;
 const fixturePath = fileURLToPath(
@@ -145,7 +148,6 @@ export async function qualifyReleasedCliStateRoot(input) {
     throw new Error('Released State Root qualification currently requires Linux');
   }
   assertCommandAvailable('bwrap');
-  assertCommandAvailable('timeout');
   const useSudo = parseSudoBwrapEnvironment(process.env[SUDO_BWRAP_ENV]);
   if (useSudo) {
     assertCommandAvailable('sudo');
@@ -524,7 +526,7 @@ async function proveWriterFence({ source, target, rootPath, scope }) {
   return { kind: 'passed', rootId: attempted.rootId };
 }
 
-async function runInstalledRuntimeHost({ artifact, rootPath, scope }) {
+export async function runInstalledRuntimeHost({ artifact, rootPath, scope }, lifecycleOptions) {
   const configPath = join(scope, `${artifact.role}-runtime-host-service.json`);
   writeFileSync(
     configPath,
@@ -541,37 +543,108 @@ async function runInstalledRuntimeHost({ artifact, rootPath, scope }) {
     })}\n`,
     { mode: 0o600 },
   );
-  const result = spawnSync(
-    'timeout',
-    [
-      '--signal=INT',
-      '--kill-after=15s',
-      '--preserve-status',
-      '10s',
-      process.execPath,
-      artifact.cliPath,
-      'runtime-host',
-      'serve',
-      '--managed-service-config',
-      configPath,
-      '--json',
-    ],
-    {
-      cwd: scope,
-      env: process.env,
-      encoding: 'utf8',
-      maxBuffer: MAX_OUTPUT_BYTES,
-      timeout: PROCESS_TIMEOUT_MS,
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(`Released Runtime Host failed: ${result.stderr || result.stdout}`);
-  }
-  const ready = findJsonLine(result.stdout, (value) => value.event === 'runtime_host_ready');
-  if (!ready?.rootId || !ready.hostEpoch) {
-    throw new Error(`The released Runtime Host did not publish Ready: ${result.stderr}`);
-  }
-  return { rootId: ready.rootId, hostEpoch: ready.hostEpoch };
+  const args = [
+    artifact.cliPath,
+    'runtime-host',
+    'serve',
+    '--managed-service-config',
+    configPath,
+    '--json',
+  ];
+  return runRuntimeHostUntilVerifierStop(args, scope, lifecycleOptions);
+}
+
+function runRuntimeHostUntilVerifierStop(
+  args,
+  scope,
+  {
+    environment = process.env,
+    startupTimeoutMs = HOST_STARTUP_TIMEOUT_MS,
+    livenessMs = HOST_LIVENESS_MS,
+    shutdownKillAfterMs = SHUTDOWN_KILL_AFTER_MS,
+  } = {},
+) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, args, { cwd: scope, env: environment });
+    let stdout = '';
+    let stderr = '';
+    let ready;
+    let failure;
+    let verifierStopRequested = false;
+    let livenessTimer;
+    let shutdownTimer;
+
+    const requestVerifierStop = (error) => {
+      if (error) failure ??= error;
+      if (verifierStopRequested || child.exitCode !== null || child.signalCode !== null) return;
+      verifierStopRequested = true;
+      if (!child.kill('SIGINT')) {
+        failure ??= new Error('Released Runtime Host could not be stopped by the verifier');
+      }
+      shutdownTimer = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        failure ??= new Error('Released Runtime Host ignored verifier shutdown after Ready');
+        child.kill('SIGKILL');
+      }, shutdownKillAfterMs);
+    };
+
+    const startupTimer = setTimeout(() => {
+      requestVerifierStop(
+        new Error(`Released Runtime Host did not publish Ready within ${startupTimeoutMs} ms`),
+      );
+    }, startupTimeoutMs);
+
+    const appendOutput = (stream, chunk) => {
+      const output = stream === 'stdout' ? stdout + chunk : stderr + chunk;
+      if (Buffer.byteLength(output) > MAX_OUTPUT_BYTES) {
+        requestVerifierStop(
+          new Error(`Released Runtime Host ${stream} exceeded ${MAX_OUTPUT_BYTES} bytes`),
+        );
+        return;
+      }
+      if (stream === 'stdout') stdout = output;
+      else stderr = output;
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      appendOutput('stdout', chunk);
+      if (ready || failure) return;
+      ready = findJsonLine(stdout, (value) => value.event === 'runtime_host_ready');
+      if (!ready) return;
+      clearTimeout(startupTimer);
+      if (!ready.rootId || !ready.hostEpoch) {
+        requestVerifierStop(
+          new Error(`Released Runtime Host Ready names no rootId or hostEpoch: ${stdout}`),
+        );
+        return;
+      }
+      livenessTimer = setTimeout(requestVerifierStop, livenessMs);
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => appendOutput('stderr', chunk));
+    child.once('error', (error) => {
+      failure ??= error;
+    });
+    child.once('close', (status, signal) => {
+      clearTimeout(startupTimer);
+      clearTimeout(livenessTimer);
+      clearTimeout(shutdownTimer);
+      const phase = ready ? 'after Ready' : 'before Ready';
+      const outcome = signal ? `signal ${signal}` : `status ${status}`;
+      if (!failure && !verifierStopRequested) {
+        failure = new Error(
+          `Released Runtime Host exited with ${outcome} ${phase}: ${stderr || stdout}`,
+        );
+      } else if (!failure && (status !== 0 || signal)) {
+        failure = new Error(
+          `Released Runtime Host completed verifier shutdown with ${outcome}: ${stderr || stdout}`,
+        );
+      }
+      if (failure) rejectPromise(failure);
+      else resolvePromise({ rootId: ready.rootId, hostEpoch: ready.hostEpoch });
+    });
+  });
 }
 
 function parseLastJsonLine(output) {

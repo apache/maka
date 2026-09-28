@@ -20,12 +20,127 @@
 # patches
 
 Applied on root `postinstall` via `scripts/apply-dependency-patches.mjs`
-(`patch-package --error-on-fail`). After bumping a patched dependency, re-run
-`npx patch-package <name>` so the filename tracks the installed version.
+(`patch-package --error-on-fail`). To update a patch, edit the installed package
+in `node_modules`, then run `node node_modules/patch-package/index.js <name>`.
+After a dependency upgrade, apply the still-needed edits to the new version
+before regenerating. The command records the installed files, not the old
+patch text.
 
 Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
+
+## `electron-updater@6.8.9`
+
+GitHub can continue serving a withdrawn prerelease in `releases.atom` after
+the Release and its channel metadata are gone. The GitHub provider otherwise
+pins that first same-channel entry, retries its missing `dev.yml`, falls back
+to its missing `latest.yml`, and never considers the next complete entry.
+
+For prerelease channels only, the patch retains eligible Atom entries in feed
+order and advances when both metadata names return 404. Other HTTP and parsing
+failures remain terminal, stable-release selection is unchanged, and the
+withdrawn candidate is never offered or downloaded. Remove the patch when
+electron-updater ships equivalent missing-metadata candidate selection. The
+provider regression is in `scripts/desktop-nightly.test.mjs`.
+
+## `run@2.1.4` and `@ai-sdk/code-mode@1.0.56`
+
+Code Mode awaits normal Runtime tools, including user interactions. The upstream
+wall deadline aborts those waits. The opt-in `timeoutMode: 'execution'` instead
+counts cumulative synchronous QuickJS execution, retaining the VM and normal
+Promise completion order during asynchronous host waits. Cancellation and worker
+pool/memory bounds remain in effect. Wall mode is unchanged. Execution mode
+rejects synchronous host functions/module loaders, which Maka does not expose.
+Callers must supply a reachable cancellation signal: a guest Promise that never
+settles retains its Worker until cancelled, even without an outstanding Host tool.
+There is no automatic liveness deadline or deadlock detector.
+
+The patched package requires Maka's Node >=22.19 baseline and drops the optional
+TypeScript peer used only by upstream's older-Node fallback. Maka uses native
+`node:module.stripTypeScriptTypes`, so a second compiler is unnecessary and the
+upstream peer range otherwise conflicts with the repository's TypeScript 7.
+
+The SDK patch only forwards this policy. Its nested patch path follows the locked
+workspace installation through `node_modules/@maka/runtime`. No continuation,
+replay, result ordering, or Worker pool is added to Maka.
+
+`run-2.1.4-source.diff` is the readable source corresponding to the run patch.
+To rebuild, check out upstream `vercel-labs/run` tag `run@2.1.4`
+(`0207eebde4fc9c04b35d8414773a7dea6c552115`), apply that diff, install with
+`pnpm install --frozen-lockfile --ignore-scripts --filter run...`, and run
+`pnpm --filter run build`. Copy the changed `dist` files into the installed run
+package and regenerate with `node node_modules/patch-package/index.js run`.
+Copy the patched package manifest as well, and pass `--exclude '^$'` when
+regenerating so patch-package includes that manifest change.
+The large generated hunk is the inline Worker with unchanged embedded WASM;
+`run-2.1.4-notices.md` retains its embedded dependency notices.
+
+Remove both patches and the run override when published versions support the
+same execution budget semantics. Regression coverage lives in
+`packages/runtime/src/__tests__/code-mode.test.ts`: long host waits with dependent
+Promise.race progress, pending-host compute timeout, cumulative compute across
+awaits, and the existing cancellation/drain and resource-limit cases.
+
+## `@xterm/xterm@6.0.0`
+
+`RenderService.handleSelectionChanged` bypasses the renderer's existing hidden
+pause. Selection refreshes can therefore redraw a hidden DOM terminal in full;
+zero-width character measurements are not cached, causing repeated synchronous
+layout under output load. The patch retains the latest selection and reuses
+the existing selection/full-refresh flags to paint it when visibility resumes.
+It does not stop the PTY, parser, or output subscriptions. There is no public
+xterm API that intercepts this internal redraw before it runs.
+
+Both shipped entry points and their TypeScript source are patched. The large
+diff is the vendor's minified bundle lines, not an additional implementation.
+Against a disposable Electron fixture with CDP, run
+`node scripts/perf/xterm-hidden-selection.mjs <port>`: real Chromium verifies
+that hidden selection changes do not mutate rows and the latest selection is
+painted on resume without another write. It fails against the unpatched bundle.
+
+Delete when upstream routes selection changes through its paused-render
+contract and both bundle regressions pass without the patch.
+
+## `@earendil-works/pi-tui@0.85.1`
+
+
+Editor undo snapshots deep-clone all stored paste strings for each typed word,
+so a 1 MiB paste followed by 60 words retains roughly 60 MiB of duplicate text.
+The editor now copies its mutable state, lines array, and paste Map while
+sharing immutable strings. All undo steps, paste renumbering, and submission
+cleanup are preserved; the generic undo stack used by Input stays unchanged.
+Snapshot creation and storage are private, with no published clone policy
+that product code can configure.
+
+Delete the patch when upstream shares immutable paste strings across undo snapshots.
+
+## `zod@4.6.5`
+
+Recursive schemas retain their last parse context and bucket in schema closures,
+keeping the input and output graphs alive for the schema's lifetime. Containers
+also leave entries on the global allocation stack when synchronous parsing
+throws, including cycles through transforms. The patch keeps memoization in the
+parse context and restores allocation state in `finally`, including a pending
+outer allocation during reentrant parsing. Recursive cycles and shared aliases
+still use the existing per-parse memoization.
+
+Delete the patch when upstream releases completed parse state in both ESM and CJS.
+Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle/alias
+identity against the new memoizer and container implementations.
+The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
+
+## `@modelcontextprotocol/client@2.0.0`
+
+Pending transport sends retain settled request arguments and results through
+error observers, even after response, abort, timeout, or connection close.
+The ESM and CJS patches scope cancellation observers independently and revoke
+the request observer's native `reject` reference in request cleanup. Late send
+errors still remove progress handlers, and cancellation send errors still reach
+`onerror`; queued frames and connection behavior stay intact. The private SDK
+request funnel has no public observer-lifetime hook for a call-site fix.
+
+Delete the patch when upstream releases settled request observers despite transport backpressure.
 
 ## `@tufjs/models@5.0.0` and `@sigstore/core@4.0.1`
 
@@ -49,7 +164,7 @@ the queue at the native exit fence. See #2978.
 
 Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 
-## `@ai-sdk/provider-utils@5.0.34`
+## `@ai-sdk/provider-utils@5.0.40`
 
 Streaming tool-call association for gateways that reuse or omit `index` / `id`
 (Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and
@@ -57,21 +172,39 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.5.2`
+## `@astryxdesign/core@0.6.2`
 
-Five published component seams drop host-owned state or semantics:
+The shared code tokenizer caches only valid language definitions. Caching `null`
+for arbitrary unsupported fence labels grows a process-lifetime map; a short
+label can also be a sliced string retaining its entire Markdown message after
+unmount. Unknown labels keep their plain-text fallback, and known languages
+keep reusing compiled regexes. A call-site language filter would duplicate the
+dependency's language list, discard the displayed label, and miss the shared
+CodeEditor path. Delete this hunk when upstream stops caching unsupported labels.
 
-- `ChatLayout` needs a conversation identity that resets scroll/unread state
-  without remounting its composer slot and discarding the live draft.
-- `ChatLayout` owns auto-follow and publishes no way to say "this scroll is
-  deliberate navigation, release it". Its scroll-direction unlock cannot infer
-  that: it discards any scroll event carrying a changed `scrollHeight` as a
-  resize artefact, and a host that mounts a turn before scrolling to it
-  produces exactly that. Without the seam the prompt rail's jump into an
-  unmounted turn is dragged straight back to the bottom (#2923), and no call
-  site can fix it — re-aiming frame by frame wins the mount and then loses to
-  the follow spring that outlives it. `unlockAutoFollow` on
-  `ChatLayoutContextValue` publishes the hook's existing `unlock`.
+`CodeBlock` retains memoized line chunks, but lays them out without guessed
+intrinsic heights. Replacing those estimates on first visibility changed the
+transcript scroll range (#5184). Keep layout/style/paint containment. Remove
+this hunk when upstream offers equivalent stable geometry; the default-mode
+geometry CI covers 1200 lines without any ablation override.
+
+`ChatComposerInput` synchronizes external controlled values into its editable
+DOM in a layout effect. A passive effect can leave the old multiline draft
+visible for a frame after the sent message is rendered; clearing it later
+shrinks the dock and moves the already-positioned transcript. The existing
+echo and selection guards stay unchanged.
+The short, multiline, tall and completion submission stories in
+`apps/desktop/stories/app-shell.stories.tsx` protect this layout contract.
+
+The other component changes preserve host-owned state and semantics:
+
+- `ChatComposerTrigger.menuAnchorRef` lets the Session picker align with the
+  composer instead of a caret-sized anchor. Popover's existing anchor sizing
+  keeps its rows aligned on resize without a second positioning observer.
+  Other triggers retain their caret placement.
+- `ChatLayout.autoScroll` forwards the existing hook's `enabled` option so
+  Maka's transcript authority can own scrolling without competing with the
+  dependency's auto-follow listeners and writes.
 - `ChatToolCalls` needs a stable row slot for product styling and E2E geometry.
 - `List` must forward its published `aria-label` to the rendered list element.
 - `SideNavItem` needs an interactive `trailingAction` sibling between its
@@ -92,6 +225,12 @@ Markdown can also transform the displayed prefix immediately before its
 existing incremental parser, so host syntax such as math stays behind the
 streaming cursor without adding another parser or scheduler.
 
+`trimStreamingArtifacts` pairs its unclosed-marker scans with the inline math
+spans it already found. Without that, a complete `$…$` whose TeX contains
+`[`, `*`, or `~~` on the last streamed line is trimmed or auto-closed as if
+the characters were Markdown, mangling a finished formula. Remove this hunk
+when upstream scopes those scans to text outside math.
+
 One hunk is a geometry fix rather than a seam. `ChatLayout`'s frosted dock
 layer is a per-density constant (80/100/120px) while the dock it fades is
 sized by its content. At `balanced` the 100px layer starts 90px inside the
@@ -104,4 +243,47 @@ alone — no `themeProps`, no `data-*`, no custom property — so the only handl
 is a structural selector that breaks the moment a caller passes
 `scrollButton={null}`. See #3446.
 
+Three hunks fix composer caret anchoring and chip alignment rather than add
+seams. Every programmatic caret move (`placeCaretAtEnd`, `ensureCaretInside`,
+`insertTextAtCursor`, `insertToken`, `expandToken`, the token-paste path and
+the controlled-write restore) anchored a collapsed range on a child offset of
+the contenteditable; Chromium anchors an IME composition to the boundary it
+starts from, and from an element boundary the first preedit commits as its raw
+letters, so the first CJK word after a chip or a caret move arrived as pinyin.
+`landInsideTrailingTextNode` moves the caret into the text node it visually
+points at — appending an empty one when nothing landable remains — and the
+`setStartAfter` sites anchor inside the node they just inserted. No product
+code can reach these ranges: they are created inside the dependency's own
+helpers. Tracked upstream as facebook/astryx#6411.
+
+The inline token chip used `vertical-align: middle`, which centres the box on
+the parent's x-height midline and ignores its height, leaving a 20px chip
+~1.8px low against CJK text on a 22px line. `insertToken`'s span and
+`ChatTokenizedText`'s wrapper both carry `height: 1lh; align-items: center;
+vertical-align: top` — they must stay equal or a token moves when the message
+is sent. Neither is reachable by product CSS without `!important` against an
+inline style and a stylex class. Tracked upstream as facebook/astryx#6412.
+
+The `./Chat` barrel re-export of `placeCaretAtEnd` is a widened surface, not a
+behaviour change: `packages/ui`'s composer restores drafts with its own
+caret-to-end and duplicated the boundary walk because the selection helpers
+are not exported. Delete the re-export when upstream exports
+`chatComposerSelection` or grows an equivalent caret primitive — raised in
+#6411 — keeping the composer call site on whatever upstream ships.
+
 Delete each hunk when the corresponding behavior ships in Astryx.
+
+## `virtua@0.52.7`
+
+When measured rows above the reader shrink the list, the browser clamps
+`scrollTop` to the new maximum before virtua corrects for the shrink. virtua's
+correction is a relative `scrollBy` unless its target lies at an edge, so the
+clamp and the correction both land: reading upwards from the tail skipped
+~2300px and several Turns. The patch also takes the absolute path when the live
+offset is within a pixel of the maximum: the browser clamps to rounded DOM
+sizes while virtua's maximum keeps the fractional part. `scripts/perf/geometry-ablation.mjs
+--assert-stable` and the `upward-traversal-holds-turn-geometry` story under CPU
+throttle fail without it.
+
+Delete when upstream applies the correction absolutely after a clamp
+(inokawa/virtua#983).

@@ -264,6 +264,47 @@ test('a Session observation reopens safely after its first connection starts dra
   await connection.close();
 });
 
+test('an initial Session observation stays pinned to the concrete connection it started on', async () => {
+  const first = connectionHarness(
+    'first',
+    () => undefined,
+    async () => {
+      first.disconnect();
+      throw new RuntimeHostOperationError(
+        'subscription.open',
+        'host_draining',
+        'Runtime Host is draining',
+      );
+    },
+  );
+  const replacement = connectionHarness(
+    'replacement',
+    () => undefined,
+    async () => ({ subscriptionId: 'replacement-subscription' }),
+  );
+  const reconnected = deferred();
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => {
+      reconnected.resolve();
+      return replacement.connection;
+    },
+  });
+
+  await assert.rejects(
+    connection.openSessionSubscriptionOnce({
+      sessionId: 'session-1',
+      transcript: { kind: 'none' },
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError && error.code === 'host_draining',
+  );
+  await reconnected.promise;
+  assert.equal(first.openedSubscriptions, 1);
+  assert.equal(replacement.openedSubscriptions, 0);
+  await connection.close();
+});
+
 test('a reconnecting Client rejects a different Host composition permanently', async () => {
   const first = connectionHarness('first', () => undefined);
   const replacement = connectionHarness('replacement', () => undefined, undefined, {
@@ -542,6 +583,70 @@ test('an initial transient failure keeps a wakeable reconnect lifecycle', async 
     lifecycle.wake();
     assert.equal(await lifecycle.waitForCurrent(), replacement.connection);
     assert.equal(connectCalls, 3);
+  } finally {
+    await lifecycle.close();
+  }
+});
+
+test('initial retry policy reports a rejected admission without retrying', async () => {
+  const capacity = new Error('capacity exceeded');
+  let attempts = 0;
+  await assert.rejects(
+    startRuntimeHostReconnectLifecycle({
+      retryInitialFailure: (error) => error !== capacity,
+      connect: async (): Promise<RuntimeHostConnection> => {
+        attempts += 1;
+        throw capacity;
+      },
+    }),
+    (error: unknown) => error === capacity,
+  );
+  assert.equal(attempts, 1);
+});
+
+test('initial retry policy also stops a later initial admission attempt', async () => {
+  const capacity = new Error('capacity exceeded');
+  let attempts = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    retryInitialFailure: (error) => error !== capacity,
+    connect: async (): Promise<RuntimeHostConnection> => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('route unavailable');
+      throw capacity;
+    },
+    backoff: { minMs: 0, maxMs: 0 },
+  });
+  try {
+    await assert.rejects(lifecycle.waitForCurrent(), (error: unknown) => error === capacity);
+    assert.equal(attempts, 2);
+  } finally {
+    await lifecycle.close();
+  }
+});
+
+test('initial retry policy does not reject recovery of an established connection', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  let attempts = 0;
+  let policyCalls = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    retryInitialFailure: () => {
+      policyCalls += 1;
+      return false;
+    },
+    connect: async () => {
+      attempts += 1;
+      if (attempts === 1) return first.connection;
+      if (attempts === 2) throw new Error('capacity exceeded');
+      return replacement.connection;
+    },
+    backoff: { minMs: 0, maxMs: 0 },
+  });
+  try {
+    first.disconnect();
+    assert.equal(await lifecycle.waitForCurrent(first.connection), replacement.connection);
+    assert.equal(attempts, 3);
+    assert.equal(policyCalls, 0);
   } finally {
     await lifecycle.close();
   }

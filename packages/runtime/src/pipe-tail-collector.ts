@@ -18,10 +18,9 @@
  */
 
 import type { PipeShellOutput } from '@maka/core/shell-run';
-import { redactSecrets } from '@maka/core/redaction';
 
 import { BashTailBuffer } from './bash-tail-buffer.js';
-import { BASH_MAX_RETAINED_CHARS, shellTailValueWithUnsafeDropMarker } from './shell-exec.js';
+import { BASH_MAX_RETAINED_CHARS } from './shell-exec.js';
 
 export class PipeTailCollector {
   private readonly stdout: BashTailBuffer;
@@ -51,18 +50,16 @@ export class PipeTailCollector {
   }
 
   snapshot(): PipeShellOutput {
-    const stdoutRaw = shellTailValueWithUnsafeDropMarker(this.stdout);
-    const stderrRaw = shellTailValueWithUnsafeDropMarker(this.stderr);
-    const stdout = redactSecrets(stdoutRaw);
-    const stderr = redactSecrets(stderrRaw);
+    const stdout = this.stdout.value();
+    const stderr = this.stderr.value();
     return {
       mode: 'pipes',
       stdout,
       stderr,
       ...(this.latestStream ? { latestStream: this.latestStream } : {}),
-      stdoutTruncated: this.stdoutChars > stdoutRaw.length || this.stdout.hasDroppedUnsafe(),
-      stderrTruncated: this.stderrChars > stderrRaw.length || this.stderr.hasDroppedUnsafe(),
-      redacted: stdout !== stdoutRaw || stderr !== stderrRaw,
+      stdoutTruncated: this.stdoutChars > stdout.length,
+      stderrTruncated: this.stderrChars > stderr.length,
+      redacted: false,
     };
   }
 

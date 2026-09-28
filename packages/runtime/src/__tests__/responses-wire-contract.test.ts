@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { buildModelCatalogEntries } from '@maka/core/model-catalog';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
 import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
@@ -29,7 +30,6 @@ import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { ModelAdapter } from '../model-adapter.js';
 import { TOOL_SEARCH_PROVIDER_NAME } from '../tool-availability.js';
 import { resolveModelRuntime } from '../model-runtime.js';
-import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
 
@@ -54,6 +54,47 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
+  test('GPT-6 catalog thinking levels reach Responses for API and Codex OAuth', async () => {
+    for (const providerType of ['openai', 'openai-codex'] as const) {
+      for (const modelId of ['gpt-6-sol', 'gpt-6-luna']) {
+        const [entry] = buildModelCatalogEntries({
+          providerType,
+          models: [{ id: modelId }],
+          modelSource: 'fetched',
+        });
+        assert.ok(entry);
+        assert.deepEqual(entry.thinkingLevels, ['low', 'medium', 'high', 'xhigh', 'max']);
+
+        const requests: Record<string, unknown>[] = [];
+        const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+          requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return Response.json({
+            id: 'response-gpt-6',
+            object: 'response',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          });
+        }) as typeof globalThis.fetch;
+        const connection = conn(providerType);
+        const model = getAIModel({ connection, apiKey: 'test-token', modelId, fetch });
+
+        for (const level of entry.thinkingLevels) {
+          await model.doGenerate({
+            prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+            providerOptions: buildProviderOptions(connection, modelId, level),
+          });
+        }
+
+        assert.deepEqual(
+          requests.map((body) => (body.reasoning as { effort?: string } | undefined)?.effort),
+          entry.thinkingLevels,
+          `${providerType}/${modelId}`,
+        );
+      }
+    }
+  });
+
   test('does not route Maka tool_search history through OpenAI native tool_search validation', async () => {
     const connection = conn('openai-codex', 'codex-subscription');
     connection.defaultModel = 'gpt-5.6-sol';
@@ -137,6 +178,92 @@ describe('responses wire contract', () => {
     );
   });
 
+  test('keeps the runtime tool_search name in a Code Mode catalog nested inside exec', async () => {
+    const connection = conn('openai-codex', 'codex-subscription');
+    connection.defaultModel = 'gpt-5.6-sol';
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({
+        id: 'response-code-mode-tool-search',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const adapter = new ModelAdapter({
+      connection,
+      apiKey: 'test-token',
+      modelId: connection.defaultModel,
+      modelFactory: (input) =>
+        getAIModel({
+          connection,
+          apiKey: input.apiKey,
+          modelId: connection.defaultModel,
+          fetch,
+        }),
+      newId: () => 'test-id',
+      now: () => 0,
+    });
+    // exec binds nested tools as `tools.<runtime name>`; the provider never
+    // sees tool_search as a function here, so its reserved-name alias must not
+    // leak into the catalog or into exec's returned text.
+    const result = await adapter.startStream({
+      model: adapter.resolveModel(),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'exec-call',
+              toolName: 'exec',
+              input: { code: 'return await tools.tool_search({ query: "ScheduledTask" })' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'exec-call',
+              toolName: 'exec',
+              output: { type: 'text', value: 'tool_search activated ScheduledTask' },
+            },
+          ],
+        },
+      ],
+      tools: {
+        exec: {
+          description: 'Run JavaScript that calls Maka tools',
+          inputSchema: z.object({ code: z.string() }),
+        },
+      },
+      activeTools: ['exec'],
+      system: 'Code Mode: After tool_search, use the refreshed catalog. {"tool_search":{}}',
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+    for await (const _event of result.events) void _event;
+    const input = requestBodies[0]?.input as Array<Record<string, unknown>>;
+    assert.equal(
+      input?.find((item) => item.role === 'developer')?.content,
+      'Code Mode: After tool_search, use the refreshed catalog. {"tool_search":{}}',
+    );
+    assert.equal(
+      input?.find((item) => item.type === 'function_call_output')?.output,
+      'tool_search activated ScheduledTask',
+    );
+    const tools = requestBodies[0]?.tools as Array<{ name?: string }>;
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      ['exec'],
+    );
+  });
+
   test('routes only Qwen3.8 Max through Token Plan Responses', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       assert.equal(
@@ -193,7 +320,7 @@ describe('responses wire contract', () => {
     assert.deepEqual(sessionHeaders, ['session-opencode-go']);
   });
 
-  test('sends the OpenCode Go session identity through Chat and Messages adapters', async () => {
+  test('sends OpenCode Go session identities through their model adapters', async () => {
     const requests: Array<{ url: string; sessionHeader: string | null }> = [];
     const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const request = new Request(url, init);
@@ -229,13 +356,16 @@ describe('responses wire contract', () => {
       });
     }) as typeof globalThis.fetch;
 
-    for (const modelId of ['kimi-k2.7-code', 'minimax-m3']) {
+    for (const [providerType, modelId] of [
+      ['opencode-go', 'kimi-k2.7-code'],
+      ['opencode-go', 'minimax-m3'],
+    ] as const) {
       const model = getAIModel({
-        connection: conn('opencode-go'),
+        connection: conn(providerType),
         apiKey: '[redacted]',
         modelId,
         fetch,
-        sessionId: 'session-opencode-go',
+        sessionId: `session-${providerType}`,
       });
       await model.doGenerate({
         prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
@@ -289,7 +419,8 @@ describe('responses wire contract', () => {
       });
     }) as unknown as typeof globalThis.fetch;
     const connection = {
-      ...conn('openai-responses-compatible'),
+      ...conn('custom'),
+      defaultApiProtocol: 'openai-responses' as const,
       baseUrl: 'https://relay.example/v1/responses',
     };
     const model = getAIModel({ connection, apiKey: '[redacted]', modelId: 'relay-model', fetch });
@@ -334,13 +465,63 @@ describe('responses wire contract', () => {
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     });
 
+    const moonshotGlobal = resolveModelRuntime(
+      { providerType: 'moonshot-global', slug: 'moonshot-global' },
+      'kimi-k3',
+    );
+    assert.deepEqual(moonshotGlobal.reasoningReplay, {
+      kind: 'responses',
+      contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+    });
+    assert.equal(moonshotGlobal.responsesProviderOptionsKey, 'moonshot-global');
+    assert.equal(moonshotGlobal.responsesReplayProfile, 'moonshot-global');
+
     const relay = resolveModelRuntime(
-      { providerType: 'openai-responses-compatible' },
+      { providerType: 'custom', defaultApiProtocol: 'openai-responses' },
       'relay-model',
     );
     assert.deepEqual(relay.reasoningReplay, {
       kind: 'responses',
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    });
+  });
+
+  test('one custom connection resolves each model on its own wire', () => {
+    const connection = {
+      providerType: 'custom' as const,
+      defaultApiProtocol: 'openai-chat' as const,
+      baseUrl: 'https://relay.example/v1',
+      models: [
+        { id: 'claude-relay', apiProtocol: 'anthropic-messages' as const },
+        { id: 'gpt-relay', apiProtocol: 'anthropic-messages' as const },
+      ],
+      modelOverrides: { 'gpt-relay': { apiProtocol: 'openai-responses' as const } },
+    };
+    const resolved = Object.fromEntries(
+      ['gpt-relay', 'claude-relay', 'plain-relay'].map((modelId) => {
+        const runtime = resolveModelRuntime(connection, modelId);
+        return [
+          modelId,
+          { wire: runtime.wire, kind: runtime.adapter.kind, baseUrl: runtime.baseUrl },
+        ];
+      }),
+    );
+    assert.deepEqual(resolved, {
+      'gpt-relay': {
+        wire: 'openai-responses',
+        kind: 'openai',
+        baseUrl: 'https://relay.example/v1',
+      },
+      'claude-relay': {
+        wire: 'anthropic-messages',
+        kind: 'anthropic',
+        baseUrl: 'https://relay.example/v1',
+      },
+      'plain-relay': {
+        wire: 'openai-chat',
+        kind: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+      },
     });
   });
 
@@ -359,63 +540,25 @@ describe('responses wire contract', () => {
       ).parallelToolCalls,
       false,
     );
-    assert.equal(
-      resolveModelRuntime({ providerType: 'openai-compatible' }, 'relay-model').parallelToolCalls,
-      undefined,
-    );
+    for (const defaultApiProtocol of ['openai-chat', 'openai-responses'] as const) {
+      assert.equal(
+        resolveModelRuntime({ providerType: 'custom', defaultApiProtocol }, 'relay-model')
+          .parallelToolCalls,
+        undefined,
+        defaultApiProtocol,
+      );
+    }
     assert.equal(
       resolveModelRuntime(
         {
-          providerType: 'openai-compatible',
+          providerType: 'custom',
+          defaultApiProtocol: 'openai-chat',
           models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
         },
         'relay-model',
       ).parallelToolCalls,
       true,
     );
-  });
-
-  test('enables Responses only through an explicit supported contract', () => {
-    const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = resolveRuntimeProviderAdapter(definition.runtimeAdapter);
-      return adapter.kind === 'openai-compatible' && adapter.responses
-        ? [{ providerType, contract: adapter.responses }]
-        : [];
-    });
-
-    assert.deepEqual(configured, [
-      {
-        providerType: 'deepseek',
-        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
-      },
-      {
-        providerType: 'xai',
-        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
-      },
-      {
-        providerType: 'xai-oauth',
-        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
-      },
-      {
-        providerType: 'alibaba-token-plan-cn',
-        contract: {
-          adapter: 'open-responses',
-          reasoningReplay: 'plaintext-summary',
-          compatibility: 'alibaba-token-plan',
-        },
-      },
-      {
-        providerType: 'alibaba-token-plan',
-        contract: {
-          adapter: 'open-responses',
-          reasoningReplay: 'plaintext-summary',
-          compatibility: 'alibaba-token-plan',
-        },
-      },
-    ]);
-
-    const relay = PROVIDER_REGISTRY['openai-responses-compatible'].runtimeAdapter;
-    assert.equal(relay.kind, 'openai');
   });
 
   test('every encrypted-content Responses contract asks for encrypted reasoning', () => {
@@ -837,4 +980,119 @@ describe('responses wire request body', () => {
       output: '{"name":"maka"}',
     });
   });
+});
+
+test('Codex custom ApplyPatch streams raw input and replays custom tool results', async () => {
+  const patch = '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch';
+  const item = {
+    type: 'custom_tool_call',
+    status: 'completed',
+    id: 'custom-1',
+    call_id: 'patch-1',
+    name: 'apply_patch',
+    input: patch,
+  };
+  const response = {
+    id: 'response-patch',
+    object: 'response',
+    created_at: 0,
+    model: 'future-model',
+    status: 'completed',
+    output: [item],
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+  const requests: Array<Record<string, unknown>> = [];
+  const fetch = (async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    requests.push(body);
+    if (!body.stream) return Response.json(response);
+    const events = [
+      { type: 'response.created', response: { ...response, status: 'in_progress', output: [] } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...item, input: '' } },
+      {
+        type: 'response.custom_tool_call_input.delta',
+        output_index: 0,
+        item_id: item.id,
+        delta: patch,
+      },
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response },
+    ];
+    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }) as typeof globalThis.fetch;
+  const connection = conn('openai-codex');
+  const model = getAIModel({ connection, apiKey: 'test-token', modelId: 'future-model', fetch });
+  const adapter = new ModelAdapter({
+    connection,
+    apiKey: 'test-token',
+    modelId: 'future-model',
+    modelFactory: () => model,
+    newId: () => 'test-id',
+    now: () => 0,
+  });
+  const toolSet = {
+    apply_patch: {
+      kind: 'provider' as const,
+      providerTool: { kind: 'codex-apply-patch' as const },
+    },
+  };
+  const stream = await adapter.startStream({
+    model: adapter.resolveModel(),
+    messages: [{ role: 'user', content: 'edit' }],
+    tools: toolSet,
+    activeTools: ['apply_patch'],
+    system: 'Edit files',
+    onStreamActivity: () => {},
+    abortSignal: new AbortController().signal,
+    repairToolCall: async () => null,
+  });
+  const events = [];
+  for await (const event of stream.events) events.push(event);
+  assert.equal(
+    events.find((event) => event.kind === 'error'),
+    undefined,
+  );
+  const call = events.find((event) => event.kind === 'tool-call');
+  assert.equal(call?.toolCall.input, patch);
+  assert.notEqual(call?.toolCall.providerExecuted, true);
+  const declarations = requests[0]?.tools;
+  assert.ok(Array.isArray(declarations));
+  const declaration = declarations[0]!;
+  assert.equal(declaration.type, 'custom');
+  assert.equal(declaration.name, 'apply_patch');
+  assert.equal((declaration.format as { syntax: string }).syntax, 'lark');
+  assert.doesNotMatch(JSON.stringify(declaration.format), /Move to/);
+
+  const tools = lowerModelTools(toolSet);
+  await model.doGenerate({
+    prompt: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'patch-1', toolName: 'apply_patch', input: patch },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'patch-1',
+            toolName: 'apply_patch',
+            output: { type: 'json', value: { status: 'failed', output: 'file not found' } },
+          },
+        ],
+      },
+    ],
+    tools: [{ ...(tools.apply_patch as object), name: 'apply_patch' } as never],
+    providerOptions: { openai: { store: false } },
+  });
+  const replay = requests[1]?.input as Array<Record<string, unknown>>;
+  assert.equal(replay[0]?.type, 'custom_tool_call');
+  assert.equal(replay[0]?.input, patch);
+  assert.equal(replay[1]?.type, 'custom_tool_call_output');
+  assert.equal(replay[1]?.call_id, 'patch-1');
+  assert.match(String(replay[1]?.output), /file not found/);
 });

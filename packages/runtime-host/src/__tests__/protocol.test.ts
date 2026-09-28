@@ -21,7 +21,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { QUOTE_COMMENT_MAX_LENGTH, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
@@ -132,6 +132,10 @@ describe('Runtime Host bootstrap protocol', () => {
     // Epoch 22 predates the live-run projection and rejects its added catalog
     // field, so mixed-version peers must fail during the handshake instead.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
+  });
+
+  test('publishes a new compatibility epoch for durable external turn origins', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 189);
   });
 
   test('publishes a new compatibility epoch for mandatory submit Skill outcomes', () => {
@@ -257,6 +261,13 @@ describe('Runtime Host bootstrap protocol', () => {
     // enrollment query, and onboarding credential shape change the closed wire
     // vocabulary, so this branch re-derives the first unclaimed epoch.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 102);
+  });
+
+  test('publishes a new compatibility epoch for named OAuth identity and slug failures', () => {
+    // Epoch 109 is the current main boundary. Named create inputs and the
+    // slug_taken output extend closed wire shapes, so older peers must be
+    // rejected during handshake rather than failing midway through setup.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 109);
   });
 
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
@@ -437,6 +448,20 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 99);
   });
 
+  test('publishes a new compatibility epoch for external Session import failure reasons', () => {
+    // model_unavailable / source_unreadable let the shell classify import
+    // failures by stable code; older peers cannot decode the new codes.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 117);
+  });
+
+  test('publishes a new compatibility epoch for event-addressed transcript cursors', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 118);
+  });
+
+  test('publishes a new compatibility epoch for context-compaction transcript state', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 124);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
@@ -574,6 +599,40 @@ describe('Runtime Host bootstrap protocol', () => {
           session: { ...continuitySnapshot('epoch-1').session, status: 'unknown' },
         }),
       isInvalidSessionStatus,
+    );
+  });
+
+  test('preserves opaque nested call and step identities in subscription tool events', () => {
+    const parentId = 'p'.repeat(128);
+    const frame = {
+      kind: 'subscription.session_event',
+      hostEpoch: 'epoch',
+      subscriptionId: 'subscription',
+      sequence: 1,
+      sessionId: 'session',
+      runId: 'run',
+      event: {
+        type: 'tool_start',
+        id: 'event',
+        turnId: 'turn',
+        ts: 1,
+        toolName: 'mcp__desktop_workhub__control',
+        toolUseId: `${parentId}:nested:00000000-0000-4000-8000-000000000001`,
+        stepId: `${parentId}:nested`,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(frame), frame);
+    for (const field of ['toolUseId', 'stepId']) {
+      for (const value of ['', 'x'.repeat(257), ' leading', 'trailing ', 'control\u0000']) {
+        assert.throws(
+          () => decodeHostFrame({ ...frame, event: { ...frame.event, [field]: value } }),
+          isInvalidFrame,
+        );
+      }
+    }
+    assert.throws(
+      () => decodeHostFrame({ ...frame, event: { ...frame.event, turnId: 'turn:nested' } }),
+      isInvalidFrame,
     );
   });
 
@@ -1491,7 +1550,9 @@ describe('Runtime Host bootstrap protocol', () => {
         originHostEpoch: 'epoch-1',
         sessionId: 'session-1',
         messageId: 'message-1',
-        content: { text: 'adjust the active turn' },
+        content: {
+          text: 'adjust the active turn',
+        },
         placement: 'current_turn' as const,
       },
     };
@@ -1718,6 +1779,49 @@ describe('Runtime Host bootstrap protocol', () => {
     });
   });
 
+  test('allows only cloud activation as an external-message origin on turn.start', () => {
+    const start = {
+      requestId: 'activation-start',
+      operation: 'turn.start' as const,
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-activation',
+        content: { text: 'Inspect the workspace' },
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      },
+    };
+    assert.deepEqual(decodeClientFrame(start), start);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...start,
+          input: { ...start.input, origin: { kind: 'cloud_activation', extra: true } },
+        }),
+      isInvalidFrame,
+    );
+    for (const origin of [
+      { kind: 'goal', goalId: 'goal-1' },
+      { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
+      { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },
+      {
+        kind: 'workhub_result',
+        eventId: 'event-1',
+        actionId: 'action-1',
+        delegationId: 'delegation-1',
+        targetSessionId: 'session-2',
+        targetTurnId: 'turn-2',
+      },
+      { kind: 'legacy_automation', automationId: 'automation-1' },
+      { kind: 'automation', automationId: 'automation-2' },
+    ]) {
+      assert.throws(
+        () => decodeClientFrame({ ...start, input: { ...start.input, origin } }),
+        isInvalidFrame,
+        `external turn.start must reject ${origin.kind}`,
+      );
+    }
+  });
+
   test('bounds turn.start feedback as one transport-safe result', () => {
     const receipt = {
       invocation: 'explicit' as const,
@@ -1773,43 +1877,6 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
-  });
-
-  test('decodes a closed regenerate identity without accepting replacement content', () => {
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-regenerate',
-        operation: 'turn.regenerate',
-        input: {
-          sessionId: 'session-1',
-          sourceTurnId: 'turn-source',
-          turnId: 'turn-regenerated',
-        },
-      }),
-      {
-        requestId: 'request-regenerate',
-        operation: 'turn.regenerate',
-        input: {
-          sessionId: 'session-1',
-          sourceTurnId: 'turn-source',
-          turnId: 'turn-regenerated',
-        },
-      },
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          requestId: 'request-regenerate',
-          operation: 'turn.regenerate',
-          input: {
-            sessionId: 'session-1',
-            sourceTurnId: 'turn-source',
-            turnId: 'turn-regenerated',
-            content: { text: 'replacement' },
-          },
-        }),
-      isInvalidFrame,
-    );
   });
 
   test('bounds canonical MessageContent attachments, directory references and quotes', () => {
@@ -1890,6 +1957,7 @@ describe('Runtime Host bootstrap protocol', () => {
         quotes: Array.from({ length: TURN_MESSAGE_QUOTE_MAX_COUNT }, (_, index) => ({
           text: `excerpt-${index}`,
           label: 'Assistant',
+          comment: 'why this matters',
           sourceTurnId: `turn-${index}`,
         })),
       }),
@@ -1902,6 +1970,8 @@ describe('Runtime Host bootstrap protocol', () => {
       [{ text: 'excerpt', label: 'x'.repeat(TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', sourceTurnId: 'bad/id' }],
       [{ text: 'excerpt', sourceTurnId: 'x'.repeat(129) }],
+      [{ text: 'excerpt', comment: '' }],
+      [{ text: 'excerpt', comment: 'x'.repeat(QUOTE_COMMENT_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', extra: true }],
     ]) {
       assert.throws(() => submit({ text: 'valid', quotes }), isInvalidFrame);
@@ -1909,6 +1979,81 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(
       () => submit({ text: 'a'.repeat(TURN_MESSAGE_CONTENT_MAX_BYTES), displayText: 'also large' }),
       isInvalidFrame,
+    );
+  });
+
+  test('admits structured-only Messages: empty inline text with quotes or attachments (#4804)', () => {
+    const submit = (content: unknown) =>
+      decodeClientFrame({
+        requestId: 'submit-structured-only',
+        operation: 'turn.message.submit',
+        input: {
+          originHostEpoch: 'epoch-1',
+          sessionId: 'session-1',
+          messageId: 'message-1',
+          content,
+          placement: 'next_turn',
+        },
+      });
+    // A quote or an attachment carries the turn by itself: empty inline text
+    // is admissible when either is present.
+    assert.doesNotThrow(() =>
+      submit({ text: '', quotes: [{ text: 'pasted reference-sized excerpt' }] }),
+    );
+    assert.doesNotThrow(() =>
+      submit({
+        text: '',
+        attachments: [attachmentRef({ kind: 'workspace_file', relativePath: 'a.ts' })],
+      }),
+    );
+    // A Message with nothing but empty text is still an invalid frame.
+    // Whitespace-only text stays admissible: replay visibility must remain
+    // compatible with everything admission has ever accepted, so the
+    // predicate does not trim (#4815 review).
+    assert.throws(() => submit({ text: '' }), isInvalidFrame);
+    assert.doesNotThrow(() => submit({ text: '   ' }));
+  });
+
+  test('admitted structured-only Messages survive queue and steering read-back (#4804)', () => {
+    const admitted = { text: '', quotes: [{ text: 'pasted reference-sized excerpt' }] };
+    // A queued next_turn entry carries content admission already accepted at
+    // submit; the read-back decoders must apply the same rule or the whole
+    // snapshot frame breaks around one admitted entry.
+    const projectionWire = {
+      hostEpoch: 'epoch-1',
+      queueRevision: 7,
+      steering: [],
+      followup: [
+        {
+          ...queuedMessage('later', 'next_turn'),
+          entryId: 'entry-9',
+          messageId: 'm-9',
+          content: admitted,
+        },
+      ],
+    };
+    assert.deepEqual(
+      decodeSessionMessageQueueProjection(JSON.parse(JSON.stringify(projectionWire))),
+      projectionWire,
+    );
+    // The durable steering echo reads back through the session-event frame.
+    assert.doesNotThrow(() =>
+      decodeHostFrame({
+        kind: 'subscription.session_event' as const,
+        hostEpoch: 'epoch-1',
+        subscriptionId: 'subscription-1',
+        sequence: 1,
+        sessionId: 'session-1',
+        runId: 'run-1',
+        event: {
+          type: 'steering_message' as const,
+          id: 'steering-event-9',
+          turnId: 'turn-1',
+          ts: 7,
+          messageId: 'steering-message-9',
+          content: admitted,
+        },
+      }),
     );
   });
 
@@ -2219,6 +2364,7 @@ describe('Runtime Host bootstrap protocol', () => {
         connections: 1,
         activeOperations: 0,
         activeResidencies: 0,
+        upgradeBlockingActivity: true,
         protocolVersion: 0,
         compatibilityEpoch: 9,
         pid: 42,
@@ -2230,6 +2376,44 @@ describe('Runtime Host bootstrap protocol', () => {
         logs,
       }),
     );
+  });
+
+  test('decodes the required upgrade blocking activity fact in diagnostics', () => {
+    const base = {
+      hostEpoch: 'epoch-1',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+      compositionModules: ['interactive'],
+      residencies: [],
+      state: 'ready',
+      connections: 1,
+      activeOperations: 0,
+      activeResidencies: 0,
+      upgradeBlockingActivity: false,
+      protocolVersion: 0,
+      compatibilityEpoch: 9,
+      pid: 42,
+      processUptimeSeconds: 1,
+      nodeVersion: '22.0.0',
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.6.0',
+      logs: [],
+    };
+    const spec = HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'];
+
+    assert.deepEqual(spec.decodeOutput(base), { ...base });
+    assert.deepEqual(spec.decodeOutput({ ...base, upgradeBlockingActivity: true }), {
+      ...base,
+      upgradeBlockingActivity: true,
+    });
+    assert.throws(
+      () => spec.decodeOutput({ ...base, upgradeBlockingActivity: 'yes' }),
+      isInvalidFrame,
+    );
+    const missing = { ...base } as Record<string, unknown>;
+    delete missing.upgradeBlockingActivity;
+    assert.throws(() => spec.decodeOutput(missing), isInvalidFrame);
   });
 
   test('rejects terminal snapshots with fields from another terminal variant', () => {
@@ -2499,3 +2683,7 @@ function continuitySnapshot(hostEpoch: string) {
     interactions: { pending: [] },
   };
 }
+
+test('Jev policy snapshots and credential locators require post-182 peers', () => {
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 182);
+});

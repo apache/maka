@@ -36,7 +36,7 @@ import {
   decodeRuntimeHostOperatorCommand,
   type RuntimeHostOperatorCommand,
 } from "@maka/runtime-host/operator";
-import { withFileUpdateLock } from "@maka/storage/file-update-lock";
+import { withProcessLifetimeFileUpdateLock } from "@maka/storage/process-lifetime-file-update-lock";
 import { syncDirectory } from "@maka/storage/stable-storage";
 
 const SCHEMA_VERSION = 2;
@@ -375,7 +375,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
 
   async #exclusive<T>(operation: () => Promise<T>): Promise<T> {
     await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
-    return withFileUpdateLock(this.#path, operation);
+    return withProcessLifetimeFileUpdateLock(this.#path, operation);
   }
 }
 

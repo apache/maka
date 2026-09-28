@@ -68,6 +68,7 @@ export type RuntimeHostPeerRouteResolution =
   | (RuntimeHostPeerRouteCandidateSnapshot & { readonly state: 'exhausted' });
 
 export interface RuntimeHostPeerRouteResolver {
+  peerConnected?(peerId: string): void;
   resolveRoutes(peerId: string): RuntimeHostPeerRouteResolution;
   prepareRoutes(peerId: string, signal: AbortSignal): Promise<void>;
   subscribeRoutes(peerId: string, listener: () => void): () => void;
@@ -98,6 +99,7 @@ export interface RuntimeHostPeerClient {
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   attachRouteResolver(resolver: RuntimeHostPeerRouteResolver): () => void;
+  /** Notify reconnect owners when candidates change or a peer becomes connected. */
   subscribeRoutes(peerId: string, listener: () => void): () => void;
   observeAuthenticatedReachability(input: {
     readonly expectedPeerId: string;
@@ -268,6 +270,9 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     }
     if (this.#routeResolver === resolver) return () => undefined;
     this.#routeResolver = resolver;
+    for (const peerId of this.#endpoint?.connectivitySnapshot.connectedPeerIds ?? []) {
+      this.#notifyPeerConnected(peerId);
+    }
     for (const peerId of this.#routeListeners.keys()) {
       this.#subscribeResolver(peerId);
       this.#notifyRouteChange(peerId);
@@ -285,6 +290,29 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   }
 
   subscribeRoutes(peerId: string, listener: () => void): () => void {
+    const snapshot = () =>
+      this.#connectionResolution(
+        { peerId, routeHints: [], directDeadlineMs: 0 },
+        'application',
+        false,
+      );
+    let previous = snapshot();
+    let connected = this.isConnected(peerId);
+    return this.#subscribeRouteResolution(peerId, () => {
+      const next = snapshot();
+      const nextConnected = this.isConnected(peerId);
+      const available =
+        next.state === 'available' &&
+        (!sameCandidates(previous, next) || (nextConnected && !connected));
+      previous = next;
+      connected = nextConnected;
+      // A dial's own recovery sweep toggles recovering/exhausted. Waking its
+      // reconnect owner for those transitions would bypass every backoff.
+      if (available) listener();
+    });
+  }
+
+  #subscribeRouteResolution(peerId: string, listener: () => void): () => void {
     const listeners = this.#routeListeners.get(peerId) ?? new Set<() => void>();
     const first = listeners.size === 0;
     listeners.add(listener);
@@ -475,20 +503,23 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     signal: AbortSignal | undefined,
     kind: 'application' | 'mesh-control',
   ): Promise<RuntimeHostPeerNativeStream> {
-    const previous = this.#connectTails.get(input.peerId) ?? Promise.resolve();
+    // Mesh reconciliation must not consume the foreground application's dial
+    // budget. The native endpoint multiplexes both lanes over peer connections.
+    const lane = `${kind}:${input.peerId}`;
+    const previous = this.#connectTails.get(lane) ?? Promise.resolve();
     let release!: () => void;
     const turn = new Promise<void>((resolve) => {
       release = resolve;
     });
     const tail = previous.then(() => turn);
-    this.#connectTails.set(input.peerId, tail);
+    this.#connectTails.set(lane, tail);
     try {
       await waitForPeerConnectTurn(previous, signal);
       return await this.#startConnect(input, signal, kind);
     } finally {
       release();
       void tail.then(() => {
-        if (this.#connectTails.get(input.peerId) === tail) this.#connectTails.delete(input.peerId);
+        if (this.#connectTails.get(lane) === tail) this.#connectTails.delete(lane);
       });
     }
   }
@@ -533,7 +564,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       void updateTail.catch(() => undefined);
     };
     const unsubscribe =
-      kind === 'application' ? this.subscribeRoutes(input.peerId, update) : undefined;
+      kind === 'application' ? this.#subscribeRouteResolution(input.peerId, update) : undefined;
     let connection: Promise<RuntimeHostPeerNativeStream>;
     try {
       connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
@@ -704,6 +735,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
         current = next;
         for (const peerId of new Set([...previousPeers, ...nextPeers])) {
           if (previousPeers.has(peerId) !== nextPeers.has(peerId)) this.#notifyRouteChange(peerId);
+          if (!previousPeers.has(peerId) && nextPeers.has(peerId))
+            this.#notifyPeerConnected(peerId);
         }
       }
     } catch (error) {
@@ -711,6 +744,14 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       this.#terminalError = error instanceof Error ? error : new Error(String(error));
       this.#finishConsumer('application', this.#terminalError);
       this.#finishConsumer('mesh', this.#terminalError);
+    }
+  }
+
+  #notifyPeerConnected(peerId: string): void {
+    try {
+      this.#routeResolver?.peerConnected?.(peerId);
+    } catch {
+      // Mesh recovery must not interrupt the transport's connectivity watcher.
     }
   }
 

@@ -79,6 +79,11 @@ export interface SessionNavigationRowActions {
   archiveSession(sessionId: string): Promise<void>;
   unarchiveSession(sessionId: string): Promise<void>;
   renameSession(sessionId: string, name: string): Promise<void>;
+  /**
+   * Re-files a task under another project, or out of every project (`null`).
+   * Not a revision-family action: one working directory moves.
+   */
+  moveSessionToProject(sessionId: string, projectId: string | null): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
   /** Sweeps and reports — the rail's own wording. */
@@ -89,33 +94,49 @@ export interface SessionNavigationRowActions {
 
 export function createSessionNavigationRowActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefObject<string | undefined>;
-  clearActiveMessages: () => void;
+  acquireAutomaticQueryBlock: (sessionIds: readonly string[]) => { release(): void };
   clearSessionRendererState: (sessionId: string) => void;
   pendingSessionRowActionsRef: RefObject<Set<string>>;
   refreshSessions: () => Promise<ReadonlyArray<SessionSummary>>;
   service: SessionNavigationSessionService;
   sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
-  setActiveId: (sessionId: string | undefined) => void;
   toastApi: SessionNavigationToastApi;
 }): SessionNavigationRowActions {
   const {
     uiLocale,
-    activeIdRef,
-    clearActiveMessages,
+    acquireAutomaticQueryBlock,
     clearSessionRendererState,
     pendingSessionRowActionsRef,
     refreshSessions,
     service,
     sessionsRef,
-    setActiveId,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).sessionRowActions;
 
+  async function withAutomaticQueryBlockOn<T>(
+    sessionIds: readonly string[],
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const lease = acquireAutomaticQueryBlock(sessionIds);
+    try {
+      return await action();
+    } finally {
+      lease.release();
+    }
+  }
+
+  async function withAutomaticQueryBlock<T>(
+    sessionId: string,
+    action: (familyIds: readonly string[]) => Promise<T>,
+  ): Promise<T> {
+    const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
+    return withAutomaticQueryBlockOn(familyIds, () => action(familyIds));
+  }
+
   async function runSessionRowAction(
     sessionId: string,
-    actionId: 'flag' | 'archive' | 'rename' | 'delete',
+    actionId: 'flag' | 'archive' | 'rename' | 'delete' | 'move',
     errorTitle: string,
     action: () => Promise<void>,
   ): Promise<void> {
@@ -146,14 +167,11 @@ export function createSessionNavigationRowActions(deps: {
 
   async function archiveSession(sessionId: string) {
     return runSessionRowAction(sessionId, 'archive', copy.archiveFailedTitle, async () => {
-      const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-      await service.archive(sessionId, { revisionFamily: true });
-      if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-        setActiveId(undefined);
-        clearActiveMessages();
-      }
-      for (const id of familyIds) clearSessionRendererState(id);
-      await refreshSessions();
+      await withAutomaticQueryBlock(sessionId, async (familyIds) => {
+        await service.archive(sessionId, { revisionFamily: true });
+        for (const id of familyIds) clearSessionRendererState(id);
+        await refreshSessions();
+      });
     });
   }
 
@@ -206,10 +224,16 @@ export function createSessionNavigationRowActions(deps: {
       if (!ok) return;
       // The confirm named an archived task, so a restore revokes it. An active
       // task has no such premise to lose.
-      const { disposition, archivedSubtaskCount } = await removeSessionFamily(sessionId, {
-        requireArchived: session?.isArchived === true,
-      });
-      await refreshSessions();
+      const { disposition, archivedSubtaskCount } = await withAutomaticQueryBlock(
+        sessionId,
+        async () => {
+          const outcome = await removeSessionFamily(sessionId, {
+            requireArchived: session?.isArchived === true,
+          });
+          await refreshSessions();
+          return outcome;
+        },
+      );
       // `restored` means nothing was deleted, so no subtask moved either. On a
       // real delete the count is the Host's executed number, not an estimate.
       if (disposition === 'restored') toastApi.success(copy.deleteRestoredTitle(name));
@@ -240,10 +264,6 @@ export function createSessionNavigationRowActions(deps: {
       requireArchived: options.requireArchived,
     });
     if (outcome.disposition === 'restored') return outcome;
-    if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-      setActiveId(undefined);
-      clearActiveMessages();
-    }
     for (const id of familyIds) clearSessionRendererState(id);
     return outcome;
   }
@@ -360,40 +380,41 @@ export function createSessionNavigationRowActions(deps: {
    * a run of them is what a sweep exists to avoid.
    */
   async function archiveSessions(sessionIds: readonly string[]): Promise<SessionArchiveOutcome> {
-    const failed: string[] = [];
-    let firstFailure: SessionArchiveOutcome['firstFailure'];
-    let archived = 0;
-    for (const sessionId of sessionIds) {
-      const key = `${sessionId}:archive`;
-      if (
-        Array.from(pendingSessionRowActionsRef.current).some((pending) =>
-          pending.startsWith(`${sessionId}:`),
-        )
-      ) {
-        failed.push(sessionId);
-        continue;
-      }
-      pendingSessionRowActionsRef.current.add(key);
-      try {
-        const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-        await service.archive(sessionId, { revisionFamily: true });
-        if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-          setActiveId(undefined);
-          clearActiveMessages();
+    const familyIds = Array.from(
+      new Set(sessionIds.flatMap((sessionId) => revisionFamilySessionIds(sessionsRef.current, sessionId))),
+    );
+    return withAutomaticQueryBlockOn(familyIds, async () => {
+      const failed: string[] = [];
+      let firstFailure: SessionArchiveOutcome['firstFailure'];
+      let archived = 0;
+      for (const sessionId of sessionIds) {
+        const key = `${sessionId}:archive`;
+        if (
+          Array.from(pendingSessionRowActionsRef.current).some((pending) =>
+            pending.startsWith(`${sessionId}:`),
+          )
+        ) {
+          failed.push(sessionId);
+          continue;
         }
-        for (const id of familyIds) clearSessionRendererState(id);
-        archived += 1;
-      } catch (error) {
-        failed.push(sessionId);
-        firstFailure ??= { error, sessionId };
-      } finally {
-        pendingSessionRowActionsRef.current.delete(key);
+        pendingSessionRowActionsRef.current.add(key);
+        try {
+          const rowFamilyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
+          await service.archive(sessionId, { revisionFamily: true });
+          for (const id of rowFamilyIds) clearSessionRendererState(id);
+          archived += 1;
+        } catch (error) {
+          failed.push(sessionId);
+          firstFailure ??= { error, sessionId };
+        } finally {
+          pendingSessionRowActionsRef.current.delete(key);
+        }
       }
-    }
-    // Once, after the whole sweep. Refreshing per task would re-render the rail
-    // under the user's cursor for every id in the selection.
-    await refreshSessions();
-    return { archived, failed, firstFailure };
+      // Once, after the whole sweep. Refreshing per task would re-render the rail
+      // under the user's cursor for every id in the selection.
+      await refreshSessions();
+      return { archived, failed, firstFailure };
+    });
   }
 
   /**
@@ -478,11 +499,32 @@ export function createSessionNavigationRowActions(deps: {
     );
   }
 
+  /**
+   * Re-file one task into another project, or out of every project.
+   *
+   * The refusals worth explaining — a running Turn, a project that is gone —
+   * arrive as an outcome rather than a thrown error, so the toast can name the
+   * reason instead of falling back to the generic line.
+   */
+  async function moveSessionToProject(sessionId: string, projectId: string | null) {
+    return runSessionRowAction(sessionId, 'move', copy.moveFailedTitle, async () => {
+      const outcome = await service.moveToProject(sessionId, projectId);
+      if (!outcome.ok) {
+        toastApi.error(copy.moveFailedTitle, copy.moveFailures[outcome.code], undefined, {
+          sessionId,
+        });
+        return;
+      }
+      await refreshSessions();
+    });
+  }
+
   return {
     flagSession,
     archiveSession,
     unarchiveSession,
     renameSession,
+    moveSessionToProject,
     deleteSession,
     purgeSessions,
     archiveSelected,

@@ -56,7 +56,7 @@ Agent harness 的本职就是把任务做完。衡量它的标准只有一条：
 
 **Apache Releases**：Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选版本的准入标准、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-**Desktop Nightly**：每天从 `main` 构建，面向开发者和测试者，覆盖 macOS 的 Apple Silicon 与 Intel、Windows x64、Linux x64 与 arm64；Windows 和 Linux 构建是未签名预览。它不是 ASF release，不适合生产使用。安装包与平台状态见[下载页面](https://maka.apache.org/zh-CN/downloads/)。
+**开发测试**：如果希望贡献代码或协助测试尚未发布的改动，请阅读[贡献指南](./CONTRIBUTING.zh-CN.md)并关注[开发邮件列表](https://lists.apache.org/list.html?dev@maka.apache.org)。开发构建不是获批的 Apache 正式版本。
 
 **从源码构建**：要从源码 checkout 直接构建并运行 Desktop、TUI 或 CLI，见下方的[从源码构建](#从源码构建)一节。
 
@@ -193,10 +193,11 @@ Workspace 数据默认放在 Electron `userData` 下：
   artifacts/
 ```
 
+- 手动编辑 `settings.json` 或 `mcp.json` 时，请保存为 UTF-8（建议不带 BOM；也支持 UTF-8 BOM）。Maka 不会猜测无 BOM 文件的其他编码，也不会自动转换 UTF-16；请先在编辑器中显式转换为 UTF-8，再使用这些文件。
 - API key 一类的机密存在本地明文文件（`credential-vault.json`），只有你的系统账号能读。界面进程拿不到明文。
 - 写文件、跑 Shell 的工具必须先过沙箱边界。
 - `runtime.sqlite` 是当前生效的那份记录。更早的 JSONL transcript 和 Electron `safeStorage` 凭据不会导入；升级后会话可能是空的，那些凭据需要重新填写。
-- 中断回合的续跑默认关闭。只有设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 才会打开 Desktop **安全恢复**、CLI `/resume` 和启动时自动续跑——这些路径会真的请求模型、消耗 token。
+- Desktop 与 CLI/TUI `/resume` 默认可以显式恢复中断回合；成功续跑会请求模型并消耗 token。设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` 可关闭新的 resume planning；设置 `=1` 会额外开启 activation 和 WorkHub 的自动 resume。默认情况下，即使 activation 使用已有 Session，也会处理这次新的 stimulus。启动恢复只修复已经 admission 的 continuation，不会自动选择普通的 failed 或 cancelled Turn。
 
 细节见 [SECURITY.md](./SECURITY.md)、[隐私](./docs/workspace-privacy-context.md)、[续跑](./docs/architecture/runtime-resume-architecture.zh-CN.md)。
 

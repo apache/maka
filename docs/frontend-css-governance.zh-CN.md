@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-28
 owners:
   - maka-backend
 ---
@@ -40,11 +40,12 @@ owners:
 - `apps/desktop/src/renderer/styles.css` 只能作为样式入口文件使用。
 - 它只允许包含 `@import` 和顶层入口编排语句。
 - 新增的 per-surface selector 规则块必须放在 `apps/desktop/src/renderer/styles/**/*.css`。
-- `cascade-layers.css`、`maka-tokens.css` 和 `reference-shell.css` 是有意保留在根目录的例外：它们分别负责级联顺序、renderer 共享 token 与历史 recipe，以及待收敛的 shell 兼容规则。普通 surface 规则不要写进这些文件。
+- `cascade-layers.css` 负责级联顺序，`maka-tokens.css` 负责 renderer 共享 token 与 type-role 表。文档级默认样式在 `styles/document.css`；普通 surface 规则应放入 `styles/**/*.css`。
 
 ### Selector 命名
 
 - 新增的跨 renderer surface 共享 selector，以及 `@maka/ui` 对外 selector，使用 kebab-case `.maka-*` 方言。
+- `agents-*` 类名已冻结：保留现有的，不再新增 `agents-*` selector 或类名。
 - 已有的 `styles/settings/**` surface 使用 camelCase `.settings*` selector；settings 内的新 selector 应延续该方言，避免同一 surface 混用两套命名。
 - 现有 feature 可以保留自己的局部命名空间，例如 `.workhub-*`，但不得把它扩散成第二套跨 surface 方言。遗留的 `.agents-*` 与 `.detailPane` 属于兼容债务，不能作为新增 selector 的范例。
 - 在 settings 的 concern 文件之间移动现有 selector 时不要求全仓重命名；未来若统一命名，应作为显式兼容性改动单独推进。
@@ -52,7 +53,7 @@ owners:
 ## 2. Layer 规则
 
 - `apps/desktop/src/renderer/cascade-layers.css` 是级联顺序的唯一权威：`reset`、`theme`、`base`、`astryx-components`、`astryx-tokens`、`components`。
-- `styles.css` 把 Astryx 中性组件样式放入 `astryx-components`，把生成的 Maka 主题放入 `astryx-tokens`，并把 `@maka/ui` 与 renderer surface 放入 `components`。`maka-tokens.css` 自己声明 `base` 与 `components` 块。
+- `styles.css` 把 Astryx 中性组件样式放入 `astryx-components`，把生成的 Maka 主题放入 `astryx-tokens`，并把 `@maka/ui` 与 renderer surface 放入 `components`。`maka-tokens.css` 为 type-role 声明 `base` 块；`styles/document.css` 自行声明 `base` 块，并将全局动效与图标规则保留在未分层区域。
 - 普通产品展示规则应放在 `components`；只有现有 layer 确实拥有该规则的语义时，才使用其他 layer。
 - 只有在构建链明确支持时，才使用 `@import "./file.css" layer(components)`。
 - 不要使用 `@layer { @import ... }` 这种写法。
@@ -62,7 +63,7 @@ owners:
 ## 3. `!important` 使用规则
 
 - 默认例外包括无障碍辅助规则（例如 `.maka-visually-hidden`）、reduced-motion / e2e-fixture 覆盖，以及集中管理的原生 cursor 策略。
-- `reference-shell.css`、`styles/settings/usage.css`、`styles/shell-layout.css`、`styles/sidebar.css` 与 `packages/ui/src/styles.css` 中仍有少量兼容或产品覆盖。shell layout 覆盖让 SideNav 宽度跟随执行动画的外层容器；sidebar 覆盖用于协调 SideNav 的间距、边框与未分层的 StyleX 规则。它们是显式债务或有边界的组件修复，不能作为继续增加覆盖的先例。
+- `styles/settings/usage.css`、`styles/shell-layout.css`、`styles/sidebar.css` 与 `packages/ui/src/styles.css` 中仍有少量兼容或产品覆盖。shell layout 覆盖让 SideNav 宽度跟随执行动画的外层容器；sidebar 覆盖用于协调 SideNav 的外观、间距与未分层的 StyleX 规则。它们是显式债务或有边界的组件修复，不能作为继续增加覆盖的先例。
 - 新增的非默认用法必须紧邻说明注释：指出与哪条规则冲突、为什么常规组件或 layer 职责无法表达，以及何时可以删除。约定使用 `Justified:` 作为标记。
 - 如果 primitive API 或语义类可以直接表达，优先在该职责层解决，不要继续叠更多 `!important`。
 
@@ -86,7 +87,7 @@ owners:
 
 调整 renderer CSS 时，建议按下面顺序推进：
 
-1. 把 `styles.css` 中的真实规则块迁到子文件。
+1. 保持 `styles.css` 只作为 import 入口，把规则写入对应的 surface 文件。
 2. 通用组件外观留给 Astryx，产品组合样式放在 `@maka/ui` 或对应 renderer surface。
 3. 清理 dead selector。
 4. 只有在 primitive / layer 架构已经稳定后，再移除剩余 `!important`。

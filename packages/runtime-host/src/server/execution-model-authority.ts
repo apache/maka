@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
@@ -24,17 +25,35 @@ import {
   PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
+import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
+import {
+  applyWorkHubRoutingPolicy,
+  bindWorkHubRoutingDecision,
+  decodeWorkHubIntent,
+  decodeWorkHubRecall,
+  projectWorkHubIntentModelInput,
+  projectWorkHubRecallModelInput,
+  WORKHUB_INTENT_SYSTEM_PROMPT,
+  WORKHUB_RECALL_SYSTEM_PROMPT,
+  workHubIntentRequiresRecall,
+  type WorkHubRoutingDecision,
+} from '@maka/core/workhub-routing';
 import type { ModelCallKind } from '@maka/core/usage-stats/types';
 import {
   buildPricingLookup,
   llmCallUsageFields,
   recordLlmCallStrict,
 } from '@maka/runtime/telemetry';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import {
+  buildProviderOptions,
+  getAIModel,
+  leastReasoningThinkingLevel,
+} from '@maka/runtime/model-factory';
 import { stableHash } from '@maka/runtime/request-shape';
 import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
 import {
@@ -53,7 +72,7 @@ import {
   type ToolFreeModelCallContent,
   ProviderPrefixModelCallUnavailableError,
 } from '@maka/runtime/tool-free-model-call';
-import { modelUsesAnthropicMessages } from '@maka/runtime/model-runtime';
+import { resolveModelRuntime } from '@maka/runtime/model-runtime';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
 import { type ModelMessage } from '@maka/runtime/model-protocol';
@@ -128,6 +147,45 @@ export interface HostSessionEffectModel {
 
 export type HostSessionEffectModelInput = Omit<HostGoalEvaluatorInput, 'readSessionHeader'>;
 
+export interface HostPluginModel {
+  generate(input: {
+    readonly sessionId: string;
+    readonly prompt: string;
+    readonly system?: string;
+    readonly maxOutputTokens?: number;
+    readonly abortSignal: AbortSignal;
+  }): Promise<{ readonly text: string; readonly modelId: string; readonly finishReason?: string }>;
+}
+
+/** Canonical credential, transport, retry, pricing and telemetry path for plugin model calls. */
+export function createHostPluginModel(input: HostGoalEvaluatorInput): HostPluginModel {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return Object.freeze({
+    generate: async ({
+      sessionId,
+      prompt,
+      system,
+      maxOutputTokens,
+      abortSignal,
+    }: Parameters<HostPluginModel['generate']>[0]) => {
+      const header = await input.readSessionHeader(sessionId);
+      return runHostAuxiliaryModelCall(authority, {
+        transportContextId: sessionId,
+        telemetrySessionId: sessionId,
+        header,
+        callKind: 'main',
+        callId: `plugin_${authority.newId()}`,
+        abortSignal,
+        buildRequest: () => ({
+          prompt,
+          ...(system ? { system } : {}),
+          maxOutputTokens: maxOutputTokens ?? 2_048,
+        }),
+      });
+    },
+  });
+}
+
 export type HostDailyReviewModelResult =
   | { readonly ok: true; readonly text: string; readonly modelKey: string }
   | {
@@ -153,6 +211,93 @@ export interface HostMemoryExtractionModel {
     | { readonly ok: true; readonly text: string }
     | { readonly ok: false; readonly errorClass: HostAuxiliaryModelFailureClass }
   >;
+}
+
+export interface HostWorkHubRoutingModel {
+  decide(input: {
+    readonly turnId: string;
+    readonly header: SessionHeader;
+    readonly userText: string;
+    readonly transcript: readonly { readonly role: 'user' | 'assistant'; readonly text: string }[];
+    readonly resolveCandidates: () => Promise<{
+      readonly candidateSetId: string;
+      readonly candidates: readonly {
+        readonly candidateRef: string;
+        readonly sessionName: string;
+        readonly workspaceName: string;
+        readonly state: string;
+        readonly recency: 'today' | 'this_week' | 'older';
+      }[];
+    }>;
+    readonly abortSignal: AbortSignal;
+  }): Promise<WorkHubRoutingDecision | undefined>;
+}
+
+/** Uses the Coordination Session's exact saved model target for split Intent and Recall. */
+export function createHostWorkHubRoutingModel(
+  input: HostSessionEffectModelInput,
+): HostWorkHubRoutingModel {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return Object.freeze({
+    decide: async ({
+      turnId,
+      header,
+      userText,
+      transcript,
+      resolveCandidates,
+      abortSignal,
+    }: Parameters<HostWorkHubRoutingModel['decide']>[0]) => {
+      const intentResult = await runHostAuxiliaryModelCall(authority, {
+        transportContextId: header.id,
+        telemetrySessionId: header.id,
+        header,
+        callKind: 'workhub_intent',
+        callId: `workhub_intent_${turnId}`,
+        abortSignal,
+        buildRequest: () => ({
+          system: WORKHUB_INTENT_SYSTEM_PROMPT,
+          prompt: JSON.stringify(projectWorkHubIntentModelInput({ userText, transcript })),
+          maxOutputTokens: 80,
+          maxRetries: 0,
+        }),
+      });
+      const intent = decodeWorkHubIntent(parseStrictJsonObject(intentResult.text));
+      if (!workHubIntentRequiresRecall(intent)) {
+        return bindWorkHubRoutingDecision(
+          applyWorkHubRoutingPolicy(intent, { kind: 'not_applicable' }),
+        );
+      }
+      const { candidateSetId, candidates } = await resolveCandidates();
+      const recallInput = projectWorkHubRecallModelInput({ userText, intent, candidates });
+      const recallResult = await runHostAuxiliaryModelCall(authority, {
+        transportContextId: header.id,
+        telemetrySessionId: header.id,
+        header,
+        callKind: 'workhub_recall',
+        callId: `workhub_recall_${turnId}`,
+        abortSignal,
+        buildRequest: () => ({
+          system: WORKHUB_RECALL_SYSTEM_PROMPT,
+          prompt: JSON.stringify(recallInput),
+          maxOutputTokens: 160,
+          maxRetries: 0,
+        }),
+      });
+      const recall = decodeWorkHubRecall(
+        parseStrictJsonObject(recallResult.text),
+        new Set(recallInput.candidates.map(({ candidateRef }) => candidateRef)),
+      );
+      return bindWorkHubRoutingDecision(applyWorkHubRoutingPolicy(intent, recall), candidateSetId);
+    },
+  });
+}
+
+function parseStrictJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    throw new Error('WorkHub routing model did not return a JSON object');
+  }
+  return JSON.parse(trimmed);
 }
 
 /** Creates bounded extraction calls on the source Session's model authority. */
@@ -234,6 +379,7 @@ export function createHostDailyReviewModel(
           callKind: 'daily_review',
           callId: `daily_review_${callId}`,
           abortSignal: effectiveAbortSignal,
+          reasoning: 'least',
           buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
         });
         return {
@@ -249,6 +395,41 @@ export function createHostDailyReviewModel(
       }
     },
   });
+}
+
+const PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS = 128;
+const PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS = 1_024;
+
+export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (
+    source: import('./prompt-suggestion.js').PromptSuggestionSource,
+    abortSignal: AbortSignal,
+  ): Promise<string | undefined> => {
+    const result = await runHostAuxiliaryModelCall(authority, {
+      transportContextId: source.sessionId,
+      telemetrySessionId: source.sessionId,
+      header: source.header,
+      callKind: 'prompt_suggestion',
+      callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
+      abortSignal,
+      reasoning: 'least',
+      buildRequest: (_target, thinkingLevel) => ({
+        prompt: buildPromptSuggestionPrompt(
+          source.messages,
+          source.header.role === 'workhub_coordination',
+        ),
+        // Reasoning tokens count against the output budget. A model that cannot
+        // turn reasoning off spends some at its lowest effort before the line.
+        maxOutputTokens:
+          thinkingLevel === 'off'
+            ? PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS
+            : PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS,
+        maxRetries: 0,
+      }),
+    });
+    return result.finishReason === 'length' ? undefined : result.text;
+  };
 }
 
 /** Creates tool-free Session title and recap calls on canonical Host model authority. */
@@ -407,11 +588,21 @@ interface HostAuxiliaryModelCallInput {
   readonly header: Pick<
     SessionHeader,
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >;
-  readonly callKind: Exclude<ModelCallKind, 'main'>;
+  > &
+    Partial<Pick<SessionHeader, 'backend'>>;
+  readonly callKind: ModelCallKind;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
-  readonly buildRequest: (target: ResolvedExecutionTarget) => AuxiliaryModelRequest;
+  /**
+   * `'least'` replaces the header's thinking level with the least reasoning
+   * the resolved model accepts (see `leastReasoningThinkingLevel`). Without it
+   * the call reasons at the header's level, as the Session's own turns do.
+   */
+  readonly reasoning?: 'least';
+  readonly buildRequest: (
+    target: ResolvedExecutionTarget,
+    thinkingLevel: ThinkingLevel | undefined,
+  ) => AuxiliaryModelRequest;
 }
 
 function createAuxiliaryModelCallAuthority(
@@ -452,6 +643,11 @@ async function runHostAuxiliaryModelCall(
   readonly finishReason?: string;
   readonly modelId: string;
 }> {
+  if (input.header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin executor Sessions do not provide a native auxiliary model',
+    );
+  }
   const target = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(
       () =>
@@ -467,7 +663,11 @@ async function runHostAuxiliaryModelCall(
   const pricingSnapshot = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(() => authority.usage.pricing.snapshot(), input.abortSignal),
   );
-  const request = input.buildRequest(target);
+  const thinkingLevel =
+    input.reasoning === 'least'
+      ? leastReasoningThinkingLevel(target.connection, target.model)
+      : input.header.thinkingLevel;
+  const request = input.buildRequest(target, thinkingLevel);
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
   const transport = authority.createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
@@ -508,10 +708,12 @@ async function runHostAuxiliaryModelCall(
       | Awaited<ReturnType<typeof generateProviderPrefixModelCall>>;
     try {
       result = await readDuringBackendCreation(() => {
+        const runtime = resolveModelRuntime(target.connection, target.model);
         const providerOptions = buildProviderOptions(
           target.connection,
           target.model,
-          input.header.thinkingLevel,
+          thinkingLevel,
+          runtime,
         );
         const model = getAIModel({
           sessionId: input.transportContextId,
@@ -520,14 +722,13 @@ async function runHostAuxiliaryModelCall(
           modelId: target.model,
           fetch: modelFetch,
           requestHeaders: target.requestHeaders,
+          resolvedRuntime: runtime,
         });
         return request.tools !== undefined
           ? generateProviderPrefixModelCall({
               model,
               ...request,
-              toolChoicePolicy: modelUsesAnthropicMessages(target.connection, target.model)
-                ? 'omit'
-                : 'none',
+              toolChoicePolicy: runtime.wire === 'anthropic-messages' ? 'omit' : 'none',
               abortSignal: input.abortSignal,
               providerOptions: request.providerOptions ?? providerOptions,
             })
@@ -764,9 +965,14 @@ function providerStateIdentityForResolvedExecution(
     Awaited<ReturnType<RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']>>,
     { kind: 'ready' }
   >,
+  model: string,
 ): `sha256:${string}` {
   const credentialBasis = (material: typeof resolved.secretMaterial.connection) =>
     material ? { credentialId: material.credentialId, revision: material.revision } : null;
+  // Provider state from one wire cannot replay on another, so a model whose
+  // declared wire changes starts a new identity. Undeclared stays absent to
+  // keep every other identity unchanged.
+  const apiProtocol = declaredModelApiProtocol(resolved.connection, model);
   return stableHash({
     protocol: 'provider_state_identity_v1',
     connectionId: resolved.connection.connectionId,
@@ -774,6 +980,7 @@ function providerStateIdentityForResolvedExecution(
     endpoint: new URL(effectiveBaseUrl(resolved.connection)).toString(),
     credential: credentialBasis(resolved.secretMaterial.connection),
     requestHeaders: credentialBasis(resolved.secretMaterial.requestHeaders),
+    ...(apiProtocol === undefined ? {} : { apiProtocol }),
   });
 }
 
@@ -828,7 +1035,8 @@ export async function resolveExecutionTarget(
   header: Pick<
     BackendFactoryContext['header'],
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >,
+  > &
+    Partial<Pick<BackendFactoryContext['header'], 'backend'>>,
   runtimePolicy: {
     readonly operations: Pick<
       RuntimePolicyStoresWriter['operations'],
@@ -838,6 +1046,11 @@ export async function resolveExecutionTarget(
   oauthCredentials: HostOAuthExecutionAuthority,
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
+  if (header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin Executor Sessions do not expose the native auxiliary model authority',
+    );
+  }
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
     executionConnectionRef(header),
   );
@@ -870,13 +1083,16 @@ export async function resolveExecutionTarget(
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
+    ...(resolved.connection.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: resolved.connection.defaultApiProtocol }),
     defaultModel: model,
     models: discovered
       ? [...resolved.connection.models]
       : [...resolved.connection.models, modelInfo],
-    ...(resolved.connection.relayModelProfiles === undefined
+    ...(resolved.connection.modelOverrides === undefined
       ? {}
-      : { relayModelProfiles: resolved.connection.relayModelProfiles }),
+      : { modelOverrides: resolved.connection.modelOverrides }),
     ...(resolved.connection.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: resolved.connection.requestBodyOverlay }),
@@ -884,7 +1100,7 @@ export async function resolveExecutionTarget(
   const requestHeaders = resolved.secretMaterial.requestHeaders
     ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
     : {};
-  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved);
+  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved, model);
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {

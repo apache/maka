@@ -21,14 +21,13 @@ import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { TurnFooterActionMeta } from '@maka/ui';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
 import { acquireSessionCopyAttempt } from './session-copy-attempt.js';
-import type { MessageListUpdater } from './session-workspace-actions.js';
 
 type RefBox<T> = { current: T };
 
@@ -50,25 +49,23 @@ export interface AppShellTurnActions {
 export function createAppShellTurnActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
+  captureSelection(): () => boolean;
   turnActionRegistry: {
     addKey(key: string): boolean;
     clearKey(key: string): void;
     keyOf(sessionId: string, turnId: string, actionId: string): string;
   };
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
-  setMessages: MessageListUpdater;
   toastApi: ToastApi;
 }): AppShellTurnActions {
   const {
     uiLocale,
     activeIdRef,
+    captureSelection,
     turnActionRegistry,
     openSessionInChat,
-    refreshMessages,
     refreshSessions,
-    setMessages,
     toastApi,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
@@ -77,20 +74,14 @@ export function createAppShellTurnActions(deps: {
     if (actionId === 'copy') return; // handled in-component
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
+    const selectionIsCurrent = captureSelection();
     const key = turnActionRegistry.keyOf(sessionId, turnId, actionId);
     // Ref-backed guard blocks same-frame double clicks before React has
     // committed the disabled state. State alone is too late here because
-    // retry/regenerate IPC returns after starting the stream asynchronously.
+    // Branch IPC returns after the copy starts asynchronously.
     if (!turnActionRegistry.addKey(key)) return;
     try {
-      if (actionId === 'regenerate') {
-        await window.maka.sessions.regenerateTurn(sessionId, {
-          sourceTurnId: turnId,
-        });
-        if (activeIdRef.current === sessionId) {
-          toastApi.info(copy.regenerateStartedTitle, copy.regenerateStartedDescription);
-        }
-      } else if (actionId === 'branch') {
+      if (actionId === 'branch') {
         const copyAttempt = acquireSessionCopyAttempt(
           {
             scope: `turn-footer:${turnId}`,
@@ -104,16 +95,14 @@ export function createAppShellTurnActions(deps: {
           copyId: copyAttempt.copyId,
         });
         copyAttempt.complete();
-        if (activeIdRef.current === sessionId) {
+        await refreshSessions();
+        if (selectionIsCurrent()) {
           openSessionInChat(newSession.id);
-          setMessages([]);
-          await refreshMessages(newSession.id);
           toastApi.success(copy.branchCreatedTitle, copy.branchCreatedDescription(newSession.name));
         }
-        await refreshSessions();
       }
     } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
+      if (!selectionIsCurrent()) return;
       if (isSessionWorkspaceUnavailableError(error)) {
         showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
       } else {

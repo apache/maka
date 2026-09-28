@@ -22,27 +22,17 @@ import { createHash } from 'node:crypto';
 import {
   buildToolResultArchiveResourceRef,
   TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
+  isLedgerArchiveIdentity,
+  type LedgerArchiveResourceIdentity,
 } from './tool-result-archive-resource.js';
-import type { ActiveToolResultSupersession } from './active-tool-result-working-set.js';
+import type { ReadPage } from './read-page.js';
 
-export interface StaleToolResultPrunePolicy {
+export interface ToolResultPrunePolicy {
   enabled: boolean;
-  /** Tool result payloads above this estimate are replaced with archive placeholders. Defaults to 2048. */
-  maxResultEstimatedTokens?: number;
-  /** Keep this many newest turns' tool results full. Defaults to 1. */
-  minRecentTurnsFull?: number;
 }
 
-/**
- * Why a model-visible Tool Result was replaced by its archive placeholder.
- *
- * One placeholder kind covers both prune paths. They differ only in when the
- * decision is taken — before the next step of the current Turn, or before a
- * prior Turn is compacted — and both now record the same durable transition, so
- * a second placeholder protocol would only be a second way to spell the same
- * fact (#4283).
- */
 export type ArchivedToolResultReason =
+  | 'tool_result_pruned'
   | 'stale_tool_result_pruned_before_compact'
   | 'active_current_turn_tool_result_pruned_before_next_step';
 
@@ -50,7 +40,7 @@ export const ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND = 'maka.archived_tool_result'
 
 export const ARCHIVED_TOOL_RESULT_REWRITE_VERSION = 1;
 
-export interface ArchivedToolResultPlaceholder {
+export interface LegacyArchivedToolResultPlaceholder {
   kind: typeof ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND;
   rewriteVersion: typeof ARCHIVED_TOOL_RESULT_REWRITE_VERSION;
   artifactId: string;
@@ -65,11 +55,44 @@ export interface ArchivedToolResultPlaceholder {
   originalEstimatedTokens: number;
   originalBytes: number;
   reason: ArchivedToolResultReason;
-  /** Why a newer completed step made this provider-visible result redundant. */
-  supersession?: ActiveToolResultSupersession;
+  page?: ReadPage;
 }
 
-export interface StaleToolResultArchiveCandidate {
+export type LedgerArchivedToolResultPlaceholder = Omit<
+  LegacyArchivedToolResultPlaceholder,
+  'artifactId' | 'rewriteVersion'
+> &
+  LedgerArchiveResourceIdentity & { rewriteVersion: 2 };
+export type ArchivedToolResultPlaceholder =
+  | LegacyArchivedToolResultPlaceholder
+  | LedgerArchivedToolResultPlaceholder;
+
+export function buildLedgerArchivedToolResultPlaceholder(
+  input: Omit<
+    LedgerArchivedToolResultPlaceholder,
+    'kind' | 'rewriteVersion' | 'resourceRef' | 'readInstructions'
+  >,
+): LedgerArchivedToolResultPlaceholder {
+  return {
+    storage: 'ledger',
+    runtimeEventId: input.runtimeEventId,
+    toolCallId: input.toolCallId,
+    toolName: input.toolName,
+    sourceProjectionDigest: input.sourceProjectionDigest,
+    ...(input.previousTransitionId ? { previousTransitionId: input.previousTransitionId } : {}),
+    bodySha256: input.bodySha256,
+    originalBytes: input.originalBytes,
+    originalEstimatedTokens: input.originalEstimatedTokens,
+    reason: input.reason,
+    kind: ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
+    rewriteVersion: 2,
+    resourceRef: `maka://runtime/tool-results/${encodeURIComponent(input.runtimeEventId)}`,
+    readInstructions: 'Use Read with the next parameters to continue this result.',
+    ...(input.page ? { page: input.page } : {}),
+  };
+}
+
+export interface ToolResultArchiveCandidate {
   runtimeEventId: string;
   turnId: string;
   toolCallId: string;
@@ -81,7 +104,7 @@ export interface StaleToolResultArchiveCandidate {
   originalEstimatedTokens: number;
   originalBytes: number;
   rewriteVersion: typeof ARCHIVED_TOOL_RESULT_REWRITE_VERSION;
-  reason: 'stale_tool_result_pruned_before_compact';
+  reason: 'tool_result_pruned';
 }
 
 export type ToolResultArchiveReadFailureReason =
@@ -95,18 +118,14 @@ export type ToolResultArchiveReadFailureReason =
   | 'size_mismatch'
   | 'corrupt';
 
-export interface ToolResultArchiveReaderInput extends ArchivedToolResultPlaceholder {
+export type ToolResultArchiveReaderInput = ArchivedToolResultPlaceholder & {
   sessionId: string;
   maxBytes?: number;
-}
+};
 
 export type ToolResultArchiveReadResult =
   | { ok: true; serializedResult: string }
   | { ok: false; reason: ToolResultArchiveReadFailureReason };
-
-export type ToolResultArchiveReader = (
-  input: ToolResultArchiveReaderInput,
-) => Promise<ToolResultArchiveReadResult> | ToolResultArchiveReadResult;
 
 export function stableToolResultArchiveArtifactId(event: {
   sessionId: string;
@@ -153,12 +172,14 @@ export function isArchivedToolResultPlaceholder(
   value: unknown,
 ): value is ArchivedToolResultPlaceholder {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<ArchivedToolResultPlaceholder>;
+  const candidate = value as Record<string, unknown>;
+  const ledgerIdentity = isLedgerArchiveIdentity(value);
   return (
     candidate.kind === ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND &&
-    candidate.rewriteVersion === ARCHIVED_TOOL_RESULT_REWRITE_VERSION &&
-    typeof candidate.artifactId === 'string' &&
-    candidate.artifactId.length > 0 &&
+    ((candidate.rewriteVersion === 1 &&
+      typeof candidate.artifactId === 'string' &&
+      candidate.artifactId.length > 0) ||
+      (candidate.rewriteVersion === 2 && ledgerIdentity)) &&
     typeof candidate.runtimeEventId === 'string' &&
     candidate.runtimeEventId.length > 0 &&
     typeof candidate.toolCallId === 'string' &&
@@ -173,33 +194,16 @@ export function isArchivedToolResultPlaceholder(
     typeof candidate.originalBytes === 'number' &&
     Number.isFinite(candidate.originalBytes) &&
     candidate.originalBytes > 0 &&
-    (candidate.reason === 'stale_tool_result_pruned_before_compact' ||
-      candidate.reason === 'active_current_turn_tool_result_pruned_before_next_step') &&
-    isValidSupersession(candidate.supersession)
+    (candidate.reason === 'tool_result_pruned' ||
+      candidate.reason === 'stale_tool_result_pruned_before_compact' ||
+      candidate.reason === 'active_current_turn_tool_result_pruned_before_next_step')
   );
 }
 
-function isValidSupersession(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<ActiveToolResultSupersession>;
-  return (
-    (candidate.reason === 'exact_duplicate' ||
-      candidate.reason === 'newer_read_covers_range' ||
-      candidate.reason === 'newer_snapshot' ||
-      candidate.reason === 'failure_resolved') &&
-    typeof candidate.supersededByToolCallId === 'string' &&
-    candidate.supersededByToolCallId.length > 0 &&
-    (candidate.reason === 'failure_resolved'
-      ? typeof candidate.failureBodySha256 === 'string' &&
-        /^[a-f0-9]{64}$/.test(candidate.failureBodySha256)
-      : candidate.failureBodySha256 === undefined)
-  );
-}
-
-/** Add the canonical ArchiveRead address to persisted v1 placeholders. */
+/** Normalize persisted archive metadata without expanding the body. */
 export function withToolResultArchiveResourceRef(value: unknown): unknown {
   if (!isArchivedToolResultPlaceholder(value)) return value;
+  if (value.rewriteVersion === 2) return buildLedgerArchivedToolResultPlaceholder(value);
   return {
     ...value,
     resourceRef: buildToolResultArchiveResourceRef({
@@ -220,8 +224,7 @@ export function buildArchivedToolResultPlaceholder(input: {
   originalEstimatedTokens: number;
   originalBytes: number;
   reason: ArchivedToolResultReason;
-  supersession?: ActiveToolResultSupersession;
-}): ArchivedToolResultPlaceholder {
+}): LegacyArchivedToolResultPlaceholder {
   return {
     kind: ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
     rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -239,6 +242,5 @@ export function buildArchivedToolResultPlaceholder(input: {
     originalEstimatedTokens: input.originalEstimatedTokens,
     originalBytes: input.originalBytes,
     reason: input.reason,
-    ...(input.supersession ? { supersession: input.supersession } : {}),
   };
 }

@@ -24,7 +24,7 @@ import {
 } from '@maka/core/llm-connections';
 import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
 import { PROVIDER_REGISTRY, providerDefaultsOf } from '@maka/core/llm-connections';
-import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
+import { normalizeModelOverrides } from '@maka/core/model-thinking';
 
 const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
 const IPC_CONNECTION_SECRET_MAX_LENGTH = 4096;
@@ -74,10 +74,10 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     ? undefined
     : normalizeConnectionApiKeyForIpc(input.apiKey, 'apiKey');
   const slug = normalizeConnectionSlugForIpc(input.slug, 'connection slug');
-  const relayModelProfiles =
-    input.relayModelProfiles === undefined
+  const modelOverrides =
+    input.modelOverrides === undefined
       ? undefined
-      : normalizeRelayModelProfiles(input.relayModelProfiles);
+      : normalizeModelOverrides(input.modelOverrides);
   const requestHeaders =
     input.requestHeaders === undefined ? undefined : normalizeRequestHeaders(input.requestHeaders);
   const requestBodyOverlay =
@@ -88,7 +88,7 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     ...input,
     slug,
     ...(apiKey === undefined ? {} : { apiKey }),
-    ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    ...(modelOverrides === undefined ? {} : { modelOverrides }),
     ...(requestHeaders === undefined ? {} : { requestHeaders }),
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   } as CreateConnectionInput;

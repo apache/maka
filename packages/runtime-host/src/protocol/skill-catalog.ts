@@ -51,6 +51,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
+const INVOCABLE_QUERY_ERRORS = [...QUERY_ERRORS, 'not_found', 'session_archived'] as const;
 const MUTATION_ERRORS = [...QUERY_ERRORS, 'commit_outcome_unknown'] as const;
 
 export type SkillCatalogRevision = `sha256:${string}`;
@@ -365,12 +366,12 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
   'skill.catalog.invocable.query': defineHostPathOperation<
     SkillCatalogInvocableQueryInput,
     SkillCatalogInvocableQueryResult,
-    (typeof QUERY_ERRORS)[number]
+    (typeof INVOCABLE_QUERY_ERRORS)[number]
   >(
     {
       mode: 'query',
       availability: 'ready',
-      errors: QUERY_ERRORS,
+      errors: INVOCABLE_QUERY_ERRORS,
       decodeInput: decodeInvocableQueryInput,
       decodeOutput: decodeInvocableQueryResult,
     },

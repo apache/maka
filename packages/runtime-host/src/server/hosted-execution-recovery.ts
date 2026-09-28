@@ -18,21 +18,51 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
+import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
+import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import {
   runtimeInvocationOutcome,
   type RootExecutionDescriptor,
+  type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import {
   messageContentsEqual,
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { StoredMessage } from '@maka/core/session';
-import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
+import { projectRuntimeEventUserMessage } from '@maka/runtime/runtime-event-read-model';
+import {
+  admittedPromptEventId,
+  RuntimeMessageAuthorityInvariantError,
+} from '@maka/runtime/message-authority';
 import { type SessionManager } from '@maka/runtime/session-manager';
-import type { ExecutionStoresWriter, RootTurnAdmission } from '@maka/storage/execution-stores';
+import {
+  ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
+  ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES,
+  type ExecutionStoresWriter,
+  type RootTurnAdmission,
+} from '@maka/storage/execution-stores';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
 import type { HostedExecutionProjectionReader } from './hosted-execution-projection.js';
+
+const RECOVERY_MESSAGE_EVIDENCE_MIN_RECORDS = 16;
+const RECOVERY_MESSAGE_EVIDENCE_MAX_RECORDS = 65_536;
+// One admission is capped at 1 MiB including the normalized prompt and every
+// folded source. A second admission-sized allowance covers RuntimeEvent
+// envelopes and the separately stored canonical prompt without inventing a
+// smaller read ceiling than the write contract permits.
+const RECOVERY_MESSAGE_EVIDENCE_BYTES_PER_ADMISSION = ROOT_TURN_ADMISSION_MAX_RECORD_BYTES * 2;
+const RECOVERY_MESSAGE_EVIDENCE_MIN_BYTES = 2 * 1024 * 1024;
+const RECOVERY_MESSAGE_EVIDENCE_MAX_BYTES = 256 * 1024 * 1024;
+const RECOVERY_HANDOFF_PREFIX_PROOF_BUDGET = Object.freeze({
+  maxEvents: 65_536,
+  maxBytes: 256 * 1024 * 1024,
+  // A RuntimeEvent can carry both a raw Tool Result and its durable model projection.
+  maxRecordBytes: DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES * 2 + 256 * 1024,
+});
 
 export interface HostedExecutionRecoveryPlan {
   readonly sessionId: string;
@@ -56,36 +86,85 @@ export async function prepareHostedExecutionRecovery(
   input: PrepareHostedExecutionRecoveryInput,
 ): Promise<readonly HostedExecutionRecoveryPlan[]> {
   // listHeaders() avoids listForRecovery()'s discarded per-Session message
-  // pre-read; the per-Session readMessagesForRecovery below remains the single
-  // decode that validates durable messages before replay.
+  // pre-read. The messages an admission is checked against are the Session's
+  // own RuntimeEvents: the ledger is where a Turn's user message is committed,
+  // so it is also the only place a missing one can be detected.
   const sessions = await input.stores.sessionStore.listHeaders();
+  const logicalMembershipStore = {
+    listSessionInvocations: input.stores.runtimeEventStore.listSessionInvocations,
+    readRunInvocation: input.stores.runtimeEventStore.readRunInvocation,
+    readContinuationClaimStateByBoundary:
+      input.stores.runtimeEventStore.readContinuationClaimStateByBoundary,
+    readImmutableRuntimePrefixProof: (proofInput: {
+      sessionId: string;
+      runId: string;
+      upToEventSeq?: number;
+    }) =>
+      input.stores.runtimeEventStore.readImmutableRuntimePrefixProof(
+        proofInput,
+        RECOVERY_HANDOFF_PREFIX_PROOF_BUDGET,
+      ),
+  };
   const prepared: PreparedRecoverySession[] = [];
   for (const session of sessions) {
     const admissions = await input.rootAdmissions.recoverSession(session.id);
-    const messages = await input.stores.sessionStore.readMessagesForRecovery(session.id);
+    if (admissions.length === 0) continue;
+    const pendingMessageIds = new Set(
+      (await input.stores.sessionStore.listMessageAdmissions(session.id)).map(
+        (admission) => admission.messageId,
+      ),
+    );
     const runs = await input.stores.runtimeEventStore.listSessionInvocations(session.id);
     const runsById = new Map(runs.map((run) => [run.runId, run]));
-    for (const run of runs) {
-      await input.stores.agentRunStore.readEventsForRecovery(session.id, run.runId);
-      await input.stores.runtimeEventStore.readRuntimeEvents(session.id, run.runId);
+    const recoveryMessageEvidence = await input.stores.runtimeEventStore.readRecoveryMessageEvents({
+      sessionId: session.id,
+      turnIds: admissions.map((admission) => admission.turnId),
+      eventIds: admissions.flatMap((admission) => [
+        admittedPromptEventId(admission.runId, admission.userMessageId),
+        ...admission.sourceMessages.map((source) => source.messageId),
+      ]),
+      budget: recoveryMessageEvidenceBudget(admissions),
+    });
+    if (recoveryMessageEvidence.status === 'limit_exceeded') {
+      throw new RuntimeMessageAuthorityInvariantError(
+        `Recovery message evidence exceeds the bounded read budget for Session ${session.id}`,
+      );
     }
-    const messageIndex = indexRecoveryMessages(messages);
+    const messageIndex = indexRecoveryMessages(
+      recoveryUserMessagesFromLedger(recoveryMessageEvidence.records),
+    );
     const replayAdmissions: RootTurnAdmission[] = [];
     const rootReplayAdmissions: RootTurnAdmission[] = [];
-    const missingMessages: RecoveryUserMessage[] = [];
-    const pendingRecoveryClosures: RootTurnAdmission[] = [];
+    const pendingRecoveryClosures: PendingRecoveryClosure[] = [];
+    const pendingHandoffRunIds = new Set<string>();
     for (const admission of admissions) {
       const run = runsById.get(admission.runId);
-      const rootUserMessages = (
-        messageIndex.userMessagesByTurnId.get(admission.turnId) ?? []
-      ).filter((message) => message.id === admission.userMessageId);
-      const messageIdOwners = admission.userMessageId
-        ? (messageIndex.messagesById.get(admission.userMessageId) ?? [])
-        : [];
+      const logical =
+        run?.terminalEvent && runtimeHandoffPause(run.terminalEvent)
+          ? await readLogicalRuntimeExecution(logicalMembershipStore, admission, run, {
+              mode: 'membership',
+            })
+          : undefined;
+      if (logical?.pendingHandoff) {
+        replayAdmissions.push(admission);
+        rootReplayAdmissions.push(admission);
+        pendingHandoffRunIds.add(admission.runId);
+      }
+      const admittedMessageId = admittedPromptEventId(admission.runId, admission.userMessageId);
+      // Whether the prompt is on the ledger is a question about the Turn, not
+      // about the id it landed under: a Run written by an older build derived
+      // that id differently, and matching on the id would read its prompt as
+      // missing and record a second one.
+      const rootUserMessages = messageIndex.userMessagesByTurnId.get(admission.turnId) ?? [];
+      const messageIdOwners = messageIndex.messagesById.get(admittedMessageId) ?? [];
+      if (messageIdOwners.length > 1) {
+        throw new Error(`Admitted Turn ${admission.turnId} has a duplicated UserMessage identity`);
+      }
+      const messageIdOwner = messageIdOwners[0];
       const executionContract = recoveryExecutionContract(admission.execution);
       if (
         admission.execution.kind === 'scheduled_task' &&
-        (!run || runtimeInvocationOutcome(run) === undefined)
+        (!run || runtimeInvocationOutcome(logical?.tip ?? run) === undefined)
       ) {
         if (!input.assertScheduledTaskAdmission) {
           throw new RuntimeMessageAuthorityInvariantError(
@@ -104,7 +183,7 @@ export async function prepareHostedExecutionRecovery(
       }
       const requiresUserMessage =
         executionContract.requiresUserMessage &&
-        !(admission.execution.kind === 'external_message' && admission.sourceMessages.length > 1);
+        !(executionContract.allowsQueueSources && admission.sourceMessages.length > 1);
       if (requiresUserMessage !== (admission.userMessageId !== null)) {
         throw new Error(
           `Admitted Turn ${admission.turnId} has an invalid UserMessage execution contract`,
@@ -114,12 +193,9 @@ export async function prepareHostedExecutionRecovery(
         if (admission.sourceMessages.length > 0) {
           await verifyQueueSourceMessages(admission, messageIndex, input.stores.agentRunStore);
         }
-        if (rootUserMessages.length > 0) {
-          throw new Error(`Admitted Turn ${admission.turnId} must not record a UserMessage`);
-        }
         if (!run) {
           if (executionContract.pendingWithoutRun === 'host_recovery_closure') {
-            pendingRecoveryClosures.push(admission);
+            pendingRecoveryClosures.push({ admission });
           } else {
             replayAdmissions.push(admission);
             if (executionContract.pendingWithoutRun === 'root_replay') {
@@ -137,49 +213,31 @@ export async function prepareHostedExecutionRecovery(
             admission.execution,
           );
         }
+        if (executionContract.requiresUserMessage) {
+          const recorded = verifyUserMessage(admission, rootUserMessages, messageIdOwner);
+          await recordAdmittedUserMessage(input.stores, admission, run, recorded);
+        }
         continue;
       }
-      if (messageIdOwners.length > 1) {
-        throw new Error(`Admitted Turn ${admission.turnId} has a duplicated UserMessage identity`);
-      }
-      const messageIdOwner = messageIdOwners[0];
       if (!run && executionContract.pendingWithoutRun === 'host_recovery_closure') {
-        verifyOrRecoverUserMessage(
+        // The closure below opens this Turn's invocation, so it is also what
+        // writes the message the crashed admission never got to record.
+        const recorded = verifyUserMessage(admission, rootUserMessages, messageIdOwner);
+        pendingRecoveryClosures.push({
           admission,
-          rootUserMessages,
-          messageIdOwner,
-          missingMessages,
-          messageIndex,
-        );
-        pendingRecoveryClosures.push(admission);
-        continue;
-      }
-      if (!run && executionContract.pendingWithoutRun === 'domain_replay') {
-        verifyOrRecoverUserMessage(
-          admission,
-          rootUserMessages,
-          messageIdOwner,
-          missingMessages,
-          messageIndex,
-        );
-        replayAdmissions.push(admission);
+          ...(recorded ? {} : { writesUserMessage: true }),
+        });
         continue;
       }
       if (!run) {
-        if (executionContract.pendingWithoutRun === 'root_replay') {
-          verifyOrRecoverUserMessage(
-            admission,
-            rootUserMessages,
-            messageIdOwner,
-            missingMessages,
-            messageIndex,
-            false,
-          );
-        } else if (rootUserMessages.length > 0 || messageIdOwner) {
-          throw new Error(`Admitted Turn ${admission.turnId} has a UserMessage but no Run`);
-        }
+        // Every remaining path replays the admission, and a replay opens the
+        // Turn with the admission's own message id — writing the message here
+        // would only race the Run that owns it.
+        verifyUserMessage(admission, rootUserMessages, messageIdOwner);
         replayAdmissions.push(admission);
-        rootReplayAdmissions.push(admission);
+        if (executionContract.pendingWithoutRun !== 'domain_replay') {
+          rootReplayAdmissions.push(admission);
+        }
         continue;
       }
       await input.projection.assertRunIdentityAndContinuation(
@@ -187,12 +245,11 @@ export async function prepareHostedExecutionRecovery(
         admission.turnId,
         admission.execution,
       );
-      verifyOrRecoverUserMessage(
+      await recordAdmittedUserMessage(
+        input.stores,
         admission,
-        rootUserMessages,
-        messageIdOwner,
-        missingMessages,
-        messageIndex,
+        run,
+        verifyUserMessage(admission, rootUserMessages, messageIdOwner),
       );
     }
     if (replayAdmissions.length > 1) {
@@ -201,37 +258,110 @@ export async function prepareHostedExecutionRecovery(
     if (replayAdmissions[0] && session.isArchived) {
       throw new Error(`Archived Session ${session.id} has an admitted Turn without a Run`);
     }
+    const pendingRecoveryClosureTurnIds = new Set(
+      pendingRecoveryClosures.map(({ admission }) => admission.turnId),
+    );
+    const rootRecoveryAdmissions = admissions.filter((admission) => {
+      const run = runsById.get(admission.runId);
+      if (!run) {
+        return (
+          rootReplayAdmissions[0] === admission ||
+          pendingRecoveryClosureTurnIds.has(admission.turnId)
+        );
+      }
+      return (
+        !run.terminalEvent ||
+        admission.sourceMessages.some((source) => pendingMessageIds.has(source.messageId)) ||
+        pendingHandoffRunIds.has(run.runId)
+      );
+    });
     prepared.push({
       sessionId: session.id,
       admissions,
+      rootRecoveryAdmissions,
       ...(rootReplayAdmissions[0] ? { rootReplayAdmission: rootReplayAdmissions[0] } : {}),
-      missingMessages,
       pendingRecoveryClosures,
     });
   }
 
   for (const plan of prepared) {
-    for (const message of plan.missingMessages) {
-      await input.stores.sessionStore.appendMessage(plan.sessionId, message);
-    }
-    for (const admission of plan.pendingRecoveryClosures) {
+    for (const { admission, writesUserMessage } of plan.pendingRecoveryClosures) {
       if (!usesHostRecoveryClosure(admission.execution)) {
         throw new Error('Execution domain cannot use Host recovery closure');
       }
+      const origin = hostedExecutionMessageOrigin(admission.execution);
       await input.runtime.closePendingHostedAdmission({
         sessionId: admission.sessionId,
         turnId: admission.turnId,
         runId: admission.runId,
         admittedAt: admission.admittedAt,
         execution: admission.execution,
+        ...(writesUserMessage && admission.userMessageId
+          ? {
+              userMessage: {
+                id: admission.userMessageId,
+                content: requireHostedExecutionMessageContent(admission),
+                ...(origin ? { origin } : {}),
+              },
+            }
+          : {}),
       });
     }
   }
-  return prepared.map(({ sessionId, admissions, rootReplayAdmission }) => ({
-    sessionId,
-    admissions,
-    ...(rootReplayAdmission ? { rootReplayAdmission } : {}),
-  }));
+  return prepared
+    .map(({ sessionId, rootRecoveryAdmissions, rootReplayAdmission }) => ({
+      sessionId,
+      admissions: rootRecoveryAdmissions,
+      ...(rootReplayAdmission ? { rootReplayAdmission } : {}),
+    }))
+    .filter((plan) => plan.admissions.length > 0 || plan.rootReplayAdmission !== undefined);
+}
+
+/**
+ * The message a crashed Turn was admitted with, written into the Run that had
+ * already opened for it.
+ *
+ * A Run records its own user message right after its opening fact, so a Run
+ * that exists without one crashed between those two writes. Nothing else will
+ * write it now: the terminal fact recovery is about to append would seal the
+ * Turn without ever saying what the user asked for.
+ *
+ * The admission's normalized input is what goes in, not its queue sources: a
+ * Root folded from several Messages ran as one prompt, and that is the prompt
+ * the Turn was executed with.
+ */
+async function recordAdmittedUserMessage(
+  stores: ExecutionStoresWriter<'interactive'>,
+  admission: RootTurnAdmission,
+  run: RuntimeInvocationRecord,
+  ledgerHasMessage: boolean,
+): Promise<void> {
+  if (run.terminalEvent) return;
+  const content = requireHostedExecutionMessageContent(admission);
+  const origin = hostedExecutionMessageOrigin(admission.execution);
+  const event: RuntimeEvent = {
+    id: admittedPromptEventId(admission.runId, admission.userMessageId),
+    sessionId: admission.sessionId,
+    invocationId: run.invocationId,
+    runId: run.runId,
+    turnId: admission.turnId,
+    ts: admission.admittedAt,
+    partial: false,
+    role: 'user',
+    author: origin ? 'host' : 'user',
+    content: { kind: 'text', ...content, ...(origin ? { origin } : {}) },
+  };
+  if (!ledgerHasMessage) {
+    await stores.runtimeEventStore.appendRuntimeEvent(admission.sessionId, run.runId, event);
+  }
+  // The Turn never reached the commit that carries these, and no later path
+  // recomputes them: the connection lock is one-way and the preview is a write.
+  // Committed even when the ledger already holds the message, because the two
+  // are separate writes and a crash between them leaves exactly that state.
+  const message = projectRuntimeEventUserMessage(event, event.id);
+  if (message) {
+    await stores.sessionStore.commitMessageCatalogProjection(admission.sessionId, message);
+  }
 }
 
 export function requireHostedExecutionMessageContent(admission: RootTurnAdmission): MessageContent {
@@ -245,6 +375,10 @@ export function requireHostedExecutionMessageContent(admission: RootTurnAdmissio
 
 export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor) {
   switch (execution.kind) {
+    case 'external_message':
+      return execution.origin;
+    case 'workhub_coordination':
+      return execution.feedback;
     case 'scheduled_task':
       return {
         kind: 'scheduled_task' as const,
@@ -270,8 +404,14 @@ export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor)
 }
 
 interface PreparedRecoverySession extends HostedExecutionRecoveryPlan {
-  readonly missingMessages: readonly RecoveryUserMessage[];
-  readonly pendingRecoveryClosures: readonly RootTurnAdmission[];
+  readonly pendingRecoveryClosures: readonly PendingRecoveryClosure[];
+  readonly rootRecoveryAdmissions: readonly RootTurnAdmission[];
+}
+
+interface PendingRecoveryClosure {
+  readonly admission: RootTurnAdmission;
+  /** The ledger has no message for this admission; the closure records it. */
+  readonly writesUserMessage?: true;
 }
 
 type RecoveryUserMessage = Extract<StoredMessage, { type: 'user' }>;
@@ -287,22 +427,22 @@ interface RecoveryExecutionContract {
   readonly pendingWithoutRun: 'root_replay' | 'domain_replay' | 'host_recovery_closure';
 }
 
-function verifyOrRecoverUserMessage(
+/**
+ * Whether the ledger already carries this admission's message, throwing when
+ * what it carries contradicts the admission.
+ */
+function verifyUserMessage(
   admission: RootTurnAdmission,
   rootUserMessages: readonly RecoveryUserMessage[],
   messageIdOwner: StoredMessage | undefined,
-  missingMessages: RecoveryUserMessage[],
-  index: RecoveryMessageIndex,
-  materializeMissing = true,
-): void {
+): boolean {
   if (rootUserMessages.length > 1) {
     throw new Error(`Admitted Turn ${admission.turnId} has multiple UserMessages`);
   }
   const userMessage = rootUserMessages[0];
   if (userMessage) {
     if (
-      messageIdOwner !== userMessage ||
-      userMessage.id !== admission.userMessageId ||
+      (messageIdOwner !== undefined && messageIdOwner !== userMessage) ||
       !recoveryUserMessageOriginMatches(userMessage, admission.execution) ||
       !messageContentsEqual(
         normalizeMessageContent(userMessage),
@@ -311,15 +451,35 @@ function verifyOrRecoverUserMessage(
     ) {
       throw new Error(`Admitted Turn ${admission.turnId} does not match its UserMessage`);
     }
-    return;
+    return true;
   }
   if (messageIdOwner) {
     throw new Error(`Admitted Turn ${admission.turnId} reuses another message identity`);
   }
-  if (!materializeMissing) return;
-  const recoveredMessage = recoveryUserMessage(admission);
-  missingMessages.push(recoveredMessage);
-  indexRecoveryMessage(index, recoveredMessage);
+  return false;
+}
+
+/**
+ * The prompts a Session's ledger holds, as the transcript presents them.
+ *
+ * Recovery reads the raw events rather than the read model: a Session it is
+ * about to repair may be exactly the one whose projection is still incomplete.
+ * Steering is excluded — it is typed as a user message but is something said
+ * into a Turn that was already admitted, so it is never the Turn's own prompt.
+ */
+function recoveryUserMessagesFromLedger(
+  events: readonly RuntimeEvent[],
+): readonly RecoveryUserMessage[] {
+  const messages: RecoveryUserMessage[] = [];
+  for (const event of events) {
+    if (event.role !== 'user' || event.content?.kind !== 'text' || event.partial) continue;
+    const projected: RecoveryUserMessage | undefined = projectRuntimeEventUserMessage(
+      event,
+      event.id,
+    );
+    if (projected && projected.steeringEventId === undefined) messages.push(projected);
+  }
+  return messages;
 }
 
 async function verifyQueueSourceMessages(
@@ -364,21 +524,6 @@ async function verifyQueueSourceMessages(
   }
 }
 
-function recoveryUserMessage(admission: RootTurnAdmission): RecoveryUserMessage {
-  if (!admission.userMessageId || !admission.normalizedInput) {
-    throw new Error(`Admitted Turn ${admission.turnId} does not own a UserMessage`);
-  }
-  const origin = hostedExecutionMessageOrigin(admission.execution);
-  return {
-    type: 'user',
-    id: admission.userMessageId,
-    turnId: admission.turnId,
-    ts: admission.admittedAt,
-    ...normalizeMessageContent(admission.normalizedInput),
-    ...(origin ? { origin } : {}),
-  };
-}
-
 function recoveryUserMessageOriginMatches(
   message: RecoveryUserMessage,
   execution: RootExecutionDescriptor,
@@ -392,7 +537,11 @@ function recoveryExecutionContract(execution: RootExecutionDescriptor): Recovery
     case 'external_message':
       return contract(true, true, 'root_replay');
     case 'workhub_coordination':
-      return contract(false, true, 'root_replay');
+      return contract(
+        execution.operation !== 'action',
+        true,
+        execution.operation === 'action' ? 'host_recovery_closure' : 'root_replay',
+      );
     case 'regenerate':
       return contract(false, true, 'root_replay');
     case 'context_compact':
@@ -429,6 +578,7 @@ function usesHostRecoveryClosure(execution: RootExecutionDescriptor): execution 
   RootExecutionDescriptor,
   {
     kind:
+      | 'workhub_coordination'
       | 'goal'
       | 'legacy_automation'
       | 'agent_graph_supervisor_wake'
@@ -439,6 +589,7 @@ function usesHostRecoveryClosure(execution: RootExecutionDescriptor): execution 
   }
 > {
   return (
+    (execution.kind === 'workhub_coordination' && execution.operation === 'action') ||
     execution.kind === 'legacy_automation' ||
     execution.kind === 'goal' ||
     execution.kind === 'agent_graph_supervisor_wake' ||
@@ -469,6 +620,29 @@ function appendIndexed<K, V>(index: Map<K, V[]>, key: K, value: V): void {
   const values = index.get(key);
   if (values) values.push(value);
   else index.set(key, [value]);
+}
+
+function recoveryMessageEvidenceBudget(admissions: readonly RootTurnAdmission[]) {
+  const citedEventIds = admissions.reduce(
+    (count, admission) =>
+      count +
+      1 +
+      Math.min(admission.sourceMessages.length, ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES),
+    0,
+  );
+  return {
+    maxRecords: Math.min(
+      RECOVERY_MESSAGE_EVIDENCE_MAX_RECORDS,
+      Math.max(RECOVERY_MESSAGE_EVIDENCE_MIN_RECORDS, admissions.length * 2 + citedEventIds),
+    ),
+    maxBytes: Math.min(
+      RECOVERY_MESSAGE_EVIDENCE_MAX_BYTES,
+      Math.max(
+        RECOVERY_MESSAGE_EVIDENCE_MIN_BYTES,
+        admissions.length * RECOVERY_MESSAGE_EVIDENCE_BYTES_PER_ADMISSION,
+      ),
+    ),
+  };
 }
 
 function assertNever(value: never): never {

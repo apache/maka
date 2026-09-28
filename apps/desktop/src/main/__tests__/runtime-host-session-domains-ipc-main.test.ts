@@ -19,13 +19,13 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import { TerminalCloseIntents } from '../terminal-close-intents.js';
+import type { TerminalCloseChange, TerminalRecovery } from '../../shared/runtime-host-identity.js';
 import type { IpcMain } from 'electron';
-import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
-import { type DeepResearchRun } from '@maka/core/deep-research-run';
-import { type PlanSessionState } from '@maka/core/plan';
+import { emptyPlanSessionState, type PlanSessionState } from '@maka/core/plan';
 import { type ShellRunUpdate } from '@maka/core/events';
 import {
-  encodeDeepResearchSnapshot,
   type GoalProjection,
 } from '@maka/runtime-host/protocol';
 import {
@@ -36,10 +36,6 @@ import type {
   ReconciledControlHandlers,
   ReconnectableReadIpcMain,
 } from '../ipc-reconnect-policy.js';
-import {
-  projectEmbeddedDeepResearch,
-  projectHostedDeepResearch,
-} from '../deep-research-desktop-projection.js';
 import {
   registerRuntimeHostSessionDomainsIpc,
   type RuntimeHostSessionDomainsIpcDeps,
@@ -449,7 +445,7 @@ test('goal:arm takes the Session from the scoped channel and refuses any other k
   assert.equal(armed.length, 2);
 });
 
-test('adapts Host Goal, Task, Deep Research, and Resource projections', async () => {
+test('adapts Host Goal, Task, and Resource projections', async () => {
   const controls: unknown[] = [];
   const client = domainClient({
     querySessionTodo: async () => [{ content: 'todo-1', status: 'pending' }] as never,
@@ -464,7 +460,6 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
     controlGoalWithRetry: async (sessionId, action) => {
       controls.push({ sessionId, action });
     },
-    queryDeepResearch: async () => hostedResearch(),
   });
   const ipc = ipcHarness();
   registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
@@ -499,29 +494,6 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
     { sessionId: 'session-1', action: 'pause' },
     { sessionId: 'session-1', action: 'resume' },
   ]);
-  assert.deepEqual(await ipc.invoke('deepResearch:get', 'session-1'), {
-    sessionId: 'session-1',
-    objective: 'Inspect the adapter',
-    scopeLevel: 'standard',
-    status: 'completed',
-    stage: 'completed',
-    round: 2,
-    createdAt: 1,
-    updatedAt: 2,
-    artifactsCount: 4,
-    stepsCount: 3,
-    checklist: [
-      { itemId: 'entrypoints', title: 'Map entrypoints', status: 'completed' },
-    ],
-    reportSections: [{ key: 'conclusion', status: 'completed' }],
-    recentInspectedRefs: [
-      { kind: 'file', locator: 'apps/desktop/src/main/runtime-host-boot.ts' },
-    ],
-    workerRunIds: ['run-1'],
-    blockers: [],
-    reportArtifactId: 'artifact-1',
-    implementationPrompt: 'Implement the result.',
-  });
 });
 
 test('adapts bounded Agent Graph epoch reads without changing graph identity', async () => {
@@ -571,6 +543,49 @@ test('adapts bounded Agent Graph epoch reads without changing graph identity', a
   ]);
 });
 
+test('keeps a failed Close across connection replacement and acknowledges Stop without a post-read', async () => {
+  const changes: TerminalCloseChange[] = [];
+  const closes = new TerminalCloseIntents((change) => changes.push(change));
+  const firstStop = deferred<Awaited<ReturnType<DomainClient['stopRuntimeResource']>>>();
+  const identity = { sessionId: 'session-1', ref: 'terminal' };
+  let attempts = 0;
+  const first = ipcHarness();
+  const old = registerDomainsIpc({
+    terminalCloses: closes, emitModeChanged() {},
+    client: domainClient({ stopRuntimeResource: () => { attempts += 1; return firstStop.promise; } }),
+  }, first);
+  const stopping = first.invoke('shell-runs:stop', identity);
+  const rejected = assert.rejects(stopping, /disconnected/);
+  await old.close();
+
+  const second = ipcHarness();
+  registerDomainsIpc({
+    terminalCloses: closes, emitModeChanged() {},
+    client: domainClient({
+      listRuntimeResources: async () => [],
+      getRuntimeResource: async () => { throw new Error('must not reread after Stop'); },
+      stopRuntimeResource: async () => { attempts += 1; return {}; },
+    }),
+  }, second);
+  const recovering = await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery;
+  assert.deepEqual(recovering.closes, [{ ...identity, status: 'pending' }]);
+  firstStop.reject(new Error('disconnected after old view closed'));
+  await rejected;
+  const unknown = await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery;
+  assert.deepEqual(unknown.closes, [{ ...identity, status: 'unknown' }]);
+  await second.invoke('shell-runs:stop', identity);
+  assert.equal(attempts, 2);
+  assert.deepEqual(changes.map((change) => change.status), ['pending', 'unknown', 'pending', 'closed']);
+  assert.deepEqual((await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery).closes, []);
+  const retiringStop = deferred<void>();
+  const lateFailure = assert.rejects(closes.stop(identity, () => retiringStop.promise), /late/);
+  closes.retireSession(identity.sessionId);
+  retiringStop.reject(new Error('late response after successful owner retirement'));
+  await lateFailure;
+  assert.deepEqual((await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery).closes, []);
+  assert.equal(changes.at(-1)?.status, 'closed');
+});
+
 test('adapts interactive terminal ownership to one Host controller lease', async () => {
   const calls: Array<{ operation: string; input: unknown }> = [];
   const update = shellRunUpdate({
@@ -610,7 +625,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
       client: domainClient({
         startRuntimeResource: async (input) => {
           calls.push({ operation: 'start', input });
-          return { resource: update.result as never };
+          return { resource: update.result };
         },
         getRuntimeResource: async (sessionId, ref) => {
           calls.push({ operation: 'get', input: { sessionId, ref } });
@@ -622,7 +637,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
         },
         controlRuntimeResource: async (input) => {
           calls.push({ operation: 'control', input });
-          return { controllerId: input.controllerId, sequence: input.sequence, resource: update.result as never };
+          return { controllerId: input.controllerId, sequence: input.sequence };
         },
         releaseRuntimeResourceController: async (input) => {
           calls.push({ operation: 'release', input });
@@ -630,7 +645,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
         },
         stopRuntimeResource: async (input) => {
           calls.push({ operation: 'stop', input });
-          return { resource: update.result as never };
+          return {};
         },
       }),
       sessionObserver: {
@@ -807,7 +822,6 @@ test('reacquires a missing terminal controller with protocol-exact identity fiel
         controlRuntimeResource: async (input) => ({
           controllerId: input.controllerId,
           sequence: input.sequence,
-          resource: shellRunUpdate().result as never,
         }),
         getRuntimeResource: async () => shellRunUpdate(),
       }),
@@ -885,35 +899,32 @@ test('adapts Plan controls and starts approved execution through one Host comman
     ipc,
   );
 
-  assert.deepEqual(await ipc.invoke('plan-mode:requestRevision', 'session-1', 'proposal-1'), state);
+  assert.deepEqual(
+    await ipc.invoke('plan-mode:requestRevision', 'session-1', 'proposal-1'),
+    { ok: true, value: state },
+  );
   const approvalInput = {
     proposalId: 'proposal-1',
     expectedRevision: 2,
     expectedStoreVersion: 3,
     turnId: 'approval-turn',
   };
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:approve', 'session-1', approvalInput),
-    { turnId: 'approval-turn', executionId: 'execution-1' },
-  );
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:approve', 'session-1', approvalInput),
-    { turnId: 'approval-turn', executionId: 'execution-1' },
-  );
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'),
-    {
-      turnId: 'resume-turn',
-      executionId: 'execution-1',
-    },
-  );
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'),
-    {
-      turnId: 'resume-turn',
-      executionId: 'execution-1',
-    },
-  );
+  assert.deepEqual(await ipc.invoke('plan-mode:approve', 'session-1', approvalInput), {
+    ok: true,
+    value: { turnId: 'approval-turn', executionId: 'execution-1' },
+  });
+  assert.deepEqual(await ipc.invoke('plan-mode:approve', 'session-1', approvalInput), {
+    ok: true,
+    value: { turnId: 'approval-turn', executionId: 'execution-1' },
+  });
+  assert.deepEqual(await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'), {
+    ok: true,
+    value: { turnId: 'resume-turn', executionId: 'execution-1' },
+  });
+  assert.deepEqual(await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'), {
+    ok: true,
+    value: { turnId: 'resume-turn', executionId: 'execution-1' },
+  });
   assert.deepEqual(calls, [
     {
       kind: 'control',
@@ -1005,7 +1016,6 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
   );
 
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'todo' });
-  handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'deep_research' });
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'plan' });
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'usage' });
   handle.sessionDomainChanged({
@@ -1032,10 +1042,6 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     {
       channel: 'todo:changed',
       payload: { sessionId: 'session-1', at: 12 },
-    },
-    {
-      channel: 'deepResearch:changed',
-      payload: { sessionId: 'session-1', ts: 12 },
     },
     {
       channel: 'plan-mode:changed',
@@ -1077,10 +1083,6 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
       payload: { sessionId: 'session-1', at: 12 },
     },
     {
-      channel: 'deepResearch:changed',
-      payload: { sessionId: 'session-1', ts: 12 },
-    },
-    {
       channel: 'plan-mode:changed',
       payload: { sessionId: 'session-1' },
     },
@@ -1097,72 +1099,6 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
       payload: { sessionId: 'session-1' },
     },
   ]);
-});
-
-test('projects embedded and hosted Deep Research into one renderer contract', () => {
-  const run: DeepResearchRun = {
-    schemaVersion: 1,
-    sessionId: 'session-1',
-    objective: 'Inspect the adapter',
-    scopeLevel: 'standard',
-    status: 'blocked',
-    stage: 'knowledge_base',
-    round: 1,
-    createdAt: 1,
-    updatedAt: 2,
-    artifacts: [],
-    checklist: [],
-    steps: [{
-      stepId: 'step-1',
-      kind: 'local_exploration',
-      status: 'blocked',
-      objective: 'Inspect the adapter',
-      summary: 'The adapter cannot continue.',
-      roots: [],
-      keywords: [],
-      ignoredPaths: [],
-      stoppingCondition: 'The boundary is known.',
-      expectedEvidence: 'A stable projection.',
-      evidenceArtifactIds: [],
-      inspectedRefs: [],
-      workerRunIds: [],
-      blockedReason: 'Runtime credentials are unavailable.',
-      createdAt: 2,
-    }],
-    reportSections: [],
-    checkpoints: [],
-  };
-  const embedded = projectEmbeddedDeepResearch(run);
-  const hosted = projectHostedDeepResearch(
-    encodeDeepResearchSnapshot(projectDeepResearchClientProgress(run), 1),
-  );
-
-  assert.deepEqual(hosted, embedded);
-  assert.deepEqual(hosted?.blockers, [
-    'Inspect the adapter: Runtime credentials are unavailable.',
-  ]);
-
-  const checklistBlocked = structuredClone(run);
-  checklistBlocked.checklist = [{
-    itemId: 'blocked-item',
-    title: '🙂'.repeat(240),
-    status: 'blocked',
-    evidenceArtifactIds: [],
-    blockedReason: 'Credentials are unavailable.',
-    updatedAt: 2,
-  }];
-  assert.match(
-    projectDeepResearchClientProgress(checklistBlocked).blockers[0] ?? '',
-    /Credentials are unavailable\./,
-  );
-
-  const stepBlocked = structuredClone(run);
-  if (!stepBlocked.steps[0]) throw new Error('Missing Deep Research step fixture');
-  stepBlocked.steps[0].objective = '🙂'.repeat(240);
-  assert.match(
-    projectDeepResearchClientProgress(stepBlocked).blockers.at(-1) ?? '',
-    /Runtime credentials are unavailable\./,
-  );
 });
 
 function domainClient(overrides: Partial<DomainClient>): DomainClient {
@@ -1184,7 +1120,6 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     querySessionTodo: unavailable,
     queryAgentGraph: unavailable,
     queryAgentGraphOperator: unavailable,
-    queryDeepResearch: unavailable,
     queryGoal: unavailable,
     releaseRuntimeResourceController: unavailable,
     startRuntimeResource: unavailable,
@@ -1250,43 +1185,6 @@ function graphSnapshot(rootSessionId: string, graphId: string) {
       controlDecisions: 0,
       recentActivity: 0,
     },
-  };
-}
-
-function hostedResearch() {
-  return {
-    kind: 'snapshot' as const,
-    sessionId: 'session-1',
-    revision: 4,
-    objective: 'Inspect the adapter',
-    scopeLevel: 'standard' as const,
-    status: 'completed' as const,
-    stage: 'completed' as const,
-    round: 2,
-    createdAt: 1,
-    updatedAt: 2,
-    artifactsCount: 4,
-    stepsCount: 3,
-    checklist: [
-      {
-        itemId: 'entrypoints',
-        title: 'Map entrypoints',
-        status: 'completed' as const,
-        blockedReason: null,
-      },
-    ],
-    reportSections: [{ key: 'conclusion' as const, status: 'completed' as const }],
-    recentInspectedRefs: [
-      {
-        kind: 'file' as const,
-        locator: 'apps/desktop/src/main/runtime-host-boot.ts',
-        label: null,
-      },
-    ],
-    workerRunIds: ['run-1'],
-    blockers: [],
-    reportArtifactId: 'artifact-1',
-    implementationPrompt: 'Implement the result.',
   };
 }
 
@@ -1390,13 +1288,14 @@ function reconciledIpcHarness() {
 }
 
 function registerDomainsIpc(
-  deps: Omit<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'> &
-    Partial<Pick<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'>>,
+  deps: Omit<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver' | 'terminalCloses'> &
+    Partial<Pick<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver' | 'terminalCloses'>>,
   ipcMain: ReconnectableReadIpcMain,
 ) {
   return registerRuntimeHostSessionDomainsIpc(
     {
       ...deps,
+      terminalCloses: deps.terminalCloses ?? new TerminalCloseIntents(),
       sessionObserver: deps.sessionObserver ?? {
         async observe() {},
         async unobserve() {},
@@ -1405,3 +1304,105 @@ function registerDomainsIpc(
     ipcMain,
   );
 }
+
+test('plan control channels rethrow failures outside the expected plan-control set', async () => {
+  const ipc = ipcHarness();
+  const boom = new Error('socket exploded');
+  registerDomainsIpc({
+    client: domainClient({
+      getPlanState: async () => emptyPlanSessionState('session-1'),
+      controlPlan: async () => {
+        throw boom;
+      },
+      startPlanTurn: async () => {
+        throw boom;
+      },
+    }),
+    emitModeChanged: () => {},
+    newId: () => 'fixed-id',
+  }, ipc);
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:requestRevision', 'session-1', 'proposal-1'),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:abandon', 'session-1', 'proposal-1'),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:approve', 'session-1', {
+      proposalId: 'proposal-1',
+      expectedRevision: 2,
+      expectedStoreVersion: 3,
+      turnId: 'turn-1',
+    }),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'turn-1'),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:abandonExecution', 'session-1', 'execution-1'),
+    (error: unknown) => error === boom,
+  );
+});
+test('plan control channels return the Host error code across the IPC boundary', async () => {
+  const cases = [
+    {
+      channel: 'plan-mode:requestRevision',
+      args: ['session-1', 'proposal-1'],
+      operation: 'plan.control',
+      code: 'session_busy',
+    },
+    {
+      channel: 'plan-mode:abandon',
+      args: ['session-1', 'proposal-1'],
+      operation: 'plan.control',
+      code: 'operation_conflict',
+    },
+    {
+      channel: 'plan-mode:approve',
+      args: [
+        'session-1',
+        { proposalId: 'proposal-1', expectedRevision: 2, expectedStoreVersion: 3, turnId: 'turn-1' },
+      ],
+      operation: 'plan.turn.start',
+      code: 'operation_conflict',
+    },
+    {
+      channel: 'plan-mode:resume',
+      args: ['session-1', 'execution-1', 'turn-1'],
+      operation: 'plan.turn.start',
+      code: 'session_busy',
+    },
+    {
+      channel: 'plan-mode:abandonExecution',
+      args: ['session-1', 'execution-1'],
+      operation: 'plan.control',
+      code: 'persistence_failed',
+    },
+  ] as const;
+  for (const scenario of cases) {
+    const ipc = ipcHarness();
+    const changed: string[] = [];
+    const reject = async () => {
+      throw new RuntimeHostOperationError(scenario.operation, scenario.code, 'Host refused the plan control');
+    };
+    registerDomainsIpc({
+      client: domainClient({
+        getPlanState: async () => emptyPlanSessionState('session-1'),
+        controlPlan: reject,
+        startPlanTurn: reject,
+      }),
+      emitModeChanged: (sessionId) => changed.push(sessionId),
+      newId: () => 'fixed-id',
+    }, ipc);
+    assert.deepEqual(
+      await ipc.invoke(scenario.channel, ...scenario.args),
+      { ok: false, error: { code: scenario.code, message: 'Host refused the plan control' } },
+      `${scenario.channel} must carry the Host error code`,
+    );
+    assert.deepEqual(changed, [], `${scenario.channel} must not report a mode change`);
+  }
+});

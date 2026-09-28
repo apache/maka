@@ -368,7 +368,13 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
             badge={isRetiredProvider(selected.providerType)
               ? null
               : selected.slug === defaultSlug
-              ? <Badge variant="neutral" label={copy.default} />
+              ? (
+                <Badge
+                  className="settingsActionSlotBadge"
+                  variant="neutral"
+                  label={copy.default}
+                />
+              )
               : (
                 <Button
                   variant="secondary"

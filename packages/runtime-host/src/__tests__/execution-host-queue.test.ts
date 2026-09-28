@@ -36,14 +36,17 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
+import {
+  TOOL_BOUNDARY_PROTOCOL_V1,
+  runtimeEventHasModelVisibleContent,
+} from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   runtimeInvocationOutcome,
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
-import type { MessageContent } from '@maka/core/events';
+import type { MessageContent, AttachmentRef } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -59,6 +62,7 @@ import {
   FAKE_WAIT_FOR_STEERING_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -90,14 +94,15 @@ import {
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 import {
   CONNECTION_EFFECT_MODEL_IDS,
   PROCESS_TIMEOUT_MS,
   SubscriptionProbe,
   assertJsonLines,
-  attachment,
   connectClient,
+  quoteRefs,
   requireStartedTurn,
   operationError,
   quotedContent,
@@ -125,6 +130,8 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await desktopSubscription.ready();
+    await tuiSubscription.ready();
     const desktopProbe = new SubscriptionProbe(desktopSubscription);
     const tuiProbe = new SubscriptionProbe(tuiSubscription);
     for (const subscription of [desktopSubscription, tuiSubscription]) {
@@ -230,6 +237,207 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
   });
 });
 
+test('a quote-only queued message survives the wire snapshot, the admission chain, and a Host restart (#4804)', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const subscription = await client.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    await subscription.ready();
+    const probe = new SubscriptionProbe(subscription);
+
+    // The root turn occupies the session so the quote-only submit queues as
+    // a follow-up instead of opening a successor.
+    const rootTurnId = randomUUID();
+    requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId: rootTurnId,
+        content: { text: `continuity root ${'x'.repeat(540)}` },
+      }),
+    );
+
+    // ① The framed-client submit admits the quote-only Message.
+    const messageId = randomUUID();
+    const queued = await client.request('turn.message.submit', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId,
+      content: quotedContent('the deploy failed at step three'),
+      placement: 'next_turn',
+    });
+    assert.equal(queued.disposition, 'followup');
+
+    // ② The wire queue snapshot carries the entry with its excerpt — the
+    //    read-back that a queue-snapshot decoder gap would break.
+    const projection = (await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.queue.followup.some((entry) => entry.messageId === messageId),
+      'the queued quote-only message never reached the wire snapshot',
+    )) as Extract<SubscriptionFrame, { kind: 'subscription.session_projection' }>;
+    const wireEntry = projection.snapshot.queue.followup.find(
+      (entry) => entry.messageId === messageId,
+    );
+    assert.match(
+      wireEntry?.content.text ?? '',
+      /the deploy failed at step three/,
+      'the excerpt survives wire serialization',
+    );
+
+    // ③ A Host restart re-opens the stores and re-publishes the durable
+    //    queue entry with the quote intact — close/reopen the whole chain.
+    await fixture.killHost(host);
+    await client.closed;
+    const secondHost = await fixture.startHost();
+    const second = await connectClient(fixture.root);
+    const recoveredSubscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    await recoveredSubscription.ready();
+    // The restart promotes the queued follow-up into a successor root Turn
+    // that runs to completion; the durable user message must carry the
+    // quote excerpt — the full submit -> admission -> wire snapshot ->
+    // reopen round trip me2seeks asked to pin (#5125 review, item 3).
+    const probe2 = new SubscriptionProbe(recoveredSubscription);
+    const successor = await probe2.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn !== null &&
+        frame.snapshot.rootTurn.turnId !== rootTurnId,
+      'no successor root was recovered after the Host restart',
+    );
+    if (successor.kind !== 'subscription.session_projection' || !successor.snapshot.rootTurn)
+      return;
+    await waitForTerminalTurn(second, fixture.sessionId, successor.snapshot.rootTurn.turnId);
+    await second.close();
+    await probe2.done;
+    await fixture.stopHost(secondHost);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => message.id === messageId)
+        .map((message) => message.id),
+      [messageId],
+    );
+  });
+});
+
+// The root-start admission path, end to end against the real Host and stores:
+// the wire decoder, the durable admission authority and the replayed event
+// must agree that structured content carries the turn, or a quote-only
+// turn.start is refused (or stored invisible) one layer below any
+// decoder-level assertion (#4804, #4815 review).
+test('a quote-only turn.start forms a durable Turn whose user event stays model-visible (#4804)', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const turnId = randomUUID();
+    const content: MessageContent = { text: '', quotes: quoteRefs('root-start') };
+
+    const started = requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId,
+        content,
+      }),
+    );
+    await waitForTerminalTurn(client, fixture.sessionId, turnId);
+    assert.equal(started.turnId, turnId);
+    await client.close();
+    await fixture.stopHost(host);
+
+    const ledger = await fixture.readTurn(turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.deepEqual(
+      ledger.userMessages.map((message) => message.quotes),
+      [content.quotes],
+    );
+    const userEvent = ledger.runtimeEvents.find(
+      (event) => event.role === 'user' && event.content?.kind === 'text',
+    );
+    assert.ok(userEvent, 'the admitted turn persisted a user RuntimeEvent');
+    if (!userEvent || userEvent.content?.kind !== 'text') return;
+    assert.deepEqual(userEvent.content.quotes, content.quotes);
+    // The persisted event passes the exact predicate that gates model replay:
+    // admission, durability and visibility decide by one rule.
+    assert.equal(runtimeEventHasModelVisibleContent(userEvent), true);
+  });
+});
+
+test('an attachment-only turn.start forms a durable Turn whose user event stays model-visible (#4804)', async () => {
+  await withExecutionRoot(async (fixture) => {
+    // Stage the canonical Artifact first — the ingest step every real client
+    // performs before a hosted Turn may reference the attachment.
+    const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+    assert.ok(owner);
+    if (!owner) return;
+    let attachmentRef: AttachmentRef;
+    try {
+      const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+      try {
+        const artifact = await artifacts.create({
+          sessionId: fixture.sessionId,
+          turnId: 'staging',
+          name: 'chart.png',
+          kind: 'image',
+          source: 'user_upload',
+          mimeType: 'image/png',
+          content: 'fake-png-bytes',
+        });
+        attachmentRef = {
+          kind: 'image',
+          name: artifact.name,
+          mimeType: 'image/png',
+          bytes: artifact.sizeBytes,
+          ref: {
+            kind: 'session_file',
+            sessionId: fixture.sessionId,
+            relativePath: artifact.id,
+          },
+        };
+      } finally {
+        artifacts.close();
+      }
+    } finally {
+      await owner.close();
+    }
+
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const turnId = randomUUID();
+    const content: MessageContent = { text: '', attachments: [attachmentRef] };
+
+    const started = requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId,
+        content,
+      }),
+    );
+    await waitForTerminalTurn(client, fixture.sessionId, turnId);
+    assert.equal(started.turnId, turnId);
+    await client.close();
+    await fixture.stopHost(host);
+
+    const ledger = await fixture.readTurn(turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.deepEqual(
+      ledger.userMessages.map((message) => message.attachments),
+      [content.attachments],
+    );
+    const userEvent = ledger.runtimeEvents.find(
+      (event) => event.role === 'user' && event.content?.kind === 'text',
+    );
+    assert.ok(userEvent, 'the admitted turn persisted a user RuntimeEvent');
+    if (!userEvent || userEvent.content?.kind !== 'text') return;
+    assert.deepEqual(userEvent.content.attachments, content.attachments);
+    assert.equal(runtimeEventHasModelVisibleContent(userEvent), true);
+  });
+});
+
 test('production UDS admission commits one transcript before the root handoff', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
@@ -294,6 +502,7 @@ test('a Host crash after queue admission recovers the durable successor once', a
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const successor = await probe.waitFor(
       (frame) =>
@@ -429,6 +638,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await firstSubscription.ready();
     const firstProbe = new SubscriptionProbe(firstSubscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
@@ -461,6 +671,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await recoveredSubscription.ready();
     const recovered = await second.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
@@ -534,6 +745,7 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
@@ -583,6 +795,7 @@ test('Host shutdown contains a user-question admission rejected by Interaction d
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
@@ -773,7 +986,7 @@ test('startup recovery canonically closes pending linked child admissions withou
           assert.equal(terminal.fact.failureClass, 'app_restarted');
         }
         const userMessages: StoredMessage[] = (
-          await stores.sessionStore.readMessages(recovered.sessionId)
+          await readLedgerMessages(stores.runtimeEventStore, recovered.sessionId)
         ).filter((message) => message.type === 'user' && message.turnId === recovered.turnId);
         assert.equal(userMessages.length, recovered.kind === 'linked_child_provider_retry' ? 0 : 1);
         if (recovered.kind !== 'linked_child_provider_retry') {

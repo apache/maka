@@ -49,7 +49,7 @@ test('Artifact metadata changes only write changed rows', async () => {
     `);
 
     repository.applyChanges({
-      upserts: [unchanged, { ...updated, status: 'deleted' }, artifactRecord('added')],
+      upserts: [unchanged, { ...updated, summary: 'changed' }, artifactRecord('added')],
       deleteIds: [removed.id],
     });
 
@@ -67,12 +67,12 @@ test('Artifact metadata changes only write changed rows', async () => {
     assert.deepEqual(
       repository
         .readAll()
-        .map(({ id, status }) => ({ id, status }))
+        .map(({ id, summary }) => ({ id, summary }))
         .sort((left, right) => left.id.localeCompare(right.id)),
       [
-        { id: 'added', status: 'live' },
-        { id: 'unchanged', status: 'live' },
-        { id: 'updated', status: 'deleted' },
+        { id: 'added', summary: undefined },
+        { id: 'unchanged', summary: undefined },
+        { id: 'updated', summary: 'changed' },
       ],
     );
 
@@ -82,6 +82,44 @@ test('Artifact metadata changes only write changed rows', async () => {
       DROP TRIGGER artifact_write_audit_delete;
       DROP TABLE artifact_write_audit;
     `);
+  } finally {
+    inspector?.close();
+    repository.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Artifact metadata recovery ignores records from unsupported sources', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-metadata-unsupported-'));
+  const repository = createSqliteArtifactMetadataRepository(root);
+  let inspector: DatabaseSync | undefined;
+  try {
+    const supported = artifactRecord('supported');
+    repository.applyChanges({ upserts: [supported] });
+
+    const unsupported = {
+      ...artifactRecord('unsupported'),
+      source: 'retired_artifact_source',
+    };
+    inspector = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    const insert = inspector.prepare(`
+        INSERT INTO artifact_records(
+          artifact_id,
+          session_id,
+          created_at,
+          relative_path,
+          record_json
+        ) VALUES (?, ?, ?, ?, ?)
+      `);
+    insert.run(
+      unsupported.id,
+      unsupported.sessionId,
+      unsupported.createdAt,
+      unsupported.relativePath,
+      JSON.stringify(unsupported),
+    );
+
+    assert.deepEqual(repository.readAll(), [supported]);
   } finally {
     inspector?.close();
     repository.close();
@@ -99,7 +137,6 @@ function artifactRecord(id: string): ArtifactRecord {
     kind: 'file',
     sizeBytes: id.length,
     relativePath: `session-1/${id}-${id}.txt`,
-    source: 'fixture',
-    status: 'live',
+    source: 'tool_result',
   };
 }

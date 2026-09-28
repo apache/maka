@@ -18,6 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor } from 'storybook/test';
 import type { ComponentProps } from 'react';
 import type { AttachmentRef } from '@maka/core/events';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
@@ -257,4 +258,39 @@ export const SentReferenceHierarchy: Story = {
       />
     </Frame>
   ),
+};
+
+// Real path: 用 `/` 选一个 Skill 发送 → Host 从 invocation receipts 冻结出 chip 之前的那一行
+// （乐观行，以及本地存储里同一行的副本）只带着文本，没有任何 inline reference。
+// The Host composes a Skill's chip into `inlineReferences` from the invocation
+// receipts, so a row that carries the `/skill:<id>` token can carry no
+// reference at all. The chip is a rendering of the token, not of that hint.
+export const SkillTokenWithoutAFrozenReference: Story = {
+  render: () => (
+    <Frame width={420}>
+      <AttachmentChat
+        {...baseChat}
+        messages={[{
+          type: 'user',
+          id: 'u4',
+          turnId: 't4',
+          ts: NOW,
+          text: '请用 /skill:writer 对照这些材料检查。',
+          inlineReferences: [],
+        }]}
+      />
+    </Frame>
+  ),
+  play: async ({ canvasElement }) => {
+    // The transcript virtualizes, so the row mounts after its scroller measures.
+    const chip = await waitFor(() => {
+      const found = canvasElement.querySelector('.astryx-badge');
+      if (!found) throw new Error('the row has not rendered a chip yet');
+      return found;
+    });
+    await expect(chip.textContent).toBe('writer');
+    await expect(chip.closest('.astryx-chat-message-bubble')?.textContent).not.toContain(
+      '/skill:writer',
+    );
+  },
 };

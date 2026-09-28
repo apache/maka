@@ -58,10 +58,11 @@ describe('renderConversationMarkdown', () => {
         modelId: 'fake',
       },
     ];
-    const md = renderConversationMarkdown('skill session', messages);
+    const md = renderConversationMarkdown('skill session', messages, 'zh-CN');
     assert.match(md, /## 你/);
     assert.ok(md.includes(typed), 'export shows the typed prompt');
     assert.ok(!md.includes('<invoked-skill'), 'export must not include the skill envelope');
     assert.ok(!md.includes('Secret skill body'), 'export must not include skill body');
+    assert.match(renderConversationMarkdown('skill session', messages, 'en'), /## You/);
   });
 });

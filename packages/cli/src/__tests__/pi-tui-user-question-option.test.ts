@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { visibleWidth } from '@earendil-works/pi-tui';
+import { CURSOR_MARKER, TuiMainScreen, visibleWidth } from '@earendil-works/pi-tui';
 import type { TUI } from '@earendil-works/pi-tui';
 import {
   clampRowsWithEllipsis,
@@ -27,11 +27,125 @@ import {
   UserQuestionOverlay,
 } from '../pi-tui-pickers.js';
 import { ansi, stripAnsi } from '../tui-ansi.js';
+import { FakeTerminal } from './tui-terminal-mock.js';
+import { encodeExpectedRows } from './tui-render-expectations.js';
 
 // SGR reverse degrades to identity when the terminal reports no color support
 // (piped CI), so the highlight assertion keys off this build's actual behavior.
 const REVERSE_ON = '\u001b[7m';
 const COLOR_ENABLED = ansi.reverse('').length > 0;
+
+test('Other preserves its wrapped draft and cursor position across focus changes', () => {
+  const WIDTH = 40;
+  const ARROW_UP = '\x1b[A';
+  const ARROW_DOWN = '\x1b[B';
+  const ARROW_LEFT = '\x1b[D';
+  const ENTER = '\r';
+
+  const submittedAnswers: string[] = [];
+  const tui = new TuiMainScreen(new FakeTerminal(WIDTH));
+  const question = new UserQuestionOverlay(tui, {
+    title: 'Pick one',
+    rightLabel: '1 / 1',
+    hint: '↑↓ move · type to answer',
+    placeholder: 'Other: type answer',
+    options: [{ label: 'Preset' }],
+    onSelectOption: () => undefined,
+    onSubmitText: (value) => submittedAnswers.push(value),
+    onSkip: () => undefined,
+  });
+
+  const assertQuestionBody = (expectedScene: string) => {
+    // Keep all choices and input rows; omit the title, hint, blank row and divider.
+    const actualRows = question.render(WIDTH).slice(3, -1);
+    assert.deepEqual(actualRows, encodeExpectedRows(expectedScene, WIDTH));
+  };
+
+  // Refocus with the cursor at the end of a wrapped answer.
+  const draft =
+    'Please use the custom provider and keep the current model settings for this workspace';
+  question.handleInput(draft);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspace<cursor>
+`);
+
+  question.handleInput(ARROW_UP);
+  assertQuestionBody(`
+<selected>→ Preset</selected>
+  Please use the custom provider and
+  keep the current model settings for
+  this workspace
+`);
+
+  question.handleInput(ARROW_DOWN);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspace<cursor>
+`);
+
+  // Refocus with the cursor over an existing character.
+  question.handleInput(ARROW_LEFT);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspac<cursor>e
+`);
+
+  question.handleInput(ARROW_UP);
+  assertQuestionBody(`
+<selected>→ Preset</selected>
+  Please use the custom provider and
+  keep the current model settings for
+  this workspace
+`);
+
+  question.handleInput(ARROW_DOWN);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspac<cursor>e
+`);
+
+  question.handleInput(ENTER);
+  assertQuestionBody(`
+  Preset
+→ <cursor>
+`);
+  assert.deepEqual(submittedAnswers, [draft]);
+});
+
+test('a short question viewport keeps the answer cursor visible without losing the draft', () => {
+  const width = 40;
+  const submittedAnswers: string[] = [];
+  const question = new UserQuestionOverlay(new TuiMainScreen(new FakeTerminal(width, 12)), {
+    title: 'Pick one',
+    rightLabel: '1 / 1',
+    hint: '↑↓ move · type to answer',
+    placeholder: 'Other: type answer',
+    options: [{ label: 'First' }, { label: 'Second' }, { label: 'Third' }],
+    onSelectOption: () => undefined,
+    onSubmitText: (value) => submittedAnswers.push(value),
+    onSkip: () => undefined,
+  });
+  const draft = 'Please keep the current provider and model settings for this workspace END';
+  question.handleInput(draft);
+  question.setViewportRows(6);
+  const rows = question.render(width);
+  assert.equal(rows.length, 6);
+  for (const label of ['First', 'Second', 'Third']) {
+    assert.ok(rows.some((row) => row.includes(label)));
+  }
+  assert.ok(rows.some((row) => row.includes(`END${CURSOR_MARKER}`)));
+  question.handleInput('\r');
+  assert.deepEqual(submittedAnswers, [draft]);
+});
 
 test('long options wrap within the row width instead of truncating (#4610)', () => {
   const option = {
@@ -162,11 +276,11 @@ test('render() respects the row budget: every option, input row, and divider sur
     hint: '↑↓ move · type to answer · Enter select · Esc unanswered',
     placeholder: 'Other: type your answer…',
     options: [long, long, long],
-    maxRows: () => 12,
     onSelectOption: () => undefined,
     onSubmitText: () => undefined,
     onSkip: () => undefined,
   });
+  overlay.setViewportRows(12);
   const lines = overlay.render(50);
   assert.ok(lines.length <= 12, `over budget: ${lines.length} rows`);
   const plain = lines.map((line) => stripAnsi(line));
@@ -190,6 +304,13 @@ test('render() respects the row budget: every option, input row, and divider sur
   );
   const hintIndex = plain.findIndex((line) => line.includes('↑↓ move'));
   assert.ok(hintIndex <= 3, `title must cap at two lines, hint found at row ${hintIndex}`);
+
+  overlay.setViewportRows(7);
+  const short = overlay.render(50).map((line) => stripAnsi(line));
+  assert.ok(short.length <= 7);
+  assert.equal(short.filter((line) => line.includes('默认省略')).length, 3);
+  assert.ok(short.some((line) => line.includes('Other: type your answer')));
+  assert.ok(short.at(-1)?.startsWith('---'));
 });
 
 test('render() without a budget renders every wrapped line', () => {
