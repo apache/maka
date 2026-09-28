@@ -62,6 +62,8 @@ Completion removes the input card, its header, details and action buttons. The
 terminal remains a private, read-only display using the same capture fence and
 original process. Reloading or switching tabs restores that display without
 reopening the input flow. Another handoff request creates a new input card.
+While the initial phase is unknown, only the terminal loading container is
+shown. A registration failure exposes reconnect instead of leaving a spinner.
 
 During input, one message describes the current actionable state: uncertain
 delivery takes precedence over a disconnected surface, invalid input and a
@@ -88,6 +90,11 @@ recognizer, and no SSH logic belongs in the Host.
 - `HostRuntimeResourceCoordinator` owns resource serialization and a volatile
   controller identity/sequence. The existing Interaction coordinator owns the
   pending request, durable decision, Run cancellation and Session projection.
+- Workbar owns Desktop surface registration. Restored cards await its shared
+  registration promise before claiming a controller; cards never advertise a
+  second surface. Host resync invalidates that promise, and a failed registration
+  can be retried. The display carries text only: `phase` controls the UI, while
+  Runtime retains its internal input fence.
 - `WriteStdin({ref, handoff: {message}})` waits on that Interaction. It is offered
   only when an interactive Desktop surface is registered for the Session and
   the platform provides an input fence. No new task, shell or terminal process
@@ -227,6 +234,13 @@ Removing the uncertain-delivery latch in a process-local ablation made a later
 healthy observation re-enable completion after a lost submission receipt, and
 the recovery regression failed. That necessary memory remains in the existing
 notice state; no separate uncertainty boolean is required.
+
+The surface-ownership ablation removed the card's second advertisement and the
+unused `display.inputOpen` field; restoration, retry and Runtime privacy checks
+still pass. Removing the shared-registration wait instead caused a restored
+card to claim control before its surface was available. Removing the initial
+loading branch brought back the old input card while the authoritative phase
+was pending. These two guards remain; they require no additional UI state.
 
 Two further real-PTY ablations exposed the output-policy problem. Removing
 publication leaves the model unable to read the requested command's result.

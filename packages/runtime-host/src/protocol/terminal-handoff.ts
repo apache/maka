@@ -64,7 +64,6 @@ export interface RuntimeResourceHandoffResult {
   /** Private live projection: never journal or attach to a model tool result. */
   readonly display?: {
     readonly text: string;
-    readonly inputOpen: boolean;
   };
   readonly request?: {
     readonly requestId: string;
@@ -172,15 +171,9 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
     };
   }
   if (record.display !== undefined) {
-    const screen = requireExactRecord(record.display, 'Private terminal display', [
-      'text',
-      'inputOpen',
-    ]);
-    if (typeof screen.inputOpen !== 'boolean')
-      throw invalidProtocolFrame('Invalid terminal input state');
+    const screen = requireExactRecord(record.display, 'Private terminal display', ['text']);
     display = {
       text: screen.text === '' ? '' : requireUtf8String(screen.text, 'private display', 48 * 1024),
-      inputOpen: screen.inputOpen,
     };
   }
   return {

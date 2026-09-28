@@ -80,11 +80,14 @@ let controllerRenderSnapshots: Array<{
   terminalOwnerIds: Array<string | undefined>;
 }> = [];
 
-type ControllerProbeInput = UseWorkbarControllerInput & { openOnActivation?: boolean };
+type ControllerProbeInput = UseWorkbarControllerInput & { openOnActivation?: boolean; prepareHandoffOnMount?: boolean };
 
 function ControllerProbe(props: ControllerProbeInput) {
   const workbar = useWorkbarController(props);
   latestController = workbar;
+  useLayoutEffect(() => {
+    if (props.prepareHandoffOnMount) void workbar.host.prepareTerminalHandoff?.().catch(() => {});
+  }, [props.prepareHandoffOnMount, workbar.host.prepareTerminalHandoff]);
   const visiblePanels = projectWorkbarPanelsForSession(
     workbar.host.panelsState, workbar.host.activeId,
     new Set(workbar.host.quotes?.map((quote) => `side-chat:${quote.id}`)),
@@ -314,6 +317,41 @@ function renderWorkBoardComposition(
 }
 
 describe('useWorkbarController', () => {
+  it('owns one terminal surface registration across early cards, reconnect and Session changes', async () => {
+    const { root } = installReactRenderer();
+    const gate = deferred<void>();
+    const operations: Array<{ sessionId: string; available: boolean }> = [];
+    const listeners = new Set<(event: { sessionId: string }) => void>();
+    const base = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({ terminal: { ...base.terminal,
+      subscribeResync: (handler) => { listeners.add(handler); return () => { listeners.delete(handler); }; },
+      handoff: async (operation) => {
+        assert.equal(operation.action, 'surface');
+        if (operation.action !== 'surface') throw new Error('unexpected operation');
+        operations.push(operation);
+        if (operation.available) await gate.promise;
+        return { status: 'available', phase: 'waiting', nextSequence: 1 };
+      },
+    } });
+    await act(async () => renderController(root, services, { ...input(session('a')), prepareHandoffOnMount: true }));
+    const first = controller().host.prepareTerminalHandoff!();
+    assert.equal(controller().host.prepareTerminalHandoff!(), first);
+    assert.equal(operations.length, 1);
+    await act(async () => gate.resolve());
+    await first;
+    await controller().host.prepareTerminalHandoff!();
+    assert.equal(operations.length, 1);
+    await act(async () => listeners.forEach((handler) => handler({ sessionId: 'a' })));
+    await controller().host.prepareTerminalHandoff!();
+    assert.equal(operations.length, 2);
+    await act(async () => renderController(root, services, input(session('b'))));
+    await act(async () => root.unmount());
+    assert.deepEqual(operations.map(({ sessionId, available }) => [sessionId, available]), [
+      ['a', true], ['a', true], ['a', false], ['b', true], ['b', false],
+    ]);
+    assert.equal(listeners.size, 0);
+  });
+
   afterEach(() => {
     latestController = undefined;
     latestTaskEntryController = undefined;

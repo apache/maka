@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import type { RuntimeResourceHandoffResult } from '@maka/runtime-host/protocol';
 import { LocaleProvider } from '@maka/ui';
 import { terminalFeedback, isValidPrivateTerminalInput, TerminalHandoffPanel, loadSessionTerminalPanelForTest, createFakeWorkbarServices, WorkbarServicesProvider } from '../../renderer/features/workbar/testing.js';
 import type { SessionEvent } from '@maka/core/events';
@@ -60,6 +62,81 @@ function descendants(element: FakeElement): FakeElement[] {
   return [element, ...element.childNodes.flatMap((child) => child instanceof FakeElement ? descendants(child) : [])];
 }
 
+test('restoration waits for Workbar registration and authoritative phase without flashing an input card', async () => {
+  const { root, container } = installReactRenderer();
+  const surface = deferred<void>();
+  const ready = deferred<RuntimeResourceHandoffResult>();
+  const operations: string[] = [];
+  const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
+    handoff: async (operation) => { operations.push(operation.action); return ready.promise; },
+  } });
+  await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: true,
+      prepareHandoff: () => surface.promise,
+      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
+    })),
+  })));
+  const assertLoading = () => {
+    assert.equal(descendants(container).some((node) => ['HEADER', 'INPUT', 'BUTTON', 'DETAILS'].includes(node.tagName)), false);
+    assert.ok(descendants(container).some((node) => node.getAttribute('aria-busy') === 'true'));
+  };
+  assertLoading();
+  assert.deepEqual(operations, []);
+  await act(async () => surface.resolve());
+  assert.deepEqual(operations, ['ready']);
+  assertLoading();
+  await act(async () => ready.resolve({ status: 'observed', phase: 'resumed', nextSequence: 2, display: { text: 'restored-result' } }));
+  assert.match(container.textContent, /restored-result/);
+  assert.equal(descendants(container).some((node) => node.getAttribute('data-testid') === 'terminal-handoff'), false);
+  await act(async () => root.unmount());
+});
+
+test('leaving during Workbar registration never acquires a hidden terminal controller', async () => {
+  const { root } = installReactRenderer();
+  const surface = deferred<void>();
+  const operations: string[] = [];
+  const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
+    handoff: async (operation) => { operations.push(operation.action); return { status: 'ready', phase: 'human', nextSequence: 1 }; },
+  } });
+  await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: true,
+      prepareHandoff: () => surface.promise,
+      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
+    })),
+  })));
+  await act(async () => root.unmount());
+  await act(async () => surface.resolve());
+  assert.deepEqual(operations, ['release']);
+});
+
+test('failed Workbar registration offers reconnect and can recover without submitting input', async () => {
+  const { root, container } = installReactRenderer();
+  let registrations = 0;
+  const operations: string[] = [];
+  const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
+    handoff: async (operation) => { operations.push(operation.action); return { status: 'ready', phase: 'human', nextSequence: 1 }; },
+  } });
+  await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: true,
+      prepareHandoff: async () => { if (++registrations === 1) throw new Error('disconnected'); },
+      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
+    })),
+  })));
+  assert.match(container.textContent, /Connection lost/);
+  assert.equal(operations.includes('ready'), false);
+  const reconnect = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === 'Reconnect to original terminal')!;
+  const key = Object.keys(reconnect).find((name) => name.startsWith('__reactProps$'))!;
+  await act(async () => (reconnect as unknown as Record<string, { onClick(event: { preventDefault(): void }): void }>)[key]!.onClick({ preventDefault() {} }));
+  assert.equal(registrations, 2);
+  assert.equal(operations.includes('ready'), true);
+  assert.equal(operations.includes('input'), false);
+  assert.doesNotMatch(container.textContent, /Connection lost/);
+  await act(async () => root.unmount());
+});
+
 test('a disconnected private card explains recovery and cannot offer an enabled Resume', async () => {
   const { root, container } = installReactRenderer();
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal, handoff: async () => { throw new Error('transport lost'); } } });
@@ -94,7 +171,7 @@ test('recovering an uncertain receipt keeps Submit and Resume disabled', async (
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async (operation) => {
       operations.push(operation.action);
-      return { status: 'outcome_unknown', phase: 'human', nextSequence: 2, display: { text: "Permission denied, please try again.\nuser@host's password: ", inputOpen: true } };
+      return { status: 'outcome_unknown', phase: 'human', nextSequence: 2, display: { text: "Permission denied, please try again.\nuser@host's password: " } };
     },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -119,7 +196,7 @@ test('losing observation while human input is open clears private display and di
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async (operation) => {
       if (operation.action === 'observe') throw new Error('disconnected');
-      return { status: 'ready', phase: 'human', nextSequence: 1, display: { text: 'private-sentinel', inputOpen: true } };
+      return { status: 'ready', phase: 'human', nextSequence: 1, display: { text: 'private-sentinel' } };
     },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -144,7 +221,7 @@ test('reconnection cannot clear an uncertain local submission or replay it', asy
   const services = createFakeWorkbarServices({ terminal: { ...base.terminal,
     handoff: async (operation) => {
       if (operation.action === 'input') { inputs++; throw new Error('response lost'); }
-      return { status: 'observed', phase: 'human', nextSequence: 2, display: { text: '$ ', inputOpen: true } };
+      return { status: 'observed', phase: 'human', nextSequence: 2, display: { text: '$ ' } };
     },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -180,7 +257,7 @@ test('one explicit completion click resumes the original handoff; prompt renderi
   const { root, container } = installReactRenderer();
   const answers: unknown[] = [];
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
-    handoff: async () => ({ status: 'ready', phase: 'human', nextSequence: 1, display: { text: '$ ', inputOpen: true } }),
+    handoff: async () => ({ status: 'ready', phase: 'human', nextSequence: 1, display: { text: '$ ' } }),
     answerHandoff: async (answer) => { answers.push(answer); },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -220,7 +297,7 @@ test('revealing a private draft never sends it and submission or hiding resets v
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async (operation) => {
       if (operation.action === 'input') submitted.push(operation.input);
-      return { status: operation.action === 'input' ? 'written' : 'observed', phase: 'human', nextSequence: 1, display: { text: '$ ', inputOpen: true } };
+      return { status: operation.action === 'input' ? 'written' : 'observed', phase: 'human', nextSequence: 1, display: { text: '$ ' } };
     },
   } });
   const render = async (active: boolean) => act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -288,7 +365,7 @@ test('an existing terminal tab refreshes a new handoff request from its canonica
   });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(WorkbarServicesProvider, { services }, createElement(SessionTerminalPanel, {
-      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: false, terminalRef: 'terminal-1',
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: true, terminalRef: 'terminal-1',
     })),
   })));
   assert.match(container.textContent, /first-request/);
@@ -307,7 +384,7 @@ test('completion leaves only the private terminal display and restores it on ret
     handoff: async (operation) => {
       operations.push(operation.action);
       return { status: 'observed', phase: 'resumed', nextSequence: 2,
-        ...(operation.action === 'observe' ? { display: { text: 'private-result', inputOpen: false } } : {}) };
+        ...(operation.action === 'observe' ? { display: { text: 'private-result' } } : {}) };
     },
   } });
   const render = async (active: boolean) => act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -327,5 +404,5 @@ test('completion leaves only the private terminal display and restores it on ret
   assert.match(container.textContent, /private-result/);
   assert.doesNotMatch(container.textContent, /share|select.*text/i);
   assert.equal(descendants(container).some((node) => node.tagName === 'BUTTON'), false);
-  assert.deepEqual(operations, ['surface', 'ready', 'observe', 'release', 'surface', 'ready', 'observe']);
+  assert.deepEqual(operations, ['ready', 'observe', 'release', 'ready', 'observe']);
 });

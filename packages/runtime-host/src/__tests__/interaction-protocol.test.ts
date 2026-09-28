@@ -79,7 +79,7 @@ describe('Runtime Host Interaction protocol', () => {
     assert.throws(() =>
       decodeRuntimeResourceHandoffResult({
         ...closed,
-        display: { text: 'private', inputOpen: false },
+        display: { text: 'private' },
       }),
     );
     assert.throws(() => decodeRuntimeResourceHandoffResult({ ...rejected, status: 'written' }));
@@ -90,7 +90,7 @@ describe('Runtime Host Interaction protocol', () => {
       status: 'observed',
       phase: 'resumed',
       nextSequence: 2,
-      display: { text: '', inputOpen: false },
+      display: { text: '' },
     };
     assert.deepEqual(decodeRuntimeResourceHandoffResult(cleared), cleared);
   });

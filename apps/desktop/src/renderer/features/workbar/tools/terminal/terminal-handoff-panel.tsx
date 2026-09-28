@@ -72,6 +72,7 @@ export function TerminalHandoffPanel(props: {
   sessionId: string;
   request: NonNullable<RuntimeResourceHandoffResult['request']>;
   active: boolean;
+  prepareHandoff?: () => Promise<void>;
 }) {
   const { terminal } = useWorkbarServices();
   const locale = useUiLocale();
@@ -93,6 +94,10 @@ export function TerminalHandoffPanel(props: {
   const disconnected = connection === 'disconnected';
   // An ambiguous local send stays latched even if a later poll looks healthy.
   const uncertain = notice === 'unknown' || state?.status === 'outcome_unknown';
+  const human = state?.phase === 'human';
+  const hint = human && connected && state?.display ? terminalFeedback(props.request.command, state.display.text) : undefined;
+  const canInput = human && connected && !busy && !uncertain;
+  const canResume = canInput && !privateInput && !hint && Boolean(state?.display);
 
   function accept(result: RuntimeResourceHandoffResult) {
     setState(result);
@@ -121,9 +126,10 @@ export function TerminalHandoffPanel(props: {
       } catch { failed(); }
     };
     // Reclaim only the original resource. Input is never replayed on recovery.
-    void terminal.handoff({ action: 'surface', sessionId: props.sessionId, available: true })
-      .then(() => terminal.handoff!({ ...identity, action: 'ready' }))
-      .then((result) => {
+    void (props.prepareHandoff?.() ?? Promise.resolve())
+      .then(async () => {
+        if (disposed) return;
+        const result = await terminal.handoff!({ ...identity, action: 'ready' });
         if (disposed) { void terminal.handoff!({ ...identity, action: 'release' }).catch(() => {}); return; }
         setConnection('connected'); accept(result);
         if (result.phase !== 'closed') void poll();
@@ -134,11 +140,11 @@ export function TerminalHandoffPanel(props: {
       setPrivateInput(''); setVisible(false); setState((previous) => previous ? { ...previous, display: undefined } : previous); setConnection('connecting');
       void terminal.handoff!({ ...identity, action: 'release' }).catch(() => {});
     };
-  }, [terminal, props.sessionId, props.request.requestId, props.active, controllerId, revision]);
+  }, [terminal, props.sessionId, props.request.requestId, props.active, props.prepareHandoff, controllerId, revision]);
 
   async function submit() {
     const value = input.current?.value ?? '';
-    if (sending.current || !state || state.phase !== 'human' || uncertain || !connected) return;
+    if (sending.current || !canInput || !state) return;
     if (!isValidPrivateTerminalInput(value)) { setNotice('invalid'); return; }
     sending.current = true; setBusy(true);
     input.current!.value = ''; setPrivateInput(''); setVisible(false);
@@ -155,7 +161,7 @@ export function TerminalHandoffPanel(props: {
   }
 
   async function answer(action: 'resume' | 'cancel') {
-    if (sending.current || (action === 'resume' && (!connected || uncertain || privateInput || !state?.display || terminalFeedback(props.request.command, state.display.text)))) return;
+    if (sending.current || (action === 'resume' && !canResume)) return;
     sending.current = true; setBusy(true);
     if (input.current) input.current.value = '';
     setPrivateInput(''); setVisible(false);
@@ -171,13 +177,12 @@ export function TerminalHandoffPanel(props: {
     } finally { sending.current = false; setBusy(false); }
   }
 
-  const human = state?.phase === 'human';
   const closed = state?.phase === 'closed';
   const host = parseDesktopSessionKey(props.sessionId)?.hostId ?? props.sessionId;
-  const hint = human && connected && state?.display ? terminalFeedback(props.request.command, state.display.text) : undefined;
   const problem = uncertain ? 'unknown' : disconnected ? 'disconnected' : notice === 'invalid' ? 'invalid' : hint === 'authentication_retry' ? hint : undefined;
   const response = <pre className="maka-terminal-handoff-screen" aria-hidden="true" data-private-terminal="true">{props.active ? state?.display?.text : ''}</pre>;
   const reconnect = disconnected && !closed && <Button label={copy.reconnect} variant="secondary" size="sm" onClick={() => setRevision((value) => value + 1)} isDisabled={busy} />;
+  if (!state && !disconnected) return <section className="maka-session-terminal-panel" aria-busy="true" />;
   // Keep the private transport/capture fence, but the completed input UI has no
   // reason to occupy the terminal. A later handoff mounts a fresh input card.
   if (state?.phase === 'resumed' || closed) return <section className="maka-session-terminal-panel" data-testid="private-terminal">
@@ -193,21 +198,21 @@ export function TerminalHandoffPanel(props: {
     {problem ? <Banner status={problem === 'disconnected' ? 'warning' : 'error'} title={copy[problem]} /> :
       human && <p role="status">{hint ? copy[hint] : notice === 'sent' ? copy.sent : copy.waiting}</p>}
     {human && <ChatComposer className="maka-composer-astryx" onSubmit={() => {}}
-      input={<InputGroup label={copy.input} data-maka-assistant-exclude isDisabled={busy || uncertain || !connected}>
+      input={<InputGroup label={copy.input} data-maka-assistant-exclude isDisabled={!canInput}>
         <TextInput ref={input} label={copy.input} isLabelHidden type={visible ? 'text' : 'password'} autoComplete="off"
-          value={privateInput} onChange={(value) => { setPrivateInput(value); if (!value) setVisible(false); if (notice === 'invalid') setNotice(''); }} isDisabled={busy || uncertain || !connected} width="100%"
+          value={privateInput} onChange={(value) => { setPrivateInput(value); if (!value) setVisible(false); if (notice === 'invalid') setNotice(''); }} isDisabled={!canInput} width="100%"
           onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); if (!isImeKeyEvent(event.nativeEvent)) void submit(); } }} />
         <InputGroupText><IconButton label={visible ? copy.hide : copy.show} variant="ghost" size="sm" aria-pressed={visible}
           icon={visible ? <EyeOff size={ICON_SIZE.chrome} aria-hidden="true" /> : <Eye size={ICON_SIZE.chrome} aria-hidden="true" />}
-          isDisabled={busy || uncertain || !connected} onClick={() => setVisible((value) => !value)} /></InputGroupText>
+          isDisabled={!canInput} onClick={() => setVisible((value) => !value)} /></InputGroupText>
       </InputGroup>}
       footerActions={<Button label={copy.cancel} variant="ghost" size="sm" onClick={() => void answer('cancel')} isDisabled={busy} />}
-      sendButton={<Button label={copy.submit} size="sm" onClick={() => void submit()} isDisabled={busy || uncertain || !connected || !privateInput} />}
+      sendButton={<Button label={copy.submit} size="sm" onClick={() => void submit()} isDisabled={!canInput || !privateInput} />}
     />}
     <footer>
       {!human && <Button label={copy.cancel} variant="secondary" size="sm" onClick={() => void answer('cancel')} isDisabled={busy} />}
       {reconnect}
-      {human && <Button label={copy.resume} size="sm" onClick={() => void answer('resume')} isDisabled={busy || uncertain || !connected || Boolean(privateInput) || Boolean(hint) || !state?.display} />}
+      {human && <Button label={copy.resume} size="sm" onClick={() => void answer('resume')} isDisabled={!canResume} />}
     </footer>
   </section>;
 }

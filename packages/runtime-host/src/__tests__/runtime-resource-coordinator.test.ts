@@ -62,7 +62,6 @@ describe('Host Runtime Resource coordinator', () => {
         writePrivatePtyInput: async () => {},
         readPrivatePtySnapshot: async () => ({
           text: '',
-          inputOpen: false,
         }),
         resumePtyHandoff: async () => false,
       },
@@ -111,7 +110,6 @@ describe('Host Runtime Resource coordinator', () => {
         },
         readPrivatePtySnapshot: async () => ({
           text: 'private',
-          inputOpen: true,
         }),
         resumePtyHandoff: async () => true,
       },
@@ -324,7 +322,6 @@ describe('Host Runtime Resource coordinator', () => {
         },
         readPrivatePtySnapshot: async () => ({
           text: 'private',
-          inputOpen: true,
         }),
         resumePtyHandoff: async () => {
           assert.fail('must not resume');
@@ -406,7 +403,7 @@ describe('Host Runtime Resource coordinator', () => {
       humanControl: {
         preparePtyHandoff: async () => {},
         writePrivatePtyInput: async () => {},
-        readPrivatePtySnapshot: async () => ({ text: 'private', inputOpen: false }),
+        readPrivatePtySnapshot: async () => ({ text: 'private' }),
         resumePtyHandoff: async () => true,
       },
       interactionAuthority: () => ({

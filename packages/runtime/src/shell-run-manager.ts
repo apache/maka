@@ -704,7 +704,6 @@ export class ShellRunProcessManager
     const snapshot = await terminal.collector.snapshotAtCut();
     return {
       text: [snapshot.output.scrollback, snapshot.output.screen].filter(Boolean).join('\n'),
-      inputOpen: terminal.inputOpen,
     };
   }
 

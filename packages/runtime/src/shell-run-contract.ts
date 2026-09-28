@@ -158,7 +158,6 @@ export interface PtyControlWriter {
 
 export interface PtyPrivateSnapshot {
   readonly text: string;
-  readonly inputOpen: boolean;
 }
 
 /** Host-owned human control. None of these payloads are model tool arguments. */

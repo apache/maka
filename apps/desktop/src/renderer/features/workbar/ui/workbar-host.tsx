@@ -92,6 +92,7 @@ function SessionWorkbarFallback(props: {
 export interface WorkbarHostModel {
   workspace?: 'session' | 'workhub';
   activeId?: string;
+  prepareTerminalHandoff?: () => Promise<void>;
   projectId?: string | null;
   projectAliases?: readonly string[];
   rightCollapsed: boolean;
@@ -222,6 +223,7 @@ export function WorkbarHostView({ model: props, togglePosition = 'edge' }: { mod
               togglePosition={togglePosition}
               workspace={props.workspace}
               sessionId={props.activeId}
+              prepareTerminalHandoff={props.prepareTerminalHandoff}
               projectId={props.projectId}
               projectAliases={props.projectAliases}
               hidden={props.hidden || !props.activeId}

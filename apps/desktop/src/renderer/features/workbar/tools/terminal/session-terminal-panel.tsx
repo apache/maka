@@ -51,6 +51,7 @@ function terminalTheme(element: HTMLElement) {
 
 export function SessionTerminalPanel(props: {
   sessionId: string;
+  prepareHandoff?: () => Promise<void>;
   terminalRef: string | null;
   active: boolean;
 }) {
@@ -82,7 +83,7 @@ export function SessionTerminalPanel(props: {
     });
     return () => { disposed = true; unsubscribe(); unsubscribeResync(); unsubscribeHandoff(); };
   }, [terminal, review, props.sessionId, props.terminalRef]);
-  if (handoff) return <TerminalHandoffPanel key={handoff.requestId} sessionId={props.sessionId} request={handoff} active={props.active} />;
+  if (handoff) return <TerminalHandoffPanel key={handoff.requestId} sessionId={props.sessionId} request={handoff} active={props.active} prepareHandoff={props.prepareHandoff} />;
   if (!checked) return <div className="maka-session-terminal-panel" aria-busy="true" />;
   return <StandardSessionTerminalPanel {...props} />;
 }
