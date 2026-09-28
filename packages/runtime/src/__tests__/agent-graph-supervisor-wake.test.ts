@@ -216,6 +216,38 @@ describe('Agent Graph supervisor wake delivery', () => {
     }
   });
 
+  test('bounds a long provider error before exhausting a wake', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let hostErrors = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => ({
+        kind: 'errored',
+        turnId: input.turnId,
+        reason: 'x'.repeat(4_100),
+      }),
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+      maxDeliveryAttempts: 1,
+      onError: () => {
+        hostErrors += 1;
+      },
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(wake?.status, 'exhausted');
+      assert.equal(wake?.failureReason?.length, 4_000);
+      assert.equal(hostErrors, 0);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('parks a preexisting over-limit wake during startup recovery', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     await store.claimAgentGraphSupervisorWake({

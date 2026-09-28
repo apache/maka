@@ -486,7 +486,7 @@ export class AgentGraphSupervisorWakeCoordinator {
         await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
           wake.graphId,
           wake.wakeId,
-          wake.failureReason ?? 'delivery_attempts_exhausted',
+          wake.failureReason?.slice(0, 4_000) || 'delivery_attempts_exhausted',
         );
       }
       return;
@@ -525,7 +525,7 @@ export class AgentGraphSupervisorWakeCoordinator {
             await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
               wake.graphId,
               wake.wakeId,
-              admission.wake.failureReason ?? 'delivery_attempts_exhausted',
+              admission.wake.failureReason?.slice(0, 4_000) || 'delivery_attempts_exhausted',
             );
           }
           return;
@@ -693,7 +693,7 @@ export class AgentGraphSupervisorWakeCoordinator {
     await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
       wake.graphId,
       wake.wakeId,
-      lastFailure ?? 'delivery_attempts_exhausted',
+      lastFailure?.slice(0, 4_000) || 'delivery_attempts_exhausted',
     );
   }
 
