@@ -663,4 +663,5 @@ const CONFIG_DIALOG_COPY = {
   'zh-CN': { exportTitle: '导出 Maka 配置', importTitle: '导入 Maka 配置' },
   'zh-TW': { exportTitle: '匯出 Maka 設定', importTitle: '匯入 Maka 設定' },
   en: { exportTitle: 'Export Maka configuration', importTitle: 'Import Maka configuration' },
+  ko: { exportTitle: 'Maka 구성 내보내기', importTitle: 'Maka 구성 가져오기' },
 } satisfies UiCatalog<{ exportTitle: string; importTitle: string }>;

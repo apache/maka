@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { formatUiMessage, UI_LOCALES } from '@maka/core/ui-locale';
+import { formatUiMessage } from '@maka/core/ui-locale';
 import { getTuiPickerCopy, onboardingFailureMessage } from '../pi-tui-pickers.js';
 import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 
@@ -53,10 +53,39 @@ const MESSAGE_VALUES = {
   recovery: 'Add or enable a connection first.',
 } as const;
 
+type TuiCatalog = Record<string, unknown>;
+
+// Only these domains ship Korean copy; the other twelve reach the UI through
+// the resolver's `en` fallback. The test below pins this list so changing
+// coverage is a deliberate edit rather than a silent regression.
+const koreanTuiDomains = ['todo', 'transcript-reader'] as const;
+
 describe('TUI copy resources', () => {
   test('registers every domain without a locale-specific getter branch', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
-      for (const locale of UI_LOCALES) assert.ok(catalog[locale], `${domain}/${locale}`);
+      const locales = catalog as TuiCatalog;
+      for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+        assert.ok(locales[locale], `${domain}/${locale}`);
+      }
+    }
+  });
+
+  test('pins which domains carry Korean copy instead of an English fallback', () => {
+    const declared = Object.entries(TUI_COPY_RESOURCES)
+      .filter(([, catalog]) => (catalog as TuiCatalog).ko !== undefined)
+      .map(([domain]) => domain)
+      .sort();
+
+    assert.deepEqual(
+      declared,
+      [...koreanTuiDomains].sort(),
+      'update koreanTuiDomains when a domain gains or drops Korean copy',
+    );
+    for (const domain of koreanTuiDomains) {
+      assert.ok(
+        (TUI_COPY_RESOURCES[domain] as TuiCatalog).ko,
+        `${domain}/ko must hold real copy, not resolve from en`,
+      );
     }
   });
 

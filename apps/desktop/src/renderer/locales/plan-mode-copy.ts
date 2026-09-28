@@ -158,6 +158,40 @@ const COPY = {
       stepStatuses: { pending: 'Not started', in_progress: 'In progress', completed: 'Completed', skipped: 'Skipped' },
     },
   },
+  ko: {
+    operationFailed: 'The plan action failed. Try again later.',
+    controlFailure: {
+      not_found: 'This plan proposal no longer exists. Refresh and try again.',
+      session_busy: 'A task is running in this Session. Wait for it to finish before changing the plan.',
+      operation_conflict: 'The plan changed. Refresh and try again.',
+      persistence_failed: 'The plan state could not be saved. Try again later.',
+      host_not_ready: 'The model service is not ready yet. Try again later.',
+      host_draining: 'The model service is under maintenance. Try again later.',
+      operation_unavailable: 'The plan service is temporarily unavailable. Try again later.',
+      unauthorized: 'This connection is not authorized to change the plan.',
+      session_archived: 'This Session is archived; its plan cannot change.',
+      invalid_request: 'This plan action is invalid. Refresh and try again.',
+      internal_failure: 'The plan action failed. Try again later.',
+    },
+    abandonConfirmation: {
+      title: 'Abandon this plan?',
+      description: (title) => `The execution record for “${title}” will remain, but it cannot be resumed.`,
+      confirm: 'Abandon plan',
+      cancel: 'Cancel',
+    },
+    proposal: {
+      aria: 'Plan proposal', kicker: 'Plan proposal', revision: 'Revision', steps: 'Steps',
+      risks: 'Risks', revise: 'Request changes', execute: 'Execute plan',
+      statuses: { pending_approval: 'Waiting for approval', approved: 'Approved', stale: 'Outdated' },
+    },
+    execution: {
+      aria: 'Plan execution status', interrupted: 'Plan interrupted', running: 'Executing plan',
+      approvedPlan: 'Approved plan',
+      stepCount: (completed, total) => `${completed}/${total} ${total === 1 ? 'step' : 'steps'}`,
+      resume: 'Resume', abandon: 'Abandon plan',
+      stepStatuses: { pending: 'Not started', in_progress: 'In progress', completed: 'Completed', skipped: 'Skipped' },
+    },
+  },
 } satisfies UiCatalog<PlanModeCopy>;
 
 export function getPlanModeCopy(locale: UiLocale): PlanModeCopy {

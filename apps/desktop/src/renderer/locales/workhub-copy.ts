@@ -79,6 +79,19 @@ const COPY = {
       { id: 'stopped', label: 'Stopped' },
     ],
   },
+  ko: {
+    work: 'Work', workNavigation: 'Work navigation', filterWork: 'Filter work', focused: 'Focused',
+    archived: 'Archived',
+    states: { active: 'Active', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Blocked', aborted: 'Aborted' },
+    anchorCount: (shown, matching, total) => `${shown}/${matching} anchors · ${total} total`,
+    noFilteredWork: 'No work matches this filter',
+    filters: [
+      { id: 'all', label: 'All' },
+      { id: 'active', label: 'Active' },
+      { id: 'attention', label: 'Needs you' },
+      { id: 'stopped', label: 'Stopped' },
+    ],
+  },
 } satisfies UiCatalog<WorkHubRailCopy>;
 
 export function getWorkHubRailCopy(locale: UiLocale): WorkHubRailCopy {

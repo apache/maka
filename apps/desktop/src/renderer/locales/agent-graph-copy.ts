@@ -188,6 +188,52 @@ const AGENT_GRAPH_PANEL_COPY = {
       })[status],
     wait: waitReasonEn,
   },
+  ko: {
+    title: 'Agent Graph',
+    loading: 'Loading graph state…',
+    retry: 'Retry',
+    collapse: 'Collapse Agent Graph',
+    expand: 'Expand Agent Graph',
+    dismiss: 'Dismiss Agent Graph',
+    stop: 'Stop graph',
+    stopping: 'Stopping…',
+    stopFailed: 'Could not stop the graph. Try again.',
+    loadFailed: 'Could not refresh graph state.',
+    openSession: 'Open child task',
+    operators: 'Operators',
+    selectedResults: 'Selected results',
+    epoch: 'Graph run',
+    currentEpoch: 'Current',
+    historicalEpoch: 'History (read-only)',
+    cappedEpochs: (count) => `Showing the newest ${count} runs`,
+    noOperators: 'Waiting for the main agent to create an operator…',
+    hiddenOperators: (count) => `${count} more operator${count === 1 ? '' : 's'}`,
+    progress: (settled, total, hasOmitted) =>
+      hasOmitted ? `${settled}/${total} visible settled` : `${settled}/${total} settled`,
+    status: (status) =>
+      ({
+        empty: 'Awaiting schedule',
+        active: 'Running',
+        closing: 'Finishing',
+        waiting: 'Waiting',
+        stopped: 'Stopped',
+        failed: 'Failed',
+        completed: 'Completed',
+      })[status],
+    operatorStatus: (status) =>
+      ({
+        not_started: 'Not started',
+        waiting: 'Waiting',
+        runnable: 'Runnable',
+        running: 'Running',
+        blocked: 'Blocked',
+        completed: 'Completed',
+        failed: 'Failed',
+        aborted: 'Aborted',
+        cancelled: 'Cancelled',
+      })[status],
+    wait: waitReasonEn,
+  },
 } satisfies UiCatalog<AgentGraphPanelCopy>;
 
 export function getAgentGraphPanelCopy(locale: UiLocale): AgentGraphPanelCopy {

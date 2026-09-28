@@ -67,6 +67,20 @@ const COPY = {
       attention: '等待你的確認', renderer: '正在開啟工作區',
     },
   },
+  ko: {
+    title: '작업 공간 여는 중',
+    detail: 'Maka가 로컬 백그라운드 서비스를 준비하고 있습니다.',
+    slow: '평소보다 시간이 걸리고 있습니다. 업데이트 다운로드 또는 패키지 빌드가 필요할 수 있습니다. Maka가 계속 진행하는 동안 이 창을 최소화할 수 있습니다.',
+    copy: '진단 정보 복사', copied: '진단 정보를 복사했습니다', copyFailed: '진단 정보를 복사하지 못했습니다',
+    elapsed: '경과 시간',
+    phases: {
+      prepare: 'Maka 준비 중', storage: '로컬 데이터 확인 중', connect: 'Runtime Host에 연결 중',
+      package: 'Runtime Host 패키지 준비 중', checking: '관리 서비스 확인 중',
+      staging: '업데이트 설치 중', retiring: '이전 서비스 안전 종료 중',
+      replacing: '관리 서비스 교체 중', restart: 'Runtime Host 재시작 중',
+      attention: '확인 대기 중', renderer: '작업 공간 여는 중',
+    },
+  },
 } as const;
 
 export interface StartupProgressWindow {

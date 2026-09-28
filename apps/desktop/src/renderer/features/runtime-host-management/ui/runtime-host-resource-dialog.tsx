@@ -351,6 +351,36 @@ const HOST_RESOURCE_COPY = {
     ) =>
       `${mount} · ${available} available / ${total}${filesystem ? ` · ${filesystem}` : ''}`,
   },
+  ko: {
+    title: 'Host resources',
+    open: 'View Host resources',
+    done: 'Done',
+    unavailable: 'Resource information is available while the Host is connected',
+    cpu: 'CPU',
+    cpuUsage: 'CPU usage',
+    memory: 'Memory',
+    graphics: 'Graphics adapters',
+    storage: 'Storage',
+    noGraphicsAdapter: 'None detected',
+    graphicsUnknown: 'Unable to determine',
+    sharedMemory: 'Shared memory',
+    memoryUnknown: 'Memory unknown',
+    network: 'Network throughput',
+    measuring: 'Measuring…',
+    logicalProcessors: (count: number, available: number) =>
+      count === available
+        ? `${count} logical processors`
+        : `${available} of ${count} logical processors available`,
+    networkRate: (interfaceName: string, received: string, transmitted: string) =>
+      `${interfaceName} · ↓ ${received}/s · ↑ ${transmitted}/s`,
+    storageVolume: (
+      mount: string,
+      available: string,
+      total: string,
+      filesystem: string | undefined,
+    ) =>
+      `${mount} · ${available} available / ${total}${filesystem ? ` · ${filesystem}` : ''}`,
+  },
 } satisfies Record<UiLocale, unknown>;
 
 function hostResourceCopy(locale: UiLocale) {

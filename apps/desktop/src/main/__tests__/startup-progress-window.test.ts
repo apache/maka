@@ -171,7 +171,7 @@ test('diagnostics is the only permitted navigation action; the window has no app
 });
 
 test('localized progress stays self-contained, accessible and has no fabricated percentage', () => {
-  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+  for (const locale of ['en', 'zh-CN', 'zh-TW', 'ko'] as const) {
     for (const dark of [false, true]) {
       const html = renderStartupProgressHtml(locale, dark);
       assert.ok(html.includes('lang="' + locale + '"'));
@@ -180,6 +180,12 @@ test('localized progress stays self-contained, accessible and has no fabricated 
       assert.match(html, /prefers-reduced-motion/);
       assert.doesNotMatch(html, /aria-valuenow|<progress|https?:/);
       assert.match(html, /maka-startup:\/\/copy/);
+      if (locale === 'ko') {
+        // The startup window is a native surface: ko must render visible
+        // Korean copy, not just a lang marker over English labels.
+        assert.match(html, /[\uAC00-\uD7A3]/);
+        assert.doesNotMatch(html, /Opening your workspace|Copy diagnostics/);
+      }
     }
   }
 });

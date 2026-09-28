@@ -71,4 +71,12 @@ const COPY = {
     stopAndQuit: '停止工作並結束',
     keepRunning: '繼續執行 Maka',
   },
+  ko: {
+    activeTitle: 'Maka가 아직 작업 중입니다',
+    activeMessage: '백그라운드 작업이 아직 실행 중입니다.',
+    activeDetail:
+      '지금 종료하면 Runtime Host가 중지되어 실행 중이거나 예약된 백그라운드 작업이 중단될 수 있습니다. 다음 Runtime Host 실행 시 영속 상태에서 다시 재개됩니다.',
+    stopAndQuit: '작업 중지 및 종료',
+    keepRunning: 'Maka 유지',
+  },
 } as const;

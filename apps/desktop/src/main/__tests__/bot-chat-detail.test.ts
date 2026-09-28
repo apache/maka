@@ -26,7 +26,7 @@ import type { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { createDefaultBotChannel } from '@maka/core/bot-chat-settings';
 import { MAX_ALLOWED_USER_IDS, createDefaultSettings } from '@maka/core/settings';
-import { BotRegistry, SlackBotBridge, WechatBridge, type BotStatus } from '@maka/runtime/bots';
+import { BotRegistry, SlackBotBridge, WechatBridge, type BotStatus, type BotTestErrorCode } from '@maka/runtime/bots';
 import { UI_LOCALES, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import { build } from 'esbuild';
@@ -100,10 +100,92 @@ const expectedCopy = {
       [5, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol and 2 more'],
     ],
   },
+  ko: {
+    help: 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored.',
+    cappedHelp: 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored. (limit reached)',
+    warnings: [
+      [1, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice'],
+      [3, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol'],
+      [4, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol and 1 more'],
+      [5, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol and 2 more'],
+    ],
+  },
 } satisfies UiCatalog<{
   help: string;
   cappedHelp: string;
   warnings: [number, string][];
+}>;
+
+// Spelled out, not read back via `getBotSettingsCopy(locale)`: an expectation
+// pulled from the same catalog the component renders can only prove the lookup
+// ran, so these literals are the only real check on the copy that comes out.
+const assertedTestErrorCodes = [
+  'slack_tokens_missing',
+  'wecom_credentials_missing',
+  'dingtalk_credentials_missing',
+  'qq_credentials_missing',
+  'wechat_bridge_url_invalid',
+  'wechat_ilink_credentials_incomplete',
+] as const satisfies readonly BotTestErrorCode[];
+
+const expectedStatusCopy = {
+  'zh-CN': {
+    'slack-disconnected': 'Slack 连接已断开，正在等待重新连接',
+    network_error: '网络错误，请检查网络和代理设置',
+    detailsInLogs: '运行态详情请见日志',
+    testErrors: {
+      slack_tokens_missing: '请填写 Slack Bot Token 和 App-Level Token 后再测试。',
+      wecom_credentials_missing: '请填写企业微信 Bot ID 和 Secret 后再测试。',
+      dingtalk_credentials_missing: '请填写钉钉 Client ID（AppKey）和 Client Secret 后再测试。',
+      qq_credentials_missing: '请填写 QQ App ID 和 AppSecret 后再测试。',
+      wechat_bridge_url_invalid: '微信本地桥接只允许访问本机 wechat-bridge，不能指向远端 URL。',
+      wechat_ilink_credentials_incomplete: '请先完成微信扫码登录，保存 iLink bot token 与 base URL。',
+    },
+  },
+  'zh-TW': {
+    'slack-disconnected': 'Slack 連線已中斷，正在等待重新連線',
+    network_error: '網路錯誤，請檢查網路和代理設定',
+    detailsInLogs: '執行狀態詳情請見記錄',
+    testErrors: {
+      slack_tokens_missing: '請填寫 Slack Bot Token 和 App-Level Token 後再測試。',
+      wecom_credentials_missing: '請填寫企業微信 Bot ID 和 Secret 後再測試。',
+      dingtalk_credentials_missing: '請填寫釘釘 Client ID（AppKey）和 Client Secret 後再測試。',
+      qq_credentials_missing: '請填寫 QQ App ID 和 AppSecret 後再測試。',
+      wechat_bridge_url_invalid: '微信本機橋接只允許存取本機 wechat-bridge，不能指向遠端 URL。',
+      wechat_ilink_credentials_incomplete: '請先完成微信掃碼登入，儲存 iLink bot token 與 base URL。',
+    },
+  },
+  ko: {
+    'slack-disconnected': 'Slack disconnected; waiting to reconnect',
+    network_error: 'Network error. Check the network and proxy settings',
+    detailsInLogs: 'See logs for runtime details',
+    testErrors: {
+      slack_tokens_missing: 'Enter a Slack Bot Token and App-Level Token before testing the connection.',
+      wecom_credentials_missing: 'Enter a WeCom Bot ID and Secret before testing the connection.',
+      dingtalk_credentials_missing: 'Enter a DingTalk Client ID (AppKey) and Client Secret before testing the connection.',
+      qq_credentials_missing: 'Enter a QQ App ID and AppSecret before testing the connection.',
+      wechat_bridge_url_invalid: 'The local WeChat bridge only accepts the local wechat-bridge, not a remote URL.',
+      wechat_ilink_credentials_incomplete: 'Complete WeChat QR sign-in first to save the iLink bot token and base URL.',
+    },
+  },
+  en: {
+    'slack-disconnected': 'Slack disconnected; waiting to reconnect',
+    network_error: 'Network error. Check the network and proxy settings',
+    detailsInLogs: 'See logs for runtime details',
+    testErrors: {
+      slack_tokens_missing: 'Enter a Slack Bot Token and App-Level Token before testing the connection.',
+      wecom_credentials_missing: 'Enter a WeCom Bot ID and Secret before testing the connection.',
+      dingtalk_credentials_missing: 'Enter a DingTalk Client ID (AppKey) and Client Secret before testing the connection.',
+      qq_credentials_missing: 'Enter a QQ App ID and AppSecret before testing the connection.',
+      wechat_bridge_url_invalid: 'The local WeChat bridge only accepts the local wechat-bridge, not a remote URL.',
+      wechat_ilink_credentials_incomplete: 'Complete WeChat QR sign-in first to save the iLink bot token and base URL.',
+    },
+  },
+} satisfies UiCatalog<{
+  'slack-disconnected': string;
+  network_error: string;
+  detailsInLogs: string;
+  testErrors: Record<(typeof assertedTestErrorCodes)[number], string>;
 }>;
 
 for (const locale of UI_LOCALES) {
@@ -194,30 +276,30 @@ test('real bridge failures render localized detail and overview output in all lo
     await slack.start();
     assert.ok(socket);
     socket.emit('disconnected');
-    statuses.push([slack.getStatus(), ['Slack 连接已断开，正在等待重新连接', 'Slack 連線已中斷，正在等待重新連線', 'Slack disconnected; waiting to reconnect']]);
+    statuses.push([slack.getStatus(), UI_LOCALES.map((locale) => expectedStatusCopy[locale]['slack-disconnected'])]);
     await slack.stop();
     auth.mock.mockImplementation(async () => { throw new Error('Network error bot-secret app-secret'); });
     await assert.rejects(slack.start());
     assert.equal(slack.getStatus().reason, 'network_error');
-    statuses.push([slack.getStatus(), UI_LOCALES.map((locale) => getBotSettingsCopy(locale).statusReasons.codes.network_error)]);
+    statuses.push([slack.getStatus(), UI_LOCALES.map((locale) => expectedStatusCopy[locale].network_error)]);
     const diagnostic = log.mock.calls.map((call) => call.arguments.join(' ')).join('\n');
     assert.match(diagnostic, /Network error \[redacted\] \[redacted\]/);
     for (const [url, code] of [['https://remote.invalid', 'wechat_bridge_url_invalid'], ['https://ilinkai.weixin.qq.com', 'wechat_ilink_credentials_incomplete']] as const) {
       const bridge = new WechatBridge({ ...createDefaultBotChannel('wechat'), enabled: true, webhookUrl: url });
       await bridge.start();
       assert.equal(bridge.getStatus().reason, code);
-      statuses.push([bridge.getStatus(), UI_LOCALES.map((locale) => getBotSettingsCopy(locale).testErrors[code])]);
+      statuses.push([bridge.getStatus(), UI_LOCALES.map((locale) => expectedStatusCopy[locale].testErrors[code])]);
     }
     for (const [provider, code] of [['slack', 'slack_tokens_missing'], ['wecom', 'wecom_credentials_missing'], ['dingtalk', 'dingtalk_credentials_missing'], ['qq', 'qq_credentials_missing']] as const) {
       const registry = new BotRegistry({ onIncomingMessage() {}, onStatusChange() {} });
       const settings = createDefaultSettings().botChat;
       settings.channels[provider].enabled = true;
       await registry.applySettings(settings);
-      statuses.push([registry.getStatus(provider), UI_LOCALES.map((locale) => getBotSettingsCopy(locale).testErrors[code])]);
+      statuses.push([registry.getStatus(provider), UI_LOCALES.map((locale) => expectedStatusCopy[locale].testErrors[code])]);
       await registry.stopAll();
     }
     for (const reason of ['Network error', '外部错误 token=secret', 'constructor', '__proto__', 'toString', 'future-code']) {
-      statuses.push([{ ...slack.getStatus(), reason }, UI_LOCALES.map((locale) => getBotSettingsCopy(locale).status.detailsInLogs)]);
+      statuses.push([{ ...slack.getStatus(), reason }, UI_LOCALES.map((locale) => expectedStatusCopy[locale].detailsInLogs)]);
     }
     for (const [status, expected] of statuses) {
       for (const [index, locale] of UI_LOCALES.entries()) {

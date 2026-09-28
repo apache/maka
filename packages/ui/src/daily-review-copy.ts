@@ -209,6 +209,41 @@ const DAILY_REVIEW_COPY = {
       separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active tasks', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'call' : 'calls'}`,
     },
   },
+  ko: {
+    archive: {
+      section: { summary: 'Task summary', gaps: 'Missed items', usage: 'Usage insights', code: 'Code suggestions' },
+      status: { ok: 'Generated', no_model: 'Model unavailable', no_data: 'No data', failed: 'Generation failed', skipped: 'Skipped' },
+      trigger: { cron: 'Scheduled', manual: 'Manual' },
+      title: (date, mode) => `${date} · ${mode}`,
+      range: { 1: '1 day', 7: '7 days', 30: '30 days' },
+      generated: (trigger, time) => `${trigger} · ${time}`,
+      sessionCount: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`,
+      defaultModel: 'Default task model',
+      opening: 'Opening this report…',
+      noContent: 'This report has no generated content.',
+      noContentHelp: 'Nothing archived for this day.',
+    },
+    date: {
+      today: 'Today', yesterday: 'Yesterday', daysAgo: (count) => `${count} days ago`, recent7Days: 'Last 7 days', recent30Days: 'Last 30 days', shiftedRange: (range, days) => `${range} (${days} days earlier)`,
+      unit: { day: 'day', week: 'week', month: 'month' }, earlier: (unit) => `View previous ${unit}`, later: (unit) => `View next ${unit}`,
+    },
+    emptyOverview: {
+      todayTitle: "Waiting for today's activity", rangeTitle: (label) => `No activity for ${label.toLowerCase()}`, todayBody: 'No tasks or model requests have started today.', rangeBody: (label) => `No tasks or model requests were made during ${label.toLowerCase()}.`,
+    },
+    export: {
+      ariaLabel: 'Review export actions', copyTitle: 'Copy a Markdown summary to share or add to notes', copying: 'Copying…', copy: 'Copy', appendTitle: 'Append to the current composer draft', appending: 'Appending…', append: 'Add to composer', saveTitle: 'Save as a Markdown file', saving: 'Saving…', save: 'Save',
+    },
+    page: {
+      title: 'Daily review', generateAnalysis: 'Generate analysis', retryAnalysis: 'Generate again', viewAnalysis: 'View analysis', backToActivity: 'Back to activity', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], rangeSwitch: 'Change time range',
+    },
+    overview: {
+      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active tasks',
+    },
+    errorFallback: 'Daily review is temporarily unavailable. Try again later.',
+    markdown: {
+      separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active tasks', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'call' : 'calls'}`,
+    },
+  }
 } satisfies UiCatalog<DailyReviewCopy>;
 
 export function getDailyReviewCopy(locale: UiLocale): DailyReviewCopy {

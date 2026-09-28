@@ -37,6 +37,7 @@ const copy = {
   en: { open: 'Open Maka', workHub: 'Open WorkHub', quit: 'Quit Maka' },
   'zh-CN': { open: '打开 Maka', workHub: '打开 WorkHub', quit: '退出 Maka' },
   'zh-TW': { open: '開啟 Maka', workHub: '開啟 WorkHub', quit: '結束 Maka' },
+  ko: { open: 'Maka 열기', workHub: 'WorkHub 열기', quit: 'Maka 종료' },
 };
 
 /** Windows needs a visible way back after the last product window closes. */

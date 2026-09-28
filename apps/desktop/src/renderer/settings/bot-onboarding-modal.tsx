@@ -38,6 +38,7 @@ import { ICON_SIZE, AlertCircle, Check } from '@maka/ui/icons';
 import { BotBrandLogo } from './bot-chat-shared';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { botOnboardingErrorMessage, botStatusReasonMessage, getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
+import type { UiLocale } from '@maka/core/ui-locale';
 
 export function BotOnboardingModal(props: {
   provider: BotOnboardingProvider;
@@ -251,7 +252,7 @@ function statusCopy(
   starting: boolean,
   error: string | null,
   copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): string {
   const shared = getBotSettingsCopy(locale).onboarding;
   if (starting) return shared.generating;

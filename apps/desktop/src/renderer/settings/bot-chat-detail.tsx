@@ -27,6 +27,7 @@ import {
 import { type BotChannelSettings, type BotProvider, type BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotStatus } from '@maka/runtime/bots';
 import { MAX_ALLOWED_USER_IDS, parseAllowedUserIdsFromText } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, StatusDot, Text, VStack } from '@astryxdesign/core';
 import {
   BOT_BRAND,
@@ -656,7 +657,7 @@ function BotAllowedUserIdsField(props: {
   );
 }
 
-function botConnectionLabel(connection: BotStatus['connection'], locale: 'zh-CN' | 'zh-TW' | 'en'): string {
+function botConnectionLabel(connection: BotStatus['connection'], locale: UiLocale): string {
   const copy = getBotSettingsCopy(locale).status;
   switch (connection) {
     case 'polling': return copy.polling;

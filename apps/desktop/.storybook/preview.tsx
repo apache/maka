@@ -43,7 +43,9 @@ const withMakaRoot: Decorator = (Story, context) => {
       ? 'en'
       : context.globals.locale === 'zh-TW'
         ? 'zh-TW'
-        : 'zh-CN';
+        : context.globals.locale === 'ko'
+          ? 'ko'
+          : 'zh-CN';
 
   root.classList.toggle('dark', colorScheme === 'dark');
   root.style.colorScheme = colorScheme;
@@ -103,6 +105,7 @@ const preview: Preview = {
         items: [
           { title: '简体中文', value: 'zh-CN' },
           { title: '繁體中文', value: 'zh-TW' },
+          { title: '한국어', value: 'ko' },
           { title: 'English', value: 'en' },
         ],
       },
