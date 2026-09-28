@@ -252,7 +252,7 @@ export interface SideChatSessionPort {
   ): Promise<TurnMessageExecutionQueryResult>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
   promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
-  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[], expectedQueueRevision: number): Promise<void>;
   setPermissionMode(
     sessionId: string,
     mode: PermissionMode,

@@ -221,7 +221,7 @@ export const RequestQueue: Story = {
       const rows = [...canvasElement.querySelectorAll('.maka-composer-queue-text')].map((row) => row.textContent);
       expect(rows).toEqual(['请检查这个连接恢复方案，并给出可以直接执行的修复建议。', '重新生成回答']);
     });
-    const labels = [...canvasElement.querySelectorAll('.maka-composer-queue button[aria-label]')].map((button) => button.getAttribute('aria-label'));
+    const labels = [...canvasElement.querySelectorAll('.maka-composer-queue-actions button[aria-label]')].map((button) => button.getAttribute('aria-label'));
     await expect(labels).toEqual(['撤回', '关闭']);
   },
 };

@@ -23,7 +23,10 @@ import json
 import os
 import re
 import time
+from contextlib import suppress
+from ipaddress import IPv6Address
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import unquote, urlsplit
 
 PINNED_REVISION = "d49e28f1e4ddd13d289e85a5f312a66750951932"
@@ -34,6 +37,14 @@ AUDIT_PATH = Path(
 )
 PERCENT_ESCAPE = re.compile(r"%(?![0-9a-fA-F]{2})")
 TERMINAL_BENCH = re.compile(r"terminal[-_.%/+\s]*bench", re.IGNORECASE)
+
+
+class ConnectTarget(NamedTuple):
+    """Validated CONNECT authority adapted into the URL policy's input shape."""
+
+    host: str
+    port: int | None
+    url: str
 
 
 def contamination_rule(raw_url: str) -> tuple[str, str, str] | None:
@@ -150,12 +161,12 @@ def configure(updated: object) -> None:
 
 
 def request(flow: object) -> None:
-    apply_http_policy(flow, flow.request.pretty_url)
+    enforce_url_policy(flow, flow.request.pretty_url)
 
 
 def response(flow: object) -> None:
-    response = getattr(flow, "response", None)
-    if getattr(response, "status_code", None) != 101:
+    reply = getattr(flow, "response", None)
+    if getattr(reply, "status_code", None) != 101:
         return
     # mitmproxy 12.2.3 sets flow.websocket before HttpResponseHook only when
     # the 101 is a real WebSocket upgrade (Upgrade + version 13 + option on).
@@ -163,36 +174,34 @@ def response(flow: object) -> None:
     # under rawtcp=false and must be audited.
     if getattr(flow, "websocket", None) is not None:
         return
-    record_raw_tunnel(flow)
+    reject_raw_transport(flow, close=False)
 
 
 def http_connect(flow: object) -> None:
+    request = getattr(flow, "request", None)
     try:
-        raw_url = connect_target_url(flow)
-    except Exception:
-        raw_url = ""
-    apply_http_policy(flow, raw_url)
+        target = parse_connect_target(
+            getattr(request, "host", None),
+            getattr(request, "port", None),
+        ).url
+    except (TypeError, ValueError):
+        target = ""
+    enforce_url_policy(flow, target)
 
 
 def tcp_start(flow: object) -> None:
-    # Last resort if a TCPLayer is still admitted (tcp_hosts / ignore).
-    # CONNECT raw is closed by next_layer → CloseRawLayer; HTTP 101 raw is
-    # closed by rawtcp=false. Neither of those paths starts a TCPLayer.
-    record_raw_tunnel(flow)
-    kill_flow(flow)
+    # This is a last-resort hook for a raw layer admitted by an override.
+    reject_raw_transport(flow)
 
 
 def tcp_message(flow: object) -> None:
     messages = getattr(flow, "messages", None)
-    if messages:
+    if messages and hasattr(messages[-1], "content"):
         messages[-1].content = b""
-    kill_flow(flow)
+    close_flow(flow)
 
 
 def next_layer(nextlayer: object) -> None:
-    # Script addons run before the built-in classifier assigns layer. If we
-    # set CloseRawLayer here, NextLayer leaves it in place. Waiting for
-    # isinstance(..., TCPLayer) never fires on the production CONNECT path.
     current = getattr(nextlayer, "layer", None)
     context = getattr(nextlayer, "context", None)
     if current is None:
@@ -204,20 +213,20 @@ def next_layer(nextlayer: object) -> None:
             server_tls.child_layer = ClientTLSLayer(context)
             nextlayer.layer = server_tls
             return
-        if not looks_like_raw_tcp(nextlayer):
+        if not initial_stream_is_raw(nextlayer):
             return
-        record_raw_tunnel(context)
-        nextlayer.layer = CloseRawLayer(context)
+        reject_raw_transport(context, close=False)
+        nextlayer.layer = RejectRawTransport(context, proxy_commands)
         return
     if TCPLayer is None or not isinstance(current, TCPLayer):
         return
-    record_raw_tunnel(context)
-    closer = CloseRawLayer(context)
+    reject_raw_transport(context, close=False)
+    closer = RejectRawTransport(context, proxy_commands)
     replace_layer(context, current, closer)
     nextlayer.layer = closer
 
 
-def apply_http_policy(flow: object, raw_url: str) -> None:
+def enforce_url_policy(flow: object, raw_url: str) -> None:
     if http is None:
         raise RuntimeError("mitmproxy is required to run the Eval egress filter")
     try:
@@ -225,7 +234,7 @@ def apply_http_policy(flow: object, raw_url: str) -> None:
         if not matched:
             return
         rule_id, host, normalized_path = matched
-        append_audit(rule_id, host, normalized_path)
+        audit_event(rule_id, host, normalized_path)
         flow.response = blocked_response(rule_id)
     except Exception as error:
         flow.response = http.Response.make(
@@ -237,27 +246,50 @@ def apply_http_policy(flow: object, raw_url: str) -> None:
             },
         )
         try:
-            append_audit("policy_error", "", type(error).__name__)
+            audit_event("policy_error", "", type(error).__name__)
         except Exception:
             pass
 
 
-def connect_target_url(flow: object) -> str:
-    request = flow.request
-    host = (getattr(request, "pretty_host", None) or getattr(request, "host", "") or "").strip()
-    if not host:
+def connect_url(host: object, port: object) -> str:
+    return parse_connect_target(host, port).url
+
+
+def parse_connect_target(host: object, port: object) -> ConnectTarget:
+    normalized_host = _normalize_connect_host(host)
+    normalized_port = _normalize_connect_port(port)
+    scheme = "http" if normalized_port == 80 else "https"
+    authority = normalized_host if normalized_port in (None, 443, 80) else f"{normalized_host}:{normalized_port}"
+    return ConnectTarget(
+        host=normalized_host,
+        port=normalized_port,
+        url=f"{scheme}://{authority}/",
+    )
+
+
+def _normalize_connect_host(host: object) -> str:
+    if not isinstance(host, str) or not host or host != host.strip():
         raise ValueError("empty CONNECT host")
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    port = getattr(request, "port", None)
-    if port in (None, 443):
-        return f"https://{host}/"
-    if port == 80:
-        return f"http://{host}/"
-    return f"https://{host}:{port}/"
+    if host.startswith("[") and host.endswith("]"):
+        IPv6Address(host[1:-1])
+        return host
+    if ":" in host:
+        IPv6Address(host)
+        return f"[{host}]"
+    if re.search(r"[\s/@?#\\\[\]]", host):
+        raise ValueError("invalid CONNECT host")
+    return host
 
 
-def looks_like_raw_tcp(nextlayer: object) -> bool:
+def _normalize_connect_port(port: object) -> int | None:
+    if port is None:
+        return None
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("invalid CONNECT port")
+    return port
+
+
+def initial_stream_is_raw(nextlayer: object) -> bool:
     """Close only when the bytes cannot still become HTTP or TLS.
 
     Script next_layer runs before mitmproxy 12.2.3's classifier. Copying its
@@ -309,9 +341,9 @@ def _next_layer_bytes(nextlayer: object, name: str) -> bytes:
     return bytes(data) if isinstance(data, (bytes, bytearray)) else b""
 
 
-def tcp_peer(flow: object) -> tuple[str, str]:
-    server = getattr(flow, "server_conn", None) or getattr(flow, "server", None)
-    address = getattr(server, "address", None) if server is not None else None
+def peer_label(owner: object) -> tuple[str, str]:
+    server = getattr(owner, "server_conn", None) or getattr(owner, "server", None)
+    address = getattr(server, "address", None)
     if isinstance(address, (tuple, list)) and address:
         host = str(address[0])[:255]
         port = address[1] if len(address) > 1 else ""
@@ -319,19 +351,21 @@ def tcp_peer(flow: object) -> tuple[str, str]:
     return "", ""
 
 
-def record_raw_tunnel(flow: object) -> None:
-    host, path = tcp_peer(flow)
+def reject_raw_transport(owner: object, *, close: bool = True) -> None:
+    host, port = peer_label(owner)
     try:
-        append_audit("raw_tunnel", host, path)
+        audit_event("raw_tunnel", host, port)
     except Exception:
         pass
+    if close:
+        close_flow(owner)
 
 
-def kill_flow(flow: object) -> None:
-    kill = getattr(flow, "kill", None)
-    if callable(kill) and getattr(flow, "killable", True):
+def close_flow(flow: object) -> None:
+    terminate = getattr(flow, "kill", None)
+    if callable(terminate) and getattr(flow, "killable", True):
         try:
-            kill()
+            terminate()
         except Exception:
             pass
 
@@ -351,8 +385,9 @@ def replace_layer(context: object, current: object, closer: object) -> None:
     layers.insert(min(index, len(layers)), closer)
 
 
-class CloseRawLayer(Layer):
-    def __init__(self, context: object) -> None:
+class RejectRawTransport(Layer):
+    def __init__(self, context: object, commands: object) -> None:
+        self._close_connection = getattr(commands, "CloseConnection", None)
         if Layer is object:
             self.context = context
             return
@@ -363,13 +398,13 @@ class CloseRawLayer(Layer):
         super().__init__(context)
 
     def handle_event(self, event: object):
-        if proxy_commands is None:
+        if self._close_connection is None:
             return
             yield
         for name in ("client", "server"):
             connection = getattr(self.context, name, None)
             if connection is not None:
-                yield proxy_commands.CloseConnection(connection)
+                yield self._close_connection(connection)
 
 
 def blocked_response(rule_id: str):
@@ -383,53 +418,67 @@ def blocked_response(rule_id: str):
     )
 
 
-def append_audit(rule_id: str, host: str, normalized_path: str) -> None:
-    AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if AUDIT_PATH.exists() and AUDIT_PATH.stat().st_size >= MAX_AUDIT_BYTES:
-        write_truncation_marker()
-        return
-    record = {
-        "ts": int(time.time() * 1000),
-        "ruleId": rule_id,
-        "host": host[:255],
-        "normalizedPath": normalized_path[:4096],
-    }
-    with AUDIT_PATH.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+class AuditJournal:
+    def __init__(self, path: Path, byte_limit: int) -> None:
+        self.path = path
+        self.byte_limit = byte_limit
+
+    def record(self, rule_id: str, host: str, normalized_path: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        entry = self._encode(rule_id, host[:255], normalized_path[:4096])
+        existing_bytes = self.path.stat().st_size if self.path.exists() else 0
+        if existing_bytes + len(entry) <= self.byte_limit:
+            with self.path.open("ab") as stream:
+                stream.write(entry)
+            return
+        self.mark_full()
+
+    def mark_full(self) -> None:
+        if self.has_full_marker():
+            return
+        with self.path.open("ab") as stream:
+            stream.write(self._separator() + self._encode("audit_truncated", "", ""))
+
+    def has_full_marker(self) -> bool:
+        last = self._last_record()
+        return last is not None and last.get("ruleId") == "audit_truncated"
+
+    def _separator(self) -> bytes:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return b""
+        final_offset = self.path.stat().st_size - 1
+        with self.path.open("rb") as stream:
+            stream.seek(final_offset)
+            return b"" if stream.read(1) == b"\n" else b"\n"
+
+    def _last_record(self) -> dict[str, object] | None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return None
+        size = self.path.stat().st_size
+        with self.path.open("rb") as stream:
+            stream.seek(max(0, size - 4096))
+            lines = stream.read().decode("utf-8", errors="ignore").splitlines()
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            decoded = None
+            with suppress(json.JSONDecodeError):
+                decoded = json.loads(line)
+            return decoded if isinstance(decoded, dict) else None
+        return None
+
+    @staticmethod
+    def _encode(rule_id: str, host: str, normalized_path: str) -> bytes:
+        record = {
+            "ts": int(time.time() * 1000),
+            "ruleId": rule_id,
+            "host": host,
+            "normalizedPath": normalized_path,
+        }
+        return (json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
 
 
-def write_truncation_marker() -> None:
-    if audit_already_truncated():
-        return
-    record = {
-        "ts": int(time.time() * 1000),
-        "ruleId": "audit_truncated",
-        "host": "",
-        "normalizedPath": "",
-    }
-    prefix = ""
-    if AUDIT_PATH.exists() and AUDIT_PATH.stat().st_size > 0:
-        with AUDIT_PATH.open("rb") as stream:
-            stream.seek(-1, os.SEEK_END)
-            if stream.read(1) != b"\n":
-                prefix = "\n"
-    with AUDIT_PATH.open("a", encoding="utf-8") as stream:
-        stream.write(prefix + json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
-
-
-def audit_already_truncated() -> bool:
-    if not AUDIT_PATH.exists():
-        return False
-    with AUDIT_PATH.open("rb") as stream:
-        stream.seek(0, os.SEEK_END)
-        size = stream.tell()
-        stream.seek(max(0, size - 4096))
-        tail = stream.read().decode("utf-8", errors="ignore")
-    lines = [line for line in tail.splitlines() if line.strip()]
-    if not lines:
-        return False
-    try:
-        parsed = json.loads(lines[-1])
-    except json.JSONDecodeError:
-        return False
-    return isinstance(parsed, dict) and parsed.get("ruleId") == "audit_truncated"
+def audit_event(rule_id: str, host: str, normalized_path: str) -> None:
+    AuditJournal(AUDIT_PATH, MAX_AUDIT_BYTES).record(rule_id, host, normalized_path)
