@@ -25,7 +25,7 @@
 export { WorkbarTitlebarActions } from './ui/workbar-toggle';
 export { WorkbarHost } from './ui/workbar-host';
 export { loadTerminalWebLinks } from './tools/terminal/terminal-web-links';
-export { WorkbarProvider } from './ui/workbar-provider';
+export { WorkbarProvider, WorkbarLayoutContainer } from './ui/workbar-provider';
 export { WorkbarShellRoot, type WorkbarShellProjection } from './ui/workbar-shell-root';
 export { WorkbarServicesProvider } from './services-context';
 export type { SessionWorkbarTabKind } from './model/workbar-tabs';

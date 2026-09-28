@@ -69,7 +69,7 @@ import * as Conversation from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
-import { WorkbarHost, WorkbarProvider, WorkbarShellRoot, type WorkbarShellProjection } from './features/workbar';
+import { WorkbarHost, WorkbarLayoutContainer, WorkbarProvider, WorkbarShellRoot, type WorkbarShellProjection } from './features/workbar';
 import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
 import * as ModuleHub from './features/module-hub';
@@ -119,7 +119,7 @@ import type { AppShellCommandListOptions } from './app-shell-command-actions';
 import { createContextCompactionPresentation, presentContextCompactionResult } from './app-shell-context-compaction';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
-import { appShellFrameStyle, APP_SHELL_CONTENT_AREA_GAP } from './shell/frame-style';
+import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
@@ -271,7 +271,6 @@ function AppShellContent({
 }) {
   const toastApi = useToast();
   const previousInterruptionShownRef = useRef(false);
-  const workbarLayoutContainerRef = useRef<HTMLDivElement>(null);
   const {
     readMessages,
     refreshMessages,
@@ -1599,8 +1598,6 @@ function AppShellContent({
         authoritativeSessionIds,
         shellObscured,
         modelChoices: chatModelChoices,
-        layoutContainerRef: workbarLayoutContainerRef,
-        layoutGap: APP_SHELL_CONTENT_AREA_GAP,
         toastApi,
         composerRef,
         openNewTaskSurface,
@@ -1760,7 +1757,7 @@ function AppShellContent({
               which is correct: those surfaces shouldn't be a
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
-          <div className="maka-detail-with-artifacts" ref={workbarLayoutContainerRef}>
+          <WorkbarLayoutContainer>
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>
@@ -2033,7 +2030,7 @@ function AppShellContent({
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools. */}
             <WorkbarHost togglePosition={workbarTogglePosition} />
-          </div>
+          </WorkbarLayoutContainer>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
       </AstryxAppShell>

@@ -125,15 +125,9 @@ export interface UseWorkbarControllerInput {
   modelChoices: readonly ChatModelChoice[];
   /**
    * The grid container holding both the conversation column and the rail. The
-   * shell owns the element; the Workbar owns what to do with its width.
+   * WorkbarProvider attaches the ref through WorkbarLayoutContainer.
    */
   layoutContainerRef?: RefObject<HTMLElement | null>;
-  /**
-   * The spacing between those two columns, in CSS pixels. The shell resolves it
-   * because a custom property reads back as its declaration, not a length (see
-   * `ink-ladder-contract`), so the Workbar cannot read the variable itself.
-   */
-  layoutGap?: number;
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
@@ -214,7 +208,6 @@ export function useWorkbarController(
     input.authoritativeSessionIds,
     compact,
     input.layoutContainerRef,
-    input.layoutGap,
   );
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<

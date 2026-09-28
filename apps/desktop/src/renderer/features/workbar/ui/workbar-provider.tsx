@@ -21,8 +21,10 @@ import {
   createContext,
   useContext,
   useLayoutEffect,
+  useRef,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import {
   useWorkbarController,
@@ -32,6 +34,7 @@ import type { WorkbarShellBridge } from '../controller/workbar-shell-bridge.js';
 import type { WorkbarHostModel } from './workbar-host.js';
 
 const WorkbarHostModelContext = createContext<WorkbarHostModel | null>(null);
+const WorkbarLayoutContainerRefContext = createContext<RefObject<HTMLDivElement | null> | null>(null);
 
 /**
  * Sole Workbar controller owner. Its updates reuse children built by the
@@ -43,7 +46,8 @@ export function WorkbarProvider(props: {
   readonly input: UseWorkbarControllerInput;
   readonly children?: ReactNode;
 }) {
-  const controller = useWorkbarController(props.input);
+  const layoutContainerRef = useRef<HTMLDivElement>(null);
+  const controller = useWorkbarController({ ...props.input, layoutContainerRef });
   useLayoutEffect(() => props.bridge.publish(controller), [props.bridge, controller]);
   useLayoutEffect(() => () => props.bridge.disconnect(), [props.bridge]);
   // Shell columns and the titlebar reserve both size from the Workbar width.
@@ -56,11 +60,19 @@ export function WorkbarProvider(props: {
   } as CSSProperties;
   return (
     <WorkbarHostModelContext.Provider value={controller.host}>
-      <div className="maka-workbar-shell-vars" style={style}>
-        {props.children}
-      </div>
+      <WorkbarLayoutContainerRefContext.Provider value={layoutContainerRef}>
+        <div className="maka-workbar-shell-vars" style={style}>
+          {props.children}
+        </div>
+      </WorkbarLayoutContainerRefContext.Provider>
     </WorkbarHostModelContext.Provider>
   );
+}
+
+export function WorkbarLayoutContainer({ children }: { readonly children?: ReactNode }) {
+  const ref = useContext(WorkbarLayoutContainerRefContext);
+  if (!ref) throw new Error('WorkbarLayoutContainer is missing its provider');
+  return <div className="maka-detail-with-artifacts" ref={ref}>{children}</div>;
 }
 
 export function useWorkbarHostModel(): WorkbarHostModel {

@@ -129,12 +129,9 @@ describe('Workbar feature boundary', () => {
     }
     assert.equal(appShell.includes('<WorkbarShellRoot>'), true);
     assert.equal(appShell.includes('<WorkbarProvider'), true);
-    assert.match(appShell, /layoutContainerRef: workbarLayoutContainerRef/);
-    assert.match(
-      appShell,
-      /<div className="maka-detail-with-artifacts" ref=\{workbarLayoutContainerRef\}>/,
-    );
-    assert.equal(provider.includes('useWorkbarController(props.input)'), true);
+    assert.equal(appShell.includes('<WorkbarLayoutContainer>'), true);
+    assert.equal(provider.includes('useWorkbarController({ ...props.input, layoutContainerRef })'), true);
+    assert.equal(provider.includes('<div className="maka-detail-with-artifacts" ref={ref}>'), true);
     assert.equal(productionEntry.includes('useWorkbarController'), false);
   });
 

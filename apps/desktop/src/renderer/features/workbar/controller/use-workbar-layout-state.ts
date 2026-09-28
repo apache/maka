@@ -53,15 +53,14 @@ const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
  * `compact` is the shell's narrow-window reading; see `withCompact`.
  *
  * `layoutContainerRef` is the grid holding both the conversation column and the
- * rail; `layoutGap` is the spacing between them. Measuring one and knowing the
- * other is what makes the rail's ceiling a function of the available space.
+ * rail. Measuring it and reading its seam spacing is what makes the rail's
+ * ceiling a function of the available space.
  */
 export function useWorkbarLayoutState(
   activeSessionId: string | undefined,
   authoritativeSessionIds: ReadonlySet<string> | undefined,
   compact: boolean,
   layoutContainerRef?: RefObject<HTMLElement | null>,
-  layoutGap = 0,
 ) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
@@ -100,6 +99,9 @@ export function useWorkbarLayoutState(
     const measure = () => {
       const available = container.getBoundingClientRect().width;
       if (available <= 0) return;
+      const layoutGap = Number.parseFloat(
+        getComputedStyle(container).getPropertyValue('--agents-content-area-gap'),
+      ) || 0;
       dispatch({
         type: 'measure-right-ceiling',
         ceiling: sessionWorkbarCeiling(available, layoutGap),
@@ -109,7 +111,7 @@ export function useWorkbarLayoutState(
     const observer = new ResizeObserver(measure);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [layoutContainerRef, layoutGap]);
+  }, [layoutContainerRef]);
   // The Workbar reducer is the controlled size authority. These props adapt it
   // to Astryx's ResizeHandle contract without introducing useResizable state;
   // snapping and handle-driven collapse are deliberately disabled here.
