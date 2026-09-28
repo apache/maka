@@ -21,6 +21,12 @@ import { createRequire } from 'node:module';
 import type { BrowserWindow, BrowserWindowConstructorOptions, View, WebContents } from 'electron';
 import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
+// This module is bundled by esbuild and evaluated inside a vm sandbox by the
+// workhub-presentation tests, where `import.meta` does not exist and `require`
+// is a sandbox-injected global returning the fake electron — so neither
+// `import 'electron'` nor the usual `createRequire(import.meta.url)` works
+// here. Indirect eval picks up that global (and Electron main's), while the
+// createRequire fallback covers plain-node contexts.
 function loadElectron(): typeof import('electron') {
   try {
     return (0, eval)('require')('electron') as typeof import('electron');
