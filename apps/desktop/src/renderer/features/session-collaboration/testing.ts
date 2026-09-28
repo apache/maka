@@ -31,7 +31,7 @@ export type { SessionCollaborationServices } from './ports.js';
 export { SessionCollaborationServicesProvider } from './services-context.js';
 export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog.js';
 export { SessionCollaborationNavigation } from './ui/session-collaboration-navigation.js';
-export { SessionTurnRequestComposer } from './ui/session-turn-request-composer.js';
+export { GuestTurnRequests } from './ui/guest-turn-requests.js';
 export { sessionCollaborationImportErrorMessage } from './ui/session-collaboration-join-dialog.js';
 export { SessionCollaborationDialogRoot } from './ui/session-collaboration-dialog-root.js';
 export type { SessionCollaborationDialogProjection } from './model/dialog-projection.js';

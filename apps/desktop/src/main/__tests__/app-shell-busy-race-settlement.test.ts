@@ -80,11 +80,11 @@ describe('busy-raced send settlement', () => {
     } finally { restoreWindow(); }
   });
 
-  it('keeps steering pending while the Host admits it', async () => {
+  it('shows steering in the transcript while the Host admits it', async () => {
     const transient = new Map<string, TransientUserMessageProjection>();
     const restoreWindow = installWindow({ sessions: {
       submitMessage: async (_sessionId: string, _placement: string, _command: unknown) => {
-        assert.equal([...transient.values()][0]?.transientPlacement, 'steering');
+        assert.equal([...transient.values()][0]?.transientPlacement, 'transcript');
         return { ok: true, disposition: 'steering', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
       },
     } });
@@ -96,7 +96,7 @@ describe('busy-raced send settlement', () => {
         updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
       });
       assert.equal(await actions.enqueueMessage('session-a', 'steer', 'current_turn'), true);
-      assert.equal([...transient.values()][0]?.transientPlacement, 'steering');
+      assert.equal([...transient.values()][0]?.transientPlacement, 'transcript');
     } finally { restoreWindow(); }
   });
 

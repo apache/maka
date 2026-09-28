@@ -92,6 +92,11 @@ export interface ConnectionContext {
   acquireResidency(): OperationResidency;
 }
 
+/** Host-owned operations have no Client Capability initiating connection. */
+export function capabilityInitiatingConnectionId(context: ConnectionContext): string {
+  return context.principal === 'runtime_host' ? '' : context.connectionId;
+}
+
 export interface OperationResidency {
   release(): void;
 }

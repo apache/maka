@@ -714,6 +714,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           copy={copy}
           modelId={editingModelId}
           customDefaultApiProtocol={connection.defaultApiProtocol}
+          providerType={connection.providerType}
           numericInputs={numericInputs}
           onNumericInput={(field, input) => {
             setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: editingModelId, numericInputs: { ...numericInputs, [field]: input } }));

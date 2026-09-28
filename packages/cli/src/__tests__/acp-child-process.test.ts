@@ -145,6 +145,7 @@ describe('Maka ACP child process', () => {
           agentCapabilities: {
             loadSession: true,
             sessionCapabilities: { list: {}, resume: {}, close: {} },
+            _meta: { '_maka/goalPlan': { version: 1 } },
           },
           authMethods: [],
           agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },

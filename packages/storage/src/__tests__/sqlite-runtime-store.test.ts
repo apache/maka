@@ -756,6 +756,79 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('atomically seals an unknown dispatched tool without inventing a result', async () => {
+    await withStore(async (store, _dbPath, setFailpoint) => {
+      await commitPrepared(store);
+      const terminal: RuntimeEvent = {
+        id: 'recovered-terminal-1',
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        ts: 20,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'failed',
+        actions: {
+          endInvocation: true,
+          stateDelta: { recovered: true, recoveryReason: 'outcome_unknown' },
+        },
+      };
+      await assert.rejects(
+        store.ensureTerminalRuntimeEventDurable('session-1', 'run-1', terminal),
+        /unsettled tool operation/i,
+      );
+      await assert.rejects(
+        store.ensureRecoveredTerminalRuntimeEventDurable('session-1', 'run-1', terminal, [
+          'wrong-operation',
+        ]),
+        /do not match/,
+      );
+      for (const failpoint of [
+        'after_recovery_terminal_insert',
+        'after_recovery_terminal_projection',
+      ] as const) {
+        setFailpoint(failpoint);
+        await assert.rejects(
+          store.ensureRecoveredTerminalRuntimeEventDurable('session-1', 'run-1', terminal, [
+            'operation-1',
+          ]),
+          new RegExp(failpoint),
+        );
+        setFailpoint(undefined);
+        assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 2);
+        assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
+        assert.deepEqual(
+          (await store.readToolJournal('operation-1')).map(({ state }) => state),
+          ['prepared'],
+        );
+      }
+
+      await store.ensureRecoveredTerminalRuntimeEventDurable('session-1', 'run-1', terminal, [
+        'operation-1',
+      ]);
+      await store.ensureRecoveredTerminalRuntimeEventDurable('session-1', 'run-1', terminal, [
+        'operation-1',
+      ]);
+      assert.deepEqual(
+        (await store.readToolJournal('operation-1')).map(({ state }) => state),
+        ['prepared', 'interrupted_unknown'],
+      );
+      assert.equal(
+        (await store.readToolOperation('operation-1'))?.currentState,
+        'interrupted_unknown',
+      );
+      assert.equal((await store.listUnsettledToolOperations('session-1')).length, 0);
+      assert.deepEqual(
+        (await store.readImmutableRuntimeEvents('session-1', 'run-1')).map(({ id }) => id),
+        ['call-event-1', 'dispatch-event-1', terminal.id],
+      );
+      await store.rebuildTerminalToolProjectionsForSessions(['session-1']);
+      assert.equal((await store.readToolJournal('operation-1')).length, 2);
+    });
+  });
+
   it('imports a conversation-copy tool ledger with its derived projections', async () => {
     await withStore(async (store) => {
       const events = [functionCallEvent(), toolDispatchEvent(), functionResponseEvent({ ts: 11 })];

@@ -20,11 +20,16 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable';
-import { useEffect, useReducer, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import type { SessionEvent } from '@maka/core/events';
+import type {
+  MessageQueueEntryProjection,
+  MessageQueuePlacement,
+  QueueUpdateEvent,
+  SessionEvent,
+} from '@maka/core/events';
 import {
   ChatSurfaceLayout,
   ChatView,
@@ -37,15 +42,15 @@ import {
   TitlebarSessionIdentity,
   ToastProvider,
 } from '@maka/ui';
-import type { ChatModelChoice, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
+import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
+import { deriveMessageQueueProjection } from '../src/renderer/application/contracts/message-queue-projection';
+import { retractQueuedEntryToDraft, withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
 import { AppShellTitlebar } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
-import {
-  WorkbarServicesProvider,
-} from '../src/renderer/features/workbar';
-import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { WorkbarSurface, WorkbarTitlebarActionsView } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -56,9 +61,8 @@ import {
   type WorkbarLayoutState,
 } from '../src/renderer/features/workbar/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
-import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
+import { deriveChatTurnPresentation } from '../src/renderer/application/contracts/turn-presentation';
 import {
-  deriveBranchBanner,
   deriveSessionRail,
   deriveSessionRevisionNavigation,
   SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
@@ -178,7 +182,6 @@ const catalogProjects: ProjectRecord[] = [
 const sidebarRowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onToggleFlag: noop,
   onArchive: noop,
-  onUnarchive: noop,
   onRename: noop,
 };
 const projectRowActions: NonNullable<SessionListPanelProps['projectActions']> = {
@@ -321,8 +324,11 @@ function ShellFrame(props: {
           ...appShellFrameStyle({
             sessionListCollapsed: props.sidebarCollapsed ?? false,
             sessionListWidth: SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
-            workbarRightWidth: props.workbarWidth ?? SESSION_WORKBAR_DEFAULT_WIDTH,
           }),
+          /* Production publishes the width from WorkbarProvider above the
+             frame; the cap arrives through `appShellFrameStyle` — it reads
+             `--maka-sidenav-width`, which only this element defines. */
+          '--maka-session-workbar-width': `${props.workbarWidth ?? SESSION_WORKBAR_DEFAULT_WIDTH}px`,
         } as CSSProperties
       }
     >
@@ -354,11 +360,14 @@ function ComposedShell(props: {
   session?: (Omit<Partial<SessionSummary>, 'id'> & { streaming?: boolean }) | null;
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
+  /** The mainColumn interaction gate and ChatSurfaceLayout visibility in app-shell.tsx. */
+  switchingSession?: boolean;
+  chatHidden?: boolean;
   detailChildren?: ReactNode;
   motionEnabled?: boolean;
   /**
    * Extra sessions the sidebar shows alongside the fixed catalog. Lineage
-   * states need them: production derives the branch banner and the revision
+   * states need them: production derives the titlebar's parent and the revision
    * navigation from the visible session list, so a story asks for the state by
    * supplying the relatives, not by hand-writing what the helpers would return.
    */
@@ -388,7 +397,6 @@ function ComposedShell(props: {
   // Same helpers the renderer calls (app-shell.tsx). Deriving here rather than
   // letting a story pass a banner or a footer-action list keeps a story from
   // showing lineage the production rules would not produce for its sessions.
-  const branchBanner = deriveBranchBanner(active, sessions);
   const revisionNavigation = deriveSessionRevisionNavigation(sessions, active?.id);
   // Same rail projection as app-shell: revision-tree roots only (linked
   // children stay off the list). Stories include every fixture row.
@@ -398,7 +406,7 @@ function ComposedShell(props: {
   // same seam production uses (app-shell.tsx), so a story cannot show footer
   // actions the production rules would not produce for its messages.
   const deriveTurnPresentation = (turns: readonly TurnViewModel[]) =>
-    deriveAppShellTurnPresentation(turns, {
+    deriveChatTurnPresentation(turns, {
       activeId: active?.id,
       pendingTurnActions: new Set<string>(),
       uiLocale: 'zh-CN',
@@ -422,7 +430,6 @@ function ComposedShell(props: {
         sidebarCollapsed={collapsed}
         onToggleSidebar={() => setCollapsed((current) => !current)}
         onOpenSearchModal={noop}
-        workbar={props.workbarToggle ? { togglePosition: 'titlebar', model: { activeId: active?.id, hidden: !active, rightCollapsed: props.workbarToggle.collapsed, onToggleRightPanel: props.workbarToggle.onToggle } } : undefined}
       >
         {/* Derived from the same session and project catalog the sidebar reads,
             not hand-passed: a story cannot show a project the session does not
@@ -440,6 +447,18 @@ function ComposedShell(props: {
               });
               return name ? { name, path: active.cwd, onOpenFolder: noop } : undefined;
             })()}
+            parentSession={(() => {
+              const parent = sessions.find((item) => item.id === active.parentSessionId);
+              return parent ? { name: parent.name, onOpen: noop } : undefined;
+            })()}
+          />
+        )}
+        {/* Production renders this through the titlebar's `workbar` prop, after
+            the children; the story supplies its own model to the view. */}
+        {props.workbarToggle && (
+          <WorkbarTitlebarActionsView
+            togglePosition="titlebar"
+            model={{ activeId: active?.id, hidden: !active, rightCollapsed: props.workbarToggle.collapsed, onToggleRightPanel: props.workbarToggle.onToggle }}
           />
         )}
       </AppShellTitlebar>
@@ -486,8 +505,9 @@ function ComposedShell(props: {
             // the chat column (app-shell.tsx). `.mainColumn` owns composer
             // padding, so a story without it measures its own box.
             (<div className="maka-detail-with-artifacts">
-              <div className="mainColumn">
+              <div className="mainColumn" inert={props.switchingSession || undefined}>
               <ChatSurfaceLayout
+                hidden={props.chatHidden}
                 composer={
                   <Composer
                     {...baseComposerProps}
@@ -505,7 +525,6 @@ function ComposedShell(props: {
                   activeSession={active}
                   deriveTurnPresentation={deriveTurnPresentation}
                   {...props.chat}
-                  branchBanner={branchBanner}
                   revisionNavigation={revisionNavigation}
                 />
               </ChatSurfaceLayout>
@@ -537,6 +556,10 @@ export const DefaultLayout: Story = {
     expect(trailingInset).toBeGreaterThanOrEqual(0);
     expect(trailingInset).toBeLessThanOrEqual(16);
     expect(getComputedStyle(actions).columnGap).toBe('4px');
+    const titlebarControlHeights = new Set(
+      [...canvasElement.querySelectorAll('.maka-window-titlebar button')].map((button) => button.getBoundingClientRect().height),
+    );
+    expect([...titlebarControlHeights]).toHaveLength(1);
     // Message metadata mirrors across senders: the prompt's time sits left of
     // its actions, the answer's time right of its actions.
     await waitFor(() => expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull());
@@ -718,10 +741,195 @@ export const PromptSentBeforeTurnLands: Story = {
   },
 };
 
+const QUEUE_TURN = 'turn-queue';
+
+type QueueHost = {
+  revision: number;
+  steering: MessageQueueEntryProjection[];
+  followup: MessageQueueEntryProjection[];
+  liveTurns: LiveTurnBuffer | undefined;
+};
+type QueueHostAction =
+  | { type: 'enqueue'; text: string; placement: MessageQueuePlacement }
+  | { type: 'promote' | 'retract'; entryId: string }
+  | { type: 'reorder'; entryIds: readonly string[] }
+  | { type: 'consume' };
+
+// Stands in for the Runtime Host queue: every mutation bumps the revision the
+// shell reads through the same queue_update projection production uses, and
+// consumption echoes the steering_message a step boundary emits.
+function reduceQueueHost(host: QueueHost, action: QueueHostAction): QueueHost {
+  const revision = host.revision + 1;
+  const without = (entries: MessageQueueEntryProjection[], entryId: string) =>
+    entries.filter((entry) => entry.entryId !== entryId);
+  switch (action.type) {
+    case 'enqueue': {
+      const entry: MessageQueueEntryProjection = {
+        entryId: `entry-${revision}`,
+        messageId: `msg-queued-${revision}`,
+        content: { text: action.text },
+        placement: action.placement,
+        state: 'queued',
+      };
+      return action.placement === 'current_turn'
+        ? { ...host, revision, steering: [...host.steering, entry] }
+        : { ...host, revision, followup: [...host.followup, entry] };
+    }
+    case 'promote': {
+      const entry = host.followup.find((candidate) => candidate.entryId === action.entryId);
+      if (!entry) return host;
+      return {
+        ...host,
+        revision,
+        followup: without(host.followup, action.entryId),
+        steering: [...host.steering, { ...entry, placement: 'current_turn' }],
+      };
+    }
+    case 'retract':
+      return { ...host, revision, steering: without(host.steering, action.entryId), followup: without(host.followup, action.entryId) };
+    case 'reorder':
+      return {
+        ...host,
+        revision,
+        followup: action.entryIds.flatMap((entryId) => host.followup.filter((entry) => entry.entryId === entryId)),
+      };
+    case 'consume': {
+      const [entry, ...rest] = host.steering;
+      if (!entry) return host;
+      const liveTurns = applyLiveTurnBufferEvent(host.liveTurns, {
+        type: 'steering_message',
+        id: `steering-${entry.messageId}`,
+        turnId: QUEUE_TURN,
+        ts: Date.now(),
+        messageId: entry.messageId,
+        content: entry.content,
+      }, 'zh-CN');
+      return { ...host, revision, steering: rest, liveTurns };
+    }
+  }
+}
+
+function queueUpdate(host: QueueHost, ts: number): QueueUpdateEvent {
+  return {
+    type: 'queue_update',
+    id: `queue-${host.revision}`,
+    turnId: QUEUE_TURN,
+    ts,
+    queueRevision: host.revision,
+    steering: host.steering.map((entry) => entry.content.text),
+    followup: host.followup.map((entry) => entry.content.text),
+    steeringEntries: host.steering,
+    followupEntries: host.followup,
+  };
+}
+
+function QueuedMessageLifecycle() {
+  const [host, dispatch] = useReducer(reduceQueueHost, {
+    revision: 0,
+    steering: [],
+    followup: [],
+    liveTurns: [{
+      turnId: QUEUE_TURN,
+      steps: [{
+        stepId: 'msg-assistant-queue',
+        text: { text: '先把失败用例的栈对上，三个都停在同一个断言附近。', truncated: false, complete: false },
+        tools: [],
+      }],
+    }],
+  });
+  // The running Turn's clock reads wall time, so the scene starts from mount.
+  const [startedAt] = useState(Date.now);
+  const composerRef = useRef<ComposerHandle>(null);
+  const queue = deriveMessageQueueProjection(queueUpdate(host, startedAt));
+  const draftActions = {
+    retract: async (entryId: string) => dispatch({ type: 'retract', entryId }),
+    restoreDraft: (draft: { text: string }) => composerRef.current?.setText(draft.text),
+  };
+  return (
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8, flexShrink: 0 }}>
+        <span>演示控制 · Host 在下一个步骤边界消费已排队的 steering</span>
+        <Button
+          size="sm"
+          label="Host 消费 steering"
+          isDisabled={host.steering.length === 0}
+          onClick={() => dispatch({ type: 'consume' })}
+        />
+      </div>
+      <ComposedShell
+        sidebarCollapsed
+        frameHeight="calc(100vh - 48px)"
+        session={{ status: 'running', streaming: true }}
+        chat={{
+          activeTurn: { turnId: QUEUE_TURN },
+          messages: [
+            { type: 'user', id: 'msg-queue-1', turnId: QUEUE_TURN, ts: startedAt - 20_000, text: '把整套测试跑一遍，看看那三个失败用例是不是同一个原因。' },
+            { type: 'turn_state', id: 'state-queue', turnId: QUEUE_TURN, ts: startedAt - 20_000, status: 'running' },
+          ],
+          liveTurns: host.liveTurns,
+          transientMessages: withQueuedSteeringTransients([], queue, { ...draftActions, locale: 'zh-CN' }),
+        }}
+        composer={{
+          ref: composerRef,
+          queuedMessages: queue.entries,
+          // Plain Enter mid-turn is an ordinary send the Host queues for the
+          // next Turn; Cmd/Ctrl+Enter asks for the current one.
+          onSend: (text, metadata) => {
+            dispatch({ type: 'enqueue', text, placement: metadata?.followUpMode === 'steer' ? 'current_turn' : 'next_turn' });
+          },
+          onPromoteQueuedEntry: (entryId) => dispatch({ type: 'promote', entryId }),
+          onEditQueuedEntry: (entry) => retractQueuedEntryToDraft(entry, draftActions),
+          onDeleteQueuedEntry: draftActions.retract,
+          onReorderQueuedEntries: (entryIds) => dispatch({ type: 'reorder', entryIds }),
+        }}
+      />
+    </div>
+  );
+}
+
+// Real path: mid-turn Enter queues a follow-up in the staging drawer → 直接发送
+// promotes it into the running Turn, where it becomes a transcript bubble with
+// edit/delete → the Host consumes it at the next step boundary and the same
+// message lands inside the Turn, shown once. The control bar stands in for the
+// step boundary.
+export const QueuedMessageLifecycleFlow: Story = {
+  name: '排队消息：暂存区 → 直接发送 → 进入对话',
+  render: () => <QueuedMessageLifecycle />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const text = '顺便确认一下 coverage 阈值没有变。';
+    const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
+    if (!input) throw new Error('The composer input is missing');
+    await userEvent.type(input, text);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvasElement.querySelector('.maka-composer-queue-text')).toHaveTextContent(text));
+    await expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
+
+    await userEvent.click(canvas.getByRole('button', { name: '直接发送' }));
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.maka-composer-queue')).toBeNull();
+      const bubble = canvasElement.querySelector('[data-transient-message-id]');
+      expect(bubble).toHaveTextContent(text);
+      expect(bubble?.querySelector('[aria-label="编辑"]')).not.toBeNull();
+      expect(bubble?.querySelector('[aria-label="删除"]')).not.toBeNull();
+    });
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Host 消费 steering' }));
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
+      const rows = canvas.getAllByText(text);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.closest(`[data-turn-id="${QUEUE_TURN}"]`)).not.toBeNull();
+    });
+  },
+};
+
 // Real path: stop during `npm test` → cancelled terminal result → interrupted tool row.
 // The stdout fixture above comes from the build phase of a real run. ChatView →
 // materializeTurns → ToolTrow derives the interruption from the result; the
 // aborted Session also settles the sidebar and composer.
+// production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
+// and composer agree with the transcript instead of still reading as active.
 export const InterruptedToolAfterTurnAbort: Story = {
   render: () => (
     <ComposedShell
@@ -1300,8 +1508,96 @@ export const WaitingForPermission: Story = {
 // half and it is not the same screen — see NewChatComposer below — so this
 // story is the one where the composer still binds to a session.
 export const EmptyHome: Story = {
-  render: () => <ComposedShell chat={{ messages: [] }} />,
+  render: () => <EmptyComposerLifecycle />,
+  play: async ({ canvasElement }) => {
+    const editor = canvasElement.querySelector<HTMLElement>('.maka-composer-editor > [contenteditable]')!;
+    const assertLineBox = () => {
+      const style = getComputedStyle(editor);
+      const required = Number.parseFloat(style.lineHeight)
+        + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      // The editable itself must contain a line, not just the placeholder or
+      // outer wrapper. Before #5264 this becomes 8px: padding with no line box.
+      expect(editor.clientHeight).toBeGreaterThanOrEqual(required);
+      expect(canvasElement.querySelector('.maka-composer-editor > [contenteditable]')).toBe(editor);
+    };
+    const transition = async (next: Partial<EmptyComposerState>) => {
+      expect(setEmptyComposerState).toBeDefined();
+      setEmptyComposerState!(next);
+      // Render each hide/inert boundary; collapsing these into one React
+      // commit would skip the browser layout reconstruction being tested.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    };
+    await waitFor(assertLineBox);
+
+    // Reduced WorkHub/sidebar lifecycle: the frame returns while session
+    // switching still makes its parent inert. Keep the same empty editor DOM.
+    for (const draftKey of ['session:caret-b', 'session:caret-a']) {
+      await transition({ switchingSession: true });
+      await transition({ chatHidden: true });
+      expect(editor.getClientRects()).toHaveLength(0);
+      await transition({ chatHidden: false, draftKey });
+      expect(editor.closest('[inert]')).not.toBeNull();
+      assertLineBox();
+      await transition({ switchingSession: false });
+      expect(editor.closest('[inert]')).toBeNull();
+      assertLineBox();
+    }
+
+    await userEvent.click(editor);
+    await userEvent.keyboard('one{Shift>}{Enter}{/Shift}two{Shift>}{Enter}{/Shift}three');
+    const multilineHeight = editor.clientHeight;
+    expect(multilineHeight).toBeGreaterThan(2 * Number.parseFloat(getComputedStyle(editor).lineHeight));
+    await transition({ draftKey: 'session:caret-b' });
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+    await transition({ draftKey: 'session:caret-a' });
+    await waitFor(() => expect(editor).toHaveTextContent('three'));
+    expect(editor.clientHeight).toBe(multilineHeight);
+    await userEvent.clear(editor);
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+    await transition({ disabled: true });
+    expect(editor).toHaveAttribute('contenteditable', 'false');
+    assertLineBox();
+    await transition({ disabled: false });
+    assertLineBox();
+
+    // A minimum must not turn into a fixed height or defeat the existing cap.
+    await userEvent.click(editor);
+    for (let line = 0; line < 12; line += 1) {
+      await userEvent.keyboard(`${line === 0 ? '' : '{Shift>}{Enter}{/Shift}'}line`);
+    }
+    expect(editor.clientHeight).toBe(Number.parseFloat(getComputedStyle(editor).maxHeight));
+    expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
+    await userEvent.clear(editor);
+    await userEvent.type(editor, 'send and clear');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(emptyComposerSend).toHaveBeenCalledWith('send and clear', undefined));
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertLineBox();
+  },
 };
+
+type EmptyComposerState = {
+  switchingSession: boolean;
+  chatHidden: boolean;
+  draftKey: string;
+  disabled: boolean;
+};
+let setEmptyComposerState: ((next: Partial<EmptyComposerState>) => void) | undefined;
+const emptyComposerSend = fn();
+function EmptyComposerLifecycle() {
+  const [state, setState] = useState<EmptyComposerState>({
+    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false,
+  });
+  useEffect(() => {
+    emptyComposerSend.mockClear();
+    setEmptyComposerState = (next) => setState((current) => ({ ...current, ...next }));
+    return () => { setEmptyComposerState = undefined; };
+  }, []);
+  return <ComposedShell chat={{ messages: [] }} switchingSession={state.switchingSession}
+    chatHidden={state.chatHidden} composer={{ draftKey: state.draftKey, disabled: state.disabled, onSend: emptyComposerSend }} />;
+}
 
 // Real path: 新任务 → no session exists yet. The composer swaps
 // ChatModelSwitcher for NewChatModelPicker and drops the thinking selector,
@@ -1663,8 +1959,8 @@ export const NativeConversation: Story = {
 };
 
 // The relatives that make the active session a branch AND revision 2 of 3.
-// ComposedShell feeds them to the production derive helpers, so the banner and
-// the revision counter appear only if the real rules still produce them.
+// ComposedShell feeds them to the production derive helpers, so the revision
+// counter appears only if the real rules still produce it.
 //
 // The shape follows what `reviseBeforeTurn` actually writes: the root keeps no
 // revision fields and each revision gets all five, which is also what the store
@@ -1729,7 +2025,6 @@ function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicato
         memoryActive: true,
         onOpenMemorySettings: noop,
         goalIndicator: props.goal,
-        onBranchBannerClick: noop,
         onRevisionNavigate: noop,
       }}
     />
@@ -1739,13 +2034,7 @@ function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicato
 // Real path: open a derived revision that is running an autonomous goal with
 // local memory and a legacy research label. Session metadata stays in one context
 // layer above the transcript instead of splitting across header pills and
-// standalone branch/revision rows. The long session name is the point: it is
-// what forces that layer to collapse rather than wrap.
-//
-// The banner reads 分自 without 从中断前: deriveBranchBanner only adds that hint
-// when the caller supplies it, and the renderer deliberately does not until
-// parent-message preloading lands (app-shell.tsx). A story that showed it would
-// be showing a screen the app cannot currently produce.
+// standalone revision rows.
 export const SessionContextLayer: Story = {
   render: () => (
     <GoalContextStory
@@ -3619,6 +3908,9 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
     panels: createSessionWorkbarPanelsState(),
     activeSessionId: 'session-active',
     collapsedBySession: {},
+    compact: false,
+    compactCollapsed: {},
+    spaceCollapsed: false,
     bottomOpen: false,
     rightWidth: SESSION_WORKBAR_DEFAULT_WIDTH,
     bottomHeight: SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
@@ -3626,7 +3918,14 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
 );
 
-function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean; togglePosition?: 'titlebar' | 'edge' } = {}) {
+function WorkbarInShell(props: {
+  longTitle?: boolean;
+  onShare?: () => void;
+  workbarWidth?: number;
+  withConversation?: boolean;
+  togglePosition?: 'titlebar' | 'edge';
+  composer?: Partial<ComposerProps>;
+} = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
@@ -3649,7 +3948,13 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
           detailChildren={
             <div className="maka-detail-with-artifacts">
               <div className="mainColumn">
-                {props.withConversation && <ChatSurfaceLayout composer={<Composer {...baseComposerProps} activeSession={activeSession} />}>
+                {props.withConversation && <ChatSurfaceLayout composer={(
+                  <Composer
+                    {...baseComposerProps}
+                    activeSession={activeSession}
+                    {...props.composer}
+                  />
+                )}>
                   <ChatView {...baseChatProps} messages={promptRailMessages} />
                 </ChatSurfaceLayout>}
               </div>
@@ -3699,21 +4004,22 @@ export const TitlebarWithWideWorkbar: Story = {
     const menuButton = title.querySelector<HTMLButtonElement>('[aria-label$="任务操作"]')!;
     const bounds = () => {
       const box = title.getBoundingClientRect();
-      const boundary = window.innerWidth > 990
-        ? workbar.getBoundingClientRect().left
-        : frame.getBoundingClientRect().right;
+      const boundary = workbar.getBoundingClientRect().left;
       expect(box.right).toBeLessThanOrEqual(boundary);
       const action = menuButton.getBoundingClientRect();
       expect(action.width).toBeGreaterThanOrEqual(24);
       expect(action.right).toBeLessThanOrEqual(boundary);
       expect(document.elementFromPoint(action.x + action.width / 2, action.y + action.height / 2)?.closest('button')).toBe(menuButton);
     };
-    // Read the rendered columns at several controller widths, including the resize limits.
+    // Read the rendered columns at several controller widths, including the
+    // resize limits. The column draws the controller's width unless the frame
+    // leaves it less room beside the conversation, which a narrow canvas does.
     for (const width of [340, 600, 480]) {
       frame.style.setProperty('--maka-session-workbar-width', `${width}px`);
-      if (window.innerWidth > 990) {
-        await waitFor(() => expect(workbar.getBoundingClientRect().width).toBe(width));
-      }
+      await waitFor(() => expect(workbar.getBoundingClientRect().width).toBeCloseTo(
+        Math.min(width, parseFloat(getComputedStyle(workbar).maxWidth)),
+        0,
+      ));
       await waitFor(bounds);
     }
     menuButton.focus();
@@ -3888,13 +4194,14 @@ export const WorkbarTitlebarRestore: Story = {
 };
 
 const narrowWorkbarShare = fn();
+const narrowWorkbarWidth = 600;
 
-export const NarrowWorkbarClearsTitlebarReserve: Story = {
+export const WorkbarClearsTitlebarReserve: Story = {
   render: () => (
     <WorkbarInShell
       longTitle
       onShare={narrowWorkbarShare}
-      workbarWidth={600}
+      workbarWidth={narrowWorkbarWidth}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -3935,10 +4242,12 @@ export const NarrowWorkbarClearsTitlebarReserve: Story = {
         titlebar.getBoundingClientRect().left,
       ),
     );
-    expect(workbar.getBoundingClientRect().width).toBeCloseTo(
-      detail.getBoundingClientRect().width,
-      0,
-    );
+    // The right Workbar keeps its configured width even when the narrow detail
+    // column has less room; titlebar clearance is asserted independently below.
+    // The restore ease is still interpolating when visibility flips, so the
+    // width read has to wait the transition out.
+    await waitFor(() =>
+      expect(workbar.getBoundingClientRect().width).toBeCloseTo(narrowWorkbarWidth, 0));
     expect(share.getBoundingClientRect().right).toBeLessThanOrEqual(
       titlebar.getBoundingClientRect().right,
     );
@@ -3946,6 +4255,140 @@ export const NarrowWorkbarClearsTitlebarReserve: Story = {
     await userEvent.click(share);
     await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole('menuitem', { name: '分享任务' }));
     expect(narrowWorkbarShare).toHaveBeenCalledOnce();
+  },
+};
+
+// Real path: on a window too narrow for the configured Workbar the frame caps
+// the column, and the titlebar must reserve the DRAWN width. Reserving the
+// configured width would squeeze the session identity out against space the
+// Workbar does not occupy. The `narrow` story id puts this render on the
+// smoke lane's 720px viewport (the runner keys width off the id, not the
+// toolbar pin below — the pin only keeps local dev narrow too); at 720px the
+// 600px Workbar is capped to ~52px, so the two reserve formulas differ by
+// ~548px of padding.
+export const NarrowWorkbarCappedTitlebarReserve: Story = {
+  parameters: {
+    viewport: {
+      options: {
+        workbarCapped: {
+          name: 'Maka desktop window narrower than the workbar fit',
+          styles: { width: '1100px', height: '800px' },
+          type: 'desktop' as const,
+        },
+      },
+    },
+  },
+  globals: { viewport: { value: 'workbarCapped', isRotated: false } },
+  render: () => (
+    <WorkbarInShell longTitle workbarWidth={narrowWorkbarWidth} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const titlebar = canvasElement.querySelector<HTMLElement>('.maka-window-titlebar');
+    const workbar = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar[data-placement="right"]:not([data-collapsed])',
+    );
+    if (!titlebar || !workbar) {
+      throw new Error('the titlebar or right workbar is missing');
+    }
+
+    // The gutter token is an unresolved calc() in computed style, so read it
+    // empirically: collapsed, the reserve rule is off and padding-right is the
+    // gutter alone. It eases, so poll until two reads agree.
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    await waitFor(() => expect(workbar).not.toBeVisible());
+    let gutter = 0;
+    await waitFor(async () => {
+      const next = parseFloat(getComputedStyle(titlebar).paddingRight);
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      expect(parseFloat(getComputedStyle(titlebar).paddingRight)).toBe(next);
+      gutter = next;
+    });
+
+    await userEvent.click(await canvas.findByRole('button', { name: '展开任务工作栏' }));
+    await waitFor(() => {
+      const drawnWorkbar = workbar.getBoundingClientRect().width;
+      expect(drawnWorkbar).toBeGreaterThan(0);
+      expect(drawnWorkbar).toBeLessThan(narrowWorkbarWidth);
+      const seam = parseFloat(
+        getComputedStyle(titlebar).getPropertyValue('--agents-content-area-gap'),
+      );
+      expect(parseFloat(getComputedStyle(titlebar).paddingRight)).toBeCloseTo(
+        gutter + drawnWorkbar + seam,
+        0,
+      );
+    });
+  },
+};
+
+// Real path: a session with the right workbar open while the conversation
+// column is narrow enough for a long model label to exercise the composer's
+// footer shrink contract. Model and thinking controls remain available while
+// the lower-priority usage action is hidden.
+export const NarrowComposerFooter: Story = {
+  parameters: {
+    viewport: {
+      options: {
+        composerNarrow: {
+          name: 'Maka desktop with a narrow conversation column',
+          styles: { width: '1200px', height: '800px' },
+          type: 'desktop' as const,
+        },
+      },
+    },
+  },
+  globals: { viewport: { value: 'composerNarrow', isRotated: false } },
+  render: () => (
+    <WorkbarInShell
+      withConversation
+      workbarWidth={600}
+      composer={{
+        activeModelLabel: 'provider/very-long-model-name-that-must-stay-inside-the-card',
+        planModeActive: true,
+        orchestrationMode: 'swarm',
+        contextUsage: {
+          usageTokens: 100_000,
+          declaredContextWindow: 100_000,
+          onOpen: noop,
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const mainColumn = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts > .mainColumn');
+    const card = mainColumn?.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!mainColumn || !card) throw new Error('the narrow conversation composer is missing');
+    // A 600px Workbar beside the default sidebar does not fit a 1200px window;
+    // the frame caps the Workbar so the conversation lands on its floor, which
+    // is the narrowest column this footer is measured at.
+    await waitFor(() => expect(mainColumn.getBoundingClientRect().width).toBeCloseTo(400, 0));
+
+    const leftControls = card.querySelector<HTMLElement>('.maka-composer-left-controls');
+    if (!leftControls) throw new Error('composer footer controls are missing');
+    expect(getComputedStyle(leftControls).flexWrap).toBe('nowrap');
+
+    const send = within(card).getByRole('button', { name: '发送' });
+    const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
+    const thinkingField = card.querySelector<HTMLElement>(
+      '.maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector)',
+    );
+    if (!thinkingField) throw new Error('thinking level field is missing');
+    await waitFor(() => {
+      const cardBox = card.getBoundingClientRect();
+      const sendBox = send.getBoundingClientRect();
+      expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
+      expect(contextGauge).toBeNull();
+      expect(getComputedStyle(thinkingField).display).not.toBe('none');
+      const thinkingBox = thinkingField.getBoundingClientRect();
+      expect(thinkingBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(thinkingBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+      // The remaining controls must stay inside their flex slot rather than
+      // painting over the fixed send slot when the window narrows.
+      const controlsBox = leftControls.getBoundingClientRect();
+      expect(leftControls.scrollWidth).toBeLessThanOrEqual(leftControls.clientWidth + 1);
+      expect(controlsBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+    });
   },
 };
 

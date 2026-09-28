@@ -94,6 +94,9 @@ describe('Workbar topology', () => {
       panels: createSessionWorkbarPanelsState(),
       activeSessionId: 'session-a' as string | undefined,
       collapsedBySession: {} as Record<string, boolean>,
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: false,
       rightWidth: 480,
       bottomHeight: 300,
@@ -235,6 +238,9 @@ describe('Workbar topology', () => {
       ),
       activeSessionId: 'session-a',
       collapsedBySession: { 'session-a': false },
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: true,
       rightWidth: 544,
       bottomHeight: 388,
@@ -262,6 +268,9 @@ describe('Workbar topology', () => {
       ),
       activeSessionId: 'session-a',
       collapsedBySession: { 'session-a': false },
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: true,
       rightWidth: 544,
       bottomHeight: 388,
@@ -280,6 +289,88 @@ describe('Workbar topology', () => {
     assert.equal(isSessionWorkbarCollapsed(loadWorkbarLayout('a')), false);
     assert.equal(isSessionWorkbarCollapsed(loadWorkbarLayout('b')), true);
     assert.equal(isSessionWorkbarCollapsed(loadWorkbarLayout()), true);
+  });
+
+  it('restores the preference for a Workbar only hidden by the compact policy', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+  });
+
+  it('promotes a Workbar opened while compact into the per-Session preference', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: true }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    assert.equal(state.collapsedBySession['a'], false);
+  });
+
+  it('keeps a Workbar the user closed while compact closed when the window widens', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: true });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    assert.equal(state.collapsedBySession['a'], true);
+  });
+
+  it('releases a space-collapsed Workbar to its spell choice, never the preference', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+
+    // The rail taking the room suppresses the Workbar through the flag: the
+    // spell choice stays `false` and nothing reaches collapsedBySession.
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: true });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    assert.equal(state.compactCollapsed['a'], false);
+
+    // Releasing the flag mid-spell restores the open reading.
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: true });
+
+    // Widening clears the suppression with the spell boundary and promotes the
+    // open choice — the squeeze never reaches the stored preference.
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    assert.equal(state.collapsedBySession['a'], false);
+  });
+
+  it('clears space suppression on an explicit collapse choice', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: true });
+    // The user's own collapse wins over the space decision and is what
+    // promotes on widen.
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: true });
+    assert.equal(state.spaceCollapsed, false);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(state.collapsedBySession['a'], true);
   });
 
   it('distinguishes an unhydrated catalog from an authoritative empty snapshot', () => {

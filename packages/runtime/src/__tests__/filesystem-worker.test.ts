@@ -672,6 +672,42 @@ describe('filesystem worker operations', () => {
     assert.equal(await readFile(target, 'utf8'), `${replacement}\n`);
   });
 
+  test('FormatJson preserves numeric literals and refuses invalid JSON before writing', async () => {
+    const root = await temporaryDirectory('maka-worker-format-numbers-');
+    const path = join(root, 'data.json');
+    for (const sortKeys of [false, true]) {
+      for (const source of [
+        '9223372036854775807',
+        '1e400',
+        '-0',
+        '[0.123456789012345678901]',
+        '{"id":9223372036854775807}',
+      ]) {
+        await writeFile(path, source);
+        const response = await executeFilesystemWorkerRequest(
+          await requestFor(
+            { kind: 'format_json', cwd: root, path, sortKeys },
+            { enforcementPath: path, access: 'write', scope: 'exact', targetType: 'file' },
+          ),
+        );
+        assert.ok(response.ok);
+        assert.equal((await readFile(path, 'utf8')).replace(/\s/g, ''), source);
+      }
+    }
+    const invalid = '{"id":9223372036854775807,}';
+    await writeFile(path, invalid);
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        { kind: 'format_json', cwd: root, path, sortKeys: true },
+        { enforcementPath: path, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'format_json');
+    if (response.result.kind === 'format_json') assert.equal(response.result.valid, false);
+    assert.equal(await readFile(path, 'utf8'), invalid);
+  });
+
   test('omits the diff when FormatJson leaves the file unchanged', async () => {
     const root = await temporaryDirectory('maka-worker-format-same-');
     const target = join(root, 'data.json');

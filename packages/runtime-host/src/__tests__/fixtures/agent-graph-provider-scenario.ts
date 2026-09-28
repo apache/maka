@@ -41,6 +41,18 @@ export class AgentGraphProviderScenario {
   constructor(private readonly childResultText: string) {}
 
   respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): void {
+    // The scenario follows user requests, not the Host's ephemeral environment snapshot.
+    body = {
+      ...body,
+      messages: (Array.isArray(body.messages) ? body.messages : []).filter(
+        (message) =>
+          !(
+            message.role === 'user' &&
+            typeof message.content === 'string' &&
+            message.content.startsWith('Runtime Host environment for this turn')
+          ),
+      ),
+    };
     const names = toolNames(body);
     // Read covers both files and the child's Session-scoped tool results.
     if (names.join(',') === 'Glob,Grep,Read') {

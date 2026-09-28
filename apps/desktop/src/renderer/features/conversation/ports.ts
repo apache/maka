@@ -66,6 +66,14 @@ export interface ConversationServices extends Pick<
     setExecutorModelConfiguration?(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<import('../../../shared/desktop-session-projection.js').DesktopSessionUpdateResult<DesktopSessionSummary>>;
     readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
+    promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    updateQueueEntry?(sessionId: string, entryId: string, expectedQueueRevision: number, text: string): Promise<void>;
+    reorderQueueEntries(
+      sessionId: string,
+      entryIds: readonly string[],
+      expectedQueueRevision: number,
+    ): Promise<void>;
   };
   readonly runtimeHosts: {
     subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;

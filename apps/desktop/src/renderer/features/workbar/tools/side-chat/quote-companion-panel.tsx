@@ -17,14 +17,13 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
   ChatView,
   ChatSurfaceLayout,
   Composer,
   ClientCapabilityPrompt,
-  finalAssistantReplyText,
   FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
@@ -34,15 +33,15 @@ import {
   type ComposerHandle,
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
+import type { QuoteRef } from '@maka/core/events';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
 import { preflightAttachmentItems } from '../../../../attachment-preflight';
-import { toComposerIngestItems } from '../../../../composer-attachments';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
-import { deriveTurnFooterActions } from '../../../../turn-footer-actions';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
+import { useAppShellTurnPresentation } from '../../../../application/contracts/turn-presentation.js';
 import {
   createQuoteCompanionCompactionPresentation,
   dispatchQuoteCompanionInput,
@@ -78,6 +77,8 @@ export function QuoteCompanionPanel(props: {
   modelChoices: readonly ChatModelChoice[];
   confirmBypass: () => Promise<boolean>;
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
+  /** Re-stages quotes a retracted send carried, so an edit restores them. */
+  onRestoreQuotes?: (panelId: string, quotes: readonly QuoteRef[]) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
@@ -113,6 +114,7 @@ export function QuoteCompanionPanel(props: {
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
   } = useComposerAttachments({
@@ -165,6 +167,15 @@ export function QuoteCompanionPanel(props: {
         undefined,
         { sessionId },
       );
+    },
+    restoreDraft: (_sessionId, draft) => {
+      if (draft.attachments?.length) restoreAttachments(draftKey, draft.attachments);
+      if (draft.quotes?.length) props.onRestoreQuotes?.(props.panelId, draft.quotes);
+      const input = composerRef.current;
+      if (!input || !draft.text.trim()) return;
+      if (input.getText().trim()) input.appendText(draft.text);
+      else input.setText(draft.text);
+      input.focus();
     },
   });
   useEffect(() => {
@@ -232,28 +243,8 @@ export function QuoteCompanionPanel(props: {
     companion.activeClientCapability ??
     companion.activeQuestion ??
     companion.activeForm;
-  const deriveTurnPresentation = useCallback<
-    NonNullable<ComponentProps<typeof ChatView>['deriveTurnPresentation']>
-  >(
-    (turns) => ({
-      footerActionsByTurn: Object.fromEntries(
-        turns.map((turn) => [
-          turn.turnId,
-          deriveTurnFooterActions({
-            status: turn.status,
-            locale,
-            hasContent: finalAssistantReplyText(turn).trim().length > 0,
-          }).filter((action) => action.id !== 'branch'),
-        ]),
-      ),
-      failedReasonLabels: {},
-      failedSeverities: {},
-      failedExecutionStateLabels: {},
-      lineageBadgesByTurn: {},
-    }),
-    [locale],
-  );
 
+  const deriveTurnPresentation = useAppShellTurnPresentation({ uiLocale: locale, allowBranch: false });
   return (
     <div className="maka-quote-companion">
       <ChatSurfaceLayout
@@ -322,12 +313,10 @@ export function QuoteCompanionPanel(props: {
                     // boundary, not on the hook's optimistic return: an unknown
                     // outcome keeps them staged for retry (#4804).
                     const submitted = pendingAttachments;
-                    const submittedItems =
-                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
                     return companion.steer(
                       text,
-                      submittedItems,
-                      submittedItems
+                      submitted,
+                      submitted.length > 0
                         ? () => clearSubmittedAttachments(submitted)
                         : undefined,
                     );
@@ -344,12 +333,10 @@ export function QuoteCompanionPanel(props: {
                     }
                     // Same admission-boundary retirement as `steer` above.
                     const submitted = pendingAttachments;
-                    const submittedItems =
-                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
                     const accepted = await companion.send(
                       text,
-                      submittedItems,
-                      submittedItems
+                      submitted,
+                      submitted.length > 0
                         ? () => clearSubmittedAttachments(submitted)
                         : undefined,
                     );
@@ -365,10 +352,10 @@ export function QuoteCompanionPanel(props: {
               streaming={companion.streaming}
               processing={companion.processing}
               queuedMessages={companion.queuedMessages}
-              pendingMessages={companion.transientMessages}
               queuedMessageRevision={companion.queuedMessageRevision}
+              pendingMessages={companion.transientMessages}
               onPromoteQueuedEntry={companion.promoteQueuedEntry}
-              onUpdateQueuedEntry={companion.updateQueuedEntry}
+              onEditQueuedEntry={companion.editQueuedEntry}
               onDeleteQueuedEntry={companion.deleteQueuedEntry}
               onReorderQueuedEntries={companion.reorderQueuedEntries}
               draftKey={draftKey}

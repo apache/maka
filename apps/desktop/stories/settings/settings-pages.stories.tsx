@@ -1008,15 +1008,15 @@ const makaBridge = {
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
 let typographyStoryDefaultSlug: string | null = 'zai-live';
-let typographyStorySelectedPetId: string | null = 'storybook.typography-pet';
+let storyPetSelectedId: string | null = 'storybook.pet';
 
-const typographyStoryPet = {
+const storyPet = {
   schema: 'maka.pet/v1',
-  id: 'storybook.typography-pet',
-  displayName: 'Typography Pet',
-  description: 'Exercises action-to-badge transitions in the custom pet rows.',
+  id: 'storybook.pet',
+  displayName: 'Storybook Pet',
+  description: 'An imported pet pack.',
   spriteSheet: {
-    path: 'assets/typography-pet.png',
+    path: 'assets/storybook-pet.png',
     format: 'png',
     frameWidth: 32,
     frameHeight: 32,
@@ -1048,14 +1048,14 @@ const withConnectionDefaultTypographyBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-const withPetActionBadgeTypographyBridge = withScopedMakaBridge({
+const withPetsBridge = withScopedMakaBridge({
   ...makaBridge,
   pets: {
     ...makaBridge.pets,
-    list: async () => [typographyStoryPet],
-    getSelection: async () => typographyStorySelectedPetId,
+    list: async () => [storyPet],
+    getSelection: async () => storyPetSelectedId,
     select: async (petId: string | null) => {
-      typographyStorySelectedPetId = petId;
+      storyPetSelectedId = petId;
       return { ok: true as const, selectedPetId: petId };
     },
   },
@@ -2591,40 +2591,48 @@ export const Appearance: Story = {
     }
   },
 };
-// Real path: 设置 → 外观 → 桌宠. The selected and disabled badges each
-// replace a small action in the same row, so both settled states must retain
-// the action label's type tier.
-export const PetsActionBadgeTypography: Story = {
-  decorators: [withPetActionBadgeTypographyBridge],
+// Real path: 设置 → 外观 → 应用图标 with 浅色和深色用不同图标 turned on.
+// The slot control decides which appearance the icon grid edits.
+export const AppearanceSplitAppIcons: Story = {
+  decorators: [
+    withScopedMakaBridge({
+      ...makaBridge,
+      settings: {
+        ...makaBridge.settings,
+        getClient: async () => ({
+          ...storyClientSettings,
+          appearance: { ...storyClientSettings.appearance, appIconDark: 'ink' as const },
+        }),
+      },
+    }),
+  ],
+  globals: { locale: 'en' },
+  render: () => <SettingsStory section="appearance" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const slots = await canvas.findByRole('radiogroup', { name: 'Use a different icon in dark mode' });
+    const ink = await canvas.findByRole('checkbox', { name: 'Ink' });
+    expect(ink).not.toBeChecked();
+    await userEvent.click(within(slots).getByRole('radio', { name: 'Dark' }));
+    await waitFor(() => expect(ink).toBeChecked());
+  },
+};
+// Real path: 设置 → 外观 → 桌宠 with one imported pet in use, then 关闭宠物.
+// Turning the pet off must hand the row its 使用 action back.
+export const PetsSelectedThenDisabled: Story = {
+  decorators: [withPetsBridge],
   globals: { locale: 'zh-CN' },
   render: () => {
-    typographyStorySelectedPetId = typographyStoryPet.id;
+    storyPetSelectedId = storyPet.id;
     return <SettingsStory section="appearance" />;
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const selectedLabel = await canvas.findByText('正在使用');
-    const selectedBadge = selectedLabel.closest<HTMLElement>('.astryx-badge');
-    const selectedActions = selectedBadge?.closest<HTMLElement>('.settingsRowEnd');
-    const removeButton = selectedActions
-      ? within(selectedActions).getByRole('button', { name: '删除' })
-      : null;
-    if (!selectedBadge || !removeButton) {
-      throw new Error('Selected-pet action row did not render');
-    }
-    await expect(getComputedStyle(selectedBadge).fontSize).toBe(
-      getComputedStyle(removeButton).fontSize,
-    );
-
-    const disableButton = await canvas.findByRole('button', { name: '关闭宠物' });
-    const disableActionFontSize = getComputedStyle(disableButton).fontSize;
-    await userEvent.click(disableButton);
-    const disabledLabels = await canvas.findAllByText('已关闭');
-    const disabledBadge = disabledLabels
-      .map((label) => label.closest<HTMLElement>('.astryx-badge'))
-      .find((badge): badge is HTMLElement => badge !== null);
-    if (!disabledBadge) throw new Error('Disabled-pet action badge did not render');
-    await expect(getComputedStyle(disabledBadge).fontSize).toBe(disableActionFontSize);
+    await canvas.findByText(`当前使用：${storyPet.displayName}`);
+    await expect(canvas.queryByRole('button', { name: '使用' })).not.toBeInTheDocument();
+    await userEvent.click(await canvas.findByRole('button', { name: '关闭宠物' }));
+    await canvas.findByRole('button', { name: '使用' });
+    await expect(canvas.queryByRole('button', { name: '关闭宠物' })).not.toBeInTheDocument();
   },
 };
 
@@ -2700,6 +2708,51 @@ export const UsageSingleProvider: Story = {
 export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement, globals }) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
+    const tabs = within(await canvas.findByRole('navigation', { name: copy.viewAria }));
+    await userEvent.click(tabs.getByRole('button', { name: new RegExp(`^${copy.tabs[2]}`) }));
+    const table = within(await canvas.findByRole('table', { name: copy.tables.modelsAria }));
+
+    async function expectExactTooltip(trigger: HTMLElement, exactValue: string) {
+      await waitFor(() => {
+        const tooltipId = trigger.getAttribute('aria-describedby');
+        expect(tooltipId).toBeTruthy();
+        const tooltip = canvasElement.ownerDocument.getElementById(tooltipId!);
+        expect(tooltip).toHaveAttribute('role', 'tooltip');
+        expect(tooltip).toBeVisible();
+        expect(tooltip?.textContent).toBe(exactValue);
+        expect(trigger).toHaveAccessibleDescription(exactValue);
+      });
+    }
+
+    for (const compact of ['624K', '318K', '214K', '96K', '32K']) {
+      const token = table.getByText(compact);
+      const cell = token.closest('td');
+      if (!cell) throw new Error('Token count did not render inside a table cell');
+      const range = canvasElement.ownerDocument.createRange();
+      range.selectNodeContents(token);
+      const cellStyle = getComputedStyle(cell);
+      const requiredWidth = range.getBoundingClientRect().width
+        + Number.parseFloat(cellStyle.paddingLeft) + Number.parseFloat(cellStyle.paddingRight);
+      expect(requiredWidth).toBeLessThanOrEqual(cell.clientWidth);
+    }
+
+    const first = table.getByText('624K');
+    await userEvent.hover(first);
+    await expectExactTooltip(first, '624,000');
+    await userEvent.unhover(first);
+    expect(first).toHaveAttribute('tabindex', '0');
+    first.focus();
+    await userEvent.tab();
+    const second = table.getByText('318K');
+    expect(second).toHaveFocus();
+    await expectExactTooltip(second, '318,000');
+    second.blur();
+  },
 };
 // Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {
@@ -2998,7 +3051,7 @@ export const DataCachedHostRevalidation: Story = {
     await expect(canvas.getByRole('button', { name: '复制路径' })).toBeDisabled();
     await expect(canvas.getByRole('button', { name: '导出配置…' })).toBeDisabled();
     await expect(canvas.getByRole('button', { name: '导入配置…' })).toBeDisabled();
-    await expect(canvas.getByRole('switch', { name: '模型连接' })).toBeEnabled();
+    await expect(canvas.getByRole('checkbox', { name: '模型连接' })).toBeEnabled();
     await expect(
       canvas.getByRole('combobox', { name: '导入时同名连接的处理方式' }),
     ).toBeEnabled();
@@ -3549,6 +3602,22 @@ export const ArchivedTasks: Story = {
   render: () => (
     <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The newer revision represents this task family in the archived list.
+    const title = 'Single agent_spawn, second attempt';
+    const unarchive = await canvas.findByRole('button', { name: `取消归档「${title}」` });
+    const remove = await canvas.findByRole('button', { name: `彻底删除「${title}」` });
+    await expect(unarchive).toBeVisible();
+    await expect(remove).toBeVisible();
+    await expect(unarchive.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(remove.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(canvas.queryByRole('button', { name: `「${title}」的更多操作` })).toBeNull();
+    const row = unarchive.closest('li');
+    if (!row) throw new Error('archived task row is missing');
+    await userEvent.click(unarchive);
+    await waitFor(() => expect(row).not.toBeInTheDocument());
+  },
 };
 
 // Real path: 设置 → 导入任务 on a machine that has Codex installed.

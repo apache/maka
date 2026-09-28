@@ -43,6 +43,7 @@
 .maka-model-wheel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted-foreground); transform: scale(0.96); transform-origin: left center; transition: transform 180ms ease-out, color 180ms ease-out; }
 .maka-model-wheel-option[data-active='true'] .maka-model-wheel-label { font-weight: 600; color: var(--foreground); transform: scale(1); }
 .maka-model-wheel-viewport[aria-disabled='true'] { opacity: 0.5; overflow-y: hidden; }
+
 @media (prefers-reduced-motion: reduce) { .maka-model-wheel-label { transition: none; } }
 .maka-model-wheel-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--muted-foreground); }
 .maka-model-wheel-check { position: absolute; right: 8px; top: 50%; translate: 0 -50%; color: var(--muted-foreground); }
@@ -110,11 +111,6 @@
   }
 }
 
-.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
-.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
-.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
-
-
 /* One shape. The tone and emphasis modifiers that used to sit here — a filled
    plate, four tinted borders, four value inks, a dimmed zero — were reachable
    only from this package's own story; the product's single call site renders
@@ -158,7 +154,7 @@
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
 
-.maka-quote-chip { display: inline-flex; gap: 4px; padding-left: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
+.maka-quote-chip { display: inline-flex; gap: 4px; padding-inline: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
 .maka-quote-chip-expanded { width: 100%; max-width: 100%; align-items: flex-start; padding-block: 4px; border-radius: var(--radius-surface); }
 /* #1879: measured 24px natural — a 20px line box plus 2 x 2px padding — and
    `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
@@ -167,8 +163,6 @@
    type lives on `.maka-quote-chip-text`, which is why the derived scan needed
    two arms rather than three to see it at all. */
 .maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
-.maka-quote-chip-removable { padding-right: 2px; }
-.maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
 .maka-quote-chip-text {
@@ -192,16 +186,11 @@
 .maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
-.maka-quote-chip-remove {
-  width: 16px;
-  height: 16px;
-  min-width: 16px;
-  min-height: 16px;
-  border-radius: 50%;
-  padding: 0;
-}
-.maka-quote-chip-remove > svg,
-.maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
+
+.maka-quote-hover-card { max-width: 360px; }
+.maka-quote-comment-panel { width: 320px; max-width: 100%; }
+/* Painted rather than selected: the note input takes the DOM selection. */
+::highlight(maka-quote-mark) { background-color: var(--selection); }
 
 .maka-session-todo-empty {
   margin: 0;
@@ -1132,7 +1121,6 @@
   box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
 
-.maka-message-status-time { display: inline-flex; align-items: center; gap: 4px; }
 
 .maka-choice-panel { outline: none; }
 

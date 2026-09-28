@@ -19,6 +19,28 @@
 
 /* Sidebar — SideNav shell, session rows, footer update chip.
  * Session rows are Astryx SideNavItem; this file only owns product-only chrome. */
+/* Justified: the Agents shell reuses shared sidebar/session-panel primitives,
+   but this surface must read as a transparent rail. Keep these `!important`
+   resets until the primitive chrome is split from layout. */
+.agents-sidebar {
+  background: transparent !important;
+  contain: layout paint style;
+  flex-shrink: 0;
+}
+
+.agents-sidebar[data-resizing="true"] {
+  box-shadow: none !important;
+}
+
+.agents-layout-root aside[data-settings-nav-column].agents-sidebar > div {
+  background: transparent;
+}
+
+.maka-session-panel.agents-sidebar {
+  background: transparent !important;
+  contain: layout paint style;
+}
+
 .maka-session-panel {
   min-width: 0;
   min-height: 0;
@@ -327,6 +349,7 @@
 }
 
 .maka-sidebar-hover-card-path,
+.maka-sidebar-hover-card-location,
 .maka-sidebar-hover-card-project {
   min-width: 0;
   overflow: hidden;

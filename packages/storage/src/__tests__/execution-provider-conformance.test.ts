@@ -30,6 +30,7 @@ import { invocationOpening } from './fixtures/invocation-opening.js';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { AgentGraphScheduleRevisionConflictError } from '@maka/core/agent-graph-schedule';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
@@ -79,6 +80,38 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(backend + ': graph wake exhaustion passes through the execution facade', async () => {
+    await withProvider(make(), async ({ graphControlStore: graph }) => {
+      await graph.claimAgentGraphSupervisorWake({
+        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: 'session-1',
+      });
+      const started = await graph.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        turnId: 'turn-1',
+      });
+      assert.equal(started.acquired, true);
+      await graph.completeAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        status: 'retryable_failed',
+        failureReason: 'provider failure',
+      });
+      const exhausted = await graph.exhaustAgentGraphSupervisorWake(
+        'graph-1',
+        'wake-1',
+        'attempt limit',
+      );
+      assert.equal(exhausted.status, 'exhausted');
+      assert.deepEqual(await graph.listRetryableAgentGraphSupervisorWakes(), []);
+    });
+  });
   test(
     backend + ': plugin executor routes survive configuration and catalog projection',
     async () => {
@@ -2224,6 +2257,32 @@ for (const backend of ['Local', 'Memory'] as const) {
         (await s.readImmutableRuntimeEvents('tool-session', 'tool-run'))[0]!.author,
         'user',
       );
+    });
+  });
+  test(backend + ': unknown-outcome terminal settles dispatched tools atomically', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const { prepared } = toolInputs();
+      await s.commitToolPrepared(prepared);
+      const terminal: RuntimeEvent = {
+        ...prepared.dispatchRuntimeEvent,
+        id: 'unknown-outcome-terminal',
+        status: 'failed',
+        actions: {
+          endInvocation: true,
+          stateDelta: { recovered: true, recoveryReason: 'outcome_unknown' },
+        },
+      };
+      await assert.rejects(
+        s.ensureTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal),
+      );
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      assert.equal((await s.listUnsettledToolOperations('tool-session')).length, 0);
+      assert.equal((await s.readImmutableRuntimeEvents('tool-session', 'tool-run')).length, 3);
     });
   });
   for (const stage of ['commitToolPrepared', 'commitToolOutcome'] as const) {

@@ -60,6 +60,44 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       return conversation.left >= 0 && conversation.right <= innerWidth + 1;
     })).toBe(true);
   }
+  const shellFloor = await page.locator('.maka-shell-astryx').evaluate((element) =>
+    Math.round(parseFloat(getComputedStyle(element).minWidth)));
+  const nativeMinWidth = await mainWindow.evaluate((window) => window.getMinimumSize()[0]);
+  // The renderer's shell floor can be below the native safety floor when both
+  // panels are hidden. Requests below the native floor must clamp the whole
+  // host and its docked WorkHub together instead of reducing the main window
+  // to an unusable titlebar sliver.
+  expect(nativeMinWidth).toBe(600);
+  const desktopConversationFloor = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  const workhubConversationFloor = await workhub.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  expect(workhubConversationFloor).toBe(desktopConversationFloor);
+  await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+    getComputedStyle(element).minWidth)).toBe(desktopConversationFloor);
+  const dockLeft = await page.locator('.workHubDock').evaluate((element) =>
+    Math.round(element.getBoundingClientRect().left));
+  let frozenDockWidth: number | undefined;
+  for (const width of [shellFloor - 10, shellFloor - 40]) {
+    const contentWidth = await mainWindow.evaluate((window, nextWidth) => {
+      window.setBounds({ width: nextWidth });
+      return window.getContentSize()[0];
+    }, width);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(nativeMinWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(shellFloor);
+    const dockWidth = await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width));
+    expect(await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(dockLeft);
+    frozenDockWidth ??= dockWidth;
+    expect(dockWidth).toBe(frozenDockWidth);
+    await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width))).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(0);
+  }
   const restoredContentWidth = await mainWindow.evaluate((window, bounds) => {
     window.setBounds(bounds);
     return window.getContentSize()[0];
@@ -417,7 +455,7 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(prompt).toHaveCount(1);
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await expect(stop).toBeVisible();
-  const followups = workhub.locator('[data-queue-placement="next_turn"] .maka-composer-queue-text');
+  const followups = workhub.locator('.maka-composer-queue .maka-composer-queue-text');
   const queuedTexts = ['下一轮整理测试结果', '再下一轮补充使用说明'] as const;
   await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[0]);
   await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
@@ -428,17 +466,6 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('Enter');
   await expect(followups).toHaveText(queuedTexts);
-  const shortcuts = workhub.getByRole('button', { name: '发送快捷键', exact: true });
-  await expect(shortcuts).toHaveCount(1);
-  await shortcuts.hover();
-  const shortcutHint = workhub.getByRole('tooltip');
-  const steerModifier = process.platform === 'darwin' ? 'Cmd' : 'Ctrl';
-  await expect(shortcutHint).toHaveText(`${steerModifier}+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行`);
-  await expect.poll(() => shortcutHint.evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
-  })).toBe(true);
-  await workhub.screenshot({ path: testInfo.outputPath('workhub-queue-shortcuts.png') });
   for (const text of queuedTexts) {
     await expect(workhub.locator('.maka-user-message').filter({ hasText: text })).toHaveCount(0);
   }

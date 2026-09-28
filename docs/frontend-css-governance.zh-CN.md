@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-27
 owners:
   - maka-backend
 ---
@@ -40,11 +40,12 @@ owners:
 - `apps/desktop/src/renderer/styles.css` 只能作为样式入口文件使用。
 - 它只允许包含 `@import` 和顶层入口编排语句。
 - 新增的 per-surface selector 规则块必须放在 `apps/desktop/src/renderer/styles/**/*.css`。
-- `maka-tokens.css` 尾部的历史 recipe 和 `reference-shell.css` 是待收敛的 transitional exceptions；不要继续向这两个例外增加 surface 规则。
+- `maka-tokens.css` 只放 token（含 type-role 表及其代码字体重绑定）。文档级默认样式在 `styles/document.css`；surface 规则一律不进 token 文件。
 
 ### Selector 命名
 
 - renderer 与 `@maka/ui` 的共享 selector 使用 kebab-case `.maka-*` 方言。
+- `agents-*` 类名已冻结：保留现有的，不再新增 `agents-*` selector 或类名。
 - 已有的 `styles/settings/**` surface 使用 camelCase `.settings*` selector；settings 内的新 selector 应延续该方言，避免同一 surface 混用两套命名。
 - 在 settings 的 concern 文件之间移动现有 selector 时不要求全仓重命名；未来若统一命名，应作为显式兼容性改动单独推进。
 
