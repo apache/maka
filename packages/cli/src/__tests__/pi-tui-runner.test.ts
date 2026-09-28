@@ -8527,6 +8527,78 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('blocks Alt+Up for the entire in-progress switch window, not just its drain', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // End the turn: the runner is idle while the Host still holds the queued
+    // message and the quote riding it.
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    // Park the idle `/session` INSIDE the driver's switch, before it re-keys:
+    // the real driver spends this window stopping user commands and opening
+    // the target Session channel, and Alt+Up stays live throughout (#5265
+    // review).
+    driver.switchGate = deferred<void>();
+    driver.retractGate = deferred<void>();
+    terminal.input('/session session-other');
+    terminal.input('\r');
+    await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('switch-start:')));
+
+    // Alt+Up in that window must not send a retraction for the old Session:
+    // the Host would remove the queued entries while the driver re-keys, and
+    // the switched-session fence would then discard what the Host removed.
+    terminal.input('\x1b[1;3A'); // Alt+Up
+    await delay(50);
+    assert.equal(
+      driver.retractCalls,
+      0,
+      'no queue.retract may cross while the switch is still re-keying',
+    );
+
+    // Re-key while a retraction response would still be pending, then let any
+    // response land: the queued entries must survive untouched either way.
+    driver.switchGate.resolve();
+    await waitFor(() => driver.getSessionId() === 'session-other');
+    driver.retractGate.resolve();
+    await delay(30);
+    assert.equal(driver.queuedRows.length, 1, 'the queued entry stays on the Host queue');
+    assert.ok(
+      !driver.eventLog.some((entry) => entry.startsWith('retract-done:')),
+      'no retraction completed: ' + driver.eventLog.join(','),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('shows an in-progress notice while the rewind branch is being created', async () => {
     const terminal = new FakeTerminal();
     const driver = new DeferredRewindDriver(
@@ -14002,6 +14074,7 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
   readonly eventLog: string[] = [];
   retractGate: ReturnType<typeof deferred<void>> | undefined = undefined;
   enqueueGate: ReturnType<typeof deferred<void>> | undefined = undefined;
+  switchGate: ReturnType<typeof deferred<void>> | undefined = undefined;
   #retractCalls = 0;
   #stopCalls = 0;
   #turnStarted = false;
@@ -14059,6 +14132,11 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
   override async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
     // The base fake leaves `sessionId` alone; a mid-turn switch must move the
     // driver's session for the retraction-fence scenario to be reachable.
+    this.eventLog.push(`switch-start:${sessionId}`);
+    // The real driver spends several asynchronous calls (stopping user
+    // commands, opening the target Session channel) before it re-keys; the
+    // gate holds a test inside that in-progress switch window.
+    if (this.switchGate) await this.switchGate.promise;
     this.eventLog.push(`switch:${sessionId}`);
     this.sessionId = sessionId;
     return super.switchSession(sessionId);

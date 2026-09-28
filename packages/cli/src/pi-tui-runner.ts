@@ -1305,6 +1305,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       await Promise.allSettled([...pendingRetractionTasks]);
     }
   };
+  // A session switch re-keys the driver only partway through its work: the
+  // driver stops user commands and opens the target Session's channel before
+  // adopting the new id, and Alt+Up stays live through that whole window. A
+  // retraction asked for there starts after the switch's `settleRetractions`
+  // drain yet still addresses the old Session — the Host removes the queued
+  // entries while the driver re-keys, and the switched-session fence then
+  // discards the returned text and quotes. New retractions are blocked for
+  // the entire switch instead (#5265 review).
+  let sessionSwitchesInFlight = 0;
+  const holdSwitchWindow = async <T>(body: () => Promise<T>): Promise<T> => {
+    sessionSwitchesInFlight += 1;
+    try {
+      return await body();
+    } finally {
+      sessionSwitchesInFlight -= 1;
+    }
+  };
 
   const requestTurnInterrupt = () => {
     // A detach in flight is not the running Turn's owner acting on it — the
@@ -1551,6 +1568,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Alt+↑: take back every queued message from the Runtime Host, joined and
   // prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
+    // A session switch blocks new retractions for its entire window: the
+    // switch's own settle drain only covers retractions asked for before it,
+    // and past that drain a retraction would still address the old Session
+    // while the driver is busy re-keying (#5265 review). Swallowing the
+    // keypress loses nothing: the entries stay queued and Alt+Up works once
+    // the switch lands.
+    if (sessionSwitchesInFlight > 0) return;
     const retractionTask = (async () => {
       // Same session fence as the interrupt path: a mid-turn `/session` that
       // lands while enqueues or the retraction are in flight must neither
@@ -2034,7 +2058,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The driver validates the durable cwd before adopting the resumed session.
   // A failure leaves the active session untouched and the next prompt still
   // lands on the old one.
-  const switchSession = async (sessionId: string, relocateCwd?: string) => {
+  const runSessionSwitch = async (sessionId: string, relocateCwd?: string) => {
     // A session switch waits for an in-flight retraction: the retracted text
     // and quotes must land in the session they were asked for before the
     // driver re-keys (#5109 review).
@@ -2082,6 +2106,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     requestRender();
   };
+  // The whole switch — its settle drain, the driver's asynchronous re-key,
+  // and the adoption — runs inside the switch window so Alt+Up cannot send a
+  // retraction for the session being left (#5265 review).
+  const switchSession = (sessionId: string, relocateCwd?: string): Promise<void> =>
+    holdSwitchWindow(() => runSessionSwitch(sessionId, relocateCwd));
 
   // Mid-turn `/session` switch-away (#3380): adopt another Session while a
   // Turn is still running on the current one. In Runtime Host mode the Turn is
@@ -2091,7 +2120,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // tail unwinds through the superseded branch and releases busy/activity,
   // then either that tail or the startPendingAttachedTurn below starts the
   // freshly attached Turn, whichever observes an idle runner first.
-  const switchAwayMidTurn = async (sessionId: string) => {
+  const runMidTurnSwitch = async (sessionId: string) => {
     // Same serialization as the idle switch: the in-flight retraction lands
     // its payload in the session it was asked for first (#5109 review).
     await settleRetractions();
@@ -2138,6 +2167,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       startPendingAttachedTurn();
     }
   };
+  // Same window as the idle switch: the mid-turn detach also re-keys the
+  // driver through asynchronous work, so Alt+Up waits it out (#5265 review).
+  const switchAwayMidTurn = (sessionId: string): Promise<void> =>
+    holdSwitchWindow(() => runMidTurnSwitch(sessionId));
 
   const stopSideParentObserver = async (
     pair: NonNullable<typeof sideConversation>,
@@ -2355,25 +2388,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push(pendingNotice);
     requestRender();
     try {
-      const result = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
-        // The driver refuses rewind with a machine code when the selected
-        // turn carries structured context the TUI cannot restore (#5109).
-        // Render the localized catalog copy for that code instead of the
-        // driver's English fallback.
-        const code = (error as { code?: unknown })?.code;
-        if (
-          code === 'rewind_unsupported_attachments' ||
-          code === 'rewind_unsupported_directory_references'
-        ) {
-          const localized =
-            code === 'rewind_unsupported_attachments'
-              ? TUI_REWIND_COPY[locale].unsupportedAttachments
-              : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
-          throw new Error(localized);
-        }
-        throw error;
+      // Same switch window as /session: rewind re-keys the driver through its
+      // own asynchronous branch-and-switch, and a retraction crossing that
+      // window would address the session being left (#5265 review).
+      const result = await holdSwitchWindow(async () => {
+        const rewind = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
+          // The driver refuses rewind with a machine code when the selected
+          // turn carries structured context the TUI cannot restore (#5109).
+          // Render the localized catalog copy for that code instead of the
+          // driver's English fallback.
+          const code = (error as { code?: unknown })?.code;
+          if (
+            code === 'rewind_unsupported_attachments' ||
+            code === 'rewind_unsupported_directory_references'
+          ) {
+            const localized =
+              code === 'rewind_unsupported_attachments'
+                ? TUI_REWIND_COPY[locale].unsupportedAttachments
+                : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
+            throw new Error(localized);
+          }
+          throw error;
+        });
+        await applySwitchResult(rewind);
+        return rewind;
       });
-      await applySwitchResult(result);
       await discardCurrentSidePair();
       // The branched session starts clean: any quotes staged for the previous
       // session are gone, and the rewound turn's own quotes become the new
