@@ -465,7 +465,7 @@ export class HostRuntimeResourceCoordinator
         outputVisibility: 'private',
         instruction:
           state.phase === 'resumed'
-            ? 'The user checked that this terminal is ready and explicitly pressed Resume. Continue the original task now: send the next requested command to this same ref under existing permissions. Do not ask for another confirmation, a post-login prompt, or shared output before sending that command. The user confirmation is not machine-verified authentication success: do not claim success or describe unseen output. After executing the command, ask the user to review and share its non-sensitive result in an ordinary message, then use Read on this ref to retrieve the published observation. Do not call handoff again just to wait for sharing; finish the turn if necessary and read the shared observation when the user replies.'
+            ? 'The user checked that this terminal is ready and explicitly pressed Resume. Continue the original task now: send the next requested command to this same ref under existing permissions. Do not ask for another confirmation or a post-login prompt. The user confirmation is not machine-verified authentication success: do not claim success or describe unseen output. This terminal output remains private and unavailable to Read. If observing the result is necessary, report that limitation. Do not ask the user to copy private terminal output into chat or hand off again just to inspect the result.'
             : 'The handoff closed without returning control. Do not retry credentials or recreate the original terminal.',
       });
     } catch (error) {
@@ -586,7 +586,7 @@ export class HostRuntimeResourceCoordinator
           delete state.connectionId;
           delete state.controllerId;
           // Hiding the card releases its controller, not the live private output.
-          // Returning must be able to reclaim the same handoff and share results.
+          // Returning must be able to reclaim the same private display.
           return { ok: true as const, result: result('observed') };
         }
         if (input.action === 'observe') {
@@ -604,32 +604,6 @@ export class HostRuntimeResourceCoordinator
               },
             },
           };
-        }
-        if (input.action === 'share') {
-          if (state.phase !== 'resumed') throw new Error('Resume before sharing a new observation');
-          const snapshot = await this.#humanControl!.readPrivatePtySnapshot(
-            state.sessionId,
-            state.ref,
-          );
-          if (
-            snapshot.sequence !== input.sequence ||
-            !input.text ||
-            !snapshot.text.includes(input.text)
-          )
-            return {
-              ok: true as const,
-              result: {
-                ...result('rejected'),
-                rejection: 'observation_expired' as const,
-              },
-            };
-          await this.#humanControl!.sharePrivatePtyObservation(
-            state.sessionId,
-            state.ref,
-            input.sequence,
-            input.text,
-          );
-          return { ok: true as const, result: result('shared') };
         }
         if (input.action !== 'input' || state.phase !== 'human')
           throw new Error('Terminal is not accepting private input');
@@ -721,7 +695,7 @@ export class HostRuntimeResourceCoordinator
   #retainTerminalHandoff(key: string, state: TerminalHandoffState): void {
     if (this.#handoffs.get(key) !== state) return;
     this.#terminalHandoffs.delete(key);
-    // A resumed live process still needs its review/share surface. Only closed
+    // A resumed live process still needs its private display. Only closed
     // tombstones are bounded; live state dies with the resource or Host drain.
     if (state.phase !== 'closed') return;
     this.#terminalHandoffs.set(key, state);

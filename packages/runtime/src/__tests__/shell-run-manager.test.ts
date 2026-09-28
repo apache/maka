@@ -135,15 +135,9 @@ describe('ShellRunProcessManager', () => {
       );
       const privateView = await manager.readPrivatePtySnapshot('session-1', initial.ref);
       assert.ok(privateView.text.includes(secret), 'fixture must actually echo after Resume');
-      const shared = 'CONTINUITY:handoff-preserved:/tmp';
-      await manager.sharePrivatePtyObservation(
-        'session-1',
-        initial.ref,
-        privateView.sequence,
-        shared,
-      );
       const observed = await manager.readRuntimeResource('session-1', initial.ref, NO_ABORT);
-      assert.ok(JSON.stringify(observed).includes(shared));
+      assert.equal(JSON.stringify(observed).includes('CONTINUITY:handoff-preserved:/tmp'), false);
+      assert.match(JSON.stringify(observed), /Terminal output is private/);
       const persisted = await store.listSessionShellRuns('session-1');
       for (const projection of [
         observed,

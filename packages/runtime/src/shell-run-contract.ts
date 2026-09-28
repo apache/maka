@@ -157,7 +157,6 @@ export interface PtyControlWriter {
 }
 
 export interface PtyPrivateSnapshot {
-  readonly sequence: number;
   readonly text: string;
   readonly inputOpen: boolean;
 }
@@ -173,12 +172,6 @@ export interface PtyHandoffController {
   ): Promise<void>;
   readPrivatePtySnapshot(sessionId: string, ref: string): Promise<PtyPrivateSnapshot>;
   resumePtyHandoff(sessionId: string, ref: string): Promise<boolean>;
-  sharePrivatePtyObservation(
-    sessionId: string,
-    ref: string,
-    sequence: number,
-    text: string,
-  ): Promise<void>;
 }
 
 export function validateWriteStdinInput(input: ShellRunWriteInput): void {

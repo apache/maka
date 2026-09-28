@@ -61,12 +61,10 @@ describe('Host Runtime Resource coordinator', () => {
         },
         writePrivatePtyInput: async () => {},
         readPrivatePtySnapshot: async () => ({
-          sequence: 0,
           text: '',
           inputOpen: false,
         }),
         resumePtyHandoff: async () => false,
-        sharePrivatePtyObservation: async () => {},
       },
       interactionAuthority: () => ({
         requestTerminalHandoff: async () => {
@@ -112,12 +110,10 @@ describe('Host Runtime Resource coordinator', () => {
           inputs.push(input);
         },
         readPrivatePtySnapshot: async () => ({
-          sequence: 1,
           text: 'private',
           inputOpen: true,
         }),
         resumePtyHandoff: async () => true,
-        sharePrivatePtyObservation: async () => {},
       },
       interactionAuthority: () => ({
         requestTerminalHandoff: async (input) => {
@@ -286,11 +282,6 @@ describe('Host Runtime Resource coordinator', () => {
     await control({ ...reattached, action: 'ready' }, connection('reconnected'));
     const returned = await control({ ...reattached, action: 'observe' }, connection('reconnected'));
     assert.equal(returned.ok && returned.result.display?.text, 'private');
-    const shared = await control(
-      { ...reattached, action: 'share', sequence: 1, text: 'private' },
-      connection('reconnected'),
-    );
-    assert.equal(shared.ok && shared.result.status, 'shared');
     host.observeShellRunUpdate({
       ...ptyUpdate(),
       result: { ...ptySnapshot(), status: 'completed', exitCode: 0 },
@@ -332,14 +323,12 @@ describe('Host Runtime Resource coordinator', () => {
           throw new Error('partial write');
         },
         readPrivatePtySnapshot: async () => ({
-          sequence: 1,
           text: 'private',
           inputOpen: true,
         }),
         resumePtyHandoff: async () => {
           assert.fail('must not resume');
         },
-        sharePrivatePtyObservation: async () => {},
       },
       interactionAuthority: () => ({
         requestTerminalHandoff: async (input) => {
@@ -417,9 +406,8 @@ describe('Host Runtime Resource coordinator', () => {
       humanControl: {
         preparePtyHandoff: async () => {},
         writePrivatePtyInput: async () => {},
-        readPrivatePtySnapshot: async () => ({ sequence: 1, text: 'review', inputOpen: false }),
+        readPrivatePtySnapshot: async () => ({ text: 'private', inputOpen: false }),
         resumePtyHandoff: async () => true,
-        sharePrivatePtyObservation: async () => {},
       },
       interactionAuthority: () => ({
         requestTerminalHandoff: async (request) => {

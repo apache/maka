@@ -29,49 +29,44 @@ import { isValidPrivateTerminalInput, terminalFeedback } from './terminal-handof
 
 const COPY = {
   en: {
-    waiting: 'Your input is private. The agent is waiting.', resumed: 'Control returned to the agent. Output stays private.',
+    waiting: 'The agent is waiting for your private input.', details: 'Connection details',
     input: 'Private terminal input', submit: 'Submit', resume: 'Done, continue task', cancel: 'Cancel and stop',
     show: 'Show input', hide: 'Hide input',
-    shared: 'Selected observation shared with the agent.', share: 'Share selected text with the agent',
-    review: 'Review new output and select only non-sensitive text to share. Sharing records that text in the task.',
-    sent: 'Submitted. Check the terminal response; if it asks you to retry, enter another response. Submission does not confirm authentication.',
-    unknown: 'Delivery could not be confirmed. Input was not retried. Stop this terminal to avoid duplicate input.',
-    disconnected: 'Connection to this terminal was lost. Input and Resume are paused. Reconnect to check the original process; nothing will be resent.',
+    sent: 'Submitted. Check the terminal response.',
+    unknown: 'Delivery is uncertain. Stop this terminal to avoid duplicate input.',
+    disconnected: 'Connection lost. Reconnect to the original terminal; input will not be resent.',
     reconnect: 'Reconnect to original terminal', invalid: 'Not sent. Enter one line without control characters, up to 32 KB.',
-    select: 'Select current non-sensitive text to share. The output may have changed; select it again.',
     target: 'Execution host',
-    password: 'SSH is requesting a password. Enter it below.', authentication_retry: 'SSH rejected authentication and is asking for the password again. Check the account and retry.',
-    exited: 'The original terminal process exited. This handoff has ended; no replacement was started.',
-    cancelled: 'Terminal stopped. This handoff was cancelled.', unavailable: 'The original terminal is no longer available. Control was not returned to the agent.',
+    password: 'Enter the SSH password below.', authentication_retry: 'SSH rejected authentication. Check the password and try again.',
+    exited: 'The original terminal process exited.',
+    cancelled: 'Terminal stopped.', unavailable: 'The original terminal is unavailable.',
   },
   'zh-CN': {
-    waiting: '输入仅发送给此终端，Agent 正在等待。', resumed: '已交还 Agent，输出仍保持私密。',
+    waiting: 'Agent 正在等待你的私密输入。', details: '连接详情',
     input: '私密终端输入', submit: '提交', resume: '已完成，继续任务', cancel: '取消并停止',
     show: '显示输入', hide: '隐藏输入',
-    shared: '已将所选观察分享给 Agent。', share: '将所选文字分享给 Agent', review: '请审阅新输出，只选择非敏感文字分享。分享的文字将记入任务。',
-    sent: '已提交，请查看终端回应；如要求重试，请重新输入。提交不代表验证通过。',
-    unknown: '无法确认投递结果，未自动重试。请停止此终端，避免重复输入。',
-    disconnected: '与终端的连接已中断，已暂停输入和交还。请重新连接以检查原进程，不会重发输入。',
+    sent: '已提交，请查看终端回应。',
+    unknown: '无法确认是否送达，请停止此终端，避免重复输入。',
+    disconnected: '连接已中断，请重新连接原终端。输入不会重发。',
     reconnect: '重新连接原终端', invalid: '尚未发送。请输入不含控制字符的单行内容，最多 32 KB。',
-    select: '请选择当前的非敏感文字。输出可能已变化，请重新选择。', target: '执行主机',
-    password: 'SSH 正在请求密码，请在下方输入。', authentication_retry: 'SSH 拒绝了本次验证，正在重新请求密码。请核对账户后重试。',
-    exited: '原终端进程已退出，本次接管已结束，未启动替代进程。', cancelled: '已停止终端并取消本次接管。', unavailable: '原终端已不可用，未将控制权交还 Agent。',
+    target: '执行主机',
+    password: '请在下方输入 SSH 密码。', authentication_retry: 'SSH 验证未通过，请核对密码后重试。',
+    exited: '原终端进程已退出。', cancelled: '已停止终端。', unavailable: '原终端已不可用。',
   },
   'zh-TW': {
-    waiting: '輸入僅傳送給此終端，Agent 正在等待。', resumed: '已交還 Agent，輸出仍保持私密。',
+    waiting: 'Agent 正在等待你的私密輸入。', details: '連線詳情',
     input: '私密終端輸入', submit: '提交', resume: '已完成，繼續任務', cancel: '取消並停止',
     show: '顯示輸入', hide: '隱藏輸入',
-    shared: '已將所選觀察分享給 Agent。', share: '將所選文字分享給 Agent', review: '請審閱新輸出，只選擇非敏感文字分享。分享的文字將記入任務。',
-    sent: '已提交，請查看終端回應；如要求重試，請重新輸入。提交不代表驗證通過。',
-    unknown: '無法確認投遞結果，未自動重試。請停止此終端，避免重複輸入。',
-    disconnected: '與終端的連線已中斷，已暫停輸入及交還。請重新連線以檢查原行程，不會重送輸入。',
+    sent: '已提交，請查看終端回應。',
+    unknown: '無法確認是否送達，請停止此終端，避免重複輸入。',
+    disconnected: '連線已中斷，請重新連線原終端。輸入不會重送。',
     reconnect: '重新連線原終端', invalid: '尚未傳送。請輸入不含控制字元的單行內容，最多 32 KB。',
-    select: '請選擇目前的非敏感文字。輸出可能已變更，請重新選擇。', target: '執行主機',
-    password: 'SSH 正在要求密碼，請在下方輸入。', authentication_retry: 'SSH 拒絕了本次驗證，正在重新要求密碼。請核對帳戶後重試。',
-    exited: '原終端行程已結束，本次接管已結束，未啟動替代行程。', cancelled: '已停止終端並取消本次接管。', unavailable: '原終端已無法使用，未將控制權交還 Agent。',
+    target: '執行主機',
+    password: '請在下方輸入 SSH 密碼。', authentication_retry: 'SSH 驗證未通過，請核對密碼後重試。',
+    exited: '原終端行程已結束。', cancelled: '已停止終端。', unavailable: '原終端已無法使用。',
   },
 } satisfies UiCatalog<Record<string, string>>;
-type Notice = '' | 'sent' | 'unknown' | 'invalid' | 'shared' | 'select';
+type Notice = '' | 'sent' | 'unknown' | 'invalid';
 
 export function TerminalHandoffPanel(props: {
   sessionId: string;
@@ -85,26 +80,26 @@ export function TerminalHandoffPanel(props: {
   const [state, setState] = useState<RuntimeResourceHandoffResult>();
   const [notice, setNotice] = useState<Notice>('');
   const [busy, setBusy] = useState(false);
-  const [uncertain, setUncertain] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [disconnected, setDisconnected] = useState(false);
+  const [connection, setConnection] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [revision, setRevision] = useState(0);
   // Component-local only: never reuse chat drafts or generic form responses.
   const [privateInput, setPrivateInput] = useState('');
   const [visible, setVisible] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const screen = useRef<HTMLPreElement>(null);
   const sending = useRef(false);
   const displayEpoch = useRef(0);
   const identity = { sessionId: props.sessionId, requestId: props.request.requestId, controllerId };
+  const connected = connection === 'connected';
+  const disconnected = connection === 'disconnected';
+  // An ambiguous local send stays latched even if a later poll looks healthy.
+  const uncertain = notice === 'unknown' || state?.status === 'outcome_unknown';
 
   function accept(result: RuntimeResourceHandoffResult) {
     setState(result);
-    if (result.status === 'outcome_unknown') { setUncertain(true); setNotice('unknown'); }
+    if (result.status === 'outcome_unknown') setNotice('unknown');
     if (result.status === 'closed') { setNotice(''); setVisible(false); }
-    if (result.rejection === 'controller_expired') { setConnected(false); setDisconnected(true); setVisible(false); }
-    if (result.rejection === 'invalid_input') setNotice('invalid');
-    if (result.rejection === 'observation_expired') setNotice('select');
+    if (result.rejection === 'controller_expired') { setConnection('disconnected'); setVisible(false); }
+    if (result.rejection === 'invalid_input') setNotice((previous) => previous === 'unknown' ? previous : 'invalid');
   }
 
   useEffect(() => {
@@ -113,7 +108,7 @@ export function TerminalHandoffPanel(props: {
     let timer: ReturnType<typeof setTimeout>;
     const failed = () => {
       if (disposed) return;
-      setConnected(false); setDisconnected(true); setVisible(false);
+      setConnection('disconnected'); setVisible(false);
       if (input.current) input.current.value = '';
       setPrivateInput(''); setState((previous) => previous ? { ...previous, display: undefined } : previous);
     };
@@ -130,13 +125,13 @@ export function TerminalHandoffPanel(props: {
       .then(() => terminal.handoff!({ ...identity, action: 'ready' }))
       .then((result) => {
         if (disposed) { void terminal.handoff!({ ...identity, action: 'release' }).catch(() => {}); return; }
-        setConnected(true); setDisconnected(false); accept(result);
+        setConnection('connected'); accept(result);
         if (result.phase !== 'closed') void poll();
       }).catch(failed);
     return () => {
       disposed = true; displayEpoch.current++; clearTimeout(timer);
       if (input.current) input.current.value = '';
-      setPrivateInput(''); setVisible(false); setState(undefined); setConnected(false);
+      setPrivateInput(''); setVisible(false); setState((previous) => previous ? { ...previous, display: undefined } : previous); setConnection('connecting');
       void terminal.handoff!({ ...identity, action: 'release' }).catch(() => {});
     };
   }, [terminal, props.sessionId, props.request.requestId, props.active, controllerId, revision]);
@@ -152,10 +147,10 @@ export function TerminalHandoffPanel(props: {
       const result = await terminal.handoff!({ ...identity, action: 'input', sequence: state.nextSequence, input: value });
       if (epoch !== displayEpoch.current) return;
       accept(result);
-      if (result.status === 'written') setNotice('sent');
+      if (result.status === 'written') setNotice((previous) => previous === 'unknown' ? previous : 'sent');
     } catch {
       if (epoch !== displayEpoch.current) return;
-      setUncertain(true); setNotice('unknown'); setConnected(false); setDisconnected(true);
+      setNotice('unknown'); setConnection('disconnected');
     } finally { sending.current = false; setBusy(false); }
   }
 
@@ -172,33 +167,31 @@ export function TerminalHandoffPanel(props: {
       if (epoch !== displayEpoch.current) return;
       displayEpoch.current++; accept(result); setNotice('');
     } catch {
-      if (epoch === displayEpoch.current) { setConnected(false); setDisconnected(true); }
+      if (epoch === displayEpoch.current) setConnection('disconnected');
     } finally { sending.current = false; setBusy(false); }
-  }
-
-  async function share() {
-    const selection = window.getSelection();
-    if (!state?.display || !selection?.anchorNode || !screen.current?.contains(selection.anchorNode) || !screen.current.contains(selection.focusNode)) { setNotice('select'); return; }
-    const text = selection.toString();
-    if (!text) { setNotice('select'); return; }
-    try {
-      const result = await terminal.handoff!({ ...identity, action: 'share', sequence: state.display.sequence, text });
-      if (result.status === 'shared') setNotice('shared'); else accept(result);
-    } catch { setNotice('select'); }
   }
 
   const human = state?.phase === 'human';
   const closed = state?.phase === 'closed';
   const host = parseDesktopSessionKey(props.sessionId)?.hostId ?? props.sessionId;
   const hint = human && connected && state?.display ? terminalFeedback(props.request.command, state.display.text) : undefined;
-  return <section className="maka-terminal-handoff" data-testid="terminal-handoff">
-    <header><strong>{props.request.message}</strong><small title={host}>{copy.target}: {host.slice(0, 12)}</small><code>{props.request.command}</code><small title={props.request.ref}>{props.request.ref}</small></header>
+  const problem = uncertain ? 'unknown' : disconnected ? 'disconnected' : notice === 'invalid' ? 'invalid' : hint === 'authentication_retry' ? hint : undefined;
+  const response = <pre className="maka-terminal-handoff-screen" aria-hidden="true" data-private-terminal="true">{props.active ? state?.display?.text : ''}</pre>;
+  const reconnect = disconnected && !closed && <Button label={copy.reconnect} variant="secondary" size="sm" onClick={() => setRevision((value) => value + 1)} isDisabled={busy} />;
+  // Keep the private transport/capture fence, but the completed input UI has no
+  // reason to occupy the terminal. A later handoff mounts a fresh input card.
+  if (state?.phase === 'resumed' || closed) return <section className="maka-session-terminal-panel" data-testid="private-terminal">
     {closed ? <Banner status={state.closure === 'cancelled' ? 'info' : 'warning'} title={copy[state.closure ?? 'unavailable']} /> :
-      <p role="status">{human ? copy.waiting : state?.phase === 'resumed' ? copy.resumed : ''}</p>}
-    <pre ref={screen} className="maka-terminal-handoff-screen" aria-hidden="true" data-private-terminal="true">{props.active ? state?.display?.text : ''}</pre>
-    {disconnected && !closed && <Banner status="warning" title={copy.disconnected} />}
-    {hint && <Banner status={hint === 'authentication_retry' ? 'error' : 'info'} title={copy[hint]} />}
-    {notice && !closed && <Banner status={notice === 'invalid' || notice === 'unknown' ? 'error' : 'info'} title={copy[notice]} />}
+      problem && <Banner status="warning" title={copy[problem]} />}
+    {response}
+    {reconnect}
+  </section>;
+  return <section className="maka-terminal-handoff" data-testid="terminal-handoff">
+    <header><strong>{copy.input}</strong><code>{props.request.command}</code></header>
+    <details><summary>{copy.details}</summary><p>{props.request.message}</p><small>{copy.target}: {host}</small><code>{props.request.ref}</code></details>
+    {response}
+    {problem ? <Banner status={problem === 'disconnected' ? 'warning' : 'error'} title={copy[problem]} /> :
+      human && <p role="status">{hint ? copy[hint] : notice === 'sent' ? copy.sent : copy.waiting}</p>}
     {human && <ChatComposer className="maka-composer-astryx" onSubmit={() => {}}
       input={<InputGroup label={copy.input} data-maka-assistant-exclude isDisabled={busy || uncertain || !connected}>
         <TextInput ref={input} label={copy.input} isLabelHidden type={visible ? 'text' : 'password'} autoComplete="off"
@@ -211,12 +204,10 @@ export function TerminalHandoffPanel(props: {
       footerActions={<Button label={copy.cancel} variant="ghost" size="sm" onClick={() => void answer('cancel')} isDisabled={busy} />}
       sendButton={<Button label={copy.submit} size="sm" onClick={() => void submit()} isDisabled={busy || uncertain || !connected || !privateInput} />}
     />}
-    {state?.phase === 'resumed' && <p>{copy.review}</p>}
     <footer>
-      {!human && !closed && state?.phase !== 'resumed' && <Button label={copy.cancel} variant="secondary" size="sm" onClick={() => void answer('cancel')} isDisabled={busy} />}
-      {disconnected && !closed && <Button label={copy.reconnect} variant="secondary" size="sm" onClick={() => setRevision((value) => value + 1)} isDisabled={busy} />}
+      {!human && <Button label={copy.cancel} variant="secondary" size="sm" onClick={() => void answer('cancel')} isDisabled={busy} />}
+      {reconnect}
       {human && <Button label={copy.resume} size="sm" onClick={() => void answer('resume')} isDisabled={busy || uncertain || !connected || Boolean(privateInput) || Boolean(hint) || !state?.display} />}
-      {state?.phase === 'resumed' && <Button label={copy.share} size="sm" onClick={() => void share()} isDisabled={!connected} />}
     </footer>
   </section>;
 }

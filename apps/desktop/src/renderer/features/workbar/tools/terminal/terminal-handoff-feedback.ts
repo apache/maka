@@ -21,25 +21,14 @@ import { isWellFormedTerminalInput } from '@maka/core/terminal-input';
 
 /** Renderer-only hints. Never return raw output, publish it, or infer success. */
 type TerminalHint = 'password' | 'authentication_retry';
-interface TerminalFeedbackAdapter {
-  matches(command: string): boolean;
-  observe(text: string): TerminalHint | undefined;
-}
-
-// Each adapter must be validated against its actual program. Unknown commands,
-// compound shell commands, locales and prompts retain the raw private response.
-const adapters: readonly TerminalFeedbackAdapter[] = [{
-  matches: (command) => /^(?:\/usr\/bin\/)?ssh\s/.test(command.trim()) && !/[;&|`\n]/.test(command),
-  observe(text) {
-    const lines = text.trimEnd().split('\n');
-    if (!/^[^\r\n]*'s password:\s*$/.test(lines.at(-1) ?? '')) return;
-    return lines.at(-2)?.trim() === 'Permission denied, please try again.'
-      ? 'authentication_retry' : 'password';
-  },
-}];
-
 export function terminalFeedback(command: string, text: string): TerminalHint | undefined {
-  return adapters.find((adapter) => adapter.matches(command))?.observe(text);
+  // The only verified program today is OpenSSH. Unsupported commands/locales
+  // keep their raw response; add tested recognizers when another program needs one.
+  if (!/^(?:\/usr\/bin\/)?ssh\s/.test(command.trim()) || /[;&|`\n]/.test(command)) return;
+  const lines = text.trimEnd().split('\n');
+  if (!/^[^\r\n]*'s password:\s*$/.test(lines.at(-1) ?? '')) return;
+  return lines.at(-2)?.trim() === 'Permission denied, please try again.'
+    ? 'authentication_retry' : 'password';
 }
 
 export function isValidPrivateTerminalInput(value: string): boolean {

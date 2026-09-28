@@ -64,7 +64,7 @@ const proxy = createServer(async (request, response) => {
         path: request.url,
         privateHandoffOffered: JSON.stringify(payload.tools).includes('"handoff":'),
         handoffDiscoveryHintSeen: body.includes('Starting a PTY does not reveal'),
-        reviewedObservationSeen: body.includes('CONTINUITY:original-shell:/tmp'),
+        resultObservationSeen: body.includes('CONTINUITY:original-shell:/tmp'),
         resumeInstructionSeen: body.includes('Continue the original task now'),
       });
     }
@@ -159,6 +159,7 @@ const logs = [];
 const keepOpen = process.env.HANDOFF_KEEP_OPEN === '1';
 const screenshots = [];
 async function recordScreenshot(file, title) {
+  if (process.env.HANDOFF_CAPTURE_SCREENSHOTS === '0') return;
   const displays = page.locator('[data-private-terminal]:visible');
   const text = (await displays.allTextContents()).join('\n');
   const redacted = text.includes(password) || text.includes(factor);
@@ -238,6 +239,8 @@ try {
       }),
   ]);
   await recordScreenshot('02-waiting.png', '自动展开原终端，等待用户私密输入');
+  await expect(card.locator('details')).not.toHaveAttribute('open');
+  await expect(card.locator('header')).toContainText('fixture@127.0.0.1');
   console.log(JSON.stringify({ phase: 'awaiting-private-input' }));
   const beforeReload = await page.evaluate(() => window.handoffAcceptance.events);
   // A harmless draft makes the reveal control reviewable without photographing a credential.
@@ -285,16 +288,12 @@ try {
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('AUTHENTICATED', { timeout: 30_000 });
   await recordScreenshot('authentication-complete.png', '验证完成，点击一次已完成即可继续任务');
+  await expect(card.getByRole('checkbox')).toHaveCount(0);
   await expect(privateField).toHaveValue('');
   await expect(
     card.getByRole('button', { name: 'Done, continue task', exact: true }),
   ).toBeEnabled();
-  assert.equal(
-    (await page.evaluate(() => window.handoffAcceptance.events)).some(
-      (event) => event.type === 'terminal_handoff_answer_ack',
-    ),
-    false,
-  );
+  await expect(card.locator('input')).toHaveCount(1);
   await privateField.fill('unsubmitted');
   await expect(
     card.getByRole('button', { name: 'Done, continue task', exact: true }),
@@ -306,21 +305,24 @@ try {
   assert.equal(JSON.stringify(before).includes(factor), false);
   await card.getByRole('button', { name: 'Done, continue task', exact: true }).click();
   console.log(JSON.stringify({ phase: 'resumed' }));
-  await expect(card.locator('input')).toHaveCount(0);
+  await expect(card).toHaveCount(0);
+  const terminalView = page.getByTestId('private-terminal');
+  await expect(terminalView).toBeVisible();
+  await expect(terminalView.locator('input, header, details, button')).toHaveCount(0);
   await recordScreenshot('03-resumed.png', '交还 Agent，认证屏幕清除，输出继续私密');
   const safe = 'CONTINUITY:original-shell:/tmp';
-  await expect(card.locator('pre')).toContainText(safe, { timeout: 180_000 });
+  await expect(terminalView.locator('pre')).toContainText(safe, { timeout: 180_000 });
   console.log(JSON.stringify({ phase: 'same-shell-command-observed' }));
-  await recordScreenshot('command-result.png', 'Agent 在原 shell 执行命令，等待审阅结果');
-  // Real hide/remount paths must keep the same private review surface.
+  await recordScreenshot('command-result.png', 'Agent 在原 shell 执行命令；结果仍仅对用户可见');
+  // Real hide/remount paths must keep the same private display.
   await page.getByRole('button', { name: 'Collapse task workbar', exact: true }).click();
-  await expect(card).toBeHidden();
-  await expect(card.locator('pre')).toHaveText('');
+  await expect(terminalView).toBeHidden();
+  await expect(terminalView.locator('pre')).toHaveText('');
   console.log(JSON.stringify({ phase: 'resumed-card-hidden' }));
   await recordScreenshot('panel-hidden.png', '收起工作栏，私密显示清除');
   await page.getByRole('button', { name: 'Expand task workbar', exact: true }).click();
-  await expect(card).toBeVisible();
-  await expect(card.locator('pre')).toContainText(safe, { timeout: 30_000 });
+  await expect(terminalView).toBeVisible();
+  await expect(terminalView.locator('pre')).toContainText(safe, { timeout: 30_000 });
   console.log(JSON.stringify({ phase: 'resumed-card-expanded' }));
   await recordScreenshot('panel-restored.png', '重新展开，原私密结果恢复');
   const tabs = page.locator('.maka-workbar-tab-list [role="tab"]');
@@ -329,13 +331,13 @@ try {
   );
   assert.ok(activeTab >= 0 && (await tabs.count()) >= 2);
   await tabs.nth(activeTab === 0 ? 1 : 0).click();
-  await expect(card).toBeHidden();
+  await expect(terminalView).toBeHidden();
   await recordScreenshot('other-tab.png', '切换到另一个终端标签');
   await tabs.nth(activeTab).click();
-  await expect(card).toBeVisible();
-  await expect(card.locator('pre')).toContainText(safe, { timeout: 30_000 });
+  await expect(terminalView).toBeVisible();
+  await expect(terminalView.locator('pre')).toContainText(safe, { timeout: 30_000 });
   console.log(JSON.stringify({ phase: 'resumed-card-tab-returned' }));
-  await recordScreenshot('tab-restored.png', '切回原标签，仍可审阅和分享');
+  await recordScreenshot('tab-restored.png', '切回原标签，私密显示恢复，无分享入口');
   const beforeReturn = await page.evaluate(() => window.handoffAcceptance?.events ?? []);
   await page.reload();
   await page.waitForFunction(() => Boolean(window.maka?.sessions));
@@ -348,71 +350,43 @@ try {
     },
     { id: sessionId, events: beforeReturn },
   );
-  await expect(card.locator('pre')).toContainText(safe, { timeout: 30_000 });
+  await expect(terminalView.locator('pre')).toContainText(safe, { timeout: 30_000 });
   console.log(JSON.stringify({ phase: 'resumed-card-recovered' }));
-  await recordScreenshot('reload-restored.png', '刷新 App 后恢复同一终端的分享入口');
-  await card.locator('pre').evaluate((element, text) => {
-    const node = element.firstChild;
-    const start = node.textContent.indexOf(text);
-    const range = document.createRange();
-    range.setStart(node, start);
-    range.setEnd(node, start + text.length);
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }, safe);
-  await recordScreenshot('selection.png', '仅选择允许分享的非敏感结果');
-  await card
-    .getByRole('button', { name: 'Share selected text with the agent', exact: true })
-    .click();
-  await expect(card).toContainText('Selected observation shared with the agent.');
-  console.log(JSON.stringify({ phase: 'observation-shared' }));
-  await recordScreenshot('shared.png', '明确提示所选观察已分享给 Agent');
+  await expect(card).toHaveCount(0);
+  await recordScreenshot('reload-restored.png', '刷新 App 后恢复同一终端，无分享入口');
   await page.waitForFunction(
-    () =>
-      window.handoffAcceptance.events.some(
-        (event) =>
-          event.type === 'complete' ||
-          (event.type === 'text_complete' &&
-            event.text.includes('original-shell') &&
-            event.text.includes('/tmp')),
-      ),
+    () => window.handoffAcceptance.events.some((event) => event.type === 'complete'),
     undefined,
     { timeout: 180_000 },
   );
-  // A quick share may be read in the current turn. Otherwise the next ordinary
-  // user message requests the result, without telling the model which tool to use.
-  if (!requests.some((request) => request.reviewedObservationSeen)) {
+  for (const turn of [2, 3]) {
+    const eventCount = await page.evaluate(() => window.handoffAcceptance.events.length);
     await editor.fill(
-      'I reviewed and shared the non-sensitive terminal observation using the app. Please check that shared result and report the marker and working directory. Keep using the original connection.',
+      `Continue in the same authenticated SSH terminal. Print FOLLOWUP${turn}: followed by the existing shell-local marker and current directory, separated by colons. Do not set the marker or change directories. Execute the command even if its output remains private; in that case say you cannot observe its result. Leave the connection open.`,
     );
     await editor.press('Enter');
+    await expect(terminalView.locator('pre')).toContainText(`FOLLOWUP${turn}:original-shell:/tmp`, {
+      timeout: 180_000,
+    });
+    await expect(card).toHaveCount(0);
+    await page.waitForFunction(
+      (count) =>
+        window.handoffAcceptance.events.slice(count).some((event) => event.type === 'complete'),
+      eventCount,
+      { timeout: 180_000 },
+    );
+    console.log(JSON.stringify({ phase: 'same-connection-followup', turn }));
   }
-  await page.waitForFunction(
-    () =>
-      window.handoffAcceptance.events.some(
-        (event) =>
-          event.type === 'text_complete' &&
-          event.text.includes('original-shell') &&
-          event.text.includes('/tmp'),
-      ),
-    undefined,
-    { timeout: 180_000 },
-  );
   const events = [
     ...beforeReload,
     ...beforeReturn,
     ...(await page.evaluate(() => window.handoffAcceptance.events)),
   ];
   const wire = JSON.stringify(events);
-  assert.ok(
-    requests.some((request) => request.reviewedObservationSeen),
-    'reviewed observation must reach the real provider',
-  );
-  const answer = events.filter((event) => event.type === 'text_complete').at(-1)?.text ?? '';
-  assert.ok(
-    answer.includes('original-shell') && answer.includes('/tmp'),
-    'real model must report the reviewed shell state',
+  assert.equal(
+    requests.some((request) => request.resultObservationSeen),
+    false,
+    'removing sharing must not silently publish private output',
   );
   assert.equal(wire.includes(password), false);
   assert.equal(wire.includes(factor), false);
@@ -420,13 +394,15 @@ try {
   assert.ok(requests.some((request) => request.model === model && request.privateHandoffOffered));
   assert.equal(logs.join('').includes(password), false);
   assert.equal(logs.join('').includes(factor), false);
-  await recordScreenshot('agent-report.png', 'Agent 读取分享内容并报告真实 shell 状态');
+  await recordScreenshot('agent-report.png', '当前限制：Agent 无法读取私密结果，完整任务尚未闭环');
   // End the remote process, not the UI's "close tab" command: an exited
   // process should leave an explanatory card in the original open tab.
   ssh.kill('SIGTERM');
-  await expect(card).toContainText('The original terminal process exited', { timeout: 30_000 });
-  await expect(card.locator('input')).toHaveCount(0);
-  await expect(card.locator('pre')).toHaveText('');
+  await expect(terminalView).toContainText('The original terminal process exited', {
+    timeout: 30_000,
+  });
+  await expect(card).toHaveCount(0);
+  await expect(terminalView.locator('pre')).toHaveText('');
   await recordScreenshot('05-exited.png', '远端进程退出，原卡片明确结束');
   const liveFiles = await scanFiles(workspace);
   if (!keepOpen) {
@@ -439,6 +415,9 @@ try {
     JSON.stringify(
       {
         passed: true,
+        scope: 'private input, same-shell continuation, sharing removal and privacy isolation',
+        fullIssueAcceptance: false,
+        automaticResultObservation: false,
         model,
         requests,
         liveWorkspaceFiles: liveFiles,
@@ -448,6 +427,9 @@ try {
         reloadClearedDraft: true,
         autonomousHandoff: true,
         inputValidationAndResumeGuard: true,
+        singleClickCompletionWithoutCheckbox: true,
+        completedInputCardRemoved: true,
+        sameConnectionFollowupTurns: 2,
         explicitProcessExit: true,
         resumedCardRecovered: true,
         sameShellObservation: safe,

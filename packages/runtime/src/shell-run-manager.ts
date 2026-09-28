@@ -229,7 +229,7 @@ interface LivePtyShellRun extends LiveShellRunBase {
   rawSequence: number;
   pendingRawData: string;
   rawPublishTimer?: NodeJS.Timeout;
-  privateTerminal?: { collector: PtyScreenCollector; sequence: number; inputOpen: boolean };
+  privateTerminal?: { collector: PtyScreenCollector; inputOpen: boolean };
 }
 
 type LiveShellRun = LivePipeShellRun | LivePtyShellRun;
@@ -663,15 +663,13 @@ export class ShellRunProcessManager
           this.handleIntegrityFailure(live, new Error('Private terminal display failed')),
       });
       collector.accept(live.rawBuffer);
-      live.privateTerminal = { collector, sequence: 0, inputOpen: true };
+      live.privateTerminal = { collector, inputOpen: true };
       if (live.rawPublishTimer) clearTimeout(live.rawPublishTimer);
       live.rawPublishTimer = undefined;
       live.rawBuffer = '';
       live.pendingRawData = '';
       // The public parser never sees a private byte, including delayed echoes.
-      live.collector.accept(
-        '\x1bc[Terminal output is private. Ask the user to review and share an observation.]\r\n',
-      );
+      live.collector.accept('\x1bc[Terminal output is private and unavailable to the agent.]\r\n');
     } else {
       live.privateTerminal.inputOpen = true;
     }
@@ -703,10 +701,8 @@ export class ShellRunProcessManager
     const live = this.requirePrivatePtyTarget(sessionId, ref);
     const terminal = live.privateTerminal;
     if (!terminal) throw new Error('Terminal has no private display');
-    const sequence = terminal.sequence;
     const snapshot = await terminal.collector.snapshotAtCut();
     return {
-      sequence,
       text: [snapshot.output.scrollback, snapshot.output.screen].filter(Boolean).join('\n'),
       inputOpen: terminal.inputOpen,
     };
@@ -722,33 +718,7 @@ export class ShellRunProcessManager
     // Discard the authentication screen; later output still remains private.
     live.privateTerminal.collector.accept('\x1bc');
     await live.privateTerminal.collector.snapshotAtCut();
-    live.privateTerminal.sequence++;
     return true;
-  }
-
-  async sharePrivatePtyObservation(
-    sessionId: string,
-    ref: string,
-    sequence: number,
-    text: string,
-  ): Promise<void> {
-    const live = this.requirePrivatePtyTarget(sessionId, ref);
-    if (live.privateTerminal?.inputOpen)
-      throw new Error('Finish private input before sharing a new observation');
-    const snapshot = await this.readPrivatePtySnapshot(sessionId, ref);
-    if (
-      snapshot.sequence !== sequence ||
-      !text ||
-      !snapshot.text.includes(text) ||
-      text.length > 8_000
-    ) {
-      throw new Error('Select a current terminal observation to share');
-    }
-    // Publication requires a separate explicit human review, not Resume.
-    live.collector.accept(
-      `\x1bc[User-reviewed terminal observation]\r\n${text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')}`,
-    );
-    await this.persistObservation(live);
   }
 
   private requirePrivatePtyTarget(sessionId: string, ref: string): LivePtyShellRun {
@@ -1159,7 +1129,6 @@ export class ShellRunProcessManager
     if (live.driverExit || live.finalizeOnce) return;
     if (live.privateTerminal) {
       live.privateTerminal.collector.accept(data);
-      live.privateTerminal.sequence++;
       return;
     }
     // Amortize the tail trim: slicing on every tiny node-pty event copies the

@@ -39,6 +39,33 @@ import {
 } from '../server/interaction-projection.js';
 
 describe('Runtime Host Interaction protocol', () => {
+  test('removed terminal sharing cannot publish private text through an old client', () => {
+    assert.throws(() =>
+      decodeRuntimeResourceHandoffInput({
+        action: 'share',
+        sessionId: 'session-1',
+        requestId: 'request-1',
+        controllerId: 'card-1',
+        sequence: 1,
+        text: 'private',
+      }),
+    );
+    assert.throws(() =>
+      decodeRuntimeResourceHandoffResult({
+        status: 'shared',
+        phase: 'resumed',
+        nextSequence: 1,
+      }),
+    );
+    assert.throws(() =>
+      decodeRuntimeResourceHandoffResult({
+        status: 'rejected',
+        phase: 'resumed',
+        nextSequence: 1,
+        rejection: 'observation_expired',
+      }),
+    );
+  });
   test('handoff outcomes distinguish rejected input and closure without private display', () => {
     const rejected = {
       status: 'rejected',
@@ -52,7 +79,7 @@ describe('Runtime Host Interaction protocol', () => {
     assert.throws(() =>
       decodeRuntimeResourceHandoffResult({
         ...closed,
-        display: { sequence: 1, text: 'private', inputOpen: false },
+        display: { text: 'private', inputOpen: false },
       }),
     );
     assert.throws(() => decodeRuntimeResourceHandoffResult({ ...rejected, status: 'written' }));
@@ -63,7 +90,7 @@ describe('Runtime Host Interaction protocol', () => {
       status: 'observed',
       phase: 'resumed',
       nextSequence: 2,
-      display: { sequence: 3, text: '', inputOpen: false },
+      display: { text: '', inputOpen: false },
     };
     assert.deepEqual(decodeRuntimeResourceHandoffResult(cleared), cleared);
   });

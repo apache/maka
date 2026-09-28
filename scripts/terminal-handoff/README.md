@@ -46,10 +46,19 @@ process. Desktop's isolated profile contains only a proxy placeholder credential
 The test drives the actual password card through preload/main IPC, including
 refresh with an unsubmitted draft, a rejected password and successful retry, a
 second verification challenge, explicit Resume, a command
-in the original shell, hiding/reopening and reloading the resumed card, selecting
-a reviewed observation, and the model reading
-that observation in the current or next turn. The server intentionally echoes both
+in the original shell, and hiding/reopening and reloading the terminal display.
+The completed input card disappears. Two further conversation turns use the
+same authenticated shell without opening another input card; both preserve the
+original shell-local marker and working directory.
+There is no selection/sharing flow. The server intentionally echoes both
 the password and verification code, including a delayed echo after Resume.
+
+This is now a **scoped acceptance test**, not full issue acceptance. It verifies
+private input, continuation in the same shell, sharing removal and output
+isolation. The agent still cannot observe the private command result; the report
+explicitly records `fullIssueAcceptance: false` and
+`automaticResultObservation: false`. A validated automatic result boundary is
+required before the original issue can be considered complete.
 
 The task prompt describes an SSH destination and the desired shell result without
 naming `WriteStdin`, `handoff`, discovery tools or invocation syntax. It verifies
@@ -62,10 +71,12 @@ provider with function-tool support; the values above record our acceptance run.
 Set `HANDOFF_KEEP_OPEN=1` to leave the successful run visible until you close its
 window. In that mode the report explicitly records `profileClosed: false`:
 profile scanning occurs while the app remains open, rather than after shutdown.
+Set `HANDOFF_CAPTURE_SCREENSHOTS=0` to run the same assertions without capturing
+any screenshots.
 
 Assertions cover provider requests, ordinary Session events, process/renderer
 logs, live workspace files (including SQLite/WAL), and the closed Desktop profile.
-The fixture prints an artifact directory containing 23 sequential screenshots,
+The fixture prints an artifact directory containing 21 sequential screenshots,
 their ordered captions/redaction flags in `screenshots.json`, and `result.json`.
 When a private terminal display contains a generated credential, only that
 display is masked in the screenshot; the actual UI is unchanged. Password input

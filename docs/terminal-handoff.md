@@ -26,6 +26,12 @@ execution-host identity and terminal ref, and uses the same `ChatComposer`,
 line and returning control are separate actions. Resume records the user's
 decision, not a claim that authentication succeeded.
 
+**Open acceptance gap:** the manual sharing mechanism has been removed. The
+agent can resume writes in the original terminal, but cannot yet observe its
+post-handoff results. Output remains private until a replacement boundary has
+been validated. This is not a complete implementation of issue #5309's result
+observation requirement.
+
 The agent decides when to request this capability through a structured tool
 call. Neither chat keywords nor a password prompt automatically opens the card.
 Supported sessions advertise discovery from the existing Bash description:
@@ -52,20 +58,33 @@ An eye button lets users inspect their own draft. It defaults to masked and
 returns to masked on submission, clearing, hiding, disconnection or completion.
 Reveal does not send the draft or make it available to assistant observations.
 
+Completion removes the input card, its header, details and action buttons. The
+terminal remains a private, read-only display using the same capture fence and
+original process. Reloading or switching tabs restores that display without
+reopening the input flow. Another handoff request creates a new input card.
+
+During input, one message describes the current actionable state: uncertain
+delivery takes precedence over a disconnected surface, invalid input and a
+recognized authentication rejection. Ordinary submission/prompt feedback is a
+short status line. The original command stays visible so the user can check its
+destination; the agent's explanation, full Host identity and resource ref live
+in collapsed connection details.
+
 Renderer-only program adapters may translate known prompts into fixed friendly
 hints. The first adapter covers the standard English OpenSSH password prompt and
 `Permission denied, please try again.` followed by a new password prompt. It
 also blocks Resume while that prompt remains visible. It never classifies an
 arbitrary output as successful authentication, changes transport state, publishes
 output or sends input. Unsupported programs, compound commands, prompts and
-locales retain the original private response. Add another tested adapter to the
-small adapter list to extend this behavior; no SSH logic belongs in the Host.
+locales retain the original private response. Additional verified programs can
+extend the pure renderer function; there is no registry for the single current
+recognizer, and no SSH logic belongs in the Host.
 
 ## Owners and extension points
 
 - `ShellRunProcessManager` remains the sole process/PTY owner. The
   `PtyHandoffController` interface exposes prepare, private input, private
-  observation, resume and explicitly reviewed publication.
+  observation and resume. There is no private-output publication operation.
 - `HostRuntimeResourceCoordinator` owns resource serialization and a volatile
   controller identity/sequence. The existing Interaction coordinator owns the
   pending request, durable decision, Run cancellation and Session projection.
@@ -109,22 +128,26 @@ human input itself has no handoff deadline (the original process timeout still
 applies). Cancel, Turn stop, resource exit and Host shutdown close the pending
 Interaction. A restarted Host does not recreate a lost authenticated process.
 
+The authenticated PTY belongs to the task, not the conversation turn. Later
+turns can write to the same resource without another password while it remains
+alive. Its configured process timeout still applies; another message does not
+renew it. Losing only the Desktop surface does not imply that SSH disconnected.
+
 Hiding a resumed card releases only its controller. Returning, including after
-reload, can still observe and share the same private output. Only closed
+reload, can still display the same private output to the user. Only closed
 tombstones have a 128-entry retention cap; live resumed terminals remain tied to
 their resource lifetime. Resume rechecks delivery certainty inside the resource
 queue. A failed terminal side effect rejects that handoff without poisoning the
 Host's Interaction authority for other tasks.
 An already-open terminal tab refreshes its request from the canonical handoff
-event if the same process needs human input again. Requesting a reviewed output
-uses an ordinary message, not another handoff.
+event if the same process needs human input again.
 
 The authenticated owner/grant is the authorization boundary, not a particular
 Desktop device. While a card owns a handoff, other connections cannot reclaim
 it. After release/disconnection, another authorized client of the same owner
 may register a private surface and claim it; the old controller then expires.
 
-## Output privacy and explicit publication
+## Output privacy and the unresolved result boundary
 
 Before the first human write, PTY output switches to a separate volatile parser.
 The normal parser, raw replay buffer, Session projections, tool results and
@@ -133,12 +156,12 @@ an arbitrary terminal can echo credentials late, and changing visibility based
 on timing, an echo flag or password matching would not provide this guarantee.
 
 Resume discards the authentication display and returns agent write authority.
-New output remains private. The user can select and explicitly share a current
-non-sensitive observation; only that exact reviewed text is published to the
-ordinary Runtime resource and made available to `Read`. It is recorded as
-user-reviewed output. Resume alone does not publish any terminal text. The agent
-can continue writing commands, but must request a reviewed observation before
-claiming what those commands returned.
+New output remains private. Selection, sharing UI, the Host protocol action and
+the Runtime publication method have all been removed. An old client cannot
+publish text through that removed protocol action. Resume does not publish any
+terminal text. The agent can continue writing commands, but must report its
+inability to observe the result rather than claim success or ask the user to
+copy private output into the conversation.
 Terminal device/status queries are answered by the private parser directly to
 the PTY, so interactive programs still work after Resume; replies and screen
 contents are not published to the model.
@@ -163,29 +186,20 @@ macOS with `gpt-5.6-terra`, a real local OpenAI-compatible endpoint, actual SSH
 password authentication (including rejection and retry) and a second terminal
 challenge. The follow-up natural-language journey names no tools or handoff
 parameters: the model discovers the capability itself. The original shell's
-unexported marker and `/tmp` working directory survived. The model read the
-explicitly shared observation and reported both values. The latest review run
-used eight provider requests; those requests, 18 live workspace files and 68
-profile files contained neither generated secret. The App was left open for
-review, so this profile scan was live; the earlier closed-profile run scanned 68
-files. Reload cleared the unsubmitted password and recovered the same handoff.
-The resumed review surface also survived collapse/expand, changing terminal
-tabs, and reloading before sharing the observation. All UI steps were
-captured; private displays containing echoed test credentials were explicitly
-masked in those screenshots. The representative images below contain no such
-display and need no masking.
+unexported marker and `/tmp` working directory survived in the private display.
+The current harness checks that this result is not silently published after
+sharing removal. Its report marks `fullIssueAcceptance: false` and
+`automaticResultObservation: false`; passing the scoped input/continuation tests
+does not mean the original issue is complete. Reload clears the unsubmitted
+password and recovers the same handoff. The resumed private display also survives
+collapse/expand, changing terminal tabs, and reloading. In the latest run, two
+additional conversation turns reused that same connection without another input
+card. Fourteen provider requests, 19 workspace files and 69 live-profile files
+contained neither test credential. The App remained open, so the profile scan
+was performed before shutdown.
 
-Screenshots use the same window size and contain no submitted credentials. The
-normal view is a separate user terminal baseline; the waiting and resumed views
-show the same agent-owned SSH process:
-
-| Normal terminal | Waiting for private input | Explicitly resumed |
-| --- | --- | --- |
-| ![Normal](images/pr/terminal-handoff/01-normal.png) | ![Waiting](images/pr/terminal-handoff/02-waiting.png) | ![Resumed](images/pr/terminal-handoff/03-resumed.png) |
-
-| Authentication rejected; retry remains available | Original process exited |
-| --- | --- |
-| ![Retry](images/pr/terminal-handoff/04-retry.png) | ![Exited](images/pr/terminal-handoff/05-exited.png) |
+The latest simplification is validated without screenshots. Earlier review
+images remain historical evidence and do not represent the current layout.
 
 The normal terminal wrapper uses lifecycle/resync events instead of permanent
 lookup polling. Private text is polled only by the mounted active card, avoiding
@@ -207,16 +221,26 @@ and an unsubmitted draft remain fenced. All five checks passed, so the redundant
 checkbox/state was removed. The earlier checkbox-specific regression merely
 pinned that UI choice and did not establish its necessity.
 
-Two further real-PTY ablations expose the remaining UX tradeoff. Removing only
-reviewed publication leaves the model unable to read the requested command's
-result. Keeping the authentication screen cleared but making new output public
-after Resume leaks the fixture's delayed credential echo into a public
-projection. Thus output review is a cost of this conservative isolation policy,
-not an inherent requirement of terminal handoff. Removing it from the default
-journey requires a separately validated output boundary, not another user
-confirmation or silently unprotecting the stream. Both mutations were confined
-to test processes and were discarded. Adapters remain renderer-local functions
-rather than introducing a plugin registry or another lifecycle owner.
+The next simplification merged duplicate connection flags and removed the
+single-program adapter registry. Existing feedback/recovery checks still pass.
+Removing the uncertain-delivery latch in a process-local ablation made a later
+healthy observation re-enable completion after a lost submission receipt, and
+the recovery regression failed. That necessary memory remains in the existing
+notice state; no separate uncertainty boolean is required.
+
+Two further real-PTY ablations exposed the output-policy problem. Removing
+publication leaves the model unable to read the requested command's result.
+Making new output public after Resume leaks the fixture's delayed credential
+echo. Sharing has now been removed as requested; the remaining result-observation
+gap is explicit rather than hidden behind a replacement confirmation.
+
+An isolated parser experiment also rejected automatic matching of submitted
+values as a substitute for that boundary. It hid complete echoes, pending
+prefixes, SGR-separated text and line wrapping, but a cursor edit deleting an
+already-masked prefix revealed the remaining credential fragment. An encoded
+credential also escaped exact matching. No such experimental filter is used by
+the product. Adapters remain renderer-local functions rather than introducing
+a plugin registry or another lifecycle owner.
 
 The review follow-up replaced the Driver's fd fingerprint with node-pty's own
 close fence. A Linux two-PTY ablation removed that fence while retaining all

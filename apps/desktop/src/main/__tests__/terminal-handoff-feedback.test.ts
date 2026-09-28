@@ -69,7 +69,7 @@ test('a disconnected private card explains recovery and cannot offer an enabled 
       request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'ssh host' },
     })),
   })));
-  assert.match(container.textContent, /Connection to this terminal was lost/);
+  assert.match(container.textContent, /Connection lost/);
   assert.match(container.textContent, /Reconnect to original terminal/);
   assert.equal(descendants(container).some((node) => node.tagName === 'BUTTON' && node.textContent === 'Done, continue task'), false);
 });
@@ -94,16 +94,17 @@ test('recovering an uncertain receipt keeps Submit and Resume disabled', async (
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async (operation) => {
       operations.push(operation.action);
-      return { status: 'outcome_unknown', phase: 'human', nextSequence: 2, display: { sequence: 1, text: 'private', inputOpen: true } };
+      return { status: 'outcome_unknown', phase: 'human', nextSequence: 2, display: { text: "Permission denied, please try again.\nuser@host's password: ", inputOpen: true } };
     },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
       sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: true,
-      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
+      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'ssh host' },
     })),
   })));
-  assert.match(container.textContent, /Delivery could not be confirmed/);
+  assert.match(container.textContent, /Delivery is uncertain/);
+  assert.doesNotMatch(container.textContent, /SSH rejected authentication|The agent is waiting/);
   const buttons = descendants(container).filter((node) => node.tagName === 'BUTTON');
   for (const label of ['Submit', 'Done, continue task']) {
     const button = buttons.find((node) => node.textContent === label);
@@ -118,7 +119,7 @@ test('losing observation while human input is open clears private display and di
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async (operation) => {
       if (operation.action === 'observe') throw new Error('disconnected');
-      return { status: 'ready', phase: 'human', nextSequence: 1, display: { sequence: 1, text: 'private-sentinel', inputOpen: true } };
+      return { status: 'ready', phase: 'human', nextSequence: 1, display: { text: 'private-sentinel', inputOpen: true } };
     },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -127,7 +128,7 @@ test('losing observation while human input is open clears private display and di
       request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
     })),
   })));
-  assert.match(container.textContent, /Connection to this terminal was lost/);
+  assert.match(container.textContent, /Connection lost/);
   assert.doesNotMatch(container.textContent, /private-sentinel/);
   for (const node of descendants(container)) {
     if (node.tagName === 'INPUT' || (node.tagName === 'BUTTON' && ['Submit', 'Done, continue task'].includes(node.textContent))) {
@@ -136,11 +137,50 @@ test('losing observation while human input is open clears private display and di
   }
 });
 
+test('reconnection cannot clear an uncertain local submission or replay it', async () => {
+  const { root, container } = installReactRenderer();
+  let inputs = 0;
+  const base = createFakeWorkbarServices();
+  const services = createFakeWorkbarServices({ terminal: { ...base.terminal,
+    handoff: async (operation) => {
+      if (operation.action === 'input') { inputs++; throw new Error('response lost'); }
+      return { status: 'observed', phase: 'human', nextSequence: 2, display: { text: '$ ', inputOpen: true } };
+    },
+  } });
+  await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: true,
+      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
+    })),
+  })));
+  const click = async (label: string) => {
+    const button = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === label)!;
+    assert.ok(button, label);
+    const key = Object.keys(button).find((name) => name.startsWith('__reactProps$'))!;
+    await act(async () => (button as unknown as Record<string, { onClick(event: { preventDefault(): void }): void }>)[key]!.onClick({ preventDefault() {} }));
+  };
+  const field = descendants(container).find((node) => node.tagName === 'INPUT')!;
+  const fieldKey = Object.keys(field).find((name) => name.startsWith('__reactProps$'))!;
+  await act(async () => {
+    (field as FakeElement & { value: string }).value = 'private-draft';
+    (field as unknown as Record<string, { onChange(event: { target: { value: string } }): void }>)[fieldKey]!.onChange({ target: { value: 'private-draft' } });
+  });
+  await click('Submit');
+  await click('Reconnect to original terminal');
+  assert.equal(inputs, 1);
+  assert.match(container.textContent, /Delivery is uncertain/);
+  assert.doesNotMatch(container.textContent, /Connection lost|Submitted|The agent is waiting/);
+  for (const label of ['Submit', 'Done, continue task']) {
+    const button = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === label)!;
+    assert.notEqual(button.getAttribute('disabled'), null, label);
+  }
+});
+
 test('one explicit completion click resumes the original handoff; prompt rendering never resumes it', async () => {
   const { root, container } = installReactRenderer();
   const answers: unknown[] = [];
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
-    handoff: async () => ({ status: 'ready', phase: 'human', nextSequence: 1, display: { sequence: 1, text: '$ ', inputOpen: true } }),
+    handoff: async () => ({ status: 'ready', phase: 'human', nextSequence: 1, display: { text: '$ ', inputOpen: true } }),
     answerHandoff: async (answer) => { answers.push(answer); },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -154,6 +194,15 @@ test('one explicit completion click resumes the original handoff; prompt renderi
   assert.equal(button.getAttribute('disabled'), null);
   assert.deepEqual(answers, []);
   assert.doesNotMatch(container.textContent, /I checked the terminal/);
+  const details = descendants(container).find((node) => node.tagName === 'DETAILS');
+  assert.ok(details);
+  assert.equal(details.getAttribute('open'), null);
+  assert.match(details.textContent, /host-1/);
+  assert.match(details.textContent, /terminal-1/);
+  const header = descendants(container).find((node) => node.tagName === 'HEADER');
+  assert.ok(header);
+  assert.match(header.textContent, /sh/);
+  assert.doesNotMatch(header.textContent, /host-1|terminal-1/);
   const propsKey = Object.keys(button).find((key) => key.startsWith('__reactProps$'));
   assert.ok(propsKey);
   const props = (button as unknown as Record<string, { onClick(): void }>)[propsKey]!;
@@ -171,7 +220,7 @@ test('revealing a private draft never sends it and submission or hiding resets v
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async (operation) => {
       if (operation.action === 'input') submitted.push(operation.input);
-      return { status: operation.action === 'input' ? 'written' : 'observed', phase: 'human', nextSequence: 1, display: { sequence: 1, text: '$ ', inputOpen: true } };
+      return { status: operation.action === 'input' ? 'written' : 'observed', phase: 'human', nextSequence: 1, display: { text: '$ ', inputOpen: true } };
     },
   } });
   const render = async (active: boolean) => act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -251,14 +300,14 @@ test('an existing terminal tab refreshes a new handoff request from its canonica
   assert.doesNotMatch(container.textContent, /first-request/);
 });
 
-test('a resumed card clears hidden output and reclaims the review surface on return', async () => {
+test('completion leaves only the private terminal display and restores it on return', async () => {
   const { root, container } = installReactRenderer();
   const operations: string[] = [];
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async (operation) => {
       operations.push(operation.action);
       return { status: 'observed', phase: 'resumed', nextSequence: 2,
-        ...(operation.action === 'observe' ? { display: { sequence: 3, text: 'private-result', inputOpen: false } } : {}) };
+        ...(operation.action === 'observe' ? { display: { text: 'private-result', inputOpen: false } } : {}) };
     },
   } });
   const render = async (active: boolean) => act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -269,12 +318,14 @@ test('a resumed card clears hidden output and reclaims the review surface on ret
   })));
   await render(true);
   assert.match(container.textContent, /private-result/);
+  assert.equal(descendants(container).some((node) => node.getAttribute('data-testid') === 'terminal-handoff'), false);
+  assert.equal(descendants(container).some((node) => node.getAttribute('data-testid') === 'private-terminal'), true);
+  assert.equal(descendants(container).some((node) => ['INPUT', 'HEADER', 'DETAILS'].includes(node.tagName)), false);
   await render(false);
   assert.doesNotMatch(container.textContent, /private-result/);
   await render(true);
   assert.match(container.textContent, /private-result/);
-  const share = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === 'Share selected text with the agent');
-  assert.ok(share);
-  assert.equal(share.getAttribute('disabled'), null);
+  assert.doesNotMatch(container.textContent, /share|select.*text/i);
+  assert.equal(descendants(container).some((node) => node.tagName === 'BUTTON'), false);
   assert.deepEqual(operations, ['surface', 'ready', 'observe', 'release', 'surface', 'ready', 'observe']);
 });

@@ -44,14 +44,6 @@ export type RuntimeResourceHandoffInput =
       readonly controllerId: string;
       readonly sequence: number;
       readonly input: string;
-    }
-  | {
-      readonly action: 'share';
-      readonly sessionId: string;
-      readonly requestId: string;
-      readonly controllerId: string;
-      readonly sequence: number;
-      readonly text: string;
     };
 
 export interface RuntimeResourceHandoffResult {
@@ -63,16 +55,14 @@ export interface RuntimeResourceHandoffResult {
     | 'outcome_unknown'
     | 'rejected'
     | 'closed'
-    | 'shared'
     | 'observed';
   readonly nextSequence: number;
   readonly phase: 'waiting' | 'human' | 'resumed' | 'closed';
   /** Non-sensitive transport/lifecycle facts, never an authentication verdict. */
-  readonly rejection?: 'invalid_input' | 'controller_expired' | 'observation_expired';
+  readonly rejection?: 'invalid_input' | 'controller_expired';
   readonly closure?: 'exited' | 'cancelled' | 'unavailable';
   /** Private live projection: never journal or attach to a model tool result. */
   readonly display?: {
-    readonly sequence: number;
     readonly text: string;
     readonly inputOpen: boolean;
   };
@@ -128,22 +118,6 @@ export function decodeRuntimeResourceHandoffInput(value: unknown): RuntimeResour
       input: requireUtf8String(record.input, 'private input', 32 * 1024),
     };
   }
-  if (record.action === 'share') {
-    requireExactRecord(record, 'Terminal observation', [
-      'action',
-      'sessionId',
-      'requestId',
-      'controllerId',
-      'sequence',
-      'text',
-    ]);
-    return {
-      ...base,
-      action: 'share',
-      sequence,
-      text: requireUtf8String(record.text, 'reviewed observation', 8_000),
-    };
-  }
   throw invalidProtocolFrame('Unsupported terminal handoff action');
 }
 
@@ -163,7 +137,6 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
       'outcome_unknown',
       'rejected',
       'closed',
-      'shared',
       'observed',
     ].includes(record.status as string) ||
     !['waiting', 'human', 'resumed', 'closed'].includes(record.phase as string)
@@ -173,9 +146,7 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
   if (
     (record.status === 'rejected') !== (record.rejection !== undefined) ||
     (record.rejection !== undefined &&
-      !['invalid_input', 'controller_expired', 'observation_expired'].includes(
-        record.rejection as string,
-      )) ||
+      !['invalid_input', 'controller_expired'].includes(record.rejection as string)) ||
     (record.status === 'closed') !== (record.closure !== undefined) ||
     (record.closure !== undefined &&
       (!['exited', 'cancelled', 'unavailable'].includes(record.closure as string) ||
@@ -202,14 +173,12 @@ export function decodeRuntimeResourceHandoffResult(value: unknown): RuntimeResou
   }
   if (record.display !== undefined) {
     const screen = requireExactRecord(record.display, 'Private terminal display', [
-      'sequence',
       'text',
       'inputOpen',
     ]);
     if (typeof screen.inputOpen !== 'boolean')
       throw invalidProtocolFrame('Invalid terminal input state');
     display = {
-      sequence: requireCount(screen.sequence, 'sequence'),
       text: screen.text === '' ? '' : requireUtf8String(screen.text, 'private display', 48 * 1024),
       inputOpen: screen.inputOpen,
     };
