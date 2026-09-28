@@ -72,7 +72,7 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   );
   assert.match(
     windowAllClosed,
-    /process\.platform !== "darwin" && !windowsAppTray\.hasTray\(\) && !isBrowserMessageBoxPresentationActive\(\)/u,
+    /process\.platform !== "darwin"\s*&&\s*!windowsAppTray\.hasTray\(\)\s*&&\s*!isBrowserMessageBoxPresentationActive\(\)/u,
   );
 });
 
@@ -89,7 +89,10 @@ test('registers one shared quit cleanup before the initial Host handoff', () => 
   assert.equal(earlyWindowSource.match(/createAppQuitCoordinator\(\{/gu)?.length, 1);
   assert.equal(earlyWindowSource.match(/app\.on\("before-quit"/gu)?.length, 1);
   assert.match(bootSource, /bootContext\.cleanup = closeRuntimeHostDesktop/u);
-  assert.match(bootSource, /return runtimeHostDesktopShutdown \?\?= disposeRuntimeHostDesktop\(\)/u);
+  assert.match(
+    bootSource,
+    /return\s+\(?runtimeHostDesktopShutdown\s*\?\?=\s*disposeRuntimeHostDesktop\(\)\)?/u,
+  );
   assert.match(bootSource, /workBoardIpc\?\.close\(\)/u);
 });
 
@@ -157,15 +160,18 @@ test('lets the Runtime Host migrate its State Root before Desktop opens shared t
   assert.notEqual(resolverStart, -1);
   assert.notEqual(sessionCopyOpen, -1);
   assert.match(resolver, /runtimeHostStart/u);
-  assert.match(resolver, /await manager\.waitUntilReady\('local', undefined, AbortSignal\.timeout/u);
+  assert.match(
+    resolver,
+    /await manager\.waitUntilReady\(\s*["']local["'],\s*undefined,\s*AbortSignal\.timeout/u,
+  );
   assert.notEqual(workBoardStore, -1);
   assert.match(
     bootSource.slice(workBoardStore, bootSource.indexOf('});', workBoardStore)),
-    /schemaMigration: 'require_current'/u,
+    /schemaMigration:\s*["']require_current["']/u,
   );
   assert.match(
     bootSource.slice(sessionCopyOpen, bootSource.indexOf('}),', sessionCopyOpen)),
-    /schemaMigration: 'require_current'/u,
+    /schemaMigration:\s*["']require_current["']/u,
   );
   assert.match(
     bootSource,
