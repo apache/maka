@@ -132,6 +132,7 @@
     "@jackwener/opencli@1.8.7": false,
     "electron-winstaller@5.4.0": true,
     "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true,
     "node-pty@1.2.0-beta.15": true,
     "protobufjs@7.6.5": false,
     "tree-sitter-javascript@0.25.0": true
