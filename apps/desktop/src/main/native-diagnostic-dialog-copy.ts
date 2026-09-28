@@ -195,7 +195,7 @@ const COPY = {
     },
     defaultRuntimeHostRecovery: {
       title: '기본 Runtime Host를 사용할 수 없습니다',
-      connectFailed: (profileName) => `${profileName}에 연결할 수 없습니다`,
+      connectFailed: (profileName) => `${profileName}에 연결하지 못했습니다`,
       detail:
         '다시 시도하거나, Local을 기본 Host로 사용하거나, 현재 선택을 유지한 뒤 나중에 설정에서 해결하세요. 진단 정보를 복사하면 연결 실패를 확인할 수 있습니다.',
       retry: '다시 시도',
@@ -203,7 +203,7 @@ const COPY = {
       keepOffline: '오프라인 유지',
     },
     storageRootRepair: {
-      title: 'Maka 작업 공간 복구 필요',
+      title: 'Maka 작업 공간을 복구해야 합니다',
       message: 'Maka가 이 작업 공간을 확인할 수 없습니다.',
       detail: (workspaceRoot) =>
         `디스크 식별 정보가 변경되었을 수 있습니다. 복사된 작업 공간이 아니라 이 컴퓨터의 원래 Maka 작업 공간인 경우에만 복구하세요.\n\n${workspaceRoot}`,
