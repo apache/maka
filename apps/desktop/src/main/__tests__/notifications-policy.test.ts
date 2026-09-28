@@ -20,20 +20,17 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  isRunNotificationKind,
   resolveNotificationContent,
-  runNotificationCopy,
   shouldRaiseRunNotification,
 } from '../notifications-policy.js';
 
 it('gates native notifications through every required condition', () => {
-  const base = { enabled: true, supported: true, windowFocused: false, incognito: false, e2e: false };
+  const base = { enabled: true, supported: true, windowFocused: false, e2e: false };
   const cases = [
     [base, true],
     [{ ...base, enabled: false }, false],
     [{ ...base, supported: false }, false],
     [{ ...base, windowFocused: true }, false],
-    [{ ...base, incognito: true }, false],
     [{ ...base, e2e: true }, false],
   ] as const;
 
@@ -42,36 +39,17 @@ it('gates native notifications through every required condition', () => {
   }
 });
 
-it('recognizes terminal kinds and keeps distinct localized fallback copy', () => {
-  for (const value of ['completed', 'errored', 'waiting']) assert.equal(isRunNotificationKind(value), true);
-  for (const value of ['complete', 'error', 'aborted', '', undefined, null, 1, {}]) {
-    assert.equal(isRunNotificationKind(value), false);
-  }
-
-  const completed = runNotificationCopy('completed', 'zh-CN');
-  const errored = runNotificationCopy('errored', 'zh-CN');
-  assert.ok(completed.title && completed.body);
-  assert.ok(errored.title && errored.body);
-  assert.notEqual(completed.title, errored.title);
-
-  assert.deepEqual(runNotificationCopy('completed', 'zh-TW'), {
-    title: '回答已產生',
-    body: 'Maka 已完成本次回答，按一下以檢視。',
-  });
-});
-
-it('sanitizes renderer content, caps it, and falls back per field', () => {
+it('sanitizes notification content, caps it, and falls back per field', () => {
   const clean = resolveNotificationContent(
     { kind: 'completed', title: '  会话  A  ', body: 'line one\n\nline two\tindented' },
     'zh-CN',
   );
   assert.deepEqual(clean, { title: '会话 A', body: 'line one line two indented' });
 
-  const completedFallback = runNotificationCopy('completed', 'zh-CN');
-  for (const value of ['', '   ', undefined, null, 42, {}]) {
+  for (const value of ['', '   ', undefined]) {
     assert.deepEqual(
       resolveNotificationContent({ kind: 'completed', title: value, body: value }, 'zh-CN'),
-      completedFallback,
+      { title: '回答已生成', body: 'Maka 已完成本轮回答，点击查看。' },
     );
   }
 
@@ -82,9 +60,11 @@ it('sanitizes renderer content, caps it, and falls back per field', () => {
   assert.equal(capped.body.length, 160);
   assert.ok(capped.body.endsWith('…'));
 
-  const erroredFallback = runNotificationCopy('errored', 'zh-CN');
   assert.deepEqual(
     resolveNotificationContent({ kind: 'errored', title: '出错的会话', body: '' }, 'zh-CN'),
-    { title: '出错的会话', body: erroredFallback.body },
+    { title: '出错的会话', body: '本轮回答未能完成，点击查看详情。' },
   );
+  assert.deepEqual(resolveNotificationContent({ kind: 'completed' }, 'zh-TW'), {
+    title: '回答已產生', body: 'Maka 已完成本次回答，按一下以檢視。',
+  });
 });

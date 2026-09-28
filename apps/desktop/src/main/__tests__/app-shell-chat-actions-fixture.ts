@@ -89,8 +89,8 @@ export function createActionsDeps() {
     markSessionReadLocally: () => undefined,
     messageRetryPending: { claim: () => true, release: () => undefined },
     refreshSessions: async () => [],
-    activateSessionForFirstSend: async (sessionId: string) => {
-      activeIdRef.current = sessionId;
+    activateSessionForFirstSend: async (session: { id: string }) => {
+      activeIdRef.current = session.id;
     },
     retireSession: (_sessionId: string) => undefined,
     setMessageLoadErrorBySession: () => undefined,

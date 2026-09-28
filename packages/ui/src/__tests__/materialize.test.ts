@@ -226,6 +226,23 @@ describe("steering timeline", () => {
 });
 
 describe("materializeTurns message metadata", () => {
+  test("carries a renderer Stop abort source into the turn view model", () => {
+    const [turn] = materializeTurns([
+      userMsg("t-stop", 1, "continue the interrupted work"),
+      {
+        type: "turn_state",
+        id: "stop-state",
+        turnId: "t-stop",
+        ts: 2,
+        status: "aborted",
+        abortSource: "renderer.stop_button",
+      },
+    ], "en");
+
+    assert.equal(turn?.status, "aborted");
+    assert.equal(turn?.abortSource, "renderer.stop_button");
+  });
+
   test("hides a retired provider dropping note that an old session still carries", () => {
     const turns = materializeTurns([
       {

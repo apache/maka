@@ -25,6 +25,7 @@ import { useLiveContextUsage } from '../../../application/contracts/session-insp
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
 import { getShellCopy } from '../../../locales/shell-copy.js';
@@ -34,8 +35,7 @@ import { useWorkHubController } from '../controller/use-workhub-controller.js';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
 import type { WorkHubPresentationSnapshot } from '../../../../shared/workhub-presentation.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
-import { applyWorkHubDelegationFeedback, workHubLinkedWork } from '../model/linked-work.js';
-import type { WorkHubDelegationFeedback, WorkHubDelegationReference } from '../model/linked-work.js';
+import { workHubLinkedWork } from '../model/linked-work.js';
 
 function cancelReveal(element: HTMLDivElement | null, content: HTMLDivElement | null) {
   for (const target of [element, content]) for (const animation of target?.getAnimations() ?? []) animation.cancel();
@@ -70,7 +70,12 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
 
 export function WorkHubRoot() {
   const highlight = useWorkHubHighlightState();
-  const controller = useWorkHubController(() => highlight.selectWork(undefined));
+  const composer = useRef<ComposerHandle>(null);
+  const draftRestore = useRef<((sessionId: string, draft: RestoredDraftContent) => void) | undefined>(undefined);
+  const controller = useWorkHubController(
+    () => highlight.selectWork(undefined),
+    (sessionId, draft) => draftRestore.current?.(sessionId, draft),
+  );
   const { services, session, transcript, busy } = controller;
   useEffect(() => {
     services.bindBrowserSession(controller.sessionId ?? null);
@@ -103,7 +108,6 @@ export function WorkHubRoot() {
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
-  const composer = useRef<ComposerHandle>(null);
   const composerSurface = useRef<HTMLDivElement>(null);
   const revealMark = useRef<HTMLDivElement>(null);
   const history = useRef<HTMLDivElement>(null);
@@ -112,12 +116,6 @@ export function WorkHubRoot() {
   const surface = useRef<HTMLElement>(null);
   const [editingProgressRequest, setEditingProgressRequest] = useState<number>();
   const [expandedOverride, setConversationExpanded] = useState<boolean>();
-  const promptStates = new Map<string, import('../model/linked-work.js').WorkHubDelegationState>();
-  for (const message of transcript.messages) if (message.type === 'turn_state') promptStates.set(message.turnId, message.status);
-  for (const [turnId, state] of Object.entries(controller.turnStates)) promptStates.set(turnId, state);
-  if (controller.liveTurn && !controller.liveTurn.terminal) promptStates.set(controller.liveTurn.turnId, 'running');
-  if (controller.pendingTurnId && controller.sending) promptStates.set(controller.pendingTurnId, 'running');
-  if (controller.activeInteraction) promptStates.set(controller.activeInteraction.turnId, 'waiting_for_user');
   const hasConversation = transcript.messages.length > 0 || busy || Boolean(controller.liveTurn);
   const conversationExpanded = expandedOverride ?? hasConversation;
   const hasConversationRef = useRef(hasConversation);
@@ -257,31 +255,7 @@ export function WorkHubRoot() {
     };
   }, [services]);
   const links = useMemo(() => workHubLinkedWork(transcript.messages, controller.sessions, t.work, controller.sessionId), [transcript.messages, controller.sessions, t.work, controller.sessionId]);
-  const [delegationFeedback, setDelegationFeedback] = useState<readonly WorkHubDelegationFeedback[]>([]);
-  useEffect(() => {
-    let current = true;
-    const references: WorkHubDelegationReference[] = links.flatMap((link) =>
-      link.targetMessageId && link.targetTurnId ? [{
-        id: link.id,
-        targetSessionId: link.targetSessionId,
-        targetMessageId: link.targetMessageId,
-        targetTurnId: link.targetTurnId,
-      }] : [],
-    );
-    if (references.length === 0) {
-      setDelegationFeedback([]);
-      return () => { current = false; };
-    }
-    void services.delegationFeedback(references).then((feedback) => {
-      if (current) setDelegationFeedback(feedback);
-    }).catch(controller.report);
-    return () => { current = false; };
-  }, [services, links]);
-  const linksWithFeedback = useMemo(
-    () => applyWorkHubDelegationFeedback(links, delegationFeedback),
-    [links, delegationFeedback],
-  );
-  const delegatedSessionIds = linksWithFeedback.map((link) => link.targetSessionId);
+  const delegatedSessionIds = links.map((link) => link.targetSessionId);
   const call = (task: Promise<unknown>) => {
     void task.catch(controller.report);
   };
@@ -332,14 +306,14 @@ export function WorkHubRoot() {
             <WorkHubComposer
               pendingMessages={controller.transientMessages}
               queuedMessages={controller.messageQueue.entries}
-              queuedMessageRevision={controller.messageQueue.revision}
-              onUpdateQueuedEntry={controller.updateQueuedEntry}
+              onEditQueuedEntry={controller.editQueuedEntry}
               onDeleteQueuedEntry={controller.deleteQueuedEntry}
               onPromoteQueuedEntry={controller.promoteQueuedEntry}
               onReorderQueuedEntries={controller.reorderQueuedEntries}
               placeholder={progress ? t.progressInput : t.welcome}
               ref={composer}
               hidden={Boolean(controller.activeQuestion || controller.activeForm)}
+              draftRestore={draftRestore}
               sessionId={controller.sessionId}
               streaming={busy}
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}
@@ -421,8 +395,7 @@ export function WorkHubRoot() {
       >
         <div ref={history} className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
         <WorkHubConversation
-          promptStates={promptStates}
-          workLinks={linksWithFeedback}
+          workLinks={links}
           onReadAttachmentBytes={services.readAttachmentBytes}
           onOpenWork={(id) => call(services.presentation.openSession(id))}
           scrollBehavior="auto"

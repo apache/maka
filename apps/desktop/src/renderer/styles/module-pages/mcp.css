@@ -17,10 +17,6 @@
  * under the License.
  */
 
-.maka-module-row-description code {
-  font: var(--maka-text-supporting);
-}
-
 .maka-mcp-detail-endpoint {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -38,12 +34,15 @@
   white-space: pre-wrap;
 }
 
-.maka-mcp-section-heading {
-  font: var(--maka-text-heading-4);
-}
-
 .maka-mcp-mark {
   flex: none;
+}
+
+/* A tile-shaped brand mark replaces the plate, so it takes the plate's box:
+   .maka-module-market-icon in module-shell.css. */
+svg.maka-mcp-mark {
+  width: 28px;
+  height: 28px;
 }
 
 .maka-mcp-mark > img,
@@ -52,10 +51,6 @@
   width: 20px;
   height: 20px;
   object-fit: contain;
-}
-
-.maka-mcp-status-dot {
-  display: inline-flex;
 }
 
 .maka-mcp-manual-form,

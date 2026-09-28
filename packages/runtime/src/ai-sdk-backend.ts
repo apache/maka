@@ -253,6 +253,8 @@ export interface SystemPromptContext {
   sessionId: string;
   turnId: string;
   cwd: string;
+  /** Sampled once for this execution; absent during prompt inspection without a live turn. */
+  turnStartedAt?: number;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
   emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
 }

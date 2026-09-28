@@ -25,6 +25,7 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
 import type {
@@ -217,7 +218,17 @@ export class ModelAdapter {
     });
   }
 
+  /**
+   * Whether a request to this connection may carry an output-token limit at
+   * all. When it may not, no limit is sent: neither a configured per-model
+   * limit nor the context-recovery cap.
+   */
+  acceptsOutputTokenLimit(): boolean {
+    return providerAcceptsOutputTokenLimit(this.input.connection.providerType);
+  }
+
   maxOutputTokens(): number | undefined {
+    if (!this.acceptsOutputTokenLimit()) return undefined;
     return selectedModelMaxOutputTokens(
       this.input.connection,
       this.input.modelId,
@@ -274,14 +285,18 @@ export class ModelAdapter {
       wrapLanguageModel: (input: Record<string, unknown>) => unknown;
     };
 
-    const maxOutputTokens =
-      input.maxOutputTokens ??
-      selectedModelMaxOutputTokens(
-        this.input.connection,
-        this.input.modelId,
-        this.input.providerOptions,
-        this.runtime,
-      );
+    // The one place a main-turn output limit reaches the wire. A provider that
+    // rejects any limit gets none, whether it came from the caller (overflow
+    // recovery, a resumed request) or from the configured model limit.
+    const maxOutputTokens = this.acceptsOutputTokenLimit()
+      ? (input.maxOutputTokens ??
+        selectedModelMaxOutputTokens(
+          this.input.connection,
+          this.input.modelId,
+          this.input.providerOptions,
+          this.runtime,
+        ))
+      : undefined;
     let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
     const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
