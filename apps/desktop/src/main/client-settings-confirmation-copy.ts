@@ -51,7 +51,7 @@ const COPY = {
     buttons: ['Apply changes', 'Cancel'],
   },
   ko: {
-    labels: { theme: '테마', palette: '색상 팔레트', uiLocale: 'UI 언어', runComplete: '실행 완료 알림', keepSystemAwake: '시스템 절전 모드 유지' },
+    labels: { theme: '테마', palette: '색상 팔레트', uiLocale: 'UI 언어', runComplete: '실행 완료 알림', keepSystemAwake: '시스템 절전 방지' },
     on: '켬',
     off: '끔',
     message: 'Maka가 이 클라이언트의 설정을 업데이트하도록 허용할까요?',

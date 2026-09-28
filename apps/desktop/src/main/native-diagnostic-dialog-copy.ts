@@ -206,7 +206,7 @@ const COPY = {
       title: 'Maka 작업 공간 복구 필요',
       message: 'Maka가 이 작업 공간을 확인할 수 없습니다.',
       detail: (workspaceRoot) =>
-        `디스크 ID가 변경되었을 수 있습니다. 복사된 작업 공간이 아니라 이 컴퓨터의 원래 Maka 작업 공간인 경우에만 복구하세요.\n\n${workspaceRoot}`,
+        `디스크 식별 정보가 변경되었을 수 있습니다. 복사된 작업 공간이 아니라 이 컴퓨터의 원래 Maka 작업 공간인 경우에만 복구하세요.\n\n${workspaceRoot}`,
       repair: '작업 공간 복구',
       exit: '종료',
     },

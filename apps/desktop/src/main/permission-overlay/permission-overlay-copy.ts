@@ -109,7 +109,7 @@ const COPY: Catalog = {
   },
   ko: {
     accessibility: {
-      headline: (appName) => `위 목록에 ${appName}을(를) 끌어다 놓으면 손쉬운 사용 권한이 허용됩니다`,
+      headline: (appName) => `위 목록에 ${appName} 아이콘을 끌어다 놓으면 손쉬운 사용 권한이 허용됩니다`,
       fallback: '시스템 설정에서 +를 누르고 응용 프로그램에서 이 앱을 선택할 수도 있습니다.',
       granted: '손쉬운 사용 권한이 허용되었습니다',
       dismiss: '닫기',
@@ -117,7 +117,7 @@ const COPY: Catalog = {
       noBundle: '.app 번들로 실행 중이 아니어서 끌 수 없습니다. 시스템 설정에서 수동으로 추가하세요.',
     },
     screen_recording: {
-      headline: (appName) => `위 목록에 ${appName}을(를) 끌어다 놓으면 화면 기록 권한이 허용됩니다`,
+      headline: (appName) => `위 목록에 ${appName} 아이콘을 끌어다 놓으면 화면 기록 권한이 허용됩니다`,
       fallback: '시스템 설정에서 +를 누르고 응용 프로그램에서 이 앱을 선택할 수도 있습니다.',
       granted: '화면 기록 권한이 허용되었습니다',
       dismiss: '닫기',
