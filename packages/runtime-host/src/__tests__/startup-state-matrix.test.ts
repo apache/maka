@@ -36,6 +36,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { openRuntimeEventPersistence } from '@maka/storage/runtime-event-persistence';
 import {
   tryAcquireInteractiveRootOwner,
   tryAcquireInteractiveRootReader,
@@ -129,6 +130,26 @@ test('mixed tool states recover once beside unrelated history before Host ready'
         assert.equal(outcomes.length, 0, scenario.name);
       }
       settled.push(ledger.runtimeEvents);
+    }
+    const persistence = await openRuntimeEventPersistence({ workspaceRoot: fixture.root });
+    try {
+      for (const { scenario, operationId } of targets) {
+        if (scenario.outcome === undefined && scenario.mode !== 'outcome_unknown') {
+          assert.equal(
+            (await persistence.runtimeEventStore.readToolOperation(operationId))?.currentState,
+            'interrupted_unknown',
+            scenario.name,
+          );
+        }
+      }
+      assert.deepEqual(
+        await persistence.runtimeEventStore.listUnsettledToolOperations(
+          targets.map(({ session }) => session.sessionId),
+        ),
+        [],
+      );
+    } finally {
+      persistence.close();
     }
     assert.deepEqual(await readHistory(fixture, background), unchangedBackground);
 
