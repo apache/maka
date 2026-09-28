@@ -3,10 +3,10 @@ doc_id: astryx-alignment-inventory
 title: "Astryx alignment inventory"
 language: en
 source_language: en
-implementation_status: current
-document_status: current
+implementation_status: historical
+document_status: historical
 translation_status: source-only
-last_verified: 2026-09-07
+last_verified: 2026-09-28
 owners:
   - maka-backend
 ---

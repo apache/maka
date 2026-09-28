@@ -6,7 +6,7 @@ source_language: en
 implementation_status: historical
 document_status: historical
 translation_status: source-only
-last_verified: 2026-09-05
+last_verified: 2026-09-28
 owners:
   - maka-backend
 ---
@@ -41,13 +41,13 @@ owners:
 
 > **Historical review record.** The findings, file sizes, inventory counts, and backlog below describe the audited commit and the follow-up branch, not current `main`. Current file-level coverage is generated in [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md); current renderer ownership is recorded in `apps/desktop/renderer-architecture.json` and the feature README files.
 
-## Follow-up status checked on 2026-09-05
+## Follow-up status checked on 2026-09-28
 
-- The generated inventory now covers **249 files: 0 blockers, 0 reimplementations, 1 polish item, and 248 aligned files**. The remaining polish row is the raw draft editor in `packages/ui/src/composer-message-queue.tsx`.
+- The generated inventory covers **305 files: 0 blockers, 0 reimplementations, 3 polish items, and 302 aligned files**. The polish rows are `styles/desktop-assistant.css`, `styles/work-board.css`, and `work-board-panel.tsx` under `apps/desktop/src/renderer/`.
 - `WorkbarController` is now a real boundary at `apps/desktop/src/renderer/features/workbar/controller/use-workbar-controller.ts`, and `WorkbarHost` owns the rendered surface. The A3 direction below therefore landed; its old `session-workbar*` anchors no longer exist.
-- Module Hub, Goals, Task Entry, Session Navigation, Session Collaboration, and Workbar have feature boundaries below `AppShell`. `apps/desktop/renderer-architecture.json` still classifies `app-shell.tsx` as the `app-shell-integration-knot`; at 3,293 lines, the broader A1 concentration remains current.
-- Settings still accepts section requests through `use-settings-modal.ts`, persisted section state, and the `maka:jumpToSettingsSection` event in `settings-surface.tsx`. The A4 convergence remains planned.
-- `packages/ui/src/composer.tsx` is now 2,284 lines, so the A5 concentration remains current. The tool-output implementation named in A6 now lives in `packages/ui/src/tool-activity/tool-result-preview.tsx`.
+- Module Hub, Goals, Task Entry, Session Navigation, Session Collaboration, and Workbar have feature boundaries below `AppShell`. `apps/desktop/renderer-architecture.json` still classifies `app-shell.tsx` as the `app-shell-integration-knot`; at 2,615 lines, the broader A1 concentration remains current.
+- Settings open intents and modal state now live in `features/overlays/model/settings-modal-state.ts` and `features/overlays/controller/use-overlays-controller.ts`. `settings/settings-surface.tsx` still persists the active section and handles `maka:jumpToSettingsSection`, so A4 has partly converged.
+- `packages/ui/src/composer.tsx` is now 2,717 lines, so the A5 concentration remains current. The tool-output implementation named in A6 now lives in `packages/ui/src/tool-activity/tool-result-preview.tsx`.
 - Astryx patches are versioned with the installed dependency. `patches/README.md` is the stable authority; do not use the `0.3.0` filename from the historical table as a current path.
 
 Reproduce the latest file-level result with `npm run astryx:surface-inventory`.

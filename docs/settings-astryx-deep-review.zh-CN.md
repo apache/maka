@@ -1,12 +1,12 @@
 ---
 doc_id: settings-astryx-deep-review.zh-CN
-title: "Maka 设置页深度 Review——以 Astryx 设计语言为基准"
+title: "Maka 设置页 Astryx 深度审计（历史记录）"
 language: zh-CN
 source_language: zh-CN
 implementation_status: historical
 document_status: historical
 translation_status: source-only
-last_verified: 2026-09-05
+last_verified: 2026-09-28
 owners:
   - maka-backend
 ---
@@ -31,7 +31,7 @@ owners:
 
 # Maka 设置页 Astryx 深度审计（历史记录）
 
-> **生命周期：历史。** 下文记录的是 2026-08-03、`#1972` 落地前的设置页问题与重构目标，不是当前缺陷清单。该方案已经由 `refactor(desktop): rebuild Settings on the Astryx open-group idiom (#1972)` 落地。当前实现以 `settings/settings-section.tsx`、`settings/settings-rows.tsx` 和 `styles/settings/rows.css` 为准；全量 surface 覆盖以生成的 [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md) 为准。
+> **生命周期：历史。** 下文记录的是 2026-08-03、`#1972` 落地前的设置页问题与重构目标，不是当前缺陷清单。该方案已经由 `refactor(desktop): rebuild Settings on the Astryx open-group idiom (#1972)` 落地。当前 `SettingsSection` / `SettingsRow` / `SettingsField` / `SettingsActions` 的实现以 `application/contracts/settings-presentation/settings-section.tsx` 为准；`settings/settings-section.tsx` 仅转导出这些组件，`settings/settings-rows.tsx` 定义额外的 `SettingRow` 组合，行样式位于 `styles/settings/rows.css`。全量 surface 覆盖以生成的 [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md) 为准。
 >
 > 原审计基于 `settings/astryx-refactor` 分支，使用 Storybook 全页截图（中/英 × 亮/暗）、Astryx 官方 `settings` / `settings-dialog` 模板和 `astryx docs` 原文。2026-09-05 复核确认：`SettingsSection` 的开放行组、`SettingsRow` / `SettingsField` / `SettingsActions` 三种行语法，以及以 `StatusDot` + 文本为主的状态表达均已进入当前实现；页面数量、按钮数量和 CSS 行数等下文数字只描述当时快照。
 
