@@ -92,6 +92,7 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
+  const [adding, setAdding] = useState(false);
   const [projectDialog, setProjectDialog] = useState<'directory' | 'new' | null>(null);
   const directoryPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const reloadGeneration = useRef(0);
@@ -111,14 +112,28 @@ export function ProjectsSettingsPage(props: {
    * call still owns the folder picker, so a cancelled picker simply leaves the
    * list unchanged; the name rides along and the project is registered under it.
    */
-  const addNamedProject = useCallback(
-    async (name: string) => {
-      if (!host || !props.runtimeHostTargetVerified) return;
-      const result = await window.maka.projects.add(host, { name });
-      if (result.ok) await reload();
-    },
-    [host, props.runtimeHostTargetVerified, reload],
-  );
+  async function addNamedProject(name: string) {
+    if (!host || !props.runtimeHostTargetVerified) return;
+    await runRowAction('add', async () => {
+      setAdding(true);
+      try {
+        const result = await window.maka.projects.add(host, { name });
+        if (!mountedRef.current) return;
+        if (!result.ok && result.reason === 'archived') {
+          const ok = await toast.confirm({
+            title: copy.archivedProjectTitle,
+            description: copy.archivedProjectDescription,
+            confirmLabel: copy.archivedProjectRestore,
+            cancelLabel: copy.archivedProjectCancel,
+          });
+          if (!ok || !mountedRef.current) return;
+          await window.maka.projects.restore(result.projectId, host);
+        }
+      } finally {
+        if (mountedRef.current) setAdding(false);
+      }
+    }, copy.actionFailed);
+  }
 
   useEffect(() => {
     if (!host || !props.runtimeHostTargetVerified) {
@@ -280,7 +295,8 @@ export function ProjectsSettingsPage(props: {
               variant="secondary"
               size="sm"
               label={copy.addProject}
-              clickAction={capabilities.chooseHostDirectory
+              isLoading={adding}
+              onClick={capabilities.chooseHostDirectory
                 ? () => {
                     if (props.runtimeHostTargetVerified) setProjectDialog('directory');
                   }
@@ -513,7 +529,7 @@ export function ProjectsSettingsPage(props: {
           onClose={() => setProjectDialog(null)}
           onRegistered={() => {
             setProjectDialog(null);
-            void reload();
+            void runRowAction('add', async () => {}, copy.actionFailed);
           }}
         />
         {projectDialog === 'new' && props.runtimeHostTargetVerified ? (

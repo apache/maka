@@ -35,9 +35,6 @@ export function createDesktopTaskEntryServices(
       async archiveProject(host, projectId) {
         await bridge.projects.archive(projectId, host);
       },
-      async restoreProject(host, projectId) {
-        await bridge.projects.restore(projectId, host);
-      },
     },
     sessions: {
       async relocateWorkspace(sessionId, projectId) {

@@ -30,6 +30,10 @@ describe('createDesktopTaskEntryServices', () => {
     let disposed = 0;
     const catalog = { defaultProfileId: 'local', hosts: [] };
     const cancelled = { ok: false as const, reason: 'cancelled' as const };
+    const restored = {
+      ok: true as const,
+      project: { id: 'project-1', name: 'Project', locations: [], available: true },
+    };
     const bridge = {
       newTasks: {
         getCatalog: async () => {
@@ -47,6 +51,10 @@ describe('createDesktopTaskEntryServices', () => {
           calls.push({ name: 'addProject', args });
           return cancelled;
         },
+        restoreProject: async (...args: unknown[]) => {
+          calls.push({ name: 'restoreProject', args });
+          return restored;
+        },
         relinkProject: async (...args: unknown[]) => {
           calls.push({ name: 'relinkProject', args });
           return cancelled;
@@ -57,8 +65,9 @@ describe('createDesktopTaskEntryServices', () => {
           calls.push({ name: 'renameProject', args }),
         archive: async (...args: unknown[]) =>
           calls.push({ name: 'archiveProject', args }),
-        restore: async (...args: unknown[]) =>
-          calls.push({ name: 'restoreProject', args }),
+        restore: async () => {
+          throw new Error('Task Entry must use the result-bearing newTasks restore bridge');
+        },
       },
       sessions: {
         moveToProject: async (...args: unknown[]) => {
@@ -79,7 +88,7 @@ describe('createDesktopTaskEntryServices', () => {
     await services.catalog.relinkProject(host, 'project-1');
     await services.catalog.renameProject(host, 'project-1', 'Renamed');
     await services.catalog.archiveProject(host, 'project-1');
-    await services.catalog.restoreProject(host, 'project-1');
+    assert.deepEqual(await services.catalog.restoreProject(host, 'project-1'), restored);
     assert.deepEqual(
       await services.sessions.relocateWorkspace('session-1', 'project-1'),
       { ok: true },
@@ -93,7 +102,7 @@ describe('createDesktopTaskEntryServices', () => {
       { name: 'relinkProject', args: [host, 'project-1'] },
       { name: 'renameProject', args: ['project-1', 'Renamed', host] },
       { name: 'archiveProject', args: ['project-1', host] },
-      { name: 'restoreProject', args: ['project-1', host] },
+      { name: 'restoreProject', args: [host, 'project-1'] },
       {
         name: 'moveToProject',
         args: ['session-1', 'project-1'],
