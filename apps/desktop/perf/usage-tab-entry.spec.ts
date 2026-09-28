@@ -38,7 +38,11 @@ const EXPECTED_ACTIVITY_ROWS = 409;
 /** usage-settings-view's USAGE_REQUESTS_PAGE_SIZE. */
 const PAGE_SIZE = 50;
 const ROUNDS = 12;
-/** Frames the in-renderer poll may wait per phase before giving up. */
+/**
+ * Frames the in-renderer poll may wait per phase before giving up. Playwright
+ * serializes page.evaluate callbacks without their Node-side closure, so this
+ * must be passed into each callback as an argument.
+ */
 const MOUNT_POLL_FRAMES = 600;
 
 interface UsageWindow {
@@ -101,7 +105,7 @@ test('usage activity tab entry mounts one bounded page of 409 total rows', async
   const entries: number[] = [];
   for (let round = 1; round <= ROUNDS; round += 1) {
     const leftMs = await page.evaluate(
-      ([tableSelector, navSelector]) =>
+      ([tableSelector, navSelector, pollBudgetFrames]) =>
         new Promise<number>((resolve, reject) => {
           const t0 = performance.now();
           const nav = document.querySelector(navSelector);
@@ -117,7 +121,7 @@ test('usage activity tab entry mounts one bounded page of 409 total rows', async
               return;
             }
             frames += 1;
-            if (frames > MOUNT_POLL_FRAMES) {
+            if (frames > pollBudgetFrames) {
               reject(new Error('activity table never unmounted'));
               return;
             }
@@ -125,10 +129,10 @@ test('usage activity tab entry mounts one bounded page of 409 total rows', async
           };
           requestAnimationFrame(poll);
         }),
-      [ACTIVITY_TABLE, GENERAL_NAV],
+      [ACTIVITY_TABLE, GENERAL_NAV, MOUNT_POLL_FRAMES],
     );
     const entryMs = await page.evaluate(
-      ([tableSelector, navSelector]) =>
+      ([tableSelector, navSelector, pollBudgetFrames]) =>
         new Promise<number>((resolve, reject) => {
           const t0 = performance.now();
           const nav = document.querySelector(navSelector);
@@ -144,7 +148,7 @@ test('usage activity tab entry mounts one bounded page of 409 total rows', async
               return;
             }
             frames += 1;
-            if (frames > MOUNT_POLL_FRAMES) {
+            if (frames > pollBudgetFrames) {
               reject(new Error('activity table did not mount within the poll budget'));
               return;
             }
@@ -152,7 +156,7 @@ test('usage activity tab entry mounts one bounded page of 409 total rows', async
           };
           requestAnimationFrame(poll);
         }),
-      [ACTIVITY_TABLE, USAGE_NAV],
+      [ACTIVITY_TABLE, USAGE_NAV, MOUNT_POLL_FRAMES],
     );
     entries.push(entryMs);
     console.log(JSON.stringify({
@@ -163,7 +167,10 @@ test('usage activity tab entry mounts one bounded page of 409 total rows', async
   }
 
   const sorted = [...entries].sort((left, right) => left - right);
-  const median = sorted[Math.floor(sorted.length / 2)];
+  const mid = Math.floor(sorted.length / 2);
+  // Even sample: the median is the mean of the two middle values, not the
+  // upper one.
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
   const summary = {
     condition:
