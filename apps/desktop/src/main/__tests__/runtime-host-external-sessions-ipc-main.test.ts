@@ -21,7 +21,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
 import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
+import { decodeExternalSessionImportResult } from '@maka/runtime-host/protocol';
 import {
   registerRuntimeHostExternalSessionsIpc,
   type RuntimeHostExternalSessionsIpcDeps,
@@ -55,10 +59,11 @@ test('forwards bounded external Session requests and publishes imported Sessions
         },
         importExternalSession: async (input) => {
           requests.push(input);
-          return session('imported-1');
+          return { kind: 'imported', session: session('imported-1') };
         },
       }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'project', projectId: 'selected-project' }),
     },
     ipc,
   );
@@ -95,7 +100,11 @@ test('forwards bounded external Session requests and publishes imported Sessions
   );
   assert.deepEqual(requests, [
     { adapterId: 'codex', includeArchived: true, cursor: '16' },
-    { adapterId: 'codex', sourceSessionId: 'source-1' },
+    {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+      workspace: { kind: 'project', projectId: 'selected-project' },
+    },
   ]);
   assert.deepEqual(events, [{ reason: 'created', sessionId: 'imported-1' }]);
 });
@@ -115,6 +124,7 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
         },
       }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -134,6 +144,286 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
 });
 
+test('does not turn a missing import destination into an uncertain commit', async () => {
+  let imports = 0;
+  const events: string[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          imports += 1;
+          return { kind: 'imported', session: session('unexpected') };
+        },
+      }),
+      emitSessionsChanged: (reason) => events.push(reason),
+      resolveImportWorkspace: async () => {
+        throw new Error('Select a project from the Runtime Host first');
+      },
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    () => ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    /Select a project from the Runtime Host first/,
+  );
+  assert.equal(imports, 0);
+  assert.deepEqual(events, []);
+});
+
+test('keeps catalog eligibility owned by the Host after an uncertain import', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        listExternalSessions: async () => ({
+          sessions: [{
+            id: 'source-1',
+            name: 'Source',
+            hostCwd: '/external',
+            importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+          }],
+          nextCursor: null,
+        }),
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'commit_outcome_unknown',
+            'check the Session list before retrying',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    },
+    ipc,
+  );
+
+  await ipc.invoke('external-sessions:import', {
+    adapterId: 'codex',
+    sourceSessionId: 'source-1',
+  });
+  assert.deepEqual(await ipc.invoke('external-sessions:list', { adapterId: 'codex' }), {
+    sessions: [{
+      id: 'source-1',
+      name: 'Source',
+      cwd: '/external',
+      importState: {
+        importedCount: 0,
+        importedSessionIds: [],
+        isImporting: false,
+      },
+    }],
+    nextCursor: null,
+  });
+});
+
+test('a dispatched interrupted import has the same uncertain outcome as the Host error', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostRequestInterruptedError(
+            'external-session.import',
+            'command',
+            'dispatched',
+            'connection_lost',
+          );
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'commit_outcome_unknown' },
+  );
+  assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
+});
+
+test('fails closed when a dispatched import response cannot be decoded', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new Error('Invalid external Session import result');
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'commit_outcome_unknown' },
+  );
+  assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
+});
+
+test('does not relabel an explicitly undispatched import as uncertain', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostRequestInterruptedError(
+            'external-session.import',
+            'command',
+            'not_dispatched',
+            'connection_lost',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    () =>
+      ipc.invoke('external-sessions:import', {
+        adapterId: 'codex',
+        sourceSessionId: 'source-1',
+      }),
+    (error: unknown) =>
+      error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'not_dispatched',
+  );
+});
+
+test('maps a no-usable-model failure to a distinct, non-recovering reason', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'model_unavailable',
+            'No usable Session model connection is available for import',
+          );
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'no_model' },
+  );
+  // A model-resolution failure never touched the catalog, so nothing to re-read.
+  assert.deepEqual(events, []);
+});
+
+test('maps a pre-commit conversion failure to source_unreadable', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'source_unreadable',
+            'External Session could not be read or converted',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'source_unreadable' },
+  );
+});
+
+test('maps a decoded source limit to IPC data without publishing a created Session', async () => {
+  const events: string[] = [];
+  const ipc = ipcHarness();
+  const wireResult = decodeExternalSessionImportResult(JSON.parse(JSON.stringify({
+    kind: 'source_limit_exceeded',
+    limit: { kind: 'record_bytes', max: 67_108_864 },
+  })));
+  assert.equal(wireResult.kind, 'source_limit_exceeded');
+  if (wireResult.kind !== 'source_limit_exceeded') assert.fail('Expected an import limit');
+  registerRuntimeHostExternalSessionsIpc({
+    client: clientFixture({ importExternalSession: async () => wireResult }),
+    emitSessionsChanged: (reason) => events.push(reason),
+    resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+  }, ipc);
+
+  assert.deepEqual(await ipc.invoke('external-sessions:import', {
+    adapterId: 'claude-code', sourceSessionId: 'source-1',
+  }), {
+    ok: false, reason: 'source_limit_exceeded', limit: { kind: 'record_bytes', max: 67_108_864 },
+  });
+  assert.deepEqual(events, []);
+});
+
+test('rethrows import failures that have no distinct renderer reason', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          // An unsupported adapter is a bad request, not a model or source
+          // problem — it must NOT be relabeled as `source_unreadable`; it falls
+          // through to the generic banner.
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'invalid_request',
+            'External Session source is unsupported',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    () =>
+      ipc.invoke('external-sessions:import', {
+        adapterId: 'codex',
+        sourceSessionId: 'source-1',
+      }),
+    /External Session source is unsupported/,
+  );
+});
+
 test('rejects malformed renderer requests before they reach the Host client', async () => {
   let calls = 0;
   const ipc = ipcHarness();
@@ -146,10 +436,11 @@ test('rejects malformed renderer requests before they reach the Host client', as
         },
         importExternalSession: async () => {
           calls += 1;
-          return session('unexpected');
+          return { kind: 'imported', session: session('unexpected') };
         },
       }),
       emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -175,7 +466,7 @@ function clientFixture(overrides: Partial<ExternalSessionClient> = {}): External
   return {
     listExternalSessionSources: async () => ({ adapterIds: ['codex'] }),
     listExternalSessions: async () => ({ sessions: [], nextCursor: null }),
-    importExternalSession: async () => session('imported'),
+    importExternalSession: async () => ({ kind: 'imported', session: session('imported') }),
     ...overrides,
   };
 }

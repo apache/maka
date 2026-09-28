@@ -27,8 +27,12 @@ import {
 import {
   buildContinuationReplayPlan,
   buildContinuationReplaySegment,
+  digestProviderReplayAdmission,
 } from '../continuation-replay.js';
-import { PROVIDER_REPLAY_PROJECTION_VERSION } from '../model-history.js';
+import {
+  PROVIDER_REPLAY_PROJECTION_VERSION,
+  type RuntimeEventModelReplayItem,
+} from '../model-history.js';
 
 describe('continuation replay segment', () => {
   it('rejects a persisted v1 admission under the route-bound v2 projection', () => {
@@ -361,6 +365,34 @@ describe('continuation replay segment', () => {
     assert.deepEqual(
       result.plan.boundary.segments.map((segment) => segment.identity.runId),
       ['run-1', 'run-2'],
+    );
+  });
+});
+
+describe('continuation replay digest', () => {
+  it('keeps the projection v2 digest compatible while excluding internal invocation identity', () => {
+    const digest = (invocationId: string) =>
+      digestProviderReplayAdmission({
+        providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+        targetProviderStateIdentity: undefined,
+        targetModelId: 'test-model',
+        items: [
+          {
+            kind: 'tool_call',
+            invocationId,
+            toolCallId: 'read-1',
+            toolName: 'Read',
+            input: { path: 'notes.md' },
+            eventId: 'call-1',
+            ts: 1,
+          } satisfies RuntimeEventModelReplayItem,
+        ],
+      });
+
+    assert.equal(digest('invocation-a'), digest('invocation-b'));
+    assert.equal(
+      digest('invocation-a'),
+      'sha256:775dac9a0959d888541d9e4930431b60dee89e4f28b62238ddde64dfd5f542ee',
     );
   });
 });

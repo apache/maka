@@ -25,6 +25,8 @@ import {
 import { isDarkAppearance } from './theme-source.js';
 import type { SettingsStore } from '@maka/storage/settings-store';
 
+/** Returns true when a settings snapshot/effect changes or an event is emitted.
+ * A silent refresh can return true; this is not a renderer acknowledgment. */
 export interface ClientSettingsEffects {
   apply(settings: AppSettings, notifyRenderer: boolean): Promise<boolean>;
   refresh(notifyRenderer: boolean): Promise<boolean>;
@@ -35,6 +37,7 @@ interface ClientSettingsEffectDependencies {
   readonly applyKeepSystemAwake: (enabled: boolean) => Promise<void>;
   readonly applyBotSettings: (settings: AppSettings['botChat']) => Promise<void>;
   readonly applyAppIcon: (icon: AppIconChoice) => Promise<void>;
+  readonly applyWorkHub: (enabled: boolean) => Promise<void>;
   /**
    * What the OS currently reports, read fresh on every pass. Injected
    * rather than imported so this module stays free of electron and keeps
@@ -42,12 +45,14 @@ interface ClientSettingsEffectDependencies {
    */
   readonly systemPrefersDark: () => boolean;
   readonly observeLocale: (settings: AppSettings) => void;
-  readonly emitExternalChanged: () => void;
+  /** False means no live renderer accepted an IPC send (not a delivery ack). */
+  readonly emitExternalChanged: () => boolean;
 }
 
 export function createClientSettingsEffects(
   dependencies: ClientSettingsEffectDependencies,
 ): ClientSettingsEffects {
+  let appliedSettingsFingerprint: string | undefined;
   let rendererFingerprint: string | undefined;
   let botFingerprint: string | undefined;
   let keepSystemAwake: boolean | undefined;
@@ -66,6 +71,8 @@ export function createClientSettingsEffects(
       const settings = await load();
       const nextRendererFingerprint = JSON.stringify(settings);
       const nextBotFingerprint = JSON.stringify(settings.botChat);
+      const settingsChanged = nextRendererFingerprint !== appliedSettingsFingerprint;
+      const firstSnapshot = appliedSettingsFingerprint === undefined;
       const rendererChanged = nextRendererFingerprint !== rendererFingerprint;
       const keepAwakeChanged = settings.system.keepSystemAwake !== keepSystemAwake;
       const botChanged = nextBotFingerprint !== botFingerprint;
@@ -85,6 +92,7 @@ export function createClientSettingsEffects(
       );
       const appIconChanged = nextAppIcon !== appIcon;
       dependencies.observeLocale(settings);
+      await dependencies.applyWorkHub(settings.workHub.enabled);
       if (keepAwakeChanged) {
         await dependencies.applyKeepSystemAwake(settings.system.keepSystemAwake);
         keepSystemAwake = settings.system.keepSystemAwake;
@@ -97,9 +105,16 @@ export function createClientSettingsEffects(
         await dependencies.applyAppIcon(nextAppIcon);
         appIcon = nextAppIcon;
       }
-      rendererFingerprint = nextRendererFingerprint;
-      if (notifyRenderer && rendererChanged) dependencies.emitExternalChanged();
-      return rendererChanged || keepAwakeChanged || botChanged || appIconChanged;
+      appliedSettingsFingerprint = nextRendererFingerprint;
+      // The renderer loads initial settings itself. Establish that baseline
+      // without making an unchanged first watcher pass emit an extra event.
+      if (firstSnapshot && !notifyRenderer) rendererFingerprint = nextRendererFingerprint;
+      // A theme-triggered silent refresh can observe a later file change before
+      // the watcher. Preserve that change until a live renderer accepts a send;
+      // successful IPC emission does not acknowledge renderer handling.
+      const rendererEmitted = notifyRenderer && rendererChanged && dependencies.emitExternalChanged();
+      if (rendererEmitted) rendererFingerprint = nextRendererFingerprint;
+      return settingsChanged || rendererEmitted || keepAwakeChanged || botChanged || appIconChanged;
     });
     tail = run.then(
       () => undefined,

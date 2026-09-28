@@ -19,7 +19,9 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 7;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 9;
+export const MODEL_PROJECTION_TARGET_SQL =
+  "CASE WHEN json_valid(record_json) THEN CASE WHEN json_type(record_json, '$.data.transition.target.runtimeEventId') = 'text' THEN nullif(json_extract(record_json, '$.data.transition.target.runtimeEventId'), '') WHEN json_type(record_json, '$.data.runtimeEventId') = 'text' THEN nullif(json_extract(record_json, '$.data.runtimeEventId'), '') END END";
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -53,6 +55,11 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS core_agent_run_events_type_sequence
       ON core_agent_run_events(event_type, session_id, run_id, sequence);
+
+    CREATE INDEX IF NOT EXISTS core_model_projection_target
+      ON core_agent_run_events(session_id,
+        ${MODEL_PROJECTION_TARGET_SQL}
+      ) WHERE event_type = 'model_projection_transition_recorded';
 
     CREATE TABLE IF NOT EXISTS core_agent_run_projections (
       session_id TEXT NOT NULL,
@@ -172,7 +179,18 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
       ON core_agent_runs(session_id, latest_model_call_sequence, run_id)
       WHERE latest_model_call_sequence IS NOT NULL;
 
+    DROP INDEX IF EXISTS core_root_turn_continuation_source;
+
+    CREATE INDEX IF NOT EXISTS core_root_turn_continuation_source_v2
+      ON core_root_turn_admissions(
+        session_id,
+        json_extract(record_json, '$.execution.sourceTurnId'),
+        json_extract(record_json, '$.execution.sourceRunId')
+      )
+      WHERE json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation';
+
     DROP INDEX IF EXISTS core_agent_runs_identity;
+    DROP INDEX IF EXISTS core_interaction_requests_by_turn;
 
     DROP TABLE IF EXISTS core_message_receipts;
     DROP TABLE IF EXISTS core_message_host_epochs;

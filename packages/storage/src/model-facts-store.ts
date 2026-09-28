@@ -17,14 +17,12 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
 import {
   decodeModelFactsDocument,
   MODEL_FACTS_SCHEMA_VERSION,
   UnsupportedModelFactsSchemaError,
   type ModelFactsDocument,
 } from '@maka/core/model-facts';
-import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { readBoundedDocumentBytes } from './runtime-policy/document-io.js';
 import { RuntimePolicyStoreError } from './runtime-policy/errors.js';
 
@@ -34,10 +32,9 @@ const FILE = 'model-facts.json';
 export interface ModelFactsReadResult {
   readonly document: ModelFactsDocument;
   readonly diagnostic?: 'malformed' | 'oversized' | 'unsupported_schema';
-  readonly fingerprint: string;
 }
 
-export class ModelFactsDocumentOwner {
+export class LegacyModelFactsReader {
   async readWithDiagnostics(root: string): Promise<ModelFactsReadResult> {
     let bytes: Buffer | undefined;
     try {
@@ -47,53 +44,24 @@ export class ModelFactsDocumentOwner {
         return {
           document: emptyDocument(),
           diagnostic: error.message.includes('exceeds') ? 'oversized' : 'malformed',
-          fingerprint: `invalid:${error.message}`,
         };
       }
       throw error;
     }
-    if (bytes === undefined) return { document: emptyDocument(), fingerprint: 'missing' };
-    const fingerprint = fingerprintBytes(bytes);
+    if (bytes === undefined) return { document: emptyDocument() };
     let value: unknown;
     try {
       value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
-      return { document: decodeModelFactsDocument(value), fingerprint };
+      return { document: decodeModelFactsDocument(value) };
     } catch (error) {
       if (error instanceof UnsupportedModelFactsSchemaError) {
-        return { document: emptyDocument(), diagnostic: 'unsupported_schema', fingerprint };
+        return { document: emptyDocument(), diagnostic: 'unsupported_schema' };
       }
-      return { document: emptyDocument(), diagnostic: 'malformed', fingerprint };
+      return { document: emptyDocument(), diagnostic: 'malformed' };
     }
-  }
-
-  fingerprintForConnection(
-    document: ModelFactsDocument,
-    connection: Pick<ConnectionCatalogEntry, 'providerType' | 'enabledModelIds' | 'models'>,
-  ): string {
-    const modelIds = new Set<string>([
-      ...(connection.models ?? []).map((model) => model.id),
-      ...connection.enabledModelIds,
-    ]);
-    const entries = Object.entries(document.overrides)
-      .filter(([key]) => {
-        const separator = key.indexOf(':');
-        return (
-          separator > 0 &&
-          key.slice(0, separator) === connection.providerType &&
-          modelIds.has(key.slice(separator + 1)) &&
-          Object.prototype.hasOwnProperty.call(document.overrides[key]!, 'apiProtocol')
-        );
-      })
-      .map(([key, override]) => [key, { apiProtocol: override.apiProtocol }] as const)
-      .sort(([left], [right]) => left.localeCompare(right));
-    return fingerprintBytes(Buffer.from(JSON.stringify(entries), 'utf8'));
   }
 }
 
 function emptyDocument(): ModelFactsDocument {
   return { schemaVersion: MODEL_FACTS_SCHEMA_VERSION, overrides: {} };
-}
-
-function fingerprintBytes(bytes: Buffer): string {
-  return createHash('sha256').update(bytes).digest('hex');
 }

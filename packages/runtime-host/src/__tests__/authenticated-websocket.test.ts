@@ -58,7 +58,39 @@ const PROTOCOL = {
 const KNOWN_EMPTY_LIVE_RUN_STATE = {
   schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   runningTurnIds: [],
+  runEpoch: 0,
 } as const;
+
+async function configureTestModel(local: RuntimeHostConnection): Promise<void> {
+  const catalog = await local.request('connection.catalog.query', { kind: 'start' });
+  assert.equal(catalog.kind, 'page');
+  if (catalog.kind !== 'page') assert.fail('Expected the initial catalog page');
+  const created = await local.request('connection.catalog.create', {
+    expectedCatalogRevision: catalog.revision,
+    connection: {
+      slug: 'websocket-fixture',
+      name: 'WebSocket fixture',
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-chat',
+      baseUrl: 'https://websocket-model.invalid/v1',
+      enabled: true,
+      enabledModelIds: ['websocket-test-model'],
+    },
+  });
+  if (created.kind !== 'committed') assert.fail('Test connection must commit');
+  const connectionId = created.connection.connectionId;
+  const credential = await local.request('credential.vault.set', {
+    locator: { scope: 'connection', connectionId, kind: 'api_key' },
+    expected: null,
+    secret: 'websocket-fixture-key',
+  });
+  assert.equal(credential.kind, 'committed');
+  const selected = await local.request('connection.catalog.set-default-target', {
+    expectedCatalogRevision: created.catalogRevision,
+    target: { connectionId, modelId: 'websocket-test-model' },
+  });
+  assert.equal(selected.kind, 'committed');
+}
 
 test('one Local IPC owner and one authenticated WebSocket Client control the same Session', {
   timeout: 120_000,
@@ -75,6 +107,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
   let guest: RuntimeHostConnection | undefined;
   try {
     local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    await configureTestModel(local);
     const issued = await local.request('access.credential.issue', {
       principalKind: 'remote_owner',
       principalId: 'remote-device',
@@ -260,6 +293,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       sessionId: 'shared-session',
       transcript: { kind: 'none' },
     });
+    await guestSubscription.ready();
     const observationGrant = preparedGuest.grants.find(
       (grant) => grant.kind === 'session_observation',
     )!;
@@ -276,15 +310,25 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     if (closed.value?.kind === 'subscription.closed') {
       assert.equal(closed.value.reason, 'access_revoked');
     }
+    const sharedRead = await remote.request('session.catalog.query', {
+      kind: 'get',
+      sessionId: 'shared-session',
+    });
+    assert.equal(sharedRead.kind, 'session');
+    const sharedSession = sharedRead.kind === 'session' ? sharedRead.session : null;
+    assert.ok(sharedSession && !('kind' in sharedSession));
+    if ('kind' in sharedSession) assert.fail('the shared row must be a current projection');
+    // The host generation is unique per Host process, so assert its shape and
+    // compare the known-empty remainder.
+    const { hostGeneration: sharedGeneration, ...sharedKnownEmpty } =
+      sharedSession.liveRunState ?? {};
+    if (typeof sharedGeneration !== 'string' || sharedGeneration.length === 0) {
+      assert.fail('the host generation must be a non-empty string');
+    }
+    assert.deepEqual(sharedKnownEmpty, KNOWN_EMPTY_LIVE_RUN_STATE);
     assert.deepEqual(
-      await remote.request('session.catalog.query', {
-        kind: 'get',
-        sessionId: 'shared-session',
-      }),
-      {
-        kind: 'session',
-        session: { ...created, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
-      },
+      { ...sharedSession, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
+      { ...created, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
     );
 
     const catalogChanged = new Promise<string>((resolve) => {
@@ -297,16 +341,23 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     });
     assert.equal(renamed.kind, 'committed');
     assert.equal(await catalogChanged, 'shared-session');
+    const localRead = await local.request('session.catalog.query', {
+      kind: 'get',
+      sessionId: 'shared-session',
+    });
+    assert.equal(localRead.kind, 'session');
+    const localSession = localRead.kind === 'session' ? localRead.session : null;
+    assert.ok(localSession && !('kind' in localSession));
+    if ('kind' in localSession) assert.fail('the local row must be a current projection');
+    const { hostGeneration: localGeneration, ...localKnownEmpty } = localSession.liveRunState ?? {};
+    if (typeof localGeneration !== 'string' || localGeneration.length === 0) {
+      assert.fail('the host generation must be a non-empty string');
+    }
+    assert.deepEqual(localKnownEmpty, KNOWN_EMPTY_LIVE_RUN_STATE);
     assert.deepEqual(
-      await local.request('session.catalog.query', {
-        kind: 'get',
-        sessionId: 'shared-session',
-      }),
+      { ...localSession, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
       renamed.kind === 'committed'
-        ? {
-            kind: 'session',
-            session: { ...renamed.session, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
-          }
+        ? { ...renamed.session, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE }
         : assert.fail('Remote Session rename did not commit'),
     );
 
@@ -512,6 +563,7 @@ test('an authenticated WebSocket Client reconnects after service restart to cano
   let remote: Awaited<ReturnType<typeof createRuntimeHostReconnectingConnection>> | undefined;
   try {
     local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    await configureTestModel(local);
     const issued = await local.request('access.credential.issue', {
       principalKind: 'remote_owner',
       principalId: 'restart-client',
@@ -582,7 +634,29 @@ test('an authenticated WebSocket Client reconnects after service restart to cano
       websocket: { host: '127.0.0.1', port },
     });
 
-    assert.deepEqual(await recovered, expected);
+    const canonical = await recovered;
+    assert.equal(canonical.kind, 'session');
+    assert.equal(expected.kind, 'session');
+    const beforeSession = expected.kind === 'session' ? expected.session : null;
+    const afterSession = canonical.kind === 'session' ? canonical.session : null;
+    assert.ok(beforeSession && afterSession);
+    if ('kind' in beforeSession || 'kind' in afterSession) {
+      assert.fail('the canonical reads must be current projections');
+    }
+    const beforeLive = beforeSession.liveRunState;
+    const afterLive = afterSession.liveRunState;
+    assert.ok(beforeLive && afterLive);
+    // The restart must change the host generation — the wire signal that lets
+    // clients tell the restarted Host's reads apart from its predecessor's
+    // (#5713).
+    assert.notEqual(afterLive.hostGeneration, beforeLive.hostGeneration);
+    assert.deepEqual(
+      {
+        ...afterSession,
+        liveRunState: { ...afterLive, hostGeneration: beforeLive.hostGeneration },
+      },
+      beforeSession,
+    );
     assert.notEqual(remote.hostEpoch, firstHostEpoch);
   } finally {
     await Promise.allSettled([remote?.close(), local?.close()]);
@@ -1439,7 +1513,6 @@ test('migrates the released transcript query grant when opening an existing acce
     assert.deepEqual(authority.authenticate(credential)?.operationGrants, [
       'host.status',
       'session.transcript.page',
-      'session.transcript.overlay.release',
     ]);
   } finally {
     await rm(directory, { recursive: true, force: true });

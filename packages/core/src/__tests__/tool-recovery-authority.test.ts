@@ -22,8 +22,10 @@ import { describe, it } from 'node:test';
 import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
 import { canonicalToolArgsHash, stableJsonStringify } from '../tool-args-identity.js';
 import {
+  ToolLedgerReducer,
   scanToolLedger,
   validateGenericToolLedgerAppend,
+  validateIncrementalToolLedgerTransition,
   validateToolLedgerTransition,
   validateToolLedgerEventLane,
 } from '../tool-ledger-scanner.js';
@@ -335,6 +337,71 @@ describe('recovery persistence authority', () => {
     assert.ok(scan.issues.some(({ code }) => code === 'invocation_identity_conflict'));
   });
 
+  it('checks parent tool dependencies after the whole batch, including identity and cycles', () => {
+    const parent = linkedOperationEvents({
+      prefix: 'parent',
+      invocationId: 'parent-invocation',
+      operationId: 'parent-operation',
+      toolCallId: 'parent-call',
+    });
+    const child = linkedOperationEvents({
+      prefix: 'child',
+      invocationId: 'child-invocation',
+      operationId: 'child-operation',
+      toolCallId: 'child-call',
+      parentOperationId: 'parent-operation',
+      parentToolCallId: 'parent-call',
+    });
+
+    // Dependency interpretation is final-state based: a transaction may stage
+    // the child first as long as its parent is present before validation ends.
+    assert.equal(scanToolLedger([...child, ...parent]).hasCorruption, false);
+
+    assert.deepEqual(scanToolLedger(child).issues, [
+      {
+        code: 'parent_operation_missing',
+        eventId: 'child-dispatch',
+        operationId: 'child-operation',
+        toolCallId: 'child-call',
+      },
+    ]);
+
+    const conflictingChild = linkedOperationEvents({
+      prefix: 'conflicting-child',
+      invocationId: 'conflicting-child-invocation',
+      operationId: 'conflicting-child-operation',
+      toolCallId: 'conflicting-child-call',
+      parentOperationId: 'parent-operation',
+      parentToolCallId: 'not-the-parent-call',
+    });
+    assert.ok(
+      scanToolLedger([...parent, ...conflictingChild]).issues.some(
+        ({ code }) => code === 'parent_identity_conflict',
+      ),
+    );
+
+    const first = linkedOperationEvents({
+      prefix: 'cycle-a',
+      invocationId: 'cycle-a-invocation',
+      operationId: 'cycle-a-operation',
+      toolCallId: 'cycle-a-call',
+      parentOperationId: 'cycle-b-operation',
+      parentToolCallId: 'cycle-b-call',
+    });
+    const second = linkedOperationEvents({
+      prefix: 'cycle-b',
+      invocationId: 'cycle-b-invocation',
+      operationId: 'cycle-b-operation',
+      toolCallId: 'cycle-b-call',
+      parentOperationId: 'cycle-a-operation',
+      parentToolCallId: 'cycle-a-call',
+    });
+    assert.deepEqual(
+      scanToolLedger([...first, ...second]).issues.map(({ code }) => code),
+      ['parent_dependency_cycle', 'parent_dependency_cycle'],
+    );
+  });
+
   it('rejects prospective generic transitions that would corrupt a clean ledger', () => {
     const duplicateCall = callEvent({ id: 'call-event-duplicate' });
     assert.deepEqual(
@@ -367,6 +434,110 @@ describe('recovery persistence authority', () => {
         toolCallId: 'provider-call-1',
       },
     );
+  });
+
+  it('keeps whole, single-event, and batched incremental reductions equivalent', () => {
+    const ledger = [
+      callEvent(),
+      dispatchEvent(),
+      reconcileEvent(),
+      outcomeEvent(),
+      decisionEvent(),
+    ];
+    const expected = {
+      operations: [
+        {
+          toolCallId: 'provider-call-1',
+          toolName: 'Write',
+          operationId: 'operation-1',
+          callEvent: ledger[0],
+          dispatchEvent: ledger[1],
+          responseEvent: ledger[3],
+          reconcileEvents: [ledger[2]],
+          decisionEvents: [ledger[4]],
+          issues: [],
+        },
+      ],
+      issues: [],
+      hasCorruption: false,
+    };
+
+    assert.deepEqual(scanToolLedger(ledger), expected);
+    for (const batches of [
+      ledger.map((event) => [event]),
+      [ledger.slice(0, 2), ledger.slice(2)],
+      [ledger],
+    ]) {
+      const reducer = new ToolLedgerReducer();
+      for (const batch of batches) {
+        const checkpoint = reducer.checkpoint();
+        reducer.append(batch);
+        reducer.commit(checkpoint);
+      }
+      assert.deepEqual(reducer.scan(), expected);
+    }
+  });
+
+  it('rolls prospective state back and distinguishes existing corruption', () => {
+    const reducer = new ToolLedgerReducer([callEvent()]);
+    const before = structuredClone(reducer.scan());
+    const invalid = callEvent({ id: 'duplicate-call' });
+
+    assert.deepEqual(
+      validateIncrementalToolLedgerTransition({
+        reducer,
+        candidateEvents: [invalid],
+        expectedTransition: 'generic_append',
+      }),
+      {
+        ok: false,
+        source: 'candidate',
+        code: 'duplicate_call',
+        eventId: 'duplicate-call',
+        toolCallId: 'provider-call-1',
+      },
+    );
+    assert.deepEqual(reducer.scan(), before);
+
+    const corrupt = new ToolLedgerReducer([callEvent(), invalid]);
+    assert.deepEqual(
+      validateIncrementalToolLedgerTransition({
+        reducer: corrupt,
+        candidateEvents: [dispatchEvent()],
+        expectedTransition: 't1_prepare',
+      }),
+      {
+        ok: false,
+        source: 'existing',
+        code: 'duplicate_call',
+        eventId: 'duplicate-call',
+        toolCallId: 'provider-call-1',
+      },
+    );
+  });
+
+  it('can roll back or commit an accepted candidate delta', () => {
+    const reducer = new ToolLedgerReducer([callEvent()]);
+    const before = structuredClone(reducer.scan());
+    const first = validateIncrementalToolLedgerTransition({
+      reducer,
+      candidateEvents: [dispatchEvent()],
+      expectedTransition: 't1_prepare',
+    });
+    assert.equal(first.ok, true);
+    if (!first.ok) throw new Error('expected accepted tool ledger transition');
+    reducer.rollback(first.checkpoint);
+    assert.deepEqual(reducer.scan(), before);
+
+    const second = validateIncrementalToolLedgerTransition({
+      reducer,
+      candidateEvents: [dispatchEvent()],
+      expectedTransition: 't1_prepare',
+    });
+    assert.equal(second.ok, true);
+    if (!second.ok) throw new Error('expected accepted tool ledger transition');
+    reducer.commit(second.checkpoint);
+    assert.equal(reducer.scan().operations[0]?.dispatchEvent?.id, 'dispatch-event-1');
   });
 
   it('rejects a recovery bundle whose T1 hash authenticates itself instead of the call args', () => {
@@ -511,6 +682,64 @@ function dispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
     ...overrides,
   });
+}
+
+function linkedOperationEvents(input: {
+  prefix: string;
+  invocationId: string;
+  operationId: string;
+  toolCallId: string;
+  parentOperationId?: string;
+  parentToolCallId?: string;
+}): [RuntimeEvent, RuntimeEvent] {
+  const execution = {
+    invocationId: input.invocationId,
+    runId: `${input.prefix}-run`,
+    turnId: `${input.prefix}-turn`,
+  };
+  const parentRefs =
+    input.parentOperationId && input.parentToolCallId
+      ? {
+          parentOperationId: input.parentOperationId,
+          parentToolCallId: input.parentToolCallId,
+        }
+      : {};
+  return [
+    callEvent({
+      id: `${input.prefix}-call`,
+      ...execution,
+      content: {
+        kind: 'function_call',
+        id: input.toolCallId,
+        name: 'Write',
+        args: { path: 'notes.txt', content: 'after' },
+      },
+      refs: {
+        operationId: input.operationId,
+        toolCallId: input.toolCallId,
+        ...parentRefs,
+      },
+    }),
+    dispatchEvent({
+      id: `${input.prefix}-dispatch`,
+      ...execution,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: input.operationId,
+          providerToolCallId: input.toolCallId,
+          toolName: 'Write',
+          canonicalArgsHash: EXPECTED_ARGS_HASH,
+          recoveryMode: 'reconcile',
+        },
+      },
+      refs: {
+        operationId: input.operationId,
+        toolCallId: input.toolCallId,
+        ...parentRefs,
+      },
+    }),
+  ];
 }
 
 function reconcileEvent(): RuntimeEvent {

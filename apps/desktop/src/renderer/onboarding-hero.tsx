@@ -312,7 +312,7 @@ function OnboardingCard(props: {
   return (
     <Center width="100%" className="maka-onboarding-center">
       <VStack gap={4} hAlign="center" width="min(460px, 100%)" className="maka-onboarding">
-        <MakaWordmark width={112} className="maka-onboarding-wordmark" />
+        <MakaWordmark width={112} />
         <Card
           width="100%"
           padding={6}

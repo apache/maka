@@ -17,54 +17,18 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
-
-/**
- * Pure decision + copy helpers for desktop run-completion notifications.
- *
- * Kept free of any `electron` import so the gating logic can be unit
- * tested under plain `node --test` (the IPC glue in
- * `notifications-ipc-main.ts` owns everything Electron-shaped). The
- * renderer only reports *that* a turn ended; the main process decides
- * whether to actually raise an OS notification.
- */
-
-/** Terminal states a turn can reach that are worth notifying about. */
-export type RunNotificationKind = 'completed' | 'errored';
-
-export function isRunNotificationKind(value: unknown): value is RunNotificationKind {
-  return value === 'completed' || value === 'errored';
-}
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import type { SessionAttention } from '@maka/runtime-host/protocol';
 
 export interface RunNotificationGate {
-  /** Product toggle: `settings.notifications.runComplete`. */
   readonly enabled: boolean;
-  /** Electron `Notification.isSupported()` for the current platform. */
   readonly supported: boolean;
-  /**
-   * Whether the main window currently holds OS focus. We suppress the
-   * notification when focused — the user is already looking at Maka, so
-   * a banner would be pure noise.
-   */
   readonly windowFocused: boolean;
-  /**
-   * `settings.privacy.incognitoActive`. A banner carries the session
-   * name + reply/error preview *outside* the app (Notification Center,
-   * lock screen), which contradicts incognito, so we suppress entirely
-   * — consistent with incognito pausing local memory / search.
-   */
-  readonly incognito: boolean;
-  /** Automated desktop runs must never emit native OS notifications. */
   readonly e2e: boolean;
 }
 
-/**
- * Single source of truth for "should we raise a native notification for
- * this finished turn". All gates must pass; order is irrelevant because
- * the predicate is a plain conjunction.
- */
 export function shouldRaiseRunNotification(gate: RunNotificationGate): boolean {
-  return gate.enabled && gate.supported && !gate.windowFocused && !gate.incognito && !gate.e2e;
+  return gate.enabled && gate.supported && !gate.windowFocused && !gate.e2e;
 }
 
 export interface RunNotificationCopy {
@@ -72,69 +36,58 @@ export interface RunNotificationCopy {
   readonly body: string;
 }
 
-/**
- * Generic fallback text, keyed by terminal kind. Used when the renderer
- * could not supply a session name / reply preview (e.g. an untitled
- * session or a tool-only turn with no assistant text).
- */
-export function runNotificationCopy(
-  kind: RunNotificationKind,
-  locale: UiLocale,
-): RunNotificationCopy {
-  if (locale === 'en') {
-    return kind === 'errored'
-      ? { title: 'Conversation error', body: 'This response did not finish. Click to view details.' }
-      : { title: 'Response ready', body: 'Maka finished this response. Click to view it.' };
-  }
-  if (locale === 'zh-TW') {
-    return kind === 'errored'
-      ? { title: '任務發生錯誤', body: '本次回答未能完成，按一下以檢視詳細資料。' }
-      : { title: '回答已產生', body: 'Maka 已完成本次回答，按一下以檢視。' };
-  }
-  if (kind === 'errored') {
-    return { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' };
-  }
-  return { title: '回答已生成', body: 'Maka 已完成本轮回答，点击查看。' };
+const RUN_NOTIFICATION_COPY = {
+  'zh-CN': {
+    errored: { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' },
+    completed: { title: '回答已生成', body: 'Maka 已完成本轮回答，点击查看。' },
+    waiting: { title: '等你回答', body: 'Maka 需要你的回答才能继续，点击查看。' },
+  },
+  'zh-TW': {
+    errored: { title: '任務發生錯誤', body: '本次回答未能完成，按一下以檢視詳細資料。' },
+    completed: { title: '回答已產生', body: 'Maka 已完成本次回答，按一下以檢視。' },
+    waiting: { title: '等你回答', body: 'Maka 需要你的回答才能繼續，按一下以檢視。' },
+  },
+  en: {
+    errored: { title: 'Conversation error', body: 'This response did not finish. Click to view details.' },
+    completed: { title: 'Response ready', body: 'Maka finished this response. Click to view it.' },
+    waiting: { title: 'Waiting for you', body: 'Maka needs your answer to continue. Click to view it.' },
+  },
+} satisfies UiCatalog<Record<SessionAttention['kind'], RunNotificationCopy>>;
+
+export interface RunNotificationEvent extends SessionAttention {
+  readonly title?: string;
+  readonly hostEpoch: string;
+  readonly sessionId: string;
 }
 
-/** Renderer-supplied content for a finished turn. Both fields are
- * best-effort: `title` is the session name, `body` the start of the
- * reply (or the error message). Either may be missing/blank. */
-export interface RunNotificationInput {
-  readonly kind: RunNotificationKind;
-  readonly title?: unknown;
-  readonly body?: unknown;
+export function deduplicateRunNotifications(
+  notify: (input: RunNotificationEvent) => Promise<void>,
+): (input: RunNotificationEvent) => Promise<void> {
+  const seen = new Set<string>();
+  return async (input) => {
+    const key = JSON.stringify([input.hostEpoch, input.sessionId, input.eventId]);
+    if (seen.has(key)) return;
+    // Owner and shared-session connections can deliver the same Host event.
+    seen.add(key);
+    if (seen.size > 512) seen.delete(seen.values().next().value!);
+    await notify(input);
+  };
 }
 
-// The OS truncates long banners anyway; cap defensively so a runaway
-// reply (renderer bug, no-whitespace blob) can't bloat the payload.
 const MAX_TITLE_CHARS = 80;
 const MAX_BODY_CHARS = 160;
 
-/**
- * Collapse a renderer-supplied string into a single trimmed line,
- * hard-capped with an ellipsis. Non-strings and blanks return '' so the
- * caller can fall back. Kept defensive because the value crosses the IPC
- * boundary as `unknown`.
- */
-function sanitizeLine(value: unknown, max: number): string {
-  if (typeof value !== 'string') return '';
-  const collapsed = value.replace(/\s+/g, ' ').trim();
+function sanitizeLine(value: string | undefined, max: number): string {
+  const collapsed = (value ?? '').replace(/\s+/g, ' ').trim();
   if (collapsed.length <= max) return collapsed;
   return `${collapsed.slice(0, max - 1).trimEnd()}…`;
 }
 
-/**
- * Final notification text: prefer the renderer's session name + reply
- * preview, falling back per-field to the generic copy when a field is
- * missing or blank. Sanitization + capping live here so the IPC handler
- * stays a thin shell and the logic is unit-testable without Electron.
- */
 export function resolveNotificationContent(
-  input: RunNotificationInput,
+  input: Pick<RunNotificationEvent, 'kind' | 'title' | 'body'>,
   locale: UiLocale,
 ): RunNotificationCopy {
-  const fallback = runNotificationCopy(input.kind, locale);
+  const fallback = RUN_NOTIFICATION_COPY[locale][input.kind];
   return {
     title: sanitizeLine(input.title, MAX_TITLE_CHARS) || fallback.title,
     body: sanitizeLine(input.body, MAX_BODY_CHARS) || fallback.body,

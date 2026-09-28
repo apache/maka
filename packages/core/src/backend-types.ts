@@ -53,6 +53,8 @@ export interface RuntimeContinuationMetadata {
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
+  /** Restored by Runtime from authoritative decisions on the authenticated continuation chain. */
+  sandboxBoundaryDenied?: boolean;
 }
 
 export interface BackendSendInput {
@@ -63,7 +65,7 @@ export interface BackendSendInput {
   /** Caller-generated turn id shared by the persisted UserMessage and every emitted event. */
   turnId: string;
   /** Trusted per-turn cap on provider tool-call steps. */
-  maxSteps?: number;
+  maxSteps?: number | null;
   /** Trusted effective orchestration snapshot for this run. */
   orchestration?: EffectiveOrchestration;
   /** Trusted per-run tool protocol override. Direct remains the default. */
@@ -81,18 +83,22 @@ export interface BackendSendInput {
   /** Inline quoted excerpts folded into the model-facing user content. */
   quotes?: QuoteRef[];
   /**
-   * Prior conversation projected from the RuntimeEvent ledger into the
-   * existing StoredMessage public shape. Adapters materialize this into the
-   * SDK's expected conversation shape when native RuntimeEvent replay is not
-   * available.
+   * Legacy caller projection retained for source compatibility. Runtime
+   * backends must not use it as provider history; RuntimeEvents are the only
+   * model-history authority.
    */
-  context: StoredMessage[];
+  context?: StoredMessage[];
   /**
-   * Optional prior RuntimeEvent ledger for model-history projection. Backends
-   * prefer this when supplied and usable; `context` is the RuntimeEvent-derived
-   * compatibility projection.
+   * Optional prior RuntimeEvent ledger for model-history projection.
    */
   runtimeContext?: RuntimeEvent[];
+  /**
+   * Trusted marker for an explicit client-authored fresh turn. When prior
+   * history contains a sealed dispatched tool with no result, the backend may
+   * project that uncertainty into this request only. Continuations and hosted
+   * automation must never set this.
+   */
+  allowPriorUnknownToolOutcomes?: boolean;
   /**
    * The invocations `runtimeContext` came from, used only to verify
    * provider-owned replay against the current model route. RuntimeEvents stay
@@ -101,10 +107,19 @@ export interface BackendSendInput {
   runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
+  /** Runtime-owned reversible gate, called only before another provider step,
+   * after the preceding provider/tool events have been durably consumed.
+   * `pause` ends this physical stream without emitting logical completion.
+   */
+  handoffBoundary?: (
+    signal: AbortSignal,
+    remainingSteps: number | null,
+  ) => Promise<'continue' | 'pause'>;
   /**
    * Steering pull — a LEASE, and the single atomic commit point of delivery.
-   * Backends that support mid-turn steering call this at every step boundary;
-   * each returned message moves to the caller's in-flight set, where it still
+   * Backends that support mid-turn steering await this at every step boundary,
+   * including the final one: the Host may still be committing a queue edit.
+   * Each returned message moves to the caller's in-flight set, where it still
    * counts as pending but is past the user-retract point: it settles only by
    * durability — `ackSteering` when the echoed `steering_message` event is
    * durably persisted AND in the injection set, `nackSteering` when it
@@ -114,7 +129,7 @@ export interface BackendSendInput {
    * continuing the same turn. Absent for callers that do not steer, including
    * child agents and non-interactive clients.
    */
-  pullSteering?: () => readonly SteeringLease[];
+  pullSteering?: () => readonly SteeringLease[] | Promise<readonly SteeringLease[]>;
   /** Confirm delivery of leased steering messages (see pullSteering). */
   ackSteering?: (leaseIds: readonly string[]) => void;
   /** Return undelivered leased steering messages to the queue (see pullSteering). */
@@ -219,6 +234,7 @@ export type BackendSessionEvent = Exclude<
         | 'message_admission'
         | 'client_capability_request'
         | 'client_capability_decision_ack'
+        | 'context_compaction_started'
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'
@@ -230,6 +246,12 @@ export type BackendSessionEvent = Exclude<
 export interface AgentBackend {
   readonly kind: PersistedBackendKind;
   readonly sessionId: string;
+  /**
+   * Resolve the same composition used by send and commit it through the Run
+   * recorder, without dispatching provider or tool work. Required for handoff;
+   * backends without this capability must not resume a cooperative pause.
+   */
+  prepareRunComposition?(input: { runId: string; turnId: string }): Promise<void>;
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;
   stop(reason: 'user_stop' | 'redirect', mode?: BackendStopMode): Promise<void>;

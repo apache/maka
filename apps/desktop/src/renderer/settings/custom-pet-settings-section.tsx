@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EmptyState } from '@astryxdesign/core';
-import { Badge, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { SettingsRow, SettingsSection } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
@@ -200,7 +200,7 @@ export function CustomPetSettingsSection() {
           : selectedPet
             ? copy.activePet(selectedPet.displayName)
             : copy.disabled}
-        end={loading ? undefined : selectedPet ? (
+        end={!loading && selectedPet ? (
           <Button
             variant="secondary"
             size="sm"
@@ -208,9 +208,7 @@ export function CustomPetSettingsSection() {
             onClick={() => void selectPet(null)}
             label={mutation === 'disable' ? copy.disabling : copy.disable}
           />
-        ) : (
-          <Badge variant="neutral" label={copy.disabled} />
-        )}
+        ) : undefined}
       />
 
       {loading && library.pets.length === 0 ? (
@@ -229,12 +227,12 @@ export function CustomPetSettingsSection() {
           <SettingsRow
             key={pet.id}
             label={pet.displayName}
-            description={pet.description ? `${pet.description} · ${pet.id}` : pet.id}
+            description={[isSelected ? copy.selected : null, pet.description, pet.id]
+              .filter(Boolean)
+              .join(' · ')}
             end={(
               <>
-                {isSelected ? (
-                  <Badge variant="neutral" label={copy.selected} />
-                ) : (
+                {isSelected ? null : (
                   <Button
                     variant="secondary"
                     size="sm"
@@ -244,7 +242,7 @@ export function CustomPetSettingsSection() {
                   />
                 )}
                 <Button
-                  variant="destructive"
+                  variant="secondary"
                   size="sm"
                   isDisabled={actionDisabled}
                   onClick={() => void requestRemovePet(pet.id)}

@@ -28,7 +28,7 @@
 // a catalog, so the projected-connection shape belongs here beside the stored
 // one rather than in the module that computes entries.
 import type { ModelCatalogEntry } from './model-catalog.js';
-import type { RelayModelProfiles } from './model-thinking.js';
+import type { ModelOverride, ModelOverrides } from './model-thinking.js';
 import type {
   JsonObject,
   RequestHeaderUpdate,
@@ -37,18 +37,21 @@ import type {
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_MODEL,
+  isModelApiProtocol,
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
   providerFallbackModelIds,
   providerMenuLabel,
   type ApplyPatchProtocol,
+  type ModelApiProtocol,
+  type OpenResponsesCompatibilityProfile,
   type ProviderCatalogGroup,
   type ProviderCategory,
   type ProviderDefaults,
   type ProviderRuntimeAdapter,
-  type ProviderRuntimeProfileId,
   type ProviderResponsesContract,
   type ProviderType,
 } from './provider-registry.js';
@@ -56,7 +59,9 @@ import {
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_MODEL,
+  isModelApiProtocol,
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
@@ -65,20 +70,15 @@ export {
 };
 export type {
   ApplyPatchProtocol,
+  ModelApiProtocol,
+  OpenResponsesCompatibilityProfile,
   ProviderCatalogGroup,
   ProviderCategory,
   ProviderDefaults,
   ProviderRuntimeAdapter,
-  ProviderRuntimeProfileId,
   ProviderResponsesContract,
   ProviderType,
 };
-
-export function isRelayProviderType(
-  providerType: ProviderType,
-): providerType is 'openai-compatible' | 'openai-responses-compatible' {
-  return PROVIDER_REGISTRY[providerType].relayModelProfiles === true;
-}
 
 export type ConnectionAuth =
   | { kind: 'api_key'; apiKey: string }
@@ -106,7 +106,7 @@ export interface ModelInfo {
   /** Short upstream description, when the provider advertises one. */
   description?: string;
   /** Account-advertised request wire when one provider exposes multiple model protocols. */
-  apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+  apiProtocol?: ModelApiProtocol;
   contextWindow?: number;
   /** Maximum provider-visible input tokens, when narrower than contextWindow. */
   inputLimit?: number;
@@ -133,26 +133,7 @@ export interface ModelInfo {
     input: ModelModality[];
     output: ModelModality[];
   };
-  /**
-   * Read-time provenance for values overlaid from model-facts.json. This is
-   * never persisted in a provider inventory; it lets catalog consumers show
-   * where a projected value came from.
-   */
-  factOverriddenFields?: readonly ModelFactField[];
 }
-
-export type ModelFactField =
-  | 'displayName'
-  | 'description'
-  | 'apiProtocol'
-  | 'contextWindow'
-  | 'inputLimit'
-  | 'maxOutputTokens'
-  | 'knowledgeCutoff'
-  | 'structuredOutput'
-  | 'lastUpdated'
-  | 'capabilities'
-  | 'modalities';
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';
 
@@ -165,25 +146,26 @@ export interface ModelDiscoveryResult {
 
 export type ConnectionLastTestStatus = 'verified' | 'needs_reauth' | 'error';
 
+/** Stable client/Host value for one exact configured connection and model. */
+export function connectionModelChoiceValue(
+  connectionId: string,
+  connectionSlug: string,
+  model: string,
+): string {
+  return `${encodeURIComponent(connectionId)}:${encodeURIComponent(connectionSlug)}:${encodeURIComponent(model)}`;
+}
+
 /** Non-secret provider/model configuration required by runtime execution. */
 export interface RuntimeExecutionConnection {
   slug: string;
   providerType: ProviderType;
   baseUrl?: string;
+  /** Wire for models on a custom connection that do not declare their own; set only on `custom`. */
+  defaultApiProtocol?: ModelApiProtocol;
   defaultModel: string;
   models?: ModelInfo[];
-  /**
-   * Per-model user declarations for a custom OpenAI relay: the facts
-   * (offered thinking levels, vision enable/disable, context window) that
-   * neither the relay's /models report nor built-in metadata can decide
-   * (see `RelayModelProfile` in `model-thinking.ts`). First-class and typed —
-   * relay models are unknown to metadata and a catalog refresh rewrites
-   * `models[]` rows, so declarations live next to the user-edited fields.
-   * Invariants enforced at store boundaries: only custom OpenAI relay
-   * connections carry profiles, and only for ids in `enabledModelIds`
-   * (disabling a model deletes its profile).
-   */
-  relayModelProfiles?: RelayModelProfiles;
+  /** User model parameters, retained independently of the enabled selection. */
+  modelOverrides?: ModelOverrides;
   /** Additional top-level JSON properties added to model request bodies. */
   requestBodyOverlay?: JsonObject;
   /** Free-form, non-secret per-connection data; nothing reads a key unless it is shaped for the connection's provider type. */
@@ -265,7 +247,7 @@ export function connectionEnabledModelIds(connection: {
  *   3. the Host's entry says the connection can hold a chat on it.
  *
  * (3) already subsumes what clients used to re-derive locally: a retired
- * provider, a quarantined `brokenModelIds` id, and a model whose metadata says
+ * provider and a model whose metadata says
  * it cannot chat are all non-offerable before a client sees them. A client
  * re-testing any of those against its OWN registry answers for a build that is
  * not the one running the send.
@@ -356,12 +338,6 @@ export function authorizeConnectionModel(
 ): ModelInfo | undefined {
   const model = modelId.trim();
   if (!model || !connectionEnabledModelIds(connection).includes(model)) return undefined;
-  // The one veto: quarantined ids fail in a shape the send cannot surface
-  // (e.g. a billed 200 with an empty completion), so the request settling it
-  // is not available as the arbiter. See ProviderDefaults.brokenModelIds.
-  if (providerDefaultsOf(connection.providerType)?.brokenModelIds?.includes(model)) {
-    return undefined;
-  }
   // The observed row wins wherever it exists: it carries wire metadata such as
   // `apiProtocol`, and capabilities, which a synthesized entry cannot. Absent
   // capabilities already mean "unknown", not "unsupported".
@@ -458,6 +434,11 @@ export function reconcileConnectionAfterModelFetch(
      * caller that knows the provider's naming supplies the table.
      */
     readonly aliases?: Readonly<Record<string, string>>;
+    /**
+     * The provider guarantees this is the account's complete usable catalog.
+     * Missing ids are therefore unavailable, unlike ordinary partial snapshots.
+     */
+    readonly authoritative?: boolean;
   },
 ): {
   defaultModel: string;
@@ -490,6 +471,19 @@ export function reconcileConnectionAfterModelFetch(
       ),
     ),
   ];
+  if (options?.authoritative) {
+    // The first account-scoped fetch replaces the provider fallback guess: no
+    // user chose those bootstrap ids, and every usable model should be offered.
+    // Later refreshes preserve explicit user choices only while they remain in
+    // the account catalog; newly introduced models stay opt-in.
+    const enabledModelIds = connection.hasModelInventory
+      ? previousEnabled.filter((id) => live.has(id))
+      : liveIds;
+    const defaultModel = enabledModelIds.includes(previousDefault)
+      ? previousDefault
+      : (enabledModelIds[0] ?? '');
+    return { defaultModel, enabledModelIds };
+  }
   // Seed a first choice only for a connection that has never had a list to
   // pick from: four providers ship no `fallbackModels`, so for them discovery
   // is the only place a first default can come from.
@@ -533,20 +527,6 @@ export interface ConnectionTestResult {
   errorClass?: ConnectionTestErrorClass;
 }
 
-/**
- * The models a connection created without an explicit selection starts with,
- * or undefined when the provider seeds nothing. Derived from the provider's
- * shipped baseline rather than listed a second time: the two can then never
- * disagree about what "all of them" means.
- */
-export function defaultEnabledModelIdsWhenOmitted(
-  providerType: ProviderType,
-): readonly string[] | undefined {
-  const defaults = providerDefaultsOf(providerType);
-  if (!defaults?.enableShippedModelsByDefault) return undefined;
-  return providerFallbackModelIds(defaults);
-}
-
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {
   const authKind = providerDefaultsOf(providerType)?.authKind;
   return authKind === 'api_key' || authKind === 'oauth_token';
@@ -567,12 +547,12 @@ export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUr
   return providerDefaultsOf(c.providerType)?.baseUrl ?? '';
 }
 
-export function validateSlug(slug: string): string | null {
-  if (!slug.trim()) return 'Slug is required';
-  if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(slug)) {
-    return 'Slug must be lowercase letters, digits, and hyphens';
-  }
-  if (slug.length > 64) return 'Slug must be 64 characters or fewer';
+export type SlugValidationIssue = 'required' | 'format' | 'too_long';
+
+export function validateSlug(slug: string): SlugValidationIssue | null {
+  if (!slug.trim()) return 'required';
+  if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(slug)) return 'format';
+  if (slug.length > 64) return 'too_long';
   return null;
 }
 
@@ -766,11 +746,12 @@ export interface CreateConnectionInput {
   name: string;
   providerType: ProviderType;
   baseUrl?: string;
+  defaultApiProtocol?: ModelApiProtocol;
   defaultModel?: string;
   /** When omitted, falls back to the default model alone. */
   enabledModelIds?: string[];
   apiKey?: string;
-  relayModelProfiles?: RelayModelProfiles;
+  modelOverrides?: ModelOverrides;
   /** Sensitive values are accepted only for initial creation and stored in the credential vault. */
   requestHeaders?: Readonly<Record<string, string>>;
   requestBodyOverlay?: JsonObject;
@@ -778,6 +759,12 @@ export interface CreateConnectionInput {
 }
 
 export interface UpdateConnectionInput {
+  modelOverride?: {
+    modelId: string;
+    expected: ModelOverride | null;
+    value: ModelOverride;
+    enable?: boolean;
+  };
   name?: string;
   baseUrl?: string;
   defaultModel?: string;
@@ -789,12 +776,8 @@ export interface UpdateConnectionInput {
   lastTestStatus?: ConnectionLastTestStatus;
   lastTestAt?: string;
   lastTestMessage?: string;
-  /**
-   * Replace the whole relay profiles table: absent leaves it untouched,
-   * `null` clears it outright, a table replaces it (with the usual rules —
-   * only custom OpenAI relays, only for `enabledModelIds`).
-   */
-  relayModelProfiles?: RelayModelProfiles | null;
+  /** Full replacement for imports. Omitted leaves records intact; null clears them. */
+  modelOverrides?: ModelOverrides | null;
   requestBodyOverlay?: JsonObject | null;
   extras?: Record<string, unknown>;
 }

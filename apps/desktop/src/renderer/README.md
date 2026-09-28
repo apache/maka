@@ -25,9 +25,9 @@ For the main/preload/renderer split and the IPC contract, see `apps/desktop/READ
 
 ## Entry
 
-`main.tsx` → `app.tsx` → `AppShell` (`app-shell.tsx`). `index.html` is the Vite HTML shell. `main.tsx` prefetches the onboarding snapshot before mounting React so the normal-path first commit paints the real surface (if the prefetch times out it mounts with `null` and a fail-soft loading state); `app.tsx` wraps `AppShell` in `ToastProvider` + `ErrorBoundary`.
+`main.tsx` → `app.tsx` → `AppShell` (`app-shell.tsx`). `index.html` is the Vite HTML shell. `main.tsx` mounts React immediately — the `.maka-preload` launch overlay covers the load gap and stays until a surface commits `data-maka-content-ready`; `app.tsx` wraps `AppShell` in `ToastProvider` + `ErrorBoundary`.
 
-`styles.css` is the **only** bundled style entry: it imports Astryx, fonts, `maka-tokens.css`, `reference-shell.css`, and every `styles/*.css`. It contains only top-level orchestration; real selector rules go in `styles/*.css`. One contract-pinned exception: `index.html` carries an inline `.maka-preload` skeleton with hardcoded colors (no CSS variables — `maka-tokens.css` hasn't loaded yet) so there's no blank window during the CSS + JS load gap; `createRoot` replaces it on mount.
+`styles.css` is the **only** bundled style entry: it imports Astryx, fonts, `maka-tokens.css`, and every `styles/*.css`. It contains only top-level orchestration; real selector rules go in `styles/*.css`. One contract-pinned exception: `index.html` carries an inline `.maka-preload` launch overlay with hardcoded colors (no CSS variables — `maka-tokens.css` hasn't loaded yet) so there's no blank window during the CSS + JS load gap; it retires once a surface commits `data-maka-content-ready`.
 
 ## Renderer ownership boundary
 
@@ -104,6 +104,24 @@ capabilities and dependencies, so ordinary implementation can evolve without
 token-count ledger noise. A support entry may move one way from the AppShell
 closure to the root closure without resetting its budget; the reverse move is
 rejected. Legacy import allowlists may only shrink relative to the base branch.
+CI runs the checker as `--base <sha> --strict-base`: the ratchet re-derives the
+base commit's debt from its materialized tree rather than trusting its committed
+ledger, and `--strict-base` turns any failure to materialize or analyze that tree
+into a hard error. A silent fallback to the committed ledger could reintroduce
+the stale-ledger failure #4250 demonstrated, where a base ledger that
+under-reported its own tree wedged CI. When the checker script itself differs
+from the base commit, the base commit's checker is also imported to measure
+both trees, and debt the base measurement rules (generation and classification)
+would have flagged fails as a `base-checker cross-check:` violation, so one
+change cannot loosen how debt is measured and lower both sides of the ratchet
+at once. Under `--strict-base`, failure to write, import, or run an existing
+base checker, a missing `generateArchitectureConfig` export, or output that
+does not match the current ledger schema is a hard error. Without the flag,
+these conditions are reported and the cross-check is skipped. A base commit
+without a checker has no old measurement rules to run and is skipped in both
+modes. The schema validation and comparison still run under the current checker;
+changes to those rules remain a review concern. In particular, changes to
+`validateMonotonicDebt` are not protected by the cross-check.
 
 Dependency-path debt prices only regressive runtime edges. Type-only imports
 are erased at compile time and never count. Edges into a shell, feature public,
@@ -197,8 +215,8 @@ Composer mount semantics, Session switching, or Workbar resource lifecycles.
 |---|---|
 | `astryx-theme/makaTheme.ts` | Source for the Astryx type scale, neutral remaps, and theme-level component overrides. |
 | `astryx-theme/maka.css` | Generated Astryx theme imported by `styles.css`; regenerate it from `makaTheme.ts`, never edit it directly. |
-| `maka-tokens.css` | The main source of product CSS tokens (color / shadow / typography aliases / radius / spacing / motion / z / layout), plus a large recipe section at the tail. Transitional: tokens and recipes coexist in one file. |
-| `reference-shell.css` | A target-layout shell rebuild, hand-authored from a reference-implementation extract (its header comment documents the provenance). **Transitional** — meant to be folded back into the token/style system and removed. |
+| `maka-tokens.css` | The source of product CSS tokens (color / shadow / typography roles / radius / spacing / motion / z / layout), including the type-role table. Tokens only. |
+| `styles/document.css` | Document-level defaults: box sizing, scrollbars, the html/body ground, selection, film grain, lucide stroke, global reduced motion. |
 | `styles/*.css` | Per-surface hand-written recipes (e.g. `chat-*`, `sidebar`, `composer`, `palette`, `settings/*`, `module-pages/*`). |
 
 Token authoring rule: custom CSS variables go in `maka-tokens.css`. New component-local vars should carry `/* local: ... */` (existing ones don't all have it yet). No new hardcoded color / radius / z-index.
@@ -216,8 +234,6 @@ Note the `--foreground-N` split: the wash stops (`-2/-3/-5/-8/-10`) are surface 
 Acknowledged transitional states — not TODOs; track work in issues/PRs.
 
 - Existing hand-written `styles/*.css` recipes and internal-DOM overrides on Astryx-backed `@maka/ui` primitives are acknowledged transitional states, not precedent for new work. New styling uses published props, tokens, or stable `themeProps` extension points; track concrete retirement work in GitHub issues and PRs.
-- `reference-shell.css`: end state is folded into the token/style system and the file removed.
-- `maka-tokens.css` mixing tokens + recipes: end state is tokens-only here, recipes living on primitives / `styles/`.
 
 ## Contracts & guardrails
 

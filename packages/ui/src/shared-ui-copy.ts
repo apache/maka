@@ -52,6 +52,8 @@ export interface SharedUiCopy {
     mermaidExpandView: string;
     mermaidCollapseView: string;
     mermaidZoomLevel: (percent: number) => string;
+    mermaidCopyImage: string;
+    mermaidCopyImageFailed: string;
   };
   formControls: {
     selectPlaceholder: string;
@@ -60,8 +62,9 @@ export interface SharedUiCopy {
     optional: string;
   };
   modelPicker: {
+    empty: string;
+    noResults: string;
     searchPlaceholder: string;
-    knowledgeCutoff: (date: string) => string;
   };
   moduleHubs: {
     extensions: {
@@ -95,13 +98,6 @@ export interface SharedUiCopy {
     close: string;
     resizeHandle: string;
   };
-  sessionTodo: {
-    ariaLabel: string;
-    retry: string;
-    loading: string;
-    activeAriaLabel: string;
-    empty: string;
-  };
   toast: {
     notifications: string;
     closeNotification: string;
@@ -109,10 +105,8 @@ export interface SharedUiCopy {
     cancel: string;
   };
   stream: {
-    assistantChunkTruncated: string;
     assistantTailTruncated: string;
     thinkingHeadTruncated: string;
-    thinkingChunkTruncated: string;
     toolChunkTruncated: string;
   };
   artifact: { unknownSize: string };
@@ -153,6 +147,8 @@ const SHARED_UI_COPY = {
       mermaidExpandView: '全屏查看图表',
       mermaidCollapseView: '退出全屏图表',
       mermaidZoomLevel: (percent) => `缩放比例 ${percent}%`,
+      mermaidCopyImage: '复制图表',
+      mermaidCopyImageFailed: '复制图表失败',
     },
     formControls: {
       selectPlaceholder: '选择…',
@@ -161,8 +157,9 @@ const SHARED_UI_COPY = {
       optional: '可选',
     },
     modelPicker: {
+      empty: '暂无可用模型',
+      noResults: '没有匹配的模型',
       searchPlaceholder: '搜索模型…',
-      knowledgeCutoff: (date) => `知识截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -192,15 +189,8 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: '桌面端数据桥当前未连接。',
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
-    sessionTodo: {
-      ariaLabel: '任务待办',
-      retry: '重新载入待办',
-      loading: '正在载入待办…',
-      activeAriaLabel: '进行中的待办',
-      empty: '这个任务还没有待办',
-    },
     toast: { notifications: '通知', closeNotification: '关闭通知', confirm: '确定', cancel: '取消' },
-    stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
+    stream: { assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中国站', custom: '自定义', claudeSubscription: 'Claude 订阅' },
   },
@@ -237,6 +227,8 @@ const SHARED_UI_COPY = {
       mermaidExpandView: '全屏檢視圖表',
       mermaidCollapseView: '退出全屏圖表',
       mermaidZoomLevel: (percent) => `縮放比例 ${percent}%`,
+      mermaidCopyImage: '複製圖表',
+      mermaidCopyImageFailed: '複製圖表失敗',
     },
     formControls: {
       selectPlaceholder: '選擇…',
@@ -245,8 +237,9 @@ const SHARED_UI_COPY = {
       optional: '可選',
     },
     modelPicker: {
+      empty: '暫無可用模型',
+      noResults: '沒有符合的模型',
       searchPlaceholder: '搜尋模型…',
-      knowledgeCutoff: (date) => `知識截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -276,15 +269,8 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: '桌面端資料橋目前未連線。',
     },
     primitives: { loading: '載入中', close: '關閉', resizeHandle: '調整寬度' },
-    sessionTodo: {
-      ariaLabel: '任務待辦',
-      retry: '重新載入待辦',
-      loading: '正在載入待辦…',
-      activeAriaLabel: '進行中的待辦',
-      empty: '這個任務還沒有待辦',
-    },
     toast: { notifications: '通知', closeNotification: '關閉通知', confirm: '確定', cancel: '取消' },
-    stream: { assistantChunkTruncated: '\n[…單條 delta 已截斷]\n', assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', thinkingChunkTruncated: '\n[…單條 delta 已截斷]\n', toolChunkTruncated: '\n[…已截斷]\n' },
+    stream: { assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', toolChunkTruncated: '\n[…已截斷]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中國站', custom: '自訂', claudeSubscription: 'Claude 訂閱' },
   },
@@ -321,6 +307,8 @@ const SHARED_UI_COPY = {
       mermaidExpandView: 'View diagram fullscreen',
       mermaidCollapseView: 'Exit diagram fullscreen',
       mermaidZoomLevel: (percent) => `Zoom level ${percent}%`,
+      mermaidCopyImage: 'Copy diagram',
+      mermaidCopyImageFailed: 'Copy diagram failed',
     },
     formControls: {
       selectPlaceholder: 'Select…',
@@ -329,8 +317,9 @@ const SHARED_UI_COPY = {
       optional: 'Optional',
     },
     modelPicker: {
+      empty: 'No models available',
+      noResults: 'No matching models',
       searchPlaceholder: 'Search models…',
-      knowledgeCutoff: (date) => `Knowledge cutoff: ${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -360,15 +349,8 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
-    sessionTodo: {
-      ariaLabel: 'To-do list',
-      retry: 'Reload the to-do list',
-      loading: 'Loading the to-do list…',
-      activeAriaLabel: 'In-progress to-dos',
-      empty: 'This task has no to-dos yet',
-    },
     toast: { notifications: 'Notifications', closeNotification: 'Close notification', confirm: 'Confirm', cancel: 'Cancel' },
-    stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
+    stream: { assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },
     providers: { minimaxChina: 'MiniMax China', custom: 'Custom', claudeSubscription: 'Claude subscription' },
   },

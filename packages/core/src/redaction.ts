@@ -42,8 +42,21 @@ const AWS_SECRET_ACCESS_KEY_FLAG_SOURCE = posixContinuedTokenSource('--secret-ac
 const AWS_SECRET_ACCESS_KEY_ENV_SOURCE = posixContinuedTokenSource('AWS_SECRET_ACCESS_KEY');
 
 const QUOTED_SECRET_KEY_VALUE_PATTERN = /((?:"([^"\\]+)"\s*:\s*"))(?:\\.|[^"\\])*/g;
-const ASSIGNED_SECRET_KEY_VALUE_PATTERN =
-  /\b(([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]|\\\r?\n)*[:=](?:[ \t]|\\\r?\n)*['"]?)(?:\\\r?\n|[^\s"'&<>])+/g;
+// The prefix lookahead and the value pattern share this source, so the sticky
+// value pattern always matches where a prefix ends.
+const ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE = `${POSIX_LINE_CONTINUATION_SOURCE}|[^\\s"'&<>]`;
+// The prefix matches a whole key-character run once, and the key starts at the
+// run's first word-initial letter. Trying each such letter as its own start
+// would rescan a long hyphenated run (base64url) once per hyphen.
+const ASSIGNED_SECRET_PREFIX_PATTERN = new RegExp(
+  `(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE}['"]?(?=${ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE})`,
+  'g',
+);
+const ASSIGNED_SECRET_KEY_PATTERN = /(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_-]*/;
+const ASSIGNED_SECRET_VALUE_PATTERN = new RegExp(
+  `(?:${ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE})+`,
+  'y',
+);
 const AUTHORIZATION_HEADER_PATTERN =
   /(^|[^A-Za-z0-9_])(['"]?(?:proxy[-_]?authorization|authorization)['"]?\s*:\s*['"]?(?:bearer|basic|token)\s+)[^\s"'<>]+/gim;
 const AWS_CLI_SPACE_SECRET_PATTERN = new RegExp(
@@ -70,6 +83,7 @@ export function redactSecrets(value: string): string {
 
 function redactTextSecrets(value: string): string {
   let next = value;
+  next = redactUrlUserinfoSecrets(next);
   next = redactUrlQuerySecrets(next);
   next = next.replace(QUOTED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
     isSensitiveKey(key) ? `${prefix}[redacted]` : match,
@@ -87,9 +101,7 @@ function redactTextSecrets(value: string): string {
     AWS_SECRET_ASSIGNMENT_PATTERN,
     (_match, prefix: string) => `${prefix}[redacted]`,
   );
-  next = next.replace(ASSIGNED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
-    isAssignmentSensitiveKey(key) ? `${prefix}[redacted]` : match,
-  );
+  next = redactAssignedSecrets(next);
   for (const pattern of SECRET_PATTERNS) {
     // Each pattern's single capture group matches only the secret token, so the
     // replacement is always the full redaction marker. Never echo any part of
@@ -98,6 +110,36 @@ function redactTextSecrets(value: string): string {
     next = next.replace(pattern, () => '[redacted]');
   }
   return next;
+}
+
+function redactAssignedSecrets(value: string): string {
+  let next = '';
+  let copied = 0;
+  ASSIGNED_SECRET_PREFIX_PATTERN.lastIndex = 0;
+  for (
+    let match = ASSIGNED_SECRET_PREFIX_PATTERN.exec(value);
+    match;
+    match = ASSIGNED_SECRET_PREFIX_PATTERN.exec(value)
+  ) {
+    // The prefix stops where the value starts, so every value is still searched
+    // for a nested sensitive assignment (`excerpt: password=…`). This includes a
+    // redacted value: a key with an empty value takes the next `KEY=` as its
+    // value (`token= password="…"`), and that key's own value follows the quote.
+    const key = ASSIGNED_SECRET_KEY_PATTERN.exec(match[1] ?? '')?.[0] ?? '';
+    if (!isAssignmentSensitiveKey(key)) continue;
+    const valueStart = ASSIGNED_SECRET_PREFIX_PATTERN.lastIndex;
+    // A value that starts inside the last redacted value ends with it.
+    if (valueStart < copied) continue;
+    ASSIGNED_SECRET_VALUE_PATTERN.lastIndex = valueStart;
+    const valueMatch = ASSIGNED_SECRET_VALUE_PATTERN.exec(value);
+    // The prefix lookahead promises a value here. Should the two patterns ever
+    // disagree, skip: a failed sticky match resets lastIndex, and copying from
+    // there would echo the value after its marker.
+    if (!valueMatch) continue;
+    next += `${value.slice(copied, valueStart)}[redacted]`;
+    copied = valueStart + valueMatch[0].length;
+  }
+  return next + value.slice(copied);
 }
 
 function posixContinuedTokenSource(token: string): string {
@@ -170,6 +212,18 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
   return { value: next, changed };
 }
 
+function redactUrlUserinfoSecrets(value: string): string {
+  // Authority runs through the first `/`, `?`, `#`, whitespace, quote, or
+  // angle bracket. If it contains `@`, everything from the host-start through
+  // the last `@` is userinfo. The class matches display-redaction's
+  // streamingTerminator so a bare `https://host` followed later by an
+  // email/`@package` (including across JSON quotes) cannot swallow the gap.
+  // Known boundary: punctuation like commas can still join a bare URL to a
+  // later `@` into one fake credentialed match; a proper fix would restrict
+  // userinfo to the RFC 3986 set instead of exclusion. http(s) only for now.
+  return value.replace(/(https?:\/\/)[^\s"'<>/?#]*@/gi, '$1[redacted]@');
+}
+
 function redactUrlQuerySecrets(value: string): string {
   return value.replace(/([?&])([^=\s&?#]+)=([^&\s#]*)/g, (match, sep: string, key: string) => {
     if (!isSensitiveKey(key)) return match;
@@ -194,9 +248,12 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 function sensitiveKeySegments(key: string): string[] {
+  // The second split marks one capital per step, which keeps a long uppercase
+  // run (zero-filled base64) linear; `([A-Z]+)([A-Z][a-z])` backtracks through
+  // the run from every capital.
   return key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, '$1 ')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
@@ -208,96 +265,114 @@ function isAssignmentSensitiveKey(key: string): boolean {
   return suffix !== 'auth' && suffix !== 'authorization';
 }
 
-type GeneralizedErrorCategory = 'timeout' | 'rateLimit' | 'authentication' | 'provider' | 'network';
+export type GeneralizedErrorClass =
+  | 'timeout'
+  | 'rate_limited'
+  | 'auth_failed'
+  | 'provider_error'
+  | 'network_error';
 
-const GENERALIZED_ERROR_COPY: UiCatalog<Record<GeneralizedErrorCategory, string>> = {
-  'zh-CN': {
-    timeout: '请求超时',
-    rateLimit: '触发模型速率限制',
-    authentication: '鉴权失败',
-    provider: '模型服务返回错误',
-    network: '网络错误',
-  },
-  'zh-TW': {
-    timeout: '請求逾時',
-    rateLimit: '已達模型速率限制',
-    authentication: '驗證失敗',
-    provider: '模型服務傳回錯誤',
-    network: '網路錯誤',
-  },
-  en: {
-    timeout: 'Request timed out',
-    rateLimit: 'Rate limit exceeded',
-    authentication: 'Authentication failed',
-    provider: 'Provider returned an error',
-    network: 'Network error',
-  },
-};
-
-function classifyGeneralizedError(error: unknown): GeneralizedErrorCategory | null {
+/**
+ * Keyword classification shared by the localized message helpers and by
+ * producers that emit a stable machine code instead of prose.
+ */
+export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass | undefined {
   const message = error instanceof Error ? error.message : String(error);
-  const redacted = redactSecrets(message);
-  const lower = redacted.toLowerCase();
+  const lower = redactSecrets(message).toLowerCase();
   if (lower.includes('timeout')) return 'timeout';
-  if (lower.includes('429') || lower.includes('rate')) return 'rateLimit';
+  if (lower.includes('429') || lower.includes('rate')) return 'rate_limited';
+  // builder-util-runtime appends generic authentication-token advice to HTTP
+  // 404 errors. electron-updater has already classified this particular case
+  // as a missing channel artifact, so it is not evidence of bad credentials.
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
+  )
+    return undefined;
   if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
-    return 'authentication';
-  if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return 'provider';
+    return 'auth_failed';
+  if (/\b5\d\d\b/.test(lower)) return 'provider_error';
   if (
     lower.includes('network') ||
     lower.includes('fetch') ||
+    // Chromium network stack error codes (`net::ERR_CONNECTION_RESET`,
+    // `net::ERR_NAME_NOT_RESOLVED`, ...) never match the Node errno
+    // spellings below.
+    lower.includes('net::err') ||
     lower.includes('econn') ||
     lower.includes('enotfound')
   )
-    return 'network';
-  return null;
+    return 'network_error';
+  return undefined;
 }
 
-function localizedGeneralizedErrorMessage(
-  error: unknown,
-  fallback: string,
-  locale: UiLocale,
-): string {
-  const category = classifyGeneralizedError(error);
-  return category ? GENERALIZED_ERROR_COPY[locale][category] : fallback;
-}
-
-export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {
-  return localizedGeneralizedErrorMessage(error, fallback, 'en');
-}
-
-/**
- * Chinese-locale companion to `generalizedErrorMessage()` (PR110b
- * follow-up). Same classification rules; returns Chinese phrasing
- * instead of English. Used by surfaces that must enforce a
- * Chinese-only error copy contract (session start, onboarding setup
- * banners, etc.) — the English version would have leaked through any
- * matched category, breaking the gate.
- *
- * The fallback default is also Chinese so callers that don't supply
- * one still produce a Chinese-only result. Pass a more specific
- * Chinese fallback (e.g. "会话已创建但发送失败，请重试。") for better
- * UX when the classifier can't categorize.
- */
-export function generalizedErrorMessageChinese(error: unknown, fallback = '操作失败'): string {
-  return localizedGeneralizedErrorMessage(error, fallback, 'zh-CN');
-}
-
-export function generalizedErrorMessageTraditionalChinese(
-  error: unknown,
-  fallback = '操作失敗',
-): string {
-  return localizedGeneralizedErrorMessage(error, fallback, 'zh-TW');
-}
+/** Locale copy for each {@link GeneralizedErrorClass}; catalog authors spread
+ * this per-locale block instead of restating the sentences. */
+export const GENERALIZED_ERROR_COPY = {
+  'zh-CN': {
+    timeout: '请求超时',
+    rate_limited: '触发模型速率限制',
+    auth_failed: '鉴权失败',
+    provider_error: '模型服务返回错误',
+    network_error: '网络错误',
+  },
+  'zh-TW': {
+    timeout: '請求逾時',
+    rate_limited: '已達模型速率限制',
+    auth_failed: '驗證失敗',
+    provider_error: '模型服務傳回錯誤',
+    network_error: '網路錯誤',
+  },
+  en: {
+    timeout: 'Request timed out',
+    rate_limited: 'Rate limit exceeded',
+    auth_failed: 'Authentication failed',
+    provider_error: 'Provider returned an error',
+    network_error: 'Network error',
+  },
+} satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
 
 export function generalizedErrorMessageForLocale(
   error: unknown,
   fallback: string,
   locale: UiLocale,
 ): string {
-  return localizedGeneralizedErrorMessage(error, fallback, locale);
+  const classified = classifyGeneralizedError(error);
+  return classified ? GENERALIZED_ERROR_COPY[locale][classified] : fallback;
+}
+
+export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {
+  return generalizedErrorMessageForLocale(error, fallback, 'en');
 }
 
 export function isAuthenticationErrorText(message: string): boolean {
   return message.replace(/\bauthorit\w*/g, '').includes('auth');
+}
+
+const reportedFailures = new WeakSet<object>();
+
+/** Redacted diagnostics channel for unexpected operation failures. Copy
+ * catalogs live here (bare-importable) because a depended-on copy catalog may
+ * only hold bare package runtime imports. */
+export function reportUnexpectedOperation(scope: string, error: unknown): void {
+  // One failure, one diagnostic: a rejection formatted again by an outer layer
+  // is the same defect, not a second one.
+  if (typeof error === 'object' && error !== null) {
+    if (reportedFailures.has(error)) return;
+    reportedFailures.add(error);
+  }
+  const detail =
+    error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  console.error(`[${scope}] operation failed:`, redactSecrets(detail));
+}
+
+export function unexpectedOperationFallback(
+  error: unknown,
+  fallback: string,
+  scope: string,
+): string {
+  reportUnexpectedOperation(scope, error);
+  return fallback;
 }

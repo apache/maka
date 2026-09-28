@@ -19,6 +19,8 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { formatTextWithInlineRefs } from '../model-history.js';
+import { readParameters } from '../read-page.js';
 import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, openSync } from 'node:fs';
 import {
@@ -42,6 +44,7 @@ import {
   type PermissionProfile,
 } from '@maka/core/permission-profile';
 import { buildBuiltinTools } from '../builtin-tools.js';
+import { encodeDefaultDurableToolResultOutput } from '../durable-tool-result-projection.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
@@ -63,6 +66,7 @@ import {
   type WorkspaceExecutorFacts,
 } from '../workspace-executor.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { BASH_MAX_RETAINED_CHARS } from '../shell-exec.js';
 
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
@@ -205,6 +209,12 @@ describe('builtin apply_patch', () => {
 
     assert.equal(await readFile(join(cwd, 'added.txt'), 'utf8'), 'hello\n');
     assert.equal(await readFile(join(cwd, 'changed.txt'), 'utf8'), 'after\n');
+    await runTool(
+      applyPatch,
+      { patch: '*** Begin Patch\n*** Delete File: added.txt\n*** End Patch' },
+      cwd,
+    );
+    await assert.rejects(access(join(cwd, 'added.txt')));
   });
 });
 
@@ -343,6 +353,33 @@ describe('builtin Bash streaming output', () => {
       }).success,
       false,
     );
+  });
+
+  test('Bash drops its boundary declaration when the session has no boundary to widen', () => {
+    const shellRuns = {
+      runForegroundBash: () => Promise.reject(new Error('not used')),
+      runBackgroundBash: () => Promise.reject(new Error('not used')),
+    };
+    for (const options of [
+      { shellRuns, declareSandboxBoundary: false },
+      {
+        sandboxManager: availableLinuxManager(),
+        sandboxPlatform: 'linux' as const,
+        declareSandboxBoundary: false,
+      },
+    ]) {
+      const bash = buildBuiltinTools(options).find((tool) => tool.name === 'Bash');
+      if (!bash) throw new Error('Bash tool missing');
+      const parameters = bash.parameters as z.ZodTypeAny;
+      const keys = Object.keys(z.toJSONSchema(parameters).properties ?? {});
+      assert.equal(keys.includes('boundary_intent'), false);
+      assert.equal(keys.includes('required_boundary'), false);
+      assert.doesNotMatch(bash.description, /sandbox boundary/u);
+      assert.equal(
+        parameters.safeParse({ command: 'echo', boundary_intent: 'expand' }).success,
+        false,
+      );
+    }
   });
 
   test('Bash schema exposes explicit background execution and boundary declarations', () => {
@@ -1525,49 +1562,6 @@ describe('builtin Bash streaming output', () => {
     } satisfies RuntimeResourceReader;
     const read = buildBuiltinTools({ runtimeResources }).find((tool) => tool.name === 'Read');
     if (!read) throw new Error('Read tool missing');
-    const parameters = read.parameters as {
-      jsonSchema: PromiseLike<Record<string, unknown>> | Record<string, unknown>;
-      validate(value: unknown): PromiseLike<{ success: boolean }> | { success: boolean };
-    };
-    const providerSchema = await parameters.jsonSchema;
-    // Anthropic-compatible: a plain top-level object with properties, and no
-    // top-level union combinator (#1228).
-    assert.strictEqual(providerSchema.type, 'object');
-    assert.strictEqual(providerSchema.anyOf, undefined);
-    assert.strictEqual(providerSchema.oneOf, undefined);
-    assert.strictEqual(providerSchema.allOf, undefined);
-    assert.deepStrictEqual(
-      Object.keys(providerSchema.properties as Record<string, unknown>).sort(),
-      ['limit', 'offset', 'path', 'ref'],
-    );
-    // The strict file-vs-ref union remains the authoritative runtime validator.
-    assert.strictEqual(
-      (await parameters.validate({ path: 'README.md', offset: 2, limit: 10 })).success,
-      true,
-    );
-    assert.strictEqual(
-      (await parameters.validate({ ref: 'maka://runtime/background-tasks/shell-run-1' })).success,
-      true,
-    );
-    assert.strictEqual((await parameters.validate({})).success, false);
-    assert.strictEqual(
-      (
-        await parameters.validate({
-          ref: 'maka://runtime/background-tasks/shell-run-1',
-          offset: 2,
-        })
-      ).success,
-      false,
-    );
-    assert.strictEqual(
-      (
-        await parameters.validate({
-          path: 'README.md',
-          ref: 'maka://runtime/background-tasks/shell-run-1',
-        })
-      ).success,
-      false,
-    );
     const context = {
       sessionId: 'session-1',
       runId: 'run-1',
@@ -1577,31 +1571,20 @@ describe('builtin Bash streaming output', () => {
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
     };
-    await assert.rejects(
-      async () => read.impl({ path: 'maka://runtime/background-tasks/shell-run-1' }, context),
-      /must be read with the ref parameter/,
-    );
-    const result = await read.impl({ ref: 'maka://runtime/background-tasks/shell-run-1' }, context);
-
-    assert.deepStrictEqual(result, {
-      kind: 'shell_run',
-      ref: 'maka://runtime/background-tasks/shell-run-1',
-      mode: 'pipes',
-      status: 'running',
-      cwd: '/workspace',
-      cmd: 'sleep 60',
-      startedAt: 1,
-      updatedAt: 2,
-      revision: 2,
-      output: {
-        mode: 'pipes',
-        stdout: 'background task detail',
-        stderr: '',
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        redacted: false,
-      },
+    const result = (await read.impl(
+      { path: 'maka://runtime/background-tasks/shell-run-1' },
+      context,
+    )) as { kind: string; status: string };
+    assert.equal(result.kind, 'shell_run');
+    assert.equal(result.status, 'running');
+    const projected = read.toModelOutput!({
+      toolCallId: 'tool-1',
+      input: { path: 'maka://runtime/background-tasks/shell-run-1' },
+      output: result,
     });
+    assert.equal(projected?.type, 'json');
+    if (projected?.type === 'json')
+      assert.equal((projected.value as { content: string }).content, 'background task detail');
     assert.deepStrictEqual(calls, [
       {
         sessionId: 'session-1',
@@ -1631,81 +1614,32 @@ describe('builtin Bash streaming output', () => {
       emitOutput: () => {},
     };
 
-    assert.deepEqual(await read.impl({ ref: 'maka://runtime/attachments/attachment-1' }, context), {
-      kind: 'text',
-      text: 'attachment marker',
+    const prompt = formatTextWithInlineRefs('read this', {
+      attachments: [
+        {
+          kind: 'doc',
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          bytes: 17,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+        },
+      ],
+    });
+    const args = readParameters.parse(JSON.parse(prompt.match(/Read argument: (.*)/)![1]!));
+    const result = await read.impl(args, context);
+    assert.deepEqual(result, { kind: 'text', text: 'attachment marker' });
+    const projection = read.toModelOutput!({ toolCallId: 'tool-1', input: args, output: result });
+    assert.deepEqual(projection, {
+      type: 'json',
+      value: {
+        content: 'attachment marker',
+        offset: 0,
+        returnedLines: 1,
+        totalLines: 1,
+        next: null,
+      },
     });
     assert.deepEqual(calls, [{ sessionId: 'session-1', artifactId: 'attachment-1' }]);
-  });
-
-  test('Read normalizes a blank ref to "no ref" before validating the file-or-resource union', async () => {
-    const read = buildBuiltinTools({
-      runtimeResources: {
-        readRuntimeResource: async () => ({ kind: 'text', text: 'unused' }),
-      },
-    }).find((tool) => tool.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-    const parameters = read.parameters as {
-      validate(value: unknown): PromiseLike<{
-        success: boolean;
-        value?: unknown;
-        error?: unknown;
-      }>;
-    };
-
-    // A blank ref alongside a path passes, and the ref key is dropped so the
-    // canonical input is the pure file variant.
-    const normalized = await parameters.validate({
-      path: 'config.yaml',
-      ref: '',
-      offset: 2,
-    });
-    assert.equal(normalized.success, true);
-    if (normalized.success) {
-      assert.deepEqual(normalized.value, { path: 'config.yaml', offset: 2 });
-      assert.ok(!('ref' in (normalized.value as Record<string, unknown>)));
-    }
-    assert.equal((await parameters.validate({ path: 'config.yaml', ref: '   ' })).success, true);
-    // A lone blank ref still fails: there is no readable target.
-    assert.equal((await parameters.validate({ ref: '' })).success, false);
-    assert.equal((await parameters.validate({ ref: '   ' })).success, false);
-  });
-
-  test('Read ignores provider defaults beside a non-empty runtime ref', async () => {
-    const read = buildBuiltinTools({
-      runtimeResources: {
-        readRuntimeResource: async () => ({ kind: 'text', text: 'unused' }),
-      },
-    }).find((tool) => tool.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-    const parameters = read.parameters as {
-      validate(value: unknown): PromiseLike<{
-        success: boolean;
-        value?: unknown;
-      }>;
-    };
-    const ref = 'maka://runtime/background-tasks/shell-run-1';
-
-    const normalized = await parameters.validate({
-      path: '',
-      offset: 0,
-      limit: 1,
-      ref,
-    });
-    assert.equal(normalized.success, true);
-    if (normalized.success) assert.deepEqual(normalized.value, { ref });
-
-    assert.equal(
-      (
-        await parameters.validate({
-          path: 'README.md',
-          offset: 0,
-          limit: 1,
-          ref,
-        })
-      ).success,
-      false,
-    );
   });
 
   test('StopBackgroundTask stops a runtime ref in the current session', async () => {
@@ -2014,7 +1948,10 @@ describe('builtin Bash streaming output', () => {
     if (!bash) throw new Error('Bash tool missing');
 
     const result = (await bash.impl(
-      { command: 'awk \'BEGIN{for(i=1;i<=5000;i++)print "line"i}\'', timeout_ms: 10_000 },
+      {
+        command: 'perl -e \'print "HEAD\\n", "x" x 2000000, "\\nTAIL\\n"\'',
+        timeout_ms: 10_000,
+      },
       {
         sessionId: 'session-1',
         turnId: 'turn-1',
@@ -2025,32 +1962,11 @@ describe('builtin Bash streaming output', () => {
       },
     )) as { exitCode: number; output: { stdout: string; stdoutTruncated: boolean } };
 
-    assert.strictEqual(result.exitCode, 0); // no reject — the old code threw away everything past the cap
-    assert.strictEqual(result.output.stdout.includes('line5000'), true); // tail preserved
-    assert.strictEqual(result.output.stdout.includes('truncated'), true); // truncation marker present
-    assert.strictEqual(result.output.stdout.includes('line1\n'), false); // head dropped, not the whole output
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(result.output.stdout.endsWith('\nTAIL\n'), true);
+    assert.strictEqual(result.output.stdout.includes('HEAD\n'), false);
+    assert.ok(result.output.stdout.length <= BASH_MAX_RETAINED_CHARS);
     assert.strictEqual(result.output.stdoutTruncated, true);
-  });
-
-  test('foreground Bash marks retained-tail truncation even when model shaping does not truncate again', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-'));
-    const bash = buildBuiltinTools().find((tool) => tool.name === 'Bash');
-    if (!bash) throw new Error('Bash tool missing');
-
-    const result = (await bash.impl(
-      { command: 'perl -e \'print "x" x 2000000\'', timeout_ms: 10_000 },
-      {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        cwd,
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-      },
-    )) as { output: { stdout: string; stdoutTruncated: boolean } };
-
-    assert.strictEqual(result.output.stdoutTruncated, true);
-    assert.ok(result.output.stdout.includes('omitted for safety'));
   });
 
   test('a failing command surfaces stdout/stderr on the rejection error', async () => {
@@ -2194,6 +2110,32 @@ describe('builtin read tools path containment', () => {
 
     const result = await runTool(read, { path: 'inside.txt' }, root);
     assert.partialDeepStrictEqual(result, { content: 'inside' });
+  });
+
+  test('Grep carries exact omitted-line counts through the executor and model projection', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-grep-completeness-'));
+    try {
+      await writeFile(join(cwd, 'matches.txt'), 'token token\n'.repeat(51));
+      const grep = tool('Grep');
+      const input = (grep.parameters as z.ZodTypeAny).parse({
+        pattern: 'token',
+        path: '',
+        glob: '',
+      });
+      const result = await runTool(grep, input, cwd);
+      assert.partialDeepStrictEqual(result, {
+        matchedLines: 51,
+        returnedLines: 50,
+        omittedLines: 1,
+        truncated: true,
+      });
+      assert.partialDeepStrictEqual(encodeDefaultDurableToolResultOutput(result, 'session-1'), {
+        kind: 'json',
+        value: result,
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   test('Glob and Grep constrain search roots to session cwd', async () => {
@@ -2407,7 +2349,7 @@ describe('builtin write tools path containment', () => {
       'inside edited\n',
     );
     const scopedGlobResult = await runTool(glob, { pattern: '*.txt', cwd: join(cwd, 'src') }, cwd);
-    assert.deepStrictEqual((scopedGlobResult as { files: string[] }).files, [
+    assert.deepStrictEqual((scopedGlobResult as { files: string[] }).files.sort(), [
       'inside.txt',
       'written.txt',
     ]);
@@ -2568,7 +2510,65 @@ describe('builtin write tools path containment', () => {
   });
 });
 
+test('Edit leaves a file unchanged when exact matches overlap', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-edit-overlap-'));
+  const original = 'retry();\nretry();\nretry();\n';
+  await writeFile(join(root, 'overlap.txt'), original, 'utf8');
+  await assert.rejects(
+    runTool(
+      tool('Edit'),
+      { path: 'overlap.txt', old_string: 'retry();\nretry();', new_string: 'MARKER();' },
+      root,
+    ),
+    /old_string is not unique/,
+  );
+  assert.equal(await readFile(join(root, 'overlap.txt'), 'utf8'), original);
+});
+
 describe('builtin FormatJson (file in place)', () => {
+  test('the path-based executor preserves nested numbers and sorts ordinary data keys', async () => {
+    let written: string | undefined;
+    const formatter = buildBuiltinTools({
+      executor: fakeExecutor({
+        readFile: async () => ({
+          content:
+            '{"z":[9223372036854775807,1e400,-0,1.00],"rawJSON":"null","__proto__":{"b":0.123456789012345678901,"a":2}}',
+        }),
+        writeFile: async ({ path, content }) => {
+          written = content;
+          return { ok: true, path, bytes: Buffer.byteLength(content) };
+        },
+      }),
+    }).find((candidate) => candidate.name === 'FormatJson')!;
+    await runTool(formatter, { path: 'data.json', sort_keys: true }, tmpdir());
+    assert.equal(
+      written,
+      '{\n  "__proto__": {\n    "a": 2,\n    "b": 0.123456789012345678901\n  },\n  "rawJSON": "null",\n  "z": [\n    9223372036854775807,\n    1e400,\n    -0,\n    1.00\n  ]\n}',
+    );
+  });
+
+  for (const sort_keys of [false, true]) {
+    test(`formatting preserves exact JSON numeric values (sort_keys=${sort_keys})`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-numbers-'));
+      const original =
+        '{"account_id":9223372036854775807,"amount":0.123456789012345678901,"large":1e400}';
+      await writeInput(root, 'numbers.json', original);
+      const result = await runFormatJson({ path: 'numbers.json', sort_keys }, root);
+      const after = await readFile(join(root, 'numbers.json'), 'utf8');
+      if (result.ok === false) {
+        assert.equal(
+          after,
+          original,
+          'an unsupported numeric value must be rejected before writing',
+        );
+        return;
+      }
+      assert.match(after, /"account_id"\s*:\s*9223372036854775807(?=\s*[,}])/);
+      assert.match(after, /"amount"\s*:\s*0\.123456789012345678901(?=\s*[,}])/);
+      assert.match(after, /"large"\s*:\s*1e400(?=\s*[,}])/);
+    });
+  }
+
   async function writeInput(root: string, name: string, content: string): Promise<string> {
     const path = join(root, name);
     await writeFile(path, content, 'utf8');
@@ -2788,8 +2788,14 @@ function fakeExecutor(overrides: Partial<WorkspaceExecutor>): WorkspaceExecutor 
     resolveExistingPath: async ({ path }) => ({ path }),
     resolveWritablePath: async ({ path }) => ({ path }),
     writeLockKey: async ({ cwd, path }) => ({ key: `${cwd}:${path}` }),
-    globFiles: async () => ({ files: [] }),
-    grepFiles: async () => ({ matches: [] }),
+    globFiles: async () => ({ files: [], truncated: false }),
+    grepFiles: async () => ({
+      matches: [],
+      matchedLines: 0,
+      returnedLines: 0,
+      omittedLines: 0,
+      truncated: false,
+    }),
   };
   return Object.assign(base, overrides);
 }

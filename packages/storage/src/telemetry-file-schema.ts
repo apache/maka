@@ -22,6 +22,7 @@ import {
   type LlmCallRecord,
   type ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
+import { isUsageTimestamp } from '@maka/core/settings';
 import { isContextBudgetDiagnostic, isPromptSegmentEstimate } from '@maka/core/usage-record-schema';
 
 export type PersistedLlmCallRecord = LlmCallRecord & {
@@ -144,8 +145,8 @@ export function decodePersistedLlmCallRecord(input: unknown): PersistedLlmCallRe
       'latencyMs',
       'costUsd',
       'startedAt',
-      'ts',
-    ])
+    ]) ||
+    !isUsageTimestamp(input.ts)
   ) {
     throw invalid('invalid required LLM number');
   }
@@ -215,7 +216,10 @@ export function decodePersistedToolInvocationRecord(input: unknown): PersistedTo
   if (!strings(input, ['id', 'toolName', 'date'])) {
     throw invalid('invalid required tool string');
   }
-  if (!nonNegativeNumbers(input, ['durationMs', 'bytesIn', 'bytesOut', 'startedAt', 'ts'])) {
+  if (
+    !nonNegativeNumbers(input, ['durationMs', 'bytesIn', 'bytesOut', 'startedAt']) ||
+    !isUsageTimestamp(input.ts)
+  ) {
     throw invalid('invalid required tool number');
   }
   if (!['success', 'error', 'aborted'].includes(input.status as string)) {

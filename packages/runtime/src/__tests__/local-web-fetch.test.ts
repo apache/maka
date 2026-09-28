@@ -71,6 +71,84 @@ test('local WebFetch resolves links against the document base URL', async () => 
   assert.match(result, /\[article link\]\(https:\/\/cdn\.example\/assets\/details\)/);
 });
 
+test('local WebFetch resolves relative image sources against the response URL', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(
+        '<html><body><article><h1>Wiring guide</h1>' +
+          '<p>A useful article body long enough for extraction.</p>' +
+          '<img alt="wiring" src="../images/wiring.png">' +
+          '</article></body></html>',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+
+  const result = await executor.fetch({
+    url: 'https://docs.example.com/guide/v2/install',
+    sessionId: 's1',
+  });
+
+  assert.match(result, /!\[wiring\]\(https:\/\/docs\.example\.com\/guide\/images\/wiring\.png\)/);
+});
+
+test('local WebFetch resolves lazy image sources synthesized by Readability', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(
+        '<html><body><article><h1>Lazy wiring guide</h1>' +
+          '<p>A useful article body long enough for extraction.</p>' +
+          '<img alt="wiring" data-src="/images/wiring.png">' +
+          '</article></body></html>',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+
+  const result = await executor.fetch({
+    url: 'https://docs.example.com/guide/install',
+    sessionId: 's1',
+  });
+
+  assert.match(result, /!\[wiring\]\(https:\/\/docs\.example\.com\/images\/wiring\.png\)/);
+});
+
+test('local WebFetch preserves the document base for lazy image sources', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(
+        '<html><head><base href="https://cdn.example/assets/"></head><body><article>' +
+          '<h1>Lazy wiring guide</h1>' +
+          '<p>A useful article body long enough for extraction.</p>' +
+          '<img alt="wiring" data-src="images/wiring.png">' +
+          '</article></body></html>',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+
+  const result = await executor.fetch({ url: 'https://docs.example.com/guide/', sessionId: 's1' });
+
+  assert.match(result, /!\[wiring\]\(https:\/\/cdn\.example\/assets\/images\/wiring\.png\)/);
+});
+
+test('local WebFetch leaves absolute and inline image sources unchanged', async () => {
+  const inline = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(
+        '<html><body><article><h1>Fixed sources</h1>' +
+          '<p>A useful article body long enough for extraction.</p>' +
+          '<img alt="remote" src="https://img.example/remote.png">' +
+          `<img alt="inline" src="${inline}">` +
+          '</article></body></html>',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+
+  const result = await executor.fetch({ url: 'https://example.com/page', sessionId: 's1' });
+
+  assert.match(result, /!\[remote\]\(https:\/\/img\.example\/remote\.png\)/);
+  assert.ok(result.includes(`![inline](${inline})`), result);
+});
+
 test('local WebFetch rejects pathologically deep HTML before DOM parsing', async () => {
   const html = `<html><body>${'<div>'.repeat(600)}content${'</div>'.repeat(600)}</body></html>`;
   const executor = createLocalWebFetchExecutor({

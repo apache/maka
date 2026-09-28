@@ -177,6 +177,34 @@ describe('createCtxRefresher', () => {
     assert.deepEqual(applied, ['newer']);
   });
 
+  test('a newer relevant event retires an in-flight query before the replacement runs', async () => {
+    const scheduler = createFakeScheduler();
+    const queries: Array<ReturnType<typeof deferred<string>>> = [];
+    const applied: string[] = [];
+    const refresher = createCtxRefresher({
+      query: () => {
+        const query = deferred<string>();
+        queries.push(query);
+        return query.promise;
+      },
+      apply: (result) => applied.push(result),
+      delayMs: 400,
+      schedule: scheduler.schedule,
+    });
+
+    refresher.observe(toolStartEvent());
+    scheduler.flush();
+    refresher.observe(toolStartEvent());
+    queries[0]!.resolve('stale');
+    await Promise.resolve();
+    assert.deepEqual(applied, []);
+
+    scheduler.flush();
+    queries[1]!.resolve('fresh');
+    await Promise.resolve();
+    assert.deepEqual(applied, ['fresh']);
+  });
+
   test('a failed query leaves the last value standing and later events still refresh', async () => {
     const scheduler = createFakeScheduler();
     const queries: Array<ReturnType<typeof deferred<string>>> = [];

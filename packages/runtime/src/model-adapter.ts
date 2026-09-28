@@ -25,7 +25,7 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
-import { generalizedErrorMessage } from '@maka/core/redaction';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
 import type {
@@ -38,9 +38,9 @@ import type {
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
-  ModelRequestMetadata,
   ModelToolSet,
   ToolCallPart,
+  UserContent,
 } from './model-protocol.js';
 export type {
   NormalizedUsage,
@@ -50,23 +50,22 @@ export type {
   ModelStepOutcome,
   ModelFinishReason,
   ModelFailure,
-  ModelFailureKind,
-  ModelRequestMetadata,
   ModelToolSet,
 } from './model-protocol.js';
 
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
+import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import {
   plaintextResponsesReasoningProviderOptions,
+  withoutMakaResponsesState,
   safePlaintextResponsesReasoningItemId,
 } from './responses-reasoning-state.js';
+import { classifyError, providerModelFailure } from './provider-error-classification.js';
 import {
-  classifyError,
-  errorPresentationFromClass,
-  providerFailureSummary,
-  providerRetryMetadata,
-} from './provider-error-classification.js';
-import type { ProviderRequestTracker } from './provider-request-telemetry.js';
+  withProviderStreamTracking,
+  type ProviderRequestTracker,
+  type ProviderStreamResult,
+} from './provider-request-telemetry.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import {
   createOpenAiChatReasoningTransportState,
@@ -84,7 +83,7 @@ import {
   OPENAI_RESPONSES_LANE_HEADER,
   type OpenAiResponsesTransportState,
 } from './openai-responses-websocket.js';
-import { openAiApplyPatchProviderTool } from './openai-apply-patch.js';
+import { openAiApplyPatchProviderTool, codexApplyPatchProviderTool } from './openai-apply-patch.js';
 import { TOOL_SEARCH_NAME, TOOL_SEARCH_PROVIDER_NAME } from './tool-availability.js';
 
 /**
@@ -112,6 +111,7 @@ export interface ModelAdapterInput {
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;
+  resolvedRuntime?: ResolvedModelRuntime;
   providerOptions?: Record<string, unknown>;
   newId: () => string;
   now: () => number;
@@ -144,16 +144,8 @@ export interface ModelAdapterStreamInput {
   historyCompactBoundary?: ContextDiagnosticsCompaction;
   /** Turn-scoped continuation lane. Omitted callers keep the full-request path. */
   continuationKey?: string;
-}
-
-interface ProviderMiddlewareStreamInput {
-  doStream: () => PromiseLike<{
-    stream: ReadableStream<unknown>;
-    request?: unknown;
-    response?: unknown;
-  }>;
-  params: Record<string, unknown> & { abortSignal?: AbortSignal };
-  model: { provider: string; modelId: string };
+  /** Per-request cap after the caller has accounted for the current context. */
+  maxOutputTokens?: number;
 }
 
 export class ModelAdapter {
@@ -162,7 +154,7 @@ export class ModelAdapter {
   private readonly openAiResponsesTransportState: OpenAiResponsesTransportState;
 
   constructor(private readonly input: ModelAdapterInput) {
-    this.runtime = resolveModelRuntime(input.connection, input.modelId);
+    this.runtime = input.resolvedRuntime ?? resolveModelRuntime(input.connection, input.modelId);
     this.openAiChatReasoningTransportState = createOpenAiChatReasoningTransportState(
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
         ? this.runtime.reasoningReplay.requestField
@@ -197,11 +189,13 @@ export class ModelAdapter {
             ? 'encrypted-content'
             : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content'
               ? 'plaintext-content'
-              : {
-                  kind: 'plaintext-item',
-                  profile: requireResponsesReplayProfile(this.runtime),
-                  providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
-                },
+              : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
+                ? {
+                    kind: 'plaintext-item',
+                    profile: requireResponsesReplayProfile(this.runtime),
+                    providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
+                  }
+                : 'none',
     };
   }
 
@@ -224,12 +218,59 @@ export class ModelAdapter {
     });
   }
 
+  /**
+   * Whether a request to this connection may carry an output-token limit at
+   * all. When it may not, no limit is sent: neither a configured per-model
+   * limit nor the context-recovery cap.
+   */
+  acceptsOutputTokenLimit(): boolean {
+    return providerAcceptsOutputTokenLimit(this.input.connection.providerType);
+  }
+
   maxOutputTokens(): number | undefined {
+    if (!this.acceptsOutputTokenLimit()) return undefined;
     return selectedModelMaxOutputTokens(
       this.input.connection,
       this.input.modelId,
       this.input.providerOptions,
       this.runtime,
+    );
+  }
+
+  /**
+   * Keep a provider-derived output limit from making a resumed request
+   * impossible. The token count is the last request the provider accepted, so
+   * it is a conservative lower bound for the next request. Leave a small
+   * amount of room for newly appended user/tool content because Runtime does
+   * not estimate the final prompt locally.
+   */
+  maxOutputTokensForInput(knownInputTokens: number | undefined): number | undefined {
+    const outputLimit = this.maxOutputTokens();
+    if (
+      outputLimit === undefined ||
+      knownInputTokens === undefined ||
+      !Number.isFinite(knownInputTokens) ||
+      knownInputTokens < 0
+    ) {
+      return outputLimit;
+    }
+    const contextWindow = resolveSelectedModelContextWindow(
+      this.input.connection,
+      this.input.modelId,
+    );
+    if (contextWindow === undefined) return outputLimit;
+    const thinkingBudget =
+      this.runtime.wire === 'anthropic-messages'
+        ? fixedAnthropicThinkingBudget(this.input.providerOptions)
+        : 0;
+    const available =
+      contextWindow - Math.ceil(knownInputTokens) - CONTEXT_INPUT_GROWTH_HEADROOM - thinkingBudget;
+    // Do not turn a near-window request into a one-token success. A useful
+    // floor deliberately lets the provider reject the request, which keeps
+    // the existing reactive compaction path in control of recovery.
+    return Math.max(
+      Math.min(outputLimit, CONTEXT_RECOVERY_OUTPUT_FLOOR),
+      Math.min(outputLimit, available),
     );
   }
 
@@ -244,41 +285,53 @@ export class ModelAdapter {
       wrapLanguageModel: (input: Record<string, unknown>) => unknown;
     };
 
-    const maxOutputTokens = selectedModelMaxOutputTokens(
-      this.input.connection,
-      this.input.modelId,
-      this.input.providerOptions,
-      this.runtime,
-    );
+    // The one place a main-turn output limit reaches the wire. A provider that
+    // rejects any limit gets none, whether it came from the caller (overflow
+    // recovery, a resumed request) or from the configured model limit.
+    const maxOutputTokens = this.acceptsOutputTokenLimit()
+      ? (input.maxOutputTokens ??
+        selectedModelMaxOutputTokens(
+          this.input.connection,
+          this.input.modelId,
+          this.input.providerOptions,
+          this.runtime,
+        ))
+      : undefined;
+    let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
+    const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
-      ? wrapLanguageModel({
-          model: input.model,
-          middleware: {
-            wrapStream: async ({ doStream, params, model }: ProviderMiddlewareStreamInput) =>
-              await input.providerRequestTracker!.trackStream({
-                providerId: model.provider,
-                modelId: model.modelId,
-                params,
-                abortSignal: input.abortSignal,
-                doStream,
-                ...(input.historyCompactBoundary
-                  ? { historyCompactBoundary: input.historyCompactBoundary }
-                  : {}),
-              }),
+      ? withProviderStreamTracking({
+          model: terminalModel,
+          wrapLanguageModel,
+          tracker: input.providerRequestTracker,
+          abortSignal: input.abortSignal,
+          onAttempt: (settle) => {
+            settleAccounting = settle;
           },
+          ...(input.historyCompactBoundary
+            ? { historyCompactBoundary: input.historyCompactBoundary }
+            : {}),
         })
-      : input.model;
+      : terminalModel;
     const usesOpenAiResponsesAdapter = hasOpenAiResponsesAdapter(this.runtime);
     const providerToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_NAME ? TOOL_SEARCH_PROVIDER_NAME : name;
     const runtimeToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_PROVIDER_NAME ? TOOL_SEARCH_NAME : name;
     const sdkTools = lowerModelTools(input.tools);
-    if (usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined) {
+    // Prose names the alias only when the provider can call it. In Code Mode
+    // tool_search is nested inside exec under its runtime name, so the
+    // catalog prompt must keep that name.
+    const providerExposesToolSearch =
+      usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined;
+    const providerTextToolName = (name: string): string =>
+      providerExposesToolSearch ? providerToolName(name) : name;
+    if (providerExposesToolSearch) {
       sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
       delete sdkTools[TOOL_SEARCH_NAME];
     }
-    const fullMessages = input.messages;
+    const fullMessages =
+      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(input.messages) : input.messages;
     const responsesLane =
       input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.runtime)
         ? input.continuationKey
@@ -289,9 +342,13 @@ export class ModelAdapter {
           this.openAiResponsesTransportState.semanticBaseline(responsesLane),
         )
       : { messages: fullMessages };
-    const providerMessages = remapModelMessageToolNames(continuation.messages, providerToolName);
+    const providerMessages = remapModelMessageToolNames(
+      continuation.messages,
+      providerToolName,
+      providerTextToolName,
+    );
     const providerSystem = input.system
-      ? remapProviderToolNamesInText(input.system, providerToolName)
+      ? remapProviderToolNamesInText(input.system, providerTextToolName)
       : undefined;
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
@@ -330,10 +387,6 @@ export class ModelAdapter {
       providerOptions,
       ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
       maxRetries: 0,
-      // Preserve the final request's Maka-owned message projection without
-      // retaining the provider request body. ProviderRequestTracker owns body
-      // capture; duplicating it here can retain large base64 image payloads.
-      include: { requestMessages: true },
       // With no continuation predicate, streamText performs one provider step.
       // Continuation belongs to the Runtime above this adapter.
       abortSignal: input.abortSignal,
@@ -348,6 +401,9 @@ export class ModelAdapter {
       requestMessages: fullMessages,
       abortSignal: input.abortSignal,
       runtimeToolName,
+      settleAccounting: async (outcome) => {
+        await settleAccounting?.(outcome);
+      },
     });
   }
 
@@ -365,6 +421,7 @@ export class ModelAdapter {
       requestMessages: ModelMessage[];
       abortSignal: AbortSignal;
       runtimeToolName?: (name: string) => string;
+      settleAccounting: (outcome: ModelStepOutcome) => Promise<void>;
     },
   ): ModelStreamResult {
     const openAiChatReasoningTransportState =
@@ -377,7 +434,6 @@ export class ModelAdapter {
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
     });
-    const request = { messages: continuation.requestMessages };
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
@@ -395,6 +451,9 @@ export class ModelAdapter {
             ) {
               streamedRawFinishReason =
                 rawFinishReasonString(chunk.rawFinishReason) ?? streamedRawFinishReason;
+              streamedFinishReason = chunkFinishReason(chunk) ?? streamedFinishReason;
+              if (chunk.type === 'finish') sawFinish = true;
+              continue;
             }
             if (isUnfinalizedPlaintextSummaryReasoningEnd(chunk, resolvedRuntime)) {
               // The SDK emits this trailer from flush() when no
@@ -412,10 +471,6 @@ export class ModelAdapter {
               continuation.runtimeToolName,
             )) {
               if (event.kind === 'error') failure = event.failure;
-              if (event.kind === 'finish') sawFinish = true;
-              if (event.kind === 'finish' || event.kind === 'step-finish') {
-                streamedFinishReason = event.finishReason ?? streamedFinishReason;
-              }
               yield event;
             }
           }
@@ -425,6 +480,9 @@ export class ModelAdapter {
             yield { kind: 'error', failure };
           }
         } finally {
+          if (continuation.abortSignal.aborted) {
+            failure = normalizeProviderFailure(continuation.abortSignal.reason);
+          }
           const [sdkUsage, sdkFinishReason] = await Promise.all([
             sdk.usage.catch(() => undefined),
             sdk.finishReason.catch(() => undefined),
@@ -451,7 +509,6 @@ export class ModelAdapter {
             finishReason,
             rawFinishReason,
             usage,
-            request,
           });
           let deferredFailure: ModelFailure | undefined;
 
@@ -467,7 +524,6 @@ export class ModelAdapter {
               finishReason,
               rawFinishReason,
               usage,
-              request,
             });
           }
 
@@ -492,7 +548,11 @@ export class ModelAdapter {
               }
             }
           } finally {
-            settleOutcome(settled);
+            try {
+              await continuation.settleAccounting(settled);
+            } finally {
+              settleOutcome(settled);
+            }
           }
           if (deferredFailure) {
             // Consumers may stop iterating at the first error. The outcome and
@@ -540,7 +600,7 @@ export class ModelAdapter {
   }
 
   makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {
-    const failure = normalizeModelFailure(err);
+    const failure = normalizeProviderFailure(err);
     return {
       type: 'error',
       id: this.input.newId(),
@@ -550,7 +610,7 @@ export class ModelAdapter {
       ...(failure.code !== undefined ? { code: failure.code } : {}),
       ...(reasonOverride !== undefined
         ? { reason: reasonOverride }
-        : failure.kind !== 'abort' && failure.kind !== 'unknown'
+        : failure.kind !== 'abort'
           ? { reason: failure.kind }
           : {}),
       message: failure.message,
@@ -561,8 +621,8 @@ export class ModelAdapter {
     return normalizeProviderFailure(error);
   }
 
-  classifyError(error: unknown): string {
-    if (isModelFailure(error)) return errorClassFromFailureKind(error.kind);
+  classifyError(error: unknown): ModelFailureKind {
+    if (isModelFailure(error)) return error.kind;
     return classifyError(error);
   }
 
@@ -588,35 +648,26 @@ interface ModelStepSettlementEvidence {
   finishReason: ModelFinishReason;
   rawFinishReason?: string;
   usage?: NormalizedUsage;
-  request: ModelRequestMetadata;
 }
 
 export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
-  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage, request } = evidence;
+  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
-      'aborted',
-      failure ?? normalizeModelFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })),
-      request,
+      failure ??
+        normalizeProviderFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })),
       usage,
     );
   }
   if (failure) {
-    return failedStepOutcome(
-      failure.retryable ? 'retryable-failure' : 'terminal-failure',
-      failure,
-      request,
-      usage,
-    );
+    return failedStepOutcome(failure, usage);
   }
   if (!sawFinish || finishReason === 'other' || finishReason === 'unknown') {
     return failedStepOutcome(
-      'truncated',
       modelStepFailure(
-        'provider_unavailable',
+        'stream_truncated',
         `Provider stream ended without finishing (${finishReason})`,
       ),
-      request,
       usage,
     );
   }
@@ -625,24 +676,18 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       finishReason === 'error'
         ? providerFinishFailure(rawFinishReason)
         : modelStepFailure('unknown', 'Provider stopped the stream on a content filter');
-    return failedStepOutcome(
-      terminalFailure.retryable ? 'retryable-failure' : 'terminal-failure',
-      terminalFailure,
-      request,
-      usage,
-    );
+    return failedStepOutcome(terminalFailure, usage);
   }
   return {
     kind: 'completed',
     finishReason,
     ...(usage ? { usage } : {}),
-    request,
     continuation: 'none',
   };
 }
 
 function modelStepFailure(kind: ModelFailureKind, message: string): ModelFailure {
-  return { type: 'model_failure', kind, message, retryable: false };
+  return { type: 'model_failure', kind, message, retryable: kind === 'stream_truncated' };
 }
 
 function providerFinishFailure(rawFinishReason: string | undefined): ModelFailure {
@@ -664,19 +709,23 @@ function providerFinishFailure(rawFinishReason: string | undefined): ModelFailur
 }
 
 function failedStepOutcome(
-  kind: Exclude<ModelStepOutcome['kind'], 'completed'>,
   failure: ModelFailure,
-  request: ModelRequestMetadata,
   usage?: NormalizedUsage,
 ): Exclude<ModelStepOutcome, { kind: 'completed' }> {
   return {
-    kind,
+    kind: 'failed',
     failure,
     ...(usage ? { usage } : {}),
-    request,
     continuation: 'none',
   };
 }
+
+/**
+ * A persisted provider count describes the preceding request, not the new
+ * user message or tool result that may be appended after a restart.
+ */
+const CONTEXT_INPUT_GROWTH_HEADROOM = 8_000;
+const CONTEXT_RECOVERY_OUTPUT_FLOOR = 8_000;
 
 function selectedModelMaxOutputTokens(
   connection: RuntimeExecutionConnection,
@@ -687,14 +736,27 @@ function selectedModelMaxOutputTokens(
   const anthropicMessages = runtime.wire === 'anthropic-messages';
   const kimiOpenAiChat =
     connection.providerType === 'kimi-coding-plan' && runtime.wire === 'openai-chat';
-  if (!anthropicMessages && !kimiOpenAiChat) return undefined;
-  const wireOutputLimit =
+  const requestedBudget = connection.modelOverrides?.[modelId]?.maxOutputTokens;
+  if (requestedBudget === undefined && !anthropicMessages && !kimiOpenAiChat) return undefined;
+  const capacity =
     connection.models?.find((model) => model.id === modelId)?.maxOutputTokens ??
     lookupModelMetadata(connection.providerType, modelId).maxOutputTokens;
+  const wireOutputLimit =
+    requestedBudget === undefined
+      ? capacity
+      : capacity === undefined
+        ? requestedBudget
+        : Math.min(requestedBudget, capacity);
   if (wireOutputLimit === undefined) return undefined;
-  return anthropicMessages
+  const outputTokens = anthropicMessages
     ? wireOutputLimit - fixedAnthropicThinkingBudget(providerOptions)
     : wireOutputLimit;
+  if (outputTokens <= 0) {
+    throw new Error(
+      'Output budget must exceed the fixed thinking budget. Increase the output limit or reduce thinking.',
+    );
+  }
+  return outputTokens;
 }
 
 function usesNativeOpenAiResponses(
@@ -798,6 +860,47 @@ interface SdkStreamResult {
 }
 
 /**
+ * A provider `finish` part is the LanguageModel stream's terminal semantic
+ * boundary. Expose EOF at that boundary so the SDK can flush its public
+ * finish/usage promises even when the transport keeps the connection open.
+ */
+function withProviderFinishBoundary(
+  model: unknown,
+  wrapLanguageModel: (input: Record<string, unknown>) => unknown,
+): unknown {
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      wrapStream: async ({
+        doStream,
+      }: {
+        doStream: () => PromiseLike<ProviderStreamResult>;
+      }): Promise<ProviderStreamResult> => {
+        const result = await doStream();
+        return {
+          ...result,
+          stream: result.stream.pipeThrough(
+            new TransformStream<unknown, unknown>({
+              transform(part, controller) {
+                controller.enqueue(part);
+                if (
+                  part !== null &&
+                  typeof part === 'object' &&
+                  !Array.isArray(part) &&
+                  (part as { type?: unknown }).type === 'finish'
+                ) {
+                  controller.terminate();
+                }
+              },
+            }),
+          ),
+        };
+      },
+    },
+  });
+}
+
+/**
  * The finish reason to forward, preferring what the provider actually said.
  *
  * The SDK splits the reason in two: a closed unified enum, and the provider's
@@ -838,19 +941,17 @@ function anthropicRedactedThinkingProviderOptionsFromChunk(
   if (!anthropic || typeof anthropic !== 'object' || Array.isArray(anthropic)) return undefined;
   const redactedData = (anthropic as { redactedData?: unknown }).redactedData;
   return typeof redactedData === 'string'
-    ? (meta as NonNullable<ModelMessage['providerOptions']>)
+    ? withoutMakaResponsesState(meta as NonNullable<ModelMessage['providerOptions']>)
     : undefined;
 }
 
-function openAiResponsesReasoningProviderOptionsFromChunk(
+function responsesReasoningProviderOptionsFromChunk(
   chunk: AiSdkStreamChunk,
   runtime: ResolvedModelRuntime,
 ): NonNullable<ModelMessage['providerOptions']> | undefined {
+  if (runtime.reasoningReplay.kind !== 'responses') return undefined;
   const meta = chunk.providerMetadata;
-  if (
-    runtime.reasoningReplay.kind === 'responses' &&
-    runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
-  ) {
+  if (runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary') {
     if (chunk.type !== 'reasoning' && chunk.type !== 'reasoning-end') return undefined;
     const providerOptionsKey = runtime.responsesProviderOptionsKey;
     const provider =
@@ -885,6 +986,9 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
       throw new Error('Plaintext Responses reasoning summary exceeds durable state bounds');
     }
     return providerOptions;
+  }
+  if (runtime.reasoningReplay.contract.reasoningReplay !== 'encrypted-content') {
+    return undefined;
   }
   if (!meta || typeof meta !== 'object') return undefined;
   const openai = (meta as { openai?: unknown }).openai;
@@ -1031,7 +1135,7 @@ function translateChunk(
               : undefined;
       const signature = reasoningSignatureFromChunk(chunk);
       const responsesProviderOptions = runtime
-        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        ? responsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
@@ -1069,7 +1173,7 @@ function translateChunk(
     case 'reasoning-end': {
       const signature = reasoningSignatureFromChunk(chunk);
       const responsesProviderOptions = runtime
-        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        ? responsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
@@ -1099,33 +1203,7 @@ function translateChunk(
     case 'tool-input-start':
     case 'tool-input-delta':
     case 'tool-input-end':
-      return chunk.providerExecuted === true ? [{ kind: 'provider-tool-input' }] : [];
-    // Step boundaries (`start-step` / `finish-step`) and the terminal `finish`
-    // carry no text/thinking to stream. The backend owns step accounting: it
-    // counts and flushes one AssistantMessage per step and rotates the
-    // messageId at each `finish-step`. `step-finish` is legacy replay fixture
-    // compatibility — handled as a step boundary, not a text carrier.
-    case 'finish-step':
-    case 'step-finish': {
-      const finishReason = chunkFinishReason(chunk);
-      const rawFinishReason = rawFinishReasonString(chunk.rawFinishReason);
-      // The same value the turn's outcome is decided from, so the record and
-      // the outcome cannot name different reasons for the same stream.
-      const usage = normalizeAiSdkUsage(chunk.usage, {
-        rawFinishReason: rawFinishReason ?? finishReason,
-      });
-      return [
-        {
-          kind: 'step-finish',
-          ...(usage ? { usage } : {}),
-          ...(finishReason ? { finishReason } : {}),
-        },
-      ];
-    }
-    case 'finish': {
-      const finishReason = chunkFinishReason(chunk);
-      return [{ kind: 'finish', ...(finishReason ? { finishReason } : {}) }];
-    }
+      return [{ kind: 'tool-input', providerExecuted: chunk.providerExecuted === true }];
     case 'start-step':
     case 'tool-result':
     case 'tool-error': {
@@ -1172,6 +1250,48 @@ function translateChunk(
   }
 }
 
+function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] {
+  const result: ModelMessage[] = [];
+  let images: Exclude<UserContent, string> = [];
+  const flush = () => {
+    if (images.length === 0) return;
+    result.push({ role: 'user', content: images });
+    images = [];
+  };
+  for (const message of messages) {
+    if (message.role !== 'tool') {
+      flush();
+      result.push(message);
+      continue;
+    }
+    result.push({
+      ...message,
+      content: message.content.map((part) => {
+        if (part.type !== 'tool-result' || part.output.type !== 'content') return part;
+        return {
+          ...part,
+          output: {
+            ...part.output,
+            value: part.output.value.map((content) => {
+              if (content.type !== 'file' || !content.mediaType.startsWith('image/'))
+                return content;
+              images.push(
+                { type: 'text', text: `Image from tool ${part.toolName} (${part.toolCallId}):` },
+                content,
+              );
+              return { type: 'text', text: 'Image supplied below.' };
+            }),
+          },
+        };
+      }),
+    });
+  }
+  // Chat tool messages are text-only; attach images after the whole result group
+  // so an assistant's parallel tool calls stay paired before the next user message.
+  flush();
+  return result;
+}
+
 /**
  * OpenAI Responses reserves the provider name `tool_search`. Keep Maka's
  * persisted/history name intact and translate only the provider-bound copy.
@@ -1179,6 +1299,7 @@ function translateChunk(
 function remapModelMessageToolNames(
   messages: readonly ModelMessage[],
   providerToolName: (name: string) => string,
+  providerTextToolName: (name: string) => string,
 ): ModelMessage[] {
   const remapContent = <T extends { type: string }>(content: readonly T[]): T[] =>
     content.map((part) => {
@@ -1197,7 +1318,7 @@ function remapModelMessageToolNames(
           ) {
             remapped.output = {
               ...remapped.output,
-              value: remapProviderToolNamesInText(remapped.output.value, providerToolName),
+              value: remapProviderToolNamesInText(remapped.output.value, providerTextToolName),
             };
           }
         }
@@ -1255,6 +1376,8 @@ function compileProviderTool(
   switch (tool.kind) {
     case 'openai-apply-patch':
       return openAiApplyPatchProviderTool;
+    case 'codex-apply-patch':
+      return codexApplyPatchProviderTool;
     case 'openai-web-search':
       return openai.tools.webSearch({
         ...(tool.searchContextSize ? { searchContextSize: tool.searchContextSize } : {}),
@@ -1266,34 +1389,8 @@ function compileProviderTool(
   }
 }
 
-function normalizeModelFailure(error: unknown): ModelFailure {
-  if (isModelFailure(error)) return error;
-  const errorClass = classifyError(error);
-  const presentation = errorPresentationFromClass(errorClass);
-  const retry = providerRetryMetadata(error);
-  const code =
-    error instanceof Error && 'code' in error
-      ? String((error as { code?: unknown }).code)
-      : undefined;
-  return {
-    type: 'model_failure',
-    kind: modelFailureKind(errorClass),
-    retryable: retry.retryable,
-    ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
-    ...(code !== undefined ? { code } : {}),
-    message: presentation.message ?? generalizedErrorMessage(error),
-  };
-}
-
 function normalizeProviderFailure(error: unknown): ModelFailure {
-  if (isModelFailure(error)) return error;
-  const summary = providerFailureSummary(error);
-  const failure = normalizeModelFailure(error);
-  return {
-    ...failure,
-    ...(summary?.code !== undefined ? { code: summary.code } : {}),
-    ...(failure.kind === 'unknown' && summary !== undefined ? { message: summary.message } : {}),
-  };
+  return isModelFailure(error) ? error : providerModelFailure(error);
 }
 
 function isModelFailure(value: unknown): value is ModelFailure {
@@ -1304,56 +1401,6 @@ function isModelFailure(value: unknown): value is ModelFailure {
     typeof (value as { kind?: unknown }).kind === 'string' &&
     typeof (value as { message?: unknown }).message === 'string'
   );
-}
-
-function modelFailureKind(errorClass: string): ModelFailureKind {
-  switch (errorClass) {
-    case 'Abort':
-      return 'abort';
-    case 'Auth':
-      return 'auth';
-    case 'ContextLength':
-      return 'context_overflow';
-    case 'Network':
-      return 'network';
-    case 'ProviderBilling':
-      return 'provider_billing';
-    case 'ProviderCapacity':
-      return 'provider_capacity';
-    case 'ProviderUnavailable':
-      return 'provider_unavailable';
-    case 'RateLimit':
-      return 'rate_limit';
-    case 'Timeout':
-      return 'timeout';
-    default:
-      return 'unknown';
-  }
-}
-
-function errorClassFromFailureKind(kind: ModelFailureKind): string {
-  switch (kind) {
-    case 'abort':
-      return 'Abort';
-    case 'auth':
-      return 'Auth';
-    case 'context_overflow':
-      return 'ContextLength';
-    case 'network':
-      return 'Network';
-    case 'provider_billing':
-      return 'ProviderBilling';
-    case 'provider_capacity':
-      return 'ProviderCapacity';
-    case 'provider_unavailable':
-      return 'ProviderUnavailable';
-    case 'rate_limit':
-      return 'RateLimit';
-    case 'timeout':
-      return 'Timeout';
-    case 'unknown':
-      return 'Other';
-  }
 }
 
 type TokenCountBreakdown = {

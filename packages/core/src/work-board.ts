@@ -35,9 +35,18 @@ export const WORK_BOARD_ID_MAX_CHARS = 64;
 export const WORK_BOARD_SESSION_ID_MAX_CHARS = 160;
 export const WORK_BOARD_MESSAGE_ID_MAX_CHARS = 256;
 export const WORK_BOARD_PROJECT_ID_MAX_CHARS = 160;
+export const WORK_BOARD_HOST_ID_MAX_CHARS = 160;
+export const WORK_BOARD_PROFILE_ID_MAX_CHARS = 160;
 export const WORK_BOARD_DEFAULT_PAGE_SIZE = 50;
 export const WORK_BOARD_PAGE_SIZE_MAX = 100;
 export const WORK_BOARD_CURSOR_MAX_CHARS = 1024;
+/**
+ * Single-link contract: a project-scoped item owns at most one started
+ * Session at a time. Linking a freshly started Session replaces any previous
+ * link, keeping `linkedSessions` bounded instead of growing on repeated
+ * starts. Read paths stay tolerant of legacy arrays with more entries.
+ */
+export const WORK_BOARD_MAX_LINKED_SESSIONS = 1;
 
 export const WORK_BOARD_ITEM_STATES = ['todo', 'in_progress', 'done'] as const;
 export type WorkBoardItemState = (typeof WORK_BOARD_ITEM_STATES)[number];
@@ -68,6 +77,13 @@ export type WorkBoardProvenance =
       excerpt: string;
     };
 
+export interface WorkBoardLinkedSession {
+  profileId: string;
+  hostId: string;
+  sessionId: string;
+  linkedAt: number;
+}
+
 export interface WorkBoardItemBase {
   schemaVersion: typeof WORK_BOARD_ITEM_SCHEMA_VERSION;
   id: string;
@@ -79,6 +95,8 @@ export interface WorkBoardItemBase {
   state: WorkBoardItemState;
   creator: WorkBoardCreator;
   provenance: WorkBoardProvenance;
+  /** Durable Host-scoped Sessions started from this item. */
+  linkedSessions?: WorkBoardLinkedSession[];
   createdAt: number;
   updatedAt: number;
 }
@@ -145,6 +163,7 @@ interface WorkBoardItemJsonShape {
   updatedAt: number;
   archived: boolean;
   archivedAt?: number;
+  linkedSessions?: WorkBoardLinkedSession[];
 }
 
 const WORK_BOARD_SCOPE_INBOX_SHAPE = defineObjectShape<{ kind: 'inbox' }>()(['kind'], []);
@@ -181,7 +200,7 @@ const WORK_BOARD_ITEM_SHAPE = defineObjectShape<WorkBoardItemJsonShape>()(
     'updatedAt',
     'archived',
   ],
-  ['notes', 'archivedAt'],
+  ['notes', 'archivedAt', 'linkedSessions'],
 );
 const WORK_BOARD_CREATE_INPUT_SHAPE = defineObjectShape<CreateWorkBoardItemInput>()(
   ['scope', 'title', 'creator', 'provenance'],
@@ -373,6 +392,89 @@ export function normalizeCreateWorkBoardItemInput(
   };
 }
 
+const WORK_BOARD_LINKED_SESSION_SHAPE = defineObjectShape<WorkBoardLinkedSession>()(
+  ['profileId', 'hostId', 'sessionId', 'linkedAt'],
+  [],
+);
+
+export function normalizeWorkBoardLinkedSession(
+  input: unknown,
+): WorkBoardNormalizeResult<WorkBoardLinkedSession> {
+  if (!isRecord(input) || !hasExactShape(input, WORK_BOARD_LINKED_SESSION_SHAPE)) {
+    return fail('Work Board linked Session reference is invalid');
+  }
+  const profileId = normalizeIdString(input.profileId, {
+    field: 'linkedSessions.profileId',
+    max: WORK_BOARD_PROFILE_ID_MAX_CHARS,
+  });
+  if (!profileId.ok) return profileId;
+  const hostId = normalizeIdString(input.hostId, {
+    field: 'linkedSessions.hostId',
+    max: WORK_BOARD_HOST_ID_MAX_CHARS,
+  });
+  if (!hostId.ok) return hostId;
+  const sessionId = normalizeIdString(input.sessionId, {
+    field: 'linkedSessions.sessionId',
+    max: WORK_BOARD_SESSION_ID_MAX_CHARS,
+  });
+  if (!sessionId.ok) return sessionId;
+  const linkedAt = asSafeInteger(input.linkedAt);
+  if (linkedAt === null || linkedAt < 0) return fail('linkedAt must be a non-negative integer');
+  return {
+    ok: true,
+    value: {
+      profileId: profileId.value,
+      hostId: hostId.value,
+      sessionId: sessionId.value,
+      linkedAt,
+    },
+  };
+}
+
+export function normalizeWorkBoardLinkedSessions(
+  input: unknown,
+): WorkBoardNormalizeResult<WorkBoardLinkedSession[]> {
+  if (input === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(input)) return fail('linkedSessions must be an array');
+  const result: WorkBoardLinkedSession[] = [];
+  const seen = new Set<string>();
+  for (const entry of input) {
+    const normalized = normalizeWorkBoardLinkedSession(entry);
+    if (!normalized.ok) return normalized;
+    const key = `${normalized.value.profileId}\u0000${normalized.value.hostId}\u0000${normalized.value.sessionId}`;
+    if (seen.has(key)) return fail('linkedSessions contains duplicates');
+    seen.add(key);
+    result.push(normalized.value);
+  }
+  if (result.length > WORK_BOARD_MAX_LINKED_SESSIONS) {
+    return fail(
+      `linkedSessions must hold at most ${WORK_BOARD_MAX_LINKED_SESSIONS} entry (single-link contract)`,
+    );
+  }
+  return { ok: true, value: result };
+}
+
+/**
+ * Lenient read path for stored items: drop malformed or duplicate link entries
+ * instead of failing the whole item, so one corrupt reference cannot hide an
+ * otherwise valid board item. The strict {@link normalizeWorkBoardLinkedSessions}
+ * guard remains on the write path.
+ */
+function tolerantWorkBoardLinkedSessions(value: unknown): WorkBoardLinkedSession[] {
+  if (!Array.isArray(value)) return [];
+  const result: WorkBoardLinkedSession[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const normalized = normalizeWorkBoardLinkedSession(entry);
+    if (!normalized.ok) continue;
+    const key = `${normalized.value.profileId}\u0000${normalized.value.hostId}\u0000${normalized.value.sessionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized.value);
+  }
+  return result;
+}
+
 export function normalizeUpdateWorkBoardItemInput(
   input: unknown,
 ): WorkBoardNormalizeResult<UpdateWorkBoardItemInput> {
@@ -518,6 +620,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
   if (!creator.ok) return null;
   const provenance = normalizeWorkBoardProvenance(value.provenance);
   if (!provenance.ok) return null;
+  const linkedSessions = tolerantWorkBoardLinkedSessions(value.linkedSessions);
   const createdAt = asSafeInteger(value.createdAt);
   const updatedAt = asSafeInteger(value.updatedAt);
   if (createdAt === null || updatedAt === null) return null;
@@ -538,6 +641,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
       archivedAt,
       creator: creator.value,
       provenance: provenance.value,
+      linkedSessions,
       createdAt,
       updatedAt,
     };
@@ -554,6 +658,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
     archived: false,
     creator: creator.value,
     provenance: provenance.value,
+    linkedSessions,
     createdAt,
     updatedAt,
   };

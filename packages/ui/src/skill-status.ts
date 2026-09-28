@@ -20,7 +20,7 @@
 // packages/ui/src/skill-status.ts
 //
 // One severity reading for one Skill, shared by the list rows and the
-// inspector so a skill never reads as two different states depending on
+// detail dialog so a skill never reads as two different states depending on
 // where it is shown — the same contract scheduled-task-status.ts keeps for
 // 定时任务.
 //
@@ -31,7 +31,7 @@
 // never success-green. What those words look like is status-vocabulary's
 // call, not this file's.
 
-import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
+import type { StatusSemantic } from './status-vocabulary.js';
 import type { SkillEntry } from './module-panel-types.js';
 import type { SkillsCopy } from './skills-copy.js';
 
@@ -68,15 +68,10 @@ export function skillStatusSemantic(skill: SkillEntry): StatusSemantic {
   return 'active';
 }
 
-export function skillStatusDotVariant(skill: SkillEntry) {
-  return dotForStatus(skillStatusSemantic(skill));
-}
-
 /**
- * Exceptional state leads the row as TEXT, never only as the dot's colour
- * (WCAG 1.4.1; the dot sits outside the row's button). A plain enabled skill
- * stays silent — naming the normal case on every row is the noise this list
- * is built to avoid.
+ * Exceptional state is written out as TEXT, never only as a dot's colour
+ * (WCAG 1.4.1). A plain enabled skill stays silent — naming the normal case
+ * on every row is the noise this list is built to avoid.
  */
 export function skillExceptionalStateLabel(skill: SkillEntry, copy: SkillsCopy): string | null {
   // The diagnostic row is itself the message; it does not lead with a label.
@@ -94,11 +89,6 @@ export function skillExceptionalStateLabel(skill: SkillEntry, copy: SkillsCopy):
   return null;
 }
 
-/** The dot's accessible name: the exceptional state, or the plain runtime. */
-export function skillStatusDotLabel(skill: SkillEntry, copy: SkillsCopy): string {
-  return skillExceptionalStateLabel(skill, copy) ?? formatSkillRuntimeLabel(skill, copy);
-}
-
 export function formatSkillStatusLabel(skill: SkillEntry, copy: SkillsCopy): string {
   if (skill.validationStatus === 'metadata_error') return copy.status.metadataError;
   if (skill.sourceType === 'managed') {
@@ -109,34 +99,9 @@ export function formatSkillStatusLabel(skill: SkillEntry, copy: SkillsCopy): str
   return copy.status.local;
 }
 
-export function formatSkillRuntimeLabel(skill: SkillEntry, copy: SkillsCopy): string {
-  if (skill.runtimeStatus === 'state_error') return copy.status.stateError;
-  return skill.enabled ? copy.status.enabled : copy.status.disabled;
-}
-
 export function formatSkillLibraryDescription(skill: SkillEntry, copy: SkillsCopy): string | undefined {
   const raw = skill.description?.trim();
   if (!raw) return undefined;
-  if (/[\u3400-\u9fff]/.test(raw)) return raw;
-
-  const source = `${skill.id} ${skill.name} ${raw}`.toLowerCase();
-  if (source.includes('docx') || source.includes('word') || source.includes('google docs')) {
-    return copy.description.document;
-  }
-  if (source.includes('ppt') || source.includes('powerpoint') || source.includes('slide') || source.includes('presentation')) {
-    return copy.description.presentation;
-  }
-  if (source.includes('spreadsheet') || source.includes('excel') || source.includes('csv') || source.includes('xlsx')) {
-    return copy.description.spreadsheet;
-  }
-  if (source.includes('image') || source.includes('photo') || source.includes('bitmap')) {
-    return copy.description.image;
-  }
-  if (source.includes('browser') || source.includes('chrome') || source.includes('web target')) {
-    return copy.description.browser;
-  }
-  if (source.includes('macos') || source.includes('swiftui') || source.includes('appkit')) {
-    return copy.description.macos;
-  }
-  return copy.description.fallback;
+  if (skill.sourceType !== 'bundled' || skill.userModified) return raw;
+  return copy.bundledDescription[skill.id] ?? raw;
 }

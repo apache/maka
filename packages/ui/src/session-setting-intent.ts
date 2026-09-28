@@ -57,8 +57,15 @@ export type SessionSettingIntentChannel<Value> = SessionSettingIntentChannelBase
     }
 );
 
+export interface SessionSettingIntentCatalog {
+  /** The catalog's latest committed revision, read at call time. */
+  revision(): number;
+  /** Runs `listener` after every catalog commit; returns the unsubscribe. */
+  subscribeChanged(listener: () => void): () => void;
+}
+
 export interface SessionSettingIntentOptions<Values extends object> {
-  catalogRevision: number;
+  catalog: SessionSettingIntentCatalog;
   refreshCatalog(): Promise<unknown>;
   channels: {
     [Channel in keyof Values]: SessionSettingIntentChannel<Values[Channel]>;
@@ -168,18 +175,24 @@ export function useSessionSettingIntent<Values extends object>(
       ) {
         return;
       }
-    } else if (optionsRef.current.catalogRevision <= intent.committedAtCatalogRevision) {
+    } else if (optionsRef.current.catalog.revision() <= intent.committedAtCatalogRevision) {
       return;
     }
     channelIntents?.delete(sessionId);
     setOverlay(channel, sessionId, undefined);
   }, [setOverlay]);
 
+  // Reconcile is driven by catalog commits, not renders: subscribing here is
+  // what lets the catalog live outside this component's render scope.
   useEffect(() => {
-    for (const [channel, intents] of intentsRef.current) {
-      for (const sessionId of intents.keys()) reconcile(channel, sessionId);
-    }
-  }, [options.catalogRevision, reconcile]);
+    const reconcileAll = () => {
+      for (const [channel, intents] of intentsRef.current) {
+        for (const sessionId of intents.keys()) reconcile(channel, sessionId);
+      }
+    };
+    reconcileAll();
+    return options.catalog.subscribeChanged(reconcileAll);
+  }, [options.catalog, reconcile]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -242,7 +255,7 @@ export function useSessionSettingIntent<Values extends object>(
         if (!mountedRef.current || typedIntents.get(sessionId) !== intent) return;
         if (committed) {
           intent.committed = attempted;
-          intent.committedAtCatalogRevision = optionsRef.current.catalogRevision;
+          intent.committedAtCatalogRevision = optionsRef.current.catalog.revision();
           intent.committedAtSessionRevision = committedSessionRevision;
           if (isEqual(channel, intent.desired, attempted)) {
             setOverlay(channel, sessionId, attempted);

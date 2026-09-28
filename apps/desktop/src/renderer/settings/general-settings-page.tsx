@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { JevSettingsSection } from '../features/jev-settings';
 import { useEffect, useMemo, useState } from "react";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
@@ -34,7 +35,6 @@ import type {
   RuntimeHostNetworkProxySettings,
   UpdateAppSettingsResult,
 } from '@maka/core/settings';
-import { THINKING_LEVELS, type ThinkingLevel } from '@maka/core/model-thinking';
 import type {
   IdentifiedLlmConnection,
   ProjectedLlmConnection,
@@ -59,7 +59,6 @@ import {
 } from "@maka/ui";
 import { ProviderBrandMark } from "./provider-brand-marks";
 import { PasswordInput } from "./password-input";
-import { getConversationCopy } from '@maka/ui';
 import { settingsActionErrorMessage } from "./settings-error-copy";
 import { useActionGuard, useKeyedActionGuard } from "./use-action-guard";
 import { useOptimisticSettingsDraft } from "./use-optimistic-settings-draft";
@@ -75,6 +74,7 @@ import { getShellCopy } from "../locales/shell-copy.js";
 import type { RuntimeHostSettingsConnectionsBridge } from '../features/connection-settings';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
+  RuntimeHostSettingsGenerationBoundary,
   useOptionalRuntimeHostSettingsTarget,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
@@ -305,7 +305,7 @@ export function GeneralSettingsPage(props: {
           showSettingsPlaceholder={showRuntimeHostSettingsPlaceholder}
           onRefresh={props.onRefreshConnections}
           permissionMode={props.settings.chatDefaults.permissionMode}
-          thinkingLevel={props.settings.chatDefaults.thinkingLevel}
+          codeModeEnabled={props.settings.chatDefaults.codeModeEnabled === true}
           onUpdate={props.onUpdate}
         />
       ) : null}
@@ -327,6 +327,9 @@ export function GeneralSettingsPage(props: {
               testNetworkProxy={props.testNetworkProxy!}
             />
           </SettingsSection>
+          {host && <RuntimeHostSettingsGenerationBoundary>
+            <JevSettingsSection settings={props.settings.jev} isInteractive={runtimeHostSettingsInteractive} onUpdate={props.onUpdate} />
+          </RuntimeHostSettingsGenerationBoundary>}
         </>
       ) : showRuntimeHostSettingsPlaceholder ? (
         <>
@@ -449,7 +452,7 @@ function ShellSettingsSection(props: {
       ) : null}
       <SettingsActions>
         <Button
-          variant="primary"
+          variant="secondary"
           isDisabled={!canSave || !props.isInteractive}
           isLoading={saving}
           onClick={() => void save()}
@@ -486,9 +489,6 @@ function isRejectedShellPreference(error: unknown): boolean {
  * `PermissionModeSelect` so labels, hints, and markup can't drift from the
  * composer picker.
  */
-/** Sentinel for "no preference" — Selector needs a value, absence is not one. */
-const FOLLOW_MODEL_DEFAULT = "__follow_model__";
-
 function GeneralDefaultsCard(props: {
   connections: readonly ProjectedLlmConnection[];
   defaultSlug: string | null;
@@ -501,7 +501,7 @@ function GeneralDefaultsCard(props: {
   showSettingsPlaceholder: boolean;
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
-  thinkingLevel?: ThinkingLevel;
+  codeModeEnabled: boolean;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -509,19 +509,16 @@ function GeneralDefaultsCard(props: {
   const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
-  // Level names come from the composer's own map — one vocabulary for the
-  // levels, so the settings row and the in-chat menu can never disagree.
-  const conversationCopy = getConversationCopy(locale);
   const sections = getSettingsPreferencesCopy(locale).sections;
   const boundaryCopy = getShellCopy(locale).sessionSettingsActions;
   const toast = useToast();
   const mountedRef = useMountedRef();
-  const persistGuard = useKeyedActionGuard<
-    "default-model" | "permission-mode" | "thinking-level"
-  >();
-  const [saving, setSaving] = useState(false);
-  const [savingPermissionMode, setSavingPermissionMode] = useState(false);
-  const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  type SaveKey = "default-model" | "permission-mode";
+  const persistGuard = useKeyedActionGuard<SaveKey>();
+  const [savingRows, setSavingRows] = useState<Partial<Record<SaveKey, boolean>>>({});
+  function setRowSaving(key: SaveKey, saving: boolean) {
+    setSavingRows((current) => ({ ...current, [key]: saving }));
+  }
 
   const modelChoices = useMemo(
     () => buildChatModelChoices(props.connections),
@@ -549,7 +546,7 @@ function GeneralDefaultsCard(props: {
     if (!props.connectionsBridge || !props.connectionsInteractive) return;
     const releaseSave = persistGuard.begin("default-model");
     if (!releaseSave) return;
-    setSaving(true);
+    setRowSaving("default-model", true);
     try {
       const parsed = parseModelChoiceValue(nextValue);
       await props.connectionsBridge.setDefaultModel(
@@ -573,7 +570,7 @@ function GeneralDefaultsCard(props: {
       }
     } finally {
       releaseSave();
-      if (mountedRef.current) setSaving(false);
+      if (mountedRef.current) setRowSaving("default-model", false);
     }
   }
 
@@ -610,7 +607,7 @@ function GeneralDefaultsCard(props: {
         return;
       }
     }
-    setSavingPermissionMode(true);
+    setRowSaving("permission-mode", true);
     try {
       await props.onUpdate({ chatDefaults: { permissionMode: nextMode } });
     } catch (error) {
@@ -624,29 +621,19 @@ function GeneralDefaultsCard(props: {
       }
     } finally {
       releaseSave();
-      if (mountedRef.current) setSavingPermissionMode(false);
+      if (mountedRef.current) setRowSaving("permission-mode", false);
     }
   }
 
-  async function persistThinkingLevel(next: ThinkingLevel | undefined) {
+  async function persistCodeMode(codeModeEnabled: boolean) {
     if (!props.settingsInteractive) return;
-    const releaseSave = persistGuard.begin("thinking-level");
-    if (!releaseSave) return;
-    setSavingThinkingLevel(true);
     try {
-      await props.onUpdate({ chatDefaults: { thinkingLevel: next } });
+      await props.onUpdate({ chatDefaults: { codeModeEnabled } });
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(
-          copy.saveDefaultThinkingFailed,
-          settingsActionErrorMessage(error, locale),
-          undefined,
-          host ? { profileId: host.profileId } : undefined,
-        );
+        toast.error(copy.updateFailed, settingsActionErrorMessage(error, locale), undefined,
+          host ? { profileId: host.profileId } : undefined);
       }
-    } finally {
-      releaseSave();
-      if (mountedRef.current) setSavingThinkingLevel(false);
     }
   }
 
@@ -655,6 +642,23 @@ function GeneralDefaultsCard(props: {
       title={sections.chatDefaults}
       description={sections.chatDefaultsHelp}
     >
+      {props.settingsAvailable ? (
+        <SettingsRow
+          label="Code Mode"
+          description={copy.codeModeHelp}
+          end={
+            <Switch
+              label="Code Mode"
+              isLabelHidden
+              value={props.codeModeEnabled}
+              isDisabled={!props.settingsInteractive}
+              changeAction={persistCodeMode}
+            />
+          }
+        />
+      ) : props.showSettingsPlaceholder ? (
+        <SettingsRowSkeleton label="Code Mode" description={copy.codeModeHelp} width="3rem" />
+      ) : null}
       {props.connectionsAvailable ? (
         <SettingsRow
           label={copy.defaultModel}
@@ -666,8 +670,7 @@ function GeneralDefaultsCard(props: {
               leadingOption={{ value: "", label: copy.notSet }}
               renderProviderMark={(type) => <ProviderBrandMark type={type} />}
               ariaLabel={copy.defaultModel}
-              disabled={saving || !props.connectionsInteractive}
-              loading={saving}
+              disabled={savingRows["default-model"] || !props.connectionsInteractive}
               triggerClassName="settingsModelPickerTrigger"
               onValueChange={persistDefault}
             />
@@ -691,7 +694,7 @@ function GeneralDefaultsCard(props: {
                 void persistPermissionMode(mode);
               }}
               align="end"
-              disabled={savingPermissionMode || !props.settingsInteractive}
+              disabled={savingRows["permission-mode"] || !props.settingsInteractive}
               ariaLabel={copy.defaultPermission}
             />
           }
@@ -700,42 +703,6 @@ function GeneralDefaultsCard(props: {
         <SettingsRowSkeleton
           label={copy.defaultPermission}
           description={copy.defaultPermissionHelp}
-          width="7rem"
-        />
-      ) : null}
-      {/* The absent option is first and means exactly that: no preference, so
-          each model uses its own. It is not a level, which is why the composer
-          menu now calls that same state 模型默认 rather than 默认 — the old
-          wording promised a knob that did not exist anywhere. */}
-      {props.settingsAvailable ? (
-        <SettingsRow
-          label={copy.defaultThinking}
-          description={copy.defaultThinkingHelp}
-          end={
-            <Selector
-              label={copy.defaultThinking}
-              isLabelHidden
-              value={props.thinkingLevel ?? FOLLOW_MODEL_DEFAULT}
-              onChange={(value) => {
-                void persistThinkingLevel(
-                  value === FOLLOW_MODEL_DEFAULT ? undefined : (value as ThinkingLevel),
-                );
-              }}
-              options={[
-                { value: FOLLOW_MODEL_DEFAULT, label: copy.followModelDefault },
-                ...THINKING_LEVELS.map((level) => ({
-                  value: level,
-                  label: conversationCopy.model.level[level],
-                })),
-              ]}
-              isDisabled={savingThinkingLevel || !props.settingsInteractive}
-            />
-          }
-        />
-      ) : props.showSettingsPlaceholder ? (
-        <SettingsRowSkeleton
-          label={copy.defaultThinking}
-          description={copy.defaultThinkingHelp}
           width="7rem"
         />
       ) : null}
@@ -961,22 +928,15 @@ function NetworkProxySection(props: {
               }
               placeholder="metaso.cn, baidu.com"
               label={copy.bypassList}
-              description={copy.bypassHelp}
+              description={copy.bypassHelp(proxyDraft.autoBypassDomains.length)}
               width="100%"
               isDisabled={!props.isInteractive}
             />
           </SettingsField>
 
-          <SettingsField>
-            <Banner
-              status="info"
-              title={copy.autoBypass(proxyDraft.autoBypassDomains.length)}
-            />
-          </SettingsField>
-
           <SettingsActions>
             <Button
-              variant="primary"
+              variant="secondary"
               isLoading={testing}
               isDisabled={!props.isInteractive}
               onClick={() => void testProxy(passwordDraft)}

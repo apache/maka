@@ -35,6 +35,7 @@ import {
   type PeerReachabilityLeaseReceipt,
   type SignedPeerReachabilityLeaseV1,
 } from './model.js';
+import { isNodeError } from '../node-error.js';
 
 const STATE_FILE = 'peer-reachability.json';
 const MAX_STATE_BYTES = 64 * 1_024;
@@ -286,8 +287,4 @@ async function syncDirectory(path: string): Promise<void> {
   } finally {
     await handle.close();
   }
-}
-
-function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error && error.code === code;
 }

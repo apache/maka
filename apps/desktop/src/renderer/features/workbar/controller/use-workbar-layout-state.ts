@@ -28,6 +28,7 @@ import {
 import type { ResizableProps } from '@astryxdesign/core/Resizable';
 import {
   loadWorkbarLayout,
+  isSessionWorkbarCollapsed,
   persistWorkbarLayout,
   reduceWorkbarLayout,
   SESSION_BOTTOM_PANEL_MAX_HEIGHT,
@@ -40,19 +41,39 @@ import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
 } from '../model/workbar-tabs.js';
-
 const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 
 /**
  * Owns the application-level Workbar topology, dimensions and persistence.
- * Session-owned panel data deliberately lives below this boundary.
+ * Right-panel visibility belongs to each Session; topology and sizes stay global.
+ * `compact` is the shell's narrow-window reading; see `withCompact`.
  */
-export function useWorkbarLayoutState() {
+export function useWorkbarLayoutState(
+  activeSessionId: string | undefined,
+  authoritativeSessionIds: ReadonlySet<string> | undefined,
+  compact: boolean,
+) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
-    undefined,
-    loadWorkbarLayout,
+    activeSessionId,
+    (sessionId) => loadWorkbarLayout(sessionId, compact),
   );
+  // Bind the owner before this render commits. An effect-based mirror would
+  // briefly show the previous Session's panel and could overwrite an open
+  // action issued by another layout effect in the activation commit.
+  if (state.activeSessionId !== activeSessionId) {
+    dispatch({ type: 'activate-session', sessionId: activeSessionId });
+  }
+  // Same reason: a window crossing the threshold must not paint one frame of
+  // the other layout.
+  if (state.compact !== compact) {
+    dispatch({ type: 'set-compact', compact });
+  }
+  useEffect(() => {
+    if (authoritativeSessionIds) {
+      dispatch({ type: 'retain-sessions', sessionIds: authoritativeSessionIds });
+    }
+  }, [authoritativeSessionIds, activeSessionId, state.panels]);
   const stateRef = useRef(state);
   stateRef.current = state;
   const rightDragStartRef = useRef(state.rightWidth);
@@ -118,22 +139,20 @@ export function useWorkbarLayoutState() {
     (
       kind: Exclude<SessionWorkbarTabKind, 'side-chat'>,
       placement: SessionWorkbarPlacement = 'right',
-      options: { preview?: boolean } = {},
-    ) =>
-      dispatch({
-        type: 'open',
-        placement,
-        tab: {
-          id: `workbar:${kind}`,
-          kind,
-          ...(options.preview ? { preview: true } : {}),
-        },
-      }),
+    ) => dispatch({ type: 'open', placement, tab: { id: `workbar:${kind}`, kind } }),
     [],
   );
   const openDynamicWorkbarTab = useCallback(
     (tab: SessionWorkbarTab, placement: SessionWorkbarPlacement = 'right') =>
       dispatch({ type: 'open', placement, tab }),
+    [],
+  );
+  const restoreTerminals = useCallback(
+    (tabs: readonly SessionWorkbarTab[]) => dispatch({ type: 'restore-terminals', tabs }),
+    [],
+  );
+  const closeTerminal = useCallback(
+    (sessionId: string, ref: string) => dispatch({ type: 'close-terminal', sessionId, ref }),
     [],
   );
   const activateWorkbarTab = useCallback(
@@ -147,21 +166,16 @@ export function useWorkbarLayoutState() {
     [],
   );
   const closeWorkbarTabs = useCallback(
-    (placement: SessionWorkbarPlacement, tabIds: readonly string[]) =>
-      dispatch({ type: 'close', placement, tabIds }),
-    [],
-  );
-  const reorderWorkbarTab = useCallback(
-    (placement: SessionWorkbarPlacement, tabId: string, targetTabId: string) =>
-      dispatch({ type: 'reorder', placement, tabId, targetTabId }),
-    [],
-  );
-  const moveWorkbarTab = useCallback(
     (
       placement: SessionWorkbarPlacement,
-      tabId: string,
-      direction: 'left' | 'right',
-    ) => dispatch({ type: 'move', placement, tabId, direction }),
+      tabIds: readonly string[],
+      options?: { preserveVisibility?: boolean },
+    ) =>
+      dispatch({
+        type: options?.preserveVisibility ? 'remove-stale' : 'close',
+        placement,
+        tabIds,
+      }),
     [],
   );
   const openWorkbarLauncher = useCallback(
@@ -177,9 +191,6 @@ export function useWorkbarLayoutState() {
   const titleWorkbarTab = useCallback((tabId: string, title: string) => {
     dispatch({ type: 'title', tabId, title });
   }, []);
-  const pinWorkbarTab = useCallback((tabId: string) => {
-    dispatch({ type: 'pin', tabId });
-  }, []);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -189,7 +200,7 @@ export function useWorkbarLayoutState() {
   }, [state.rightWidth]);
   useEffect(() => {
     persistWorkbarLayout(stateRef.current, 'right-visibility');
-  }, [state.rightCollapsed]);
+  }, [state.collapsedBySession]);
   useEffect(() => {
     const handle = window.setTimeout(() => {
       persistWorkbarLayout(stateRef.current, 'bottom-size');
@@ -207,10 +218,17 @@ export function useWorkbarLayoutState() {
     (next: SetStateAction<boolean>) => {
       const collapsed =
         typeof next === 'function'
-          ? next(stateRef.current.rightCollapsed)
+          ? next(isSessionWorkbarCollapsed(stateRef.current))
           : next;
       dispatch({ type: 'collapse', placement: 'right', collapsed });
     },
+    [],
+  );
+  /* Space suppression, the rail's spaceConcealed counterpart: the controller's
+     room arbitration sets and releases it; user collapse/expand clears it in
+     the reducer. */
+  const setSpaceCollapsed = useCallback(
+    (collapsed: boolean) => dispatch({ type: 'set-space-collapsed', collapsed }),
     [],
   );
   const setBottomPanelOpen = useCallback(
@@ -227,8 +245,10 @@ export function useWorkbarLayoutState() {
   );
 
   return {
-    workbarCollapsed: state.rightCollapsed,
+    workbarCollapsed: isSessionWorkbarCollapsed(state),
     setWorkbarCollapsed,
+    spaceCollapsed: state.spaceCollapsed,
+    setSpaceCollapsed,
     bottomPanelOpen: state.bottomOpen,
     setBottomPanelOpen,
     workbarWidth: state.rightWidth,
@@ -238,14 +258,13 @@ export function useWorkbarLayoutState() {
     workbarPanelsState: state.panels,
     openWorkbarTab,
     openDynamicWorkbarTab,
+    restoreTerminals,
     activateWorkbarTab,
     closeWorkbarTab,
     closeWorkbarTabs,
-    reorderWorkbarTab,
-    moveWorkbarTab,
+    closeTerminal,
     moveWorkbarTabToPanel,
     titleWorkbarTab,
-    pinWorkbarTab,
     openWorkbarLauncher,
   };
 }

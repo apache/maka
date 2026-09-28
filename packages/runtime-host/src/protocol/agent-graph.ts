@@ -22,6 +22,7 @@ import {
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
+  requireOpaqueIdentity,
   requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
@@ -1345,19 +1346,6 @@ function requireSchemaVersion(value: unknown): void {
 
 function requireBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw invalidProtocolFrame(`Invalid ${label}`);
-  return value;
-}
-
-function requireOpaqueIdentity(value: unknown, label: string): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
   return value;
 }
 

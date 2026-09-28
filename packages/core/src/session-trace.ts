@@ -330,7 +330,11 @@ const MODEL_CALL_STEP_SHAPE = defineObjectShape<TraceModelCallStep>()(
   ],
   ['connectionSlug', 'historyCompactRoute', 'costUsd'],
 );
-const MODEL_ATTEMPT_SHAPE = defineObjectShape<TraceModelAttempt>()(
+/**
+ * The Inspector's own view of an attempt. Exported so the projection narrows an
+ * authority record through this list rather than restating it by hand.
+ */
+export const MODEL_ATTEMPT_SHAPE = defineObjectShape<TraceModelAttempt>()(
   [
     'attemptId',
     'attempt',

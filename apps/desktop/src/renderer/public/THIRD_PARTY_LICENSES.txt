@@ -7,8 +7,16 @@ This file records notices for third-party source assets vendored into the Maka d
 
 - Repository: https://github.com/lobehub/lobe-icons
 - Package: `@lobehub/icons-static-svg` version `1.91.0`
-- License: MIT
+- Upstream source license: MIT. This records LobeHub's distribution terms, not authorization from each brand owner to use its mark.
 - Covered vendored files:
+  - `apps/desktop/src/renderer/assets/provider-brands/mcp.svg`
+    - Upstream commit: `2e76c48721e91b9aaa40803a0fa2eb8aca7399c4`
+    - Upstream path: `packages/static-svg/icons/mcp.svg`
+    - SHA-256: `8670df38c9558de3cdd98d8b39ee6cbaf1c929377cffc5952e9b02f9bf9429b3`
+  - `apps/desktop/src/renderer/assets/provider-brands/antigravity.svg`
+    - Upstream commit: `32f4083f7a20b67ecdc7b29c0af031ada5a29c52`
+    - Upstream path: `packages/static-svg/icons/antigravity-color.svg`
+    - SHA-256: `652128cf55a28bb958563ee372d0bd00208d9e6fd446f523f77aafd811eef8ca`
   - `apps/desktop/src/renderer/assets/provider-brands/xai.svg`
     - Upstream commit: `32f4083f7a20b67ecdc7b29c0af031ada5a29c52`
     - Upstream path: `packages/static-svg/icons/xai.svg`
@@ -105,7 +113,7 @@ This file records notices for third-party source assets vendored into the Maka d
     - Upstream path: `packages/static-svg/icons/opencode.svg`
     - SHA-256: `7cfa6e9d6726f7c9fa26c7d9aef0dfec52d20a137380454340f30f12ccbfd302`
 
-The OpenCode name and logo remain trademarks of their owner and are used here only to identify the provider. The MIT license above covers the vendored Lobe Icons SVG source, not any trademark rights.
+The brand names and logos above remain trademarks of their respective owners and are used here to identify providers. LobeHub's MIT license does not grant trademark rights or establish permission from those owners.
 
 MIT License
 
@@ -164,20 +172,19 @@ SOFTWARE.
 ## Simple Icons brand marks
 
 - Repository: https://github.com/simple-icons/simple-icons
-- License: CC0-1.0
+- Collection license: CC0-1.0. Simple Icons states that this does not establish the license of every included icon; check each icon's metadata and brand terms.
 - Covered source assets, by how the path data reaches the build:
   - Vendored from `simple-icons` version `15.22.0` as pinned path constants
     (upstream later removed some of these marks, so the pins stay at the
     version they were copied from):
     - `packages/ui/src/bot-brand-logo.tsx`: Telegram, Discord, WeChat, QQ and Slack paths
-    - `apps/desktop/src/renderer/mcp-brand-marks.tsx`: Slack paths
   - Imported at build time from the installed `simple-icons` package, so the
-    bundled version is the one package-lock.json pins; that copy is licensed
-    through the generated `licenses/npm/THIRD_PARTY_NOTICES.txt`:
-    - `apps/desktop/src/renderer/mcp-brand-marks.tsx`: LINE, Google Calendar, Figma, Vercel, Supabase, Notion and Apple paths
+    bundled version is the one package-lock.json pins; the package-level CC0
+    notice is in `licenses/npm/THIRD_PARTY_NOTICES.txt`:
     - `apps/desktop/src/renderer/settings/provider-brand-marks.tsx`: MiniMax path
+- MiniMax's entry in the pinned Simple Icons package declares a custom license: https://github.com/simple-icons/simple-icons/pull/13982#issuecomment-3531627803. The brand owner confirms conformity with its design guidelines while retaining its intellectual property rights.
 - Full license text: packaged as `licenses/renderer/SIMPLE_ICONS_LICENSE.md`.
-- Trademark boundary: CC0 does not grant trademark rights. The marks are used only to identify the corresponding services.
+- Trademark boundary: the collection's CC0 license does not grant rights to the individual brands' marks. The marks are used only to identify the corresponding services.
 
 ## TDesign Icons WeCom mark
 
@@ -198,31 +205,24 @@ SOFTWARE.
   `licenses/renderer/MINGCUTE_APACHE_LICENSE.txt`.
 - Trademark boundary: DingTalk and its logo remain trademarks of their owner.
 
-## Allogo Feishu mark
+## Allogo service marks
 
 - Repository: https://github.com/callback-io/allogo
-- Source: `feishu/icon.svg`
+- Existing inline source: `feishu/icon.svg`
 - License: MIT
 - Covered source asset: `packages/ui/src/bot-brand-logo.tsx` `FeishuLogo`
+- Covered vendored files:
+  - `apps/desktop/src/renderer/assets/provider-brands/notion.svg`
+    - Upstream commit: `95790d39b66a2bdb09661ea779fc15361d58f07f`
+    - Upstream path: `public/logos/notion/icon.svg`
+    - SHA-256: `65b8a1becb0cb011eb71b7c417779a481b694ab25d5d57745270141373b1d243`
+  - `apps/desktop/src/renderer/assets/provider-brands/linear.svg`
+    - Upstream commit: `95790d39b66a2bdb09661ea779fc15361d58f07f`
+    - Upstream path: `public/logos/linear/icon.svg`
+    - SHA-256: `2d629956cdcd2f2d8ba65f7a085e989ed7520f2b24e2c6dd99fa8b4c59ea3065`
+  - `apps/desktop/src/renderer/assets/provider-brands/chrome.svg`
+    - Upstream commit: `95790d39b66a2bdb09661ea779fc15361d58f07f`
+    - Upstream path: `public/logos/chrome/icon.svg`
+    - SHA-256: `444bae99a53bb4a1ba807612cf1f4776071e6f94adb0efeccdf78c035e1c6c82`
 - Full license text and upstream trademark disclaimer: packaged as `licenses/renderer/ALLOGO_LICENSE.txt`.
-- Trademark boundary: Feishu/Lark and its logo remain trademarks of ByteDance.
-
-## Ant Design Icons DingTalk mark
-
-- Repository: https://github.com/ant-design/ant-design-icons
-- Package: `@ant-design/icons-svg` version `4.5.0`
-- Source: `DingtalkOutlined`
-- License: MIT
-- Covered source asset: `apps/desktop/src/renderer/mcp-brand-marks.tsx` `DINGTALK_MARK`
-- Full license text: packaged as `licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt`.
-- Trademark boundary: DingTalk and its logo remain trademarks of their owner.
-
-## Semi Design Feishu mark
-
-- Repository: https://github.com/DouyinFE/semi-design
-- Package/source: `@douyinfe/semi-icons@2.101.0`, `packages/semi-icons/src/svgs/feishu_logo.svg`
-- License: MIT
-- Covered source asset: `apps/desktop/src/renderer/mcp-brand-marks.tsx` `FEISHU_MARK`
-- Source SHA-256: `5f9a5066c702ada4acdb752521a7d70293fbe5166ac4a7fa256cff8778670e2d`
-- Full license text: packaged as `licenses/renderer/SEMI_ICONS_LICENSE.txt`.
-- Trademark boundary: Feishu/Lark and its logo remain trademarks of ByteDance.
+- Trademark boundary: Feishu/Lark, Notion, Linear, and Google Chrome marks remain their owners' trademarks. The marks identify those services in-product.

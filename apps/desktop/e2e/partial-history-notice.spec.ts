@@ -17,121 +17,80 @@
  * under the License.
  */
 
+/**
+ * A Session too large for one read: what the Host hands over is a tail, and
+ * the rest comes only when the reader asks, one bounded page at a time.
+ *
+ * Where the arriving rows leave the reader is renderer-owned and lives in the
+ * `PrependedHistoryKeepsMeasuredHeights` browser story over real layout.
+ */
+
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 
-const NOTICE = '.maka-transcript-history-controls';
+const SCROLLER = '[data-chat-scroll-container="true"]';
+const TICK = '.maka-prompt-rail-tick';
+/** Turns the partial-history fixture seeds. */
+const PARTIAL_HISTORY_TURN_COUNT = 18;
 
-async function waitForPaint(page: Page): Promise<void> {
-  await page.evaluate(() => new Promise<void>((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  }));
-}
-
-async function noticePresentation(page: Page) {
-  return page.locator(NOTICE).evaluate((notice) => {
-    const style = getComputedStyle(notice);
-    const box = notice.getBoundingClientRect();
-    const composer = document.querySelector('.maka-composer-astryx');
-    if (!composer) throw new Error('the composer is missing');
-    const composerBox = composer.getBoundingClientRect();
-    return {
-      backgroundColor: style.backgroundColor,
-      borderWidths: [
-        style.borderTopWidth,
-        style.borderRightWidth,
-        style.borderBottomWidth,
-        style.borderLeftWidth,
-      ],
-      display: style.display,
-      flexWrap: style.flexWrap,
-      justifyContent: style.justifyContent,
-      widthDelta: Math.abs(box.width - composerBox.width),
-      centerDelta: Math.abs(
-        (box.left + box.right) / 2 - (composerBox.left + composerBox.right) / 2,
-      ),
-      fitsViewport: box.left >= 0 && box.right <= document.documentElement.clientWidth,
-      hasHorizontalOverflow: notice.scrollWidth > notice.clientWidth,
+async function frames(page: Page, count = 2): Promise<void> {
+  await page.evaluate((remaining) => new Promise<void>((resolve) => {
+    const step = (left: number): void => {
+      if (left === 0) resolve();
+      else requestAnimationFrame(() => step(left - 1));
     };
-  });
+    step(remaining);
+  }), count);
 }
 
-test('partial history is a quiet reading-column control with neutral rail ticks', async ({
+/** Wheel to the top as a reader would; a programmatic scroll does not release the tail pin. */
+async function wheelToTop(page: Page): Promise<void> {
+  const scroller = page.locator(SCROLLER);
+  await expect(async () => {
+    // Re-read each attempt: the window may still be resizing.
+    const box = await scroller.boundingBox();
+    if (!box) throw new Error('the chat scroll container has no box');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 4);
+    await page.mouse.wheel(0, -4_000);
+    await frames(page, 4);
+    expect(await scroller.evaluate((element) => element.scrollTop)).toBe(0);
+  }).toPass({ timeout: 30_000 });
+  await frames(page, 4);
+}
+
+test('a transcript over the history budget loads earlier Turns only on request', async ({
   partialHistoryWindow: page,
 }) => {
+  test.setTimeout(90_000);
   await page.setViewportSize({ width: 1_400, height: 800 });
-  await expect(page.locator(NOTICE)).toHaveCount(0);
+  const loadEarlier = page.getByRole('button', { name: '载入更早的记录' });
+  const pendingLoad = page.locator('button:disabled', { hasText: '载入更早的记录' });
+  const ticks = page.locator(TICK);
 
-  const firstPrompt = page.locator(
-    '.maka-prompt-rail-tick[data-prompt-turn-id="turn-partial-history-1"]',
-  );
-  await expect(firstPrompt).toBeVisible();
-  await firstPrompt.click();
+  await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`)).toBeVisible();
+  // The Host Turn index lists the whole Session before its history is loaded.
+  await expect(ticks).toHaveCount(PARTIAL_HISTORY_TURN_COUNT);
+  await expect(loadEarlier).toHaveCount(1);
 
-  const notice = page.locator(NOTICE);
-  await expect(notice).toBeVisible();
-  await expect(notice).toContainText('正在查看较早的消息');
-  await expect(notice.getByRole('button', { name: '返回最新消息' })).toBeVisible();
-  await expect(notice).not.toContainText(/保存|加载/);
+  let loads = 0;
+  while ((await loadEarlier.count()) > 0) {
+    await wheelToTop(page);
+    await loadEarlier.click();
+    await expect(pendingLoad).toHaveCount(0, { timeout: 30_000 });
+    loads += 1;
+    expect(loads).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
+  }
 
-  const regular = await noticePresentation(page);
-  expect(regular).toEqual({
-    backgroundColor: 'rgba(0, 0, 0, 0)',
-    borderWidths: ['0px', '0px', '0px', '0px'],
-    display: 'flex',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    widthDelta: expect.any(Number),
-    centerDelta: expect.any(Number),
-    fitsViewport: true,
-    hasHorizontalOverflow: false,
+  expect(loads).toBeGreaterThan(0);
+  await expect(ticks).toHaveCount(PARTIAL_HISTORY_TURN_COUNT);
+  await wheelToTop(page);
+  await expect(page.locator('[data-turn-id="turn-partial-history-1"]')).toBeVisible();
+
+  const returnToLatest = page.getByRole('button', {
+    name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
   });
-  expect(regular.widthDelta).toBeLessThanOrEqual(1);
-  expect(regular.centerDelta).toBeLessThanOrEqual(1);
-
-  await page.mouse.move(0, 0);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  const railPresentation = await page.evaluate(() => {
-    const ticks = [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
-    const presentation = (tick: HTMLElement) => {
-      const bar = tick.querySelector<HTMLElement>('.maka-prompt-rail-tick-bar');
-      if (!bar) throw new Error('a prompt rail tick is missing its bar');
-      const style = getComputedStyle(bar);
-      return {
-        backgroundColor: style.backgroundColor,
-        borderStyle: style.borderStyle,
-        borderWidth: style.borderWidth,
-        boxShadow: style.boxShadow,
-      };
-    };
-    const neutralPaint = ticks
-      .filter((tick) => tick.dataset.active !== 'true' && !tick.matches(':hover'))
-      .map(presentation);
-    const residentStyleRules = [...document.styleSheets].flatMap((sheet) =>
-      [...sheet.cssRules].filter((rule) => rule.cssText.includes('data-resident'))
-    );
-    return {
-      residentAttributeCount: document.querySelectorAll('[data-resident]').length,
-      residentStyleRuleCount: residentStyleRules.length,
-      neutralTickCount: neutralPaint.length,
-      neutralPaintCount: new Set(neutralPaint.map((paint) => JSON.stringify(paint))).size,
-    };
-  });
-  expect(railPresentation.residentAttributeCount).toBe(0);
-  expect(railPresentation.residentStyleRuleCount).toBe(0);
-  expect(railPresentation.neutralTickCount).toBeGreaterThan(1);
-  expect(railPresentation.neutralPaintCount).toBe(1);
-
-  await page.setViewportSize({ width: 520, height: 720 });
-  await waitForPaint(page);
-  const narrow = await noticePresentation(page);
-  expect(narrow.centerDelta).toBeLessThanOrEqual(1);
-  expect(narrow.fitsViewport).toBe(true);
-  expect(narrow.hasHorizontalOverflow).toBe(false);
-
-  await notice.getByRole('button', { name: '返回最新消息' }).click();
-  await expect(notice).toHaveCount(0);
-  await expect(
-    page.locator('[data-turn-id="turn-partial-history-8"]'),
-  ).toBeVisible();
+  await expect(returnToLatest).toBeVisible();
+  await returnToLatest.click();
+  await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`)).toBeVisible();
+  await expect(ticks).toHaveCount(PARTIAL_HISTORY_TURN_COUNT);
 });

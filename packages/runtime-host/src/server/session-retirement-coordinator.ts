@@ -31,6 +31,7 @@ import {
   type SessionHeaderSnapshot,
 } from '@maka/storage/execution-stores';
 import { type SessionManager } from '@maka/runtime/session-manager';
+import type { AgentGraphRetirementDisposition } from '@maka/runtime/stream-graph-coordinator';
 import type { InteractiveSessionTodoWriter } from '@maka/storage/session-todo-authority';
 import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import {
@@ -85,7 +86,7 @@ type RetirementSessionEffects = {
   hasLiveSessionState(sessionId: string): boolean;
 };
 type RetirementGraph = {
-  hasLiveSessionState(sessionId: string): Promise<boolean>;
+  readRetirementDisposition(sessionId: string): Promise<AgentGraphRetirementDisposition>;
   listGraphIds(sessionId: string): Promise<readonly string[]>;
 };
 type RetirementGraphWake = {
@@ -123,10 +124,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
   readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
-  readonly contextOffload?: Pick<
-    InteractiveContextOffloadWriter,
-    'retireSession' | 'collectGarbage'
-  >;
+  readonly contextOffload?: Pick<InteractiveContextOffloadWriter, 'retireSession'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
@@ -286,7 +284,7 @@ export class HostSessionRetirementCoordinator {
           handles.goal.commit();
           handles.scheduledTasks.commit();
           await this.#graphWake.retireSessions(family.sessionIds);
-          this.#capabilities.retireSessions(family.sessionIds);
+          await this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
           await this.#refreshFamily(family);
           return lifecycleSuccess(
@@ -359,7 +357,7 @@ export class HostSessionRetirementCoordinator {
           await this.#graphWake.retireSessions(allSessionIds);
           this.#rememberRetiredWorktrees(committableRemove, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
-          this.#capabilities.retireSessions(allSessionIds);
+          await this.#capabilities.retireSessions(allSessionIds);
           this.#messages.retireSessions(allSessionIds);
           await this.#continuity.retireSessions(plan.remove.sessionIds, plan.remove.admission);
           await this.#refreshFamily(plan.archive);
@@ -663,8 +661,13 @@ export class HostSessionRetirementCoordinator {
         throw new SessionRetirementBusyError(`Session ${sessionId} has a live derived effect`);
       }
       const header = requireFamilyRecord(family, sessionId).header;
-      if (!header.subagentParent && (await this.#graph.hasLiveSessionState(sessionId))) {
-        throw new SessionRetirementBusyError(`Session ${sessionId} has a live Agent Graph`);
+      if (!header.subagentParent) {
+        const graph = await this.#graph.readRetirementDisposition(sessionId);
+        if (graph.kind === 'busy') {
+          throw new SessionRetirementBusyError(
+            `Session ${sessionId} has an Agent Graph that is ${graph.status}`,
+          );
+        }
       }
       if (!header.subagentParent && this.#graphWake.hasLiveSessionState(sessionId)) {
         throw new SessionRetirementBusyError(

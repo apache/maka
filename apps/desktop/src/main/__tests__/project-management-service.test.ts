@@ -18,14 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
 import { createProjectCatalog, type ProjectCatalog } from '@maka/storage/project-catalog';
 import {
   createProjectManagementService,
@@ -88,47 +85,52 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
     assert.equal(relinked.ok, true);
     assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
   } finally {
+    catalog.close();
     await rm(base, { recursive: true, force: true });
   }
 });
 
-test('adding a nested folder selects that folder instead of the parent project', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-add-'));
-  const parentPath = join(base, 'parent-project');
-  const childPath = join(parentPath, 'child-project');
-  await mkdir(childPath, { recursive: true });
-  await execFileAsync('git', ['init', '--quiet'], { cwd: parentPath });
+test('add preserves the exact selected directory inside an existing repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-exact-selection-'));
+  const repository = join(base, 'repository');
+  const nestedDirectory = join(repository, 'nested');
+  await mkdir(nestedDirectory, { recursive: true });
+  execFileSync('git', ['init', '--quiet'], { cwd: repository });
 
-  const selected: string[] = [];
-  let nextDirectory = parentPath;
+  const choices = [repository, nestedDirectory];
+  const selections: Array<{ id: string; path: string }> = [];
   let nextId = 0;
   const catalog = createProjectCatalog(join(base, 'storage'), {
-    now: () => 1_000,
     createId: () => `project-${++nextId}`,
+    now: () => 1_000,
   });
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
     catalog: managementCatalog(catalog),
-    chooseDirectory: async () => nextDirectory,
+    chooseDirectory: async () => choices.shift(),
     selection: {
-      currentSelection: async () => ({ projectId: undefined, path: parentPath }),
-      setSelection: (_projectId, path) => selected.push(path),
+      currentSelection: async () => ({ path: repository, projectId: undefined }),
+      setSelection: (id, path) => {
+        assert.ok(id);
+        assert.ok(path);
+        selections.push({ id, path });
+      },
     },
   });
 
   try {
-    const parent = await service.add();
-    assert.equal(parent.ok, true);
-    if (!parent.ok) return;
-    assert.equal(parent.path, await realpath(parentPath));
+    const repositoryResult = await service.add();
+    const nestedResult = await service.add();
+    assert.equal(repositoryResult.ok, true);
+    assert.equal(nestedResult.ok, true);
+    if (!repositoryResult.ok || !nestedResult.ok) assert.fail('Expected both Projects to be added');
 
-    nextDirectory = childPath;
-    const child = await service.add();
-    assert.equal(child.ok, true);
-    if (!child.ok) return;
-    assert.notEqual(child.project.id, parent.project.id);
-    assert.equal(child.path, await realpath(childPath));
-    assert.equal(selected.at(-1), await realpath(childPath));
+    assert.notEqual(repositoryResult.project.id, nestedResult.project.id);
+    assert.deepEqual(
+      selections.map(({ path }) => path),
+      [await realpath(repository), await realpath(nestedDirectory)],
+    );
+    assert.equal(nestedResult.path, await realpath(nestedDirectory));
   } finally {
     catalog.close();
     await rm(base, { recursive: true, force: true });
@@ -164,6 +166,73 @@ test('can register a draft Project without changing the Host selection', async (
 
   assert.equal((await service.add({ select: false })).ok, true);
   assert.equal(selected, false);
+});
+
+test('names the Project in the same step as registering it', async () => {
+  const renames: Array<{ projectId: string; name: string }> = [];
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: async (path) => ({
+        id: 'project-1',
+        name: 'folder-name',
+        locations: [{ path, available: true, isWorktree: false }],
+        preferredPath: path,
+        available: true,
+      }),
+      relink: unexpected,
+      rename: async (projectId, name) => {
+        renames.push({ projectId, name });
+        return {
+          id: projectId,
+          name,
+          locations: [{ path: '/workspace', available: true, isWorktree: false }],
+          preferredPath: '/workspace',
+          available: true,
+        };
+      },
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => '/workspace',
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: '/current' }),
+      setSelection() {},
+    },
+  });
+
+  const result = await service.add({ select: false, name: '  My Project  ' });
+  assert.deepEqual(renames, [{ projectId: 'project-1', name: 'My Project' }]);
+  assert.equal(result.ok && result.project.name, 'My Project');
+});
+
+test('a blank name leaves the folder-derived name alone', async () => {
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: async (path) => ({
+        id: 'project-1',
+        name: 'folder-name',
+        locations: [{ path, available: true, isWorktree: false }],
+        preferredPath: path,
+        available: true,
+      }),
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => '/workspace',
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: '/current' }),
+      setSelection() {},
+    },
+  });
+
+  const result = await service.add({ select: false, name: '   ' });
+  assert.equal(result.ok && result.project.name, 'folder-name');
 });
 
 test('rejects malformed Project identities before catalog access', async () => {

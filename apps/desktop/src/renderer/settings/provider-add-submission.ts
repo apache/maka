@@ -26,7 +26,11 @@ import {
   type ModelInfo,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import type { CreateConnectionInput, IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type {
+  CreateConnectionInput,
+  IdentifiedLlmConnection,
+  SlugValidationIssue,
+} from '@maka/core/llm-connections';
 export type ApiKeyOnboardingRoute =
   | { readonly kind: 'host' }
   | {
@@ -97,7 +101,7 @@ export function initialOnboardingModelIds(
 export type AddProviderField = 'slug' | 'apiKey' | 'accountId' | 'baseUrl' | 'form';
 
 export type AddProviderIssue =
-  | { readonly field: 'slug'; readonly reason: 'invalid'; readonly detail: string }
+  | { readonly field: 'slug'; readonly reason: 'invalid'; readonly detail: SlugValidationIssue }
   | { readonly field: 'slug'; readonly reason: 'duplicate' }
   | { readonly field: 'apiKey'; readonly reason: 'required' }
   | { readonly field: 'accountId'; readonly reason: 'required' }
@@ -143,6 +147,9 @@ export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIs
   // missing one — it just has not composed it yet.
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   if (requiresBaseUrl && !draft.baseUrl.trim()) return { field: 'baseUrl', reason: 'required' };
+  // Experimental first, deliberately: a provider that is both cannot be added
+  // at all, so telling the user to answer a question that would not unblock
+  // them would be the wrong of the two answers.
   if (defaults.status === 'phase3-experimental') return { field: 'form', reason: 'experimental' };
   return null;
 }

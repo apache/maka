@@ -33,11 +33,6 @@ export interface SessionStartModeSpec {
 }
 
 export const SESSION_START_MODE_SPECS = {
-  deep_research: {
-    name: 'Deep Research',
-    labels: ['mode:deep_research'],
-    permissionMode: 'explore',
-  },
   bot: {
     labels: ['mode:bot'],
     permissionMode: 'explore',
@@ -49,6 +44,8 @@ export const SESSION_START_MODES: readonly SessionStartMode[] = Object.keys(
   SESSION_START_MODE_SPECS,
 ) as SessionStartMode[];
 export const SESSION_START_MODE_LABELS: readonly string[] = [
+  // Historical mode labels remain reserved when editing old Sessions.
+  'mode:deep_research',
   ...new Set(Object.values(SESSION_START_MODE_SPECS).flatMap((spec) => spec.labels)),
 ];
 

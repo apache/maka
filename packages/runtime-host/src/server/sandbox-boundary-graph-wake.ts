@@ -39,14 +39,12 @@ export async function sandboxBoundaryGraphWakeRoot(
   return parent.parentSessionId;
 }
 
-/** Resolve durable lineage before notifying the root graph supervisor. */
-export async function notifySandboxBoundaryGraphWake(
+/** Resolve the durable lineage for a settled sandbox boundary. */
+export async function resolveSandboxBoundaryRootSession(
   sessionId: string,
   sessions: SandboxBoundaryGraphWakeHeaderReader,
   graphIds: { listGraphIds(rootSessionId: string): Promise<readonly string[]> },
-  notifyPermissionResponse: (rootSessionId: string) => Promise<void> | void,
-): Promise<void> {
+): Promise<string | undefined> {
   const header = await sessions.readHeaderSnapshot(sessionId);
-  const rootSessionId = await sandboxBoundaryGraphWakeRoot(header, graphIds);
-  if (rootSessionId) await notifyPermissionResponse(rootSessionId);
+  return sandboxBoundaryGraphWakeRoot(header, graphIds);
 }

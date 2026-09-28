@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
-import { TYPE_SCALE_BASE_PX } from '../../renderer/astryx-theme/type-scale.js';
+import { TYPE_SCALE_BASE_PX } from '../../renderer/platform/desktop/document-appearance.js';
 import { makaTheme } from '../../renderer/astryx-theme/makaTheme.js';
 
 // `DEFAULT_UI_FONT_SIZE` (in @maka/core, which cannot import renderer code)

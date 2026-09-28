@@ -354,7 +354,6 @@ test('the model reads its own call back in the names the tool accepts', async ()
     header: header(),
     connection: connection(),
     modelId: 'mock-model',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -516,7 +515,8 @@ function connection(): LlmConnection {
   return {
     slug: 'test',
     name: 'Test',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
     baseUrl: 'https://example.invalid',
     defaultModel: 'mock-model',
     enabled: true,

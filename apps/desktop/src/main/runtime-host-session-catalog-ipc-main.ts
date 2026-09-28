@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration } from '@maka/core/executor-catalog';
 import { randomUUID } from 'node:crypto';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
@@ -24,17 +25,22 @@ import { isPermissionMode } from '@maka/core/permission';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
 import { type SessionChangedEvent, type SessionChangedReason, type SessionCatalogSummary } from '@maka/core/session';
-import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
   SessionCreateInput,
   WorkspaceTarget,
   SessionModelTarget,
 } from '@maka/runtime-host/protocol';
-import { resolveCreateSessionRequest } from './create-session-input.js';
 import type {
-  DesktopRuntimeHostClient,
-  DesktopSessionConfigurationPatch,
+  DesktopSessionUpdateFailureCode,
+  DesktopSessionUpdateResult,
+} from '../shared/desktop-session-projection.js';
+import { resolveCreateSessionRequest } from './create-session-input.js';
+import {
+  type DesktopRuntimeHostClient,
+  DesktopRuntimeHostClientError,
+  type DesktopSessionConfigurationPatch,
 } from './runtime-host-client.js';
 import {
   requestsRevisionFamily,
@@ -50,8 +56,10 @@ import {
 type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
   | 'createSession'
+  | 'getSession'
   | 'listSessions'
   | 'previewSessionRemoval'
+  | 'relocateSessionWorkspace'
   | 'removeSession'
   | 'setSessionLifecycle'
   | 'updateSessionConfiguration'
@@ -66,6 +74,7 @@ export interface DesktopHostSessionSummary extends SessionCatalogSummary {
 
 export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
+  queryExecutors?: (input: import('@maka/runtime-host/protocol').PluginExecutorQueryInput) => Promise<import('@maka/runtime-host/protocol').PluginExecutorQueryResult>;
   /** Observer state supplements the Host catalog without falling back to the durable header. */
   runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
@@ -107,9 +116,27 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
+  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string) => {
+    if (typeof cwd !== 'string' || !cwd) throw new Error('Executor discovery requires a workspace');
+    return (await deps.queryExecutors?.({ kind: 'catalog', cwd }))?.items ?? [];
+  });
+  handleReconnectableRead(ipcMain, 'sessions:executorState', async (_event, sessionId: string) =>
+    (await deps.queryExecutors?.({ kind: 'conversation', sessionId }))?.items ?? [],
+  );
   handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: unknown) =>
     listSessions(normalizeSessionListFilter(filter)),
   );
+  handleReconnectableRead(ipcMain, 'sessions:get', async (_event, sessionId: unknown) => {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      throw new Error('Invalid Session id');
+    }
+    await recoveryTask;
+    if (pendingCleanup.has(sessionId)) return null;
+    const session = await deps.client.getSession(sessionId);
+    return session === null
+      ? null
+      : toDesktopHostSessionListSummary(session, deps.runningTurnIds(sessionId));
+  });
   ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.cleanup(sessionId);
     pendingCleanup.delete(sessionId);
@@ -119,26 +146,11 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    const request = resolveCreateSessionRequest(input);
     const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
     });
-    const session = await deps.client.createSession({
-      sessionId: newId(),
-      workspace,
-      ...(request.mode === undefined ? {} : { mode: request.mode }),
-      // A nameless mode (`bot`) keeps the caller's name, so always forward it.
-      name: request.name,
-      ...(request.labels === undefined ? {} : { labels: request.labels }),
-      modelTarget: normalizeModelTarget(input),
-      ...normalizeCreateThinkingLevel(input?.thinkingLevel),
-      ...(request.mode !== undefined || request.permissionMode === undefined
-        ? {}
-        : { permissionMode: request.permissionMode }),
-      collaborationMode: request.collaborationMode,
-      orchestrationMode: request.orchestrationMode,
-    });
+    const session = await deps.client.createSession(resolveDesktopSessionCreateInput(input, newId(), workspace));
     deps.emitSessionsChanged('created', session.id);
     return toDesktopHostSessionSummary(session);
   });
@@ -210,6 +222,29 @@ export function registerRuntimeHostSessionCatalogIpc(
       return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel }, 'updated');
     },
   );
+  ipcMain.handle(
+    'sessions:setExecutorConfiguration',
+    async (_event, sessionId: string, input: unknown) => {
+      if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+        throw new Error('Invalid executor configuration');
+      }
+      const record = input as Record<string, unknown>;
+      const executorId = normalizeOptionalString(record.executorId, 'executor id');
+      if (!executorId) throw new Error('Executor id is required');
+      const model = normalizeOptionalString(record.model, 'executor model');
+      const thinkingLevel = normalizeRequiredThinkingLevel(input);
+      return updateConfiguration(
+        deps,
+        sessionId,
+        { executorTarget: { executorId, ...(model ? { model } : {}) }, thinkingLevel },
+        'updated',
+      );
+    },
+  );
+  ipcMain.handle('sessions:setExecutorModelConfiguration', async (_event, sessionId: string, config: unknown) => {
+    if (!isExecutorConfiguration(config)) throw new Error('Invalid executor configuration');
+    return updateConfiguration(deps, sessionId, { executorConfig: config }, 'updated');
+  });
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${String(level)}`);
@@ -231,6 +266,61 @@ export function registerRuntimeHostSessionCatalogIpc(
     // Read-only: how many subtasks the delete would archive, for the confirm.
     return deps.client.previewSessionRemoval(sessionId);
   });
+  ipcMain.handle(
+    'sessions:moveToProject',
+    async (_event, sessionId: string, projectId: unknown) => {
+      if (projectId !== null && (typeof projectId !== 'string' || projectId.length === 0)) {
+        throw new Error('Invalid project id');
+      }
+      return moveSessionToProject(deps, sessionId, projectId);
+    },
+  );
+}
+
+/**
+ * Re-files an existing Session into another Project, or out of every Project.
+ *
+ * Unlike the configuration updates, this is not a revision-family action: a
+ * move re-points one working directory, and moving an archived or branched
+ * sibling's cwd as a side effect is not what the user asked for.
+ *
+ * The revision is read once, here, and carried into the commit. Detaching needs
+ * the Session's own cwd as the target, and that directory is only meaningful
+ * paired with the revision it was read at: committing it against a later
+ * revision would move the Session back to a directory a concurrent writer had
+ * already left, which is exactly what the Host's compare-and-set exists to
+ * stop. So a conflict is reported, not retried.
+ */
+async function moveSessionToProject(
+  deps: RuntimeHostSessionCatalogIpcDeps,
+  sessionId: string,
+  projectId: string | null,
+): Promise<DesktopSessionUpdateResult<DesktopHostSessionSummary>> {
+  let session: SessionCatalogProjection;
+  try {
+    const current = await deps.client.getSession(sessionId);
+    if (!current) {
+      throw new DesktopRuntimeHostClientError(
+        'session_not_found',
+        `No such Session: ${sessionId}`,
+      );
+    }
+    const workspace: WorkspaceTarget =
+      projectId === null
+        ? { kind: 'host_path', path: current.workspace.hostCwd }
+        : { kind: 'project', projectId };
+    session = await deps.client.relocateSessionWorkspace(
+      sessionId,
+      current.revision,
+      workspace,
+    );
+  } catch (error) {
+    const code = updateFailureCode(error);
+    if (code) return { ok: false, code };
+    throw error;
+  }
+  deps.emitSessionsChanged('updated', sessionId);
+  return { ok: true, session: toDesktopHostSessionSummary(session) };
 }
 
 /**
@@ -271,10 +361,35 @@ async function updateConfiguration(
   patch: DesktopSessionConfigurationPatch,
   reason: SessionChangedReason,
   extra?: Pick<SessionChangedEvent, 'modelId' | 'turnId'>,
-): Promise<DesktopHostSessionSummary> {
-  const session = await deps.client.updateSessionConfiguration(sessionId, patch);
+): Promise<DesktopSessionUpdateResult<DesktopHostSessionSummary>> {
+  let session: SessionCatalogProjection;
+  try {
+    session = await deps.client.updateSessionConfiguration(sessionId, patch);
+  } catch (error) {
+    const code = updateFailureCode(error);
+    if (code) return { ok: false, code };
+    throw error;
+  }
   deps.emitSessionsChanged(reason, sessionId, extra);
-  return toDesktopHostSessionSummary(session);
+  return { ok: true, session: toDesktopHostSessionSummary(session) };
+}
+
+const EXPECTED_UPDATE_FAILURES = [
+  'session_busy',
+  'operation_conflict',
+  'operation_unavailable',
+  'not_found',
+] as const;
+
+function updateFailureCode(error: unknown): DesktopSessionUpdateFailureCode | undefined {
+  if (error instanceof RuntimeHostOperationError) {
+    return EXPECTED_UPDATE_FAILURES.find((code) => code === error.code);
+  }
+  if (error instanceof DesktopRuntimeHostClientError) {
+    if (error.code === 'revision_conflict') return 'operation_conflict';
+    if (error.code === 'session_not_found') return 'not_found';
+  }
+  return undefined;
 }
 
 function normalizeParentSessionFilter(value: unknown): string | undefined {
@@ -302,6 +417,33 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
             record.subagentParentSessionId,
           ),
         }),
+  };
+}
+
+export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
+  const request = resolveCreateSessionRequest(input);
+  const executorId = normalizeOptionalString(input?.executorId, 'executor id');
+  if (executorId && (input?.llmConnectionId !== undefined || input?.llmConnectionSlug !== undefined)) {
+    throw new Error('Plugin executor selection cannot include a model connection');
+  }
+  return {
+    sessionId, workspace,
+    ...(request.mode === undefined ? {} : { mode: request.mode }),
+    name: request.name,
+    ...(request.labels === undefined ? {} : { labels: request.labels }),
+    ...(executorId
+      ? {
+          executorId,
+          ...(input?.executorConfig ? { executorConfig: input.executorConfig } : {}),
+          ...(normalizeOptionalString(input?.model, 'executor model')
+            ? { executorModel: normalizeOptionalString(input?.model, 'executor model') }
+            : {}),
+        }
+      : { modelTarget: normalizeModelTarget(input) }),
+    ...normalizeCreateThinkingLevel(input?.thinkingLevel),
+    ...(request.mode !== undefined || request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
+    collaborationMode: request.collaborationMode,
+    orchestrationMode: request.orchestrationMode,
   };
 }
 
@@ -348,6 +490,7 @@ function normalizeCreateThinkingLevel(
   value: unknown,
 ): Pick<SessionCreateInput, 'thinkingLevel'> | Record<string, never> {
   if (value === undefined) return {};
+  if (value === null) return { thinkingLevel: null };
   if (!isThinkingLevel(value)) throw new Error(`Invalid thinking level: ${String(value)}`);
   return { thinkingLevel: value };
 }

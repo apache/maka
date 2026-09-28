@@ -51,6 +51,7 @@ export {
   type ExtensionConfigurationSchema,
   type ExtensionPackageDependency,
   type ExtensionPackageComposition,
+  type ExtensionPackageClient,
   type ExtensionPackageManifest,
   type ExtensionPackageRuntime,
 } from './extension-package-manifest.js';

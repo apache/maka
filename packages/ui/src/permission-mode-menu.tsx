@@ -31,14 +31,15 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
-import { ICON_SIZE, Eye, ShieldAlert, ShieldCheck } from './icons.js';
+import { ICON_SIZE, Eye, Shield, ShieldAlert, ShieldCheck } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { cn } from './utils.js';
 
 type PermissionModeAppearance = 'field' | 'icon';
 
-function permissionModeIcon(mode: PermissionMode) {
+function permissionModeIcon(mode: PermissionMode | undefined) {
+  if (!mode) return <Shield size={ICON_SIZE.control} aria-hidden="true" />;
   if (mode === 'bypass') return <ShieldAlert size={ICON_SIZE.control} aria-hidden="true" />;
   if (mode === 'explore') return <Eye size={ICON_SIZE.control} aria-hidden="true" />;
   return <ShieldCheck size={ICON_SIZE.control} aria-hidden="true" />;
@@ -82,9 +83,12 @@ export const PERMISSION_MODE_ORDER: readonly ChatDefaultPermissionMode[] = CHAT_
  * Legacy `execute` sessions collapse to Auto for display. A read-only
  * (`explore`) session has no matching option, so the control shows that state
  * without selecting Auto or full access.
+ *
+ * Without a mode (#1611: the boundary is unknown or not locally controlled)
+ * the control stays in place but names no mode and cannot be used.
  */
 export function PermissionModeSelect(props: {
-  activeMode: PermissionMode;
+  activeMode?: PermissionMode;
   onSelect(mode: ChatDefaultPermissionMode): void | Promise<void>;
   align?: 'start' | 'end';
   disabled?: boolean;
@@ -98,8 +102,9 @@ export function PermissionModeSelect(props: {
   const modeMeta = getPermissionModeMeta(locale);
   // #1611: `explore` is a real read-only boundary the user is running under,
   // so it shows its own label and hint instead of borrowing Auto's.
-  const displayMode: PermissionMode = props.activeMode;
-  const meta = modeMeta[displayMode];
+  const displayMode = props.activeMode;
+  const meta = displayMode ? modeMeta[displayMode] : undefined;
+  const disabled = props.disabled || !meta;
   const selectedValue: ChatDefaultPermissionMode | undefined = PERMISSION_MODE_ORDER.includes(
     displayMode as ChatDefaultPermissionMode,
   )
@@ -109,7 +114,8 @@ export function PermissionModeSelect(props: {
     value: mode,
     label: modeMeta[mode].label,
   }));
-  const ariaLabel = props.ariaLabel ?? permissionCopy.modeAriaLabel(meta.label);
+  const ariaLabel = props.ariaLabel
+    ?? permissionCopy.modeAriaLabel(meta?.label ?? permissionCopy.modeUnavailable);
 
   // Composer footer: match the ＋ ghost icon button. Astryx puts DropdownMenu
   // className on the panel, so product anchors wrap the whole control.
@@ -126,9 +132,9 @@ export function PermissionModeSelect(props: {
             isIconOnly: true,
             variant: 'ghost',
             size: 'sm',
-            isDisabled: props.disabled,
-            tooltip: props.disabledReason ?? `${meta.label} — ${meta.hint}`,
-            'aria-description': meta.hint,
+            isDisabled: disabled,
+            tooltip: props.disabledReason ?? (meta ? `${meta.label} — ${meta.hint}` : ariaLabel),
+            'aria-description': meta?.hint,
           }}
         >
           <DropdownMenuRadioGroup
@@ -144,7 +150,7 @@ export function PermissionModeSelect(props: {
                 value={mode}
                 label={modeMeta[mode].label}
                 icon={permissionModeIcon(mode)}
-                isDisabled={props.disabled}
+                isDisabled={disabled}
               />
             ))}
           </DropdownMenuRadioGroup>
@@ -158,14 +164,14 @@ export function PermissionModeSelect(props: {
       label={ariaLabel}
       isLabelHidden
       value={selectedValue}
-      placeholder={meta.label}
+      placeholder={meta?.label ?? permissionCopy.modeUnavailable}
       options={options}
       onChange={(value) =>
         void props.onSelect(value as ChatDefaultPermissionMode)
       }
-      isDisabled={props.disabled}
+      isDisabled={disabled}
       disabledMessage={props.disabledReason}
-      aria-description={meta.hint}
+      aria-description={meta?.hint}
       placement="below"
       className={cn('permissionModeSelector', props.className)}
       renderOption={(option) => (

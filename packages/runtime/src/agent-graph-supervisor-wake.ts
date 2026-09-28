@@ -403,7 +403,12 @@ export class AgentGraphSupervisorWakeCoordinator {
         snapshotVersion: snapshot.snapshotVersion,
         rootSessionId,
       });
-      if (this.#closed || claimed.wake.status === 'delivered') return;
+      if (
+        this.#closed ||
+        claimed.wake.status === 'delivered' ||
+        claimed.wake.status === 'exhausted'
+      )
+        return;
       abortSignal.throwIfAborted();
       await this.#deliverWake(claimed.wake, snapshot, abortSignal, result);
     } finally {
@@ -475,6 +480,17 @@ export class AgentGraphSupervisorWakeCoordinator {
     abortSignal: AbortSignal,
     result?: AgentGraphScheduleReconciliationResult,
   ): Promise<void> {
+    if (wake.status === 'exhausted') return;
+    if (wake.attemptCount >= this.#maxDeliveryAttempts) {
+      if (wake.status === 'retryable_failed') {
+        await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
+          wake.graphId,
+          wake.wakeId,
+          wake.failureReason?.slice(0, 4_000) || 'delivery_attempts_exhausted',
+        );
+      }
+      return;
+    }
     const presentation = (await this.#input.renderWake?.(wake.rootSessionId, snapshot, result)) ?? {
       text: renderAgentGraphSupervisorWakePrompt(snapshot, result),
       displayText: 'Agent graph reached a supervisor checkpoint.',
@@ -482,7 +498,7 @@ export class AgentGraphSupervisorWakeCoordinator {
     };
     let lastFailure: string | undefined;
     let overflowRecoveryAttempted = false;
-    for (let index = 0; index < this.#maxDeliveryAttempts; index += 1) {
+    for (let index = wake.attemptCount; index < this.#maxDeliveryAttempts; index += 1) {
       abortSignal.throwIfAborted();
       if (!(await this.#isSessionDeliverable(wake.rootSessionId))) {
         await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
@@ -499,8 +515,21 @@ export class AgentGraphSupervisorWakeCoordinator {
           wakeId: wake.wakeId,
           attemptId,
           turnId,
+          maxAttempts: this.#maxDeliveryAttempts,
         });
-        if (!admission.acquired) return;
+        if (!admission.acquired) {
+          if (
+            admission.wake.status === 'retryable_failed' &&
+            admission.wake.attemptCount >= this.#maxDeliveryAttempts
+          ) {
+            await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
+              wake.graphId,
+              wake.wakeId,
+              admission.wake.failureReason?.slice(0, 4_000) || 'delivery_attempts_exhausted',
+            );
+          }
+          return;
+        }
         if (this.#sessionWakesSuppressed(wake.rootSessionId)) return;
         if (this.#closed) {
           await this.#markRetryable(wake.graphId, wake.wakeId, attemptId, 'host_shutdown');
@@ -595,7 +624,12 @@ export class AgentGraphSupervisorWakeCoordinator {
             this.#input.onDiagnostic,
             exhaustedDiagnostic(wake, overflowError),
           );
-          throw overflowError;
+          await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
+            wake.graphId,
+            wake.wakeId,
+            overflowError.message.slice(0, 4_000),
+          );
+          return;
         }
         overflowRecoveryAttempted = true;
         try {
@@ -612,6 +646,22 @@ export class AgentGraphSupervisorWakeCoordinator {
             attemptId: overflowAttempt.attemptId,
             ...(recovery ? { recovery } : {}),
           });
+          if (recovery?.outcome && recovery.outcome.kind !== 'compacted') {
+            const overflowError = await this.#contextOverflowError(wake.rootSessionId, snapshot, {
+              recoveryAttempted: true,
+              recoveryFailure: recovery.outcome.reason,
+            });
+            await emitWakeDiagnostic(
+              this.#input.onDiagnostic,
+              exhaustedDiagnostic(wake, overflowError),
+            );
+            await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
+              wake.graphId,
+              wake.wakeId,
+              overflowError.message.slice(0, 4_000),
+            );
+            return;
+          }
         } catch (error) {
           if (this.#closed || isAbortError(error)) return;
           const failureReason = errorMessage(error);
@@ -630,15 +680,20 @@ export class AgentGraphSupervisorWakeCoordinator {
             this.#input.onDiagnostic,
             exhaustedDiagnostic(wake, overflowError),
           );
-          throw overflowError;
+          await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
+            wake.graphId,
+            wake.wakeId,
+            overflowError.message.slice(0, 4_000),
+          );
+          return;
         }
       }
       if (this.#closed) return;
     }
-    throw new Error(
-      `Agent graph supervisor wake was not delivered after ${this.#maxDeliveryAttempts} attempts: ${
-        lastFailure ?? 'unknown failure'
-      }`,
+    await this.#input.wakeStore.exhaustAgentGraphSupervisorWake(
+      wake.graphId,
+      wake.wakeId,
+      lastFailure?.slice(0, 4_000) || 'delivery_attempts_exhausted',
     );
   }
 

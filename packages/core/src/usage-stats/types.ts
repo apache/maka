@@ -28,8 +28,11 @@ export const MODEL_CALL_KINDS = [
   'goal_evaluation',
   'session_title',
   'session_recap',
+  'prompt_suggestion',
   'daily_review',
   'memory_extraction',
+  'workhub_intent',
+  'workhub_recall',
 ] as const;
 export type ModelCallKind = (typeof MODEL_CALL_KINDS)[number];
 

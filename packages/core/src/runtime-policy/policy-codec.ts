@@ -68,7 +68,7 @@ export function decodeRuntimePolicyV2(value: unknown): RuntimePolicy {
     normalizeSubagentSettings(policy.subagents),
     { preference: 'auto', executable: '' },
   );
-  assertCanonicalValue(value, withoutShell(decoded), 'runtime policy v2');
+  assertCanonicalValue(value, withoutExternalAgents(withoutShell(decoded)), 'runtime policy v2');
   return decoded;
 }
 
@@ -175,21 +175,40 @@ export function normalizeNetworkProxyCredentialTarget(
 }
 
 function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
-  const policy = exactRecord(value, 'runtime policy', [
-    'networkProxy',
-    'personalization',
-    'memory',
-    'workspaceInstructions',
-    'privacy',
-    'chatDefaults',
-    'webSearch',
-    'subagents',
-    'shell',
-  ]);
+  const policy = exactRecord(
+    value,
+    'runtime policy',
+    [
+      'networkProxy',
+      'personalization',
+      'memory',
+      'workspaceInstructions',
+      'privacy',
+      'chatDefaults',
+      'webSearch',
+      'subagents',
+      'shell',
+      'externalAgents',
+      'jev',
+    ],
+    [
+      'networkProxy',
+      'personalization',
+      'memory',
+      'workspaceInstructions',
+      'privacy',
+      'chatDefaults',
+      'webSearch',
+      'subagents',
+      'shell',
+      'externalAgents',
+    ],
+  );
   return normalizeRuntimePolicyFields(
     policy,
     normalizeSubagentSettings(policy.subagents),
     normalizeShell(policy.shell),
+    normalizeExternalAgents(policy.externalAgents),
   );
 }
 
@@ -197,6 +216,7 @@ function normalizeRuntimePolicyFields(
   policy: Record<string, unknown>,
   subagents: RuntimePolicy['subagents'],
   shell: RuntimePolicy['shell'],
+  externalAgents: RuntimePolicy['externalAgents'] = { antigravity: { executable: '' } },
 ): RuntimePolicy {
   return {
     networkProxy: normalizeNetworkProxy(policy.networkProxy),
@@ -208,6 +228,8 @@ function normalizeRuntimePolicyFields(
     webSearch: normalizeWebSearch(policy.webSearch),
     subagents,
     shell,
+    externalAgents,
+    ...(policy.jev === undefined ? {} : { jev: normalizeJev(policy.jev) }),
   };
 }
 
@@ -218,6 +240,8 @@ function withoutShell(policy: RuntimePolicy): Omit<RuntimePolicy, 'shell'> {
 
 function normalizeMutationOperation(operation: Record<string, unknown>): RuntimePolicyMutation {
   switch (operation.kind) {
+    case 'set_jev':
+      return { kind: operation.kind, value: normalizeJev(operation.value) };
     case 'set_network_proxy':
       return { kind: operation.kind, value: normalizeNetworkProxy(operation.value) };
     case 'set_personalization':
@@ -234,6 +258,8 @@ function normalizeMutationOperation(operation: Record<string, unknown>): Runtime
       return { kind: operation.kind, value: normalizeWebSearch(operation.value) };
     case 'set_subagents':
       return { kind: operation.kind, value: normalizeSubagentSettings(operation.value) };
+    case 'set_external_agents':
+      return { kind: operation.kind, value: normalizeExternalAgents(operation.value) };
     case 'set_shell':
       return { kind: operation.kind, value: normalizeShell(operation.value) };
     case 'patch_agent_settings':
@@ -402,7 +428,7 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   const item = exactRecord(
     value,
     'chat defaults',
-    ['permissionMode', 'thinkingLevel'],
+    ['permissionMode', 'thinkingLevel', 'codeModeEnabled'],
     ['permissionMode'],
   );
   if (!(CHAT_DEFAULT_PERMISSION_MODES as readonly unknown[]).includes(item.permissionMode)) {
@@ -411,8 +437,12 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   if (item.thinkingLevel !== undefined && !isThinkingLevel(item.thinkingLevel)) {
     throw domainError('chat default thinking level is invalid');
   }
+  if (item.codeModeEnabled !== undefined && typeof item.codeModeEnabled !== 'boolean') {
+    throw domainError('chat default code mode is invalid');
+  }
   return {
     permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'],
+    ...(item.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
     ...(item.thinkingLevel === undefined ? {} : { thinkingLevel: item.thinkingLevel }),
   };
 }
@@ -426,4 +456,46 @@ function normalizeWebSearch(value: unknown): RuntimePolicy['webSearch'] {
     enabled: booleanValue(item.enabled, 'web search enabled'),
     defaultProvider: item.defaultProvider as RuntimePolicy['webSearch']['defaultProvider'],
   };
+}
+
+/** Read the previous document without loosening the current wire decoder. */
+export function decodeRuntimePolicyV3(value: unknown): RuntimePolicy {
+  const old = exactRecord(value, 'runtime policy v3', [
+    'networkProxy',
+    'personalization',
+    'memory',
+    'workspaceInstructions',
+    'privacy',
+    'chatDefaults',
+    'webSearch',
+    'subagents',
+    'shell',
+  ]);
+  return decodeCanonicalRuntimePolicy({
+    ...old,
+    externalAgents: { antigravity: { executable: '' } },
+  });
+}
+
+function withoutExternalAgents<T extends { externalAgents: RuntimePolicy['externalAgents'] }>(
+  policy: T,
+): Omit<T, 'externalAgents'> {
+  const { externalAgents: _externalAgents, ...legacy } = policy;
+  return legacy;
+}
+
+function normalizeExternalAgents(value: unknown): RuntimePolicy['externalAgents'] {
+  const agents = exactRecord(value, 'external agents', ['antigravity']);
+  const agent = exactRecord(agents.antigravity, 'Antigravity', ['executable']);
+  const executable = stringValue(agent.executable, 'Antigravity executable', 4096);
+  if (executable !== '' && (!executable.startsWith('/') || /[\x00-\x1f]/u.test(executable))) {
+    throw domainError('Antigravity executable must be an absolute macOS path');
+  }
+  return { antigravity: { executable } };
+}
+
+function normalizeJev(value: unknown): { enabled: boolean } {
+  const item = exactRecord(value, 'Jev settings', ['enabled']);
+  if (typeof item.enabled !== 'boolean') throw domainError('Jev enabled must be boolean');
+  return { enabled: item.enabled };
 }

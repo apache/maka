@@ -23,7 +23,7 @@ import {
   createDefaultRuntimePolicy,
   decodeCanonicalConnectionCatalogEntry,
   decodeCanonicalRuntimePolicy,
-  decodeRelayModelProfilesTable,
+  decodeModelOverridesTable,
   normalizeCreateCatalogConnectionInput,
   normalizeConnectionCatalogEntryUpdate,
   normalizeConnectionCatalogEntryUpdateForProvider,
@@ -61,7 +61,27 @@ test('normalizes policy input while canonical policy decode rejects producer dri
   );
 });
 
-test('preserves a valid default thinking level and rejects unknown levels', () => {
+test('Code Mode is opt-in and survives policy decoding', () => {
+  const policy = createDefaultRuntimePolicy();
+  assert.notEqual(decodeCanonicalRuntimePolicy(policy).chatDefaults.codeModeEnabled, true);
+  assert.equal(
+    decodeCanonicalRuntimePolicy({
+      ...policy,
+      chatDefaults: { ...policy.chatDefaults, codeModeEnabled: true },
+    }).chatDefaults.codeModeEnabled,
+    true,
+  );
+  assert.throws(
+    () =>
+      decodeCanonicalRuntimePolicy({
+        ...policy,
+        chatDefaults: { ...policy.chatDefaults, codeModeEnabled: 'true' },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
+test('preserves the legacy chat thinking field but rejects unknown levels', () => {
   const policy = {
     ...createDefaultRuntimePolicy(),
     chatDefaults: { permissionMode: 'ask' as const, thinkingLevel: 'high' as const },
@@ -196,7 +216,8 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
         connection: {
           slug: 'unicode-relay',
           name: 'Unicode relay',
-          providerType: 'openai-compatible',
+          providerType: 'custom',
+          defaultApiProtocol: 'openai-chat',
           baseUrl: `https://example.test/${'界'.repeat(2_000)}`,
           enabled: true,
           enabledModelIds: [],
@@ -217,6 +238,29 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
     RuntimePolicyDomainDecodeError,
   );
 });
+
+for (const [slug, detail] of [
+  ['', 'Slug is required'],
+  ['Not A Slug', 'Slug must be lowercase letters, digits, and hyphens'],
+  ['a'.repeat(65), 'Slug must be 64 characters or fewer'],
+]) {
+  test(`catalog decoding preserves the diagnostic: ${detail}`, () => {
+    assert.throws(
+      () =>
+        decodeCanonicalConnectionCatalogEntry({
+          connectionId: '123e4567-e89b-42d3-a456-426614174000',
+          revision: 1,
+          slug,
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: [],
+          models: [],
+        }),
+      { name: 'RuntimePolicyDomainDecodeError', message: `connection slug: ${detail}` },
+    );
+  });
+}
 
 test('rejects new connections for the retired Gemini CLI account provider', () => {
   assert.throws(
@@ -239,6 +283,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
   const table = {
     'relay-reasoner': {
       thinkingLevels: ['minimal', 'low'],
+      defaultThinkingLevel: 'low',
       vision: true,
       contextWindow: 128_000,
       serviceTier: 'fast',
@@ -249,27 +294,16 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     connection: {
       slug: 'relay',
       name: 'Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: 'https://relay.example/v1',
+      defaultApiProtocol: 'anthropic-messages',
       enabled: true,
       enabledModelIds: ['relay-reasoner'],
-      relayModelProfiles: table,
+      modelOverrides: table,
     },
   });
-  assert.deepEqual(draft.connection.relayModelProfiles, table);
-  const responsesDraft = normalizeCreateCatalogConnectionInput({
-    expectedCatalogRevision: 0,
-    connection: {
-      slug: 'responses-relay',
-      name: 'Responses Relay',
-      providerType: 'openai-responses-compatible',
-      baseUrl: 'https://responses.example/v1',
-      enabled: true,
-      enabledModelIds: ['relay-reasoner'],
-      relayModelProfiles: table,
-    },
-  });
-  assert.deepEqual(responsesDraft.connection.relayModelProfiles, table);
+  assert.deepEqual(draft.connection.modelOverrides, table);
+  assert.equal(draft.connection.defaultApiProtocol, 'anthropic-messages');
   // The canonical path re-decodes the same table (entry = draft + identity).
   const entry = decodeCanonicalConnectionCatalogEntry({
     ...draft.connection,
@@ -277,7 +311,8 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     revision: 1,
     models: [],
   });
-  assert.deepEqual(entry.relayModelProfiles, table);
+  assert.deepEqual(entry.modelOverrides, table);
+  assert.equal(entry.defaultApiProtocol, 'anthropic-messages');
 
   // An empty table is never a state: drafts omit the key, updates read it as
   // the same clear-instruction `null` gives.
@@ -286,20 +321,22 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     connection: {
       slug: 'relay',
       name: 'Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      baseUrl: 'https://relay.example/v1',
+      defaultApiProtocol: 'openai-chat',
       enabled: true,
       enabledModelIds: [],
-      relayModelProfiles: {},
+      modelOverrides: {},
     },
   });
-  assert.equal(emptyDraft.connection.relayModelProfiles, undefined);
+  assert.equal(emptyDraft.connection.modelOverrides, undefined);
   const emptyUpdate = normalizeConnectionCatalogEntryUpdate({
     name: 'Relay',
     enabled: true,
     enabledModelIds: [],
-    relayModelProfiles: {},
+    modelOverrides: {},
   });
-  assert.equal(emptyUpdate.relayModelProfiles, null);
+  assert.equal(emptyUpdate.modelOverrides, null);
 
   // The update input is tri-state: null (or the equivalent {}) clears, a
   // table replaces, and an ABSENT key means untouched — absent must never
@@ -309,9 +346,9 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     name: 'Relay',
     enabled: true,
     enabledModelIds: [],
-    relayModelProfiles: null,
+    modelOverrides: null,
   });
-  assert.equal(update.relayModelProfiles, null);
+  assert.equal(update.modelOverrides, null);
   const absentUpdate = normalizeConnectionCatalogEntryUpdate({
     name: 'Relay',
     enabled: true,
@@ -338,9 +375,9 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
         providerType: 'openai',
         enabled: true,
         enabledModelIds: ['relay-reasoner'],
-        relayModelProfiles: facts,
+        modelOverrides: facts,
       },
-    }).connection.relayModelProfiles,
+    }).connection.modelOverrides,
     facts,
   );
   assert.deepEqual(
@@ -349,16 +386,15 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
         name: 'Other',
         enabled: true,
         enabledModelIds: ['relay-reasoner'],
-        relayModelProfiles: facts,
+        modelOverrides: facts,
       },
       'anthropic',
-    ).relayModelProfiles,
+    ).modelOverrides,
     facts,
   );
 
-  // `thinkingLevels` and `serviceTier` name a wire feature only the
-  // OpenAI-compatible relays accept, so they stay relay-only on both write
-  // paths: elsewhere they are a request Maka would never send.
+  // `thinkingLevels` and `serviceTier` are declarations only a custom
+  // connection sends, on both write paths.
   for (const wireShaped of [
     { 'relay-reasoner': { thinkingLevels: ['low'] } },
     { 'relay-reasoner': { serviceTier: 'fast' } },
@@ -373,10 +409,10 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
             providerType: 'openai',
             enabled: true,
             enabledModelIds: ['relay-reasoner'],
-            relayModelProfiles: wireShaped,
+            modelOverrides: wireShaped,
           },
         }),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? a custom connection/,
       JSON.stringify(wireShaped),
     );
     assert.throws(
@@ -386,48 +422,67 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
             name: 'Other',
             enabled: true,
             enabledModelIds: ['relay-reasoner'],
-            relayModelProfiles: wireShaped,
+            modelOverrides: wireShaped,
           },
           'anthropic',
         ),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? a custom connection/,
       JSON.stringify(wireShaped),
     );
   }
 
   assert.equal(
     normalizeConnectionCatalogEntryUpdateForProvider(
-      { name: 'Other', enabled: true, enabledModelIds: [], relayModelProfiles: null },
+      { name: 'Other', enabled: true, enabledModelIds: [], modelOverrides: null },
       'anthropic',
-    ).relayModelProfiles,
+    ).modelOverrides,
     null,
   );
 
-  // The subset invariant: profiles exist only for ENABLED models. The store
-  // prunes profiles of deselected models, so a key outside the set marks a
-  // document the store never wrote.
-  assert.throws(
-    () =>
-      normalizeConnectionCatalogEntryUpdate({
-        name: 'Relay',
-        enabled: true,
-        enabledModelIds: ['relay-reasoner'],
-        relayModelProfiles: { 'disabled-model': { vision: true } },
-      }),
-    RuntimePolicyDomainDecodeError,
+  // A custom connection needs a default wire; no other provider may carry one.
+  const custom = {
+    slug: 'relay',
+    name: 'Relay',
+    providerType: 'custom',
+    baseUrl: 'https://relay.example/v1',
+    defaultApiProtocol: 'openai-chat',
+    enabled: true,
+    enabledModelIds: [],
+  };
+  const { defaultApiProtocol: _protocol, ...withoutProtocol } = custom;
+  for (const [connection, message] of [
+    [withoutProtocol, /default API protocol is invalid/],
+    [{ ...custom, defaultApiProtocol: 'google-generate' }, /default API protocol is invalid/],
+    [
+      { ...custom, providerType: 'openai', baseUrl: undefined },
+      /only a custom connection has a default API protocol/,
+    ],
+  ] as const) {
+    assert.throws(
+      () => normalizeCreateCatalogConnectionInput({ expectedCatalogRevision: 0, connection }),
+      message,
+    );
+  }
+  assert.deepEqual(
+    normalizeConnectionCatalogEntryUpdate({
+      name: 'Relay',
+      enabled: true,
+      enabledModelIds: [],
+      modelOverrides: { 'disabled-model': { vision: true } },
+    }).modelOverrides,
+    { 'disabled-model': { vision: true } },
   );
 
   // Model ids are relay-supplied strings; __proto__/constructor/toString
   // must survive the table as ordinary own keys — the decode builds the
   // table with fromEntries precisely so '__proto__' cannot poison the result
   // object's prototype and quietly drop the entry.
-  const hostileTable = decodeRelayModelProfilesTable(
+  const hostileTable = decodeModelOverridesTable(
     // An object literal could not even express `__proto__` as an own key —
     // the deserialized document is the realistic carrier of a hostile id.
     JSON.parse(
       '{"__proto__":{"vision":true},"constructor":{"vision":false},"toString":{"contextWindow":8192}}',
     ),
-    ['__proto__', 'constructor', 'toString'],
   );
   assert.deepEqual(Object.keys(hostileTable).sort(), ['__proto__', 'constructor', 'toString']);
   assert.equal(JSON.stringify(hostileTable).includes('"__proto__"'), true);
@@ -440,7 +495,6 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { thinkingLevels: ['off'] } }, // disable wire, not a declarable tier
     { m: { thinkingLevels: ['low', 'low'] } }, // duplicate
     { m: { thinkingLevels: [] } }, // empty level list
-    { m: {} }, // declares nothing
     { m: { vision: 'yes' } },
     { m: { contextWindow: 0 } },
     { m: { contextWindow: 1.5 } },
@@ -448,7 +502,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { vision: true, extra: 1 } }, // unknown key in the entry
   ]) {
     assert.throws(
-      () => decodeRelayModelProfilesTable(bad, ['m']),
+      () => decodeModelOverridesTable(bad),
       RuntimePolicyDomainDecodeError,
       JSON.stringify(bad),
     );
@@ -469,8 +523,10 @@ test('normalizes exact bounded model discovery results', () => {
     },
   );
   for (const invalid of [
+    { models: [{ id: 'duplicate' }, { id: 'duplicate' }], source: 'fetched', fetchedAt: 42 },
+    { models: [{ id: 'invalid', contextWindow: 0 }], source: 'fetched', fetchedAt: 42 },
     {
-      models: [{ id: 'duplicate' }, { id: 'duplicate' }],
+      models: Array.from({ length: 2049 }, (_, i) => ({ id: `model-${i}` })),
       source: 'fetched',
       fetchedAt: 42,
     },
@@ -554,6 +610,54 @@ test('credential domain validation requires material but leaves capacity to call
   assert.equal(input.secret.length, 20 * 1024);
   assert.throws(
     () => normalizeSetCredentialInput({ ...input, secret: '' }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
+test('per-model ApplyPatch overrides survive persistence and reject non-booleans', () => {
+  const profiles = {
+    enabled: { applyPatch: true },
+    disabled: { applyPatch: false },
+    automatic: {},
+  };
+  assert.deepEqual(decodeModelOverridesTable(JSON.parse(JSON.stringify(profiles))), profiles);
+  assert.throws(
+    () => decodeModelOverridesTable({ model: { applyPatch: 'true' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
+test('Jev is an optional strict policy field and has a dedicated credential scope', () => {
+  const legacy = createDefaultRuntimePolicy();
+  assert.deepEqual(decodeCanonicalRuntimePolicy(legacy), legacy);
+  const enabled = { ...legacy, jev: { enabled: true } };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(enabled), enabled);
+  assert.throws(
+    () => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: 'true' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+  assert.throws(
+    () => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: true, apiKey: 'secret' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+  const mutation = normalizeRuntimePolicyMutation({
+    expectedRevision: 0,
+    operation: { kind: 'set_jev', value: { enabled: false } },
+  });
+  assert.deepEqual(mutation.operation, { kind: 'set_jev', value: { enabled: false } });
+  const credential = normalizeSetCredentialInput({
+    locator: { scope: 'jev', kind: 'api_key' },
+    expected: null,
+    secret: 'key',
+  });
+  assert.deepEqual(credential.locator, { scope: 'jev', kind: 'api_key' });
+  assert.throws(
+    () =>
+      normalizeSetCredentialInput({
+        locator: { scope: 'jev', kind: 'password' },
+        expected: null,
+        secret: 'key',
+      }),
     RuntimePolicyDomainDecodeError,
   );
 });

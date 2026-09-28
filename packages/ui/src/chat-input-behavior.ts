@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
+
 /** Either a React synthetic event or the native one it wraps. */
 export interface ChatInputCompositionEvent {
   key?: string;
@@ -43,7 +45,9 @@ export function isChatInputComposing(
  * character no tool splitting a path on ASCII whitespace will match.
  */
 export function composerWireText(draft: string): string {
-  return draft.replace(/ /g, ' ').trim();
+  const wire = draft.replace(/ /g, ' ').trim();
+  // Sent text and recall history outlive the editor's original whitespace.
+  return wire.length < draft.length ? structuredClone(wire) : wire;
 }
 
 /**
@@ -116,9 +120,48 @@ export function mentionQueryMatches(query: string, text: string): boolean {
     .every((token) => haystack.includes(token));
 }
 
+/**
+ * How well one `/`-menu candidate answers the typed query, lower first: 0 for
+ * a prefix of `primary`, 1 for a substring of it, 3 when the match lives only
+ * in the description the filter also searched.
+ *
+ * The menu orders by this ahead of its catalog order. `mentionQueryMatches`
+ * alone treats a description as good as a name, so one or two typed letters of
+ * a Skill's own name sorted below every Skill that merely mentions the word in
+ * its prose — the list looked like it had not matched at all until the query
+ * grew long enough to exclude those descriptions.
+ *
+ * `primary` is what a user is naming: a Skill's id and name, a command's id,
+ * name and keywords.
+ */
+export function mentionMatchRank(query: string, primary: string): 0 | 1 | 3 {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return 0;
+  const haystack = primary.toLowerCase();
+  if (haystack.startsWith(normalized)) return 0;
+  return haystack.includes(normalized) ? 1 : 3;
+}
+
 /** Normalize `/skill:<query>` and bare `/<query>` into the same Skill search query. */
 export function skillMentionQuery(query: string): string {
   return query.toLowerCase().startsWith('skill:') ? query.slice('skill:'.length) : query;
+}
+
+/** Skills already in the draft, excluding the invocation currently being completed. */
+export function selectedSkillIds(draft: string, rawQuery: string): Set<string> {
+  // A full `/skill:id` query will be replaced by the chosen chip. Ignore that
+  // occurrence only; an earlier chip with the same id must still hide the row.
+  let queryId = /^skill:([A-Za-z0-9._-]+)$/.exec(rawQuery)?.[1]?.toLowerCase();
+  const selected = new Set<string>();
+  for (const match of draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))) {
+    const id = match[1].toLowerCase();
+    if (id === queryId) {
+      queryId = undefined;
+    } else {
+      selected.add(id);
+    }
+  }
+  return selected;
 }
 
 /** Return the searchable command query only when `/` starts the draft's first token. */

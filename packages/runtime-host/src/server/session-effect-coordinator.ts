@@ -161,12 +161,15 @@ export class HostSessionEffectCoordinator {
     try {
       const header = await this.#readSessionHeader(sessionId);
       if (header.titleIsManual || header.name !== DEFAULT_SESSION_NAME) return;
-      generated = await this.#model.generateTitle({
-        sessionId,
-        header,
-        sourceText,
-        abortSignal,
-      });
+      generated =
+        header.backend === 'plugin-executor'
+          ? undefined
+          : await this.#model.generateTitle({
+              sessionId,
+              header,
+              sourceText,
+              abortSignal,
+            });
     } catch {
       // An unreachable title model is not a Session failure; the fallback name
       // below still beats leaving the Session unnamed.
@@ -278,6 +281,14 @@ export class HostSessionEffectCoordinator {
       if (header.isArchived) {
         return settledRecap(
           recapFailure('session_archived', 'Archived Session cannot generate a recap'),
+        );
+      }
+      if (header.backend === 'plugin-executor') {
+        return settledRecap(
+          recapFailure(
+            'operation_unavailable',
+            'Plugin executor Sessions do not support native recap generation',
+          ),
         );
       }
 
@@ -434,7 +445,7 @@ export class HostSessionEffectCoordinator {
     artifactId: string,
   ): Promise<Record<string, unknown> | undefined> {
     const entry = await this.#artifacts.getInSession(sessionId, artifactId);
-    if (!entry.record || entry.record.status !== 'live') return undefined;
+    if (!entry.record) return undefined;
     const read = await this.#artifacts.readTextInSession(sessionId, artifactId, {
       maxBytes: SESSION_EFFECT_ARTIFACT_MAX_BYTES,
     });

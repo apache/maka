@@ -51,15 +51,17 @@ export interface ModuleHubHostModel {
   readonly openSession: (sessionId: string) => void;
 }
 
+export interface ModuleHubCommands {
+  refreshProjectSkills(): Promise<void>;
+  openScheduledTaskCreate(): void;
+  copyTodayDailyReview(): Promise<void>;
+  pasteTodayDailyReview(): Promise<void>;
+  saveTodayDailyReview(): Promise<void>;
+}
+
 export interface ModuleHubController {
   readonly host: ModuleHubHostModel;
-  readonly commands: {
-    refreshProjectSkills(): Promise<void>;
-    openScheduledTaskCreate(): void;
-    copyTodayDailyReview(): Promise<void>;
-    pasteTodayDailyReview(): Promise<void>;
-    saveTodayDailyReview(): Promise<void>;
-  };
+  readonly commands: ModuleHubCommands;
   readonly selectors: {
     readonly scheduledTasks: readonly ScheduledTask[];
     /** Invalidates the composer's Runtime-owned invocable Skills projection. */
@@ -70,7 +72,7 @@ export interface ModuleHubController {
 export interface UseModuleHubControllerInput {
   readonly selection: NavSelection;
   readonly selectModule: (selection: NavSelection) => void;
-  readonly openSkillsFolder?: () => void | Promise<void>;
+  readonly clientPathsAccessible: boolean;
   readonly useSkillInChat: (skillId: string, skillName: string) => void;
   readonly openSession: (sessionId: string) => void;
   readonly appendComposerText: (text: string) => void;
@@ -92,7 +94,7 @@ export function useModuleHubController(
     active: isSkillsActive,
     toastApi,
     useSkillInChat: input.useSkillInChat,
-    openSkillsFolder: input.openSkillsFolder,
+    clientPathsAccessible: input.clientPathsAccessible,
   });
   const scheduledTasks = useScheduledTasksController({
     uiLocale,

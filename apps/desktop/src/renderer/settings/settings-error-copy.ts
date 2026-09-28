@@ -22,7 +22,7 @@ import { type UiLocale } from '@maka/core/ui-locale';
 import { redactSecrets } from '@maka/ui';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
-export function settingsActionErrorMessage(error: unknown, locale: UiLocale = 'zh-CN'): string {
+export function settingsActionErrorMessage(error: unknown, locale: UiLocale): string {
   const raw = error instanceof Error
     ? error.message
     : typeof error === 'string'
@@ -30,7 +30,6 @@ export function settingsActionErrorMessage(error: unknown, locale: UiLocale = 'z
       : '';
   const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
   if (classified) return classified;
-  const redacted = redactSecrets(raw).trim();
-  if (locale === 'zh-CN' && redacted && /[\u4E00-\u9FFF]/.test(redacted)) return redacted;
+  if (raw) console.error('[settings] operation failed:', redactSecrets(raw));
   return getSettingsSharedCopy(locale).unknownError;
 }

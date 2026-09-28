@@ -37,7 +37,7 @@ type FakeController = {
 
 function makeHost(shown: string | null, controller: FakeController | undefined) {
   const manager = { get: () => controller } as never;
-  return createBrowserViewHost(manager, () => shown);
+  return createBrowserViewHost(manager, (sessionId) => sessionId === shown);
 }
 
 describe('createBrowserViewHost canDrive (visible lease + viewport-restore wait)', () => {

@@ -21,6 +21,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getConversationCopy } from '../conversation-copy.js';
 
+test('goal token labels use shared compact units in every locale', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const { goalTokens } = getConversationCopy(locale).chat;
+    assert.equal(goalTokens(45_200, 100_000), '45.2K / 100K');
+    assert.equal(goalTokens(12_647_391, 20_000_000), '12.6M / 20M');
+  }
+});
+
 test('labels the Chinese default thinking level as default', () => {
   assert.equal(getConversationCopy('zh-CN').model.defaultLevel, '默认');
   assert.equal(getConversationCopy('zh-TW').model.defaultLevel, '預設');
@@ -51,22 +59,38 @@ test('context usage explains missing data without exposing provider internals', 
 test('context usage tooltip leads with the measured share', () => {
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(12_345, 128_000),
-    '已用 12,345 / 128,000 token（10%）',
+    '上下文窗口：已用 10%（12.3K / 128K token）',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageShare(12_345, 128_000),
-    'This request used 12,345 / 128,000 tokens (10%).',
+    'Context window: 10% used (12.3K / 128K tokens).',
+  );
+  // Million-scale windows collapse to the M tier, mirroring the "1M context" marketing term.
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(44_060, 1_048_576),
+    '上下文窗口：已用 4%（44.1K / 1M token）',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageShare(44_060, 1_048_576),
+    'Context window: 4% used (44.1K / 1M tokens).',
+  );
+  // Compact counts are lossy: near-full usage can render identical numerator
+  // and denominator while the percentage still differs. Pinned on purpose —
+  // the percentage is the authoritative figure, the counts are for scale.
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(1_000_000, 1_048_576),
+    '上下文窗口：已用 95%（1M / 1M token）',
   );
 });
 
 test('context usage tooltip keeps measured usage when the limit is unknown', () => {
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageNoWindow(12_345),
-    '已用 12,345 token；上下文上限未知',
+    '已用 12.3K token；上下文窗口上限未知',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageNoWindow(12_345),
-    'This request used 12,345 tokens; no context limit is available for this model.',
+    'This request used 12.3K tokens; no context limit is available for this model.',
   );
 });
 

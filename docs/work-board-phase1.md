@@ -36,7 +36,9 @@ A compact Work Board tab in the session workbar, next to Tasks, with:
 - The Desktop main process owns `WorkBoardStore`; the renderer is a read-only
   IPC projection that reloads on the `workBoard:changed` signal.
 - No Runtime Host involvement, model-visible tools, or automatic prompt injection.
-- `linkedSessions` and the linked-session projection remain deferred to Phase 3.
+- `linkedSessions` and the linked-session projection are separate concerns;
+  Phase 3 stores Host-scoped links, while execution-status projection remains
+  deferred.
 
 ## Why a dedicated store instead of a project file
 
@@ -52,15 +54,22 @@ suffice.
 ## Assumption
 
 We are betting that users will return to the board and start tasks from it.
-Phase 3 must prove this.
+The 2026-09-28 run verified the start-task mechanism, but because creation and
+revisit happened in one sitting it has not yet demonstrated delayed return-use.
+The evidence and contributor request for a maintainer go/stop decision are in
+the [Phase 3 update comment on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658).
+The maintainer decision remains pending on [#2560](https://github.com/apache/maka/issues/2560).
+Phases 2 and 4 remain paused pending that decision.
 
 ## Sequencing
 
 Per maintainer review, the thin capture -> revisit -> start-as-task loop is
 validated **before** Phase 2 (side-chat capture) and Phase 4 (evidence /
 refinement): a minimal, flag-gated Phase 3 spike wires one hard-coded item ->
-"Start task" -> new Session -> link back, with no polish. Only if the loop
-shows real use do we resume Phases 2 and 4.
+"Start task" -> new Session -> link back, with no polish. The current run
+verifies that mechanism; a delayed return-use run and an explicit go/stop
+decision on [#2560](https://github.com/apache/maka/issues/2560) are still
+required before resuming Phases 2 and 4.
 
 ## Implementation
 

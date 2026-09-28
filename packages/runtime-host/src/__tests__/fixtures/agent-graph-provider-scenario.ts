@@ -41,10 +41,21 @@ export class AgentGraphProviderScenario {
   constructor(private readonly childResultText: string) {}
 
   respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): void {
+    // The scenario follows user requests, not the Host's ephemeral environment snapshot.
+    body = {
+      ...body,
+      messages: (Array.isArray(body.messages) ? body.messages : []).filter(
+        (message) =>
+          !(
+            message.role === 'user' &&
+            typeof message.content === 'string' &&
+            message.content.startsWith('Runtime Host environment for this turn')
+          ),
+      ),
+    };
     const names = toolNames(body);
-    // The graph child's exact surface: its read-only allowlist plus the archive
-    // decoder every session that archives now carries (#2026).
-    if (names.join(',') === 'ArchiveRead,Glob,Grep,Read') {
+    // Read covers both files and the child's Session-scoped tool results.
+    if (names.join(',') === 'Glob,Grep,Read') {
       assert.equal(this.#childCompleted, false, 'Graph child provider request was repeated');
       this.#childCompleted = true;
       reply.text(this.childResultText);

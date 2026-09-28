@@ -707,6 +707,14 @@ export async function tryAcquireInteractiveRootReader(
   );
 }
 
+/** Synchronous capability/liveness check only; I/O still requires the full lease guard. */
+export function assertStorageRootLeaseActive<
+  K extends StorageRootKind,
+  A extends StorageRootAccess,
+>(lease: StorageRootLease<K, A>, expectedKind: K, expectedAccess: A): void {
+  requireLease(lease, expectedKind, expectedAccess);
+}
+
 export async function assertStorageRootLease<
   K extends StorageRootKind,
   A extends StorageRootAccess,

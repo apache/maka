@@ -23,53 +23,19 @@ import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { DownloadedUpdateAttestationVerifier } from './app-update-attestation.js';
 import type { DesktopUpdateChannel } from './app-update-attestation.js';
 import { resolveUpdateFeedOverride } from './app-update-test-context.js';
+import type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateProgress as SharedAppUpdateProgress,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
 
-export type AppUpdateProgress = {
-  percent: number;
-  bytesPerSecond?: number;
-  transferred?: number;
-  total?: number;
-};
-
-export type AppUpdateStatus =
-  | { state: 'idle'; currentVersion: string }
-  | { state: 'checking'; currentVersion: string }
-  | { state: 'not-available'; currentVersion: string; latestVersion?: string }
-  | {
-      state: 'available';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | {
-      state: 'downloading';
-      currentVersion: string;
-      latestVersion: string;
-      progress: AppUpdateProgress;
-    }
-  | { state: 'verifying'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'downloaded';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | { state: 'installing'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'error';
-      currentVersion: string;
-      message: string;
-      operation: 'check' | 'download' | 'install';
-      latestVersion?: string;
-    };
-
-export type AppUpdateInstallRequest = {
-  /** User consent from the trusted desktop renderer; this is a UX boundary, not a security boundary. */
-  allowInterruptActiveTasks: boolean;
-};
-
-export type AppUpdateInstallResult =
-  | { ok: true }
-  | { ok: false; reason: 'active_tasks' }
-  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
+export type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
+export type AppUpdateProgress = SharedAppUpdateProgress;
 
 export interface AppUpdateService {
   start(): void;
@@ -91,6 +57,14 @@ interface AppUpdateServiceDeps {
   isPackaged: boolean;
   updateChannel?: DesktopUpdateChannel;
   updater?: AppUpdater;
+  /**
+   * Electron's own updater, which announces `before-quit-for-update` when the
+   * dispatched install is actually about to close the windows and quit.
+   */
+  nativeUpdater: {
+    on(event: 'before-quit-for-update', listener: () => void): unknown;
+    off(event: 'before-quit-for-update', listener: () => void): unknown;
+  };
   /**
    * Harness-only feed override (`MAKA_UPDATE_TEST_FEED`); see
    * {@link resolveUpdateFeedOverride} for the exact accepted shape.
@@ -122,6 +96,32 @@ const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
  * four-hour timer stays as the floor for a window that is never refocused.
  */
 const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
+/**
+ * GitHub intermittently answers the releases-feed request electron-updater
+ * uses to resolve "latest" with a transient HTTP 406 (#4790), and the same
+ * request succeeds seconds later. One quick retry before surfacing a check
+ * failure absorbs that class of error; anything still failing afterwards is
+ * reported exactly as before.
+ */
+const UPDATE_CHECK_RETRY_DELAY_MS = 2_000;
+const UPDATE_CHECK_MAX_ATTEMPTS = 2;
+/**
+ * quitAndInstall is not a quit. On macOS it first lets Squirrel fetch, verify
+ * and unpack the archive, then announces `before-quit-for-update`, closes
+ * every window and waits, silently, for the window list to empty before
+ * Squirrel relaunches; only that relaunch reaches `before-quit`. A window that
+ * refuses to close (#5783) leaves the process alive with the Runtime Host
+ * handoff still held — the local Host retired and candidate launches paused —
+ * so every reconnect is rejected and the target sits in "reconnecting" until
+ * a full restart. Nothing on that path reports an error, so time is the only
+ * signal, but it is measured from the announcement, not from dispatch: before
+ * it the updater may still be busy and a rollback would restore the Host
+ * under an install that is going to quit the app anyway. After it, closing
+ * the windows and preparing the quit takes seconds; a process still running
+ * this long did not quit. Release the handoff and surface it. Squirrel keeps
+ * its prepared install, so the next quit still applies the update.
+ */
+const UPDATE_INSTALL_QUIT_WATCHDOG_MS = 30_000;
 
 /**
  * Harness-only override for the update feed (`MAKA_UPDATE_TEST_FEED`).
@@ -222,7 +222,15 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   } | undefined;
   let activeVerification: Promise<void> | undefined;
   let checkTimer: unknown;
+  let checkRetryTimer: unknown;
+  /**
+   * Attempts still owed after the one currently running. While this is
+   * non-zero a check failure is transient by definition and must not be
+   * published as an error — the retry has not had its turn yet.
+   */
+  let checkAttemptsRemaining = 0;
   let installHandoff: { rollback(): void } | undefined;
+  let installQuitWatchdog: unknown;
   let started = false;
   let disposed = false;
   // Resolve Electron's singleton lazily so tests can inject an updater without
@@ -261,10 +269,36 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     message: error instanceof Error ? error.message : String(error),
   });
 
+  const disarmInstallQuitWatchdog = (): void => {
+    deps.nativeUpdater.off('before-quit-for-update', armInstallQuitWatchdog);
+    if (installQuitWatchdog !== undefined) {
+      clock.clearTimeout(installQuitWatchdog);
+      installQuitWatchdog = undefined;
+    }
+  };
+
   const rollbackInstallHandoff = (): void => {
+    disarmInstallQuitWatchdog();
     const handoff = installHandoff;
     installHandoff = undefined;
     handoff?.rollback();
+  };
+
+  function armInstallQuitWatchdog(): void {
+    if (disposed || installHandoff === undefined || installQuitWatchdog !== undefined) return;
+    installQuitWatchdog = clock.setTimeout(() => {
+      installQuitWatchdog = undefined;
+      // A completed install exits the process long before this fires; reaching
+      // it means the window sweep or the quit never finished.
+      if (disposed || status.state !== 'installing') return;
+      rollbackInstallHandoff();
+      publishError('install', new Error('The app did not restart to install the update'));
+    }, UPDATE_INSTALL_QUIT_WATCHDOG_MS);
+  }
+
+  const watchInstallQuit = (): void => {
+    deps.nativeUpdater.off('before-quit-for-update', armInstallQuitWatchdog);
+    deps.nativeUpdater.on('before-quit-for-update', armInstallQuitWatchdog);
   };
 
   const trackAutoDownload = (result: UpdateCheckResult | null): void => {
@@ -363,6 +397,10 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
         ? 'download'
         : 'check';
     if (operation === 'install') rollbackInstallHandoff();
+    // A check failure with retry attempts still owed is transient: hold it
+    // back and let the scheduled retry produce the final word. Download and
+    // install errors always surface immediately.
+    if (operation === 'check' && checkAttemptsRemaining > 0) return;
     publishError(operation, error);
   });
 
@@ -378,18 +416,51 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (activeDownload && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
     lastCheckStartedAt = now();
-    checkInFlight = updater
-      .checkForUpdates()
-      .then(async (result) => {
-        trackAutoDownload(result);
-        const verification = activeVerification;
-        if (verification) await verification.catch(() => undefined);
+    // Each attempt propagates its rejection; the publish-or-retry decision
+    // lives in the outer catch below, so only the last failure surfaces.
+    const attempt = (): Promise<AppUpdateStatus> =>
+      updater
+        .checkForUpdates()
+        .then(async (result) => {
+          trackAutoDownload(result);
+          const verification = activeVerification;
+          if (verification) await verification.catch(() => undefined);
+          return status;
+        });
+    checkAttemptsRemaining = UPDATE_CHECK_MAX_ATTEMPTS - 1;
+    checkInFlight = attempt().catch((error) => {
+      if (disposed) {
+        // Terminal: settle without publishing to a disposed service's
+        // subscribers, and run the .finally cleanup below.
+        checkAttemptsRemaining = 0;
         return status;
-      })
-      .catch((error) => status.state === 'error' ? status : publishError('check', error))
-      .finally(() => {
-        checkInFlight = null;
+      }
+      if (checkAttemptsRemaining <= 0) {
+        checkAttemptsRemaining = 0;
+        return status.state === 'error' ? status : publishError('check', error);
+      }
+      checkAttemptsRemaining -= 1;
+      // Back off briefly, then re-check. The 'error' listener holds the
+      // first failure back while this retry is pending, so a transient
+      // feed refusal (#4790) never reaches the renderer as an error.
+      return new Promise<AppUpdateStatus>((resolve) => {
+        checkRetryTimer = clock.setTimeout(() => {
+          checkRetryTimer = undefined;
+          if (disposed) {
+            // dispose() does not clear this timer precisely so the promise
+            // still settles here and `checkInFlight` is not left dangling.
+            resolve(status);
+            return;
+          }
+          resolve(attempt().catch((retryError) =>
+            status.state === 'error' ? status : publishError('check', retryError),
+          ));
+        }, UPDATE_CHECK_RETRY_DELAY_MS);
       });
+    }).finally(() => {
+      checkAttemptsRemaining = 0;
+      checkInFlight = null;
+    });
     return checkInFlight;
   }
 
@@ -417,6 +488,10 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       clock.clearTimeout(checkTimer);
       checkTimer = undefined;
     }
+    disarmInstallQuitWatchdog();
+    // Deliberately leaves the retry timer running: its callback checks
+    // `disposed` and settles the in-flight check, so `checkInFlight` is not
+    // left dangling and its .finally cleanup still runs.
   }
 
   async function retryUpdateDownload(): Promise<AppUpdateStatus> {
@@ -451,6 +526,14 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       installHandoff = preparation;
       const version = latestVersion() ?? deps.currentVersion;
       publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
+      // Subscribe first: when Squirrel already holds the update, the native
+      // updater announces the quit synchronously inside this call. No
+      // announcement at all is left alone on purpose: on macOS Squirrel has
+      // yet to finish and every way it gives up reports an updater error; on
+      // Windows a second quitAndInstall after a cancelled quit is ignored by
+      // electron-updater without any signal, which this service cannot tell
+      // apart from a slow installer.
+      watchInstallQuit();
       updater.quitAndInstall(false, true);
       const installStatus = currentStatus();
       if (installStatus.state === 'error' && installStatus.operation === 'install') {

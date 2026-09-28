@@ -159,7 +159,6 @@ export interface ComputerUseBoundAction extends ComputerUseFrameIdentity {
 
 export const CU_ACTION_TYPES = ['screenshot', 'type', 'key', 'wait'] as const;
 
-export const COMPUTER_USE_ACTION_TYPES = CU_ACTION_TYPES;
 export type CuActionType = (typeof CU_ACTION_TYPES)[number];
 
 /**

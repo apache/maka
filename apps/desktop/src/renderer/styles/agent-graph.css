@@ -102,6 +102,14 @@
   color: var(--muted-foreground);
 }
 
+/* Inline flex so the heartbeat spinner stays on the status line and spacing is
+   gap-driven; the element also holds plain text nodes. */
+.maka-agent-graph-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
 .maka-agent-graph-empty {
   margin: var(--space-2) 0 0;
 }
@@ -143,9 +151,25 @@
   background: var(--muted-foreground);
 }
 
+@keyframes maka-agent-graph-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
 .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
   background: var(--status-running);
+}
+
+.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
+.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
+  animation: maka-agent-graph-dot-pulse 1.6s ease-in-out infinite;
 }
 
 .maka-agent-graph-operators li[data-status="completed"] .maka-agent-graph-status-dot {
@@ -222,4 +246,17 @@
   .maka-agent-graph-operator-status {
     display: none;
   }
+}
+
+/* Under reduced motion the base.css global freezes Astryx's ring mid-spin,
+   and a motionless ring reads as broken — hide it and let the pulse's static
+   dot carry the state. Both reduce paths get the same treatment. */
+@media (prefers-reduced-motion: reduce) {
+  .maka-agent-graph-heartbeat {
+    display: none;
+  }
+}
+
+[data-maka-reduced-motion="true"] .maka-agent-graph-heartbeat {
+  display: none;
 }

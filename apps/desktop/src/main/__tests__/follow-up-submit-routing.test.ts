@@ -20,80 +20,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
-  resolveFollowUpModeAtSubmit,
 } from '../../renderer/follow-up-submit-routing.js';
 
 describe('follow-up submit routing', () => {
-  it('uses the synchronous turn arm before React publishes streaming state', () => {
-    assert.equal(
-      hasActiveTurnAtSubmit({
-        liveTurn: { turnId: 'turn-1' },
-        runningTurnIds: [],
-      }),
-      true,
-    );
-  });
-
-  it('ignores a terminal projection whose only running id is the same turn', () => {
-    assert.equal(
-      hasActiveTurnAtSubmit({
-        liveTurn: { turnId: 'turn-1', terminal: true },
-        runningTurnIds: ['turn-1'],
-      }),
-      false,
-    );
-  });
-
-  it('routes burst input through the selected follow-up lane', () => {
-    assert.equal(
-      resolveFollowUpModeAtSubmit({
-        hasActiveTurn: true,
-        slashCommand: null,
-      }),
-      'queue',
-    );
-    assert.equal(
-      resolveFollowUpModeAtSubmit({
-        requestedMode: 'steer',
-        hasActiveTurn: true,
-        slashCommand: null,
-      }),
-      'steer',
-    );
-  });
-
-  it('starts a normal turn only when no active-turn witness exists', () => {
-    assert.equal(
-      resolveFollowUpModeAtSubmit({
-        hasActiveTurn: false,
-        slashCommand: null,
-      }),
-      undefined,
-    );
-  });
-
-  it('dispatches a slash command mid-turn instead of steering it into the Turn', () => {
-    assert.equal(
-      resolveFollowUpModeAtSubmit({
-        hasActiveTurn: true,
-        slashCommand: { kind: 'side' },
-      }),
-      undefined,
-    );
-    // An explicit steer request loses to the command too: Shift+Enter on
-    // `/side` still opens the side chat.
-    assert.equal(
-      resolveFollowUpModeAtSubmit({
-        requestedMode: 'steer',
-        hasActiveTurn: true,
-        slashCommand: { kind: 'side' },
-      }),
-      undefined,
-    );
-  });
-
   it('restores workspace references after queued text returns to the draft', () => {
     assert.deepEqual(
       mergeWorkspaceReferences(

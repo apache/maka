@@ -20,11 +20,24 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  dismissAgentGraphPanel,
+  createAgentGraphPanelModel,
+  isAgentGraphLive,
   isAgentGraphPanelDismissible,
-  reconcileAgentGraphPanelDismissals,
+  reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
 } from '../../renderer/agent-graph-panel-visibility.js';
+
+describe('isAgentGraphLive', () => {
+  it('treats in-flight statuses as live and settled ones as not', () => {
+    for (const status of ['active', 'waiting', 'closing'] as const) {
+      assert.equal(isAgentGraphLive(status), true, status);
+    }
+    for (const status of ['empty', 'stopped', 'failed', 'completed'] as const) {
+      assert.equal(isAgentGraphLive(status), false, status);
+    }
+    assert.equal(isAgentGraphLive(undefined), false);
+  });
+});
 
 describe('isAgentGraphPanelDismissible', () => {
   it('allows hiding a graph that no longer has active work', () => {
@@ -47,7 +60,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-1',
         graphId: 'graph-1',
         status: 'completed',
@@ -62,7 +74,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-1',
         graphId: 'graph-2',
         status: 'active',
@@ -77,7 +88,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-1',
         graphId: 'graph-1',
         status: 'active',
@@ -92,7 +102,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-2',
         graphId: 'graph-1',
         status: 'completed',
@@ -107,7 +116,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: false,
         hasGraphActivity: false,
-        error: false,
         sessionId: 'session-1',
         dismissedBySession: {},
       }),
@@ -120,7 +128,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: false,
-        error: false,
         sessionId: 'session-1',
         dismissedBySession: {},
       }),
@@ -131,52 +138,55 @@ describe('shouldShowAgentGraphPanel', () => {
 
 describe('dismiss and reconcile', () => {
   it('records the dismissed graph for the session', () => {
-    assert.deepEqual(dismissAgentGraphPanel({}, 'session-1', 'graph-1'), {
-      'session-1': 'graph-1',
+    const state = reduceAgentGraphPanelModel(createAgentGraphPanelModel('session-1'), {
+      type: 'dismiss',
+      graphId: 'graph-1',
     });
+    assert.deepEqual(state.dismissedBySession, { 'session-1': 'graph-1' });
   });
 
   it('drops a stale dismissal when a later snapshot is a different graph', () => {
-    assert.deepEqual(
-      reconcileAgentGraphPanelDismissals(
-        { 'session-1': 'graph-1' },
-        'session-1',
-        { rootSessionId: 'session-1', graphId: 'graph-2', status: 'active' },
-      ),
-      {},
-    );
+    let state = createAgentGraphPanelModel('session-1');
+    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-1' });
+    state = reduceAgentGraphPanelModel(state, {
+      type: 'commit-snapshot',
+      current: true,
+      snapshot: { rootSessionId: 'session-1', graphId: 'graph-2', status: 'active' },
+    });
+    assert.deepEqual(state.dismissedBySession, {});
   });
 
   it('drops a stale dismissal when the same graph becomes active again', () => {
-    assert.deepEqual(
-      reconcileAgentGraphPanelDismissals(
-        { 'session-1': 'graph-1' },
-        'session-1',
-        { rootSessionId: 'session-1', graphId: 'graph-1', status: 'active' },
-      ),
-      {},
-    );
+    let state = createAgentGraphPanelModel('session-1');
+    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-1' });
+    state = reduceAgentGraphPanelModel(state, {
+      type: 'commit-snapshot',
+      current: true,
+      snapshot: { rootSessionId: 'session-1', graphId: 'graph-1', status: 'active' },
+    });
+    assert.deepEqual(state.dismissedBySession, {});
   });
 
   it('keeps a matching terminal dismissal', () => {
-    assert.deepEqual(
-      reconcileAgentGraphPanelDismissals(
-        { 'session-1': 'graph-1' },
-        'session-1',
-        { rootSessionId: 'session-1', graphId: 'graph-1', status: 'completed' },
-      ),
-      { 'session-1': 'graph-1' },
-    );
+    let state = createAgentGraphPanelModel('session-1');
+    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-1' });
+    state = reduceAgentGraphPanelModel(state, {
+      type: 'commit-snapshot',
+      current: true,
+      snapshot: { rootSessionId: 'session-1', graphId: 'graph-1', status: 'completed' },
+    });
+    assert.deepEqual(state.dismissedBySession, { 'session-1': 'graph-1' });
   });
 
   it('does not clear a dismissal against a snapshot still owned by the previous session', () => {
-    assert.deepEqual(
-      reconcileAgentGraphPanelDismissals(
-        { 'session-a': 'graph-a' },
-        'session-a',
-        { rootSessionId: 'session-b', graphId: 'graph-b', status: 'completed' },
-      ),
-      { 'session-a': 'graph-a' },
-    );
+    let state = createAgentGraphPanelModel('session-a');
+    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-a' });
+    state = reduceAgentGraphPanelModel(state, { type: 'enter-session', rootSessionId: 'session-b' });
+    state = reduceAgentGraphPanelModel(state, {
+      type: 'commit-snapshot',
+      current: true,
+      snapshot: { rootSessionId: 'session-a', graphId: 'graph-a', status: 'completed' },
+    });
+    assert.deepEqual(state.dismissedBySession, { 'session-a': 'graph-a' });
   });
 });

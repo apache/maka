@@ -23,6 +23,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import {
   isProductReleaseVersion,
   type RuntimeHostManagedUpdatePolicy,
+  type RuntimeHostServiceErrorCode,
 } from '@maka/runtime-host/operator';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
@@ -43,10 +44,12 @@ export interface RuntimeHostManagedUpdatePolicyRecord {
 
 export class RuntimeHostUpdatePolicyError extends Error {
   constructor(
-    readonly code:
+    readonly code: Extract<
+      RuntimeHostServiceErrorCode,
       | 'invalid_update_policy'
       | 'update_policy_write_failed'
-      | 'update_policy_commit_outcome_unknown',
+      | 'update_policy_commit_outcome_unknown'
+    >,
     message: string,
     options?: ErrorOptions,
   ) {

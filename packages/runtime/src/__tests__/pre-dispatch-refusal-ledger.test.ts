@@ -142,7 +142,6 @@ function runtimeInput(h: LedgerHarness) {
     runId: RUN_ID,
     invocationId: INVOCATION_ID,
     runtimeCommitSink: h.sink,
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -464,7 +463,8 @@ function connection(): LlmConnection {
   return {
     slug: 'test',
     name: 'Test',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
     baseUrl: 'https://example.invalid',
     defaultModel: 'mock-model',
     enabled: true,

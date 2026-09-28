@@ -17,7 +17,16 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
+import type { SubscriptionActionCode, SubscriptionActionFailureReason } from '@maka/core/oauth-subscription';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+
+type SubscriptionResultCode =
+  | SubscriptionActionCode
+  | Extract<
+      SubscriptionActionFailureReason,
+      'experimental_disabled' | 'login_in_progress' | 'presentation_failed'
+    >;
 
 type WidenCopy<T> = T extends string
   ? string
@@ -25,78 +34,137 @@ type WidenCopy<T> = T extends string
     ? (...args: Args) => string
     : { [K in keyof T]: WidenCopy<T[K]> };
 
+
 // Capability-section strings for the connection detail page — the add-provider
 // form deliberately carries no declaration controls (capabilities are edited
 // after the connection exists).
 const zhCapabilitiesCopy = {
   capabilities: '能力',
-  thinkingEffort: '思考档位（reasoning_effort）',
-  thinkingEffortHelp: '勾选需要的思考强度档位，不勾选即为不声明。',
-  thinkingUndeclared: '未声明',
-  thinkingSelectedCount: (count: number) => `已选择 ${count} 个`,
-  thinkingBulk: '批量设置思考档位',
-  thinkingBulkCoverage: (declared: number, total: number) =>
-    declared === 0 ? '全部未声明' : `${declared}/${total} 个模型`,
-  visionInput: '视觉输入（vision）',
-  visionInputHelp: '「自动」跟随内置元数据；「启用/禁用」是显式声明，覆盖自动判断。',
-  visionAuto: '自动',
-  visionEnabledOption: '启用',
-  visionDisabledOption: '禁用',
-  contextWindow: '上下文窗口（tokens）',
-  contextWindowHelp: '设置后作为 Maka 压缩的触发阈值。留空则不主动压缩，由供应商决定何时超限。',
-  contextWindowHint: (tokens: number) => `该模型声明的窗口为 ${tokens} tokens`,
-  contextWindowApplyHint: '填入',
+  modelDisplayName: '显示名称',
+  modelDisplayNameHelp: '仅用于显示；请求仍使用模型 ID。',
+  thinkingEffort: '思考强度',
+  thinkingEffortHelp: '勾选服务商支持的强度，供对话时选择。留空时按模型资料设置。',
+  thinkingUndeclared: '自动',
+  thinkingSelectedCount: (count: number) => `已选 ${count} 项`,
+  defaultThinkingLevel: '默认思考级别',
+  defaultThinkingLevelHelp: '新任务使用此模型时采用的思考级别；任务内仍可单独切换。',
+  providerDefaultThinking: '服务商默认',
+  visionInput: '图片识别',
+  visionInputHelp: '此服务商的模型是否支持图片。自动按模型资料判断，缺少资料时不发送图片。',
+  visionDefaultOption: (supported: boolean | undefined) =>
+    supported === undefined ? '自动' : supported ? '自动 · 支持' : '自动 · 不支持',
+  visionEnabledOption: '支持',
+  visionDisabledOption: '不支持',
+  applyPatch: 'ApplyPatch 文件编辑',
+  applyPatchHelp: '自动跟随模型默认设置；手动启用或关闭仅影响此连接中的当前模型。启用时使用 ApplyPatch 编辑文件，关闭时使用 Write/Edit。选择自动可恢复默认设置。',
+  applyPatchDefaultOption: (enabled: boolean) => (enabled ? '自动 · 启用' : '自动 · 关闭'),
+  applyPatchEnabled: '启用',
+  applyPatchDisabled: '关闭',
+  contextWindow: '上下文窗口',
+  inputLimit: '输入上限',
+  inputLimitHelp: '单次请求可输入的 token 数。留空时按模型资料设置。',
+  modelLimitsConflict: '输入上限不能超过上下文窗口。',
+  contextWindowHelp: '模型可处理的 token 总量。留空时按模型资料设置。',
+  compactionThreshold: '压缩阈值',
+  compactionThresholdHelp: '达到此 token 数时压缩上下文。留空则不主动压缩。',
+  maxOutputTokens: '输出上限',
+  maxOutputTokensHelp: '单次回复的输出 token 上限，含思考。留空自动设置。',
+  maxOutputTokensUnsupported: 'ChatGPT 订阅（Codex）不接受输出上限，Maka 不会发送此设置。',
   fastMode: 'Fast 模式',
-  fastModeHelp: '使用 OpenAI 的 fast service tier；留空跟随服务商默认值。',
+  fastModeHelp: '选择更快的服务档位，可能产生额外费用。',
   fastAuto: '自动',
   fastEnabled: 'Fast',
+  apiProtocol: '请求协议',
+  apiProtocolHelp: '此模型使用的接口格式。同一地址同时提供多种协议时，可为单个模型单独选择。',
+  apiProtocolDefaultOption: (protocol: string) => `跟随连接 · ${protocol}`,
+  connectionApiProtocol: '默认请求协议',
+  connectionApiProtocolHelp: '模型未单独选择协议时使用。创建后不可更改，可在每个模型上单独覆盖。',
 };
 
 const zhTwCapabilitiesCopy = {
   capabilities: '能力',
-  thinkingEffort: '思考檔位（reasoning_effort）',
-  thinkingEffortHelp: '勾選需要的思考強度檔位，不勾選即為不宣告。',
-  thinkingUndeclared: '未宣告',
-  thinkingSelectedCount: (count: number) => `已選擇 ${count} 個`,
-  thinkingBulk: '批次設定思考檔位',
-  thinkingBulkCoverage: (declared: number, total: number) =>
-    declared === 0 ? '全部未宣告' : `${declared}/${total} 個模型`,
-  visionInput: '視覺輸入（vision）',
-  visionInputHelp: '「自動」跟隨內建後設資料；「啟用/停用」是顯式宣告，覆蓋自動判斷。',
-  visionAuto: '自動',
-  visionEnabledOption: '啟用',
-  visionDisabledOption: '停用',
-  contextWindow: '上下文視窗（tokens）',
-  contextWindowHelp: '聲明後壓縮與預算按此值計算；留空跟隨內建後設資料。',
-  contextWindowHint: (tokens: number) => `該模型宣告的視窗為 ${tokens} tokens`,
-  contextWindowApplyHint: '填入',
+  modelDisplayName: '顯示名稱',
+  modelDisplayNameHelp: '僅供顯示；請求仍使用模型 ID。',
+  thinkingEffort: '思考強度',
+  thinkingEffortHelp: '勾選服務商支援的強度，供對話時選擇。留空時依模型資料設定。',
+  thinkingUndeclared: '自動',
+  thinkingSelectedCount: (count: number) => `已選 ${count} 項`,
+  defaultThinkingLevel: '預設思考級別',
+  defaultThinkingLevelHelp: '新任務使用此模型時採用的思考級別；任務內仍可單獨切換。',
+  providerDefaultThinking: '服務商預設',
+  visionInput: '圖片辨識',
+  visionInputHelp: '此服務商的模型是否支援圖片。自動依模型資料判斷，缺少資料時不傳送圖片。',
+  visionDefaultOption: (supported: boolean | undefined) =>
+    supported === undefined ? '自動' : supported ? '自動 · 支援' : '自動 · 不支援',
+  visionEnabledOption: '支援',
+  visionDisabledOption: '不支援',
+  applyPatch: 'ApplyPatch 檔案編輯',
+  applyPatchHelp: '自動依模型預設設定；手動啟用或關閉僅影響此連線中的目前模型。啟用時使用 ApplyPatch 編輯檔案，關閉時使用 Write/Edit。選擇自動可恢復預設設定。',
+  applyPatchDefaultOption: (enabled: boolean) => (enabled ? '自動 · 啟用' : '自動 · 關閉'),
+  applyPatchEnabled: '啟用',
+  applyPatchDisabled: '關閉',
+  contextWindow: '上下文視窗',
+  inputLimit: '輸入上限',
+  inputLimitHelp: '單次請求可輸入的 token 數。留空時依模型資料設定。',
+  modelLimitsConflict: '輸入上限不能超過上下文視窗。',
+  contextWindowHelp: '模型可處理的 token 總量。留空時依模型資料設定。',
+  compactionThreshold: '壓縮門檻',
+  compactionThresholdHelp: '達到此 token 數時壓縮上下文。留空則不主動壓縮。',
+  maxOutputTokens: '輸出上限',
+  maxOutputTokensHelp: '單次回覆的輸出 token 上限，含思考。留空自動設定。',
+  maxOutputTokensUnsupported: 'ChatGPT 訂閱（Codex）不接受輸出上限，Maka 不會送出此設定。',
   fastMode: 'Fast 模式',
-  fastModeHelp: '使用 OpenAI 的 fast service tier；留空跟隨服務商預設值。',
+  fastModeHelp: '選擇更快的服務檔位，可能產生額外費用。',
   fastAuto: '自動',
   fastEnabled: 'Fast',
+  apiProtocol: '請求協定',
+  apiProtocolHelp: '此模型使用的介面格式。同一位址同時提供多種協定時，可為單一模型單獨選擇。',
+  apiProtocolDefaultOption: (protocol: string) => `跟隨連線 · ${protocol}`,
+  connectionApiProtocol: '預設請求協定',
+  connectionApiProtocolHelp: '模型未單獨選擇協定時使用。建立後不可變更，可在每個模型上單獨覆寫。',
 };
 const enCapabilitiesCopy = {
   capabilities: 'Capabilities',
-  thinkingEffort: 'Thinking levels (reasoning_effort)',
-  thinkingEffortHelp: 'Tick the thinking levels this model supports; none ticked means undeclared.',
-  thinkingUndeclared: 'Undeclared',
-  thinkingSelectedCount: (count: number) => `${count} selected`,
-  thinkingBulk: 'Set thinking levels for all models',
-  thinkingBulkCoverage: (declared: number, total: number) =>
-    declared === 0 ? 'On no model' : `On ${declared} of ${total} models`,
-  visionInput: 'Vision input',
-  visionInputHelp: 'Auto follows built-in metadata; Enabled/Disabled overrides it explicitly.',
-  visionAuto: 'Auto',
-  visionEnabledOption: 'Enabled',
-  visionDisabledOption: 'Disabled',
-  contextWindow: 'Context window (tokens)',
-  contextWindowHelp: 'When set, Maka compacts once the previous request\'s real usage exceeds it. Leave empty to never compact proactively; the provider decides.',
-  contextWindowHint: (tokens: number) => `This model declares a ${tokens}-token window`,
-  contextWindowApplyHint: 'Use it',
+  modelDisplayName: 'Display name',
+  modelDisplayNameHelp: 'A label for this model. Requests still use the exact model ID.',
+  thinkingEffort: 'Available thinking levels',
+  thinkingEffortHelp: 'These levels appear in the conversation’s thinking selector. Select only levels supported by this provider. Leave all unchecked to use existing model information.',
+  thinkingUndeclared: 'Use model options',
+  thinkingSelectedCount: (count: number) => `${count} levels available`,
+  defaultThinkingLevel: 'Default thinking level',
+  defaultThinkingLevelHelp: 'Thinking level for new tasks that use this model. It can still be changed per task.',
+  providerDefaultThinking: 'Provider default',
+  visionInput: 'Send images to the model',
+  visionInputHelp: 'Use provider and model information to decide whether to send images. Images are not sent when information is missing. Before choosing “Allow images”, confirm this provider supports images for this model.',
+  visionDefaultOption: (supported: boolean | undefined) =>
+    supported === undefined ? 'Use model information' : supported ? 'Model information: allow images' : 'Model information: no images',
+  visionEnabledOption: 'Allow images',
+  visionDisabledOption: 'Do not send images',
+  applyPatch: 'ApplyPatch file editing',
+  applyPatchHelp: 'Automatic follows the model default. Enabled uses ApplyPatch to edit files; Disabled uses Write/Edit. Manual choices apply only to this model on this connection. Select Automatic to restore the default.',
+  applyPatchDefaultOption: (enabled: boolean) =>
+    enabled ? 'Automatic: enabled' : 'Automatic: disabled',
+  applyPatchEnabled: 'Enabled',
+  applyPatchDisabled: 'Disabled',
+  contextWindow: 'Context window',
+  inputLimit: 'Input limit',
+  inputLimitHelp: 'Maximum input tokens per request. Leave empty to use model information.',
+  modelLimitsConflict: 'The input limit cannot exceed the context window.',
+  contextWindowHelp: 'Model capacity offered by this provider. Leave empty to use known information.',
+  compactionThreshold: 'Compaction threshold',
+  compactionThresholdHelp: 'Compact at this token count. Leave empty to disable proactive compaction.',
+  maxOutputTokens: 'Maximum output',
+  maxOutputTokensHelp: 'Output token budget per reply, including thinking. Leave empty for automatic limits.',
+  maxOutputTokensUnsupported: 'The ChatGPT subscription (Codex) does not accept an output limit, so Maka does not send this setting.',
   fastMode: 'Fast mode',
-  fastModeHelp: "Use OpenAI's fast service tier; empty follows the provider default.",
+  fastModeHelp: 'Use the faster service tier. Additional charges may apply.',
   fastAuto: 'Auto',
   fastEnabled: 'Fast',
+  apiProtocol: 'Request protocol',
+  apiProtocolHelp: 'The API format this model uses. When one address serves several protocols, choose one per model.',
+  apiProtocolDefaultOption: (protocol: string) => `Connection default: ${protocol}`,
+  connectionApiProtocol: 'Default request protocol',
+  connectionApiProtocolHelp: 'Used by models without their own protocol. It cannot be changed after the connection is added; each model can override it.',
 };
 
 const zhCopy = {
@@ -113,9 +181,9 @@ const zhCopy = {
     oauthLoadingDetail: '正在读取本机 OAuth 登录状态，读取完成前不会把未知状态显示成未登录。',
     oauthUnknownDetail: '暂时无法读取本机 OAuth 登录状态；请刷新页面或重新打开设置。',
     oauthWaitingDetail: '请到账号连接完成登录；登录成功后会自动出现在模型连接里。',
-    oauthRetired: '此登录方式已停用',
-    oauthRetiredDetail:
-      '这条连接使用的登录方式已从 Maka 移除，无法再登录，也无法用于对话。改用 Anthropic API Key 连接即可继续使用 Claude 模型；删除这条连接会一并清除本机保存的登录凭据。',
+    providerRetired: '此模型服务已停用',
+    providerRetiredDetail:
+      '这条连接已无法用于对话。请添加其他模型连接，并选择新的默认模型；原有对话记录会保留。',
     credentialLoadingDetail: '正在读取模型凭据状态，读取完成前暂不测试连接或刷新模型。',
     credentialUnknownDetail: '模型凭据状态暂时没刷新成功，已避免把未知状态显示成未登录或未配置。',
     testConnection: '测试连接',
@@ -126,18 +194,19 @@ const zhCopy = {
     addModelConfirm: '添加',
     addModelIdField: '模型 ID',
     addModelIdFieldHelp: '需与服务商完全一致，区分大小写。',
-    addModelIdPlaceholder: 'deepseek-v4-pro-beta',
+    addModelIdPlaceholder: 'deepseek-v4-flash-0731',
     addModelIdRequired: '请填写模型 ID。',
     addModelIdDuplicate: '该模型已在列表中。',
     addModelContextWindow: '上下文窗口',
     addModelContextWindowHelp: '服务商模型页给出的最大 token 数。缺少它 Maka 只能按 32k 处理，长对话会被提前截断。',
     addModelContextWindowRequired: '请填写上下文窗口。',
+    contextWindowInputInvalid: '请输入正整数 token 数或 K/M 缩写，例如 128000、128K、1.5M。',
     credentials: '连接', dangerZone: '删除连接', deleteRowHelp: '此操作不可撤销。',
     credentialsHelp: '密钥只保存在本机。',
     credentialsHelpAccount: '登录令牌只保存在本机。',
     modelManagementHelp: '这些模型会出现在任务的模型选择器里。',
     ...zhCapabilitiesCopy,
-    capabilitiesHelp: '配置这个模型的上下文长度、视觉支持与思考档位，保存后生效。',
+    capabilitiesHelp: '仅应用于此连接中的这个模型，保存后生效。',
     // Row affordances (settings-sidebar 的 InfoRow / ExpandableRow 语言)：一行
     // 只报状态，改的时候才展开成输入框。
     change: '更换', set: '设置', edit: '编辑', save: '保存',
@@ -155,8 +224,7 @@ const zhCopy = {
     filterModels: '搜索模型', noModelsMatch: '未找到匹配的模型',
     enableModelAria: (name: string) => `启用模型 ${name}`,
     declareCapabilities: '配置参数', declareCapabilitiesAria: (name: string) => `配置模型参数：${name}`,
-    modelUndescribed: '缺少该模型的参数信息，请手动配置。',
-    visionToken: '视觉', thinkingToken: '思考', contextToken: (value: string) => `${value} 上下文`,
+    modelUndescribed: '待配置参数',
     noModels: '暂无可选模型，请先更新模型目录。',
     keySet: '已设置', statusLoading: '正在读取状态', credentialUnknown: '凭据状态未知', keyMissing: '尚未设置密钥',
     keyTroubleshooting: '模型密钥 / 服务地址 / 代理设置', endpointTroubleshooting: '本地服务 / 服务地址 / 代理设置', oauthTroubleshooting: 'OAuth 登录 / 代理设置',
@@ -181,8 +249,31 @@ const zhCopy = {
     modelsFetchFailedDetail: (message: string, troubleshooting: string) => `${message} · 当前继续显示静态列表，请确认 ${troubleshooting} 后重试。`,
     authTroubleshooting: (value: string) => `鉴权失败，请确认 ${value} 后重试。`, recheckTroubleshooting: (value: string) => `检查 ${value} 后重试。`,
     modelKeyAria: (name: string) => `${name} 模型密钥`,
+    usage: {
+      title: '账户用量',
+      refresh: '刷新',
+      refreshing: '刷新中…',
+      current: '当前使用',
+      unavailable: '暂时取不到用量数据。',
+      unsupported: '该连接不支持查看用量。',
+      unauthorized: '用量读取被拒绝：密钥可能已失效或权限不足，请更新模型密钥后重试。',
+      partiallyUnauthorized: '部分用量数据被拒绝：密钥缺少相应权限，以下为可读取的部分。请更新模型密钥后重试。',
+      windowLabels: { fiveHour: '5 小时窗口', weekly: '每周窗口', monthly: '月额度' },
+      requests: '请求',
+      failed: (count: number) => `失败 ${count}`,
+      successRate: '成功率',
+      cost: '花费',
+      tokens: 'Token',
+      tokensBreakdown: (input: string, output: string) => `${input} 入 / ${output} 出`,
+      resetsAt: (when: string) => `重置于 ${when}`,
+      periodEnd: (when: string) => `账期截止 ${when}`,
+      updatedAt: (when: string) => `更新于 ${when}`,
+      unlimited: '不限',
+    },
   },
   shared: {
+    requestUrlLabel: '请求地址：',
+    connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
     network: '网络错误，请检查服务地址或代理设置后重试。', statusUnavailable: '连接测试状态暂时无法显示，请重新测试。',
@@ -191,12 +282,7 @@ const zhCopy = {
     filterMatches: (count: number) => (count === 0 ? '没有匹配的结果' : `${count} 个匹配结果`),
     connectionStatuses: { retired: '已停用 · 请删除', reauth: '需要重新登录', disabledFailed: '暂不可用 · 上次连接失败', disabled: '暂不可用', failed: '上次连接失败' },
     lastTest: {
-      '连接已验证': '连接已验证', '鉴权失败': '鉴权失败', '请求超时': '请求超时', '网络错误': '网络错误', '模型服务返回错误': '模型服务返回错误', '连接测试失败': '连接测试失败',
-      'connection verified': '连接已验证', 'authentication failed': '鉴权失败', 'request timed out': '请求超时', 'network error': '网络错误', 'provider returned an error': '模型服务返回错误', 'connection test failed': '连接测试失败',
-      'claude oauth 未登录。': 'Claude OAuth 未登录。', 'claude oauth 本地凭据读取失败。': 'Claude OAuth 本地凭据读取失败。', 'claude oauth 需要重新登录。': 'Claude OAuth 需要重新登录。', 'claude oauth 已登录。': 'Claude OAuth 已登录。', 'claude oauth 已退出登录。': 'Claude OAuth 已退出登录。',
-      'codex oauth 未登录。': 'Codex OAuth 未登录。', 'codex oauth 本地凭据读取失败。': 'Codex OAuth 本地凭据读取失败。', 'codex oauth 需要重新登录。': 'Codex OAuth 需要重新登录。', 'codex oauth 已登录。': 'Codex OAuth 已登录。', 'codex oauth 已退出登录。': 'Codex OAuth 已退出登录。',
-      '当前账号无可用 codex 模型。': '当前账号无可用 Codex 模型。', 'codex 模型列表获取失败。': 'Codex 模型列表获取失败。',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot 需要重新导入 GitHub CLI 登录。', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot 无法读取当前账号可用模型，请重新验证登录。', 'github copilot 登录已导入。': 'GitHub Copilot 登录已导入。', 'github copilot 连接未能保存，请重新导入登录。': 'GitHub Copilot 连接未能保存，请重新导入登录。', 'github copilot 已移除本地登录。': 'GitHub Copilot 已移除本地登录。',
+      auth: '鉴权失败', timeout: '请求超时', provider_unavailable: '模型服务返回错误', network: '网络错误', invalid_response: '模型服务返回错误', unknown: '连接测试失败',
     },
   },
   panel: {
@@ -219,7 +305,7 @@ const zhCopy = {
     cardAria: (name: string, description: string) => `添加模型供应商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '连接标识格式不正确', duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
+    slugIssues: { required: '请填写连接标识', format: '连接标识只能包含小写字母、数字和连字符', too_long: '连接标识不能超过 64 个字符' }, duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
     accountLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。',
     apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', accountTitle: '使用账号连接登录',
     advancedRequest: '高级请求设置', expandAdvancedRequest: '展开高级请求设置', collapseAdvancedRequest: '收起高级请求设置',
@@ -249,6 +335,20 @@ const zhCopy = {
     loggedOut: '已退出登录', credentialsCleared: '本地凭据已清除。', logoutFailed: '退出失败', logoutFailedRetry: '退出登录失败，请稍后重试。',
     serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
     logoutTitle: (name: string) => `退出 ${name} 登录？`,
+    resultCodes: {
+      copilot_classic_pat_unsupported: 'GitHub Copilot 不支持 classic PAT；请使用兼容 OAuth 登录或具有 Copilot Requests 权限的 fine-grained PAT。',
+      copilot_credential_type_unsupported: '当前 GitHub 凭据类型不受支持；请使用兼容 OAuth 登录或 fine-grained PAT。',
+      copilot_local_credential_missing: '未找到可导入的 GitHub 凭据；请先使用 gh 登录或配置兼容凭据。',
+      copilot_import_no_credential: 'GitHub Copilot 登录没有产生可用凭据。',
+      copilot_import_superseded: 'GitHub Copilot 账号在导入期间发生变化，请重试。',
+      copilot_subscription_unavailable: '当前 GitHub 账号没有可用的 Copilot 订阅权限。',
+      copilot_credential_import_rejected: '当前 GitHub 凭据无法导入，请检查凭据后重试。',
+      copilot_subscription_check_failed: '暂时无法验证 GitHub Copilot 订阅状态，请稍后重试。',
+      copilot_import_commit_failed: 'GitHub Copilot 登录未能写入 Runtime Host。',
+      experimental_disabled: '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。',
+      login_in_progress: '上一轮登录仍在进行，等它结束后再点登录。',
+      presentation_failed: '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。',
+    } satisfies Record<SubscriptionResultCode, string>,
   },
   oauthSection: {
     signedIn: '已登录', codexDescription: '使用 ChatGPT Plus / Pro 账号添加连接。', xaiDescription: '使用 SuperGrok / X Premium 账号添加连接。',
@@ -284,9 +384,9 @@ const zhTwCopy = {
     oauthLoadingDetail: '正在讀取本機 OAuth 登入狀態，讀取完成前不會把未知狀態顯示成未登入。',
     oauthUnknownDetail: '暫時無法讀取本機 OAuth 登入狀態；請重新整理頁面或重新開啟設定。',
     oauthWaitingDetail: '請到帳號連線完成登入；登入成功後會自動出現在模型連線裡。',
-    oauthRetired: '此登入方式已停用',
-    oauthRetiredDetail:
-      '這條連線使用的登入方式已從 Maka 移除，無法再登入，也無法用於對話。改用 Anthropic API Key 連線即可繼續使用 Claude 模型；刪除這條連線會一併清除本機儲存的登入憑據。',
+    providerRetired: '此模型服務已停用',
+    providerRetiredDetail:
+      '這條連線已無法用於對話。請新增其他模型連線，並選擇新的預設模型；原有對話記錄會保留。',
     credentialLoadingDetail: '正在讀取模型憑據狀態，讀取完成前暫不測試連線或重新整理模型。',
     credentialUnknownDetail: '模型憑據狀態暫時沒重新整理成功，已避免把未知狀態顯示成未登入或未設定。',
     testConnection: '測試連線',
@@ -297,18 +397,19 @@ const zhTwCopy = {
     addModelConfirm: '新增',
     addModelIdField: '模型 ID',
     addModelIdFieldHelp: '需與服務商完全一致，區分大小寫。',
-    addModelIdPlaceholder: 'deepseek-v4-pro-beta',
+    addModelIdPlaceholder: 'deepseek-v4-flash-0731',
     addModelIdRequired: '請填寫模型 ID。',
     addModelIdDuplicate: '該模型已在列表中。',
     addModelContextWindow: '上下文視窗',
     addModelContextWindowHelp: '服務商模型頁給出的最大 token 數。缺少它 Maka 只能按 32k 處理，長對話會被提前截斷。',
     addModelContextWindowRequired: '請填寫上下文視窗。',
+    contextWindowInputInvalid: '請輸入正整數 token 數或 K/M 縮寫，例如 128000、128K、1.5M。',
     credentials: '連線', dangerZone: '刪除連線', deleteRowHelp: '此操作不可撤銷。',
     credentialsHelp: '金鑰只儲存在本機。',
     credentialsHelpAccount: '登入權杖只儲存在本機。',
     modelManagementHelp: '這些模型會出現在任務的模型選擇器裡。',
     ...zhTwCapabilitiesCopy,
-    capabilitiesHelp: '宣告每個已啟用模型的思考檔位、視覺與上下文視窗；儲存後生效。',
+    capabilitiesHelp: '僅套用至此連線中的這個模型，儲存後生效。',
     // Row affordances (settings-sidebar 的 InfoRow / ExpandableRow 語言)：一行
     // 只報狀態，改的時候才展開成輸入框。
     change: '更換', set: '設定', edit: '編輯', save: '儲存',
@@ -326,8 +427,7 @@ const zhTwCopy = {
     filterModels: '搜尋模型', noModelsMatch: '找不到符合的模型',
     enableModelAria: (name: string) => `啟用模型 ${name}`,
     declareCapabilities: '設定參數', declareCapabilitiesAria: (name: string) => `設定模型參數：${name}`,
-    modelUndescribed: '缺少該模型的參數資訊，請手動設定。',
-    visionToken: '视觉', thinkingToken: '思考', contextToken: (value: string) => `${value} 上下文`,
+    modelUndescribed: '待設定參數',
     noModels: '暫無可選模型，請先更新模型目錄。',
     keySet: '已設定', statusLoading: '正在讀取狀態', credentialUnknown: '憑據狀態未知', keyMissing: '尚未設定金鑰',
     keyTroubleshooting: '模型金鑰 / 服務地址 / 代理設定', endpointTroubleshooting: '本地服務 / 服務地址 / 代理設定', oauthTroubleshooting: 'OAuth 登入 / 代理設定',
@@ -352,20 +452,38 @@ const zhTwCopy = {
     modelsFetchFailedDetail: (message: string, troubleshooting: string) => `${message} · 目前繼續顯示靜態列表，請確認 ${troubleshooting} 後重試。`,
     authTroubleshooting: (value: string) => `鑑權失敗，請確認 ${value} 後重試。`, recheckTroubleshooting: (value: string) => `檢查 ${value} 後重試。`,
     modelKeyAria: (name: string) => `${name} 模型金鑰`,
+    usage: {
+      title: '帳戶用量',
+      refresh: '重新整理',
+      refreshing: '重新整理中…',
+      current: '目前使用',
+      unavailable: '暫時取不到用量資料。',
+      unsupported: '此連線不支援檢視用量。',
+      unauthorized: '用量讀取被拒絕：金鑰可能已失效或權限不足，請更新模型金鑰後重試。',
+      partiallyUnauthorized: '部分用量資料被拒絕：金鑰缺少相應權限，以下為可讀取的部分。請更新模型金鑰後重試。',
+      windowLabels: { fiveHour: '5 小時視窗', weekly: '每週視窗', monthly: '月額度' },
+      requests: '請求',
+      failed: (count: number) => `失敗 ${count}`,
+      successRate: '成功率',
+      cost: '花費',
+      tokens: 'Token',
+      tokensBreakdown: (input: string, output: string) => `${input} 入 / ${output} 出`,
+      resetsAt: (when: string) => `重設於 ${when}`,
+      periodEnd: (when: string) => `帳期截止 ${when}`,
+      updatedAt: (when: string) => `更新於 ${when}`,
+      unlimited: '不限',
+    },
   },
   shared: {
+    requestUrlLabel: '請求地址：',
+    connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
     network: '網路錯誤，請檢查服務地址或代理設定後重試。', statusUnavailable: '連線測試狀態暫時無法顯示，請重新測試。',
     filterMatches: (count: number) => (count === 0 ? '沒有符合的結果' : `${count} 個符合結果`),
     connectionStatuses: { retired: '已停用 · 請刪除', reauth: '需要重新登入', disabledFailed: '暫不可用 · 上次連線失敗', disabled: '暫不可用', failed: '上次連線失敗' },
     lastTest: {
-      '连接已验证': '連線已驗證', '鉴权失败': '鑑權失敗', '请求超时': '請求超時', '网络错误': '網路錯誤', '模型服务返回错误': '模型服務回傳錯誤', '连接测试失败': '連線測試失敗',
-      'connection verified': '連線已驗證', 'authentication failed': '鑑權失敗', 'request timed out': '請求超時', 'network error': '網路錯誤', 'provider returned an error': '模型服務回傳錯誤', 'connection test failed': '連線測試失敗',
-      'claude oauth 未登录。': 'Claude OAuth 未登入。', 'claude oauth 本地凭据读取失败。': 'Claude OAuth 本地憑據讀取失敗。', 'claude oauth 需要重新登录。': 'Claude OAuth 需要重新登入。', 'claude oauth 已登录。': 'Claude OAuth 已登入。', 'claude oauth 已退出登录。': 'Claude OAuth 已退出登入。',
-      'codex oauth 未登录。': 'Codex OAuth 未登入。', 'codex oauth 本地凭据读取失败。': 'Codex OAuth 本地憑據讀取失敗。', 'codex oauth 需要重新登录。': 'Codex OAuth 需要重新登入。', 'codex oauth 已登录。': 'Codex OAuth 已登入。', 'codex oauth 已退出登录。': 'Codex OAuth 已退出登入。',
-      '当前账号无可用 codex 模型。': '目前帳號無可用 Codex 模型。', 'codex 模型列表获取失败。': 'Codex 模型列表取得失敗。',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot 需要重新匯入 GitHub CLI 登入。', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot 無法讀取目前帳號可用模型，請重新驗證登入。', 'github copilot 登录已导入。': 'GitHub Copilot 登入已匯入。', 'github copilot 连接未能保存，请重新导入登录。': 'GitHub Copilot 連線未能儲存，請重新匯入登入。', 'github copilot 已移除本地登录。': 'GitHub Copilot 已移除本地登入。',
+      auth: '鑑權失敗', timeout: '請求超時', provider_unavailable: '模型服務回傳錯誤', network: '網路錯誤', invalid_response: '模型服務回傳錯誤', unknown: '連線測試失敗',
     },
   },
   panel: {
@@ -388,7 +506,7 @@ const zhTwCopy = {
     cardAria: (name: string, description: string) => `新增模型供應商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '連線標識格式不正確', duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
+    slugIssues: { required: '請填寫連線標識', format: '連線標識只能包含小寫字母、數字和連字號', too_long: '連線標識不能超過 64 個字元' }, duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
     accountLogin: '請到帳號連線完成登入；登入成功後會自動建立模型連線。',
     apiKeyPlaceholder: '輸入或貼上 API Key', cancel: '取消', accountTitle: '使用帳號連線登入',
     advancedRequest: '高階請求設定', expandAdvancedRequest: '展開高階請求設定', collapseAdvancedRequest: '收起高階請求設定',
@@ -417,6 +535,20 @@ const zhTwCopy = {
     logoutDescription: '將刪除本機儲存的訂閱憑據，之後需要重新登入才能繼續使用這些 OAuth 模型。', logout: '退出登入', cancel: '取消',
     loggedOut: '已退出登入', credentialsCleared: '本地憑據已清除。', logoutFailed: '退出失敗', logoutFailedRetry: '退出登入失敗，請稍後重試。',
     serviceUnavailable: '登入服務暫時不可用，請檢查網路後重試。',
+    resultCodes: {
+      copilot_classic_pat_unsupported: 'GitHub Copilot 不支援 classic PAT；請使用相容 OAuth 登入或具有 Copilot Requests 權限的 fine-grained PAT。',
+      copilot_credential_type_unsupported: '目前的 GitHub 憑據類型不受支援；請使用相容 OAuth 登入或 fine-grained PAT。',
+      copilot_local_credential_missing: '找不到可匯入的 GitHub 憑據；請先使用 gh 登入或設定相容憑據。',
+      copilot_import_no_credential: 'GitHub Copilot 登入沒有產生可用憑據。',
+      copilot_import_superseded: 'GitHub Copilot 帳號在匯入期間發生變化，請重試。',
+      copilot_subscription_unavailable: '目前的 GitHub 帳號沒有可用的 Copilot 訂閱權限。',
+      copilot_credential_import_rejected: '目前的 GitHub 憑據無法匯入，請檢查憑據後重試。',
+      copilot_subscription_check_failed: '暫時無法驗證 GitHub Copilot 訂閱狀態，請稍後重試。',
+      copilot_import_commit_failed: 'GitHub Copilot 登入未能寫入 Runtime Host。',
+      experimental_disabled: '本機未啟用該帳號登入方式；可改用匯入相容憑據，或由管理員啟用後重試。',
+      login_in_progress: '上一輪登入仍在進行，等它結束後再按登入。',
+      presentation_failed: '無法開啟系統瀏覽器完成登入，請檢查是否封鎖了彈出式視窗後再試。',
+    },
     logoutTitle: (name: string) => `退出 ${name} 登入？`,
   },
   oauthSection: {
@@ -455,9 +587,9 @@ const enCopy: ProviderSettingsCopy = {
     oauthLoadingDetail: 'Reading the local OAuth status. An unknown state will not be shown as signed out.',
     oauthUnknownDetail: 'The local OAuth status is temporarily unavailable. Refresh the page or reopen Settings.',
     oauthWaitingDetail: 'Complete sign-in under account connections. The model connection appears automatically afterward.',
-    oauthRetired: 'This sign-in path is retired',
-    oauthRetiredDetail:
-      'The sign-in this connection uses was removed from Maka. It can no longer be signed into or used in a conversation. Add an Anthropic API key connection to keep using Claude models; deleting this connection also clears the sign-in credential stored on this machine.',
+    providerRetired: 'This provider is retired',
+    providerRetiredDetail:
+      'This connection can no longer be used for conversations. Add another provider and choose a new default model. Existing conversations are kept.',
     credentialLoadingDetail: 'Reading model credential status. Connection tests and model refresh are paused until it finishes.',
     credentialUnknownDetail: 'Model credential status could not be refreshed, so the connection is not being mislabeled as signed out or unconfigured.',
     testConnection: 'Test connection',
@@ -468,19 +600,20 @@ const enCopy: ProviderSettingsCopy = {
     addModelConfirm: 'Add',
     addModelIdField: 'Model ID',
     addModelIdFieldHelp: 'Must match the provider exactly, including case.',
-    addModelIdPlaceholder: 'deepseek-v4-pro-beta',
+    addModelIdPlaceholder: 'deepseek-v4-flash-0731',
     addModelIdRequired: 'Enter a model ID.',
     addModelIdDuplicate: 'This model is already in the list.',
     addModelContextWindow: 'Context window',
     addModelContextWindowHelp:
       "The maximum token count from the provider's model page. Without it Maka can only assume 32k, and long conversations get truncated early.",
     addModelContextWindowRequired: 'Enter a context window.',
+    contextWindowInputInvalid: 'Enter a positive whole token count or K/M value, such as 128000, 128K, or 1.5M.',
     credentials: 'Connection', dangerZone: 'Delete connection', deleteRowHelp: 'This cannot be undone.',
     credentialsHelp: 'The key stays on this machine.',
     credentialsHelpAccount: 'The sign-in token stays on this machine.',
     modelManagementHelp: 'These models appear in the chat model picker.',
     ...enCapabilitiesCopy,
-    capabilitiesHelp: "Set this model's context length, vision support, and thinking levels; applies on save.",
+    capabilitiesHelp: 'Applies to this model on this connection. Changes take effect on save.',
     change: 'Change', set: 'Set', edit: 'Edit', save: 'Save',
     endpointManaged: 'Managed by account sign-in or the provider',
     endpointMissing: 'No service URL configured',
@@ -496,8 +629,7 @@ const enCopy: ProviderSettingsCopy = {
     filterModels: 'Search models', noModelsMatch: 'No matching models',
     enableModelAria: (name: string) => `Enable model ${name}`,
     declareCapabilities: 'Set parameters', declareCapabilitiesAria: (name: string) => `Set model parameters: ${name}`,
-    modelUndescribed: 'No parameters known for this model. Set them by hand.',
-    visionToken: 'Vision', thinkingToken: 'Thinking', contextToken: (value: string) => `${value} context`,
+    modelUndescribed: 'Parameters not configured',
     noModels: 'No models are available. Update the model catalog first.',
     keySet: 'Set', statusLoading: 'Reading status', credentialUnknown: 'Credential status unavailable', keyMissing: 'No key set',
     keyTroubleshooting: 'model key, service URL, and proxy settings', endpointTroubleshooting: 'local service, service URL, and proxy settings', oauthTroubleshooting: 'OAuth sign-in and proxy settings',
@@ -522,20 +654,38 @@ const enCopy: ProviderSettingsCopy = {
     modelsFetchFailedDetail: (message: string, troubleshooting: string) => `${message} · The static list remains visible. Check ${troubleshooting} and try again.`,
     authTroubleshooting: (value: string) => `Authentication failed. Check ${value} and try again.`, recheckTroubleshooting: (value: string) => `Check ${value} and try again.`,
     modelKeyAria: (name: string) => `${name} model key`,
+    usage: {
+      title: 'Account usage',
+      refresh: 'Refresh',
+      refreshing: 'Refreshing…',
+      current: 'In use',
+      unavailable: 'No usage data is available right now.',
+      unsupported: 'This connection does not report usage.',
+      unauthorized: 'Usage was refused — the key may be expired or lack the scope. Update the model key and try again.',
+      partiallyUnauthorized: 'Some usage was refused — the key lacks the scope for it. Below is what could be read; update the model key and try again.',
+      windowLabels: { fiveHour: '5-hour window', weekly: 'Weekly window', monthly: 'Monthly credits' },
+      requests: 'Requests',
+      failed: (count: number) => `${count} failed`,
+      successRate: 'Success rate',
+      cost: 'Cost',
+      tokens: 'Tokens',
+      tokensBreakdown: (input: string, output: string) => `${input} in / ${output} out`,
+      resetsAt: (when: string) => `Resets ${when}`,
+      periodEnd: (when: string) => `Period ends ${when}`,
+      updatedAt: (when: string) => `Updated ${when}`,
+      unlimited: 'Unlimited',
+    },
   },
   shared: {
+    requestUrlLabel: 'Request URL:',
+    connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
     network: 'Network error. Check the service URL or proxy settings and try again.', statusUnavailable: 'The connection test status is temporarily unavailable. Test again.',
     filterMatches: (count: number) => (count === 0 ? 'No matches' : count === 1 ? '1 match' : `${count} matches`),
     connectionStatuses: { retired: 'Retired · delete it', reauth: 'Sign-in required', disabledFailed: 'Unavailable · last connection failed', disabled: 'Unavailable', failed: 'Last connection failed' },
     lastTest: {
-      '连接已验证': 'Connection verified', '鉴权失败': 'Authentication failed', '请求超时': 'Request timed out', '网络错误': 'Network error', '模型服务返回错误': 'Model service returned an error', '连接测试失败': 'Connection test failed',
-      'connection verified': 'Connection verified', 'authentication failed': 'Authentication failed', 'request timed out': 'Request timed out', 'network error': 'Network error', 'provider returned an error': 'Model service returned an error', 'connection test failed': 'Connection test failed',
-      'claude oauth 未登录。': 'Claude OAuth is signed out.', 'claude oauth 本地凭据读取失败。': 'Could not read local Claude OAuth credentials.', 'claude oauth 需要重新登录。': 'Claude OAuth requires sign-in.', 'claude oauth 已登录。': 'Claude OAuth is signed in.', 'claude oauth 已退出登录。': 'Claude OAuth signed out.',
-      'codex oauth 未登录。': 'Codex OAuth is signed out.', 'codex oauth 本地凭据读取失败。': 'Could not read local Codex OAuth credentials.', 'codex oauth 需要重新登录。': 'Codex OAuth requires sign-in.', 'codex oauth 已登录。': 'Codex OAuth is signed in.', 'codex oauth 已退出登录。': 'Codex OAuth signed out.',
-      '当前账号无可用 codex 模型。': 'No Codex models are available for this account.', 'codex 模型列表获取失败。': 'Failed to fetch the Codex model list.',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot requires the GitHub CLI sign-in to be imported again.', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot could not read models available to this account. Verify sign-in again.', 'github copilot 登录已导入。': 'GitHub Copilot sign-in imported.', 'github copilot 连接未能保存，请重新导入登录。': 'The GitHub Copilot connection could not be saved. Import sign-in again.', 'github copilot 已移除本地登录。': 'Local GitHub Copilot sign-in removed.',
+      auth: 'Authentication failed', timeout: 'Request timed out', provider_unavailable: 'Model service returned an error', network: 'Network error', invalid_response: 'Model service returned an error', unknown: 'Connection test failed',
     },
   },
   panel: {
@@ -558,7 +708,7 @@ const enCopy: ProviderSettingsCopy = {
     cardAria: (name: string, description: string) => `Add model provider: ${name}; ${description}`,
   },
   add: {
-    invalidSlug: 'The connection identifier format is invalid', duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
+    slugIssues: { required: 'Enter a connection identifier', format: 'Connection identifiers use lowercase letters, digits, and hyphens', too_long: 'Connection identifiers are at most 64 characters' }, duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
     accountLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.',
     apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', accountTitle: 'Sign in with an account connection',
     advancedRequest: 'Advanced request settings', expandAdvancedRequest: 'Show advanced request settings', collapseAdvancedRequest: 'Hide advanced request settings',
@@ -588,6 +738,20 @@ const enCopy: ProviderSettingsCopy = {
     loggedOut: 'Signed out', credentialsCleared: 'Local credentials cleared.', logoutFailed: 'Sign-out failed', logoutFailedRetry: 'Sign-out failed. Try again later.',
     serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
     logoutTitle: (name: string) => `Sign out of ${name}?`,
+    resultCodes: {
+      copilot_classic_pat_unsupported: 'GitHub Copilot does not accept classic PATs. Use a compatible OAuth login or a fine-grained PAT with the Copilot Requests permission.',
+      copilot_credential_type_unsupported: 'This GitHub credential type is not supported. Use a compatible OAuth login or a fine-grained PAT.',
+      copilot_local_credential_missing: 'No importable GitHub credential was found. Sign in with gh or configure a compatible credential first.',
+      copilot_import_no_credential: 'The GitHub Copilot login produced no usable credential.',
+      copilot_import_superseded: 'The GitHub Copilot account changed during import. Try again.',
+      copilot_subscription_unavailable: 'This GitHub account has no usable Copilot subscription.',
+      copilot_credential_import_rejected: 'This GitHub credential could not be imported. Check it and try again.',
+      copilot_subscription_check_failed: 'Could not verify the GitHub Copilot subscription right now. Try again later.',
+      copilot_import_commit_failed: 'The GitHub Copilot login could not be committed to Runtime Host.',
+      experimental_disabled: 'This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.',
+      login_in_progress: 'A previous login is still running. Start again after it settles.',
+      presentation_failed: 'Could not open the system browser for login. Check popup blockers and try again.',
+    },
   },
   oauthSection: {
     signedIn: 'Signed in', codexDescription: 'Use a ChatGPT Plus / Pro account to add a connection.', xaiDescription: 'Use a SuperGrok or X Premium account to add a connection.',
@@ -617,4 +781,35 @@ const PROVIDER_SETTINGS_COPY = {
 
 export function getProviderSettingsCopy(locale: UiLocale): ProviderSettingsCopy {
   return PROVIDER_SETTINGS_COPY[locale];
+}
+
+export function subscriptionActionErrorMessage(error: unknown, locale: UiLocale): string {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : '';
+  return subscriptionResultMessage(message, getProviderSettingsCopy(locale).oauthFlow.serviceUnavailable, locale);
+}
+
+export type SubscriptionResultInput =
+  // `code`/`reason` stay `string` on the wire: a newer host may send a code
+  // this client does not know yet, and the guard below maps only known codes.
+  | string
+  | undefined
+  | { readonly code?: string; readonly reason?: string; readonly message?: string };
+
+export function subscriptionResultMessage(input: SubscriptionResultInput, fallback: string, locale: UiLocale): string {
+  const { code, reason, message } = typeof input === 'object' && input !== null ? input : { message: input };
+  const copy = getProviderSettingsCopy(locale).oauthFlow;
+  const mapped = lookupCopy(copy.resultCodes, code) ?? lookupCopy(copy.resultCodes, reason);
+  if (mapped) return mapped;
+  const raw = redactSecrets(message ?? '').trim();
+  if (!raw) return fallback;
+  // Prose fallback for Hosts older than the typed reasons; every Desktop-owned
+  // producer now sends a code, so nothing local depends on this wording.
+  if (/enrollment is disabled for this provider/i.test(raw)) return copy.resultCodes.experimental_disabled;
+  if (/already in progress/i.test(raw)) return copy.resultCodes.login_in_progress;
+  const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
+  return classified || fallback;
 }

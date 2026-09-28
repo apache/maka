@@ -29,6 +29,7 @@ import {
 } from '@maka/ui';
 import {
   getProviderSettingsCopy,
+  subscriptionActionErrorMessage,
   subscriptionResultMessage,
   type ConnectionOAuthProviderBridge,
   type ConnectionsBridge,
@@ -36,7 +37,6 @@ import {
 } from '../features/connection-settings';
 import {
   useOAuthLoginFlow,
-  subscriptionActionErrorMessage,
   type OAuthAuthorizationFlowBridge,
   type OAuthConnectionIdentity,
   type SubscriptionSnapshot,
@@ -256,7 +256,7 @@ function GitHubCopilotLoginPanel(props: {
       if (!result.ok) {
         flow.reportError(
           copy.copilotActionFailed,
-          subscriptionResultMessage(result.message, copy.copilotActionFailed, locale, result.reason),
+          subscriptionResultMessage(result, copy.copilotActionFailed, locale),
         );
         return;
       }

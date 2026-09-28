@@ -35,6 +35,7 @@ export interface InteractiveShellRunWriter extends ShellRunStore {
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
+  listShellRunRecoverySessionIds(): Promise<string[]>;
   close(): void;
 }
 
@@ -122,6 +123,7 @@ function createWriterFacade(
     },
     readShellRun: (sessionId, shellRunId) => run(() => store.readShellRun(sessionId, shellRunId)),
     listSessionShellRuns: (sessionId) => run(() => store.listSessionShellRuns(sessionId)),
+    listShellRunRecoverySessionIds: () => run(() => store.listShellRunRecoverySessionIds()),
     close: () => {
       if (closed) return;
       closed = true;

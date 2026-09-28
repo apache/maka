@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { bundleFromJSON, type Bundle } from '@sigstore/bundle';
-import { getTrustedRoot } from '@sigstore/tuf';
-import { toSignedEntity, toTrustMaterial, Verifier } from '@sigstore/verify';
+import type { Bundle } from '@sigstore/bundle';
 import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { basename, join } from 'node:path';
+
+const require = createRequire(import.meta.url);
 
 const PRODUCT_REPOSITORY = 'apache/maka';
 const PRODUCT_RELEASE_WORKFLOW = '.github/workflows/release-cli-finalize.yml';
@@ -228,6 +229,7 @@ function parseBundle(bytes: Uint8Array): Bundle {
     throw new Error('Update attestation is not valid JSON', { cause: error });
   }
   try {
+    const { bundleFromJSON } = require('@sigstore/bundle') as typeof import('@sigstore/bundle');
     return bundleFromJSON(serialized as Parameters<typeof bundleFromJSON>[0]);
   } catch (error) {
     throw new Error('Update attestation is not a valid Sigstore bundle', { cause: error });
@@ -290,6 +292,9 @@ export async function verifyDownloadedUpdateAttestation(
   if (options.verifyBundle) {
     await options.verifyBundle(bundle);
   } else {
+    const { getTrustedRoot } = require('@sigstore/tuf') as typeof import('@sigstore/tuf');
+    const { toSignedEntity, toTrustMaterial, Verifier } =
+      require('@sigstore/verify') as typeof import('@sigstore/verify');
     const trustedRoot = await getTrustedRoot({
       cachePath: options.trustRootCacheDirectory,
       timeout: 10_000,

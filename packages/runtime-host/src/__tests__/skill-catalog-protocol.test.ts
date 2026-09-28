@@ -172,6 +172,18 @@ describe('Runtime Host Skill catalog protocol', () => {
         result,
       },
     );
+    for (const error of [
+      { code: 'not_found', message: 'Session does not exist' },
+      { code: 'session_archived', message: 'Session is archived' },
+    ] as const) {
+      const refusal = {
+        requestId: 'request-1',
+        operation: 'skill.catalog.invocable.query',
+        ok: false,
+        error,
+      };
+      assert.deepEqual(decodeHostFrame(refusal), refusal);
+    }
     assertInvalidRequest('skill.catalog.invocable.query', {
       kind: 'start',
       target: { kind: 'new_session', context: CONTEXT, collaborationMode: 'plan' },

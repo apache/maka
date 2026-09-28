@@ -33,6 +33,7 @@
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { SHELL_WINDOW_MIN_WIDTH } from '../shared/shell-layout-contract.js';
 
 export interface SavedBounds {
   x?: number;
@@ -49,10 +50,10 @@ export interface DefaultBounds {
 
 /**
  * The minimum sensible window size, enforced both at restore (sanitizeBounds)
- * and at runtime resize (BrowserWindow minHeight). Centralized so the restore
+ * and at runtime resize (BrowserWindow minWidth/minHeight). Centralized so the restore
  * floor and the resize floor can't drift apart (#824).
  */
-export const SAFE_MIN_WIDTH = 480;
+export const SAFE_MIN_WIDTH = SHELL_WINDOW_MIN_WIDTH;
 export const SAFE_MIN_HEIGHT = 320;
 
 /**
@@ -60,7 +61,9 @@ export const SAFE_MIN_HEIGHT = 320;
  * provided defaults — no half-applied state.
  *
  * Rules:
- *   - width/height must be positive integers >= the safe minimum (480x320)
+ *   - width/height must be positive numbers; a size below the safe minimum
+ *     (600x320) clamps up to it so raising the floor does not discard an
+ *     older client's saved bounds
  *   - x/y are optional; if present, both must be finite numbers
  *   - isMaximized is forwarded as-is if boolean
  */
@@ -70,8 +73,8 @@ export function sanitizeBounds(
 ): SavedBounds {
   if (!candidate || typeof candidate !== 'object') return defaults;
   const c = candidate as Record<string, unknown>;
-  const width = typeof c.width === 'number' && c.width >= SAFE_MIN_WIDTH ? Math.floor(c.width) : null;
-  const height = typeof c.height === 'number' && c.height >= SAFE_MIN_HEIGHT ? Math.floor(c.height) : null;
+  const width = typeof c.width === 'number' && c.width > 0 ? Math.max(SAFE_MIN_WIDTH, Math.floor(c.width)) : null;
+  const height = typeof c.height === 'number' && c.height > 0 ? Math.max(SAFE_MIN_HEIGHT, Math.floor(c.height)) : null;
   if (width === null || height === null) return defaults;
 
   const out: SavedBounds = { width, height };

@@ -20,143 +20,157 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
 
-test('projects WorkHub coordination resolution through its dedicated IPC domain', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  let resolveCalls = 0;
-  const records: unknown[] = [];
-  const actions: unknown[] = [];
-  const changes: unknown[] = [];
-  const createdSessionId = 'runtime-created-session';
+test('registers the WorkHub Session projection as a reconnectable read', () => {
+  const ordinary = new Set<string>();
+  const reconnectable = new Set<string>();
+  registerRuntimeHostWorkHubIpc(
+    {} as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel) {
+        ordinary.add(channel);
+      },
+      handleReconnectableRead(channel) {
+        reconnectable.add(channel);
+      },
+    },
+    {},
+  );
+
+  assert.equal(reconnectable.has('workhub:getSession'), true);
+  assert.equal(ordinary.has('workhub:getSession'), false);
+});
+
+test('stores new-work execution defaults separately from the coordination Session', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const client = { hostId: 'host-defaults' } as Parameters<
+    typeof registerRuntimeHostWorkHubIpc
+  >[0];
+  registerRuntimeHostWorkHubIpc(
+    client,
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    {},
+  );
+  const event = { sender: { id: 7 } } as Parameters<IpcHandler>[0];
+  const read = handlers.get('workhub:getNewWorkDefaults');
+  const write = handlers.get('workhub:setNewWorkDefaults');
+  assert.ok(read);
+  assert.ok(write);
+  assert.deepEqual(await read(event), {});
+  const defaults = {
+    executorId: 'codex.app-server',
+    executorModel: 'gpt-6-astra',
+    thinkingLevel: 'high',
+  };
+  await write(event, defaults);
+  assert.deepEqual(await read(event), defaults);
+  assert.throws(
+    () => write(event, { ...defaults, permissionMode: 'bypass' }),
+    /Invalid WorkHub new-work defaults/u,
+  );
+
+  const replacementHandlers = new Map<string, IpcHandler>();
+  registerRuntimeHostWorkHubIpc(
+    { hostId: client.hostId } as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel, handler) {
+        replacementHandlers.set(channel, handler);
+      },
+    },
+    {},
+  );
+  const replacementRead = replacementHandlers.get('workhub:getNewWorkDefaults');
+  assert.ok(replacementRead);
+  assert.deepEqual(
+    await replacementRead(event),
+    defaults,
+    'replacement clients for the same Host retain the execution defaults',
+  );
+});
+
+test('returns a structured WorkHub attachment rejection across IPC', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostWorkHubIpc(
+    {} as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    {
+      attachmentIngest: {
+        approvals: {} as never,
+        stat: async () => ({ size: 0 }),
+      },
+    },
+  );
+
+  const prepareAttachments = handlers.get('workhub:prepareAttachments');
+  assert.ok(prepareAttachments);
+  const result = await prepareAttachments(
+    { sender: { id: 7 } } as Parameters<IpcHandler>[0],
+    Array.from({ length: 9 }, () => ({})),
+  );
+  assert.deepEqual(result, { ok: false, code: 'count_limit' });
+});
+
+test('returns a structured model setup state across IPC', async () => {
+  const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostWorkHubIpc(
     {
       resolveWorkHubCoordinationSession: async () => {
-        resolveCalls += 1;
-        return { sessionId: 'maka_workhub_coordination' };
-      },
-      recordWorkHubCoordination: async (input: {
-        turnId: string;
-        userText: string;
-        assistantText: string;
-      }) => {
-        records.push(input);
-        return { turnId: input.turnId };
-      },
-      listWorkHubCoordinationCandidates: async () => ({
-        candidateSetId: `sha256:${'a'.repeat(64)}`,
-        candidates: [],
-      }),
-      actWorkHubCoordination: async (input: unknown) => {
-        actions.push(input);
-        return {
-          disposition: 'create_new',
-          targetSessionId: createdSessionId,
-          targetTurnId: 'created-turn',
-        };
-      },
-    } as never,
-    {
-      handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
-        handlers.set(channel, handler);
-      },
-    } as never,
-    {
-      resolveCreateProject: async () => ({
-        kind: 'host_path',
-        path: '/tmp/workhub-project',
-      }),
-      emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
-    },
-  );
-
-  const handler = handlers.get('workhub:resolveCoordinationSession');
-  assert.ok(handler);
-  assert.deepEqual(await handler({}), { sessionId: 'maka_workhub_coordination' });
-  assert.equal(resolveCalls, 1);
-  assert.deepEqual(
-    await handlers.get('workhub:record')?.({}, {
-      turnId: 'record',
-      userText: 'Request',
-      assistantText: 'Summary',
-    }),
-    { turnId: 'record' },
-  );
-  assert.deepEqual(records, [{
-    turnId: 'record',
-    userText: 'Request',
-    assistantText: 'Summary',
-  }]);
-  assert.deepEqual(await handlers.get('workhub:candidates')?.({}), {
-    candidateSetId: `sha256:${'a'.repeat(64)}`,
-    candidates: [],
-  });
-  assert.deepEqual(
-    await handlers.get('workhub:act')?.({}, {
-      actionId: 'create-action',
-      userText: 'Start accessibility review',
-      proposal: { disposition: 'create_new', title: 'Accessibility review' },
-      create: {
-        sessionId: 'renderer-invented',
-        workspace: { kind: 'host_path', path: '/renderer-path' },
-      },
-    }),
-    {
-      ok: true,
-      result: {
-        disposition: 'create_new',
-        targetSessionId: createdSessionId,
-        targetTurnId: 'created-turn',
-      },
-    },
-  );
-  assert.deepEqual(actions, [{
-    actionId: 'create-action',
-    userText: 'Start accessibility review',
-    proposal: { disposition: 'create_new', title: 'Accessibility review' },
-    create: {
-      workspace: { kind: 'host_path', path: '/tmp/workhub-project' },
-    },
-  }]);
-  assert.deepEqual(changes, [{ reason: 'created', sessionId: createdSessionId }]);
-});
-
-test('serializes typed WorkHub action failures across Electron IPC', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  registerRuntimeHostWorkHubIpc(
-    {
-      actWorkHubCoordination: async () => {
         throw new RuntimeHostOperationError(
-          'workhub.coordination.act',
-          'operation_conflict',
-          'WorkHub action is permanently abandoned',
+          'workhub.coordination.resolve',
+          'model_required',
+          'A default model must be selected',
         );
       },
-    } as never,
+    } as unknown as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
     {
-      handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
+      handle(channel, handler) {
         handlers.set(channel, handler);
       },
-    } as never,
-    {
-      resolveCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
-      emitSessionsChanged: () => undefined,
     },
+    {},
   );
 
-  assert.deepEqual(
-    await handlers.get('workhub:act')?.({}, {
-      actionId: 'abandoned-action',
-      userText: 'Continue payment work',
-      candidateSetId: `sha256:${'a'.repeat(64)}`,
-      proposal: { disposition: 'delegate_existing', candidateRef: 'candidate' },
-    }),
+  const resolve = handlers.get('workhub:resolveCoordinationSession');
+  assert.ok(resolve);
+  const result = await resolve({ sender: { id: 7 } } as Parameters<IpcHandler>[0]);
+  assert.deepEqual(result, { kind: 'model_required' });
+});
+
+test('does not diagnose an ordinary WorkHub conflict as missing model setup', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostWorkHubIpc(
     {
-      ok: false,
-      error: {
-        code: 'operation_conflict',
-        message: 'WorkHub action is permanently abandoned',
+      resolveWorkHubCoordinationSession: async () => {
+        throw new RuntimeHostOperationError(
+          'workhub.coordination.resolve',
+          'operation_conflict',
+          'WorkHub Coordination Session requires an available default model',
+        );
+      },
+    } as unknown as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
       },
     },
+    {},
+  );
+
+  const resolve = handlers.get('workhub:resolveCoordinationSession');
+  assert.ok(resolve);
+  await assert.rejects(
+    resolve({ sender: { id: 7 } } as Parameters<IpcHandler>[0]),
+    (error) =>
+      error instanceof RuntimeHostOperationError && error.code === 'operation_conflict',
   );
 });

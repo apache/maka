@@ -52,7 +52,8 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
     }) as typeof globalThis.fetch;
     const connection = {
       slug: 'responses-relay',
-      providerType: 'openai-responses-compatible' as const,
+      providerType: 'custom' as const,
+      defaultApiProtocol: 'openai-responses' as const,
       baseUrl: 'https://relay.example/v1',
       defaultModel: 'gpt-5.6-sol',
     };
@@ -135,7 +136,7 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
         kind: 'network',
         retryable: true,
         code: 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
-        message: 'Network error',
+        message: 'closed before completion (code=OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR)',
       },
     ]);
   });
@@ -263,7 +264,8 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
     assert.equal(calls[1]?.headers?.['x-maka-openai-responses-lane'], 'turn-1');
 
     const truncated = await drain(adapter, model, [user], ['shell']);
-    assert.equal(truncated.kind, 'truncated');
+    assert.equal(truncated.kind, 'failed');
+    if (truncated.kind === 'failed') assert.equal(truncated.failure.kind, 'stream_truncated');
     assert.equal(pending, undefined);
     assert.equal(baseline, undefined);
   });

@@ -19,6 +19,8 @@
 
 # Renderer performance probes
 
+For the two manual CI lanes, raw reports, fixtures and their coverage limits, see [CI.md](./CI.md). Those lanes verify DOM events and consumer state; they do not use the legacy native-input helpers below.
+
 Measuring what a session switch costs in the running Desktop app, over CDP. The
 findings in #4109 were produced with these; they live here so the next
 measurement is a command rather than a rebuild.
@@ -52,6 +54,12 @@ node scripts/perf/session-switch-busy-js.mjs
   catches React creating a `dispatchSetState`, so a commit can be attributed to
   the `setState` that caused it.
 - `cdp-client.mjs` — the protocol client and the row-clicking helper.
+- `xterm-hidden-selection.mjs <port>` — functional regression for the patched
+  xterm CJS/ESM bundles in real Chromium: hidden selection updates must not
+  redraw rows, and showing the terminal must paint the latest selection without
+  another write. Use a disposable Electron fixture; the probe briefly embeds
+  its own terminal frame and bypasses CSP, then removes the frame and restores
+  CSP. This is a behavior check, not a performance score.
 
 ## The one rule
 

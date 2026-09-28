@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { closeSync, constants, fstatSync, lstatSync, openSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync } from 'node:fs';
 
 export interface PinnedLinuxProfilePath {
   readonly path: string;
@@ -62,6 +62,12 @@ export function pinExistingLinuxProfilePath(input: {
     closeSync(sourceFd);
   };
   try {
+    // O_NOFOLLOW only protects the last component. Check the kernel's path for
+    // the opened object too, so a replaced ancestor cannot redirect an approved
+    // canonical path. Checking the original pathname again would race anew.
+    if (process.platform === 'linux' && readlinkSync(`/proc/self/fd/${sourceFd}`) !== input.path) {
+      throw new Error(`Approved sandbox path changed before pinning: ${input.path}`);
+    }
     const metadata = fstatSync(sourceFd, { bigint: true });
     if (
       metadata.dev !== BigInt(existing.dev) ||

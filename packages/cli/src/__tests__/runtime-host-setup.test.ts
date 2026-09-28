@@ -201,7 +201,10 @@ test('on-demand setup installs one exact deployment without a service backend', 
     },
     writeOutput: (value) => outputs.push(value),
   } satisfies NonNullable<Parameters<typeof runRuntimeHostSetupCli>[1]>;
-  assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
+  assert.equal(
+    await runRuntimeHostSetupCli({ ...options, reuseExistingEnvironment: true }, overrides),
+    0,
+  );
   assert.equal(pairingAttempts, 3);
   const complete = outputs
     .map(decodeRuntimeHostSetupFrame)
@@ -280,6 +283,46 @@ test('on-demand setup installs one exact deployment without a service backend', 
     'unsupported_lifecycle_configuration',
   );
 
+  // Discovery reuses canonical identity even when a newer/older Desktop selects
+  // another package, and never opens storage, activates, pairs, or changes settings.
+  const discoveryOwner = await tryAcquireStateRootOwner(
+    await resolveStorageRoot({ path: stateRoot, kind: 'interactive' }),
+  );
+  assert.ok(discoveryOwner);
+  t.after(() => discoveryOwner.close());
+  for (const version of ['1.2.2', '1.2.3', '1.2.4']) {
+    const discovery: string[] = [];
+    assert.equal(
+      await runRuntimeHostSetupCli(
+        { ...options, version, reuseExistingEnvironment: true },
+        {
+          ...overrides,
+          resolveRegistryCandidate: async () => assert.fail('discovery must not resolve a package'),
+          prepareDeployment: async () => assert.fail('discovery must not stage a package'),
+          replaceLifecycle: async () => assert.fail('discovery must not retire a Host'),
+          activateManaged: async () => assert.fail('discovery must not activate'),
+          replaceCredential: async () => assert.fail('local environment discovery must not pair'),
+          writeOutput: (value) => discovery.push(value),
+        },
+      ),
+      0,
+    );
+    const binding = discovery
+      .map(decodeRuntimeHostSetupFrame)
+      .find((frame) => frame?.kind === 'existing_environment');
+    assert.equal(binding?.kind, 'existing_environment');
+    assert.equal(
+      binding && 'deploymentId' in binding ? binding.deploymentId : undefined,
+      complete.deploymentId,
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8')),
+      persisted,
+    );
+  }
+
+  await discoveryOwner.close();
+
   const replacementIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`;
   const replacementOptions = { ...options, version: '1.2.4' } as const;
   const replacementPackage = {
@@ -306,6 +349,36 @@ test('on-demand setup installs one exact deployment without a service backend', 
     'version_change_requires_update',
   );
 
+  const beforeBusyUpdate = await readFile(
+    resolveRuntimeHostManagedDeploymentConfigPath(rootId),
+    'utf8',
+  );
+  const busyOutputs: string[] = [];
+  assert.equal(
+    await runRuntimeHostSetupCli(
+      { ...replacementOptions, updateExisting: true },
+      {
+        ...replacementPackage,
+        replaceLifecycle: async (input) => {
+          // Model the source Host refusing retirement while a TUI owns work.
+          assert.equal(input.allowInterruptActiveTasks, false);
+          return { kind: 'active_tasks' };
+        },
+        writeOutput: (value) => busyOutputs.push(value),
+      },
+    ),
+    1,
+  );
+  assert.equal(
+    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
+    beforeBusyUpdate,
+  );
+  assert.ok(
+    busyOutputs
+      .map(decodeRuntimeHostSetupFrame)
+      .some((frame) => frame?.kind === 'error' && frame.error.code === 'active_tasks'),
+  );
+
   const replacementOutputs: string[] = [];
   let replacementAllowedInterrupt: boolean | undefined;
   assert.equal(
@@ -329,7 +402,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   ) as RuntimeHostManagedDeploymentConfig;
   assert.equal(replaced.launch.package.version, '1.2.4');
   assert.equal(replaced.launch.package.integrity, replacementIntegrity);
-  assert.equal(replacementAllowedInterrupt, true);
+  assert.equal(replacementAllowedInterrupt, false);
   assert.equal(
     replacementOutputs.map(decodeRuntimeHostSetupFrame).some((frame) => frame?.kind === 'complete'),
     true,

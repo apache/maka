@@ -77,6 +77,7 @@ export interface InspectAgentRunOptions {
   invocation?: RuntimeInvocationRecord;
   isFatalReadError?: (error: unknown) => boolean;
   includeModelReplay?: boolean;
+  includeProjection?: boolean;
 }
 
 export type AgentRunInspectReader = Pick<AgentRunStore, 'readEvents'>;
@@ -131,7 +132,7 @@ export async function inspectAgentRunReadModel(
   }
 
   const projection =
-    runtimeEvents.length > 0
+    runtimeEvents.length > 0 && options.includeProjection !== false
       ? projectRuntimeEventsToStoredMessages(runtimeEvents, { invocations: [invocation] })
       : undefined;
   if (projection) {
@@ -160,27 +161,6 @@ export async function inspectAgentRunReadModel(
     },
     diagnostics,
   };
-}
-
-export async function inspectSessionRunReadModels(
-  runStore: AgentRunInspectReader,
-  runtimeEventStore: RuntimeEventInspectReader,
-  sessionId: string,
-  options: Pick<InspectAgentRunOptions, 'isFatalReadError'> = {},
-): Promise<AgentRunInspectModel[]> {
-  const invocations = await runtimeEventStore.listSessionInvocations(sessionId);
-  const models: AgentRunInspectModel[] = [];
-  for (const invocation of invocations) {
-    models.push(
-      await inspectAgentRunReadModel(runStore, runtimeEventStore, {
-        sessionId,
-        runId: invocation.runId,
-        invocation,
-        ...(options.isFatalReadError ? { isFatalReadError: options.isFatalReadError } : {}),
-      }),
-    );
-  }
-  return models;
 }
 
 // A run is not its invocation: a continuation is a new run on the invocation it

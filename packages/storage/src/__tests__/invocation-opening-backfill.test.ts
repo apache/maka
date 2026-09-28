@@ -230,6 +230,19 @@ describe('invocation opening fact backfill', () => {
         );
         assert.equal(migrated?.turnId, 'turn-with-events');
         assert.equal(migrated?.terminalEvent, undefined);
+        const recoveryInventory = await store.listInvocationRecoveryInventory(['session-1']);
+        assert.deepEqual(
+          recoveryInventory.map((entry) => ({
+            invocationId: entry.invocationId,
+            candidate: entry.candidate?.invocationId ?? null,
+          })),
+          [
+            { invocationId: 'run-legacy-route', candidate: null },
+            { invocationId: 'run-scheduled', candidate: null },
+            { invocationId: 'run-with-events', candidate: 'run-with-events' },
+          ],
+          'the narrow inventory keeps migrated openings but decodes only recovery candidates',
+        );
       } finally {
         store.close();
       }
@@ -462,7 +475,7 @@ describe('invocation opening fact backfill', () => {
           'INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json) VALUES (?, ?, ?, ?)',
         ).run(corrupt.sessionId, corrupt.runId, corrupt.createdAt, JSON.stringify(corrupt));
         assert.throws(() => migrateSqliteRuntimeDatabase(db), /session-1\/run-corrupt-root/);
-        assert.equal(readUserVersion(db), SQLITE_RUNTIME_SCHEMA_VERSION - 1);
+        assert.equal(readUserVersion(db), 15);
         const openings = db
           .prepare(
             "SELECT COUNT(*) AS total FROM runtime_events WHERE event_kind = 'invocation_opened'",
@@ -495,11 +508,15 @@ function headerEraComposition() {
 }
 
 /**
- * Put the database back the way the header era left it: runtime schema one step
- * behind, no opening facts, and a `core_agent_runs` row that still carries the
+ * Put the database back the way the header era left it: runtime schema v15,
+ * no opening facts, and a `core_agent_runs` row that still carries the
  * header the migration under test has to read.
  */
 function rewindToHeaderEra(db: DatabaseSync): void {
+  db.exec('DROP INDEX IF EXISTS runtime_events_recovery_user_message');
+  db.exec('DROP INDEX IF EXISTS runtime_events_steering_message');
+  db.exec('DROP INDEX IF EXISTS runtime_events_tool_dispatch_operation');
+  db.exec('DROP INDEX IF EXISTS tool_operations_unsettled');
   db.exec('DROP INDEX IF EXISTS runtime_events_by_session_kind');
   db.exec('DROP INDEX IF EXISTS runtime_events_one_opening_per_invocation');
   db.exec('DROP INDEX IF EXISTS runtime_legacy_invocation_openings_by_session');
@@ -509,7 +526,8 @@ function rewindToHeaderEra(db: DatabaseSync): void {
     'ALTER TABLE runtime_continuation_claims RENAME COLUMN target_opening_json TO target_run_header_json',
   );
   db.exec('ALTER TABLE core_agent_runs ADD COLUMN record_json TEXT');
-  db.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
+  // Opening facts were introduced in v16, regardless of the current version.
+  db.exec('PRAGMA user_version = 15');
 }
 
 function readUserVersion(db: DatabaseSync): number {

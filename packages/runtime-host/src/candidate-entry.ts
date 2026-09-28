@@ -25,7 +25,6 @@ import {
 } from './candidate-startup-failure.js';
 import { createRuntimeHostLaunchOwnerGuard } from './candidate-launch-owner-guard.js';
 import { parseInteractiveRuntimeHostCandidateArguments } from './candidate-cli.js';
-import { writeCandidateStartupDiagnostic } from './control/startup-diagnostic.js';
 import { installRuntimeHostLogCapture, runtimeHostLogBuffer } from './process-diagnostics.js';
 import {
   type ExecutionRuntimeHostCandidateDependencies,
@@ -87,13 +86,19 @@ export async function runExecutionCandidateEntry(
     const logs = runtimeHostLogBuffer.snapshot();
     console.error('[runtime-host] startup failed:', error);
     if (rootId && startupAttemptId) {
-      await writeCandidateStartupDiagnostic({
-        rootId,
-        startupAttemptId,
-        failure,
-        error,
-        logs,
-      }).catch(() => undefined);
+      const diagnosticRootId = rootId;
+      const diagnosticStartupAttemptId = startupAttemptId;
+      await import('./control/startup-diagnostic.js')
+        .then(({ writeCandidateStartupDiagnostic }) =>
+          writeCandidateStartupDiagnostic({
+            rootId: diagnosticRootId,
+            startupAttemptId: diagnosticStartupAttemptId,
+            failure,
+            error,
+            logs,
+          }),
+        )
+        .catch(() => undefined);
     }
     process.exit(candidateStartupFailureExitCode(failure));
   }
@@ -102,7 +107,10 @@ export async function runExecutionCandidateEntry(
     process.exit(2);
   }
 
-  launchOwnerGuard?.bind(() => result.host.close());
+  // A launcher that disappears without releasing this Host (Desktop quit,
+  // launcher crash) is an intentional retirement of an owned ephemeral Host,
+  // not a crash — closing with the retirement reason keeps the exit truthful.
+  launchOwnerGuard?.bind(() => result.host.close({ reason: 'retirement' }));
   const stopWatch = hooks.onWon?.(result.host);
   try {
     await runRuntimeHostProcessLifecycle(result.host);

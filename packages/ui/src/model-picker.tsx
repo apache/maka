@@ -25,25 +25,20 @@
  * semantics, keyboard navigation, focus, scrolling, and popup behavior.
  */
 
-import {
-  useMemo,
-  type ReactNode,
-} from 'react';
-import {
-  Selector,
-  SelectorOption,
-  type SelectorOptionData,
-} from '@astryxdesign/core/Selector';
+import { useMemo, type ReactNode } from 'react';
+import { Selector } from '@astryxdesign/core/Selector';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { ModelMenuGroup } from './chat-model-helpers.js';
 import {
   buildModelPickerOptions,
-  buildModelPickerDescriptions,
-  buildModelPickerProviderTypes,
+  renderModelPickerOption,
+  renderModelPickerValue,
   type ModelPickerLeadingOption,
 } from './model-picker-internals.js';
+import { modelChoiceValue } from './chat-model-helpers.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
+import { usePendingSelection } from './use-pending-selection.js';
 
 export interface ModelPickerProps {
   groups: readonly ModelMenuGroup[];
@@ -51,7 +46,6 @@ export interface ModelPickerProps {
   onValueChange(value: string): void | Promise<void>;
   renderProviderMark?(type: ProviderType): ReactNode;
   disabled?: boolean;
-  loading?: boolean;
   /**
    * An ordinary option placed before the catalog for product values such as
    * “not set” or a current model that is no longer listed. Astryx search treats
@@ -63,62 +57,47 @@ export interface ModelPickerProps {
   ariaLabel: string;
 }
 
+const slugScopedValue = (choice: ModelMenuGroup['choices'][number]) =>
+  modelChoiceValue(choice.connectionSlug, choice.model);
+
 export function ModelPicker(props: ModelPickerProps) {
   const locale = useUiLocale();
   const copy = getSharedUiCopy(locale).modelPicker;
 
   const options = useMemo(
-    () => buildModelPickerOptions(props.groups, props.leadingOption),
-    [props.groups, props.leadingOption],
-  );
-  const providerTypes = useMemo(
-    () => buildModelPickerProviderTypes(props.groups, props.leadingOption),
-    [props.groups, props.leadingOption],
-  );
-  const descriptions = useMemo(
-    () => buildModelPickerDescriptions(props.groups, locale),
-    [locale, props.groups],
+    () =>
+      buildModelPickerOptions(props.groups, props.leadingOption, slugScopedValue, props.renderProviderMark),
+    [props.groups, props.leadingOption, props.renderProviderMark],
   );
 
-  // size=md matches the other settings-row selectors. Settings is the only
-  // production host since the composer footer moved to ghost DropdownMenus,
-  // so the size is a fact of the component, not a prop.
+  // Reflect the pick immediately and hold it until the caller's write settles,
+  // then defer to the authoritative `value`. See usePendingSelection.
+  const selection = usePendingSelection(props.value, props.onValueChange);
+
+  // size=md matches the other settings-row selectors, so the size is a fact
+  // of the component, not a prop.
   return (
     <div className="maka-model-picker-root">
       <Selector
         label={props.ariaLabel}
         isLabelHidden
         options={options}
-        value={props.value}
+        value={selection.value}
         hasSearch
         searchPlaceholder={props.searchPlaceholder ?? copy.searchPlaceholder}
         size="md"
         placement="above"
         isDisabled={props.disabled}
-        isLoading={props.loading}
         className={props.triggerClassName}
-        changeAction={props.onValueChange}
-        renderOption={(option: SelectorOptionData) => {
-          const providerType = providerTypes.get(option.value);
-          const providerMark =
-            providerType && props.renderProviderMark ? (
-              <span
-                className="modelPickerProviderMark"
-                data-provider={providerType}
-                aria-hidden="true"
-              >
-                {props.renderProviderMark(providerType)}
-              </span>
-            ) : undefined;
-          return (
-            <SelectorOption
-              className="modelPickerOption"
-              icon={providerMark}
-              label={<span className="modelPickerOptionLabel">{option.label ?? option.value}</span>}
-              description={descriptions.get(option.value)}
-            />
-          );
-        }}
+        // `onChange`, not `changeAction`: the async `changeAction` path wraps
+        // the caller's save in a transition and spins the trigger (Astryx's
+        // built-in optimistic `isBusy`) for the whole round-trip. On the
+        // fire-and-forget `onChange` path the trigger never enters that busy
+        // state; usePendingSelection shows the pick at once and settles it when
+        // the write finishes.
+        onChange={selection.onChange}
+        renderOption={renderModelPickerOption}
+        renderValue={renderModelPickerValue}
       />
     </div>
   );

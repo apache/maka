@@ -1079,6 +1079,18 @@ function slugId(title: string): string {
   return slug.length > 0 ? slug : 'memory-entry';
 }
 
+export type LocalMemoryOperationCode =
+  | 'no_backup'
+  | 'invalid_backup_kind'
+  | 'memory_unavailable'
+  | 'backup_not_found'
+  | 'remote_host_owned'
+  | 'not_regular_file'
+  | 'open_failed'
+  | 'file_not_found'
+  | 'revision_conflict'
+  | 'backup_revision_conflict';
+
 function hexSha256(sha256: Sha256Digest, input: string): string {
   return Array.from(sha256.digest(input), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }

@@ -93,6 +93,10 @@ describe('Linux filesystem worker smoke', { skip }, () => {
     assert.deepEqual(read, {
       kind: 'read',
       content: 'export const healthSignal = true;\n',
+      offset: 0,
+      returnedLines: 2,
+      totalLines: 2,
+      next: null,
     });
 
     // Capture the identity at T0 (the boundary executor does this in
@@ -124,7 +128,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       mode: 'ask',
       expectedIdentity: 'unchecked',
     });
-    assert.deepEqual(glob, { kind: 'glob', files: ['health.ts'] });
+    assert.deepEqual(glob, { kind: 'glob', files: ['health.ts'], truncated: false });
 
     const grep = await client.execute({
       operation: {

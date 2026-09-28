@@ -219,7 +219,11 @@ function truncateUtf8(text: string, maxBytes: number): string {
   const ellipsis = '…';
   const ellipsisBytes = Buffer.byteLength(ellipsis, 'utf8');
   if (maxBytes < ellipsisBytes) return '';
-  const codePoints = Array.from(text);
+  const codePoints: string[] = [];
+  for (const point of text) {
+    if (codePoints.length >= maxBytes) break;
+    codePoints.push(point);
+  }
   let low = 0;
   let high = codePoints.length;
   let best = ellipsis;

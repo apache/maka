@@ -65,6 +65,7 @@ import {
   type ResponseFrame,
 } from './operations.js';
 import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
+import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
 export * from './agent-graph.js';
@@ -83,6 +84,7 @@ export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
 export * from './message.js';
+export * from './queue-mutation.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
@@ -96,12 +98,163 @@ export * from './session-todo.js';
 export * from './workspace.js';
 export * from './workhub-coordination.js';
 export * from './websocket-path.js';
+export { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 198 as const;
+// 198: Executor readiness exposes explicit restore, restore-failed and history-gap states.
+// 197: Queue reorder requests carry the expected queue revision. Epoch-196
+// peers reject the required field or send an unfenced reorder request.
+// 196: `turn.start` carries an optional durable external-message origin; older
+// peers would drop activation provenance and misclassify automated turns.
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
+// 194: Session catalog live run state may carry the runtime's run epoch, which
+// lets clients order same-revision reads. Epoch-193 peers reject the unknown
+// key, so a newer Desktop against an older Host loses session catalog reads.
+// 193: Queue reorder requests require at least one entry identity. Epoch-192
+// peers can send an empty reorder request that the current Host rejects.
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
+// 191: Session catalog change frames can carry attention events.
+// 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
+// 189: Remove form_interaction transcript messages and the transcript_changed close reason.
+// 188: Session capability replacement can require an atomic idle root check;
+// complete MCP configuration identities fence conflicting providers across ACP clients.
+// 187: transcript_changed closes a subscription for automatic bounded-tail reseeding.
+// 186: Settled form/question history adds form_interaction transcript messages.
+// 185: Add the bounded next-prompt suggestion operation.
+// 184: the unified `custom` provider type and its defaultApiProtocol require matching peers.
+// 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
+// 182: Executor catalogs expose structured model families and thinking variant IDs.
+// 181: Canonical executor models and retained provider stop reasons after cancellation.
+// 180: Reject contradictory executor configuration and legacy model targets.
+// 179: Generic executor discovery and confirmed per-Session configuration.
+// 178: WorkHub result turns carry a Host-owned workhub_result origin. Older
+// Clients reject that origin and cannot render the result notification.
+// 177: External Session import input may carry an optional Host-resolved
+// workspace target. Epoch-176 peers reject the unknown `workspace` key.
+// 176: Session-scoped capability publication and MCP admission require compatible
+// Client and Host builds; older peers do not enforce their isolation contract.
+// 175: WorkHub coordinator model configuration again accepts only native
+// explicit targets. Epoch-174 peers may send an executor target it must reject.
+// 174: WorkHub new-Work defaults may select an executor-specific model and
+// thinking level. Epoch-173 peers reject these fields on strict action shapes.
+// 173: Plugin executor Sessions may select an executor-specific model at
+// creation and configuration time, and propagate its reasoning effort.
+// 172: Usage screen requests and results accept fractional timestamps in the
+// persisted domain. Older peers reject these otherwise valid wire values.
+// 171: Removed the `connection.usage.read` operation along with the Command
+// Code GO provider it served. A peer older than this epoch may still advertise
+// or submit that operation, which this Host no longer answers.
+// 169: The message execution query reports an identity the Host can prove was
+// never admitted as a positive `not_admitted` resolution instead of omitting
+// it, so silence stops meaning both "not admitted" and "cannot say yet".
+// Epoch-168 peers reject the new state as an invalid frame.
+// 167: Removed the turn.regenerate operation. Older peers can no longer
+// safely interoperate because they may submit or advertise that operation.
+// 166: Connection usage reads add an operation, an accepted availability reason
+// (`unauthorized`), a report field (`partiallyUnauthorized`), and a bounded
+// window list. Peers older than this epoch take the added operation for an
+// unknown key and reject the new reason and field.
+// 165: WorkHub coordination resolve adds a model_required error code. Older
+// peers reject the new operation outcome rather than misdiagnosing prose.
+// 164: Client Plugin bundles, desktop-ui composition, generation-fenced Host
+// Remote calls, and pull streams are projected through strict Host contracts.
+// 163: Session reference quotes carry strict capture and truncation provenance.
+// Epoch-162 peers reject the added QuoteRef fields.
+// 162: Runtime Resource control and stop replies drop the unused resource
+// snapshot; start replies allow compact state. Older peers require snapshots.
+// 161: Session transcript reads return the whole transcript under a byte budget,
+// and every page says whether it stops between two Turns. The windowed read's
+// range edges are gone, and the Turn landmark query takes a Turn to look up, so
+// a peer older than this epoch asks for what this Host no longer answers.
+// 160: Usage queries add revision-consistent screens and revision-bound activity pages.
+// 159: External Session catalog queries distinguish adapter source limits from
+// persistence failures. Older Clients reject the new closed error code.
+// 158: Session transcripts advance per committed RuntimeEvent; the active overlay is gone.
+// 154: External Session import results distinguish committed Sessions from typed source limits.
+// 153: Sessions may select plugin executors and Plugin Platform queries expose them.
+// 152: Assistant completions and transcript rows preserve interrupted responses.
+// 151: WorkHub selects and delegates through a durable Host Form interaction.
+// 150: Message admission accepts an empty-text Message that carries a quote or
+// an attachment (#4804). Peers older than this epoch reject that frame at
+// admission, so the pair must refuse each other at the handshake.
+// 149: Connection model overrides retain disabled identities and separate capacity
+// from compaction. Catalog entries carry overrides; clients do not rebuild them.
+// 148: Model catalog entries include image support before a user override.
+// 147: OAuth create targets may carry a caller-selected Connection name and
+// slug, and slug collisions remain a closed typed error before or after
+// authorization. Older peers reject those strict input and output shapes.
+// 146: Code Mode settings and Session tool mode join the epoch-145 Host contract.
+// 145: Combine Antigravity setup with Session bundle Host operations and explicit
+// missing/archived Skill query refusals.
+// 144: Antigravity setup combined with explicit missing/archived Skill query refusals.
+// 143: Session bundle export and import are Host operations. Pre-merge Antigravity
+// builds also advertised 143 without this contract and remain incompatible.
+
+// 142: Invocable Skill queries expose missing and archived Session refusals explicitly.
+// 141: WorkHub root admissions bind model Intent/Recall decisions before actions.
+// 140: Plugin Platform queries expose scoped Command contribution projections.
+// Epoch-139 peers reject the added query view and result shape.
+// 139: WorkHub recovery preserves the Host-authenticated Desktop capability binding.
+// 138: Removes the unused steering display anchor from canonical MessageContent.
+// 137: Reserved by the former display anchor contract.
+// 136: WorkHub transient proposals distinguish routing dispositions from linked
+// operations. Older peers expect replace/stop_work/resume_work dispositions.
+// 135: WorkHub model Turns replace direct action proposals with active-Turn task tools.
+// 134: Coordination actions own real Runtime Turns. Removes the synthetic record
+// operation, projects typed action receipts and admitted action identities, and
+// distinguishes stale candidate refusals and resumable transcript preparation.
+// 133: WorkHub actions carry attachments and new-Work model/permission defaults.
+// Epoch-132 peers reject these additional fields on strict action shapes.
+// 132: new Tool Result archives use versioned ledger references, not Artifact payloads.
+// 131: Logical model steps bind durable Request Composition identities.
+// 130: Turn contributions carry the optional bounded `failureMessage` diagnostic.
+// Epoch-129 peers reject this added field on the strict contribution shape.
+// 129: Turn states and Turn records drop `partialOutputRetained`. The fact was
+// derived twice — once from the Turn's output rows, once off the state message
+// — and read by nothing; older peers require the field on both.
+// 128: Session transcript bootstraps drop `durableCoverage`. A durable sequence
+// is an event ordinal times its stride, so no projection has contiguous
+// sequences any more and the claim the field made is unavailable to make.
+// 127: Session Turn contributions carry only the Turn's recorded state. Older
+// peers require the derived shape booleans this projection no longer sends.
+// 126: Durable transcript cursors seek Session event ordinals instead of run indexes.
+// 125: Live Turn snapshots carry an optional `rootExecutionKind:'context_compact'`
+// so a running context-compaction Turn can render a transcript row. Epoch-124
+// peers reject the added optional field on the strict live snapshot shape.
+// 124: PTY delivery is independent of the ordered Session state stream. A
+// bounded PTY overflow requests terminal-only snapshot recovery.
+// 123: Failed turns carry canonical retry decisions through bounded projections.
+// 122: Authenticated physical handoff continuations retain logical Turn identity.
+// Older peers cannot decode the handoff source and sealed invocation facts.
+// 121: Host diagnostics report `upgradeBlockingActivity`, the Host's
+// authoritative activity answer for maintenance probes, computed by the same
+// authority that gates `host.upgrade.prepare`. Older Clients reject the
+// unknown key when decoding diagnostics, so the pair must refuse each other
+// at the handshake.
+// 120: WorkHub admits named resume proposals with an explicit resumesActionId
+// and returns a transient resume outcome. Older peers cannot decode this action.
+// 119: Session Guest principals expose optional display names and an owner-only
+// rename command. Older peers reject named principal projections.
+// 118: External-session import publishes distinct `model_unavailable` and
+// `source_unreadable` error codes so the shell classifies failures by code
+// instead of the redacted message. Older peers cannot decode the new codes.
+// 117: WorkHub exposes only one correction linkage per bounded candidate and
+// no longer returns the Host's complete active-link set.
+// 116: User deletion rejects workflow-owned Artifacts with operation_conflict.
+// 115: Artifact creation requires explicit source ownership.
+// 114: Artifacts are physically deleted and no longer expose tombstone status.
+// 113: Client Capability tool schemas add `patternProperties` and draft-07 tuple
+// `additionalItems`; validation and projection share one per-keyword shape table.
+// Older peers reject these keywords and fail the handshake.
+
 // 112: Owners can query the Host execution environment through an extensible,
 // bounded resource-envelope contract. Older Hosts do not implement the query.
 // 111: Client Capability tool schemas may use draft-07 tuple additionalItems.
@@ -304,8 +457,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
 // 41: Context compaction returns a typed terminal outcome on both Turn
 // snapshots and context.compact results. Epoch-40 peers reject these closed
 // shapes after admission, so mixed peers must fail during the handshake.
-// 40: The message queue gains per-entry mutation operations
-// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
+// 40: Queue entries become independently addressable for promotion,
+// retraction, and ordering. Epoch-39 peers do not recognize those commands.
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a
@@ -338,7 +491,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
 // one transport message; narrower domains retain their own encoded limits.
 export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 768 * 1024;
 export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
-export const INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID = 'maka.interactive' as const;
 
 declare const encodedProtocolMessageBrand: unique symbol;
 
@@ -360,6 +512,8 @@ export interface ClientHello {
   compositionId: string;
   generation?: string;
   takeover?: { expectedHostEpoch: string };
+  /** Opt in before a Host adds maintenance evidence to the strict activity record. */
+  activitySnapshotVersion?: 2;
 }
 
 export interface HostAccepted {
@@ -372,6 +526,7 @@ export interface HostAccepted {
   compositionId: string;
   compositionRevision: string;
   state: Exclude<HostLifecycleState, 'draining'>;
+  cooperativeHandoff?: true;
 }
 
 export interface HostIncompatible {
@@ -468,6 +623,7 @@ export function decodeClientFrame(value: unknown): ClientFrame {
     }
     return {
       kind: 'hello',
+      ...(frame.activitySnapshotVersion === 2 ? { activitySnapshotVersion: 2 as const } : {}),
       clientInstanceId: requireClientInstanceId(frame.clientInstanceId),
       protocolMin,
       protocolMax,
@@ -486,8 +642,12 @@ export function decodeClientFrame(value: unknown): ClientFrame {
 export function decodeHostFrame(value: unknown): HostFrame {
   const frame = requireRecord(value, 'host frame');
   if (frame.kind === 'accepted') {
+    if (frame.cooperativeHandoff !== undefined && frame.cooperativeHandoff !== true) {
+      throw invalidProtocolFrame('Invalid Runtime Host cooperative handoff capability');
+    }
     return {
       kind: 'accepted',
+      ...(frame.cooperativeHandoff === true ? { cooperativeHandoff: true as const } : {}),
       rootId: requireHostRootId(frame.rootId),
       hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
       connectionId: requireId(frame.connectionId, 'connectionId'),

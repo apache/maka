@@ -5,6 +5,8 @@
     { "path": "packages/storage" },
     { "path": "packages/mcp" },
     { "path": "packages/runtime" },
+    { "path": "packages/acp-executor-plugin" },
+    { "path": "packages/antigravity-acp-plugin" },
     { "path": "packages/runtime-host" },
     { "path": "packages/computer-use" },
     { "path": "packages/ui" }

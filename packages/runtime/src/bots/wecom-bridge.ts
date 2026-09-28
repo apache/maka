@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { WSClient, type TextMessage, type WsFrame } from '@wecom/aibot-node-sdk';
+import { createRequire } from 'node:module';
+import type { WSClient, TextMessage, WsFrame } from '@wecom/aibot-node-sdk';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
 
@@ -84,63 +84,67 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
     const botId = this.settings.appId?.trim() ?? '';
     const secret = this.settings.appSecret?.trim() ?? '';
     if (!botId || !secret) {
-      this.reason = 'no-credentials';
+      this.reason = 'wecom_credentials_missing';
       this.readiness = 'scaffolded';
       this.emitStatusChange();
       return;
     }
 
     this.explicitlyStopped = false;
-    const client = new WSClient({
-      botId,
-      secret,
-      maxReconnectAttempts: -1,
-      logger: quietLogger,
-    });
-    this.client = client;
-    this.wire(client, botId);
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const onAuthenticated = () => finish(resolve);
-      const onError = (error: Error) => finish(() => reject(error));
-      const cleanup = () => {
-        clearTimeout(timer);
-        client.off('authenticated', onAuthenticated);
-        client.off('error', onError);
-      };
-      const finish = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        fn();
-      };
-      const timer = setTimeout(
-        () => finish(() => reject(new Error('WeCom authentication timed out'))),
-        AUTH_TIMEOUT_MS,
-      );
-      client.once('authenticated', onAuthenticated);
-      client.once('error', onError);
-      client.connect();
-    })
-      .then(() => {
-        if (this.explicitlyStopped || this.client !== client) return;
-        this.running = true;
-        this.startedAt = Date.now();
-        this.identity = { id: botId, username: botId, displayName: botId };
-        this.reason = undefined;
-        this.readiness = 'credentials_valid';
-        this.emitStatusChange();
-      })
-      .catch((error) => {
-        if (this.explicitlyStopped || this.client !== client) return;
-        this.running = false;
-        this.reason = generalizedErrorMessage(error);
-        this.readiness = 'configured';
-        this.emitStatusChange();
-        this.client = null;
-        closeWeComClient(client);
+    let startedClient: WSClient | undefined;
+    try {
+      const { WSClient } = createRequire(import.meta.url)(
+        '@wecom/aibot-node-sdk',
+      ) as typeof import('@wecom/aibot-node-sdk');
+      const client = new WSClient({
+        botId,
+        secret,
+        maxReconnectAttempts: -1,
+        logger: quietLogger,
       });
+      startedClient = client;
+      this.client = client;
+      this.wire(client, botId);
+
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const onAuthenticated = () => finish(resolve);
+        const onError = (error: Error) => finish(() => reject(error));
+        const cleanup = () => {
+          clearTimeout(timer);
+          client.off('authenticated', onAuthenticated);
+          client.off('error', onError);
+        };
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fn();
+        };
+        const timer = setTimeout(
+          () => finish(() => reject(new Error('WeCom authentication timed out'))),
+          AUTH_TIMEOUT_MS,
+        );
+        client.once('authenticated', onAuthenticated);
+        client.once('error', onError);
+        client.connect();
+      });
+      if (this.explicitlyStopped || this.client !== client) return;
+      this.running = true;
+      this.startedAt = Date.now();
+      this.identity = { id: botId, username: botId, displayName: botId };
+      this.reason = undefined;
+      this.readiness = 'credentials_valid';
+      this.emitStatusChange();
+    } catch (error) {
+      if (this.explicitlyStopped || (startedClient && this.client !== startedClient)) return;
+      this.running = false;
+      this.recordFailure(error);
+      this.readiness = 'configured';
+      this.emitStatusChange();
+      this.client = null;
+      if (startedClient) closeWeComClient(startedClient);
+    }
   }
 
   async stop(): Promise<void> {
@@ -173,7 +177,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
       return response.headers?.req_id ?? null;
     } catch (error) {
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error, 'send-failed');
       this.emitStatusChange();
       return null;
     }
@@ -214,7 +218,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
     client.on('disconnected', (reason) => {
       if (this.client !== client || this.explicitlyStopped) return;
       this.running = false;
-      this.reason = reason || 'disconnected';
+      this.recordFailure(reason || 'disconnected', 'disconnected');
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'configured';
       this.emitStatusChange();
     });
@@ -225,7 +229,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
     });
     client.on('error', (error) => {
       if (this.client !== client || this.explicitlyStopped) return;
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'configured';
       this.emitStatusChange();
     });

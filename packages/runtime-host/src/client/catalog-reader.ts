@@ -24,8 +24,8 @@ import {
   type ConnectionCatalogPageItem,
   type ConnectionCatalogQueryResult,
   type ModelCatalogEntry,
-  type RelayModelProfile,
-  type RelayModelProfiles,
+  type ModelOverride,
+  type ModelOverrides,
   type SessionCatalogItem,
   type SessionCatalogRevision,
   type SkillCatalogWorkspaceContext,
@@ -64,7 +64,7 @@ export type RuntimeHostConnectionCatalogEntry = Omit<
   readonly models: readonly Extract<ConnectionCatalogPageItem, { kind: 'model' }>['model'][];
   /** The connection's models as the Host resolved them, in catalog order. */
   readonly catalogEntries: readonly ModelCatalogEntry[];
-  readonly relayModelProfiles?: RelayModelProfiles;
+  readonly modelOverrides?: ModelOverrides;
 };
 
 export interface RuntimeHostConnectionCatalogSnapshot {
@@ -482,7 +482,7 @@ function assembleConnectionCatalog(
       enabledModelIds: Map<number, string>;
       models: Map<number, RuntimeHostConnectionCatalogEntry['models'][number]>;
       catalogEntries: Map<number, ModelCatalogEntry>;
-      relayProfiles: Map<string, RelayModelProfile>;
+      modelOverrides: Map<string, ModelOverride>;
     }
   >();
   for (const item of items) {
@@ -495,7 +495,7 @@ function assembleConnectionCatalog(
       enabledModelIds: new Map(),
       models: new Map(),
       catalogEntries: new Map(),
-      relayProfiles: new Map(),
+      modelOverrides: new Map(),
     });
   }
   for (const item of items) {
@@ -519,13 +519,12 @@ function assembleConnectionCatalog(
     }
     if (item.kind === 'enabled_model_id') {
       entry.enabledModelIds.set(item.itemIndex, item.modelId);
-      // Reassemble the profile table the projector spread across items; the
-      // downstream type is the per-model map, not the wire's per-item shape.
-      if (item.relayProfile !== undefined) entry.relayProfiles.set(item.modelId, item.relayProfile);
     } else if (item.kind === 'model') {
       entry.models.set(item.itemIndex, item.model);
     } else {
       entry.catalogEntries.set(item.itemIndex, item.entry);
+      if (item.modelOverride !== undefined)
+        entry.modelOverrides.set(item.entry.id, item.modelOverride);
     }
   }
   if (entries.size !== first.connectionCount) {
@@ -554,9 +553,9 @@ function assembleConnectionCatalog(
         enabledModelIds: orderedValues(entry.enabledModelIds),
         models: orderedValues(entry.models),
         catalogEntries: orderedValues(entry.catalogEntries),
-        ...(entry.relayProfiles.size === 0
+        ...(entry.modelOverrides.size === 0
           ? {}
-          : { relayModelProfiles: Object.fromEntries(entry.relayProfiles) }),
+          : { modelOverrides: Object.fromEntries(entry.modelOverrides) }),
       };
     });
   return { revision: first.revision, defaultTarget: first.defaultTarget, connections };

@@ -23,12 +23,18 @@ import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import type {
   BotOnboardingBrand,
+  BotOnboardingErrorCode,
   BotOnboardingProvider,
+  BotOnboardingRetryFailureCategory,
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   BotOnboardingState,
 } from '@maka/core/bot-onboarding';
-import { generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import {
+  classifyGeneralizedError,
+  generalizedErrorMessageForLocale,
+  redactSecrets,
+} from '@maka/core/redaction';
 import { isBotOnboardingBrand, isBotOnboardingProvider } from '@maka/core/bot-onboarding';
 import type { BotRegistry } from '@maka/runtime/bots';
 import { proxiedFetch } from '@maka/runtime/bots';
@@ -99,9 +105,12 @@ interface BotOnboardingSession {
   controller: AbortController;
   pollPromise?: Promise<BotOnboardingSnapshot>;
   pollFailures: number;
+  pollFailureCategory?: BotOnboardingRetryFailureCategory;
   identity?: { id?: string; displayName?: string };
   error?: string;
-  warning?: string;
+  errorCode?: BotOnboardingErrorCode;
+  warningCode?: 'saved_not_connected';
+  warningDetail?: string;
 }
 
 export interface BotOnboardingServiceDeps {
@@ -182,7 +191,7 @@ export class BotOnboardingService {
       session.verificationUrl = result.verificationUrl;
       session.pollIntervalMs = clampPollInterval(result.pollIntervalMs);
       session.expiresAt = this.now() + Math.max(1, result.expiresInSeconds) * 1_000;
-      session.nextPollAt = this.now() + session.pollIntervalMs;
+      this.scheduleNextPoll(session);
       session.state = 'waiting';
       // PR1197 review (P2-13): the QR data URL is large; emit it only on the
       // start snapshot. The modal caches it and every subsequent poll snapshot
@@ -195,7 +204,8 @@ export class BotOnboardingService {
       }
       session.state = 'error';
       session.error = safeProviderError(error);
-      throw new Error(session.error);
+      session.errorCode = providerErrorCode(error);
+      return this.snapshot(session, true);
     }
   }
 
@@ -206,6 +216,7 @@ export class BotOnboardingService {
     }
     if (session.expiresAt !== undefined && session.expiresAt <= this.now()) {
       session.state = 'expired';
+      this.clearRetryHealth(session);
       return this.snapshot(session);
     }
     if (session.nextPollAt > this.now()) return this.snapshot(session);
@@ -240,24 +251,26 @@ export class BotOnboardingService {
   }
 
   private async pollOnce(session: BotOnboardingSession): Promise<BotOnboardingSnapshot> {
+    let providerPollSettled = false;
     try {
       const result = await this.adapters[session.provider].poll(session, session.controller.signal);
+      providerPollSettled = true;
       this.assertCurrent(session);
       // A response of any kind clears the transient-failure streak.
-      session.pollFailures = 0;
+      this.clearRetryHealth(session);
       switch (result.status) {
         case 'pending':
           session.state = 'waiting';
-          session.nextPollAt = this.now() + session.pollIntervalMs;
+          this.scheduleNextPoll(session);
           break;
         case 'scanned':
           session.state = 'scanned';
-          session.nextPollAt = this.now() + session.pollIntervalMs;
+          this.scheduleNextPoll(session);
           break;
         case 'slow_down':
           session.state = 'waiting';
           session.pollIntervalMs = Math.min(session.pollIntervalMs + 5_000, MAX_POLL_INTERVAL_MS);
-          session.nextPollAt = this.now() + session.pollIntervalMs;
+          this.scheduleNextPoll(session);
           break;
         case 'expired':
           session.state = 'expired';
@@ -279,7 +292,9 @@ export class BotOnboardingService {
           // bridge is not running, surface an honest warning instead of lying
           // about a healthy connection. Onboarding still succeeds — the user can
           // retry the connection later from settings.
-          session.warning = this.connectionWarning(session.provider);
+          const warning = this.connectionWarning(session.provider);
+          session.warningCode = warning?.code;
+          session.warningDetail = warning?.detail;
           break;
       }
       return this.snapshot(session);
@@ -294,16 +309,24 @@ export class BotOnboardingService {
       // retry with backoff until enough CONSECUTIVE failures accumulate; only
       // then surface a terminal error. A definite provider/protocol error is
       // fatal immediately.
-      if (isTransientPollError(error)) {
+      const failureCategory = providerPollSettled ? undefined : classifyTransientPollError(error);
+      if (failureCategory) {
+        if (session.expiresAt !== undefined && session.expiresAt <= this.now()) {
+          this.clearRetryHealth(session);
+          session.state = 'expired';
+          return this.snapshot(session);
+        }
         session.pollFailures += 1;
         if (session.pollFailures < MAX_CONSECUTIVE_POLL_FAILURES) {
           session.pollIntervalMs = Math.min(session.pollIntervalMs + 2_000, MAX_POLL_INTERVAL_MS);
-          session.nextPollAt = this.now() + session.pollIntervalMs;
+          session.pollFailureCategory = this.scheduleNextPoll(session) ? failureCategory : undefined;
           return this.snapshot(session);
         }
       }
+      this.clearRetryHealth(session);
       session.state = 'error';
       session.error = safeProviderError(error);
+      session.errorCode = providerErrorCode(error);
       return this.snapshot(session);
     }
   }
@@ -386,13 +409,13 @@ export class BotOnboardingService {
    * honest, secret-free notice when the credentials were saved but the bridge
    * is not actually running, or `undefined` when the connection is healthy.
    */
-  private connectionWarning(provider: BotOnboardingProvider): string | undefined {
+  private connectionWarning(
+    provider: BotOnboardingProvider,
+  ): { code: 'saved_not_connected'; detail?: string } | undefined {
     const status = this.readChannelStatus(provider);
     if (status.running) return undefined;
-    const reason = connectionFailureReason(status.reason);
-    return reason
-      ? `凭据已保存，但连接未建立：${reason}，可稍后在设置中重试。`
-      : '凭据已保存，但连接未建立，可稍后在设置中重试。';
+    const detail = connectionFailureReason(status.reason);
+    return { code: 'saved_not_connected', ...(detail ? { detail } : {}) };
   }
 
   private getSession(rawSessionId: unknown): BotOnboardingSession {
@@ -421,6 +444,7 @@ export class BotOnboardingService {
 
   private cancelSession(session: BotOnboardingSession): void {
     if (!session.controller.signal.aborted) session.controller.abort();
+    this.clearRetryHealth(session);
     if (session.state !== 'connected' && session.state !== 'expired' && session.state !== 'denied') {
       session.state = 'cancelled';
     }
@@ -438,6 +462,18 @@ export class BotOnboardingService {
     if (!this.isCurrent(session)) throw new Error('Bot onboarding session is no longer active');
   }
 
+  /** Return true only when the next provider poll can run before QR expiry. */
+  private scheduleNextPoll(session: BotOnboardingSession): boolean {
+    const retryAt = this.now() + session.pollIntervalMs;
+    session.nextPollAt = Math.min(retryAt, session.expiresAt ?? retryAt);
+    return session.expiresAt === undefined || retryAt < session.expiresAt;
+  }
+
+  private clearRetryHealth(session: BotOnboardingSession): void {
+    session.pollFailures = 0;
+    session.pollFailureCategory = undefined;
+  }
+
   private snapshot(session: BotOnboardingSession, includeQrCode = false): BotOnboardingSnapshot {
     const state = session.state === 'starting' ? 'waiting' : session.state;
     return {
@@ -448,10 +484,20 @@ export class BotOnboardingService {
       ...(includeQrCode && session.qrCodeDataUrl ? { qrCodeDataUrl: session.qrCodeDataUrl } : {}),
       ...(session.expiresAt !== undefined ? { expiresAt: session.expiresAt } : {}),
       nextPollAfterMs: Math.max(0, session.nextPollAt - this.now()),
+      ...(session.pollFailureCategory && session.pollFailures > 0
+        ? {
+            retryHealth: {
+              category: session.pollFailureCategory,
+              consecutiveFailures: session.pollFailures,
+            },
+          }
+        : {}),
       canOpenInBrowser: Boolean(session.verificationUrl),
       ...(session.identity ? { identity: { ...session.identity } } : {}),
       ...(session.error ? { error: session.error } : {}),
-      ...(session.warning ? { warning: session.warning } : {}),
+      ...(session.errorCode ? { errorCode: session.errorCode } : {}),
+      ...(session.warningCode ? { warningCode: session.warningCode } : {}),
+      ...(session.warningDetail ? { warningDetail: session.warningDetail } : {}),
     };
   }
 }
@@ -478,12 +524,17 @@ function clampPollInterval(value: number): number {
   return Math.min(Math.max(Math.round(value), 1_000), MAX_POLL_INTERVAL_MS);
 }
 
+function providerErrorCode(error: unknown): BotOnboardingErrorCode {
+  if (error instanceof Error && error.name === 'AbortError') return 'cancelled';
+  return classifyGeneralizedError(error) ?? 'unavailable';
+}
+
 function safeProviderError(error: unknown): string {
   if (error instanceof Error && error.name === 'AbortError') return '扫码接入已取消。';
   // PR1197 review (P2-11): route through the shared categorizer so 超时 / 鉴权失败 /
   // 网络错误 survive as specific Chinese copy instead of collapsing to one generic
   // line. The helper redacts secrets before returning.
-  return generalizedErrorMessageChinese(error, '扫码接入暂时不可用，请稍后重试。');
+  return generalizedErrorMessageForLocale(error, '扫码接入暂时不可用，请稍后重试。', 'zh-CN');
 }
 
 /**
@@ -491,19 +542,21 @@ function safeProviderError(error: unknown): string {
  * fault, server 5xx, or 429 rate limit) versus a fatal provider/protocol error.
  * User-initiated aborts are filtered out before this runs.
  */
-function isTransientPollError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if (error.name === 'TimeoutError' || error.name === 'AbortError') return true;
+function classifyTransientPollError(error: unknown): BotOnboardingRetryFailureCategory | undefined {
+  if (!(error instanceof Error)) return undefined;
+  if (error.name === 'TimeoutError' || error.name === 'AbortError') return 'timeout';
   const message = error.message.toLowerCase();
-  if (/fetch failed|network|socket|econn|enotfound|eai_again|und_err|timeout|timed out/.test(message)) {
-    return true;
-  }
+  if (/timeout|timed out/.test(message)) return 'timeout';
   const httpMatch = message.match(/http (\d{3})/);
   if (httpMatch) {
     const status = Number(httpMatch[1]);
-    return status === 429 || status >= 500;
+    if (status === 429) return 'rate_limited';
+    if (status >= 500) return 'server';
   }
-  return false;
+  if (/fetch failed|network|socket|econn|enotfound|eai_again|und_err/.test(message)) {
+    return 'network';
+  }
+  return undefined;
 }
 
 function channelPatchFromCredential(credential: OnboardingCredential): Partial<BotChannelSettings> {

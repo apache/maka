@@ -20,13 +20,15 @@
 /**
  * PR-SHOW-AFTER-FIRST-COMMIT: shared reveal gate for the hidden main window.
  *
- * The BrowserWindow is created with `show: false` (main-window.ts) so the OS
- * never flashes the index.html `.maka-preload` skeleton before React paints.
- * Two callers reveal it: the `window:notifyRendererReady` IPC (fired from the
- * renderer's first React commit) and a fallback timer for a wedged renderer.
- * Both route through here so the show() decision lives in one place — and so
- * it stays unit-testable without an Electron runtime (main-window.ts itself
- * can't be imported under plain `node --test` because it pulls in `electron`).
+ * The BrowserWindow is created with `show: false` (main-window.ts); the
+ * `ready-to-show` event reveals it on the first painted frame, which is the
+ * index.html launch surface by design. Two further callers exist as
+ * backstops: the `window:notifyRendererReady` IPC (fired after the
+ * renderer's first React commit paints) and a fallback timer for a wedged
+ * renderer. Both route through here so the show() decision lives in one
+ * place — and so it stays unit-testable without an Electron runtime
+ * (main-window.ts itself can't be imported under plain `node --test`
+ * because it pulls in `electron`).
  */
 
 /**
@@ -89,12 +91,38 @@ export function showWindowOnceReady(win: RevealableWindow | null, mode: WindowRe
   else win.show();
 }
 
+/**
+ * Reveal without activating, whatever the mode — for a window whose reveal is
+ * deliberately quiet even in the product (WorkHub's progress card, the startup
+ * progress window). `hidden` still shows nothing.
+ */
+export function showWindowInactive(win: RevealableWindow | null, mode: WindowRevealMode): void {
+  showWindowOnceReady(win, mode === 'hidden' ? 'hidden' : 'inactive');
+}
+
 /** Focus surface for deferred focus requests (see createWindowRevealGate). */
 export interface FocusableRevealableWindow extends RevealableWindow {
   isMinimized(): boolean;
   restore(): void;
   focus(): void;
   maximize(): void;
+}
+
+/**
+ * Reveal `win` and take the foreground, as far as `mode` allows: `active`
+ * un-minimizes, shows and focuses; `inactive` answers a focus request with a
+ * reveal and nothing more; `hidden` does nothing at all.
+ */
+export function focusWindow(win: FocusableRevealableWindow | null, mode: WindowRevealMode): void {
+  if (mode === 'hidden') return;
+  if (!win || win.isDestroyed()) return;
+  if (mode === 'inactive') {
+    showWindowOnceReady(win, mode);
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 }
 
 export interface WindowRevealGate {
@@ -111,9 +139,9 @@ export interface WindowRevealGate {
 
 /**
  * Readiness-aware wrapper around showWindowOnceReady. Focus requests that
- * arrive before the renderer's first commit (user re-launches or clicks the
+ * arrive before the window has painted (user re-launches or clicks the
  * dock icon while the window is still hidden) must NOT show() the window —
- * that would flash the `.maka-preload` skeleton the hidden creation exists to
+ * that would flash an unpainted frame the hidden creation exists to
  * suppress. They are remembered and flushed as show()+focus() when markReady
  * fires, so the user's foreground intent is honored, just not early.
  *
@@ -138,17 +166,7 @@ export function createWindowRevealGate(mode: WindowRevealMode): WindowRevealGate
   let pendingFocus = false;
   let pendingMaximize = false;
 
-  const focusNow = (win: FocusableRevealableWindow | null): void => {
-    if (mode === 'hidden') return;
-    if (!win || win.isDestroyed()) return;
-    if (mode === 'inactive') {
-      showWindowOnceReady(win, mode);
-      return;
-    }
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
-  };
+  const focusNow = (win: FocusableRevealableWindow | null): void => focusWindow(win, mode);
 
   const maximizeNow = (win: FocusableRevealableWindow | null): void => {
     if (mode === 'hidden') return;

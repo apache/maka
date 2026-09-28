@@ -67,6 +67,7 @@ export type SettingsPreferencesCopy = {
     petsHelp: string;
   };
   appearance: {
+    workbar: { title: string; titlebarToggle: string; help: string };
     saveFailed: string;
     theme: string;
     palette: string;
@@ -179,10 +180,7 @@ export type SettingsPreferencesCopy = {
     saveDefaultModelFailed: string;
     defaultPermission: string;
     defaultPermissionHelp: string;
-    defaultThinking: string;
-    defaultThinkingHelp: string;
-    followModelDefault: string;
-    saveDefaultThinkingFailed: string;
+    codeModeHelp: string;
     saveDefaultPermissionFailed: string;
     shellPreference: string;
     shellPreferenceHelp: string;
@@ -209,8 +207,7 @@ export type SettingsPreferencesCopy = {
     password: string;
     passwordSavedPlaceholder: string;
     bypassList: string;
-    bypassHelp: string;
-    autoBypass(count: number): string;
+    bypassHelp(autoBypassCount: number): string;
     testing: string;
     testCurrent: string;
     proxyReachable: string;
@@ -225,19 +222,12 @@ export type SettingsPreferencesCopy = {
     pasteHint: string;
     copyFailed: string;
     clipboardUnavailable: string;
-    devBuild: string;
-    nightlyBuild: string;
-    buildLabel: string;
     /** One sentence saying what following this channel means for the user. */
     channelSummaries: Record<'dev' | 'nightly' | 'release', string>;
     supportTitle: string;
     reportIssueHelp: string;
     reportIssueOpen: string;
     copyAction: string;
-    privacyLabel: string;
-    privacyTitle: string;
-    privacyPoints: readonly string[];
-    copying: string;
     copyDiagnostics: string;
     copyHelp: string;
     keyboardShortcuts: string;
@@ -248,13 +238,23 @@ export type SettingsPreferencesCopy = {
     checkingForUpdates: string;
     updateIdle: string;
     updateNotAvailable: string;
-    updateAvailable: (version: string) => string;
-    updateDownloading: (version: string, percent: number) => string;
-    updateVerifying: (version: string) => string;
-    updateDownloaded: (version: string) => string;
-    updateInstalling: (version: string) => string;
-    updateCheckFailed: string;
-    updateCheckFailedDetail: (message: string) => string;
+    updateTitle: string;
+    updateAvailable: string;
+    updateDownloading: (percent: number) => string;
+    updateVerifying: string;
+    updateDownloaded: string;
+    updateInstalling: string;
+    installUpdate: string;
+    /** The row's second line, carrying the version. Every phase has one, so the row keeps one height. */
+    updateScheduleHint: string;
+    updateFetchingHint: (version: string) => string;
+    updateDownloadedHint: (version: string) => string;
+    updateInstallingHint: (version: string) => string;
+    updateFailed: Record<'check' | 'download' | 'install', string>;
+    /** Provenance in one line: project, foundation status, licence. */
+    openSourceSummary: string;
+    sourceCode: string;
+    releaseNotes: string;
   };
   password: {
     copyFailed: string;
@@ -278,7 +278,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     sections: {
       identity: '身份', identityHelp: 'Maka 如何称呼你，以及界面语言和回答语气。',
       privacy: '隐私与通知', privacyHelp: '本地数据的读写范围，以及桌面通知时机。',
-      chatDefaults: '任务默认', chatDefaultsHelp: '新任务的起始模型、权限模式与思考级别。',
+      chatDefaults: '任务默认', chatDefaultsHelp: '新任务的起始模型与权限模式。每个模型的默认思考级别在模型设置中配置。',
       shell: '命令行环境', shellHelp: '选择 Runtime Host 执行 Bash 工具和终端命令时使用的 shell。',
       network: '网络', networkHelp: 'AI 模型请求走的网络通道。',
       theme: '主题', themeHelp: '界面跟随系统，还是固定浅色或深色。',
@@ -288,6 +288,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       pets: '自定义宠物', petsHelp: '管理你自己导入的 PetPack。Maka 不预装、也不默认启用任何宠物。',
     },
     appearance: {
+      workbar: { title: '任务工作栏', titlebarToggle: '在标题栏显示工作栏开关', help: '关闭后，使用对话边缘的悬浮控件展开或收起工作栏。' },
       saveFailed: '保存外观设置失败', theme: '主题', palette: '调色板',
       themeOptions: { light: { label: '浅色', help: '始终使用浅色界面。' }, dark: { label: '深色', help: '始终使用深色界面。' }, auto: { label: '跟随系统', help: '匹配系统当前的浅色或深色偏好。' } },
       paletteLabels: { default: '默认', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '珊瑚', azure: '湖蓝', forest: '森林', dusk: '暮光', sand: '沙金', mono: '极简灰' },
@@ -335,35 +336,42 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       removeErrors: { invalid_id: '宠物 ID 无效。', remove_failed: '无法删除本地宠物包。' },
     },
     general: {
-      incognito: '隐身模式', incognitoHelp: '开启后暂停本地记忆读写、联网搜索和定时任务触发。', enableIncognito: '启用隐身模式', incognitoFailed: '隐身模式切换失败', notifications: '完成时发送系统通知', notificationsHelp: '窗口不在前台时，在回答完成或出错后发送桌面通知。', notificationsFailed: '通知设置切换失败', workspaceInstructions: '遵循项目指令', workspaceInstructionsHelp: '自动读取每个项目中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；文件仍由各自项目管理。', workspaceInstructionsFailed: '项目指令设置切换失败', workHub: '启用 WorkHub', workHubHelp: 'WorkHub 目前仍不可用。此开关仅供开发测试，开启后也不能保证正常使用。', workHubFailed: 'WorkHub 设置切换失败', updateFailed: '设置未生效，请稍后重试。',
-      defaultModel: '默认模型', defaultModelHelp: '新任务默认使用的模型。', notSet: '未设置', saveDefaultModelFailed: '保存默认模型失败', defaultPermission: '默认权限模式', defaultPermissionHelp: '新任务默认使用的权限模式；可在任务内随时切换。', saveDefaultPermissionFailed: '保存默认权限模式失败', defaultThinking: '默认思考级别', defaultThinkingHelp: '新任务的思考级别；当前模型不支持所选级别时用模型默认。', followModelDefault: '跟随模型默认', saveDefaultThinkingFailed: '保存默认思考级别失败',
+      codeModeHelp: '开启后，新任务通过代码编排和调用工具。WorkHub 从下一轮起采用新设置，其他已有任务保持不变。',
+      incognito: '隐身模式', incognitoHelp: '开启后暂停本地记忆读写、联网搜索和定时任务触发。', enableIncognito: '启用隐身模式', incognitoFailed: '隐身模式切换失败', notifications: '发送系统通知', notificationsHelp: '窗口不在前台时，在回答完成、出错或等你回答时发送桌面通知。', notificationsFailed: '通知设置切换失败', workspaceInstructions: '遵循项目指令', workspaceInstructionsHelp: '自动读取每个项目中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；文件仍由各自项目管理。', workspaceInstructionsFailed: '项目指令设置切换失败', workHub: '启用 WorkHub', workHubHelp: 'WorkHub 目前仍不可用。此开关仅供开发测试，开启后也不能保证正常使用。', workHubFailed: 'WorkHub 设置切换失败', updateFailed: '设置未生效，请稍后重试。',
+      defaultModel: '默认模型', defaultModelHelp: '新任务默认使用的模型。', notSet: '未设置', saveDefaultModelFailed: '保存默认模型失败', defaultPermission: '默认权限模式', defaultPermissionHelp: '新任务默认使用的权限模式；可在任务内随时切换。', saveDefaultPermissionFailed: '保存默认权限模式失败',
       shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自动模式保持 Windows 的 PowerShell 优先规则；Git Bash 是仅对当前 Runtime Host 生效的显式覆盖。', shellAuto: '自动（推荐）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 可执行文件', shellExecutableHelp: '填写 Runtime Host 所在 Windows 机器上 bash.exe 的绝对路径。也支持该机器上的旧版 System32 WSL Bash；保存时会验证 GNU Bash。', saveShell: '保存 shell 设置', savingShell: '正在保存…', shellSaved: '已保存', saveShellFailed: '保存 shell 设置失败', shellExecutableRejected: '当前 Runtime Host 无法把该路径作为 GNU Bash 运行。请检查 Host 是否为 Windows、路径是否存在，并确认文件名为 bash.exe。',
-      proxy: '代理服务器', proxyHelp: '为 AI 模型请求配置网络代理', enableProxy: '启用代理服务器', saveNetworkFailed: '保存网络设置失败', proxyProtocol: '代理协议', serverAddress: '服务器地址', port: '端口', proxyAuth: '代理认证', proxyAuthHelp: '需要用户名和密码时开启。', enableProxyAuth: '启用代理认证', username: '用户名', password: '密码', bypassList: '代理白名单', bypassHelp: '这些域名将绕过代理直连，多个用逗号分隔。', autoBypass: (count) => `已自动添加 ${count} 个域名。代理仅作用于 AI 模型请求。`, testing: '测试中…', testCurrent: '测试当前配置', proxyReachable: '代理可达', proxyTestFailed: '代理测试失败', proxyTestError: '代理测试出错',
+      proxy: '代理服务器', proxyHelp: '为 AI 模型请求配置网络代理', enableProxy: '启用代理服务器', saveNetworkFailed: '保存网络设置失败', proxyProtocol: '代理协议', serverAddress: '服务器地址', port: '端口', proxyAuth: '代理认证', proxyAuthHelp: '需要用户名和密码时开启。', enableProxyAuth: '启用代理认证', username: '用户名', password: '密码', bypassList: '代理白名单', bypassHelp: (count) => `这些域名将绕过代理直连，多个用逗号分隔。已自动添加 ${count} 个域名。代理仅作用于 AI 模型请求。`, testing: '测试中…', testCurrent: '测试当前配置', proxyReachable: '代理可达', proxyTestFailed: '代理测试失败', proxyTestError: '代理测试出错',
       passwordSavedPlaceholder: '密码已保存；输入新密码以替换',
     },
     about: {
-      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', nightlyBuild: 'Nightly', buildLabel: '构建',
+      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。',
       channelSummaries: {
         dev: '本地开发构建，不检查更新。',
         nightly: '每日构建的预发布版，自动更新到最新 nightly，会覆盖正式版安装。',
         release: '正式发布版，自动接收稳定更新。',
       },
       supportTitle: '支持',
-      copying: '复制中…', copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径与近期脱敏日志；仅写入剪贴板，不会自动上传。',
+      copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径与近期脱敏日志；仅写入剪贴板，不会自动上传。',
       reportIssueLabel: '报告问题', reportIssueHelp: '带上诊断信息去 GitHub Issues，回复更快。', reportIssueOpen: '打开',
       keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看',
-      privacyLabel: '隐私承诺', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['任务、设置、凭据和 Skill 指令文件都留在本机；模型密钥保存在本机凭据文件内，订阅令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权；每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'],
       checkForUpdates: '检查更新',
-      checkingForUpdates: '检查中…',
-      updateIdle: '尚未检查更新。',
-      updateNotAvailable: '已是最新版本。',
-      updateAvailable: (version) => `发现新版本 v${version}，正在准备下载…`,
-      updateDownloading: (version, percent) => `正在下载 v${version}（${percent}%）…`,
-      updateVerifying: (version) => `正在验证 v${version} 的发布来源…`,
-      updateDownloaded: (version) => `v${version} 已下载，可在侧栏选择重启安装。`,
-      updateInstalling: (version) => `正在安装 v${version}…`,
-      updateCheckFailed: '检查更新失败',
-      updateCheckFailedDetail: (message) => message,
+      checkingForUpdates: '正在检查更新…',
+      updateIdle: '尚未检查更新',
+      updateNotAvailable: '已是最新版本',
+      updateTitle: '更新',
+      updateAvailable: '发现新版本',
+      updateDownloading: (percent) => `正在下载（${percent}%）`,
+      updateVerifying: '正在验证发布来源',
+      updateDownloaded: '新版本已下载',
+      updateInstalling: '正在安装',
+      installUpdate: '重启安装',
+      updateScheduleHint: 'Maka 会定期在后台检查。',
+      updateFetchingHint: (version) => `v${version}，完成后可在这里重启安装。`,
+      updateDownloadedHint: (version) => `v${version}，重启 Maka 即可完成安装。`,
+      updateInstallingHint: (version) => `v${version}，请稍候。`,
+      updateFailed: { check: '检查更新失败', download: '下载更新失败', install: '安装更新失败' },
+      openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
+      sourceCode: '源码', releaseNotes: '发行说明',
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
   },
@@ -376,7 +384,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     sections: {
       identity: '身份', identityHelp: 'Maka 如何稱呼你，以及介面語言和回答語氣。',
       privacy: '隱私與通知', privacyHelp: '本地資料的讀寫範圍，以及桌面通知時機。',
-      chatDefaults: '任務預設', chatDefaultsHelp: '新任務的起始模型、權限模式與思考級別。',
+      chatDefaults: '任務預設', chatDefaultsHelp: '新任務的起始模型與權限模式。每個模型的預設思考級別在模型設定中配置。',
       shell: '命令列環境', shellHelp: '選擇 Runtime Host 執行 Bash 工具和終端命令時使用的 shell。',
       network: '網路', networkHelp: 'AI 模型請求走的網路通道。',
       theme: '主題', themeHelp: '介面跟隨系統，還是固定淺色或深色。',
@@ -386,6 +394,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       pets: '自訂寵物', petsHelp: '管理你自己匯入的 PetPack。Maka 不預裝、也不預設啟用任何寵物。',
     },
     appearance: {
+      workbar: { title: '任務工作欄', titlebarToggle: '在標題列顯示工作欄開關', help: '關閉後，使用對話邊緣的懸浮控制項展開或收起工作欄。' },
       saveFailed: '儲存外觀設定失敗', theme: '主題', palette: '調色盤',
       themeOptions: { light: { label: '淺色', help: '始終使用淺色介面。' }, dark: { label: '深色', help: '始終使用深色介面。' }, auto: { label: '跟隨系統', help: '符合系統目前的淺色或深色偏好。' } },
       paletteLabels: { default: '預設', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '珊瑚', azure: '湖藍', forest: '森林', dusk: '暮光', sand: '沙金', mono: '極簡灰' },
@@ -433,28 +442,34 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       removeErrors: { invalid_id: '寵物 ID 無效。', remove_failed: '無法刪除本機寵物包。' },
     },
     general: {
-      incognito: '隱身模式', incognitoHelp: '開啟後暫停本地記憶讀寫、聯網搜尋和定時任務觸發。', enableIncognito: '啟用隱身模式', incognitoFailed: '隱身模式切換失敗', notifications: '完成時傳送系統通知', notificationsHelp: '視窗不在前臺時，在回答完成或出錯後傳送桌面通知。', notificationsFailed: '通知設定切換失敗', workspaceInstructions: '遵循專案指令', workspaceInstructionsHelp: '自動讀取每個專案中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；檔案仍由各自專案管理。', workspaceInstructionsFailed: '專案指令設定切換失敗', workHub: '啟用 WorkHub', workHubHelp: '在一個入口檢視已有工作，並將新輸入保守地送往普通任務。', workHubFailed: 'WorkHub 設定切換失敗', updateFailed: '設定未生效，請稍後重試。',
-      defaultModel: '預設模型', defaultModelHelp: '新任務預設使用的模型。', notSet: '未設定', saveDefaultModelFailed: '儲存預設模型失敗', defaultPermission: '預設權限模式', defaultPermissionHelp: '新任務預設使用的權限模式；可在任務內隨時切換。', saveDefaultPermissionFailed: '儲存預設權限模式失敗', defaultThinking: '預設思考級別', defaultThinkingHelp: '新任務的思考級別；目前模型不支援所選級別時用模型預設。', followModelDefault: '跟隨模型預設', saveDefaultThinkingFailed: '儲存預設思考級別失敗',
+      codeModeHelp: '開啟後，新任務透過程式碼編排和呼叫工具。WorkHub 從下一輪起套用新設定，其他既有任務保持不變。',
+      incognito: '隱身模式', incognitoHelp: '開啟後暫停本地記憶讀寫、聯網搜尋和定時任務觸發。', enableIncognito: '啟用隱身模式', incognitoFailed: '隱身模式切換失敗', notifications: '傳送系統通知', notificationsHelp: '視窗不在前臺時，在回答完成、出錯或等你回答時傳送桌面通知。', notificationsFailed: '通知設定切換失敗', workspaceInstructions: '遵循專案指令', workspaceInstructionsHelp: '自動讀取每個專案中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；檔案仍由各自專案管理。', workspaceInstructionsFailed: '專案指令設定切換失敗', workHub: '啟用 WorkHub', workHubHelp: '在一個入口檢視已有工作，並將新輸入保守地送往普通任務。', workHubFailed: 'WorkHub 設定切換失敗', updateFailed: '設定未生效，請稍後重試。',
+      defaultModel: '預設模型', defaultModelHelp: '新任務預設使用的模型。', notSet: '未設定', saveDefaultModelFailed: '儲存預設模型失敗', defaultPermission: '預設權限模式', defaultPermissionHelp: '新任務預設使用的權限模式；可在任務內隨時切換。', saveDefaultPermissionFailed: '儲存預設權限模式失敗',
       shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自動模式保持 Windows 的 PowerShell 優先規則；Git Bash 是僅對目前 Runtime Host 生效的顯式覆蓋。', shellAuto: '自動（推薦）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 執行檔', shellExecutableHelp: '填寫 Runtime Host 所在 Windows 機器上 bash.exe 的絕對路徑。也支援該機器上的舊版 System32 WSL Bash；儲存時會驗證 GNU Bash。', saveShell: '儲存 shell 設定', savingShell: '正在儲存…', shellSaved: '已儲存', saveShellFailed: '儲存 shell 設定失敗', shellExecutableRejected: '目前 Runtime Host 無法把該路徑作為 GNU Bash 執行。請檢查 Host 是否為 Windows、路徑是否存在，並確認檔名為 bash.exe。',
-      proxy: '代理伺服器', proxyHelp: '為 AI 模型請求設定網路代理', enableProxy: '啟用代理伺服器', saveNetworkFailed: '儲存網路設定失敗', proxyProtocol: '代理協議', serverAddress: '伺服器地址', port: '埠', proxyAuth: '代理認證', proxyAuthHelp: '需要使用者名稱和密碼時開啟。', enableProxyAuth: '啟用代理認證', username: '使用者名稱', password: '密碼', bypassList: '代理白名單', bypassHelp: '這些域名將繞過代理直連，多個用逗號分隔。', autoBypass: (count) => `已自動新增 ${count} 個域名。代理僅作用於 AI 模型請求。`, testing: '測試中…', testCurrent: '測試目前設定', proxyReachable: '代理可達', proxyTestFailed: '代理測試失敗', proxyTestError: '代理測試出錯',
+      proxy: '代理伺服器', proxyHelp: '為 AI 模型請求設定網路代理', enableProxy: '啟用代理伺服器', saveNetworkFailed: '儲存網路設定失敗', proxyProtocol: '代理協議', serverAddress: '伺服器地址', port: '埠', proxyAuth: '代理認證', proxyAuthHelp: '需要使用者名稱和密碼時開啟。', enableProxyAuth: '啟用代理認證', username: '使用者名稱', password: '密碼', bypassList: '代理白名單', bypassHelp: (count) => `這些域名將繞過代理直連，多個用逗號分隔。已自動新增 ${count} 個域名。代理僅作用於 AI 模型請求。`, testing: '測試中…', testCurrent: '測試目前設定', proxyReachable: '代理可達', proxyTestFailed: '代理測試失敗', proxyTestError: '代理測試出錯',
       passwordSavedPlaceholder: '密碼已儲存；輸入新密碼以替換',
     },
     about: {
-      loadFailed: '載入關於資訊失敗', loading: '正在載入關於頁', unavailable: '無法載入關於資訊', copied: '已複製診斷資訊', pasteHint: '檢查內容後，可直接貼上到問題報告', copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', devBuild: '本地開發版', nightlyBuild: 'Nightly', buildLabel: '建構', supportTitle: '支援', copyAction: '複製', reportIssueHelp: '帶上診斷資訊去 GitHub Issues，回覆更快。', reportIssueOpen: '開啟', channelSummaries: { dev: '本地開發建構，不檢查更新。', nightly: '每日建構的預發佈版，自動更新到最新 nightly，會覆蓋正式版安裝。', release: '正式發佈版，自動接收穩定更新。' }, privacyLabel: '隱私與安全', privacyTitle: '本地優先 · 隱私預設', privacyPoints: ['所有任務、設定、憑據和 Skill 指令檔案都保留在本機工作區。', '模型金鑰儲存在本機憑據檔案內；訂閱帳號權杖使用系統安全儲存。', 'Maka 不傳送使用遙測；只在你顯式啟用時與所選模型供應商通訊。', '高風險工具操作需要在任務內明示授權。', '每個任務都會在本機保留訊息、工具呼叫、權限決策與模式變更記錄。'], copying: '複製中…', copyDiagnostics: '複製診斷資訊', copyHelp: '複製版本、平臺、隱藏主目錄後的工作區路徑，以及近期脫敏的 Desktop 與 Runtime Host 記錄；僅寫入剪貼簿，不會自動上傳。', keyboardShortcuts: '鍵盤快捷鍵', keyboardShortcutsHelp: 'Maka 支援的全部快捷鍵一覽。', keyboardShortcutsOpen: '檢視', reportIssueLabel: '報告問題',
+      loadFailed: '載入關於資訊失敗', loading: '正在載入關於頁', unavailable: '無法載入關於資訊', copied: '已複製診斷資訊', pasteHint: '檢查內容後，可直接貼上到問題報告', copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', supportTitle: '支援', copyAction: '複製', reportIssueHelp: '帶上診斷資訊去 GitHub Issues，回覆更快。', reportIssueOpen: '開啟', channelSummaries: { dev: '本地開發建構，不檢查更新。', nightly: '每日建構的預發佈版，自動更新到最新 nightly，會覆蓋正式版安裝。', release: '正式發佈版，自動接收穩定更新。' }, copyDiagnostics: '複製診斷資訊', copyHelp: '複製版本、平臺、隱藏主目錄後的工作區路徑，以及近期脫敏的 Desktop 與 Runtime Host 記錄；僅寫入剪貼簿，不會自動上傳。', keyboardShortcuts: '鍵盤快捷鍵', keyboardShortcutsHelp: 'Maka 支援的全部快捷鍵一覽。', keyboardShortcutsOpen: '檢視', reportIssueLabel: '報告問題',
 
       checkForUpdates: '檢查更新',
-      checkingForUpdates: '檢查中…',
-
-
-      updateIdle: '尚未檢查更新。',
-      updateNotAvailable: '已是最新版本。',
-      updateAvailable: (version) => `發現新版本 v${version}，正在準備下載…`,
-      updateDownloading: (version, percent) => `正在下載 v${version}（${percent}%）…`,
-      updateVerifying: (version) => `正在驗證 v${version} 的發佈來源…`,
-      updateDownloaded: (version) => `v${version} 已下載，可在側欄選擇重啟安裝。`,
-      updateInstalling: (version) => `正在安裝 v${version}…`,
-      updateCheckFailed: '檢查更新失敗',
-      updateCheckFailedDetail: (message) => message,
+      checkingForUpdates: '正在檢查更新…',
+      updateIdle: '尚未檢查更新',
+      updateNotAvailable: '已是最新版本',
+      updateTitle: '更新',
+      updateAvailable: '發現新版本',
+      updateDownloading: (percent) => `正在下載（${percent}%）`,
+      updateVerifying: '正在驗證發佈來源',
+      updateDownloaded: '新版本已下載',
+      updateInstalling: '正在安裝',
+      installUpdate: '重新啟動並安裝',
+      updateScheduleHint: 'Maka 會定期在背景檢查。',
+      updateFetchingHint: (version) => `v${version}，完成後可在這裡重新啟動安裝。`,
+      updateDownloadedHint: (version) => `v${version}，重新啟動 Maka 即可完成安裝。`,
+      updateInstallingHint: (version) => `v${version}，請稍候。`,
+      updateFailed: { check: '檢查更新失敗', download: '下載更新失敗', install: '安裝更新失敗' },
+      openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
+      sourceCode: '原始碼', releaseNotes: '發行說明',
     },
     password: { copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', copying: '複製中', copied: '已複製', copy: '複製', hide: '隱藏', show: '顯示', value: '憑據值' },
   },
@@ -465,7 +480,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     sections: {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
       privacy: 'Privacy and notifications', privacyHelp: 'What Maka may read and write locally, and when it notifies you.',
-      chatDefaults: 'Task defaults', chatDefaultsHelp: 'The model, permission mode, and thinking level a new task starts on.',
+      chatDefaults: 'Task defaults', chatDefaultsHelp: 'The model and permission mode a new task starts on. Configure thinking defaults per model in Model settings.',
       shell: 'Command environment', shellHelp: 'Choose the shell the Runtime Host uses for Bash tools and terminal commands.',
       network: 'Network', networkHelp: 'The network path AI model requests take.',
       theme: 'Theme', themeHelp: 'Follow the system appearance, or stay on light or dark.',
@@ -475,6 +490,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       pets: 'Custom pets', petsHelp: 'Manage PetPacks you import yourself. Maka does not bundle or enable any pet by default.',
     },
     appearance: {
+      workbar: { title: 'Workbar', titlebarToggle: 'Show Workbar toggle in titlebar', help: 'When off, use the control at the conversation edge to expand or collapse the Workbar.' },
       saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' }, appIconLabels: { default: 'Classic', mono: 'Monochrome', 'sky': 'Sky', 'cyan': 'Cyan', 'ice': 'Ice', 'pale-inverted': 'Inverted', 'ink': 'Ink', 'paper': 'Paper', 'graphite': 'Graphite', 'pencil-kraft': 'Pencil, kraft', 'pencil-sky': 'Pencil, sky', 'pencil-navy': 'Pencil, navy', 'alpine': 'Alpine', 'dusk': 'Dusk', 'night': 'Night', 'midnight': 'Midnight', 'carbon': 'Carbon', 'slate': 'Slate', 'obsidian': 'Obsidian', 'neon-cyan': 'Neon cyan', 'matrix': 'Phosphor', 'magenta': 'Magenta', 'amber-crt': 'Amber CRT', 'clay': 'Clay', 'sage': 'Sage', 'dust': 'Dust', 'fog': 'Fog', 'sunset': 'Sunset', 'amber': 'Amber', 'terracotta': 'Terracotta', 'ocean': 'Ocean', 'moss': 'Moss', 'desert': 'Desert', 'glacier': 'Glacier', 'gold': 'Gold', 'chrome': 'Chrome', 'mono-black': 'Mono black', 'mono-white': 'Mono white', 'hazard': 'Hazard', 'forest': 'Forest' }, appIconHelp: { default: 'The default Maka mark', mono: 'Grayscale, for a quieter dock', 'sky': 'The geometric M mark in brand blue', 'cyan': 'Blue leaning to cyan', 'ice': 'A pale-to-deep blue gradient', 'pale-inverted': 'A deep blue mark on a pale field', 'ink': 'White on black, the highest contrast', 'paper': 'Black on white', 'graphite': 'Black on white with a grey tip', 'pencil-kraft': 'The pencil reading, on kraft paper', 'pencil-sky': 'The pencil reading, on sky blue', 'pencil-navy': 'The pencil reading, on deep navy', 'alpine': 'A snow-capped peak under clear sky', 'dusk': 'A snow-capped peak at dusk', 'night': 'A snow-capped peak at night', 'midnight': 'A bright mark on deep navy; keeps its edge on a dark dock', 'carbon': 'True black, so an OLED panel shows nothing but the mark', 'slate': 'Pale grey on cool slate', 'obsidian': 'Lilac on a violet-black gradient', 'neon-cyan': 'Electric cyan on near-black', 'matrix': 'The green of a phosphor terminal', 'magenta': 'Hot pink on deep violet', 'amber-crt': 'The amber of an early terminal', 'clay': 'Muted terracotta', 'sage': 'Muted grey-green', 'dust': 'Muted dusty rose', 'fog': 'Muted blue-grey', 'sunset': 'An orange-to-pink diagonal', 'amber': 'A dark mark on amber', 'terracotta': 'A brick-red gradient', 'ocean': 'A deep teal gradient', 'moss': 'A deep moss gradient', 'desert': 'A dark mark on desert sand', 'glacier': 'A pale glacial blue', 'gold': 'The mark itself carries a gold gradient', 'chrome': 'The mark itself carries a silver gradient', 'mono-black': 'Black on pure white; prints in one colour', 'mono-white': 'White on pure black', 'hazard': 'Yellow on black, the highest contrast in the set', 'forest': 'A snow-capped peak in green' }, appIconGroups: { mascot: 'Mascot', blue: 'Blues', contrast: 'Black & white', pencil: 'Pencil', mountain: 'Mountain', dark: 'Dark', neon: 'Neon', muted: 'Muted', warm: 'Warm', nature: 'Nature', metal: 'Metal', highContrast: 'High contrast', custom: 'Imported' }, appIconSplitLabel: 'Use a different icon in dark mode', appIconSplitHelp: 'When off, one icon is used in both appearances.', appIconTargets: { light: 'Light', dark: 'Dark' }, appIconCustom: 'Imported icon', appIconCustomHelp: 'An image you imported', appIconImport: 'Import icon…', appIconImporting: 'Importing…', appIconImportHelp: 'A square PNG works best. Leave about 10% transparent margin so it sits the same size as other apps in the dock.', appIconRemove: 'Remove', appIconImportError: 'Could not import the icon', appIconRemoveFailed: 'Could not remove the icon', appIconSelectFailed: 'Could not switch the icon', appIconImportFailed: { too_large: 'That file is too large; pick a smaller image', too_many_pixels: 'That image is too large; 4096×4096 is the maximum', unsupported_format: 'Only PNG and JPEG are supported', unreadable: 'No image could be read from that file', too_small: 'That image is too small; 128×128 is the minimum', write_failed: 'Could not store the imported icon' }, appIconUnavailable: 'Could not load the app icons', fontSize: { uiLabel: 'UI font size', uiHelp: 'Base font size used across the interface', terminalLabel: 'Terminal font size', terminalHelp: 'Font size used for terminal output and code' },
     },
     pets: {
@@ -489,33 +505,40 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       removeErrors: { invalid_id: 'The pet ID is invalid.', remove_failed: 'The local pet pack could not be removed.' },
     },
     general: {
-      incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled task triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send a system notification when finished', notificationsHelp: 'Notify when a response finishes or fails while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', workHub: 'Enable WorkHub', workHubHelp: 'WorkHub is not available yet. This toggle is for development testing and does not enable a usable feature.', workHubFailed: 'Could not change WorkHub setting', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new tasks.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new tasks; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', defaultThinking: 'Default thinking level', defaultThinkingHelp: 'Thinking level for new tasks; models that do not offer the chosen level use their own default.', followModelDefault: 'Follow model default', saveDefaultThinkingFailed: 'Could not save the default thinking level', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: 'These domains connect directly. Separate multiple domains with commas.', autoBypass: (count) => `${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
+      codeModeHelp: 'New tasks use code to compose and call tools. WorkHub applies changes on its next turn; other existing tasks keep their mode.',
+      incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled task triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send system notifications', notificationsHelp: 'Notify when a response finishes, fails, or needs your answer while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', workHub: 'Enable WorkHub', workHubHelp: 'WorkHub is not available yet. This toggle is for development testing and does not enable a usable feature.', workHubFailed: 'Could not change WorkHub setting', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new tasks.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new tasks; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: (count) => `These domains connect directly. Separate multiple domains with commas. ${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
       shellPreference: 'Bash tool shell', shellPreferenceHelp: 'Automatic keeps the PowerShell-first Windows default. Git Bash is an explicit override for the current Runtime Host.', shellAuto: 'Automatic (recommended)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash executable', shellExecutableHelp: 'Enter the absolute path to bash.exe on the Windows machine running the Runtime Host. The legacy System32 WSL Bash shim is also recognized; Maka verifies GNU Bash before saving.', saveShell: 'Save shell setting', savingShell: 'Saving…', shellSaved: 'Saved', saveShellFailed: 'Could not save shell setting', shellExecutableRejected: 'The current Runtime Host could not run that path as GNU Bash. Check that the Host runs Windows, the path exists, and the file is named bash.exe.',
       passwordSavedPlaceholder: 'Password saved; enter a new password to replace it',
     },
     about: {
-      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', nightlyBuild: 'Nightly', buildLabel: 'Build',
+      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.',
       channelSummaries: {
         dev: 'A local development build. It does not check for updates.',
         nightly: 'A daily prerelease build. It updates itself to the latest nightly and replaces a release install.',
         release: 'The official release build. It receives stable updates automatically.',
       },
       supportTitle: 'Support',
-      copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
+      copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
       reportIssueLabel: 'Report an issue', reportIssueHelp: 'Open a GitHub issue with your diagnostics attached — replies come faster.', reportIssueOpen: 'Open',
       keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View',
-      privacyLabel: 'Privacy commitments', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay on this machine; model keys live in a local credential file and subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task; messages, tool calls, permission decisions, and mode changes are retained locally for each task.'],
       checkForUpdates: 'Check for updates',
-      checkingForUpdates: 'Checking…',
-      updateIdle: 'No update check has run yet.',
-      updateNotAvailable: 'You are on the latest version.',
-      updateAvailable: (version) => `Version v${version} is available and will download shortly…`,
-      updateDownloading: (version, percent) => `Downloading v${version} (${percent}%)…`,
-      updateVerifying: (version) => `Verifying the release provenance for v${version}…`,
-      updateDownloaded: (version) => `v${version} is ready. Restart from the sidebar to install.`,
-      updateInstalling: (version) => `Installing v${version}…`,
-      updateCheckFailed: 'Could not check for updates',
-      updateCheckFailedDetail: (message) => message,
+      checkingForUpdates: 'Checking for updates…',
+      updateIdle: 'No update check has run yet',
+      updateNotAvailable: 'You are on the latest version',
+      updateTitle: 'Updates',
+      updateAvailable: 'Update available',
+      updateDownloading: (percent) => `Downloading (${percent}%)`,
+      updateVerifying: 'Verifying release provenance',
+      updateDownloaded: 'Update downloaded',
+      updateInstalling: 'Installing',
+      installUpdate: 'Restart to install',
+      updateScheduleHint: 'Maka checks periodically in the background.',
+      updateFetchingHint: (version) => `v${version}; restart from here once it finishes.`,
+      updateDownloadedHint: (version) => `v${version}; restart Maka to finish installing.`,
+      updateInstallingHint: (version) => `v${version}; this takes a moment.`,
+      updateFailed: { check: 'Could not check for updates', download: 'Could not download the update', install: 'Could not install the update' },
+      openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
+      sourceCode: 'Source code', releaseNotes: 'Release notes',
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
   },

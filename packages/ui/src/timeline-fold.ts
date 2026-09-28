@@ -19,69 +19,100 @@
 
 import type { TurnTimelineItem } from './materialize.js';
 
-/**
- * Render-layer fold for the collapsed "Processing" block (#1307).
- *
- * The turn timeline model (`TurnTimelineItem`) stays FLAT — every
- * timeline-rewriting pass (overlayLiveTurn, projectTurnTools, shell-run
- * folding) operates on the raw thinking/text/tools sequence and never has to
- * maintain a nesting invariant. This module derives the folded view right
- * before rendering:
- *
- *  - answer `text` and inserted `user` entries stay in place and bound groups;
- *  - a maximal thinking+tools run between two texts folds into ONE
- *    `processing` block when it contains at least one tools group, preserving
- *    the run's interleaved order as `children`;
- *  - a pure-thinking run stays bare (the 深度思考 disclosure renders it
- *    directly — wrapping a lone reasoning block would just double the fold).
- *
- * Each block carries a stable `id` derived from the preceding text or inserted
- * user entry's messageId (`'start'` when the block opens the turn). Between two boundaries there
- * is at most one block, so the id is unique per turn — and, unlike a key
- * guessed from the first child, it survives the first tool being projected
- * away (shell-run folding) without remounting the disclosure or dropping a
- * manual open/close. When projection removes a block's LAST tools group the
- * block itself dissolves (the remaining run is pure thinking), so the bare
- * 深度思考 entries remount and any manual open state inside is reset — the
- * accepted cost of deriving block existence at render time instead of
- * representing a tools-less block in the model.
+/** The timeline stays flat in storage and live projections. Only presentation
+ * groups the work before the last reply; inserted user messages are boundaries
+ * so a steering instruction can never disappear inside an assistant disclosure.
  */
-
-/** An entry folded inside a processing block: reasoning or a tool group. */
-export type FoldedTimelineChild = Extract<TurnTimelineItem, { kind: 'thinking' | 'tools' }>;
+export type FoldedTimelineChild = Exclude<TurnTimelineItem, { kind: 'user' }>;
 
 export interface ProcessingFold {
   kind: 'processing';
-  /** Stable identity: `'start'` or the preceding text/user boundary's messageId. */
+  /** Stable across streamed steps and tool projections within this segment. */
   id: string;
   children: FoldedTimelineChild[];
 }
 
-export type FoldedTimelineEntry = TurnTimelineItem | ProcessingFold;
+export type FoldedTimelineEntry = Extract<TurnTimelineItem, { kind: 'user' | 'text' }> | ProcessingFold;
 
-export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimelineEntry[] {
+export function foldTimeline(items: readonly TurnTimelineItem[]): {
+  entries: FoldedTimelineEntry[];
+  finalReply: Extract<TurnTimelineItem, { kind: 'text' }> | undefined;
+} {
   const out: FoldedTimelineEntry[] = [];
+  let finalReply: Extract<TurnTimelineItem, { kind: 'text' }> | undefined;
   let anchor = 'start';
-  let buffer: FoldedTimelineChild[] | null = null;
+  let buffer: FoldedTimelineChild[] = [];
   const flush = (): void => {
-    if (buffer && buffer.length > 0) {
-      if (buffer.some((child) => child.kind === 'tools')) {
-        out.push({ kind: 'processing', id: anchor, children: buffer });
-      } else {
-        out.push(...buffer);
-      }
+    if (buffer.length === 0) return;
+    // Imported transcripts can record reasoning after the visible reply.
+    // Ignore that trailing reasoning when locating the answer, but stop at
+    // tool activity: text before tools is still process commentary.
+    const replyIndex = buffer.findLastIndex((item) => item.kind !== 'thinking');
+    const candidate = buffer[replyIndex];
+    const answer = candidate?.kind === 'text' ? candidate : undefined;
+    if (answer) buffer.splice(replyIndex, 1);
+    finalReply = answer;
+    if (buffer.length > 0) {
+      out.push({ kind: 'processing', id: anchor, children: buffer });
     }
-    buffer = null;
+    if (answer) out.push(answer);
+    buffer = [];
   };
   for (const item of items) {
-    if (item.kind === 'thinking' || item.kind === 'tools') {
-      (buffer ??= []).push(item);
-    } else {
+    if (item.kind === 'user') {
       flush();
       out.push(item);
       anchor = item.messageId;
+      finalReply = undefined;
+    } else if (item.kind === 'text' && item.interrupted) {
+      buffer.push(item);
+      flush();
+      anchor = item.messageId;
+    } else {
+      buffer.push(item);
     }
   }
   flush();
-  return out;
+  return { entries: out, finalReply };
+}
+
+/**
+ * Keep the previous fold object for every entry whose content is unchanged.
+ * foldTimeline rebuilds every fold on each re-run, but its inputs are the
+ * reconciled timeline items, so equality is cheap here: leaf entries are the
+ * same objects, and a processing fold is unchanged iff its children are the
+ * same objects in the same order. Fold `id` (the preceding boundary's
+ * messageId) survives mid-timeline inserts, so matching by it rather than
+ * position keeps entries after a steering message stable too.
+ */
+export function reconcileFoldedEntries(
+  previous: FoldedTimelineEntry[],
+  next: FoldedTimelineEntry[],
+): FoldedTimelineEntry[] {
+  if (previous.length === 0) return next;
+  const processingById = new Map<string, ProcessingFold>();
+  const leafEntries = new Set<FoldedTimelineEntry>();
+  for (const entry of previous) {
+    if (entry.kind === 'processing') processingById.set(entry.id, entry);
+    else leafEntries.add(entry);
+  }
+  let moved = previous.length !== next.length;
+  const reconciled = next.map((entry) => {
+    if (entry.kind !== 'processing') {
+      if (leafEntries.has(entry)) return entry;
+      moved = true;
+      return entry;
+    }
+    const prior = processingById.get(entry.id);
+    if (
+      prior !== undefined
+      && prior.children.length === entry.children.length
+      && prior.children.every((child, index) => child === entry.children[index])
+    ) {
+      return prior;
+    }
+    moved = true;
+    return entry;
+  });
+  return moved ? reconciled : previous;
 }

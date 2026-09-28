@@ -22,10 +22,14 @@ import test from 'node:test';
 import {
   RuntimeHostPermanentReconnectError,
   RuntimeHostProfileConnectionError,
+  RuntimeHostRemoteCompatibilityError,
   type ResolvedRuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import {
   encodeCollaborationInvitationCode,
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
   type HostPeerEndpoint,
   type SharedSessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
@@ -142,7 +146,8 @@ test('unmounts a superseded Guest when its replacement is rejected during projec
   };
   const unmounted: string[] = [];
   const mounts = service(store, {
-    finalizeAccess: async (_mountId, _signal, onAccessActivated) => {
+    finalizeAccess: async (_mountId, _signal, onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       onAccessActivated?.();
       return 'ready';
     },
@@ -180,7 +185,8 @@ test('reports activated Guest access as recovering while reauthentication contin
       onConnectionPhase?.('handshaking');
       onConnectionPhase?.('waiting_for_ready');
     },
-    finalizeAccess: async (_mountId, _signal, onAccessActivated) => {
+    finalizeAccess: async (_mountId, _signal, onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       onAccessActivated?.();
       return 'reconnecting';
     },
@@ -325,9 +331,43 @@ test('removes failed activation desire instead of creating recoverable profile s
   });
 
   const result = await mounts.importInvitation(invitation('guest-two'), false, 'import-two');
-  assert.deepEqual(result.kind === 'error' ? result.reason : result.kind, 'peer_path_unavailable');
+  assert.deepEqual(result, { kind: 'error', reason: 'peer_path_unavailable' });
   assert.deepEqual(await store.read(), []);
   assert.equal(unmounted.length, 1);
+});
+
+test('reports incompatible hosts without losing retained access or treating a failed import as committed', async () => {
+  const error = new RuntimeHostRemoteCompatibilityError('shared-incompatible', {
+    kind: 'incompatible',
+    hostEpoch: 'host-epoch',
+    protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+    protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'host-revision',
+    state: 'ready',
+    replacement: 'blocked_by_residency',
+  });
+  const store = serializedStore();
+  const retained = { ...retainedMount('shared-incompatible'), session: sharedSession() };
+  await store.write([retained]);
+  const phases: string[] = [];
+  const mounts = service(store, {
+    inspect: () => ({ readiness: 'unavailable', error }),
+    finalizeAccess: async () => { throw error; },
+  });
+  await mounts.connectionChanged(retained.mountId, error);
+  const [visible] = await mounts.list();
+  assert.equal(visible?.failure, 'incompatible_host');
+  assert.deepEqual(visible?.session, sharedSession());
+  assert.deepEqual(await store.read(), [retained]);
+
+  const result = await mounts.importInvitation(invitation('incompatible-new'), false, 'incompatible-new',
+    (phase) => phases.push(phase));
+  assert.equal(result.kind === 'error' ? result.reason : result.kind, 'incompatible_host');
+  assert.equal(phases.includes('finalizing_access'), false);
+  assert.deepEqual(await store.read(), [retained]);
+  await mounts.close();
 });
 
 test('does not retry a startup mount whose reachability recovery is exhausted', async () => {
@@ -372,7 +412,7 @@ test('does not retry a startup mount whose reachability recovery is exhausted', 
 });
 
 test('retires a retained Session projection only after explicit access rejection', async () => {
-  const store = memoryStore();
+  const store = serializedStore();
   const retained = {
     ...retainedMount('shared-revoked'),
     session: sharedSession(),
@@ -398,6 +438,34 @@ test('retires a retained Session projection only after explicit access rejection
   assert.equal(visible?.session, undefined);
   assert.equal((await store.read())[0]?.session, undefined);
   assert.equal(mountChanges, 1);
+  await mounts.close();
+  let attempts = 0;
+  const restarted = service(store, { mount: async () => { attempts += 1; } });
+  await restarted.start();
+  assert.equal(attempts, 0);
+  assert.equal((await restarted.list())[0]?.failure, 'credential_rejected');
+  assert.equal((await restarted.list())[0]?.readiness, 'unavailable');
+  await restarted.retry(retained.mountId);
+  assert.equal(attempts, 0);
+  await restarted.rename(retained.mountId, 'Mac review');
+  assert.equal((await store.read())[0]?.name, 'Mac review');
+  assert.equal((await store.read())[0]?.accessFailure, 'credential_rejected');
+  await restarted.close();
+});
+
+test('a connection timeout before finalization is not an uncertain authorization commit', async () => {
+  const store = serializedStore();
+  const phases: string[] = [];
+  const mounts = service(store, {
+    finalizeAccess: async (_id, _signal, _activated, _started) => {
+      throw new RuntimeHostPairingFinalizationInterruptedError();
+    },
+  });
+  const result = await mounts.importInvitation(invitation('not-delivered'), false, 'not-delivered',
+    (phase) => phases.push(phase));
+  assert.equal(result.kind, 'error');
+  assert.equal(phases.includes('finalizing_access'), false);
+  assert.deepEqual(await store.read(), []);
   await mounts.close();
 });
 
@@ -672,6 +740,25 @@ test('does not lose a catalog invalidation that races Guest activation', async (
   await mounts.close();
 });
 
+test('logs unexpected activation failures without returning Host details', async (context) => {
+  const diagnostics: string[] = [];
+  context.mock.method(console, 'error', (...values: unknown[]) => {
+    diagnostics.push(values.map(String).join(' '));
+  });
+  const mounts = service(memoryStore(), {
+    mount: async () => {
+      throw new Error('Authorization: Bearer very-secret-token');
+    },
+  });
+
+  const result = await mounts.importInvitation(invitation('guest-failed'), false, 'import-failed');
+
+  assert.deepEqual(result, { kind: 'error', reason: 'connection_failed' });
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0]!, /session-collaboration.*import failed/u);
+  assert.doesNotMatch(diagnostics[0]!, /very-secret-token/u);
+});
+
 test('settles admitted finalization before committing unmount desire', async () => {
   const store = memoryStore();
   let started!: () => void;
@@ -683,7 +770,8 @@ test('settles admitted finalization before committing unmount desire', async () 
     finish = resolve;
   });
   const mounts = service(store, {
-    finalizeAccess: async () => {
+    finalizeAccess: async (_mountId, _signal, _onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       started();
       await finalized;
       return 'ready';
@@ -740,7 +828,8 @@ test('removal fences a connecting startup mount before credential finalization',
       markConnecting();
       await mountReleased;
     },
-    finalizeAccess: async () => {
+    finalizeAccess: async (_mountId, _signal, _onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       finalizations += 1;
       return 'ready';
     },
@@ -771,7 +860,8 @@ test('removal settles one admitted startup finalization without waiting through 
     failFinalization = reject;
   });
   const mounts = service(store, {
-    finalizeAccess: async () => {
+    finalizeAccess: async (_mountId, _signal, _onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       markFinalizing();
       await finalization;
       return 'ready';
@@ -799,7 +889,8 @@ test('settles admitted finalization before closing and retains the mount', async
     finish = resolve;
   });
   const mounts = service(store, {
-    finalizeAccess: async () => {
+    finalizeAccess: async (_mountId, _signal, _onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       started();
       await finalized;
       return 'ready';
@@ -836,7 +927,8 @@ test('does not enter startup retry backoff after closing during finalization', a
   });
   let waits = 0;
   const mounts = service(store, {
-    finalizeAccess: async () => {
+    finalizeAccess: async (_mountId, _signal, _onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       markFinalizing();
       await finalizationReleased;
       return 'reconnecting';
@@ -863,7 +955,8 @@ test('retains and reconciles a mount when finalization outcome is unknown', asyn
     resolveReconciled = resolve;
   });
   const mounts = service(store, {
-    finalizeAccess: async () => {
+    finalizeAccess: async (_mountId, _signal, _onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       attempts += 1;
       if (attempts === 1) throw new RuntimeHostPairingFinalizationInterruptedError();
       resolveReconciled();
@@ -892,7 +985,8 @@ test('finishes a committed credential reconnect and records its Session projecti
     markAvailable = resolve;
   });
   const mounts = service(store, {
-    finalizeAccess: async () => {
+    finalizeAccess: async (_mountId, _signal, _onAccessActivated, onFinalizationStarted) => {
+      onFinalizationStarted?.();
       attempts += 1;
       return attempts === 1 ? 'reconnecting' : 'ready';
     },
@@ -1043,7 +1137,10 @@ function service(
   return createDesktopGuestSessionMountService({
     store,
     mount: overrides.mount ?? (async () => undefined),
-    finalizeAccess: overrides.finalizeAccess ?? (async () => 'ready'),
+    finalizeAccess: overrides.finalizeAccess ?? (async (_mountId, _signal, _activated, started) => {
+      started?.();
+      return 'ready';
+    }),
     getSharedSession: overrides.getSharedSession ?? (async () => sharedSession()),
     inspect: overrides.inspect ?? (() => ({ readiness: 'ready' })),
     onMountsChanged: overrides.onMountsChanged ?? (() => undefined),

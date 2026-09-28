@@ -18,11 +18,52 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import fs, { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
+import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
+
+for (const launchFails of [false, true]) {
+  test(`HTML external open uses the managed endpoint and reports launch failure=${launchFails}`, async () => {
+    const service = new ManagedArtifactPreview();
+    const handlers = new Map<string, Handler>();
+    const bytes = Buffer.from('<!doctype html><title>Managed preview</title><button>Interact</button>');
+    let openedUrl = '';
+    try {
+      registerRuntimeHostArtifactsIpc({
+        uiLocale: () => 'en',
+        ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+        client: {
+          hostEpoch: 'h',
+          getArtifact: async () => previewArtifact({ name: 'preview.html', kind: 'html', sizeBytes: bytes.length }),
+          streamArtifact: async (_s: string, _a: string, write: (chunk: Uint8Array) => Promise<void>) => { await write(bytes); return bytes.length; },
+          deleteArtifact: async () => ({ ok: true }),
+        } as never,
+        mainWindowController: {} as never,
+        showItemInFolder: () => assert.fail('HTML must not silently fall back to Finder'),
+        openPath: async () => assert.fail('Managed preview must not open file URLs'),
+        preview: { service, scope: 'h', openExternal: async (url) => {
+          openedUrl = url;
+          assert.equal(await (await fetch(url)).text(), bytes.toString());
+          if (launchFails) throw new Error('No browser available');
+        } },
+      });
+      const result = await handlers.get('app:openArtifactPath')!({}, 's1', 'a1');
+      if (launchFails) {
+        assert.deepEqual(result, { ok: false, reason: 'open-failed' });
+        await assert.rejects(fetch(openedUrl));
+      } else {
+        assert.equal((result as { loaded: boolean }).loaded, false);
+        assert.equal((result as { reachable: boolean }).reachable, true);
+        await handlers.get('artifacts:delete')!({}, 's1', 'a1');
+        await assert.rejects(fetch(openedUrl));
+      }
+    } finally { await service.close(); }
+  });
+}
 
 type Handler = (event: unknown, ...args: any[]) => unknown;
 type StreamArtifact = (
@@ -30,6 +71,92 @@ type StreamArtifact = (
   artifactId: string,
   writeChunk: (chunk: Uint8Array) => Promise<void>,
 ) => Promise<number>;
+
+// Exercise the public Save As result and destination bytes together. Faults
+// use real temporary files; only the failing filesystem operation is mocked.
+for (const [fault, reason] of [
+  ["none", null],
+  ["stream", "source_failed"],
+  ["total", "size_mismatch"],
+  ["length", "size_mismatch"],
+  ["rename", "replace_failed"],
+  ["directory", "replace_failed"],
+  ["write", "target_write_failed"],
+  ["sync", "target_write_failed"],
+  ["close", "target_write_failed"],
+] as const) {
+  test(`Save As preserves the destination and reports ${fault} correctly`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "maka-save-artifact-"));
+    const target = join(root, "report.txt");
+    const originalPath = fault === "directory" ? join(target, "original.txt") : target;
+    const content = Buffer.from("NEW CONTENT\n中文内容测试：你好，世界。\n");
+    const handlers = new Map<string, Handler>();
+    const injectedError = () => Object.assign(new Error("Injected destination failure"), { code: "EIO" });
+    let injectedCalls = 0;
+    try {
+      if (fault === "directory") await mkdir(target);
+      await writeFile(originalPath, "ORIGINAL");
+      if (fault === "rename") {
+        const rename = fs.rename;
+        t.mock.method(fs, "rename", async (...args: Parameters<typeof rename>) => {
+          if (args[1] === target) {
+            injectedCalls += 1;
+            throw injectedError();
+          }
+          return rename(...args);
+        });
+      }
+      if (fault === "write" || fault === "sync" || fault === "close") {
+        const open = fs.open;
+        t.mock.method(fs, "open", async (...args: Parameters<typeof open>) => {
+          const handle = await open(...args);
+          t.mock.method(handle, fault, async () => {
+            injectedCalls += 1;
+            throw injectedError();
+          }, { times: 1 });
+          return handle;
+        });
+      }
+      syncBuiltinESMExports();
+      registerRuntimeHostArtifactsIpc({
+        uiLocale: () => 'zh-CN' as const,
+        ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+        client: {
+          hostEpoch: "host-1",
+          async getArtifact() {
+            return previewArtifact({ name: "report.txt", kind: "file", mimeType: "text/plain", sizeBytes: content.length });
+          },
+          async streamArtifact(_sessionId: string, _artifactId: string, writeChunk: (chunk: Uint8Array) => Promise<void>) {
+            await writeChunk(content.subarray(0, 4));
+            if (fault === "stream") throw new Error("Interrupted source stream");
+            if (fault !== "length") await writeChunk(content.subarray(4));
+            return content.length + (fault === "total" ? 1 : 0);
+          },
+        } as never,
+        mainWindowController: {
+          showSaveDialog: async () => ({ canceled: false, filePath: target }),
+        } as never,
+        showItemInFolder() {},
+      });
+      const save = handlers.get("app:saveArtifactAs");
+      assert.ok(save);
+      const result = await save({}, "session-1", "artifact-1");
+      if (fault === "directory") {
+        assert.deepEqual(await readdir(target), ["original.txt"]);
+        assert.equal(await readFile(originalPath, "utf8"), "ORIGINAL");
+      } else {
+        assert.equal(await readFile(originalPath, "utf8"), reason ? "ORIGINAL" : content.toString());
+      }
+      assert.deepEqual(result, reason ? { ok: false, reason } : { ok: true, saved: "report.txt" });
+      assert.deepEqual(await readdir(root), ["report.txt"], "no staging or backup remains");
+      if (["rename", "write", "sync", "close"].includes(fault)) assert.equal(injectedCalls, 1);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 function previewArtifact(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -52,6 +179,7 @@ function attachmentReadHandler(
 ): Handler {
   const handlers = new Map<string, Handler>();
   registerRuntimeHostArtifactsIpc({
+    uiLocale: () => 'zh-CN' as const,
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as Handler),
     },
@@ -63,7 +191,6 @@ function attachmentReadHandler(
       streamArtifact,
     } as never,
     mainWindowController: {} as never,
-    sendToRenderer() {},
     showItemInFolder() {},
   });
   const handler = handlers.get("attachments:readBytes");
@@ -78,7 +205,6 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
   const content = Buffer.alloc(70 * 1024, 5);
   const handlers = new Map<string, Handler>();
   const opened: string[] = [];
-  const events: unknown[] = [];
   const artifact = {
     id: "artifact-1",
     sessionId: "session-1",
@@ -105,7 +231,7 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
       return { ok: false, reason: "unsupported_mime" };
     },
     async deleteArtifact() {
-      return { kind: "deleted", artifact: { ...artifact, status: "deleted" } };
+      return { kind: "deleted" };
     },
     async streamArtifact(
       _sessionId: string,
@@ -121,6 +247,7 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
 
   try {
     registerRuntimeHostArtifactsIpc({
+    uiLocale: () => 'zh-CN' as const,
       ipcMain: {
         handle: (channel, handler) => handlers.set(channel, handler as Handler),
       },
@@ -128,7 +255,6 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
       mainWindowController: {
         showSaveDialog: async () => ({ canceled: false, filePath: savedPath }),
       } as never,
-      sendToRenderer: (_channel, event) => events.push(event),
       showItemInFolder: (path) => opened.push(path),
       presentationRoot,
     });
@@ -159,7 +285,185 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
     assert.deepEqual(await readFile(opened[0]!), content);
 
     await handlers.get("artifacts:delete")?.({}, "session-1", "artifact-1");
-    assert.equal((events[0] as { reason: string }).reason, "deleted");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("HTML Artifact materializes and opens with the operating system default app", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-html-artifact-ipc-"));
+  const presentationRoot = join(root, "presentations");
+  const content = Buffer.from("<!doctype html><button>Run interaction</button>");
+  const handlers = new Map<string, Handler>();
+  const openedPaths: string[] = [];
+  const artifact = previewArtifact({
+    name: "interactive.html",
+    kind: "html",
+    mimeType: "text/html",
+    sizeBytes: content.byteLength,
+  });
+
+  try {
+    registerRuntimeHostArtifactsIpc({
+      uiLocale: () => "en" as const,
+      ipcMain: {
+        handle: (channel, handler) => handlers.set(channel, handler as Handler),
+      },
+      client: {
+        hostEpoch: "host-1",
+        async getArtifact() {
+          return artifact;
+        },
+        async streamArtifact(
+          _sessionId: string,
+          _artifactId: string,
+          writeChunk: (chunk: Uint8Array) => Promise<void>,
+        ) {
+          await writeChunk(content);
+          return content.byteLength;
+        },
+      } as never,
+      mainWindowController: {} as never,
+      showItemInFolder: () => {
+        throw new Error("HTML artifacts must use openPath");
+      },
+      openPath: async (path) => {
+        openedPaths.push(path);
+        return "";
+      },
+      presentationRoot,
+    });
+
+    const open = handlers.get("app:openArtifactPath");
+    assert.ok(open);
+    assert.deepEqual(await open({}, "session-1", "artifact-1"), {
+      ok: true,
+      opened: "interactive.html",
+    });
+    assert.equal(openedPaths.length, 1);
+    assert.equal(await readFile(openedPaths[0]!, "utf8"), content.toString("utf8"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("HTML Artifact reveal uses Finder without invoking the default app", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-html-reveal-ipc-"));
+  const presentationRoot = join(root, "presentations");
+  const content = Buffer.from("<!doctype html><button>Run interaction</button>");
+  const handlers = new Map<string, Handler>();
+  const revealedPaths: string[] = [];
+  const artifact = previewArtifact({
+    name: "interactive.html",
+    kind: "html",
+    mimeType: "text/html",
+    sizeBytes: content.byteLength,
+  });
+
+  try {
+    registerRuntimeHostArtifactsIpc({
+      uiLocale: () => "en" as const,
+      ipcMain: {
+        handle: (channel, handler) => handlers.set(channel, handler as Handler),
+      },
+      client: {
+        hostEpoch: "host-1",
+        async getArtifact() {
+          return artifact;
+        },
+        async streamArtifact(_sessionId: string, _artifactId: string, writeChunk: (chunk: Uint8Array) => Promise<void>) {
+          await writeChunk(content);
+          return content.byteLength;
+        },
+      } as never,
+      mainWindowController: {} as never,
+      showItemInFolder: (path) => revealedPaths.push(path),
+      openPath: async () => {
+        throw new Error("reveal must not invoke openPath");
+      },
+      presentationRoot,
+    });
+
+    const reveal = handlers.get("app:showArtifactInFolder");
+    assert.ok(reveal);
+    assert.deepEqual(await reveal({}, "session-1", "artifact-1"), {
+      ok: true,
+      opened: "interactive.html",
+    });
+    assert.equal(revealedPaths.length, 1);
+    assert.equal(await readFile(revealedPaths[0]!, "utf8"), content.toString("utf8"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const [label, openPath] of [
+  ["returns an error", async () => "default app unavailable"],
+  ["rejects", async () => { throw new Error("launcher unavailable"); }],
+] as const) {
+  test(`HTML Artifact reports default-app failure when opener ${label}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "maka-host-html-open-failure-"));
+    const presentationRoot = join(root, "presentations");
+    const content = Buffer.from("<!doctype html><p>failure test</p>");
+    const handlers = new Map<string, Handler>();
+    let revealCalls = 0;
+    const artifact = previewArtifact({
+      name: "interactive.html",
+      kind: "html",
+      mimeType: "text/html",
+      sizeBytes: content.byteLength,
+    });
+    try {
+      registerRuntimeHostArtifactsIpc({
+        uiLocale: () => "en" as const,
+        ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+        client: {
+          hostEpoch: "host-1",
+          async getArtifact() { return artifact; },
+          async streamArtifact(_sessionId: string, _artifactId: string, writeChunk: (chunk: Uint8Array) => Promise<void>) {
+            await writeChunk(content);
+            return content.byteLength;
+          },
+        } as never,
+        mainWindowController: {} as never,
+        showItemInFolder: () => { revealCalls += 1; },
+        openPath,
+        presentationRoot,
+      });
+      const open = handlers.get("app:openArtifactPath");
+      assert.ok(open);
+      assert.deepEqual(await open({}, "session-1", "artifact-1"), { ok: false, reason: "open-failed" });
+      assert.equal(revealCalls, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("HTML Artifact does not invoke an opener when materialization fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-html-materialize-failure-"));
+  const handlers = new Map<string, Handler>();
+  const content = Buffer.from("<!doctype html><p>failure test</p>");
+  const artifact = previewArtifact({ name: "interactive.html", kind: "html", mimeType: "text/html", sizeBytes: content.byteLength });
+  let openCalls = 0;
+  try {
+    registerRuntimeHostArtifactsIpc({
+      uiLocale: () => "en" as const,
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+      client: {
+        hostEpoch: "host-1",
+        async getArtifact() { return artifact; },
+        async streamArtifact() { throw new Error("source unavailable"); },
+      } as never,
+      mainWindowController: {} as never,
+      showItemInFolder: () => { throw new Error("must not reveal failed materialization"); },
+      openPath: async () => { openCalls += 1; return ""; },
+      presentationRoot: join(root, "presentations"),
+    });
+    const open = handlers.get("app:openArtifactPath");
+    assert.ok(open);
+    assert.deepEqual(await open({}, "session-1", "artifact-1"), { ok: false, reason: "open-failed" });
+    assert.equal(openCalls, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

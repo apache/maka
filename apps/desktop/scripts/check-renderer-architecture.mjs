@@ -169,6 +169,14 @@ function validateCountMap(value) {
   );
 }
 
+function controllerOwnersOf(config) {
+  return config.controllerOwners ?? [];
+}
+
+function controllerOwnerKey(owner) {
+  return `${owner.implementation}#${owner.symbol}`;
+}
+
 function validateArchitectureConfig(config, label, violations) {
   if (!isRecord(config)) {
     violations.push(`${label} architecture ledger must be an object`);
@@ -195,6 +203,7 @@ function validateArchitectureConfig(config, label, violations) {
   for (const field of ['legacyFeatureImports', 'legacyPlatformImports']) {
     if (!isSortedUniqueStrings(config[field])) reject(`${field} must be sorted unique strings`);
   }
+  if (!Array.isArray(controllerOwnersOf(config))) reject('controllerOwners must be an array');
   if (
     !isRecord(config.legacyAppShell) ||
     !isRecord(config.legacyAppShell.files) ||
@@ -255,11 +264,66 @@ function validateArchitectureConfig(config, label, violations) {
       reject(`${owner.capability}: legacyPaths must be sorted unique strings`);
     }
   }
+  const controllerOwnerKeys = new Set();
+  let previousControllerOwnerKey = '';
+  for (const owner of controllerOwnersOf(config)) {
+    if (!isRecord(owner)) {
+      reject('controllerOwners entries must be objects');
+      continue;
+    }
+    const key = controllerOwnerKey(owner);
+    if (controllerOwnerKeys.has(key)) reject(`duplicate controller owner ${key}`);
+    if (key.localeCompare(previousControllerOwnerKey) < 0) {
+      reject('controllerOwners must be sorted by implementation and symbol');
+    }
+    controllerOwnerKeys.add(key);
+    previousControllerOwnerKey = key;
+    for (const field of ['symbol', 'ownerSymbol']) {
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(owner[field] ?? '')) {
+        reject(`${key}: ${field} must be a JavaScript identifier`);
+      }
+    }
+    for (const field of ['implementation', 'owner']) {
+      const path = owner[field];
+      if (
+        typeof path !== 'string' ||
+        !path.startsWith('src/renderer/features/') ||
+        path.includes('..') ||
+        path.includes('\\') ||
+        !SOURCE_FILE.test(path)
+      ) {
+        reject(`${key}: ${field} must be a normalized feature source path`);
+      }
+    }
+    const implementationFeature = owner.implementation?.match(
+      /^src\/renderer\/features\/([^/]+)\//u,
+    )?.[1];
+    const ownerFeature = owner.owner?.match(
+      /^src\/renderer\/features\/([^/]+)\//u,
+    )?.[1];
+    if (!implementationFeature || implementationFeature !== ownerFeature) {
+      reject(`${key}: implementation and owner must belong to the same feature`);
+    }
+    if (
+      isTestConsumer(owner.owner ?? '') ||
+      /\/(?:index|testing)\.(?:(?:c|m)?(?:js|ts)x?)$/u.test(owner.owner ?? '')
+    ) {
+      reject(`${key}: owner must be a production feature implementation file`);
+    }
+    if (![0, 1].includes(owner.count)) {
+      reject(`${key}: count must be 0 or 1`);
+    }
+  }
   return valid;
 }
 
+// Several visitors walk the same AST, so enumerate each node's children once.
+const CHILD_NODES = Symbol('childNodes');
+
 function childNodes(node) {
+  if (node[CHILD_NODES]) return node[CHILD_NODES];
   const children = [];
+  Object.defineProperty(node, CHILD_NODES, { value: children });
   for (const [key, value] of Object.entries(node)) {
     if (['comments', 'end', 'errors', 'extra', 'loc', 'start', 'tokens'].includes(key)) continue;
     if (Array.isArray(value)) {
@@ -576,7 +640,23 @@ function statementBindingIdentifier(statement, name, includeVar = true) {
   return undefined;
 }
 
+// WeakMap so entries go with the tree; a Map would retain every parsed file.
+const hoistedVarBindings = new WeakMap();
+
 function hoistedVarBindingIdentifier(root, name) {
+  if (!root) return undefined;
+  let byName = hoistedVarBindings.get(root);
+  if (!byName) {
+    byName = new Map();
+    hoistedVarBindings.set(root, byName);
+  }
+  if (byName.has(name)) return byName.get(name);
+  const binding = findHoistedVarBinding(root, name);
+  byName.set(name, binding);
+  return binding;
+}
+
+function findHoistedVarBinding(root, name) {
   let found;
   function visit(node, isRoot = false) {
     if (!node || found) return;
@@ -1061,6 +1141,98 @@ function enclosingClass(node, parents) {
   return undefined;
 }
 
+function enclosingFunctionName(node, parents) {
+  let current = parents.get(node);
+  while (current) {
+    if (current.type === 'FunctionDeclaration') return current.id?.name;
+    if (
+      current.type === 'FunctionExpression' ||
+      current.type === 'ArrowFunctionExpression'
+    ) {
+      const owner = parents.get(current);
+      if (owner?.type === 'VariableDeclarator' && owner.id?.type === 'Identifier') {
+        return owner.id.name;
+      }
+      if (owner?.type === 'ObjectProperty') return memberName(owner.key);
+    }
+    if (
+      current.type === 'ObjectMethod' ||
+      current.type === 'ClassMethod' ||
+      current.type === 'ClassPrivateMethod'
+    ) {
+      return memberName(current.key);
+    }
+    current = parents.get(current);
+  }
+  return undefined;
+}
+
+function analyzeModuleImportBindingUsages(program, bindings, parents) {
+  const bindingByName = new Map(
+    bindings.map((binding, index) => [binding.name, { binding, index }]),
+  );
+  const usages = bindings.map(() => ({
+    directCalls: 0,
+    references: 0,
+    directCallOwners: [],
+    memberCalls: {},
+    memberReferences: {},
+  }));
+
+  function visit(node) {
+    const imported =
+      node.type === 'Identifier' ? bindingByName.get(node.name) : undefined;
+    if (
+      imported &&
+      node !== imported.binding &&
+      parents.get(node)?.type !== 'ImportSpecifier' &&
+      lexicalBindingIdentifier(node, imported.binding.name, parents) ===
+        imported.binding
+    ) {
+      const usage = usages[imported.index];
+      const parent = parents.get(node);
+      if (
+        (parent?.type === 'CallExpression' ||
+          parent?.type === 'OptionalCallExpression') &&
+        unwrapExpression(parent.callee) === node
+      ) {
+        usage.directCalls += 1;
+        usage.directCallOwners.push(enclosingFunctionName(parent, parents));
+      } else if (
+        isMemberExpression(parent) &&
+        unwrapExpression(parent.object) === node
+      ) {
+        const property = memberPropertyName(parent);
+        const owner = parents.get(parent);
+        if (
+          property &&
+          (owner?.type === 'CallExpression' ||
+            owner?.type === 'OptionalCallExpression') &&
+          unwrapExpression(owner.callee) === parent
+        ) {
+          usage.memberCalls[property] =
+            (usage.memberCalls[property] ?? 0) + 1;
+        } else if (property) {
+          usage.memberReferences[property] =
+            (usage.memberReferences[property] ?? 0) + 1;
+        } else {
+          usage.references += 1;
+        }
+      } else {
+        usage.references += 1;
+      }
+    }
+    for (const child of childNodes(node)) visit(child);
+  }
+
+  visit(program);
+  return usages.map((usage) => ({
+    ...usage,
+    memberCalls: sortedObject(usage.memberCalls),
+    memberReferences: sortedObject(usage.memberReferences),
+  }));
+}
+
 export function analyzeRendererSource(source, file = 'fixture.ts') {
   const typedSource = /\.(?:(?:c|m)?ts|tsx)$/u.test(file);
   const jsxSource = /\.(?:jsx|tsx)$/u.test(file);
@@ -1090,8 +1262,16 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
   const actionFactories = [];
   const dependencies = [];
   const dependencyPaths = {};
+  const moduleImports = [];
+  const moduleImportBindings = [];
+  const moduleLoads = [];
+  const moduleDirectExportBindings = [];
+  const moduleLocalExports = [];
+  const moduleReexports = [];
   let importDeclarations = 0;
   let importSpecifiers = 0;
+  const importDeclarationsBySource = {};
+  const importSpecifiersBySource = {};
   let unresolvedDependencies = 0;
 
   function recordBridgePath(path) {
@@ -1104,12 +1284,117 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
 
   function visit(node, parent) {
     if (node.type === 'ImportDeclaration' && !typeOnlySourceDependency(node)) {
+      const specifierCount = node.specifiers.filter((specifier) => specifier.importKind !== 'type').length;
       importDeclarations += 1;
-      importSpecifiers += node.specifiers.filter((specifier) => specifier.importKind !== 'type').length;
+      importSpecifiers += specifierCount;
+      const source = staticString(node.source);
+      if (source !== undefined) {
+        importDeclarationsBySource[source] = (importDeclarationsBySource[source] ?? 0) + 1;
+        importSpecifiersBySource[source] = (importSpecifiersBySource[source] ?? 0) + specifierCount;
+      }
+      if (source !== undefined && node.importKind !== 'type') {
+        for (const specifier of node.specifiers) {
+          if (specifier.importKind === 'type') continue;
+          if (specifier.type === 'ImportSpecifier') {
+            const entry = {
+              source,
+              kind: 'named',
+              imported: memberName(specifier.imported),
+              local: specifier.local.name,
+            };
+            moduleImports.push(entry);
+            moduleImportBindings.push(specifier.local);
+          } else if (specifier.type === 'ImportNamespaceSpecifier') {
+            const entry = {
+              source,
+              kind: 'namespace',
+              local: specifier.local.name,
+            };
+            moduleImports.push(entry);
+            moduleImportBindings.push(specifier.local);
+          } else if (specifier.type === 'ImportDefaultSpecifier') {
+            const entry = {
+              source,
+              kind: 'default',
+              local: specifier.local.name,
+            };
+            moduleImports.push(entry);
+            moduleImportBindings.push(specifier.local);
+          }
+        }
+        if (node.specifiers.length === 0) {
+          moduleLoads.push({ source, kind: 'side-effect' });
+        }
+      }
+    }
+    if (node.type === 'ExportNamedDeclaration' && node.source == null) {
+      const declaration = node.declaration;
+      if (
+        (declaration?.type === 'FunctionDeclaration' ||
+          declaration?.type === 'ClassDeclaration') &&
+        declaration.id?.name
+      ) {
+        const entry = {
+          local: declaration.id.name,
+          exported: declaration.id.name,
+        };
+        moduleLocalExports.push(entry);
+        moduleDirectExportBindings.push({ ...entry, binding: declaration.id });
+      } else if (declaration?.type === 'VariableDeclaration') {
+        for (const item of declaration.declarations) {
+          for (const name of bindingNames(item.id)) {
+            const entry = { local: name, exported: name };
+            moduleLocalExports.push(entry);
+            moduleDirectExportBindings.push({
+              ...entry,
+              binding: bindingIdentifier(item.id, name),
+            });
+          }
+        }
+      }
+      for (const specifier of node.specifiers) {
+        if (specifier.type !== 'ExportSpecifier' || specifier.exportKind === 'type') {
+          continue;
+        }
+        moduleLocalExports.push({
+          local: memberName(specifier.local),
+          exported: memberName(specifier.exported),
+        });
+      }
     }
     if (node.type === 'TSImportEqualsDeclaration') {
       importDeclarations += 1;
       importSpecifiers += 1;
+    }
+    if (
+      (node.type === 'ExportNamedDeclaration' ||
+        node.type === 'ExportAllDeclaration') &&
+      node.exportKind !== 'type'
+    ) {
+      const source = staticString(node.source);
+      if (source !== undefined) {
+        if (node.type === 'ExportAllDeclaration') {
+          moduleReexports.push({ source, kind: 'all' });
+        } else {
+          for (const specifier of node.specifiers) {
+            if (specifier.exportKind === 'type') continue;
+            if (specifier.type === 'ExportSpecifier') {
+              moduleReexports.push({
+                source,
+                kind: 'named',
+                imported: memberName(specifier.local),
+                exported: memberName(specifier.exported),
+              });
+            } else if (specifier.type === 'ExportNamespaceSpecifier') {
+              moduleReexports.push({
+                source,
+                kind: 'namespace',
+                exported: memberName(specifier.exported),
+              });
+            }
+          }
+        }
+      }
     }
     const dependency = sourceDependency(node);
     if (dependency !== undefined) {
@@ -1118,6 +1403,20 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
       // for closure reachability but record no debt.
       if (!typeOnlySourceDependency(node)) {
         dependencyPaths[dependency] = (dependencyPaths[dependency] ?? 0) + 1;
+      }
+      if (node.type === 'ImportExpression') {
+        moduleLoads.push({ source: dependency, kind: 'dynamic-import' });
+      } else if (node.type === 'TSImportEqualsDeclaration' && !node.isTypeOnly) {
+        moduleLoads.push({ source: dependency, kind: 'import-equals' });
+      } else if (
+        (node.type === 'CallExpression' || node.type === 'OptionalCallExpression') &&
+        (node.callee?.type === 'Import' ||
+          (node.callee?.type === 'Identifier' && node.callee.name === 'require'))
+      ) {
+        moduleLoads.push({
+          source: dependency,
+          kind: node.callee.type === 'Import' ? 'dynamic-import' : 'require',
+        });
       }
     }
     if (
@@ -1255,6 +1554,16 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
   }
 
   visit(ast.program, undefined);
+  const moduleImportUsages = analyzeModuleImportBindingUsages(
+    ast.program,
+    moduleImportBindings,
+    parents,
+  );
+  const moduleDirectExportUsages = analyzeModuleImportBindingUsages(
+    ast.program,
+    moduleDirectExportBindings.map((entry) => entry.binding),
+    parents,
+  );
   return {
     actionFactories: actionFactories.sort(),
     bridgePaths: sortedObject(bridgePaths),
@@ -1263,8 +1572,22 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
     environmentCapabilities: sortedObject(environmentCapabilities),
     hookCalls: sortedObject(hookCalls),
     importDeclarations,
+    importDeclarationsBySource: sortedObject(importDeclarationsBySource),
     importSpecifiers,
+    importSpecifiersBySource: sortedObject(importSpecifiersBySource),
     lifecycleMethods: sortedObject(lifecycleMethods),
+    moduleImports: moduleImports.map((entry, index) => ({
+      ...entry,
+      ...moduleImportUsages[index],
+    })),
+    moduleDirectExports: moduleDirectExportBindings.map((entry, index) => ({
+      local: entry.local,
+      exported: entry.exported,
+      ...moduleDirectExportUsages[index],
+    })),
+    moduleLoads,
+    moduleLocalExports,
+    moduleReexports,
     nonTriviaTokens: ast.tokens.length,
     unresolvedDependencies,
   };
@@ -1299,9 +1622,16 @@ function isRootClosureDebtSource(path) {
 }
 
 function resolveDependency(desktopRoot, importer, dependency) {
+  const normalizedDependency = dependency.split(/[?#]/u, 1)[0];
   let target;
-  if (dependency.startsWith('.')) target = resolve(dirname(importer), dependency);
-  else if (dependency.startsWith(DESKTOP_SELF_PREFIX)) target = resolve(desktopRoot, dependency.slice(DESKTOP_SELF_PREFIX.length));
+  if (normalizedDependency.startsWith('.')) {
+    target = resolve(dirname(importer), normalizedDependency);
+  } else if (normalizedDependency.startsWith(DESKTOP_SELF_PREFIX)) {
+    target = resolve(
+      desktopRoot,
+      normalizedDependency.slice(DESKTOP_SELF_PREFIX.length),
+    );
+  }
   else return undefined;
   const normalized = normalizePath(target);
   return normalized.replace(/\.(?:c|m)?(?:js|ts)x?$/u, '');
@@ -1351,11 +1681,20 @@ function capabilityDebtMetrics(analysis) {
   };
 }
 
-function debtMetrics(analysis) {
+// Imports from a sanctioned target (a validated copy catalog, or for AppShell
+// files a shell / public application / public feature module) are the edges
+// the migration wants a legacy file to take on; they cost no import debt, so
+// a legacy file is never pushed to inline a helper it could import.
+function debtMetrics(analysis, isSanctionedSource) {
+  const unsanctioned = (bySource) =>
+    Object.entries(bySource).reduce(
+      (total, [source, count]) => (isSanctionedSource(source) ? total : total + count),
+      0,
+    );
   return {
-    importDeclarations: analysis.importDeclarations,
+    importDeclarations: unsanctioned(analysis.importDeclarationsBySource),
     ...capabilityDebtMetrics(analysis),
-    importSpecifiers: analysis.importSpecifiers,
+    importSpecifiers: unsanctioned(analysis.importSpecifiersBySource),
     nonTriviaTokens: analysis.nonTriviaTokens,
   };
 }
@@ -1422,6 +1761,298 @@ function isTestConsumer(path) {
     normalized.includes('/stories/') ||
     /\.(?:spec|stories|test)\.[^/]+$/u.test(normalized)
   );
+}
+
+function validateControllerOwners({
+  desktopRoot,
+  config,
+  sourceAnalyses,
+  violations,
+}) {
+  for (const contract of controllerOwnersOf(config)) {
+    const key = controllerOwnerKey(contract);
+    const featureName = contract.implementation.match(
+      /^src\/renderer\/features\/([^/]+)\//u,
+    )?.[1];
+    const featureRoot = `src/renderer/features/${featureName}`;
+    const publicEntry = `${featureRoot}/index.ts`;
+    const testingEntry = `${featureRoot}/testing.ts`;
+    const implementationTarget = normalizePath(
+      resolve(desktopRoot, contract.implementation),
+    ).replace(SOURCE_EXTENSION, '');
+    const ownerTarget = normalizePath(resolve(desktopRoot, contract.owner)).replace(
+      SOURCE_EXTENSION,
+      '',
+    );
+    const publicEntryTargets = new Set(
+      [featureRoot, publicEntry].map((path) =>
+        normalizePath(resolve(desktopRoot, path)).replace(SOURCE_EXTENSION, ''),
+      ),
+    );
+
+    if (contract.count === 1) {
+      for (const path of [
+        contract.implementation,
+        contract.owner,
+        publicEntry,
+      ]) {
+        if (!existsSync(resolve(desktopRoot, path))) {
+          violations.push(`${key}: controller owner source is missing: ${path}`);
+        }
+      }
+    }
+
+    let ownerImports = 0;
+    let ownerCalls = 0;
+    let ownerSymbolExported = false;
+    for (const [fileRelative, { analysis, file }] of sourceAnalyses) {
+      const targetsImplementation = (source) =>
+        resolveDependency(desktopRoot, file, source) === implementationTarget;
+      const targetsOwner = (source) =>
+        resolveDependency(desktopRoot, file, source) === ownerTarget;
+      const targetsPublicEntry = (source) =>
+        publicEntryTargets.has(resolveDependency(desktopRoot, file, source));
+      const implementationImports = analysis.moduleImports.filter((entry) =>
+        targetsImplementation(entry.source),
+      );
+      const controllerImports = implementationImports.filter(
+        (entry) =>
+          entry.kind === 'named' && entry.imported === contract.symbol,
+      );
+      const implementationReexports = analysis.moduleReexports.filter(
+        (entry) => targetsImplementation(entry.source),
+      );
+      const controllerLoads = analysis.moduleLoads.filter((entry) =>
+        targetsImplementation(entry.source),
+      );
+      const ownerProviderImports = analysis.moduleImports.filter(
+        (entry) =>
+          targetsOwner(entry.source) &&
+          (entry.kind !== 'named' || entry.imported === contract.ownerSymbol),
+      );
+      const ownerProviderReexports = analysis.moduleReexports.filter(
+        (entry) =>
+          targetsOwner(entry.source) &&
+          (entry.kind !== 'named' || entry.imported === contract.ownerSymbol),
+      );
+      const ownerLoads = analysis.moduleLoads.filter((entry) =>
+        targetsOwner(entry.source),
+      );
+
+      if (fileRelative === contract.owner) {
+        ownerImports += controllerImports.length;
+        ownerCalls += controllerImports.reduce(
+          (total, entry) => total + entry.directCalls,
+          0,
+        );
+        const directOwnerExports = analysis.moduleDirectExports.filter(
+          (entry) =>
+            entry.local === contract.ownerSymbol &&
+            entry.exported === contract.ownerSymbol,
+        );
+        ownerSymbolExported = directOwnerExports.length === 1;
+        for (const entry of directOwnerExports) {
+          const valueUsages =
+            entry.directCalls +
+            entry.references +
+            Object.values(entry.memberCalls).reduce(
+              (total, count) => total + count,
+              0,
+            ) +
+            Object.values(entry.memberReferences).reduce(
+              (total, count) => total + count,
+              0,
+            );
+          if (valueUsages > 0) {
+            violations.push(
+              `${key}: owner must expose ${contract.ownerSymbol} only as a JSX component`,
+            );
+          }
+        }
+        if (implementationImports.length !== controllerImports.length) {
+          violations.push(
+            `${key}: owner may only import the registered controller symbol`,
+          );
+        }
+        if (controllerLoads.length > 0) {
+          violations.push(
+            `${key}: owner must consume the controller through one direct import`,
+          );
+        }
+        for (const entry of controllerImports) {
+          const indirectReferences =
+            entry.references +
+            Object.values(entry.memberCalls).reduce(
+              (total, count) => total + count,
+              0,
+            ) +
+            Object.values(entry.memberReferences).reduce(
+              (total, count) => total + count,
+              0,
+            );
+          if (indirectReferences > 0) {
+            violations.push(
+              `${key}: owner must not alias or expose the controller binding`,
+            );
+          }
+          if (
+            entry.directCallOwners.some(
+              (ownerSymbol) => ownerSymbol !== contract.ownerSymbol,
+            )
+          ) {
+            violations.push(
+              `${key}: controller must be called inside ${contract.ownerSymbol}`,
+            );
+          }
+        }
+      } else if (implementationImports.length > 0) {
+        violations.push(
+          `${key}: controller implementation is imported by non-owner ${fileRelative}`,
+        );
+      }
+
+      const testingOnlyNamedExport =
+        fileRelative === testingEntry &&
+        implementationReexports.length > 0 &&
+        implementationReexports.every(
+          (entry) =>
+            entry.kind === 'named' && entry.imported === contract.symbol,
+        );
+      if (controllerLoads.length > 0 && fileRelative !== contract.owner) {
+        violations.push(
+          `${key}: controller implementation is referenced by non-owner ${fileRelative}`,
+        );
+      }
+
+      if (implementationReexports.length > 0) {
+        if (!testingOnlyNamedExport) {
+          violations.push(
+            `${key}: controller implementation is re-exported by ${fileRelative}`,
+          );
+        }
+      }
+
+      if (
+        fileRelative === publicEntry &&
+        (implementationImports.length > 0 ||
+          implementationReexports.length > 0)
+      ) {
+        violations.push(
+          `${key}: public feature entry must not expose the controller`,
+        );
+      }
+
+      if (
+        fileRelative !== publicEntry &&
+        fileRelative !== testingEntry &&
+        !isTestConsumer(file) &&
+        (ownerProviderImports.length > 0 ||
+          ownerProviderReexports.length > 0 ||
+          ownerLoads.length > 0)
+      ) {
+        violations.push(
+          `${key}: ${fileRelative} must consume ${contract.ownerSymbol} through the public feature entry`,
+        );
+      }
+
+      if (fileRelative === publicEntry) {
+        const ownerImportsFromImplementation = analysis.moduleImports.filter(
+          (entry) =>
+            targetsOwner(entry.source) &&
+            (entry.kind === 'namespace' ||
+              (entry.kind === 'named' &&
+                entry.imported === contract.ownerSymbol)),
+        );
+        if (ownerImportsFromImplementation.length > 0) {
+          violations.push(
+            `${key}: public feature entry must re-export the owner directly`,
+          );
+        }
+        const ownerReexports = analysis.moduleReexports.filter(
+          (entry) => targetsOwner(entry.source),
+        );
+        const registeredOwnerReexports = ownerReexports.filter(
+          (entry) =>
+            entry.kind === 'named' && entry.imported === contract.ownerSymbol,
+        );
+        if (
+          contract.count === 1 &&
+          !registeredOwnerReexports.some(
+            (entry) => entry.exported === contract.ownerSymbol,
+          )
+        ) {
+          violations.push(
+            `${key}: public feature entry must export ${contract.ownerSymbol} without renaming it`,
+          );
+        }
+        if (
+          ownerReexports.some(
+            (entry) =>
+              entry.kind !== 'named' ||
+              (entry.imported === contract.ownerSymbol &&
+                entry.exported !== contract.ownerSymbol),
+          )
+        ) {
+          violations.push(
+            `${key}: public feature entry must not alias or wildcard-export the owner`,
+          );
+        }
+      }
+
+      if (fileRelative !== publicEntry && !isTestConsumer(file)) {
+        const publicImports = analysis.moduleImports.filter(
+          (entry) => targetsPublicEntry(entry.source),
+        );
+        const publicOwnerReexports = analysis.moduleReexports.filter(
+          (entry) =>
+            targetsPublicEntry(entry.source) &&
+            (entry.kind !== 'named' || entry.imported === contract.ownerSymbol),
+        );
+        for (const entry of publicImports) {
+          const directOwnerCall =
+            entry.kind === 'named' &&
+            entry.imported === contract.ownerSymbol &&
+            (entry.directCalls > 0 || entry.references > 0);
+          const namespaceOwnerCall =
+            entry.kind === 'namespace' &&
+            ((entry.memberCalls[contract.ownerSymbol] ?? 0) > 0 ||
+              (entry.memberReferences[contract.ownerSymbol] ?? 0) > 0 ||
+              entry.references > 0);
+          if (directOwnerCall || namespaceOwnerCall) {
+            violations.push(
+              `${key}: ${fileRelative} must mount ${contract.ownerSymbol} through JSX`,
+            );
+          }
+        }
+        if (publicOwnerReexports.length > 0) {
+          violations.push(
+            `${key}: ${fileRelative} must not re-export ${contract.ownerSymbol} from the public feature entry`,
+          );
+        }
+        if (analysis.moduleLoads.some((entry) => targetsPublicEntry(entry.source))) {
+          violations.push(
+            `${key}: ${fileRelative} must import ${contract.ownerSymbol} statically and mount it through JSX`,
+          );
+        }
+      }
+    }
+
+    if (ownerImports !== contract.count) {
+      violations.push(
+        `${key}: owner must directly import the controller ${contract.count} time(s), received ${ownerImports}`,
+      );
+    }
+    if (ownerCalls !== contract.count) {
+      violations.push(
+        `${key}: owner ${contract.owner} must call the controller ${contract.count} time(s), received ${ownerCalls}`,
+      );
+    }
+    if (contract.count === 1 && !ownerSymbolExported) {
+      violations.push(
+        `${key}: owner must export ${contract.ownerSymbol}`,
+      );
+    }
+  }
 }
 
 function isPublicFeaturePath(subpath) {
@@ -1655,15 +2286,15 @@ function validateMetric(path, metric, actual, expected, violations) {
   }
 }
 
-function validateDebtFile(desktopRoot, path, expected, violations, metrics = ROOT_DEBT_METRICS) {
-  const absolutePath = resolve(desktopRoot, path);
-  if (!existsSync(absolutePath)) {
+function validateDebtFile(desktopRoot, path, expected, violations, section) {
+  if (!existsSync(resolve(desktopRoot, path))) {
     violations.push(`${path}: debt ledger entry points to a missing file`);
     return;
   }
-  const analysis = analyzeRendererSource(readFileSync(absolutePath, 'utf8'), path);
-  for (const metric of metrics) {
-    validateMetric(path, metric, analysis[metric], expected[metric], violations);
+  const rootSection = section === 'legacyAppShell' || section === 'rootDebt';
+  const actual = rootSection ? debtForPath(desktopRoot, path, section) : capabilityDebtForPath(desktopRoot, path);
+  for (const metric of rootSection ? ROOT_DEBT_METRICS : CAPABILITY_DEBT_METRICS) {
+    validateMetric(path, metric, actual[metric], expected[metric], violations);
   }
 }
 
@@ -1690,7 +2321,7 @@ function validateLegacyLedger(desktopRoot, config, violations) {
   }
 
   for (const [path, expected] of Object.entries(config.legacyAppShell.files)) {
-    validateDebtFile(desktopRoot, path, expected, violations);
+    validateDebtFile(desktopRoot, path, expected, violations, 'legacyAppShell');
   }
   const actualClosure = collectRootDependencyClosure(desktopRoot, expectedFiles, violations, 'AppShell');
   const expectedClosure = Object.keys(config.legacyAppShell.closure).sort();
@@ -1707,10 +2338,10 @@ function validateLegacyLedger(desktopRoot, config, violations) {
     if (!isRootClosureDebtSource(path) || DECLARATION_FILE.test(path)) {
       violations.push(`${path}: AppShell closure debt must point to a non-owner Desktop source`);
     }
-    validateDebtFile(desktopRoot, path, expected, violations, CAPABILITY_DEBT_METRICS);
+    validateDebtFile(desktopRoot, path, expected, violations, 'legacyAppShellClosure');
   }
   for (const [path, expected] of Object.entries(config.rootDebt)) {
-    validateDebtFile(desktopRoot, path, expected, violations);
+    validateDebtFile(desktopRoot, path, expected, violations, 'rootDebt');
   }
   const appShellDebtPaths = new Set([...expectedFiles, ...expectedClosure]);
   const rootDebtPaths = Object.keys(config.rootDebt).sort();
@@ -1730,7 +2361,7 @@ function validateLegacyLedger(desktopRoot, config, violations) {
     if (!isRootClosureDebtSource(path) || DECLARATION_FILE.test(path)) {
       violations.push(`${path}: renderer root closure debt must point to a non-owner Desktop source`);
     }
-    validateDebtFile(desktopRoot, path, expected, violations, CAPABILITY_DEBT_METRICS);
+    validateDebtFile(desktopRoot, path, expected, violations, 'rootDebtClosure');
   }
 
   const ownedPaths = new Map();
@@ -1997,7 +2628,41 @@ function validateMainRendererLoader(desktopRoot, violations) {
   const [loaderFunction] = loaderFunctions;
   const [resolverFunction] = resolverFunctions;
   const ifStatements = loaderFunction ? nodesIn(loaderFunction.body).filter((node) => node.type === 'IfStatement') : [];
-  const [loadBranch] = ifStatements;
+  const hasWorkHubSurface = loaderFunction?.params.length === 3;
+  const loadBranch = ifStatements[hasWorkHubSurface ? 1 : 0];
+  const surfaceBranch = ifStatements[0];
+  const surfaceStatements = surfaceBranch?.consequent?.body ?? [];
+  const surfaceUrl = surfaceStatements[0]?.declarations?.[0];
+  const surfaceQuery = surfaceStatements[1]?.expression;
+  const surfaceParameter = loaderFunction?.params[2];
+  const validWorkHubSurface =
+    !hasWorkHubSurface || (
+      isIdentifier(surfaceParameter, 'surface') &&
+      surfaceParameter.optional === true &&
+      surfaceParameter.typeAnnotation?.typeAnnotation?.type === 'TSLiteralType' &&
+      staticString(surfaceParameter.typeAnnotation.typeAnnotation.literal) === 'workhub' &&
+      isIdentifier(surfaceBranch.test, 'surface') &&
+      !surfaceBranch.alternate &&
+      surfaceStatements.length === 4 &&
+      surfaceStatements[0].kind === 'const' &&
+      surfaceStatements[0].declarations.length === 1 &&
+      isIdentifier(surfaceUrl?.id, 'url') &&
+      surfaceUrl.init?.type === 'NewExpression' &&
+      isIdentifier(surfaceUrl.init.callee, 'URL') &&
+      surfaceUrl.init.arguments.length === 1 &&
+      isNamedMember(surfaceUrl.init.arguments[0], 'rendererEntry', 'url') &&
+      surfaceQuery?.type === 'CallExpression' &&
+      isMemberExpression(surfaceQuery.callee) &&
+      isNamedMember(surfaceQuery.callee.object, 'url', 'searchParams') &&
+      memberPropertyName(surfaceQuery.callee) === 'set' &&
+      surfaceQuery.arguments.length === 2 &&
+      staticString(surfaceQuery.arguments[0]) === 'surface' &&
+      isIdentifier(surfaceQuery.arguments[1], 'surface') &&
+      isOnlyAwaitedMemberCall({ type: 'BlockStatement', body: [surfaceStatements[2]] }, 'mainWindow', 'loadURL', 'url', 'href') &&
+      surfaceStatements[3].type === 'ReturnStatement' &&
+      !surfaceStatements[3].argument &&
+      !program.body.some((statement) => statementBindings(statement).includes('URL'))
+    );
   const resolverReturns = resolverFunction
     ? nodesIn(resolverFunction.body).filter((node) => node.type === 'ReturnStatement')
     : [];
@@ -2027,17 +2692,18 @@ function validateMainRendererLoader(desktopRoot, violations) {
     loaderFunctions.length === 1 &&
     loaderFunction.async === true &&
     JSON.stringify(loaderFunction.params.map((parameter) => parameter.type === 'Identifier' ? parameter.name : undefined)) ===
-      JSON.stringify(['mainWindow', 'rendererEntry']) &&
-    loaderFunction.body.body.length === 1 &&
+      JSON.stringify(hasWorkHubSurface ? ['mainWindow', 'rendererEntry', 'surface'] : ['mainWindow', 'rendererEntry']) &&
+    validWorkHubSurface &&
+    loaderFunction.body.body.length === (hasWorkHubSurface ? 2 : 1) &&
     entryPaths.length === 1 &&
     isRendererEntryPathInitializer(entryPaths[0].init) &&
     entryUrls.length === 1 &&
     isRendererEntryUrlInitializer(entryUrls[0].init) &&
-    loadCalls.length === 2 &&
+    loadCalls.length === (hasWorkHubSurface ? 3 : 2) &&
     loadCalls.filter((node) => isMemberCall(node, 'mainWindow', 'loadFile', 'rendererEntry', 'filePath')).length === 1 &&
     loadCalls.filter((node) => isMemberCall(node, 'mainWindow', 'loadURL', 'rendererEntry', 'url')).length === 1 &&
-    navigationTokens.length === 4 &&
-    ifStatements.length === 1 &&
+    navigationTokens.length === (hasWorkHubSurface ? 5 : 4) &&
+    ifStatements.length === (hasWorkHubSurface ? 2 : 1) &&
     isNamedMember(loadBranch.test, 'rendererEntry', 'useDevServer') &&
     isOnlyAwaitedMemberCall(loadBranch.consequent, 'mainWindow', 'loadURL', 'rendererEntry', 'url') &&
     isOnlyAwaitedMemberCall(loadBranch.alternate, 'mainWindow', 'loadFile', 'rendererEntry', 'filePath');
@@ -2389,7 +3055,7 @@ function validateCopyCatalog(desktopRoot, relativePath) {
     if (metricTotal(value) > 0) return `catalog carries ${metric} (${describeMetric(value)})`;
   }
   const forbidden = inspection.runtimeDependencies.find(
-    (dependency) => dependency.startsWith('.') || dependency.startsWith(DESKTOP_SELF_PREFIX),
+    (dependency) => !isBarePackageSpecifier(dependency),
   );
   if (forbidden !== undefined) {
     return `runtime import ${forbidden} is not a bare package specifier`;
@@ -2416,9 +3082,17 @@ function validateCopyCatalogFiles(desktopRoot, violations) {
   }
 }
 
+function isBarePackageSpecifier(dependency) {
+  return !dependency.startsWith('.') && !dependency.startsWith(DESKTOP_SELF_PREFIX);
+}
+
 function withoutSanctionedDependencies(desktopRoot, section, importerPath, dependencyPaths) {
+  // A validated catalog is already restricted to bare package runtime imports;
+  // pricing them again would push copy helpers back inline into the catalog.
+  const importerIsCatalog = isValidatedCopyCatalog(desktopRoot, importerPath);
   const filtered = {};
   for (const [dependency, count] of Object.entries(dependencyPaths)) {
+    if (importerIsCatalog && isBarePackageSpecifier(dependency)) continue;
     if (isSanctionedDependencyTarget(desktopRoot, section, importerPath, dependency)) continue;
     filtered[dependency] = count;
   }
@@ -2438,6 +3112,8 @@ function isSanctionedDependencyTarget(desktopRoot, section, importerPath, depend
 }
 
 const MIGRATION_SWAP_ZONES = {
+  legacyAppShell: ['platform'],
+  legacyAppShellClosure: ['platform'],
   rootDebt: ['bootstrap', 'composition'],
   rootDebtClosure: ['application', 'bootstrap', 'composition', 'platform'],
 };
@@ -2451,8 +3127,11 @@ function allowsMigrationDependency({ base, current, dependency, desktopRoot, pat
   return swapZones.includes(zoneFor(normalizePath(relative(desktopRoot, target))).kind);
 }
 
-function debtForPath(desktopRoot, path) {
-  return debtMetrics(analyzeRendererSource(readFileSync(resolve(desktopRoot, path), 'utf8'), path));
+function debtForPath(desktopRoot, path, section) {
+  return debtMetrics(
+    analyzeRendererSource(readFileSync(resolve(desktopRoot, path), 'utf8'), path),
+    (source) => isSanctionedDependencyTarget(desktopRoot, section, path, source),
+  );
 }
 
 function capabilityDebtForPath(desktopRoot, path) {
@@ -2499,7 +3178,7 @@ export function generateArchitectureConfig(desktopRoot, config) {
   const imports = collectLegacyImportEdges(desktopRoot);
   const rootDebt = {};
   for (const path of Object.keys(config.rootDebt ?? {}).sort()) {
-    if (existsSync(resolve(desktopRoot, path))) rootDebt[path] = debtForPath(desktopRoot, path);
+    if (existsSync(resolve(desktopRoot, path))) rootDebt[path] = debtForPath(desktopRoot, path, 'rootDebt');
   }
   const appShellDebtPaths = new Set([...appShellFiles, ...closureFiles]);
   const rootDebtClosureFiles = collectRootDependencyClosure(
@@ -2517,8 +3196,9 @@ export function generateArchitectureConfig(desktopRoot, config) {
     legacyGrowthDirectories: config.legacyGrowthDirectories ?? DEFAULT_LEGACY_GROWTH_DIRECTORIES,
     legacyFeatureImports: imports.feature,
     legacyPlatformImports: imports.platform,
+    controllerOwners: controllerOwnersOf(config),
     legacyAppShell: {
-      files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path)])),
+      files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path, 'legacyAppShell')])),
       closure: Object.fromEntries(closureFiles.map((path) => [path, capabilityDebtForPath(desktopRoot, path)])),
     },
     rootDebt,
@@ -2531,6 +3211,28 @@ export function generateArchitectureConfig(desktopRoot, config) {
 
 function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
   if (!baseConfig) return;
+  const currentControllerOwners = new Map(
+    controllerOwnersOf(config).map((owner) => [controllerOwnerKey(owner), owner]),
+  );
+  for (const baseOwner of controllerOwnersOf(baseConfig)) {
+    const key = controllerOwnerKey(baseOwner);
+    const currentOwner = currentControllerOwners.get(key);
+    if (!currentOwner) {
+      violations.push(`${key}: historical controller owner entries cannot be removed`);
+      continue;
+    }
+    if (
+      currentOwner.owner !== baseOwner.owner ||
+      currentOwner.ownerSymbol !== baseOwner.ownerSymbol
+    ) {
+      violations.push(`${key}: historical controller owner cannot change`);
+    }
+    if (currentOwner.count > baseOwner.count) {
+      violations.push(
+        `${key}: controller call count cannot increase from ${baseOwner.count} to ${currentOwner.count}`,
+      );
+    }
+  }
   for (const section of ['legacyAppShell', 'legacyAppShellClosure', 'rootDebt', 'rootDebtClosure']) {
     const currentFiles =
       section === 'legacyAppShell'
@@ -2666,6 +3368,7 @@ export function checkRendererArchitecture({
   const allowedLegacyPlatformImports = new Set(resolvedConfig.legacyPlatformImports);
   const observedLegacyFeatureImports = new Set();
   const observedLegacyPlatformImports = new Set();
+  const sourceAnalyses = new Map();
 
   for (const scanRoot of ['src', 'stories', 'e2e']) {
     for (const file of sourceFiles(resolve(resolvedDesktopRoot, scanRoot))) {
@@ -2677,6 +3380,7 @@ export function checkRendererArchitecture({
         violations.push(`${fileRelative}: could not parse source: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
+      sourceAnalyses.set(fileRelative, { analysis, file });
       validateStrictZone({ fileRelative, analysis, violations });
       validateDependencies({
         allowedLegacyFeatureImports,
@@ -2691,6 +3395,13 @@ export function checkRendererArchitecture({
       });
     }
   }
+
+  validateControllerOwners({
+    desktopRoot: resolvedDesktopRoot,
+    config: resolvedConfig,
+    sourceAnalyses,
+    violations,
+  });
 
   for (const edge of allowedLegacyFeatureImports) {
     if (!observedLegacyFeatureImports.has(edge)) violations.push(`${edge}: stale feature-to-legacy import budget`);
@@ -2710,18 +3421,10 @@ export function checkRendererArchitecture({
 // wedge the ledger permanently. We materialize the base tree and re-derive its
 // debt, keeping the base ledger only as the source of policy fields (hook
 // transitions, growth directories, root-debt key set, ownership).
-function deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig) {
+function materializeBaseTree(repoRoot, base) {
   const scratch = mkdtempSync(join(tmpdir(), 'renderer-arch-base-'));
   const worktreePath = join(scratch, 'tree');
-  try {
-    execFileSync('git', ['worktree', 'add', '--detach', worktreePath, base], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const baseDesktopRoot = resolve(worktreePath, relative(repoRoot, desktopRoot));
-    return generateArchitectureConfig(baseDesktopRoot, baseCommittedConfig);
-  } finally {
+  const remove = () => {
     try {
       execFileSync('git', ['worktree', 'remove', '--force', worktreePath], {
         cwd: repoRoot,
@@ -2739,11 +3442,132 @@ function deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig) 
     } catch {
       // Best-effort cleanup of the scratch directory.
     }
+  };
+  try {
+    execFileSync('git', ['worktree', 'add', '--detach', worktreePath, base], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    remove();
+    throw error;
+  }
+  return { remove, worktreePath };
+}
+
+function deriveBaseTreeConfig(baseDesktopRoot, baseCommittedConfig) {
+  return generateArchitectureConfig(baseDesktopRoot, baseCommittedConfig);
+}
+
+// If the base tree cannot be materialized or analyzed (e.g. git worktree is
+// unavailable), fall back to the committed base ledger so the ratchet still
+// runs. That fallback could reintroduce the stale-ledger failure in #4250, so
+// `--strict-base` turns it into a hard failure instead.
+function baseTreeFallback({ base, baseCommittedConfig, error, strictBase }) {
+  const reason = error instanceof Error ? error.message : String(error);
+  if (strictBase) {
+    throw new Error(
+      `could not derive base tree debt at ${base}, and --strict-base forbids falling back to the committed base ledger (${reason})`,
+    );
+  }
+  console.warn(
+    `Renderer architecture check: could not derive base tree debt at ${base}; ` +
+      `falling back to the committed base ledger. (${reason})`,
+  );
+  return baseCommittedConfig;
+}
+
+// A change can weaken a rule in this checker and thereby lower both sides of
+// the ratchet at once: the current tree and the re-derived base tree are then
+// measured with the same relaxed rule, so the debt that rule used to flag
+// vanishes from the comparison. Whenever the checker itself differs from the
+// base commit, we therefore also measure both trees with the BASE commit's
+// checker and ratchet those two measurements with the current comparison
+// logic, so debt the base rules would have caught still fails.
+async function crossCheckUnderBaseChecker({
+  base,
+  baseCommittedConfig,
+  baseDesktopRoot,
+  desktopRoot,
+  repoRoot,
+  strictBase,
+}) {
+  const scriptPath = fileURLToPath(import.meta.url);
+  const relativeScript = normalizePath(relative(repoRoot, scriptPath));
+  let baseSource;
+  try {
+    baseSource = execFileSync('git', ['show', `${base}:${relativeScript}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    console.log(
+      `Renderer architecture check: ${base} has no ${relativeScript}; skipping the base-checker cross-check.`,
+    );
+    return [];
+  }
+  if (baseSource === readFileSync(scriptPath, 'utf8')) return [];
+
+  const unavailable = (stage, error) => {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (strictBase) {
+      throw new Error(
+        `base-checker cross-check: ${stage} at ${base}, and --strict-base forbids skipping the cross-check (${reason})`,
+      );
+    }
+    console.warn(`Renderer architecture check: base-checker cross-check skipped; ${stage} at ${base}. (${reason})`);
+    return [];
+  };
+  const skip = (reason) => {
+    if (strictBase) return unavailable('the base checker is incompatible', reason);
+    console.log(`Renderer architecture check: ${reason}; skipping the base-checker cross-check.`);
+    return [];
+  };
+
+  // The copy lives next to this script so its bare imports resolve exactly as
+  // ours do; the name is gitignored and the copy is removed even on failure.
+  const tempPath = join(dirname(scriptPath), `.tmp-base-checker-${process.pid}.mjs`);
+  try {
+    let baseChecker;
+    try {
+      writeFileSync(tempPath, baseSource);
+      baseChecker = await import(pathToFileURL(tempPath).href);
+    } catch (error) {
+      return unavailable('the base checker could not be written or imported', error);
+    }
+    if (typeof baseChecker.generateArchitectureConfig !== 'function') {
+      return skip(`the checker at ${base} does not export generateArchitectureConfig`);
+    }
+    let baseUnderBaseRules;
+    let currentUnderBaseRules;
+    try {
+      baseUnderBaseRules = baseChecker.generateArchitectureConfig(baseDesktopRoot, baseCommittedConfig);
+      currentUnderBaseRules = baseChecker.generateArchitectureConfig(desktopRoot, baseCommittedConfig);
+    } catch (error) {
+      return unavailable('the base checker could not measure the base and current trees', error);
+    }
+    const shapeViolations = [];
+    if (
+      !validateArchitectureConfig(baseUnderBaseRules, 'base-checker base', shapeViolations) ||
+      !validateArchitectureConfig(currentUnderBaseRules, 'base-checker current', shapeViolations)
+    ) {
+      return skip(`the checker at ${base} does not produce the current ledger shape (${shapeViolations.join('; ')})`);
+    }
+    const violations = [];
+    validateMonotonicDebt(currentUnderBaseRules, baseUnderBaseRules, desktopRoot, violations);
+    console.log(
+      `Renderer architecture check: ${relativeScript} differs from ${base}; cross-checked debt under the base checker.`,
+    );
+    return violations.sort().map((violation) => `base-checker cross-check: ${violation}`);
+  } finally {
+    rmSync(tempPath, { force: true });
   }
 }
 
-function loadBaseConfig(repoRoot, desktopRoot, base) {
-  if (!base) return { baseConfig: undefined, introducedLedger: false };
+async function loadBaseConfig(repoRoot, desktopRoot, base, { strictBase = false } = {}) {
+  if (!base) return { baseConfig: undefined, crossCheckViolations: [], introducedLedger: false };
   const relativeConfig = normalizePath(relative(repoRoot, join(desktopRoot, 'renderer-architecture.json')));
   try {
     execFileSync('git', ['rev-parse', '--verify', `${base}^{commit}`], {
@@ -2778,7 +3602,7 @@ function loadBaseConfig(repoRoot, desktopRoot, base) {
       },
     ).trim();
     if (diffStatus === `A\t${relativeConfig}` || worktreeStatus === `?? ${relativeConfig}`) {
-      return { baseConfig: undefined, introducedLedger: true };
+      return { baseConfig: undefined, crossCheckViolations: [], introducedLedger: true };
     }
     throw new Error(`base ledger is missing at ${base}:${relativeConfig}`);
   }
@@ -2792,25 +3616,43 @@ function loadBaseConfig(repoRoot, desktopRoot, base) {
     );
   }
 
+  let baseTree;
   try {
+    baseTree = materializeBaseTree(repoRoot, base);
+  } catch (error) {
     return {
-      baseConfig: deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig),
+      baseConfig: baseTreeFallback({ base, baseCommittedConfig, error, strictBase }),
+      crossCheckViolations: [],
       introducedLedger: false,
     };
-  } catch (error) {
-    // If the base tree cannot be materialized or analyzed (e.g. git worktree is
-    // unavailable), fall back to the committed base ledger so the ratchet still
-    // runs. This restores the pre-fix behavior rather than crashing the check.
-    console.warn(
-      `Renderer architecture check: could not derive base tree debt at ${base}; ` +
-        `falling back to the committed base ledger. (${error instanceof Error ? error.message : String(error)})`,
-    );
-    return { baseConfig: baseCommittedConfig, introducedLedger: false };
+  }
+  try {
+    const baseDesktopRoot = resolve(baseTree.worktreePath, relative(repoRoot, desktopRoot));
+    let baseConfig;
+    try {
+      baseConfig = deriveBaseTreeConfig(baseDesktopRoot, baseCommittedConfig);
+    } catch (error) {
+      baseConfig = baseTreeFallback({ base, baseCommittedConfig, error, strictBase });
+    }
+    const crossCheckViolations = await crossCheckUnderBaseChecker({
+      base,
+      baseCommittedConfig,
+      baseDesktopRoot,
+      desktopRoot,
+      repoRoot,
+      strictBase,
+    });
+    return { baseConfig, crossCheckViolations, introducedLedger: false };
+  } finally {
+    baseTree.remove();
   }
 }
 
+const CLI_USAGE = 'usage: check-renderer-architecture.mjs [--write] [--base <commit> [--strict-base]]';
+
 function parseCliArguments(args) {
   let base;
+  let strictBase = false;
   let write = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -2818,31 +3660,35 @@ function parseCliArguments(args) {
       write = true;
       continue;
     }
+    if (argument === '--strict-base' && !strictBase) {
+      strictBase = true;
+      continue;
+    }
     if (argument === '--base' && base === undefined) {
       const value = args[index + 1];
-      if (!value || value.startsWith('--')) {
-        throw new Error('usage: check-renderer-architecture.mjs [--write] [--base <commit>]');
-      }
+      if (!value || value.startsWith('--')) throw new Error(CLI_USAGE);
       base = value;
       index += 1;
       continue;
     }
-    throw new Error('usage: check-renderer-architecture.mjs [--write] [--base <commit>]');
+    throw new Error(CLI_USAGE);
   }
-  return { base, write };
+  if (strictBase && base === undefined) throw new Error(`--strict-base requires --base <commit>\n${CLI_USAGE}`);
+  return { base, strictBase, write };
 }
 
-function runCli() {
+async function runCli() {
   const desktopRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
   const repoRoot = resolve(desktopRoot, '../..');
   let base;
   let config;
   let loadedBase;
+  let strictBase;
   let write;
   try {
-    ({ base, write } = parseCliArguments(process.argv.slice(2)));
+    ({ base, strictBase, write } = parseCliArguments(process.argv.slice(2)));
     config = JSON.parse(readFileSync(join(desktopRoot, 'renderer-architecture.json'), 'utf8'));
-    loadedBase = loadBaseConfig(repoRoot, desktopRoot, base);
+    loadedBase = await loadBaseConfig(repoRoot, desktopRoot, base, { strictBase });
     if (write) {
       config = generateArchitectureConfig(desktopRoot, config);
       writeFileSync(join(desktopRoot, 'renderer-architecture.json'), `${JSON.stringify(config, null, 2)}\n`);
@@ -2853,8 +3699,8 @@ function runCli() {
     process.exitCode = 1;
     return;
   }
-  const { baseConfig, introducedLedger } = loadedBase;
-  const violations = checkRendererArchitecture({ baseConfig, config, desktopRoot });
+  const { baseConfig, crossCheckViolations, introducedLedger } = loadedBase;
+  const violations = [...checkRendererArchitecture({ baseConfig, config, desktopRoot }), ...crossCheckViolations];
   if (violations.length > 0) {
     console.error('Renderer architecture check failed:');
     for (const violation of violations) console.error(`- ${violation}`);
@@ -2868,4 +3714,4 @@ function runCli() {
   console.log(`Renderer architecture check passed${baseConfig ? ` against ${base}` : ''}.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) runCli();
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await runCli();

@@ -27,10 +27,101 @@ import {
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
   decodeClientCapabilityResult,
   decodeClientFrame,
+  decodeClientCapabilityReplaceInput,
   decodeHostFrame,
 } from '../protocol/index.js';
 
 describe('Client Capability protocol', () => {
+  test('validates complete Session configuration identities', () => {
+    const input = {
+      registrationId: 'registration',
+      sessionId: 'session',
+      offers: [],
+      sessionConfigurationId: `sha256:${'a'.repeat(64)}`,
+    };
+    assert.deepEqual(decodeClientCapabilityReplaceInput(input), input);
+    for (const sessionConfigurationId of [
+      null,
+      1,
+      '',
+      'a'.repeat(64),
+      `sha256:${'z'.repeat(64)}`,
+    ]) {
+      assert.throws(
+        () => decodeClientCapabilityReplaceInput({ ...input, sessionConfigurationId }),
+        RuntimeHostProtocolError,
+      );
+    }
+    assert.throws(
+      () => decodeClientCapabilityReplaceInput({ ...input, sessionId: undefined }),
+      RuntimeHostProtocolError,
+    );
+  });
+
+  test('decodes the opt-in idle Session replacement fence', () => {
+    assert.deepEqual(
+      decodeClientCapabilityReplaceInput({
+        registrationId: 'registration',
+        sessionId: 'session',
+        requireIdleSession: true,
+        offers: [],
+      }),
+      {
+        registrationId: 'registration',
+        sessionId: 'session',
+        requireIdleSession: true,
+        offers: [],
+      },
+    );
+    assert.throws(
+      () =>
+        decodeClientCapabilityReplaceInput({
+          registrationId: 'registration',
+          requireIdleSession: true,
+          offers: [],
+        }),
+      RuntimeHostProtocolError,
+    );
+  });
+
+  test('preserves opaque tool-call IDs while retaining identity bounds', () => {
+    const frame = {
+      kind: 'client.capability.call',
+      invocationId: 'invocation',
+      registrationId: 'registration',
+      offerId: 'offer',
+      serverId: 'server',
+      toolName: 'tool',
+      arguments: {},
+      sessionId: 'session',
+      turnId: 'turn',
+    };
+    for (const toolCallId of ['call:outer:nested:inner', 'provider/call.1+part', 'x'.repeat(256)]) {
+      assert.deepEqual(decodeHostFrame({ ...frame, toolCallId }), { ...frame, toolCallId });
+    }
+    for (const toolCallId of [
+      undefined,
+      null,
+      1,
+      '',
+      'x'.repeat(257),
+      ' leading',
+      'trailing ',
+      'a\nb',
+      'a\u0000b',
+      'a\u007fb',
+    ]) {
+      assert.throws(() => decodeHostFrame({ ...frame, toolCallId }), RuntimeHostProtocolError);
+    }
+    for (const field of ['invocationId', 'registrationId', 'offerId', 'sessionId', 'turnId']) {
+      assert.throws(
+        () =>
+          decodeHostFrame({ ...frame, toolCallId: 'call:nested:inner', [field]: 'entity:invalid' }),
+        RuntimeHostProtocolError,
+      );
+    }
+  });
+
   test('decodes open-world registration and reverse-call lifecycle frames', () => {
     assert.deepEqual(
       decodeClientFrame({
@@ -344,6 +435,26 @@ describe('Client Capability protocol', () => {
         ),
       (error: unknown) => error instanceof RuntimeHostProtocolError,
     );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('pattern_properties', 'tool'),
+            tools: [
+              {
+                ...offer('pattern_properties', 'tool').tools[0],
+                inputSchema: {
+                  type: 'object',
+                  patternProperties: {
+                    '^x-': { type: 'string' },
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
     for (const inputSchema of [
       { type: 'string' },
       { type: 'object', unsupportedKeyword: true },
@@ -390,6 +501,52 @@ describe('Client Capability protocol', () => {
           },
         ]),
       ),
+    );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('pattern_properties', 'tool'),
+            tools: [
+              {
+                ...offer('pattern_properties', 'tool').tools[0],
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    prefix: { type: 'string', pattern: '^[a-z]+$' },
+                  },
+                  patternProperties: {
+                    '^x-': { type: 'string' },
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame(
+          replaceFrame([
+            {
+              ...offer('bad_pattern_property', 'tool'),
+              tools: [
+                {
+                  ...offer('bad_pattern_property', 'tool').tools[0],
+                  inputSchema: {
+                    type: 'object',
+                    properties: { value: { type: 'string' } },
+                    patternProperties: { '(': { type: 'string' } },
+                  },
+                },
+              ],
+            },
+          ]),
+        ),
+      (error: unknown) =>
+        error instanceof RuntimeHostProtocolError &&
+        /patternProperties key is not a valid pattern/u.test(error.message),
     );
     assert.doesNotThrow(() =>
       decodeClientFrame(
