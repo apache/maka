@@ -100,7 +100,7 @@ verified the project-item -> resolved Host/project target -> normal first-send
 
 Because creation and revisit happened in the same sitting, this run does not
 establish the Phase 1 delayed return-use assumption. The go/stop decision is to
-be recorded by the maintainer on [#2560](https://github.com/apache/maka/issues/2560).
+be recorded by the maintainer in the [Phase 3 update comment on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658).
 Phase 2 and Phase 4 remain paused pending that decision and a delayed return-use
 observation.
 

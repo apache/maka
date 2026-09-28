@@ -56,8 +56,8 @@ suffice.
 We are betting that users will return to the board and start tasks from it.
 The 2026-09-28 run verified the start-task mechanism, but because creation and
 revisit happened in one sitting it has not yet demonstrated delayed return-use.
-The evidence and maintainer go/stop decision are tracked on
-[Work Board delivery #2560](https://github.com/apache/maka/issues/2560).
+The evidence and maintainer go/stop decision are tracked in the
+[Phase 3 update comment on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658).
 Phases 2 and 4 remain paused pending that decision.
 
 ## Sequencing
