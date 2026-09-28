@@ -2003,67 +2003,45 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
   coordinator.close();
 });
 
-test('keeps the current provider retry on the live Turn until the next content event', async () => {
+test('publishes retry state to reconnecting clients until the Turn makes progress', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const liveSink = new RecordingSink();
-  const live = attachTestConnection(coordinator, 'connection-live', liveSink);
-  const opened = await open(coordinator, 'connection-live');
-  assert.equal(opened.snapshot.rootTurn && 'providerRetry' in opened.snapshot.rootTurn, false);
-  live.activate(opened.subscriptionId);
-
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
     type: 'provider_retry',
-    id: 'retry-1',
+    id: 'retry-scheduled',
     turnId: 'turn-1',
-    ts: 1,
+    ts: 5_000,
     phase: 'scheduled',
-    attempt: 8,
-    maxAttempts: 10,
-    delayMs: 40_000,
+    attempt: 2,
+    maxAttempts: 4,
+    delayMs: 30_000,
     reason: 'rate_limit',
   });
 
-  const retry = {
-    phase: 'scheduled' as const,
-    attempt: 8,
-    maxAttempts: 10,
-    delayMs: 40_000,
-    // The host-clock schedule time is kept so a re-projection mid-wait can
-    // recompute the authoritative remaining duration (#3393).
-    ts: 1,
-    reason: 'rate_limit' as const,
-  };
-  attachTestConnection(coordinator, 'connection-remount', new RecordingSink());
-  const remounted = await open(coordinator, 'connection-remount');
-  assert.deepEqual(
-    remounted.snapshot.rootTurn && 'providerRetry' in remounted.snapshot.rootTurn
-      ? remounted.snapshot.rootTurn.providerRetry
-      : undefined,
-    retry,
-  );
-  assert.ok(
-    liveSink.frames.some(
-      (frame) =>
-        frame.kind === 'subscription.session_projection' &&
-        frame.snapshot.rootTurn &&
-        'providerRetry' in frame.snapshot.rootTurn &&
-        frame.snapshot.rootTurn.providerRetry?.phase === 'scheduled',
-    ),
-  );
+  attachTestConnection(coordinator, 'connection-during-wait', new RecordingSink());
+  const waiting = await open(coordinator, 'connection-during-wait');
+  const waitingTurn = waiting.snapshot.rootTurn;
+  assert.equal(waitingTurn?.status, 'running');
+  if (waitingTurn?.status !== 'running') return;
+  assert.deepEqual(waitingTurn.providerRetry, {
+    phase: 'scheduled',
+    attempt: 2,
+    maxAttempts: 4,
+    delayMs: 30_000,
+    ts: 5_000,
+    reason: 'rate_limit',
+  });
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  attachTestConnection(coordinator, 'connection-after-text', new RecordingSink());
-  const afterText = await open(coordinator, 'connection-after-text');
-  assert.equal(
-    afterText.snapshot.rootTurn && 'providerRetry' in afterText.snapshot.rootTurn,
-    false,
-  );
-
-  live.abort(opened.subscriptionId);
+  attachTestConnection(coordinator, 'connection-after-progress', new RecordingSink());
+  const progressed = await open(coordinator, 'connection-after-progress');
+  const progressedTurn = progressed.snapshot.rootTurn;
+  assert.equal(progressedTurn?.status, 'running');
+  if (progressedTurn?.status !== 'running') return;
+  assert.equal(progressedTurn.providerRetry, undefined);
   coordinator.close();
 });
 

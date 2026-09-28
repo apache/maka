@@ -74,6 +74,7 @@ import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
 import { MakaClientSlotOutlet, useMakaClientSlotOccupied } from './client-plugin-slots.js';
+import { ProviderRetryNotice } from './provider-retry-notice.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -1232,17 +1233,11 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
   // is the whole status, the moving text is decoration).
   const scheduledA11y = retry.phase === 'scheduled';
   return (
-    <Banner
+    <ProviderRetryNotice
       ref={rootRef}
-      status="warning"
-      container="section"
-      role="status"
-      className="maka-turn-provider-retry"
-      {...(scheduledA11y
-        ? {
-            'aria-label': `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`,
-          }
-        : {})}
+      accessibleLabel={scheduledA11y
+        ? `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`
+        : undefined}
       title={
         scheduledA11y ? (
           <span aria-hidden="true">

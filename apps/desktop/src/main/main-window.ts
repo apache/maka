@@ -144,13 +144,19 @@ function ownsRenderer(contents: Electron.WebContents): boolean {
 }
 let browserViews: BrowserViewManager<BrowserViewController> | undefined;
 
-/** Broadcast existing app events once to each live owned renderer, even if the main window is closed. */
-export function safeSendToRenderer(channel: string, ...args: unknown[]): void {
+/** Broadcast once to each live owned renderer, even if the main window is closed.
+ * Returns whether at least one IPC send was issued, not a renderer acknowledgment. */
+export function safeSendToRenderer(channel: string, ...args: unknown[]): boolean {
   const recipients = new Set(auxiliaryRenderers.keys());
   if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
+  let emitted = false;
   for (const contents of recipients) {
-    if (!contents.isDestroyed()) contents.send(channel, ...args);
+    if (!contents.isDestroyed()) {
+      contents.send(channel, ...args);
+      emitted = true;
+    }
   }
+  return emitted;
 }
 
 // The close button's centre sits on the same vertical line as the sidebar's
@@ -173,8 +179,8 @@ const SHOW_FALLBACK_TIMEOUT_MS = 4000;
 
 // PR-WINDOW-TITLEBAR-0: the titleBarOverlay height matches the renderer
 // `--h-titlebar: 36px` token so the native control strip and the in-app top
-// chrome share a baseline; `app-region-hygiene-contract.test.ts` fails if the
-// two numbers drift. The overlay color/symbolColor are reused both at window
+// chrome share a baseline; `shell-layout-widths.test.ts` fails if the two
+// numbers drift. The overlay color/symbolColor are reused both at window
 // creation (to avoid a first-frame flash against the window `backgroundColor`)
 // and on runtime mode/palette changes via `setTitleBarOverlayTheme` — Windows
 // only, which is why macOS passes the height alone.
@@ -404,15 +410,15 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // xuan `eea556cd`): explicit `resizable: true` so a future
       // patch can't silently disable window edge resize. Default is
       // already `true`, but pinning it here removes the ambiguity
-      // and makes the intent obvious to reviewers; CSS-level fixes
-      // (see `app-region-hygiene-contract.test.ts`) cover the
-      // renderer side of the same gate.
+      // and makes the intent obvious to reviewers; the shell's CSS
+      // floors cover the renderer side of the same gate.
       resizable: true,
       // #824: enforce the sanitizeBounds restore floor at runtime resize too,
       // so the both-present dvh layout fix can't be defeated by dragging the
-      // window shorter than the 320px restore minimum. Shares SAFE_MIN_HEIGHT
-      // with sanitizeBounds so the resize floor and the restore floor can't
-      // drift apart (locked by app-region-hygiene-contract.test.ts).
+      // window below the restore minimum. Shares SAFE_MIN_WIDTH and
+      // SAFE_MIN_HEIGHT with sanitizeBounds so the resize floor and the restore
+      // floor can't drift apart (locked by window-state.test.ts).
+      minWidth: SAFE_MIN_WIDTH,
       minHeight: SAFE_MIN_HEIGHT,
       backgroundColor: initialBg,
       // The window stays hidden until `ready-to-show`, so the first visible

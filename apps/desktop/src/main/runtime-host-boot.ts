@@ -20,6 +20,7 @@
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   type BrowserWindow,
   clipboard,
   ipcMain,
@@ -179,6 +180,7 @@ import {
 import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js";
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
 import { buildClientSettingsTools } from "./client-settings-tools.js";
+import { safeSendToRenderer } from "./main-window.js";
 import { createClientSettingsEffects } from "./client-settings-effects.js";
 import { registerClientSettingsIpc } from "./client-settings-ipc-main.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
@@ -848,8 +850,9 @@ const clientSettingsEffects = createClientSettingsEffects({
   systemPrefersDark: () => nativeTheme.shouldUseDarkColors,
   observeLocale: (settings) => desktopLocale.observe(settings),
   emitExternalChanged: () => {
-    mainWindowController.send("settings:clientChanged");
+    const emitted = safeSendToRenderer("settings:clientChanged");
     sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
+    return emitted;
   },
 });
 // An OS appearance flip changes no setting, so nothing else would notice it.
@@ -915,6 +918,7 @@ const desktopUpdateChannel = app.isPackaged
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
+  nativeUpdater: nativeAutoUpdater,
   updateChannel: desktopUpdateChannel,
   testFeedUrl: updateTestFeed,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
@@ -2058,6 +2062,21 @@ function wireLifecycle(): void {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
     if (process.platform !== "darwin" && !windowsAppTray.hasTray() && !isBrowserMessageBoxPresentationActive()) app.quit();
+  });
+  // macOS `quitAndInstall` closes every window and then waits, silently, for
+  // the window list to empty before it asks Squirrel to relaunch; only that
+  // relaunch reaches `before-quit`. WorkHub survives a main-window close by
+  // re-parenting into its floating panel, and the panel refuses its own close,
+  // so the relaunch never started and the retired Runtime Host handoff was
+  // never released (#5783). Let the panel close ahead of the sweep. This is
+  // narrower than the dispose the quit cleanup performs later: if the quit
+  // does not go through, the next Desktop window brings WorkHub back.
+  nativeAutoUpdater.on("before-quit-for-update", () => {
+    try {
+      workHubPresentation.releaseForQuit();
+    } catch (error) {
+      console.error("[update] WorkHub release before install failed:", error);
+    }
   });
   powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();

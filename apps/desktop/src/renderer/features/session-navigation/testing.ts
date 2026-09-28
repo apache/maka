@@ -53,9 +53,8 @@ export {
   type SessionSelection,
 } from './model/session-selection.js';
 export {
-  readSessionListViewMode,
   SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
-  writeSessionListViewMode,
+  SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from './model/session-list-layout.js';
 export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';
 

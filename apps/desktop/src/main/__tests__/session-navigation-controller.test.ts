@@ -94,6 +94,14 @@ const localProjectScope = {
   },
 };
 
+function localScope(project: ProjectRecord) {
+  return {
+    ...localProjectScope,
+    key: JSON.stringify(['local-host', project.id]),
+    project,
+  };
+}
+
 const hiddenSessionIds = new Set(['hidden']);
 
 const fakeServices = createFakeSessionNavigationServices();
@@ -294,6 +302,156 @@ describe('useSessionNavigationController', () => {
     await act(async () => renderController(root, { ...stableInput }));
 
     assert.equal(controller().commands, first);
+  });
+
+  it('names a session location only for a project that has more than one', async () => {
+    const { root } = installReactRenderer();
+    const linked: ProjectRecord = {
+      id: 'linked',
+      name: 'Linked',
+      locations: [
+        { path: '/repo', isWorktree: false },
+        { path: '/repo-feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('main', { projectId: 'linked', cwd: '/repo' }),
+      session('feature', { projectId: 'linked', cwd: '/repo-feature' }),
+      session('elsewhere', { projectId: 'linked', cwd: '/elsewhere' }),
+      session('single', { projectId: 'project', cwd: '/repo' }),
+    ];
+    await act(async () =>
+      renderController(root, {
+        ...input(catalog, 'main'),
+        projectScopes: [localScope(linked), localProjectScope],
+      }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), '/repo');
+    assert.equal(controller().selectors.sessionLocation(catalog[1]!), '/repo-feature');
+    assert.equal(controller().selectors.sessionLocation(catalog[2]!), undefined);
+    assert.equal(controller().selectors.sessionLocation(catalog[3]!), undefined);
+  });
+
+  it('matches Windows locations across mixed separators and case', async () => {
+    const { root } = installReactRenderer();
+    const windows: ProjectRecord = {
+      id: 'windows',
+      name: 'Windows',
+      locations: [
+        { path: 'C:\\Repo', isWorktree: false },
+        { path: 'C:\\Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('main', { projectId: 'windows', cwd: 'c:/repo' }),
+      session('feature', { projectId: 'windows', cwd: 'c:/repo-feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'main'), projectScopes: [localScope(windows)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), 'C:\\Repo');
+    assert.equal(controller().selectors.sessionLocation(catalog[1]!), 'C:\\Repo-Feature');
+    // The worktree mark reads the same comparison, so a forward-slash cwd must
+    // still find the backslash location it names.
+    assert.equal(controller().selectors.worktreeSessionIds.has('feature'), true);
+  });
+
+  it('matches a Windows drive root across case and separators', async () => {
+    const { root } = installReactRenderer();
+    const windows: ProjectRecord = {
+      id: 'windows',
+      name: 'Windows',
+      locations: [
+        { path: 'C:\\', isWorktree: false },
+        { path: 'C:\\Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [session('root', { projectId: 'windows', cwd: 'c:/' })];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'root'), projectScopes: [localScope(windows)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), 'C:\\');
+  });
+
+  it('keeps double-slash POSIX locations case-sensitive', async () => {
+    const { root } = installReactRenderer();
+    const posix: ProjectRecord = {
+      id: 'posix',
+      name: 'POSIX',
+      locations: [
+        { path: '//Repo', isWorktree: false },
+        { path: '//Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('different-case', { projectId: 'posix', cwd: '//repo-feature' }),
+      session('exact-case', { projectId: 'posix', cwd: '//Repo-Feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'exact-case'), projectScopes: [localScope(posix)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), undefined);
+    assert.equal(controller().selectors.worktreeSessionIds.has('different-case'), false);
+    assert.equal(controller().selectors.sessionLocation(catalog[1]!), '//Repo-Feature');
+    assert.equal(controller().selectors.worktreeSessionIds.has('exact-case'), true);
+  });
+
+  it('matches explicit UNC locations against forward-slash session paths', async () => {
+    const { root } = installReactRenderer();
+    const windows: ProjectRecord = {
+      id: 'windows-unc',
+      name: 'Windows UNC',
+      locations: [
+        { path: '\\\\Server\\Repo', isWorktree: false },
+        { path: '\\\\Server\\Repo-Feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('unc-feature', { projectId: 'windows-unc', cwd: '//server/repo-feature' }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'unc-feature'), projectScopes: [localScope(windows)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), '\\\\Server\\Repo-Feature');
+    assert.equal(controller().selectors.worktreeSessionIds.has('unc-feature'), true);
+  });
+
+  it('does not match a Host-workspace session against local project locations', async () => {
+    const { root } = installReactRenderer();
+    const linked: ProjectRecord = {
+      id: 'linked',
+      name: 'Linked',
+      locations: [
+        { path: '/repo', isWorktree: false },
+        { path: '/repo-feature', isWorktree: true },
+      ],
+      available: true,
+    };
+    const catalog = [
+      session('remote', {
+        runtimeHostId: 'remote-host',
+        projectId: 'linked',
+        cwd: '/repo-feature',
+        profileId: 'remote-profile',
+        profileName: 'Remote Mac',
+        profileKind: 'remote',
+      }),
+    ];
+    await act(async () =>
+      renderController(root, { ...input(catalog, 'remote'), projectScopes: [localScope(linked)] }),
+    );
+
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), undefined);
   });
 });
 

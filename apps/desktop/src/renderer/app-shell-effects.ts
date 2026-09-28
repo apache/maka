@@ -292,8 +292,7 @@ export function useActiveSessionEvents(options: {
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
   setExecution: import('./features/conversation/index.js').AppShellSessionUiStateController['setExecution'];
-  beginObservationSeed: (sessionId: string) => void;
-  completeObservationSeed: (sessionId: string) => void;
+  beginObservationSeed: (sessionId: string) => () => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   clearMessageLoadError(sessionId: string): void;
   setMessageLoadPending: (pending: boolean) => void;
@@ -348,7 +347,6 @@ export function useActiveSessionEvents(options: {
     options.handleEvent(sessionId, event);
   });
   const beginObservationSeed = useEffectEvent(options.beginObservationSeed);
-  const completeObservationSeed = useEffectEvent(options.completeObservationSeed);
   const markSessionEventStreamClosed = useEffectEvent((sessionId: string) => {
     options.setSessionEventHealthBySession((current) => {
       const previous = current[sessionId];
@@ -399,7 +397,7 @@ export function useActiveSessionEvents(options: {
       applyTranscript(activeId, controller, () => !disposed));
     const subscribeSessionEvents = () => {
       const attempt = ++observationAttempt;
-      beginObservationSeed(activeId);
+      let completeObservationSeed = beginObservationSeed(activeId);
       let unsubscribeRequested = false;
       let unsubscribeCurrent = () => {
         unsubscribeRequested = true;
@@ -413,10 +411,10 @@ export function useActiveSessionEvents(options: {
         (phase) => {
           if (attempt !== observationAttempt) return;
           controller.observationChanged(phase);
-          if (phase === 'pending') beginObservationSeed(activeId);
+          if (phase === 'pending') completeObservationSeed = beginObservationSeed(activeId);
           else {
             observationFailures = 0;
-            completeObservationSeed(activeId);
+            completeObservationSeed();
           }
         },
         () => {

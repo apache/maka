@@ -17,10 +17,13 @@
  * under the License.
  */
 
+import { useLayoutEffect } from 'react';
+import { useMediaQuery } from '@astryxdesign/core/hooks';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import type { SessionCatalogState } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { deriveSessionRail } from '../model/session-rail.js';
+import { SHELL_SIDEBAR_COMPACT_QUERY } from '../../../application/contracts/shell-layout-contract.js';
 import {
   selectRailLayout,
   sessionRailLayoutStore,
@@ -97,6 +100,13 @@ export function useSessionNavigationReads(input: {
     selectActiveParentSession,
     activeSessionId,
   );
+  /* The one place the rail asks how wide the window is. The store is
+     module-scoped, so it is told rather than handed a prop; a layout effect
+     re-renders before paint, so a narrow launch never shows it. */
+  const sidebarCompact = useMediaQuery(SHELL_SIDEBAR_COMPACT_QUERY);
+  useLayoutEffect(() => {
+    sessionRailLayoutStore.setCompact(sidebarCompact);
+  }, [sidebarCompact]);
   const layout = useExternalStoreSelector(sessionRailLayoutStore, selectRailLayout);
   return { revisionNavigation, activeParentSession, layout };
 }
