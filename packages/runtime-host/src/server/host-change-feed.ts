@@ -41,7 +41,7 @@ export interface HostChangeSubscription {
 }
 
 export interface HostChangeSubscriptionMask {
-  readonly artifact?: true | { readonly sessionId: string };
+  readonly artifact?: true;
   readonly configuration?: boolean;
   readonly connectionCatalog?: boolean;
   readonly projectCatalog?: boolean;
@@ -166,7 +166,6 @@ export class HostChangeFeed {
         this.#subscriptions.get(connectionId) === subscription
       ) {
         this.#subscriptions.delete(connectionId);
-        continue;
       }
     }
   }
@@ -175,10 +174,7 @@ export class HostChangeFeed {
 function isSubscribed(mask: HostChangeSubscriptionMask, frame: HostChangeFrame): boolean {
   switch (frame.kind) {
     case 'artifact.changed':
-      return (
-        mask.artifact === true ||
-        (mask.artifact !== undefined && frame.sessionId === mask.artifact.sessionId)
-      );
+      return mask.artifact === true;
     case 'configuration.changed':
       return mask.configuration === true;
     case 'connection.catalog.changed':

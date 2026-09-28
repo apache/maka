@@ -168,6 +168,9 @@ test('rejects previews above the global limit without invalidating existing sess
     await assert.rejects(service.prepare('h', client('replacement'), 's64', 'a1'), /across the Desktop/);
     assert.equal(await (await fetch(endpoints[0]!.url)).text(), 'preview-0');
     assert.equal(await (await fetch(endpoints[63]!.url)).text(), 'preview-63');
+    await service.releaseUrl(endpoints[0]!.url);
+    const replacement = await service.prepare('h', client('replacement'), 's64', 'a1');
+    assert.equal(await (await fetch(replacement.url)).text(), 'replacement');
   } finally {
     await service.close();
   }
@@ -181,6 +184,14 @@ test('reserves aggregate preview bytes before streaming and releases reservation
     getArtifact: async () => ({ id: 'a1', sessionId: 's1', turnId: 't1', createdAt: 0, name: 'large.html', kind: 'html' as const, sizeBytes: PREVIEW_MAX_BYTES, source: 'tool_result' as const }),
     streamArtifact: async () => { await gate; throw new Error('test stream failure'); },
   };
+  const successfulLarge = {
+    getArtifact: large.getArtifact,
+    streamArtifact: async (_sessionId: string, _artifactId: string, write: (chunk: Uint8Array) => Promise<void>) => {
+      const bytes = Buffer.alloc(PREVIEW_MAX_BYTES);
+      await write(bytes);
+      return bytes.length;
+    },
+  };
   const pending = Array.from({ length: 16 }, (_, index) => service.prepare('h', large, `s${index + 1}`, 'a1'));
   try {
     // Each in-flight Artifact reserves 8 MiB, reaching the 128 MiB aggregate budget.
@@ -188,7 +199,9 @@ test('reserves aggregate preview bytes before streaming and releases reservation
     await assert.rejects(service.prepare('h', large, 's17', 'a1'), /memory limit/);
     resume();
     await Promise.all(pending.map((preparation) => assert.rejects(preparation, /test stream failure/)));
-    assert.equal((await service.prepare('h', client(), 's1', 'a1')).reachable, true);
+    const recovered = await service.prepare('h', successfulLarge, 's1', 'a1');
+    assert.equal(recovered.reachable, true);
+    await service.releaseUrl(recovered.url);
   } finally {
     resume();
     await Promise.allSettled(pending);

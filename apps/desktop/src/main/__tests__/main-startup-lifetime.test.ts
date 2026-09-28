@@ -145,6 +145,10 @@ test('wires Artifact deletion and purge events to preview invalidation for the a
   assert.match(handler, /managedArtifactPreview\.releaseSession\(scope\.targetEpoch,\s*frame\.sessionId\)/u);
   assert.match(bootSource, /managedArtifactPreview\.openScope\(scope\.targetEpoch\)/u);
   assert.match(bootSource, /await managedArtifactPreview\.closeScope\(scope\.targetEpoch\)/u);
+  assert.ok(
+    bootSource.indexOf('await managedArtifactPreview.closeScope(scope.targetEpoch)') <
+      bootSource.indexOf('unsubscribeArtifactChanges();'),
+  );
 });
 
 test('resolves persisted locale before first post-settings recovery prompt', () => {
