@@ -526,12 +526,14 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       installHandoff = preparation;
       const version = latestVersion() ?? deps.currentVersion;
       publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
+      // Subscribe first: when Squirrel already holds the update, the native
+      // updater announces the quit synchronously inside this call.
+      watchInstallQuit();
       updater.quitAndInstall(false, true);
       const installStatus = currentStatus();
       if (installStatus.state === 'error' && installStatus.operation === 'install') {
         return { ok: false, reason: 'install_failed' };
       }
-      watchInstallQuit();
       return { ok: true };
     } catch (error) {
       rollbackInstallHandoff();

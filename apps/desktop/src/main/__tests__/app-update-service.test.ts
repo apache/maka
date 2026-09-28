@@ -700,6 +700,50 @@ describe('AppUpdateService', () => {
     assert.equal(h.clock.pending().length, 0);
   });
 
+  test('catches a quit announced synchronously inside quitAndInstall', async () => {
+    let rollbacks = 0;
+    const armed = createHarness({
+      prepareInstall: async () => ({
+        kind: 'prepared',
+        rollback: () => {
+          rollbacks += 1;
+        },
+      }),
+    });
+    // Squirrel already holds the update: electron-updater hands off to the
+    // native updater at once, and Electron announces the quit before returning.
+    armed.updater.onQuitAndInstall = () => armed.nativeUpdater.emit('before-quit-for-update');
+    armed.updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    assert.deepEqual(await armed.service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: true,
+    });
+    assert.equal(armed.clock.pending().length, 1);
+    await armed.clock.runNext();
+    assert.equal(rollbacks, 1);
+    assert.equal(armed.service.getStatus().state, 'error');
+
+    // The same announcement followed by a synchronous dispatch failure leaves
+    // nothing armed and nothing subscribed.
+    const failed = createHarness();
+    failed.updater.onQuitAndInstall = () => failed.nativeUpdater.emit('before-quit-for-update');
+    failed.updater.quitAndInstallThrows = true;
+    failed.updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    assert.deepEqual(await failed.service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: false,
+      reason: 'install_failed',
+    });
+    assert.equal(failed.clock.pending().length, 0);
+    assert.equal(failed.nativeUpdater.listenerCount('before-quit-for-update'), 0);
+  });
+
   test('disarms the install quit watchdog on dispose', async () => {
     const { clock, nativeUpdater, service, updater } = createHarness();
     updater.emit('update-downloaded', {
