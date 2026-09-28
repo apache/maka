@@ -76,7 +76,7 @@ any screenshots.
 
 Assertions cover provider requests, ordinary Session events, process/renderer
 logs, live workspace files (including SQLite/WAL), and the closed Desktop profile.
-The fixture prints an artifact directory containing 21 sequential screenshots,
+The fixture prints an artifact directory containing sequential screenshots,
 their ordered captions/redaction flags in `screenshots.json`, and `result.json`.
 When a private terminal display contains a generated credential, only that
 display is masked in the screenshot; the actual UI is unchanged. Password input

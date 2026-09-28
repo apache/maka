@@ -241,6 +241,12 @@ try {
   await recordScreenshot('02-waiting.png', '自动展开原终端，等待用户私密输入');
   await expect(card.locator('details')).not.toHaveAttribute('open');
   await expect(card.locator('header')).toContainText('fixture@127.0.0.1');
+  await card.locator('summary').click();
+  await recordScreenshot(
+    'connection-details.png',
+    '按需展开连接详情，查看 Agent 说明、执行主机和资源标识',
+  );
+  await card.locator('summary').click();
   console.log(JSON.stringify({ phase: 'awaiting-private-input' }));
   const beforeReload = await page.evaluate(() => window.handoffAcceptance.events);
   // A harmless draft makes the reveal control reviewable without photographing a credential.
@@ -309,7 +315,7 @@ try {
   const terminalView = page.getByTestId('private-terminal');
   await expect(terminalView).toBeVisible();
   await expect(terminalView.locator('input, header, details, button')).toHaveCount(0);
-  await recordScreenshot('03-resumed.png', '交还 Agent，认证屏幕清除，输出继续私密');
+  await recordScreenshot('03-resumed.png', '点击继续后输入卡片退出，仅保留原终端的私密显示');
   const safe = 'CONTINUITY:original-shell:/tmp';
   await expect(terminalView.locator('pre')).toContainText(safe, { timeout: 180_000 });
   console.log(JSON.stringify({ phase: 'same-shell-command-observed' }));
@@ -376,6 +382,10 @@ try {
       { timeout: 180_000 },
     );
     console.log(JSON.stringify({ phase: 'same-connection-followup', turn }));
+    await recordScreenshot(
+      `followup-${turn}.png`,
+      `第 ${turn} 轮对话复用原 SSH 连接，无需再次输入密码`,
+    );
   }
   const events = [
     ...beforeReload,
