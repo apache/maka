@@ -1778,7 +1778,6 @@ export class ToolRuntime {
         );
       }
       const uncertainOutcome = uncertainOutcomeSignalFromError(err);
-      const failureOutcome = ctx.abortSignal.aborted && !uncertainOutcome ? 'aborted' : 'error';
       const errorClass = uncertainOutcome ? 'OutcomeUnknown' : classifyError(err);
       const terminalFailure = coerceTerminalFailure(
         tool,
@@ -1786,6 +1785,11 @@ export class ToolRuntime {
         executionArgs,
         err,
       );
+      const failureOutcome =
+        !uncertainOutcome &&
+        (ctx.abortSignal.aborted || terminalFailure?.content.status === 'cancelled')
+          ? 'aborted'
+          : 'error';
       if (terminalFailure) {
         if (terminalFailure.sandboxDenied) {
           const denialKey = sandboxDenialKey(tool.name, this.input.header.cwd, executionArgs);

@@ -966,15 +966,18 @@ export function buildComputerUseTools(deps: {
     | 'target_changed'
     | 'capture_failed';
 
+  function publicBindingFailureCode(reason: string): ComputerUseErrorCode | undefined {
+    if (isComputerUseErrorCode(reason)) return reason;
+    if (reason === 'retired_action') return 'duplicate_action';
+    if (reason === 'invalid_binding') return 'stale_frame';
+    return undefined;
+  }
+
   function bindingFailure(reason: BindingFailureReason, action?: string): ComputerToolResult {
     // `retired_action` is an internal distinction, not a twenty-ninth word for
     // the model: it is the same fact as `duplicate_action` with a different
     // recovery, and the recovery is the sentence, not the code.
-    const error: ComputerUseErrorCode = isComputerUseErrorCode(reason)
-      ? reason
-      : reason === 'retired_action'
-        ? 'duplicate_action'
-        : 'stale_frame';
+    const error = publicBindingFailureCode(reason) ?? 'stale_frame';
     const tool = action ? `maka_computer.${action}` : 'maka_computer';
     return {
       text: `${tool} failed: ${error} — ${BINDING_FAILURE_RECOVERY[reason]}`,
@@ -1986,7 +1989,7 @@ export function buildComputerUseTools(deps: {
               modelText: `${headline}\n${stepLines}${modelTail}`,
               ...(stopped
                 ? {
-                    error: isComputerUseErrorCode(stopped) ? stopped : 'outcome_unknown',
+                    error: publicBindingFailureCode(stopped) ?? 'outcome_unknown',
                   }
                 : closingBlock
                   ? { error: closingBlock }

@@ -1318,6 +1318,50 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.match(result.text, /stopped at step 1 of 1: outcome_unknown/);
   });
 
+  test('a sequence reports a retired pre-dispatch step as a duplicate action', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    let dispatches = 0;
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return {
+        outcome: {
+          ok: false,
+          error: 'dispatch_refused',
+          message: 'the executor refused before dispatch',
+          evidence: { path: 'none' },
+        },
+      };
+    };
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+    const refused = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+      } as never,
+      ctx(undefined, { toolCallId: 'refused' }),
+    )) as { error?: string };
+    assert.equal(refused.error, 'dispatch_refused');
+
+    const sequence = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: observationId,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { error?: string; text: string };
+    assert.equal(sequence.error, 'duplicate_action');
+    assert.match(sequence.text, /stopped at step 0 of 1: retired_action/);
+    assert.equal(dispatches, 1);
+  });
+
   test('a stopped sequence preserves a partially delivered outcome over frame confirmation failure', async () => {
     const backend = fakeBackend();
     backend.observeApp = async () => observation();
