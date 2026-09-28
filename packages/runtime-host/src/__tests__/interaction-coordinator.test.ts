@@ -126,6 +126,49 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('terminal apply failure rejects that request without poisoning other interactions', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const pending = coordinator.requestTerminalHandoff({
+        ...RUN,
+        requestId: 'failing-terminal',
+        request: {
+          kind: 'terminal_handoff',
+          toolUseId: 'write-terminal',
+          ref: 'maka://runtime/background-tasks/shell-1',
+          message: 'Private input',
+        },
+        canAnswer: () => true,
+        apply: async () => {
+          throw new Error('terminal stop failed');
+        },
+      });
+      const rejected = assert.rejects(pending, /terminal stop failed/);
+      await published.promise;
+      const result = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: 'failing-terminal',
+          answer: { kind: 'terminal_handoff', action: 'cancel', controllerId: 'card' },
+        },
+        connection(),
+      );
+      assert.equal(result.ok, true, 'the durable answer was committed');
+      await rejected;
+      assert.equal(coordinator.isPoisoned(), false);
+      assert.deepEqual(await store.listPending(RUN), []);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('terminal handoff abort during publication closes instead of leaving a pending interaction', async () => {
     await withStore(async ({ store }) => {
       const abort = new AbortController();

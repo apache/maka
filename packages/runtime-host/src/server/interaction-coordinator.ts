@@ -1717,8 +1717,10 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         this.#live.delete(entry.request.requestId);
         entry.resolve(outcome.outcome);
       } catch (error) {
+        // The outcome is already committed. A terminal side-effect failure is
+        // local to this request, not evidence that the Interaction store failed.
+        this.#live.delete(entry.request.requestId);
         entry.reject(error);
-        throw this.#poison(error);
       }
       return;
     }

@@ -156,6 +156,20 @@ await createSettingsStore(workspace).update({ personalization: { uiLocale: 'en' 
 let app;
 let page;
 const logs = [];
+const keepOpen = process.env.HANDOFF_KEEP_OPEN === '1';
+const screenshots = [];
+async function recordScreenshot(file, title) {
+  const displays = page.locator('[data-private-terminal]:visible');
+  const text = (await displays.allTextContents()).join('\n');
+  const redacted = text.includes(password) || text.includes(factor);
+  await page.screenshot({
+    path: join(artifactDir, file),
+    animations: 'disabled',
+    ...(redacted ? { mask: [displays], maskColor: '#20252b' } : {}),
+  });
+  screenshots.push({ file, title, redacted });
+  await writeFile(join(artifactDir, 'screenshots.json'), JSON.stringify(screenshots, null, 2));
+}
 try {
   const env = buildFixtureEnv(profile, home, { showWindow: true, locale: 'en' });
   delete env.MAKA_E2E;
@@ -202,12 +216,13 @@ try {
   // The normal user terminal is a baseline, never a replacement for the SSH PTY.
   await page.keyboard.press('Control+Backquote');
   await expect(page.locator('.maka-session-terminal-xterm .xterm')).toBeVisible();
-  await page.screenshot({ path: join(artifactDir, '01-normal.png') });
-  const prompt = `Please log in to fixture@127.0.0.1 on SSH port ${sshPort}. This is my authorized, isolated local test server; it uses password authentication, and for this loopback test you may skip host-key verification without updating known_hosts. I will enter the password and any verification code myself in the app; do not ask me to put credentials in chat or look for them in files. After I finish, use that same remote shell to print CONTINUITY: followed by the shell-local variable marker and the current directory, separated by colons, then report the result promptly. Allow ten minutes for login and follow-up commands, but do not wait out that period before reporting; leave the connection open in the background. Use the terminal rather than a graphical SSH app.`;
+  await recordScreenshot('01-normal.png', '普通终端：接管前的基线');
+  const prompt = `Please log in to fixture@127.0.0.1 on SSH port ${sshPort}. This is my authorized, isolated local test server; it uses password authentication, and for this loopback test you may skip host-key verification without updating known_hosts. I will enter the password and any verification code myself in the app; do not ask me to put credentials in chat or look for them in files. After I finish, use that same remote shell to print CONTINUITY: followed by the shell-local variable marker and the current directory, separated by colons, then report the result promptly. Allow ten minutes for login and follow-up commands, but do not wait out that period before reporting; leave the connection open in the background. Use the terminal rather than a graphical SSH app. This test server accepts interactive shell sessions only, with no SSH remote-command argument. It already initializes the shell-local marker variable; inspect its existing value without setting or exporting it.`;
   const editor = page.locator('.maka-composer-editor [contenteditable="true"]').first();
   await editor.fill(prompt);
   await expect(page.locator('.maka-composer button[type="submit"]').first()).toBeEnabled();
   await editor.press('Enter');
+  await recordScreenshot('task-started.png', '提交自然语言任务，Agent 自主发现接管能力');
   const card = page.getByTestId('terminal-handoff');
   const privateField = card.locator('input[type="password"]');
   await Promise.race([
@@ -222,10 +237,11 @@ try {
         throw new Error('Real model turn failed before terminal handoff');
       }),
   ]);
-  await page.screenshot({ path: join(artifactDir, '02-waiting.png') });
+  await recordScreenshot('02-waiting.png', '自动展开原终端，等待用户私密输入');
   console.log(JSON.stringify({ phase: 'awaiting-private-input' }));
   const beforeReload = await page.evaluate(() => window.handoffAcceptance.events);
   await privateField.fill(password);
+  await recordScreenshot('masked-draft.png', '密码草稿以掩码显示，尚未提交');
   await page.reload();
   await page.waitForFunction(() => Boolean(window.maka?.sessions));
   await page.evaluate((id) => {
@@ -236,6 +252,7 @@ try {
   }, sessionId);
   await expect(card.locator('input[type="password"]')).toBeVisible({ timeout: 30_000 });
   await expect(privateField).toHaveValue('');
+  await recordScreenshot('draft-cleared.png', '刷新后清空草稿，恢复原接管');
   await expect(
     card.getByRole('button', { name: 'Let the agent continue', exact: true }),
   ).toBeDisabled();
@@ -243,6 +260,7 @@ try {
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card).toContainText('Not sent. Enter one line');
   await expect(privateField).toBeEnabled();
+  await recordScreenshot('invalid-input.png', '输入校验失败：未发送，可编辑');
   await privateField.fill(factor);
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('Permission denied', { timeout: 30_000 });
@@ -250,22 +268,26 @@ try {
   await expect(
     card.getByRole('button', { name: 'Let the agent continue', exact: true }),
   ).toBeDisabled();
-  await page.screenshot({ path: join(artifactDir, '04-retry.png') });
+  await recordScreenshot('04-retry.png', 'SSH 密码错误：错误提示与重试入口');
   await privateField.fill(password);
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('Verification code:', { timeout: 30_000 });
+  await recordScreenshot('verification-code.png', '密码通过，目标程序请求验证码');
   await privateField.fill(factor);
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('AUTHENTICATED', { timeout: 30_000 });
+  await recordScreenshot('authentication-complete.png', '目标程序完成验证，仍需用户确认交还');
   await expect(privateField).toHaveValue('');
   await expect(
     card.getByRole('button', { name: 'Let the agent continue', exact: true }),
   ).toBeDisabled();
   await card.getByRole('checkbox').check();
+  await recordScreenshot('confirmed-ready.png', '勾选已检查终端，允许交还 Agent');
   await privateField.fill('unsubmitted');
   await expect(
     card.getByRole('button', { name: 'Let the agent continue', exact: true }),
   ).toBeDisabled();
+  await recordScreenshot('unsent-draft.png', '仍有未提交草稿时，禁止交还');
   await privateField.fill('');
   await card.getByRole('checkbox').check();
   const before = await page.evaluate(() => window.handoffAcceptance.events);
@@ -274,10 +296,50 @@ try {
   await card.getByRole('button', { name: 'Let the agent continue', exact: true }).click();
   console.log(JSON.stringify({ phase: 'resumed' }));
   await expect(card.locator('input')).toHaveCount(0);
-  await page.screenshot({ path: join(artifactDir, '03-resumed.png') });
+  await recordScreenshot('03-resumed.png', '交还 Agent，认证屏幕清除，输出继续私密');
   const safe = 'CONTINUITY:original-shell:/tmp';
   await expect(card.locator('pre')).toContainText(safe, { timeout: 180_000 });
   console.log(JSON.stringify({ phase: 'same-shell-command-observed' }));
+  await recordScreenshot('command-result.png', 'Agent 在原 shell 执行命令，等待审阅结果');
+  // Real hide/remount paths must keep the same private review surface.
+  await page.getByRole('button', { name: 'Collapse task workbar', exact: true }).click();
+  await expect(card).toBeHidden();
+  await expect(card.locator('pre')).toHaveText('');
+  console.log(JSON.stringify({ phase: 'resumed-card-hidden' }));
+  await recordScreenshot('panel-hidden.png', '收起工作栏，私密显示清除');
+  await page.getByRole('button', { name: 'Expand task workbar', exact: true }).click();
+  await expect(card).toBeVisible();
+  await expect(card.locator('pre')).toContainText(safe, { timeout: 30_000 });
+  console.log(JSON.stringify({ phase: 'resumed-card-expanded' }));
+  await recordScreenshot('panel-restored.png', '重新展开，原私密结果恢复');
+  const tabs = page.locator('.maka-workbar-tab-list [role="tab"]');
+  const activeTab = await tabs.evaluateAll((elements) =>
+    elements.findIndex((element) => element.getAttribute('aria-selected') === 'true'),
+  );
+  assert.ok(activeTab >= 0 && (await tabs.count()) >= 2);
+  await tabs.nth(activeTab === 0 ? 1 : 0).click();
+  await expect(card).toBeHidden();
+  await recordScreenshot('other-tab.png', '切换到另一个终端标签');
+  await tabs.nth(activeTab).click();
+  await expect(card).toBeVisible();
+  await expect(card.locator('pre')).toContainText(safe, { timeout: 30_000 });
+  console.log(JSON.stringify({ phase: 'resumed-card-tab-returned' }));
+  await recordScreenshot('tab-restored.png', '切回原标签，仍可审阅和分享');
+  const beforeReturn = await page.evaluate(() => window.handoffAcceptance?.events ?? []);
+  await page.reload();
+  await page.waitForFunction(() => Boolean(window.maka?.sessions));
+  await page.evaluate(
+    ({ id, events }) => {
+      window.handoffAcceptance = { events };
+      window.maka.sessions.subscribeEvents(id, (event) =>
+        window.handoffAcceptance.events.push(event),
+      );
+    },
+    { id: sessionId, events: beforeReturn },
+  );
+  await expect(card.locator('pre')).toContainText(safe, { timeout: 30_000 });
+  console.log(JSON.stringify({ phase: 'resumed-card-recovered' }));
+  await recordScreenshot('reload-restored.png', '刷新 App 后恢复同一终端的分享入口');
   await card.locator('pre').evaluate((element, text) => {
     const node = element.firstChild;
     const start = node.textContent.indexOf(text);
@@ -288,11 +350,13 @@ try {
     selection.removeAllRanges();
     selection.addRange(range);
   }, safe);
+  await recordScreenshot('selection.png', '仅选择允许分享的非敏感结果');
   await card
     .getByRole('button', { name: 'Share selected text with the agent', exact: true })
     .click();
   await expect(card).toContainText('Selected observation shared with the agent.');
   console.log(JSON.stringify({ phase: 'observation-shared' }));
+  await recordScreenshot('shared.png', '明确提示所选观察已分享给 Agent');
   await page.waitForFunction(
     () =>
       window.handoffAcceptance.events.some(
@@ -324,7 +388,11 @@ try {
     undefined,
     { timeout: 180_000 },
   );
-  const events = [...beforeReload, ...(await page.evaluate(() => window.handoffAcceptance.events))];
+  const events = [
+    ...beforeReload,
+    ...beforeReturn,
+    ...(await page.evaluate(() => window.handoffAcceptance.events)),
+  ];
   const wire = JSON.stringify(events);
   assert.ok(
     requests.some((request) => request.reviewedObservationSeen),
@@ -341,16 +409,19 @@ try {
   assert.ok(requests.some((request) => request.model === model && request.privateHandoffOffered));
   assert.equal(logs.join('').includes(password), false);
   assert.equal(logs.join('').includes(factor), false);
+  await recordScreenshot('agent-report.png', 'Agent 读取分享内容并报告真实 shell 状态');
   // End the remote process, not the UI's "close tab" command: an exited
   // process should leave an explanatory card in the original open tab.
   ssh.kill('SIGTERM');
   await expect(card).toContainText('The original terminal process exited', { timeout: 30_000 });
   await expect(card.locator('input')).toHaveCount(0);
   await expect(card.locator('pre')).toHaveText('');
-  await page.screenshot({ path: join(artifactDir, '05-exited.png') });
+  await recordScreenshot('05-exited.png', '远端进程退出，原卡片明确结束');
   const liveFiles = await scanFiles(workspace);
-  await closeElectronApplication(app);
-  app = undefined;
+  if (!keepOpen) {
+    await closeElectronApplication(app);
+    app = undefined;
+  }
   const scanned = await scanFiles(profile);
   await writeFile(
     join(artifactDir, 'result.json'),
@@ -361,11 +432,13 @@ try {
         requests,
         liveWorkspaceFiles: liveFiles,
         scannedFiles: scanned,
+        profileClosed: !keepOpen,
         providerLeaks: 0,
         reloadClearedDraft: true,
         autonomousHandoff: true,
         inputValidationAndResumeGuard: true,
         explicitProcessExit: true,
+        resumedCardRecovered: true,
         sameShellObservation: safe,
       },
       null,
@@ -380,6 +453,11 @@ try {
       scannedFiles: scanned,
     }),
   );
+  if (keepOpen) {
+    console.log(JSON.stringify({ phase: 'open-for-review', artifactDir }));
+    await new Promise((resolve) => app.process().once('exit', resolve));
+    app = undefined;
+  }
 } catch (error) {
   // Safe diagnostics only: never dump private DOM, inputs, screenshots or raw logs on failure.
   console.error(
@@ -397,6 +475,20 @@ try {
       .replaceAll(factor, '[private]')
       .replaceAll(apiKey, '[credential]');
   await writeFile(join(artifactDir, 'diagnostic.log'), sanitize(logs.join('\n')));
+  if (page)
+    await writeFile(
+      join(artifactDir, 'card-state.txt'),
+      sanitize(
+        await page
+          .getByTestId('terminal-handoff')
+          .evaluate((element) => {
+            const clone = element.cloneNode(true);
+            clone.querySelectorAll('pre, input').forEach((node) => node.remove());
+            return clone.textContent;
+          })
+          .catch(() => 'No card'),
+      ),
+    );
   if (page)
     await writeFile(
       join(artifactDir, 'events.json'),

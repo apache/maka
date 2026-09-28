@@ -651,7 +651,13 @@ export class ShellRunProcessManager
       const collector = new PtyScreenCollector({
         stack,
         ...size,
-        onProtocolReply: () => {},
+        onProtocolReply: (data) => {
+          // Ignore replay while constructing the private parser. Subsequent
+          // device/status replies stay within the PTY, never in model output.
+          if (!live.privateTerminal || live.driverExit || live.termination || live.integrityFailure)
+            return;
+          live.driver.write(data);
+        },
         onDirty: () => {},
         onFailure: () =>
           this.handleIntegrityFailure(live, new Error('Private terminal display failed')),

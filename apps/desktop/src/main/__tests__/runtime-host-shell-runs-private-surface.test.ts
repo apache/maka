@@ -77,16 +77,22 @@ test("ready rolls back the private-surface fence when Host admission fails", asy
   }
 });
 
-test("ready retains the fence only for a confirmed human phase", async () => {
+test("ready retains the fence for human and resumed private displays", async () => {
   clearPrivateTerminalSurfaces(5309);
   const replies = [
     { status: "closed", phase: "closed", nextSequence: 1, closure: "exited" },
     { status: "ready", phase: "human", nextSequence: 1 },
     { status: "observed", phase: "human", nextSequence: 1 },
+    { status: "ready", phase: "resumed", nextSequence: 1 },
+    { status: "observed", phase: "resumed", nextSequence: 1 },
   ];
   const fixture = harness(async () => replies.shift());
   try {
     await fixture.invoke(identity);
+    assert.equal(hasPrivateTerminalSurface(), false);
+    await fixture.invoke(identity);
+    assert.equal(hasPrivateTerminalSurface(), true);
+    await fixture.invoke({ ...identity, action: "release" });
     assert.equal(hasPrivateTerminalSurface(), false);
     await fixture.invoke(identity);
     assert.equal(hasPrivateTerminalSurface(), true);

@@ -185,6 +185,13 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(invalid.ok && invalid.result.nextSequence, 1);
     assert.deepEqual(inputs, []);
     assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), true);
+    await control(
+      { ...identity, controllerId: 'replacement', action: 'ready' },
+      connection('desktop'),
+    );
+    await assert.rejects(request.apply('resume'), /controller expired before Resume/);
+    await control({ ...identity, action: 'ready' }, connection('desktop'));
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), true);
     await assert.rejects(
       host.writeStdin({
         sessionId: SESSION_ID,
@@ -270,6 +277,20 @@ describe('Host Runtime Resource coordinator', () => {
       input: 'new model write',
     });
     assert.equal(harness.writeCount, 1);
+    await control({ ...reattached, action: 'release' }, connection('reconnected'));
+    const afterSwitch = await control(
+      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection('reconnected'),
+    );
+    assert.equal(afterSwitch.ok && afterSwitch.result.phase, 'resumed');
+    await control({ ...reattached, action: 'ready' }, connection('reconnected'));
+    const returned = await control({ ...reattached, action: 'observe' }, connection('reconnected'));
+    assert.equal(returned.ok && returned.result.display?.text, 'private');
+    const shared = await control(
+      { ...reattached, action: 'share', sequence: 1, text: 'private' },
+      connection('reconnected'),
+    );
+    assert.equal(shared.ok && shared.result.status, 'shared');
     host.observeShellRunUpdate({
       ...ptyUpdate(),
       result: { ...ptySnapshot(), status: 'completed', exitCode: 0 },
@@ -299,11 +320,15 @@ describe('Host Runtime Resource coordinator', () => {
     const decision = deferred<import('@maka/core/interaction').InteractionCanonicalOutcome>();
     let request!: Parameters<HostInteractionCoordinator['requestTerminalHandoff']>[0];
     let writes = 0;
+    const inputStarted = deferred();
+    const inputFinished = deferred();
     const harness = createHarness({
       humanControl: {
         preparePtyHandoff: async () => {},
         writePrivatePtyInput: async () => {
           writes++;
+          inputStarted.resolve();
+          await inputFinished.promise;
           throw new Error('partial write');
         },
         readPrivatePtySnapshot: async () => ({
@@ -346,10 +371,16 @@ describe('Host Runtime Resource coordinator', () => {
       controllerId: 'card-1',
     };
     await control({ ...identity, action: 'ready' }, connection('desktop'));
-    const receipt = await control(
+    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), true);
+    const receiptPending = control(
       { ...identity, action: 'input', sequence: 1, input: 'secret' },
       connection('desktop'),
     );
+    await inputStarted.promise;
+    const racedResume = assert.rejects(request.apply('resume'), /uncertain input delivery/);
+    inputFinished.resolve();
+    const receipt = await receiptPending;
+    await racedResume;
     assert.equal(receipt.ok && receipt.result.status, 'outcome_unknown');
     await control(
       { ...identity, action: 'input', sequence: 1, input: 'secret' },
@@ -379,6 +410,67 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(JSON.parse(await pending).outcome, 'closed');
     const ended = await control({ ...identity, action: 'observe' }, connection('new'));
     assert.equal(ended.ok && ended.result.closure, 'cancelled');
+  });
+
+  test('bounds only closed handoffs without evicting live resumed review surfaces', async () => {
+    const harness = createHarness({
+      humanControl: {
+        preparePtyHandoff: async () => {},
+        writePrivatePtyInput: async () => {},
+        readPrivatePtySnapshot: async () => ({ sequence: 1, text: 'review', inputOpen: false }),
+        resumePtyHandoff: async () => true,
+        sharePrivatePtyObservation: async () => {},
+      },
+      interactionAuthority: () => ({
+        requestTerminalHandoff: async (request) => {
+          await harness.coordinator.handlers['runtime.resource.handoff'](
+            {
+              action: 'ready',
+              sessionId: SESSION_ID,
+              requestId: request.requestId,
+              controllerId: 'card',
+            },
+            connection('desktop'),
+          );
+          assert.equal(request.canAnswer('resume', 'desktop', 'card'), true);
+          await request.apply('resume');
+          return { kind: 'terminal_handoff_answer', action: 'resume', committedAt: 1 };
+        },
+        closeTerminalHandoff: async () => {},
+      }),
+    });
+    const host = harness.coordinator;
+    const control = host.handlers['runtime.resource.handoff'];
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('desktop'),
+    );
+    const refs = Array.from({ length: 130 }, (_, index) => `${RUNTIME_REF}-${index}`);
+    for (const ref of refs) {
+      await host.requestHandoff(ref, 'Authenticate', {
+        sessionId: SESSION_ID,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        toolCallId: ref,
+        cwd: '/workspace',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      });
+    }
+    const lookup = (ref: string) =>
+      control({ action: 'lookup', sessionId: SESSION_ID, ref }, connection('desktop'));
+    const live = await lookup(refs[0]!);
+    assert.equal(live.ok && live.result.phase, 'resumed');
+    for (const ref of refs)
+      host.observeShellRunUpdate({
+        ...ptyUpdate(),
+        result: { ...ptySnapshot(), ref, status: 'completed', exitCode: 0 },
+      });
+    const evicted = await lookup(refs[0]!);
+    const retained = await lookup(refs[2]!);
+    assert.equal(evicted.ok && evicted.result.status, 'unavailable');
+    assert.equal(retained.ok && retained.result.status, 'closed');
+    await host.close();
   });
 
   test('pages one stable bounded projection and rejects stale continuation revisions', async () => {

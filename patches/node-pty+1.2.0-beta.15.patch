@@ -1,5 +1,5 @@
 diff --git a/node_modules/node-pty/lib/unixTerminal.js b/node_modules/node-pty/lib/unixTerminal.js
-index af2d24c..a16ab59 100644
+index af2d24c..b38396e 100644
 --- a/node_modules/node-pty/lib/unixTerminal.js
 +++ b/node_modules/node-pty/lib/unixTerminal.js
 @@ -65,6 +65,10 @@ var UnixTerminal = /** @class */ (function (_super) {
@@ -29,7 +29,24 @@ index af2d24c..a16ab59 100644
              if (_this._emittedClose) {
                  return;
              }
-@@ -288,12 +294,19 @@ var CustomWriteStream = /** @class */ (function () {
+@@ -157,6 +163,16 @@ var UnixTerminal = /** @class */ (function (_super) {
+     UnixTerminal.prototype._write = function (data) {
+         this._writeStream.write(data);
+     };
++    // Maka's fenced queue needs an OS receipt, with this terminal's close fence.
++    // Never expose a raw fd to a second writer with a separate lifetime.
++    UnixTerminal.prototype.makaWriteSync = function (buffer, offset, length) {
++        if (!this._writeStream || this._writeStream._disposed || this._socket.destroyed) {
++            var error = new Error('PTY input is closed');
++            error.code = 'EPIPE';
++            throw error;
++        }
++        return fs.writeSync(this._fd, buffer, offset, length);
++    };
+     Object.defineProperty(UnixTerminal.prototype, "fd", {
+         /* Accessors */
+         get: function () { return this._fd; },
+@@ -288,12 +304,19 @@ var CustomWriteStream = /** @class */ (function () {
          this._fd = _fd;
          this._encoding = _encoding;
          this._writeQueue = [];
@@ -49,7 +66,7 @@ index af2d24c..a16ab59 100644
          // Writes are put in a queue and processed asynchronously in order to handle
          // backpressure from the kernel buffer.
          var buffer = typeof data === 'string'
-@@ -309,42 +322,53 @@ var CustomWriteStream = /** @class */ (function () {
+@@ -309,42 +332,53 @@ var CustomWriteStream = /** @class */ (function () {
      CustomWriteStream.prototype._processWriteQueue = function () {
          var _this = this;
          this._writeImmediate = undefined;

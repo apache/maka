@@ -116,6 +116,23 @@ describe('ShellRunProcessManager', () => {
           'CONTINUITY:handoff-preserved:/tmp',
         ),
       );
+      await manager.writeStdin({
+        sessionId: 'session-1',
+        ref: initial.ref,
+        input:
+          nodeCommand(`
+          process.stdin.setRawMode(true);
+          process.stdin.once('data', data => {
+            process.stdout.write('PRIVATE-DSR:' + data.toString('hex') + '\\n', () => process.exit(0));
+          });
+          process.stdout.write('\\u001b[5n');
+        `) + '\r',
+      });
+      await waitUntil(async () =>
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(
+          'PRIVATE-DSR:1b5b306e',
+        ),
+      );
       const privateView = await manager.readPrivatePtySnapshot('session-1', initial.ref);
       assert.ok(privateView.text.includes(secret), 'fixture must actually echo after Resume');
       const shared = 'CONTINUITY:handoff-preserved:/tmp';

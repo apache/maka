@@ -143,7 +143,7 @@ export function registerRuntimeHostShellRunsIpc(
       setPrivateTerminalSurface(sender.id, input.controllerId, false);
     try {
       const result = await deps.client.controlTerminalHandoff(input);
-      if (input.action === "ready" && result.phase !== "human") {
+      if (input.action === "ready" && result.phase !== "human" && result.phase !== "resumed") {
         setPrivateTerminalSurface(sender.id, input.controllerId, false);
       }
       return result;

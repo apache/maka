@@ -46,7 +46,8 @@ process. Desktop's isolated profile contains only a proxy placeholder credential
 The test drives the actual password card through preload/main IPC, including
 refresh with an unsubmitted draft, a rejected password and successful retry, a
 second verification challenge, explicit Resume, a command
-in the original shell, selecting a reviewed observation, and the model reading
+in the original shell, hiding/reopening and reloading the resumed card, selecting
+a reviewed observation, and the model reading
 that observation in the current or next turn. The server intentionally echoes both
 the password and verification code, including a delayed echo after Resume.
 
@@ -55,11 +56,20 @@ naming `WriteStdin`, `handoff`, discovery tools or invocation syntax. It verifie
 autonomous discovery as well as input validation, the retry hint, the explicit
 confirmation/unsent-draft Resume guard, and a closed card after process exit.
 The fixture allows ten minutes for model reasoning and human authentication.
+`HANDOFF_BASE_URL` and `HANDOFF_MODEL` can target any compatible Responses API
+provider with function-tool support; the values above record our acceptance run.
+Set `HANDOFF_KEEP_OPEN=1` to leave the successful run visible until you close its
+window. In that mode the report explicitly records `profileClosed: false`:
+profile scanning occurs while the app remains open, rather than after shutdown.
 
 Assertions cover provider requests, ordinary Session events, process/renderer
 logs, live workspace files (including SQLite/WAL), and the closed Desktop profile.
-The fixture prints an artifact directory containing five unmodified screenshots
-and `result.json`. It does not capture authentication screens containing secrets.
+The fixture prints an artifact directory containing 22 sequential screenshots,
+their ordered captions/redaction flags in `screenshots.json`, and `result.json`.
+When a private terminal display contains a generated credential, only that
+display is masked in the screenshot; the actual UI is unchanged. Password input
+drafts retain their normal masked appearance. This records every interaction
+without placing the fixture's echoed credentials in review artifacts.
 Failures retain sanitized diagnostics. No profile or credential file belongs in
 a commit; remove temporary profiles after reviewing them.
 

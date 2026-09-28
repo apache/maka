@@ -85,6 +85,10 @@ Admission changes the resource's input epoch. Previously queued agent writes
 cannot cross this boundary. The Unix driver owns a bounded nonblocking write
 queue and drains earlier accepted bytes to the OS before the human can write.
 This is not a claim that the child already consumed those bytes.
+Each actual write uses the pinned node-pty patch's synchronous writer and its
+own write-stream/socket close fence. Runtime never retains a raw fd for writes:
+Linux PTY masters can share the same `fstat` identity even after fd reuse.
+Expected input closure drops pending bytes without reporting an integrity fault.
 
 Each private submission has a monotonically increasing sequence and an identity
 scoped to the original live request and authenticated connection. Duplicate
@@ -99,6 +103,21 @@ write/Resume authority. A missing renderer has a bounded readiness deadline;
 human input itself has no handoff deadline (the original process timeout still
 applies). Cancel, Turn stop, resource exit and Host shutdown close the pending
 Interaction. A restarted Host does not recreate a lost authenticated process.
+
+Hiding a resumed card releases only its controller. Returning, including after
+reload, can still observe and share the same private output. Only closed
+tombstones have a 128-entry retention cap; live resumed terminals remain tied to
+their resource lifetime. Resume rechecks delivery certainty inside the resource
+queue. A failed terminal side effect rejects that handoff without poisoning the
+Host's Interaction authority for other tasks.
+An already-open terminal tab refreshes its request from the canonical handoff
+event if the same process needs human input again. Requesting a reviewed output
+uses an ordinary message, not another handoff.
+
+The authenticated owner/grant is the authorization boundary, not a particular
+Desktop device. While a card owns a handoff, other connections cannot reclaim
+it. After release/disconnection, another authorized client of the same owner
+may register a private surface and claim it; the old controller then expires.
 
 ## Output privacy and explicit publication
 
@@ -115,6 +134,9 @@ ordinary Runtime resource and made available to `Read`. It is recorded as
 user-reviewed output. Resume alone does not publish any terminal text. The agent
 can continue writing commands, but must request a reviewed observation before
 claiming what those commands returned.
+Terminal device/status queries are answered by the private parser directly to
+the PTY, so interactive programs still work after Resume; replies and screen
+contents are not published to the model.
 
 Private buffers stay in the live process and visible renderer. Drafts clear on
 submit, hide, refresh and completion. Desktop computer-use calls are fenced
@@ -137,9 +159,16 @@ password authentication (including rejection and retry) and a second terminal
 challenge. The follow-up natural-language journey names no tools or handoff
 parameters: the model discovers the capability itself. The original shell's
 unexported marker and `/tmp` working directory survived. The model read the
-explicitly shared observation and reported both values. Ten provider requests,
-18 live workspace files and 68 closed-profile files contained neither generated
-secret. Reload cleared the unsubmitted password and recovered the same handoff.
+explicitly shared observation and reported both values. The latest review run
+used eight provider requests; those requests, 18 live workspace files and 68
+profile files contained neither generated secret. The App was left open for
+review, so this profile scan was live; the earlier closed-profile run scanned 68
+files. Reload cleared the unsubmitted password and recovered the same handoff.
+The resumed review surface also survived collapse/expand, changing terminal
+tabs, and reloading before sharing the observation. All 22 UI steps were
+captured; private displays containing echoed test credentials were explicitly
+masked in those screenshots. The representative images below contain no such
+display and need no masking.
 
 Screenshots use the same window size and contain no submitted credentials. The
 normal view is a separate user terminal baseline; the waiting and resumed views
@@ -170,3 +199,10 @@ The follow-up confirmation ablation removed the checkbox guard in a test-only
 module loader; the UI regression then detected an enabled Resume on an
 unconfirmed generic terminal. The guard remains. Adapters stay renderer-local
 functions rather than introducing a plugin registry or another lifecycle owner.
+
+The review follow-up replaced the Driver's fd fingerprint with node-pty's own
+close fence. A Linux two-PTY ablation removed that fence while retaining all
+other code: the old terminal's queued test password reached the replacement PTY
+and the regression failed. The restored fence passes on Linux; macOS also
+passes the read-stream-close variant. The fingerprint abstraction was removed
+from the Driver because it cannot prove PTY ownership.

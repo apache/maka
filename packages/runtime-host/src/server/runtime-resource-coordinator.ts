@@ -382,6 +382,7 @@ export class HostRuntimeResourceCoordinator
       );
       if (!this.isHandoffAvailable(ctx.sessionId) || ctx.abortSignal.aborted)
         throw new Error('Interactive terminal surface disappeared before handoff');
+      let resumeController: { connectionId: string; controllerId: string } | undefined;
       const outcome = await authority.requestTerminalHandoff({
         signal: state.lifetime.signal,
         sessionId: ctx.sessionId,
@@ -394,16 +395,32 @@ export class HostRuntimeResourceCoordinator
           ref,
           message,
         },
-        canAnswer: (action, connectionId, controllerId) =>
-          action === 'cancel' ||
-          (state.phase === 'human' &&
+        canAnswer: (action, connectionId, controllerId) => {
+          if (action === 'cancel') return true;
+          const allowed =
+            state.phase === 'human' &&
             state.connectionId === connectionId &&
             state.controllerId === controllerId &&
-            state.lastReceipt?.status !== 'outcome_unknown'),
+            state.lastReceipt?.status !== 'outcome_unknown';
+          if (allowed) resumeController = { connectionId, controllerId };
+          return allowed;
+        },
         apply: async (action) => {
           await this.#resourceQueue.run(key, async () => {
             if (this.#handoffs.get(key) !== state || state.phase === 'closed') return;
             if (action === 'resume') {
+              // Admission precedes this queue: an earlier input can still finish
+              // with an unknown receipt. Recheck at the actual transfer boundary.
+              if (state.phase !== 'human' || state.lastReceipt?.status === 'outcome_unknown') {
+                throw new Error('Terminal cannot resume after uncertain input delivery');
+              }
+              if (
+                !resumeController ||
+                state.connectionId !== resumeController.connectionId ||
+                state.controllerId !== resumeController.controllerId
+              ) {
+                throw new Error('Terminal handoff controller expired before Resume');
+              }
               // A child can exit while its final input fence is draining. That
               // closes this handoff; it is not an Interaction-store failure.
               const live = await this.#humanControl!.resumePtyHandoff(ctx.sessionId, ref).catch(
@@ -448,7 +465,7 @@ export class HostRuntimeResourceCoordinator
         outputVisibility: 'private',
         instruction:
           state.phase === 'resumed'
-            ? 'The user checked that this terminal is ready and explicitly pressed Resume. Continue the original task now: send the next requested command to this same ref under existing permissions. Do not ask for another confirmation, a post-login prompt, or shared output before sending that command. The user confirmation is not machine-verified authentication success: do not claim success or describe unseen output. After executing the command, ask the user to review and share its non-sensitive result, then use Read on this ref to retrieve the published observation.'
+            ? 'The user checked that this terminal is ready and explicitly pressed Resume. Continue the original task now: send the next requested command to this same ref under existing permissions. Do not ask for another confirmation, a post-login prompt, or shared output before sending that command. The user confirmation is not machine-verified authentication success: do not claim success or describe unseen output. After executing the command, ask the user to review and share its non-sensitive result in an ordinary message, then use Read on this ref to retrieve the published observation. Do not call handoff again just to wait for sharing; finish the turn if necessary and read the shared observation when the user replies.'
             : 'The handoff closed without returning control. Do not retry credentials or recreate the original terminal.',
       });
     } catch (error) {
@@ -568,9 +585,8 @@ export class HostRuntimeResourceCoordinator
         if (input.action === 'release') {
           delete state.connectionId;
           delete state.controllerId;
-          if (state.phase === 'resumed') {
-            this.#discardHandoff(resourceKey(state.sessionId, state.ref), state);
-          }
+          // Hiding the card releases its controller, not the live private output.
+          // Returning must be able to reclaim the same handoff and share results.
           return { ok: true as const, result: result('observed') };
         }
         if (input.action === 'observe') {
@@ -705,6 +721,9 @@ export class HostRuntimeResourceCoordinator
   #retainTerminalHandoff(key: string, state: TerminalHandoffState): void {
     if (this.#handoffs.get(key) !== state) return;
     this.#terminalHandoffs.delete(key);
+    // A resumed live process still needs its review/share surface. Only closed
+    // tombstones are bounded; live state dies with the resource or Host drain.
+    if (state.phase !== 'closed') return;
     this.#terminalHandoffs.set(key, state);
     while (this.#terminalHandoffs.size > MAX_TERMINAL_HANDOFFS) {
       const oldest = this.#terminalHandoffs.entries().next().value;

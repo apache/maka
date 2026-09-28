@@ -18,10 +18,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
-import { terminalFeedback, isValidPrivateTerminalInput, TerminalHandoffPanel, createFakeWorkbarServices, WorkbarServicesProvider } from '../../renderer/features/workbar/testing.js';
+import { terminalFeedback, isValidPrivateTerminalInput, TerminalHandoffPanel, loadSessionTerminalPanelForTest, createFakeWorkbarServices, WorkbarServicesProvider } from '../../renderer/features/workbar/testing.js';
+import type { SessionEvent } from '@maka/core/events';
 import { installReactRenderer, cleanupFakeDom, FakeElement } from './fake-dom.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 
@@ -149,4 +151,66 @@ test('even a ready-looking generic terminal requires explicit user confirmation 
   assert.ok(button);
   assert.notEqual(button.getAttribute('disabled'), null);
   assert.match(container.textContent, /I checked the terminal/);
+});
+
+test('an existing terminal tab refreshes a new handoff request from its canonical event', async () => {
+  const { root, container } = installReactRenderer();
+  // The handoff path never instantiates xterm. Stub its browser-only UMD imports
+  // while rendering the real wrapper/card and exercising their subscriptions.
+  const browserOnly = new Map([['@xterm/xterm', 'Terminal'], ['@xterm/addon-fit', 'FitAddon'], ['@xterm/addon-web-links', 'WebLinksAddon']]);
+  const hooks = registerHooks({ resolve(specifier, context, next) {
+    const name = browserOnly.get(specifier);
+    return name ? { url: `data:text/javascript,export class ${name} {}`, shortCircuit: true } : next(specifier, context);
+  } });
+  let SessionTerminalPanel;
+  try { ({ SessionTerminalPanel } = await loadSessionTerminalPanelForTest()); }
+  finally { hooks.deregister(); }
+  let receive: ((event: SessionEvent) => void) | undefined;
+  let requestId = 'first-request';
+  const base = createFakeWorkbarServices();
+  const services = createFakeWorkbarServices({
+    review: { ...base.review, subscribeSessionEvents: (_id, handler) => { receive = handler; return () => { receive = undefined; }; } },
+    terminal: { ...base.terminal, handoff: async () => ({ status: 'available', phase: 'waiting', nextSequence: 1,
+      request: { requestId, ref: 'terminal-1', command: 'sh', message: requestId } }) },
+  });
+  await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(WorkbarServicesProvider, { services }, createElement(SessionTerminalPanel, {
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active: false, terminalRef: 'terminal-1',
+    })),
+  })));
+  assert.match(container.textContent, /first-request/);
+  requestId = 'second-request';
+  assert.ok(receive);
+  await act(async () => receive?.({ type: 'terminal_handoff_request', id: 'event-2', turnId: 'turn-1', ts: 2,
+    requestId, toolUseId: 'tool-2', ref: 'terminal-1', message: requestId }));
+  assert.match(container.textContent, /second-request/);
+  assert.doesNotMatch(container.textContent, /first-request/);
+});
+
+test('a resumed card clears hidden output and reclaims the review surface on return', async () => {
+  const { root, container } = installReactRenderer();
+  const operations: string[] = [];
+  const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
+    handoff: async (operation) => {
+      operations.push(operation.action);
+      return { status: 'observed', phase: 'resumed', nextSequence: 2,
+        ...(operation.action === 'observe' ? { display: { sequence: 3, text: 'private-result', inputOpen: false } } : {}) };
+    },
+  } });
+  const render = async (active: boolean) => act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active,
+      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
+    })),
+  })));
+  await render(true);
+  assert.match(container.textContent, /private-result/);
+  await render(false);
+  assert.doesNotMatch(container.textContent, /private-result/);
+  await render(true);
+  assert.match(container.textContent, /private-result/);
+  const share = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === 'Share selected text with the agent');
+  assert.ok(share);
+  assert.equal(share.getAttribute('disabled'), null);
+  assert.deepEqual(operations, ['surface', 'ready', 'observe', 'release', 'surface', 'ready', 'observe']);
 });
