@@ -54,7 +54,9 @@ suffice.
 ## Assumption
 
 We are betting that users will return to the board and start tasks from it.
-Phase 3 must prove this.
+The Phase 3 dogfooding spike came back **GO** on 2026-09-28 (see
+`docs/work-board-phase3.md`); resuming Phases 2 and 4 remains a separate
+maintainer roadmap decision.
 
 ## Sequencing
 

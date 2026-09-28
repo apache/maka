@@ -45,3 +45,23 @@ For each dogfooding run record whether the item pre-existed, the resolved Host
 and project, normal first-send completion, restart/reopen behavior, duplicate or
 orphan Sessions, and any manual repair. Record an explicit `go` or `stop`
 decision before starting Phase 2 or Phase 4.
+
+## Decision
+
+**GO** (2026-09-28). The loop was dogfooded on a development renderer with
+`VITE_MAKA_WORK_BOARD_START_TASK=1`, and the full capture -> revisit -> start
+chain was verified:
+
+- a project-scoped item can start a task;
+- a normal Session is created with the item title pre-filled;
+- the first send completes normally;
+- `linkedSessions` persists with exactly one Host-scoped link;
+- restarting Maka restores the same Session;
+- "Open session" from the Work Board still resolves to the original Session;
+- the build and the 106 focused tests pass.
+
+A few React development-time console warnings were observed and do not affect
+the chain above.
+
+This decision covers the Phase 3 validation spike only. It is not approval to
+start Phase 2 or Phase 4; those still follow the maintainer's roadmap decision.
