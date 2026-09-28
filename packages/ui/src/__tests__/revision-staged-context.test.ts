@@ -522,6 +522,28 @@ describe('revision staged-context helpers', () => {
     );
   });
 
+  it('keeps every user copy of a quote the edit also staged (#5274 review)', () => {
+    // The edit stages the source excerpt once and the user adds the identical
+    // excerpt twice during the edit: per-key counting means entries past the
+    // edit's own count are the user's, so the counter running negative must
+    // not drop the second copy — `=== 0` missed it (#5274 review).
+    const restored: Array<{ ownerKey: string; quotes: readonly QuoteRef[] }> = [];
+    const identical: QuoteRef = { text: 'the same excerpt' };
+    clearRevisionStagedContext(
+      {
+        restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }),
+        clearQuotes: (ownerKey) => (ownerKey === 'session-1' ? [identical, identical, identical] : []),
+      },
+      ['session-1'],
+      [identical],
+    );
+    assert.deepEqual(
+      restored,
+      [{ ownerKey: 'session-1', quotes: [identical, identical] }],
+      'only the edit-owned entry is dropped; both user copies survive',
+    );
+  });
+
   it('compares text and quotes for the unchanged retry', () => {
     const source: RevisionStagedSource = { originalQuotes: [quotedQuote], originalAttachments: [] };
     assert.equal(

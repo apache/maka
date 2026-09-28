@@ -191,11 +191,13 @@ export function clearRevisionStagedContext(
   for (const ownerKey of keys) removed.push(...staged.clearQuotes(ownerKey));
   const kept: QuoteRef[] = [];
   for (const quote of removed) {
-    // Past the edit's own per-quote count, every entry is the user's own.
+    // Past the edit's own per-quote count, every entry is the user's own —
+    // including once the counter has run negative past zero, because a user
+    // addition can duplicate a quote the edit staged itself (#5274 review).
     const key = quoteKey(quote);
     const ownedCount = owned.get(key) ?? 0;
     owned.set(key, ownedCount - 1);
-    if (ownedCount === 0) kept.push(quote);
+    if (ownedCount <= 0) kept.push(quote);
   }
   if (keys.length > 0 && kept.length > 0) staged.restoreQuotes(keys[0], kept);
 }
