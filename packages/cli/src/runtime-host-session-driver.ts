@@ -386,11 +386,17 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
             }
             if (limit !== undefined && sessions.length >= limit) break;
           }
-          if (!page.nextCursor || (limit !== undefined && sessions.length >= limit)) {
+          if (!page.nextCursor) {
             cursor = undefined;
             break;
           }
           cursor = page.nextCursor;
+          if (limit !== undefined && sessions.length >= limit) {
+            throw new MakaSessionCatalogIncompleteError(
+              pagesRead,
+              sessions.map(projectSessionCatalogSummary),
+            );
+          }
           if (cursors.has(cursor.cursor)) {
             throw new Error('Runtime Host Session catalog returned a repeated cursor');
           }

@@ -254,7 +254,7 @@ export interface MakaSessionDriver {
 }
 
 export interface MakaSessionListOptions {
-  /** Maximum number of returned sessions. */
+  /** Maximum number returned; truncation before the catalog ends is reported as incomplete. */
   readonly limit?: number;
   /** Restrict the catalog read to sessions in this working directory. */
   readonly cwd?: string;

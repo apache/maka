@@ -210,6 +210,44 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('reports incomplete results when the requested session limit truncates the catalog', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 257 }, (_, index) =>
+      sessionProjection({
+        id: `session-${index}`,
+        workspace: { target: { kind: 'host_path', path: '/repo' }, hostCwd: '/repo' },
+      }),
+    );
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = Math.min(offset + 32, catalogSessions.length);
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    await assert.rejects(driver.listSessions({ limit: 256, cwd: '/repo' }), (error: unknown) => {
+      assert.ok(error instanceof MakaSessionCatalogIncompleteError);
+      assert.equal(error.scannedPages, 8);
+      assert.equal(error.sessions.length, 256);
+      assert.equal(error.sessions[255]?.id, 'session-255');
+      return true;
+    });
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      8,
+    );
+  });
+
   test('counts the limit after hiding side conversations', async () => {
     const connection = new FakeConnection([]);
     const catalogSessions = Array.from({ length: 201 }, (_, index) =>

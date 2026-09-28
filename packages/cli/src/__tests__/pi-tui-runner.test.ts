@@ -6109,11 +6109,48 @@ Slug openai-work<cursor>
       terminal,
     });
 
+    await waitForTuiPaint(terminal);
     terminal.input('/resume');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Current workspace'));
-    assert.deepEqual(driver.listRequests[0], { limit: 200, cwd: '/repo' });
+    assert.deepEqual(driver.listRequests[0], { limit: 256, cwd: '/repo' });
     assert.match(plainTerminalOutput(terminal.output()), /Current workspace/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /No matching sessions/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes(target.id));
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume checks past 200 unavailable sessions for a later resumable candidate', async () => {
+    const terminal = new FakeTerminal();
+    const unavailable = Array.from({ length: 200 }, (_, index) =>
+      fakeSessionSummary(`unavailable-${index}`, '/repo'),
+    );
+    const target = fakeSessionSummary('resumable-201', '/repo', 'Later interrupted session');
+    const driver = new BoundedResumeAvailabilityDriver([...unavailable, target]);
+    driver.availabilityDelayMs = 0;
+    for (const session of unavailable) driver.unavailableSessionIds.add(session.id);
+    driver.setAttachedSessionId(null);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Later interrupted session'),
+    );
+    assert.equal(driver.listLimits[0], 256);
+    assert.ok(driver.availabilitySessionIds.includes(target.id));
     assert.doesNotMatch(plainTerminalOutput(terminal.output()), /No matching sessions/);
 
     terminal.input('\r');
@@ -6246,7 +6283,7 @@ Slug openai-work<cursor>
     terminal.input('/resume');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
-    assert.equal(driver.listLimits[0], 200);
+    assert.equal(driver.listLimits[0], 256);
     assert.ok(driver.availabilityCalls >= sessions.length);
     assert.ok(driver.maxActiveCalls <= 8);
 
@@ -6281,8 +6318,8 @@ Slug openai-work<cursor>
     assert.equal(driver.availabilityCalls, 101);
 
     terminal.input('\t');
-    await waitFor(() => driver.availabilityCalls === 201);
-    assert.equal(driver.availabilityCalls, 201);
+    await waitFor(() => driver.availabilityCalls === 225);
+    assert.equal(driver.availabilityCalls, 225);
 
     terminal.input('\x1b');
     exitMaka(terminal);
@@ -12492,6 +12529,7 @@ class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
   #sessionIdOverride: string | null | undefined;
 
   availabilityCalls = 0;
+  availabilityDelayMs = 1;
   readonly listLimits: Array<number | undefined> = [];
   readonly listRequests: Array<MakaSessionListOptions> = [];
   readonly completedListRequests: Array<MakaSessionListOptions> = [];
@@ -12516,7 +12554,7 @@ class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
     this.availabilitySessionIds.push(session.id);
     this.activeCalls += 1;
     this.maxActiveCalls = Math.max(this.maxActiveCalls, this.activeCalls);
-    await delay(1);
+    if (this.availabilityDelayMs > 0) await delay(this.availabilityDelayMs);
     this.activeCalls -= 1;
     return this.unavailableSessionIds.has(session.id)
       ? { available: false, reason: 'resume_candidate_missing' }

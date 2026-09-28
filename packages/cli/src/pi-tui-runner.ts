@@ -538,10 +538,9 @@ function sessionConnectionIdentityNotice(
 }
 
 const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
-// Candidate discovery is a recovery affordance, not an unbounded availability
-// scan. Current-workspace filtering happens while paging so other workspaces
-// cannot crowd those candidates out of the bounded result.
-const MAX_SESSION_RESUME_CANDIDATES = 200;
+// Match the Runtime Host's eight-page, 32-item catalog scan bound so readiness
+// checks do not silently stop before the end of the bounded result.
+const MAX_SESSION_RESUME_CANDIDATES = 256;
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
