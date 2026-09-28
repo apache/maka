@@ -225,3 +225,26 @@ test('a locally saved follow-up keeps its delivery status and recovery actions i
   assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
   assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'));
 });
+
+test('Composer forwards the compatibility edit action to Host-owned queue rows', () => {
+  const queued = {
+    entryId: 'host-entry',
+    messageId: 'host-message',
+    placement: 'next_turn' as const,
+    state: 'queued' as const,
+    content: { text: 'editable follow-up' },
+  };
+  const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer
+    onSend={() => undefined}
+    onStop={() => undefined}
+    queuedMessages={[queued]}
+    onEditQueuedEntry={() => undefined}
+  /></LocaleProvider>);
+  const document = parseHTML(`<html><body>${markup}</body></html>`).document;
+  const edit = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => (button.getAttribute('aria-label') ?? button.textContent) === 'Edit',
+  );
+  assert.ok(edit);
+  assert.equal(edit.disabled, false);
+  assert.notEqual(edit.getAttribute('aria-disabled'), 'true');
+});

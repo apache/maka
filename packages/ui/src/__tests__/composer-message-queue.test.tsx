@@ -24,6 +24,7 @@ import test from 'node:test';
 import { act, createElement } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import { getConversationCopy } from '../conversation-copy.js';
+import type { ComposerQueueEntry } from '../composer-message-queue.js';
 import { installDom } from './mermaid-test-dom.js';
 
 const copy = getConversationCopy('en').composer;
@@ -39,7 +40,7 @@ function queued(entryId: string, text: string): MessageQueueEntryProjection {
 }
 
 async function mountQueue(props: {
-  queuedMessages: readonly MessageQueueEntryProjection[];
+  queuedMessages: readonly ComposerQueueEntry[];
   queueRevision?: number;
   onEditEntry?(entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>): void | Promise<void>;
   onDeleteEntry?(entryId: string): void | Promise<void>;
@@ -145,6 +146,35 @@ test('queue actions stay disabled until the entry is Host-admitted', async () =>
     const isDisabled = (button: HTMLButtonElement) =>
       button.disabled || button.getAttribute('aria-disabled') === 'true';
     assert.deepEqual(edits.map(isDisabled), [true, false], 'only the Host-admitted row is editable');
+  } finally {
+    await view.close();
+  }
+});
+
+test('a local pending row exposes only renderer-owned delivery actions', async () => {
+  const local: ComposerQueueEntry = {
+    ...queued('local', 'pending follow-up'),
+    state: 'local',
+    localMessage: {
+      id: 'msg-local',
+      text: 'pending follow-up',
+      ts: 1,
+      transientPlacement: 'follow_up',
+    },
+  };
+  const view = await mountQueue({
+    queuedMessages: [local],
+    onEditEntry: () => assert.fail('local rows are not Host-editable'),
+    onDeleteEntry: () => assert.fail('local rows are not Host-deletable'),
+    onPromoteEntry: () => assert.fail('local rows are not Host-promotable'),
+  });
+  try {
+    const labels = [...view.document.querySelectorAll('button')].map(
+      (button) => button.getAttribute('aria-label') ?? button.textContent,
+    );
+    assert.equal(labels.includes(copy.editQueuedEntry), false);
+    assert.equal(labels.includes(copy.deleteQueuedEntry), false);
+    assert.equal(labels.includes(copy.promoteQueuedEntry), false);
   } finally {
     await view.close();
   }

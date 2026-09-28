@@ -1889,12 +1889,13 @@ export const Composer = forwardRef<
           <ComposerMessageQueue
             queuedMessages={queuedMessages}
             queueRevision={props.queuedMessageRevision}
-          copy={copy}
-          onPromoteEntry={props.onPromoteQueuedEntry}
-          onUpdateEntry={props.onUpdateQueuedEntry}
-          onDeleteEntry={props.onDeleteQueuedEntry}
-          onReorderEntries={props.onReorderQueuedEntries}
-        />
+            copy={copy}
+            onPromoteEntry={props.onPromoteQueuedEntry}
+            onEditEntry={props.onEditQueuedEntry}
+            onUpdateEntry={props.onUpdateQueuedEntry}
+            onDeleteEntry={props.onDeleteQueuedEntry}
+            onReorderEntries={props.onReorderQueuedEntries}
+          />
       ) : null}
       <form
         ref={formRef}

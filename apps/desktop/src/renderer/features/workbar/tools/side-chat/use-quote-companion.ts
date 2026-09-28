@@ -189,6 +189,8 @@ export interface UseQuoteCompanionResult {
   transientMessages: readonly TransientUserMessageProjection[];
   /** Host-authoritative pending steering and follow-up messages. */
   queuedMessages: readonly MessageQueueEntryProjection[];
+  /** Revision fence for Host-authoritative queue mutations. */
+  queuedMessageRevision: number | undefined;
   liveTurns: LiveTurnBuffer | undefined;
   activeTurn: ReturnType<typeof chatTurnActivity>;
   streaming: boolean;
@@ -357,6 +359,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
   const [messageQueue, setMessageQueue] = useState<{
     readonly entries: readonly MessageQueueEntryProjection[];
+    readonly queueRevision?: number;
     readonly ts?: number;
   }>({ entries: [] });
   // Reseed reconciliation reads the queue between React flushes, so every
@@ -1770,6 +1773,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     messages,
     transientMessages,
     queuedMessages: messageQueue.entries,
+    queuedMessageRevision: messageQueue.queueRevision,
     liveTurns,
     activeTurn: chatTurnActivity(execution),
     streaming,

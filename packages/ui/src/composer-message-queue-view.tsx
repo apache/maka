@@ -205,10 +205,10 @@ interface QueueEntryActionsProps extends Omit<ComposerMessageQueueViewProps, "en
 }
 
 function QueueEntryActions({ controller, editing, entry, ...props }: QueueEntryActionsProps) {
-  if (entry.localMessage?.deliveryActions?.length) {
+  if (entry.localMessage) {
     return (
       <span className="maka-composer-queue-actions">
-        {entry.localMessage.deliveryActions.map((action) => (
+        {entry.localMessage.deliveryActions?.map((action) => (
           <IconButton
             key={action.label}
             variant="ghost"
