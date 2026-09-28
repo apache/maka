@@ -165,6 +165,7 @@ test('queue_update stores the snapshot and retires every listed local placeholde
 
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
     ts: 1,
+    queueRevision: 3,
     entries: [steeringEntry, followupEntry],
   });
   assert.equal(transientMessages.size, 0,
@@ -206,6 +207,7 @@ test('queue_update stores the snapshot and retires every listed local placeholde
   assert.equal(transientMessages.size, 0);
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
     ts: 3,
+    queueRevision: 4,
     entries: [nextEntry],
   });
 

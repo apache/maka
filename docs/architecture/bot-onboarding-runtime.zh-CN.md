@@ -122,11 +122,11 @@ Snapshot 字段固定为：
 
 - `sessionId`, `provider`, optional `brand`
 - `state`
-- optional QR data URL、expiry、next poll delay
+- optional QR data URL、expiry、next poll delay，以及短暂轮询故障期间的 `retryHealth`
 - `canOpenInBrowser`
 - optional non-sensitive identity `{ id, displayName }`
-- redacted user-facing error
-- optional `warning`：凭证已落盘，但 live bridge 未在 commit window 内达到 running/healthy；不是 onboarding 失败，也不携带 credential
+- redacted user-facing `error`；终态错误可附带稳定的 `errorCode`
+- optional `warningCode: 'saved_not_connected'` 与脱敏的 `warningDetail`：凭证已落盘，但 live bridge 未在 commit window 内达到 running/healthy；不是 onboarding 失败，也不携带 credential
 
 `poll()` 对同一 session 的并发调用共享一个 in-flight promise，避免 duplicate provider polling。新建同 provider session 会 abort 旧 session；不同 provider 可以独立进行。
 
@@ -138,7 +138,7 @@ confirmed 后执行一个受 current-session fence 保护的 commit sequence：
 2. 把 provider credential 映射为 channel patch，并设置 `enabled: true`、`readiness: configured`。
 3. 原子写入 settings。
 4. 调用 `applySettingsRuntimeEffects`，让 `BotRegistry` reconcile channel。
-5. 读取 runtime identity，并把非敏感字段投影给 renderer。bridge 未 running 时快照带 `warning`，会话仍为 `connected`。
+5. 读取 runtime identity，并把非敏感字段投影给 renderer。bridge 未 running 时快照带 `warningCode`，可附带 `warningDetail`，会话仍为 `connected`。
 
 每个 await 边界后都重新检查 `currentByProvider` 与 `AbortSignal`。如果用户在 settings write 或 runtime effect 期间取消，service 只回滚本次 onboarding 拥有的字段。
 
@@ -185,12 +185,12 @@ Rollback 使用 `SettingsStore.updateIf(predicate, patch)`：只有 current chan
 - Feishu channel 在快捷模式内提供飞书 / Lark brand 切换。
 - Modal 明确区分生成中、等待扫码、已扫码、正在连接、已连接、过期、拒绝、取消和错误。
 - 用户可刷新 QR、取消、在 HTTPS browser 中打开 verification URL；过期或失败后可重新生成。
-- 成功状态只展示 non-sensitive bot identity，不展示 credential。bridge 未起来时用 `warning`，不用失败态。
+- 成功状态只展示 non-sensitive bot identity，不展示 credential。bridge 未起来时通过 `warningCode` 呈现提示，不用失败态。
 - QR frame 在 desktop viewport 居中，light/dark 与窄窗口保持同一 action hierarchy。
 
 ## 9. 验收标准
 
-1. Unit tests 覆盖 input validation、poll dedupe、slow-down、expiry、cancel、runtime effect、credential rollback，以及 connected 后 bridge 未 running 的 `warning`。
+1. Unit tests 覆盖 input validation、poll dedupe、slow-down、expiry、cancel、runtime effect、credential rollback，以及 connected 后 bridge 未 running 的 `warningCode`。
 2. 并发测试证明 cancel 能跨过 runtime-effect commit window，且不会覆盖 concurrent manual edit。
 3. Runtime tests覆盖 Feishu/WeCom message mapping，以及 failed-handshake cleanup 顺序。
 4. Electron E2E 通过 renderer → preload → IPC → main session 打开 Settings › 远程接入（`settings-bots-onboarding` fixture）。该场景只把 modal 固定在 `waiting` 以供界面校验；main unit tests 直接覆盖 `waiting → connected`，部分 dev/test adapters 能产生 `scanned → connected`，但 Playwright 当前没有运行完整 onboarding 行程的 spec。

@@ -236,6 +236,7 @@ test('steering becomes durable and ordered followups automatically start the nex
       originHostEpoch: host.hostEpoch,
       sessionId: fixture.sessionId,
       reorderId: randomUUID(),
+      expectedQueueRevision: queueSubscription.snapshot.queue.queueRevision,
       entryIds: queuedFollowups.map((entry) => entry.entryId).reverse(),
     });
     await queueSubscription.close();

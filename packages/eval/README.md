@@ -258,8 +258,8 @@ variable: the live cell needs a kernel that can load the checked-in `table inet`
 text — including that `127.0.0.11` is rejected before `fib daddr type local accept` — is
 locked by `lifecycle-boundaries.test.ts` and the Harbor contract tests. This URL policy is a blocklist for known
 benchmark and public-solution contamination surfaces, not a complete defense against a deliberately
-invented lookup channel. It classifies HTTP(S) requests and `CONNECT` hosts against the blocklist, and
-kills tunnels that fall back to raw TCP. Collected Maka runtime files
+invented lookup channel. It checks ordinary HTTP(S) URLs and CONNECT authorities before forwarding,
+then records and terminates any transport that falls back to unclassified raw TCP. Collected Maka runtime files
 and egress audit logs are represented in attempt artifacts with byte counts and SHA-256 digests.
 
 What the verifier scores is the environment the task was left in, so a subject that exits on its own

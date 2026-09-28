@@ -205,8 +205,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.retractQueueEntry(sessionId, entryId),
       promoteQueueEntry: (sessionId, entryId) =>
         bridge.sessions.promoteQueueEntry(sessionId, entryId),
-      reorderQueueEntries: (sessionId, entryIds) =>
-        bridge.sessions.reorderQueueEntries(sessionId, entryIds),
+      reorderQueueEntries: (sessionId, entryIds, revision) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds, revision),
       setPermissionMode: async (sessionId, mode) =>
         expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
       respondToSandboxBoundary: (sessionId, response) =>

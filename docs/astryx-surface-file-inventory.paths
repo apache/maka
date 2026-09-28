@@ -181,6 +181,7 @@ apps/desktop/src/renderer/styles/error.css
 apps/desktop/src/renderer/styles/help.css
 apps/desktop/src/renderer/styles/hero.css
 apps/desktop/src/renderer/styles/interaction-prompts.css
+apps/desktop/src/renderer/styles/message-queue.css
 apps/desktop/src/renderer/styles/model-switcher.css
 apps/desktop/src/renderer/styles/module-pages.css
 apps/desktop/src/renderer/styles/module-pages/capability-audit.css
@@ -243,6 +244,7 @@ packages/ui/src/client-capability-prompt.tsx
 packages/ui/src/client-plugin-runtime.tsx
 packages/ui/src/client-plugin-slots.tsx
 packages/ui/src/components.tsx
+packages/ui/src/composer-message-queue-view.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer-model-label.tsx
 packages/ui/src/composer.tsx
@@ -274,6 +276,7 @@ packages/ui/src/primitives/stat-tile.tsx
 packages/ui/src/progress-card.tsx
 packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/prompt-suggestion.tsx
+packages/ui/src/provider-retry-notice.tsx
 packages/ui/src/quote-comment-panel.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
