@@ -232,7 +232,12 @@ export function buildAppShellCommandList(
         const result = await completeConversation();
         if (!result) return;
         const { markdown } = result;
-        await navigator.clipboard.writeText(markdown);
+        try {
+          await navigator.clipboard.writeText(markdown);
+        } catch {
+          toastApi.error(copy.copyFailedTitle, copy.clipboardUnavailable);
+          return;
+        }
         toastApi.success(
           copy.conversationCopiedTitle,
           copy.lineCount(markdown.split("\n").length),

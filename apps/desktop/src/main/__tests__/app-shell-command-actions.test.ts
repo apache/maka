@@ -75,10 +75,15 @@ test('conversation copy and save wait for the complete transcript', async (t) =>
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   let clipboard = '';
+  let clipboardFailure = false;
   let saved = '';
+  const errors: Array<[string, string]> = [];
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
-    value: { clipboard: { writeText: async (value: string) => { clipboard = value; } } },
+    value: { clipboard: { writeText: async (value: string) => {
+      if (clipboardFailure) throw new Error('clipboard denied');
+      clipboard = value;
+    } } },
   });
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -141,7 +146,7 @@ test('conversation copy and save wait for the complete transcript', async (t) =>
     setNavSelection() {},
     setPermissionMode: async () => true,
     setThemePref() {},
-    toastApi: { success() {}, info() {}, error() {} },
+    toastApi: { success() {}, info() {}, error(title: string, description: string) { errors.push([title, description]); } },
   } as unknown as AppShellCommandListOptions;
   const commands = buildAppShellCommandList({ current: options });
 
@@ -153,6 +158,10 @@ test('conversation copy and save wait for the complete transcript', async (t) =>
   assert.match(clipboard, /newest answer/);
   assert.match(saved, /oldest question/);
   assert.match(saved, /newest answer/);
+
+  clipboardFailure = true;
+  await commands.find(({ id }) => id === 'diag:export-conversation')?.run();
+  assert.deepEqual(errors, [['Copy failed', 'Clipboard unavailable']]);
 });
 
 test('presents every successful-frame context compaction outcome', () => {
