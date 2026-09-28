@@ -119,6 +119,7 @@ function updateInfo(version: string) {
 }
 
 function createHarness(input: {
+  currentVersion?: string;
   isPackaged?: boolean;
   updater?: FakeUpdater;
   clock?: FakeClock;
@@ -139,7 +140,7 @@ function createHarness(input: {
   const updater = input.updater ?? new FakeUpdater();
   const clock = input.clock ?? new FakeClock();
   const service = createAppUpdateService({
-    currentVersion: '1.0.0',
+    currentVersion: input.currentVersion ?? '1.0.0',
     isPackaged: input.isPackaged ?? true,
     updateChannel: input.updateChannel ?? 'release',
     updater: updater as unknown as AppUpdater,
@@ -371,28 +372,29 @@ describe('AppUpdateService', () => {
       updater.checkCalls += 1;
       updater.emit('checking-for-update');
       updater.emit('update-available', updateInfo('1.1.0'));
-      if (updater.checkCalls === 1) {
-        const downloadPromise = new Promise<string[]>((_resolve, reject) => {
-          rejectFirstDownload = reject;
-        });
-        return {
-          isUpdateAvailable: true,
-          updateInfo: updateInfo('1.1.0'),
-          versionInfo: updateInfo('1.1.0'),
-          downloadPromise,
-          cancellationToken: {
-            cancel: () => {
-              cancellationCalls += 1;
-              rejectFirstDownload(new Error('download cancelled for retry'));
-            },
+      const downloadPromise = new Promise<string[]>((_resolve, reject) => {
+        rejectFirstDownload = reject;
+      });
+      return {
+        isUpdateAvailable: true,
+        updateInfo: updateInfo('1.1.0'),
+        versionInfo: updateInfo('1.1.0'),
+        downloadPromise,
+        cancellationToken: {
+          cancel: () => {
+            cancellationCalls += 1;
+            rejectFirstDownload(new Error('download cancelled for retry'));
           },
-        };
-      }
+        },
+      };
+    };
+    updater.downloadUpdate = async () => {
+      updater.downloadCalls += 1;
       updater.emit('update-downloaded', {
         ...updateInfo('1.1.0'),
         downloadedFile: '/tmp/maka-update.zip',
       });
-      return { isUpdateAvailable: true };
+      return [];
     };
     const { clock, service } = createHarness({
       updater,
@@ -405,7 +407,8 @@ describe('AppUpdateService', () => {
 
     assert.equal((await service.retryUpdateDownload()).state, 'downloaded');
     assert.equal(cancellationCalls, 1);
-    assert.equal(updater.checkCalls, 2);
+    assert.equal(updater.checkCalls, 1);
+    assert.equal(updater.downloadCalls, 1);
     assert.equal(statuses.some((status) => status.state === 'error'), false);
   });
 
@@ -422,17 +425,111 @@ describe('AppUpdateService', () => {
       message: 'proxy disconnected',
     });
 
-    updater.checkForUpdates = async () => {
-      updater.checkCalls += 1;
-      updater.emit('checking-for-update');
+    updater.downloadUpdate = async () => {
+      updater.downloadCalls += 1;
       updater.emit('update-downloaded', {
         ...updateInfo('1.1.0'),
         downloadedFile: '/tmp/maka-update.zip',
       });
-      return { isUpdateAvailable: true };
+      return [];
     };
     assert.equal((await service.retryUpdateDownload()).state, 'downloaded');
+    assert.equal(updater.checkCalls, 0);
+    assert.equal(updater.downloadCalls, 1);
+  });
+
+  test('retries a failed background download without repeating the GitHub feed check', async () => {
+    const updater = new FakeUpdater();
+    const statuses: AppUpdateStatus[] = [];
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('update-available', updateInfo('1.1.0'));
+      const downloadPromise = new Promise<string[]>((_resolve, reject) => {
+        setImmediate(() => {
+          updater.emit('error', new Error('connection reset'));
+          reject(new Error('connection reset'));
+        });
+      });
+      return { isUpdateAvailable: true, downloadPromise };
+    };
+    updater.downloadUpdate = async () => {
+      updater.downloadCalls += 1;
+      updater.emit('update-downloaded', {
+        ...updateInfo('1.1.0'),
+        downloadedFile: '/tmp/maka-update.zip',
+      });
+      return [];
+    };
+    const { clock, service } = createHarness({ updater, onStatusChange: (status) => statuses.push(status) });
+
+    service.start();
+    await clock.runNext();
+    await settleUpdateVerification();
+    assert.equal(clock.pending().some((timer) => timer.delayMs === 5_000), true);
+    assert.equal(statuses.some((entry) => entry.state === 'error'), false);
+    const retry = clock.pending().find((timer) => timer.delayMs === 5_000);
+    assert.ok(retry);
+    retry.cleared = true;
+    retry.callback();
+    await settleUpdateVerification();
+    assert.equal(service.getStatus().state, 'downloaded');
     assert.equal(updater.checkCalls, 1);
+    assert.equal(updater.downloadCalls, 1);
+  });
+
+  test('reports a download failure after the background retry also fails', async () => {
+    const updater = new FakeUpdater();
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('update-available', updateInfo('1.1.0'));
+      return { isUpdateAvailable: true, downloadPromise: Promise.reject(new Error('first failure')) };
+    };
+    updater.downloadUpdate = async () => {
+      updater.downloadCalls += 1;
+      updater.emit('error', new Error('second failure'));
+      throw new Error('second failure');
+    };
+    const statuses: AppUpdateStatus[] = [];
+    const { clock, service } = createHarness({ updater, onStatusChange: (status) => statuses.push(status) });
+
+    await service.checkForUpdatesNow();
+    await settleUpdateVerification();
+    const retry = clock.pending().find((timer) => timer.delayMs === 5_000);
+    assert.ok(retry);
+    retry.cleared = true;
+    retry.callback();
+    await settleUpdateVerification();
+    assert.deepEqual(service.getStatus(), {
+      state: 'error',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      operation: 'download',
+      message: 'second failure',
+    });
+    assert.equal(statuses.filter((entry) => entry.state === 'error').length, 1);
+    assert.equal(updater.checkCalls, 1);
+  });
+
+  test('a Nightly download retry reuses the known prerelease without a new check', async () => {
+    const updater = new FakeUpdater();
+    const version = '1.0.0-dev.2.20260924';
+    const { service } = createHarness({ updater, currentVersion: '1.0.0-dev.1.20260923' });
+    updater.emit('update-available', updateInfo(version));
+    updater.emit('error', new Error('connection reset'));
+    updater.downloadUpdate = async () => {
+      updater.downloadCalls += 1;
+      updater.emit('update-downloaded', {
+        ...updateInfo(version),
+        downloadedFile: `/tmp/Maka-${version}-mac-arm64.zip`,
+      });
+      return [];
+    };
+
+    assert.equal((await service.retryUpdateDownload()).state, 'downloaded');
+    assert.equal(updater.checkCalls, 0);
+    assert.equal(updater.downloadCalls, 1);
   });
 
   test('recovers from a transient check failure on the built-in retry', async () => {

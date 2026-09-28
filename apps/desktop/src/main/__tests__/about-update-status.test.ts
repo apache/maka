@@ -105,7 +105,7 @@ test('the nightly steady states each read as themselves', () => {
   });
 });
 
-test('a failure names the step that failed and offers the check again', () => {
+test('a failure names the step and offers the corresponding recovery', () => {
   const download = aboutUpdateRow(
     {
       state: 'error',
@@ -120,7 +120,7 @@ test('a failure names the step that failed and offers the check again', () => {
   assert.deepEqual(download, {
     label: '下载更新失败',
     description: '网络错误：ECONNRESET',
-    action: 'check',
+    action: 'retry',
   });
 
   const check = aboutUpdateRow(

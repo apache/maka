@@ -87,7 +87,9 @@ function AboutUpdateStatusRow(props: {
   async function checkForUpdates() {
     if (!checkUpdateGuard.begin('check')) return;
     try {
-      const status = await update.checkForUpdates();
+      const status = await (row.action === 'retry'
+        ? update.retryUpdateDownload()
+        : update.checkForUpdates());
       if (status.state === 'error') {
         toast.error(
           copy.updateFailed[status.operation],
@@ -120,7 +122,7 @@ function AboutUpdateStatusRow(props: {
       isDisabled={row.action === 'busy'}
       isLoading={update.checking || row.action === 'checking'}
       onClick={() => void checkForUpdates()}
-      label={copy.checkForUpdates}
+      label={row.action === 'retry' ? copy.retryUpdateDownload : copy.checkForUpdates}
     />
   );
 
