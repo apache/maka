@@ -240,6 +240,14 @@ try {
   await recordScreenshot('02-waiting.png', '自动展开原终端，等待用户私密输入');
   console.log(JSON.stringify({ phase: 'awaiting-private-input' }));
   const beforeReload = await page.evaluate(() => window.handoffAcceptance.events);
+  // A harmless draft makes the reveal control reviewable without photographing a credential.
+  await privateField.fill('review-demo');
+  await card.getByRole('button', { name: 'Show input', exact: true }).click();
+  await expect(card.locator('input[type="text"]')).toHaveValue('review-demo');
+  await recordScreenshot('visible-draft.png', '点击眼睛核对输入：演示文字非真实凭据');
+  await card.getByRole('button', { name: 'Hide input', exact: true }).click();
+  await expect(privateField).toHaveValue('review-demo');
+  await recordScreenshot('hidden-draft.png', '再次点击眼睛，恢复掩码');
   await privateField.fill(password);
   await recordScreenshot('masked-draft.png', '密码草稿以掩码显示，尚未提交');
   await page.reload();
@@ -254,7 +262,7 @@ try {
   await expect(privateField).toHaveValue('');
   await recordScreenshot('draft-cleared.png', '刷新后清空草稿，恢复原接管');
   await expect(
-    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
+    card.getByRole('button', { name: 'Done, continue task', exact: true }),
   ).toBeDisabled();
   await privateField.fill('invalid\u0007line');
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
@@ -266,7 +274,7 @@ try {
   await expect(card.locator('pre')).toContainText('Permission denied', { timeout: 30_000 });
   await expect(card).toContainText('SSH rejected authentication');
   await expect(
-    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
+    card.getByRole('button', { name: 'Done, continue task', exact: true }),
   ).toBeDisabled();
   await recordScreenshot('04-retry.png', 'SSH 密码错误：错误提示与重试入口');
   await privateField.fill(password);
@@ -276,24 +284,27 @@ try {
   await privateField.fill(factor);
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(card.locator('pre')).toContainText('AUTHENTICATED', { timeout: 30_000 });
-  await recordScreenshot('authentication-complete.png', '目标程序完成验证，仍需用户确认交还');
+  await recordScreenshot('authentication-complete.png', '验证完成，点击一次已完成即可继续任务');
   await expect(privateField).toHaveValue('');
   await expect(
-    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
-  ).toBeDisabled();
-  await card.getByRole('checkbox').check();
-  await recordScreenshot('confirmed-ready.png', '勾选已检查终端，允许交还 Agent');
+    card.getByRole('button', { name: 'Done, continue task', exact: true }),
+  ).toBeEnabled();
+  assert.equal(
+    (await page.evaluate(() => window.handoffAcceptance.events)).some(
+      (event) => event.type === 'terminal_handoff_answer_ack',
+    ),
+    false,
+  );
   await privateField.fill('unsubmitted');
   await expect(
-    card.getByRole('button', { name: 'Let the agent continue', exact: true }),
+    card.getByRole('button', { name: 'Done, continue task', exact: true }),
   ).toBeDisabled();
   await recordScreenshot('unsent-draft.png', '仍有未提交草稿时，禁止交还');
   await privateField.fill('');
-  await card.getByRole('checkbox').check();
   const before = await page.evaluate(() => window.handoffAcceptance.events);
   assert.equal(JSON.stringify(before).includes(password), false);
   assert.equal(JSON.stringify(before).includes(factor), false);
-  await card.getByRole('button', { name: 'Let the agent continue', exact: true }).click();
+  await card.getByRole('button', { name: 'Done, continue task', exact: true }).click();
   console.log(JSON.stringify({ phase: 'resumed' }));
   await expect(card.locator('input')).toHaveCount(0);
   await recordScreenshot('03-resumed.png', '交还 Agent，认证屏幕清除，输出继续私密');
@@ -475,6 +486,20 @@ try {
       .replaceAll(factor, '[private]')
       .replaceAll(apiKey, '[credential]');
   await writeFile(join(artifactDir, 'diagnostic.log'), sanitize(logs.join('\n')));
+  if (page)
+    await writeFile(
+      join(artifactDir, 'page-state.txt'),
+      sanitize(
+        await page
+          .locator('body')
+          .evaluate((element) => {
+            const clone = element.cloneNode(true);
+            clone.querySelectorAll('pre, input, script, style').forEach((node) => node.remove());
+            return clone.textContent;
+          })
+          .catch(() => 'No page'),
+      ),
+    );
   if (page)
     await writeFile(
       join(artifactDir, 'card-state.txt'),

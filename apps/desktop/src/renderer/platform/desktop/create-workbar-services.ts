@@ -137,7 +137,12 @@ export function createDesktopWorkbarServices(
           const handoff = await bridge.shellRuns.handoff({ action: 'lookup', sessionId, ref: update.result.ref }).catch(() => undefined);
           return handoff?.request ? update : null;
         }));
-        return { ...recovery, resources: retained.filter((value): value is NonNullable<typeof value> => value !== null) };
+        // Recovered resource tabs are not persisted locally. Restore the task's
+        // private interaction before manual terminals so it remains the default
+        // surface after reload, independent of Host resource enumeration order.
+        const resources = retained.filter((value): value is NonNullable<typeof value> => value !== null)
+          .sort((a, b) => Number(isDesktopTerminal(a)) - Number(isDesktopTerminal(b)));
+        return { ...recovery, resources };
       },
       subscribeCloseChanges: (handler) => bridge.shellRuns.subscribeCloseChanges(handler),
       subscribeUpdates: (handler) => bridge.shellRuns.subscribeUpdates((update) => {

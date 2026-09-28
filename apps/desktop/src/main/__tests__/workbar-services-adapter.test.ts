@@ -82,7 +82,7 @@ function createBridgeRecorder(answerOverrides: Record<string, unknown> = {}): {
 }
 
 describe('createDesktopWorkbarServices', () => {
-  it('recovers live local desktop PTYs and handed-off model PTYs, excluding inherited resources', async () => {
+  it('restores live handoffs before manual PTYs regardless of enumeration order, excluding inherited resources', async () => {
     const { bridge } = createBridgeRecorder();
     const manual = {
       sessionId: 's', ownership: { kind: 'local' },
@@ -98,15 +98,21 @@ describe('createDesktopWorkbarServices', () => {
       { ...manual, sourceTurnId: 'agent-turn', result: { ...manual.result, ref: 'agent-handoff' } },
     ] as ShellRunUpdate[];
     let listener: ((update: ShellRunUpdate) => void) | undefined;
+    let phase: 'human' | 'resumed' = 'human';
     bridge.shellRuns = {
       ...bridge.shellRuns,
       recover: async () => ({ resources: updates, closes: [] }),
-      handoff: async (input) => ({ status: 'available', nextSequence: 1, phase: 'human',
+      handoff: async (input) => ({ status: 'available', nextSequence: 1, phase,
         ...(input.action === 'lookup' && input.ref === 'agent-handoff' ? { request: { requestId: 'request', ref: input.ref, message: 'Authenticate', command: 'ssh fixture' } } : {}) }),
       subscribeUpdates: (handler) => { listener = handler; return () => { listener = undefined; }; },
     };
     const services = createDesktopWorkbarServices(bridge);
-    assert.deepEqual(await services.terminal.recover('s'), { resources: [manual, updates[5]], closes: [] });
+    const expected = { resources: [updates[5], manual], closes: [] };
+    assert.deepEqual(await services.terminal.recover('s'), expected);
+    phase = 'resumed';
+    assert.deepEqual(await services.terminal.recover('s'), expected);
+    bridge.shellRuns.recover = async () => ({ resources: [...updates].reverse(), closes: [] });
+    assert.deepEqual(await services.terminal.recover('s'), expected);
     const received: ShellRunUpdate[] = [];
     const dispose = services.terminal.subscribeUpdates((update) => received.push(update));
     for (const update of updates) listener?.(update);

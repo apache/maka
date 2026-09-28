@@ -43,9 +43,14 @@ original resource without replaying input; an uncertain receipt remains fenced.
 Process exit, cancellation and an unavailable original process have distinct
 closed-card messages and do not retain private output.
 
-Resume requires an explicit checkbox confirming that the user inspected the
-terminal. Editing or submitting input clears that confirmation, and unsent input
-blocks Resume. This is a user attestation, not automatic proof of login success.
+The explicit **Done, continue task** action confirms completion and resumes the
+original terminal in one click. There is no second confirmation checkbox.
+Unsubmitted input, uncertain delivery, disconnection and a recognized pending
+password prompt block Resume. Clicking the action is a user attestation, not
+automatic proof of login success; receiving output never resumes automatically.
+An eye button lets users inspect their own draft. It defaults to masked and
+returns to masked on submission, clearing, hiding, disconnection or completion.
+Reveal does not send the draft or make it available to assistant observations.
 
 Renderer-only program adapters may translate known prompts into fixed friendly
 hints. The first adapter covers the standard English OpenSSH password prompt and
@@ -165,7 +170,7 @@ profile files contained neither generated secret. The App was left open for
 review, so this profile scan was live; the earlier closed-profile run scanned 68
 files. Reload cleared the unsubmitted password and recovered the same handoff.
 The resumed review surface also survived collapse/expand, changing terminal
-tabs, and reloading before sharing the observation. All 22 UI steps were
+tabs, and reloading before sharing the observation. All UI steps were
 captured; private displays containing echoed test credentials were explicitly
 masked in those screenshots. The representative images below contain no such
 display and need no masking.
@@ -195,10 +200,23 @@ the coordinator regression. Both protections were retained. The mutations were
 applied only through a test-process module loader, never to the running app or
 the committed implementation.
 
-The follow-up confirmation ablation removed the checkbox guard in a test-only
-module loader; the UI regression then detected an enabled Resume on an
-unconfirmed generic terminal. The guard remains. Adapters stay renderer-local
-functions rather than introducing a plugin registry or another lifecycle owner.
+The UX ablation removed the checkbox and tested the actual product contract:
+rendering a ready-looking prompt never resumes; one deliberate completion click
+resumes the original request; uncertain delivery, disconnect, a pending password
+and an unsubmitted draft remain fenced. All five checks passed, so the redundant
+checkbox/state was removed. The earlier checkbox-specific regression merely
+pinned that UI choice and did not establish its necessity.
+
+Two further real-PTY ablations expose the remaining UX tradeoff. Removing only
+reviewed publication leaves the model unable to read the requested command's
+result. Keeping the authentication screen cleared but making new output public
+after Resume leaks the fixture's delayed credential echo into a public
+projection. Thus output review is a cost of this conservative isolation policy,
+not an inherent requirement of terminal handoff. Removing it from the default
+journey requires a separately validated output boundary, not another user
+confirmation or silently unprotecting the stream. Both mutations were confined
+to test processes and were discarded. Adapters remain renderer-local functions
+rather than introducing a plugin registry or another lifecycle owner.
 
 The review follow-up replaced the Driver's fd fingerprint with node-pty's own
 close fence. A Linux two-PTY ablation removed that fence while retaining all

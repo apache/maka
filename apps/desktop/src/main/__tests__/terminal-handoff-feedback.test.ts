@@ -71,7 +71,7 @@ test('a disconnected private card explains recovery and cannot offer an enabled 
   })));
   assert.match(container.textContent, /Connection to this terminal was lost/);
   assert.match(container.textContent, /Reconnect to original terminal/);
-  assert.equal(descendants(container).some((node) => node.tagName === 'BUTTON' && node.textContent === 'Let the agent continue'), false);
+  assert.equal(descendants(container).some((node) => node.tagName === 'BUTTON' && node.textContent === 'Done, continue task'), false);
 });
 
 test('a closed card shows the process outcome without retaining a private input or success claim', async () => {
@@ -105,7 +105,7 @@ test('recovering an uncertain receipt keeps Submit and Resume disabled', async (
   })));
   assert.match(container.textContent, /Delivery could not be confirmed/);
   const buttons = descendants(container).filter((node) => node.tagName === 'BUTTON');
-  for (const label of ['Submit', 'Let the agent continue']) {
+  for (const label of ['Submit', 'Done, continue task']) {
     const button = buttons.find((node) => node.textContent === label);
     assert.ok(button, label);
     assert.notEqual(button.getAttribute('disabled'), null, label);
@@ -130,16 +130,18 @@ test('losing observation while human input is open clears private display and di
   assert.match(container.textContent, /Connection to this terminal was lost/);
   assert.doesNotMatch(container.textContent, /private-sentinel/);
   for (const node of descendants(container)) {
-    if (node.tagName === 'INPUT' || (node.tagName === 'BUTTON' && ['Submit', 'Let the agent continue'].includes(node.textContent))) {
+    if (node.tagName === 'INPUT' || (node.tagName === 'BUTTON' && ['Submit', 'Done, continue task'].includes(node.textContent))) {
       assert.notEqual(node.getAttribute('disabled'), null);
     }
   }
 });
 
-test('even a ready-looking generic terminal requires explicit user confirmation before Resume', async () => {
+test('one explicit completion click resumes the original handoff; prompt rendering never resumes it', async () => {
   const { root, container } = installReactRenderer();
+  const answers: unknown[] = [];
   const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
     handoff: async () => ({ status: 'ready', phase: 'human', nextSequence: 1, display: { sequence: 1, text: '$ ', inputOpen: true } }),
+    answerHandoff: async (answer) => { answers.push(answer); },
   } });
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
@@ -147,10 +149,71 @@ test('even a ready-looking generic terminal requires explicit user confirmation 
       request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
     })),
   })));
-  const button = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === 'Let the agent continue');
+  const button = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === 'Done, continue task');
   assert.ok(button);
-  assert.notEqual(button.getAttribute('disabled'), null);
-  assert.match(container.textContent, /I checked the terminal/);
+  assert.equal(button.getAttribute('disabled'), null);
+  assert.deepEqual(answers, []);
+  assert.doesNotMatch(container.textContent, /I checked the terminal/);
+  const propsKey = Object.keys(button).find((key) => key.startsWith('__reactProps$'));
+  assert.ok(propsKey);
+  const props = (button as unknown as Record<string, { onClick(): void }>)[propsKey]!;
+  await act(async () => props.onClick());
+  assert.equal(answers.length, 1);
+  assert.deepEqual(answers[0], {
+    sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }),
+    requestId: 'request-1', controllerId: (answers[0] as { controllerId: string }).controllerId, action: 'resume',
+  });
+});
+
+test('revealing a private draft never sends it and submission or hiding resets visibility', async () => {
+  const { root, container } = installReactRenderer();
+  const submitted: string[] = [];
+  const services = createFakeWorkbarServices({ terminal: { ...createFakeWorkbarServices().terminal,
+    handoff: async (operation) => {
+      if (operation.action === 'input') submitted.push(operation.input);
+      return { status: operation.action === 'input' ? 'written' : 'observed', phase: 'human', nextSequence: 1, display: { sequence: 1, text: '$ ', inputOpen: true } };
+    },
+  } });
+  const render = async (active: boolean) => act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(WorkbarServicesProvider, { services }, createElement(TerminalHandoffPanel, {
+      sessionId: desktopSessionKey({ hostId: 'host-1', sessionId: 'session-1' }), active,
+      request: { requestId: 'request-1', ref: 'terminal-1', message: 'Authenticate', command: 'sh' },
+    })),
+  })));
+  const propsOf = (node: FakeElement) => {
+    const key = Object.keys(node).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key);
+    return (node as unknown as Record<string, { type?: string; value?: string; onClick(): void; onChange(event: { target: { value: string } }): void }>)[key]!;
+  };
+  const field = () => descendants(container).find((node) => node.tagName === 'INPUT')!;
+  const click = async (label: string) => {
+    const button = descendants(container).find((node) => node.tagName === 'BUTTON' && (node.textContent === label || node.getAttribute('aria-label') === label));
+    assert.ok(button, label);
+    await act(async () => propsOf(button).onClick());
+  };
+  const edit = async () => act(async () => {
+    (field() as FakeElement & { value: string }).value = 'private-draft';
+    propsOf(field()).onChange({ target: { value: 'private-draft' } });
+  });
+  await render(true);
+  assert.equal(propsOf(field()).type, 'password');
+  await edit();
+  const resume = descendants(container).find((node) => node.tagName === 'BUTTON' && node.textContent === 'Done, continue task')!;
+  assert.notEqual(resume.getAttribute('disabled'), null, 'a draft still blocks completion');
+  await click('Show input');
+  assert.equal(propsOf(field()).type, 'text');
+  assert.deepEqual(submitted, []);
+  assert.ok(descendants(container).some((node) => node.getAttribute('data-maka-assistant-exclude') !== null));
+  await click('Submit');
+  assert.deepEqual(submitted, ['private-draft']);
+  assert.equal(propsOf(field()).type, 'password');
+  assert.equal(propsOf(field()).value, '');
+  await edit();
+  await click('Show input');
+  await render(false);
+  await render(true);
+  assert.equal(propsOf(field()).type, 'password');
+  assert.equal(propsOf(field()).value, '');
 });
 
 test('an existing terminal tab refreshes a new handoff request from its canonical event', async () => {
@@ -159,6 +222,7 @@ test('an existing terminal tab refreshes a new handoff request from its canonica
   // while rendering the real wrapper/card and exercising their subscriptions.
   const browserOnly = new Map([['@xterm/xterm', 'Terminal'], ['@xterm/addon-fit', 'FitAddon'], ['@xterm/addon-web-links', 'WebLinksAddon']]);
   const hooks = registerHooks({ resolve(specifier, context, next) {
+    if (specifier === './browser-storage' && context.parentURL?.endsWith('/theme.js')) return next('./browser-storage.js', context);
     const name = browserOnly.get(specifier);
     return name ? { url: `data:text/javascript,export class ${name} {}`, shortCircuit: true } : next(specifier, context);
   } });

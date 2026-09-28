@@ -53,8 +53,9 @@ the password and verification code, including a delayed echo after Resume.
 
 The task prompt describes an SSH destination and the desired shell result without
 naming `WriteStdin`, `handoff`, discovery tools or invocation syntax. It verifies
-autonomous discovery as well as input validation, the retry hint, the explicit
-confirmation/unsent-draft Resume guard, and a closed card after process exit.
+autonomous discovery as well as input validation, the retry hint, draft reveal
+and hide, explicit single-click completion, the unsent-draft Resume guard, and a
+closed card after process exit.
 The fixture allows ten minutes for model reasoning and human authentication.
 `HANDOFF_BASE_URL` and `HANDOFF_MODEL` can target any compatible Responses API
 provider with function-tool support; the values above record our acceptance run.
@@ -64,7 +65,7 @@ profile scanning occurs while the app remains open, rather than after shutdown.
 
 Assertions cover provider requests, ordinary Session events, process/renderer
 logs, live workspace files (including SQLite/WAL), and the closed Desktop profile.
-The fixture prints an artifact directory containing 22 sequential screenshots,
+The fixture prints an artifact directory containing 23 sequential screenshots,
 their ordered captions/redaction flags in `screenshots.json`, and `result.json`.
 When a private terminal display contains a generated credential, only that
 display is masked in the screenshot; the actual UI is unchanged. Password input

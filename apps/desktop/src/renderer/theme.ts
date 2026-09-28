@@ -32,7 +32,7 @@ import {
   type ThemePreference,
 } from '@maka/core/settings';
 import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './platform/desktop/document-appearance.js';
-import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage.js';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { compositeScrimOverBackground, parseCssRgbColor } from './titlebar-dim-color.js';
 
 const DARK_CLASS = 'dark';
