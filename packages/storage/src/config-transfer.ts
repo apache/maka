@@ -19,6 +19,7 @@
 
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { providerDefaultsOf } from '@maka/core/provider-registry';
+import { isRetiredProvider } from '@maka/core/provider-retirement';
 
 /**
  * Config import / export — Alma-style selective bundle.
@@ -175,7 +176,7 @@ export function planConnectionMerge(
     // (settings, credentials, memory) unapplied. Its credential is skipped
     // with it: only a created or overwritten slug gets its secret written.
     const provider = providerDefaultsOf(conn.providerType);
-    if (!provider || provider.retired === true) {
+    if (!provider || isRetiredProvider(conn.providerType)) {
       plan.skipped.push({ slug: conn.slug, reason: 'provider_retired' });
       continue;
     }
