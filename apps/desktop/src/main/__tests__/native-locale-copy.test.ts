@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { clientSettingsConfirmation } from '../client-settings-confirmation-copy.js';
 import { getNativeDiagnosticDialogCopy } from '../native-diagnostic-dialog-copy.js';
 import { getPermissionOverlayCopy } from '../permission-overlay/permission-overlay-copy.js';
 import { buildRuntimeHostActiveQuitDialog } from '../runtime-host-quit-copy.js';
@@ -56,6 +57,19 @@ test('native copy ships real Korean for every translated surface', () => {
       en: () => renderStartupProgressHtml('en', false),
       ko: () => renderStartupProgressHtml('ko', false),
     },
+    {
+      name: 'client settings confirmation',
+      en: () =>
+        clientSettingsConfirmation(
+          [{ key: 'keepSystemAwake', current: false, next: true }],
+          'en',
+        ),
+      ko: () =>
+        clientSettingsConfirmation(
+          [{ key: 'keepSystemAwake', current: false, next: true }],
+          'ko',
+        ),
+    },
   ];
 
   for (const surface of surfaces) {
@@ -72,4 +86,21 @@ test('native copy ships real Korean for every translated surface', () => {
       `${surface.name}: ko copy must differ from the en stub`,
     );
   }
+});
+
+test('client settings confirmation keeps the keepSystemAwake label non-reversed', () => {
+  const ko = clientSettingsConfirmation(
+    [{ key: 'keepSystemAwake', current: false, next: true }],
+    'ko',
+  );
+  assert.match(
+    ko.detail,
+    /시스템 절전 방지/,
+    'ko keepSystemAwake label must read 시스템 절전 방지 (prevent sleep), not 시스템 절전 모드 유지 (keep sleeping)',
+  );
+  assert.doesNotMatch(
+    ko.detail,
+    /시스템 절전 모드 유지/,
+    'ko keepSystemAwake label must not reverse the meaning to keep the system in sleep mode',
+  );
 });
