@@ -209,7 +209,7 @@ export function createAppShellSessionEventHandlers(options: {
     });
   }
 
-  function settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void> {
+  function settleAssistantStreaming(sessionId: string, messageId?: string) {
     return handoffAssistantStreaming(sessionId, messageId, true);
   }
 
