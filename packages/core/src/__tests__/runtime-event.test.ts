@@ -149,6 +149,7 @@ test('decodes a released provider dropping note that nothing writes any more', (
 test('shares one decoder across all TurnOrigin variants', () => {
   const origins = [
     { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
+    { kind: 'cloud_activation', activationId: 'activation-1' },
     { kind: 'goal', goalId: 'goal-1' },
     { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },
   ] as const;

@@ -76,7 +76,11 @@ import {
 import type { RuntimeHostResidency } from './host-kernel.js';
 import { worstCaseFailedTurnSnapshot } from './canonical-turn-snapshot.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
-import type { ConnectionContext, MessageOperationHandlerMap } from './operation-dispatcher.js';
+import {
+  capabilityInitiatingConnectionId,
+  type ConnectionContext,
+  type MessageOperationHandlerMap,
+} from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { LogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 
@@ -1201,6 +1205,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     admission?: SessionAdmissionLease,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const payload = canonicalSubmitPayload(input);
+    const initiatingConnectionId = capabilityInitiatingConnectionId(context);
     const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
     if (isCurrentEpoch) {
       const pending = this.#pendingSubmits.get(operationKey(input.sessionId, input.messageId));
@@ -1216,10 +1221,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
     if (!isCurrentEpoch) {
-      return this.#submitAdmitted(input, payload, context.connectionId, admission);
+      return this.#submitAdmitted(input, payload, initiatingConnectionId, admission);
     }
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload, context.connectionId, admission);
+    const result = this.#submitAdmitted(input, payload, initiatingConnectionId, admission);
     this.#pendingSubmits.set(key, { payload, result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),

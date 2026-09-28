@@ -110,11 +110,6 @@
   }
 }
 
-.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
-.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
-.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
-
-
 /* One shape. The tone and emphasis modifiers that used to sit here — a filled
    plate, four tinted borders, four value inks, a dimmed zero — were reachable
    only from this package's own story; the product's single call site renders
@@ -158,7 +153,7 @@
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
 
-.maka-quote-chip { display: inline-flex; gap: 4px; padding-left: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
+.maka-quote-chip { display: inline-flex; gap: 4px; padding-inline: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
 .maka-quote-chip-expanded { width: 100%; max-width: 100%; align-items: flex-start; padding-block: 4px; border-radius: var(--radius-surface); }
 /* #1879: measured 24px natural — a 20px line box plus 2 x 2px padding — and
    `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
@@ -167,8 +162,6 @@
    type lives on `.maka-quote-chip-text`, which is why the derived scan needed
    two arms rather than three to see it at all. */
 .maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
-.maka-quote-chip-removable { padding-right: 2px; }
-.maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
 .maka-quote-chip-text {
@@ -192,16 +185,11 @@
 .maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
-.maka-quote-chip-remove {
-  width: 16px;
-  height: 16px;
-  min-width: 16px;
-  min-height: 16px;
-  border-radius: 50%;
-  padding: 0;
-}
-.maka-quote-chip-remove > svg,
-.maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
+
+.maka-quote-hover-card { max-width: 360px; }
+.maka-quote-comment-panel { width: 320px; max-width: 100%; }
+/* Painted rather than selected: the note input takes the DOM selection. */
+::highlight(maka-quote-mark) { background-color: var(--selection); }
 
 .maka-session-todo-empty {
   margin: 0;
@@ -225,9 +213,9 @@
   gap: 6px;
   min-width: 0;
   padding-block: var(--space-0-5);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   color: var(--muted-foreground);
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
   font-variant-numeric: tabular-nums;
 }
 .maka-turn-statusbar[data-turn-status='failed'] {
@@ -238,9 +226,10 @@
   flex: 1;
   padding-block: 0 var(--space-1-5);
 }
-.maka-turn-statusbar-text { font-weight: var(--font-weight-medium); }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+/* Holds the answer's place, unseen and unannounced, until the Host names the Turn. */
+.maka-pending-turn[data-awaiting-host] .maka-assistant-answer { visibility: hidden; }
 .maka-subagent-session-label,
 .maka-subagent-session-end {
   display: flex;
@@ -253,10 +242,9 @@
 .maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
 .maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-turn-processing {
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
  display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); }
 .maka-turn-indicator-text { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
@@ -287,7 +275,7 @@
   padding-block: var(--space-0-5);
   border-radius: var(--radius-control);
   color: var(--muted-foreground);
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
   list-style: none;
 }
 .maka-processing-summary::-webkit-details-marker { display: none; }
@@ -301,14 +289,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 8px;
-  /* Astryx tool rows overhang their text by 4px on each inline edge so hover
-     surfaces reach the card edge (their padding/negative-margin pair); this
-     padding is where that overhang lands. It sits on the body rather than the
-     sequence so the statusbar summary stays flush with the answer text and
-     the turn footer it reads against. */
-  padding-inline: var(--space-1);
-  /* Block-axis clip for the disclosure wipe only; the rows' inline overhang
-     must reach this padding edge, so it cannot be clipped here. */
+  /* Block-axis clip for the disclosure wipe only. */
   overflow-y: clip;
 }
 /* Astryx ChatReasoning and ChatToolCalls bring their own top margin, which
@@ -1139,22 +1120,9 @@
   box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
 
-.maka-message-status-time { display: inline-flex; align-items: center; gap: 4px; }
 
 .maka-choice-panel { outline: none; }
 
 .maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 
 .maka-choice-hint { margin: 8px 0; }
-
-.maka-form-history { margin: 8px 0; color: var(--foreground); font-size: 13px; }
-.maka-form-history > summary { cursor: pointer; padding: 8px 10px; border-radius: 6px; overflow-wrap: anywhere; }
-.maka-form-history > summary:hover { background: var(--muted); }
-.maka-form-history > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.maka-form-history-content { margin: 4px 10px 12px; padding-left: 16px; border-left: 2px solid var(--border); overflow-wrap: anywhere; }
-.maka-form-history-question { white-space: pre-wrap; font-weight: 500; }
-.maka-form-history-field { margin-top: 12px; }
-.maka-form-history-field p { white-space: pre-wrap; margin: 4px 0; }
-.maka-form-history-field ul { padding-left: 20px; margin: 6px 0; }
-.maka-form-history-field li { padding: 4px 0; }
-.maka-form-history-field li[data-selected='true'] { font-weight: 500; }

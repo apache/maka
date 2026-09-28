@@ -20,14 +20,6 @@
 import type { ExecutorConfiguration } from './executor-catalog.js';
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
-import {
-  decodeInteractionRequest,
-  decodeInteractionCanonicalOutcome,
-  isInteractionCanonicalOutcomeValidForRequest,
-  type InteractionFormRequest,
-  type InteractionQuestionRequest,
-  type InteractionCanonicalOutcome,
-} from './interaction.js';
 import { isExecutorId } from './executor-id.js';
 import { isToolCallOutcome } from './tool-result-status.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
@@ -383,6 +375,8 @@ export interface SessionSummary {
   isArchived: boolean;
   labels: string[];
   hasUnread: boolean;
+  /** Host-owned recency, including creation before the first message; present on catalog rows. */
+  activityAt?: number;
   lastMessageAt?: number;
   lastMessagePreview?: string;
   status: SessionStatus;
@@ -410,6 +404,26 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /**
+   * Bumped by the runtime each time a turn of this session starts or ends.
+   * `revision` does not move for those transitions, so two same-revision
+   * summaries can disagree about `runningTurnIds` — the epoch orders them:
+   * the higher epoch is the newer observation (#5713). Present alongside
+   * `runningTurnIds` under the same population rules.
+   *
+   * The counter restarts at zero with a fresh Host process, so it only orders
+   * observations of one host generation: summaries whose `runHostGeneration`
+   * differs are not comparable by epoch, and the newer generation's host owns
+   * the row outright.
+   */
+  runEpoch?: number;
+  /**
+   * Identifies the Host process generation that produced this live-run
+   * observation. Summaries from different generations are not ordered by
+   * `runEpoch` — a restarted Host supersedes every observation its
+   * predecessor published, whatever the epoch counters read (#5713).
+   */
+  runHostGeneration?: string;
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagent?: SessionSubagentProjection;
@@ -781,7 +795,6 @@ export type StoredMessage =
   | AssistantMessage
   | ToolCallMessage
   | ToolResultMessage
-  | FormInteractionMessage
   | PermissionDecisionMessage
   | TokenUsageMessage
   | TurnStateMessage
@@ -925,19 +938,6 @@ export interface ToolResultMessage {
   modelVisibility?: 'visible' | 'hidden';
   parentToolCallId?: string;
   parentOperationId?: string;
-}
-
-/** Read projection of a canonical answered or closed form or question, never model-authored text. */
-export interface FormInteractionMessage {
-  type: 'form_interaction';
-  id: string;
-  turnId: string;
-  ts: number;
-  request: InteractionFormRequest | InteractionQuestionRequest;
-  outcome: Extract<
-    InteractionCanonicalOutcome,
-    { kind: 'form_answer' | 'question_answer' | 'closure' }
-  >;
 }
 
 export interface PermissionDecisionMessage {
@@ -1370,10 +1370,6 @@ const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
     'parentOperationId',
   ],
 );
-const FORM_INTERACTION_MESSAGE_SHAPE = defineObjectShape<FormInteractionMessage>()(
-  ['type', 'id', 'turnId', 'ts', 'request', 'outcome'],
-  [],
-);
 const PERMISSION_DECISION_MESSAGE_SHAPE = defineObjectShape<PermissionDecisionMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'toolName', 'decision'],
   ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel', 'hint'],
@@ -1676,23 +1672,6 @@ function decodeMessage(
         isToolActivityIdentity(message)
       )
         return message as unknown as ToolResultMessage;
-      break;
-    case 'form_interaction':
-      if (
-        hasMessageEnvelope(message, true) &&
-        hasExactShape(message, FORM_INTERACTION_MESSAGE_SHAPE)
-      ) {
-        const request = decodeInteractionRequest(message.request);
-        const outcome = decodeInteractionCanonicalOutcome(message.outcome);
-        if (
-          (request.kind === 'form' || request.kind === 'question') &&
-          (outcome.kind === 'form_answer' ||
-            outcome.kind === 'question_answer' ||
-            outcome.kind === 'closure') &&
-          isInteractionCanonicalOutcomeValidForRequest(request, outcome)
-        )
-          return { ...message, request, outcome } as unknown as FormInteractionMessage;
-      }
       break;
     case 'permission_decision':
       if (

@@ -27,6 +27,7 @@ import {
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
   decodeClientCapabilityResult,
   decodeClientFrame,
+  decodeClientCapabilityReplaceInput,
   decodeHostFrame,
 } from '../protocol/index.js';
 
@@ -61,6 +62,63 @@ describe('Client Capability protocol', () => {
       RuntimeHostProtocolError,
     );
   });
+
+  test('validates complete Session configuration identities', () => {
+    const input = {
+      registrationId: 'registration',
+      sessionId: 'session',
+      offers: [],
+      sessionConfigurationId: `sha256:${'a'.repeat(64)}`,
+    };
+    assert.deepEqual(decodeClientCapabilityReplaceInput(input), input);
+    for (const sessionConfigurationId of [
+      null,
+      1,
+      '',
+      'a'.repeat(64),
+      `sha256:${'z'.repeat(64)}`,
+    ]) {
+      assert.throws(
+        () =>
+          decodeClientCapabilityReplaceInput({
+            ...input,
+            sessionConfigurationId,
+          }),
+        RuntimeHostProtocolError,
+      );
+    }
+    assert.throws(
+      () => decodeClientCapabilityReplaceInput({ ...input, sessionId: undefined }),
+      RuntimeHostProtocolError,
+    );
+  });
+
+  test('decodes the opt-in idle Session replacement fence', () => {
+    assert.deepEqual(
+      decodeClientCapabilityReplaceInput({
+        registrationId: 'registration',
+        sessionId: 'session',
+        requireIdleSession: true,
+        offers: [],
+      }),
+      {
+        registrationId: 'registration',
+        sessionId: 'session',
+        requireIdleSession: true,
+        offers: [],
+      },
+    );
+    assert.throws(
+      () =>
+        decodeClientCapabilityReplaceInput({
+          registrationId: 'registration',
+          requireIdleSession: true,
+          offers: [],
+        }),
+      RuntimeHostProtocolError,
+    );
+  });
+
   test('preserves opaque tool-call IDs while retaining identity bounds', () => {
     const frame = {
       kind: 'client.capability.call',
@@ -74,7 +132,10 @@ describe('Client Capability protocol', () => {
       turnId: 'turn',
     };
     for (const toolCallId of ['call:outer:nested:inner', 'provider/call.1+part', 'x'.repeat(256)]) {
-      assert.deepEqual(decodeHostFrame({ ...frame, toolCallId }), { ...frame, toolCallId });
+      assert.deepEqual(decodeHostFrame({ ...frame, toolCallId }), {
+        ...frame,
+        toolCallId,
+      });
     }
     for (const toolCallId of [
       undefined,
@@ -93,7 +154,11 @@ describe('Client Capability protocol', () => {
     for (const field of ['invocationId', 'registrationId', 'offerId', 'sessionId', 'turnId']) {
       assert.throws(
         () =>
-          decodeHostFrame({ ...frame, toolCallId: 'call:nested:inner', [field]: 'entity:invalid' }),
+          decodeHostFrame({
+            ...frame,
+            toolCallId: 'call:nested:inner',
+            [field]: 'entity:invalid',
+          }),
         RuntimeHostProtocolError,
       );
     }
@@ -186,12 +251,18 @@ describe('Client Capability protocol', () => {
       decodeClientFrame({
         kind: 'client.capability.accepted',
         invocationId: 'invocation',
-        admissionEvidence: { kind: 'browser_url', url: 'https://example.com/path' },
+        admissionEvidence: {
+          kind: 'browser_url',
+          url: 'https://example.com/path',
+        },
       }),
       {
         kind: 'client.capability.accepted',
         invocationId: 'invocation',
-        admissionEvidence: { kind: 'browser_url', url: 'https://example.com/path' },
+        admissionEvidence: {
+          kind: 'browser_url',
+          url: 'https://example.com/path',
+        },
       },
     );
     assert.deepEqual(
@@ -276,7 +347,12 @@ describe('Client Capability protocol', () => {
             requester: { name: 'fixture' },
             fields: [
               { kind: 'boolean', name: 'same', label: 'First', required: true },
-              { kind: 'boolean', name: 'same', label: 'Second', required: true },
+              {
+                kind: 'boolean',
+                name: 'same',
+                label: 'Second',
+                required: true,
+              },
             ],
           },
         }),
@@ -302,7 +378,12 @@ describe('Client Capability protocol', () => {
         input: {
           registrationId: 'registration',
           offers: [],
-          services: [{ serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID, version: 'vendor-v4' }],
+          services: [
+            {
+              serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
+              version: 'vendor-v4',
+            },
+          ],
         },
       }),
       {
@@ -311,7 +392,12 @@ describe('Client Capability protocol', () => {
         input: {
           registrationId: 'registration',
           offers: [],
-          services: [{ serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID, version: 'vendor-v4' }],
+          services: [
+            {
+              serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
+              version: 'vendor-v4',
+            },
+          ],
         },
       },
     );
@@ -435,7 +521,10 @@ describe('Client Capability protocol', () => {
     for (const inputSchema of [
       { type: 'string' },
       { type: 'object', unsupportedKeyword: true },
-      { type: 'object', properties: { value: { $ref: 'https://example.test/schema' } } },
+      {
+        type: 'object',
+        properties: { value: { $ref: 'https://example.test/schema' } },
+      },
       { type: 'object', properties: { value: { $ref: '#/$defs/missing' } } },
     ]) {
       assert.throws(

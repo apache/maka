@@ -24,7 +24,6 @@ export type {
   WorkbarServices,
   SessionTracePage,
   SessionUsageSummary,
-  WorkbarIngestInput,
 } from './ports.js';
 
 export * from './model/workbar-tabs.js';
@@ -33,8 +32,9 @@ export * from './model/workbar-tool-definitions.js';
 export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
 export * from '../../application/contracts/session-inspector/session-inspector-panel-model.js';
+export { SessionReviewPanel } from './tools/review/session-review-panel.js';
+export { SessionReviewBaseBranchPicker } from './tools/review/session-review-base-branch-picker.js';
 export {
-  compactNumberFormatter,
   InspectorCompositionSection,
   RING_ACTIVE_MIN_SWEEP,
   RING_MIN_SWEEP,
@@ -50,11 +50,19 @@ export * from './tools/side-chat/quote-companion-visibility.js';
 export {
   useQuoteCompanion,
 } from './tools/side-chat/use-quote-companion.js';
+export * from './tools/terminal/terminal-interaction-policy.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
 export * from '../../application/contracts/session-inspector/use-session-trace.js';
-export * from './controller/use-workbar-controller.js';
+export { useWorkbarController } from './controller/use-workbar-controller.js';
+export type {
+  UseWorkbarControllerInput,
+  WorkbarController,
+} from './controller/use-workbar-controller.js';
+export { createWorkbarShellBridge } from './controller/workbar-shell-bridge.js';
+export { WorkbarShellRoot } from './ui/workbar-shell-root.js';
+export { WorkbarProvider, useWorkbarHostModel } from './ui/workbar-provider.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
@@ -67,7 +75,15 @@ const noopSubscription = (): (() => void) => () => undefined;
 export function createFakeWorkbarServices(
   overrides: Partial<WorkbarServices> = {},
 ): WorkbarServices {
+  const reviewBaseBranches = new Map<string, string>();
   return {
+    reviewBaseBranchPreference: {
+      read: (sessionId) => reviewBaseBranches.get(sessionId) ?? null,
+      write: (sessionId, branch) => {
+        if (branch === null) reviewBaseBranches.delete(sessionId);
+        else reviewBaseBranches.set(sessionId, branch);
+      },
+    },
     popupMenu: async () => null,
     review: {
       read: async () => {
@@ -151,7 +167,6 @@ export function createFakeWorkbarServices(
       }),
       retractQueueEntry: async () => undefined,
       promoteQueueEntry: async () => undefined,
-      updateQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
       setPermissionMode: async () => {
         throw new Error('Fake sideChat.setPermissionMode is not configured');

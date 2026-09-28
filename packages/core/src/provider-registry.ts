@@ -941,7 +941,7 @@ const providerRegistry = {
     label: 'MiniMax',
     baseUrl: 'https://api.minimax.io/anthropic/v1',
     authKind: 'api_key',
-    fallbackModels: ['MiniMax-M3'],
+    fallbackModels: ['MiniMax-M3', 'MiniMax-M2.7'],
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: false },
     modelDiscovery: { kind: 'protocol' },
@@ -954,7 +954,7 @@ const providerRegistry = {
     label: 'MiniMax 中国站',
     baseUrl: 'https://api.minimaxi.com/anthropic/v1',
     authKind: 'api_key',
-    fallbackModels: ['MiniMax-M3'],
+    fallbackModels: ['MiniMax-M3', 'MiniMax-M2.7'],
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: false },
     modelDiscovery: { kind: 'protocol' },
@@ -1718,6 +1718,16 @@ export function providerMenuLabel(providerType: string): string | undefined {
  */
 export function isRetiredProvider(providerType: string): boolean {
   return providerDefaultsOf(providerType)?.retired === true;
+}
+
+/**
+ * Whether a request on this provider may carry an output-token limit. The
+ * ChatGPT Codex backend answers `max_output_tokens` with HTTP 400
+ * "Unsupported parameter", so no limit can be honoured there: Runtime must not
+ * send one, and settings must not offer one.
+ */
+export function providerAcceptsOutputTokenLimit(providerType: string): boolean {
+  return providerDefaultsOf(providerType)?.runtimeAdapter.kind !== 'openai-codex';
 }
 
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');

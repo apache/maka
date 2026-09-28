@@ -62,6 +62,7 @@ function installService(
 function createActions(h: Harness, service: SessionNavigationSessionService) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
+    acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
     clearSessionRendererState: () => undefined,
     pendingSessionRowActionsRef: { current: new Set<string>() },
     refreshSessions: async () => {

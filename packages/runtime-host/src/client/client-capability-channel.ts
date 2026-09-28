@@ -105,6 +105,8 @@ export class ClientCapabilityChannel {
     provider: ClientCapabilityProvider,
     timeoutMs: number,
     sessionId?: string,
+    requireIdleSession = false,
+    sessionConfigurationId?: string,
   ): Promise<ClientCapabilityReplaceResult> {
     this.#assertOpen();
     if (this.#pendingMutations.has(sessionId)) {
@@ -118,6 +120,8 @@ export class ClientCapabilityChannel {
       const canonical = decodeClientCapabilityReplaceInput({
         registrationId,
         ...(sessionId === undefined ? {} : { sessionId }),
+        ...(requireIdleSession ? { requireIdleSession: true } : {}),
+        ...(sessionConfigurationId === undefined ? {} : { sessionConfigurationId }),
         offers: provider.offers(),
         ...(services.length === 0 ? {} : { services }),
       });

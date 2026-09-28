@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { stat, readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { imageDimensionsFromData } from 'image-dimensions';
 import {
+  ATTACHMENT_MIME_SNIFF_BYTES,
   MAX_MODEL_IMAGE_EDGE,
   MAX_READ_IMAGE_BYTES,
   READ_IMAGE_TOO_LARGE_MESSAGE,
@@ -34,18 +35,25 @@ export function isSupportedImagePath(path: string): boolean {
   return IMAGE_EXTENSIONS.has(extname(path).toLowerCase());
 }
 
-export async function readWorkspaceImage(
+/** Classify a bounded prefix before decoding text or allocating an image body. */
+export async function readWorkspaceFile(
   path: string,
-): Promise<{ bytes: Uint8Array; mimeType: ImageMimeType }> {
-  const size = await stat(path).catch(() => {
-    throw new Error('Image could not be read.');
-  });
-  if (!size.isFile()) throw new Error('Image path is not a file.');
-  if (size.size > MAX_READ_IMAGE_BYTES) throw imageTooLargeError();
-  const bytes = await readFile(path).catch(() => {
-    throw new Error('Image could not be read.');
-  });
-  return validateImageBytes(bytes);
+): Promise<{ content: string } | { bytes: Uint8Array; mimeType: ImageMimeType }> {
+  const file = await open(path, 'r');
+  try {
+    const prefix = Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES);
+    // A positioned read leaves the descriptor's offset at zero for readFile.
+    const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
+    if (isSupportedImagePath(path) || sniffImageMime(prefix.subarray(0, bytesRead))) {
+      const size = await file.stat();
+      if (!size.isFile()) throw new Error('Image path is not a file.');
+      if (size.size > MAX_READ_IMAGE_BYTES) throw imageTooLargeError();
+      return validateImageBytes(await file.readFile());
+    }
+    return { content: await file.readFile('utf8') };
+  } finally {
+    await file.close();
+  }
 }
 
 export function validateImageBytes(bytes: Uint8Array): {

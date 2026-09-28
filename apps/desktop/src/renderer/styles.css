@@ -31,7 +31,9 @@
 @import "@fontsource-variable/geist-mono";
 /* Token declarations choose their own base/theme/component layer. */
 @import "./maka-tokens.css";
-@import "./reference-shell.css" layer(components);
+/* Declares its own base layer and keeps its global motion and icon rules
+   unlayered, so it is imported without a layer. */
+@import "./styles/document.css";
 @import "./styles/base.css" layer(components);
 /* Single owner of the native-cursor convention (hand only on links). Product
    components follow Astryx in the declared cascade, so this remains explicit
@@ -64,6 +66,7 @@
 @import "./styles/workbar/artifacts.css" layer(components);
 @import "./styles/chat-detail.css" layer(components);
 @import "./styles/settings.css" layer(components);
+@import "./styles/session-bundle.css" layer(components);
 @import "./styles/interaction-prompts.css" layer(components);
 @import "./styles/daily-review.css" layer(components);
 @import "./styles/theme-glass.css" layer(components);

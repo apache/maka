@@ -27,6 +27,7 @@ import {
   SessionCollaborationJoinDialog,
   SessionCollaborationNavigation,
   SessionCollaborationServicesProvider,
+  createFakeSessionCollaborationServices,
   type SessionCollaborationServices,
 } from '../../renderer/features/session-collaboration/testing.js';
 
@@ -61,6 +62,7 @@ afterEach(async () => {
 test('keeps loading progress visible while an irreversible import settles', async () => {
   let reportProgress: Parameters<SessionCollaborationServices['importInvitation']>[1];
   const services: SessionCollaborationServices = {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async (_input, onProgress) => {
       reportProgress = onProgress;
       return new Promise(() => undefined);
@@ -125,6 +127,7 @@ test('closes as a retained background recovery instead of reporting a failed joi
   let imported = 0;
   let closed = 0;
   const services: SessionCollaborationServices = {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async () => ({ kind: 'recovering', mountId: 'shared-1' }),
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
@@ -186,6 +189,7 @@ test('identifies a retained shared task and its selected peer transport', async 
   let retried: string | undefined;
   let opened: string | undefined;
   const services: SessionCollaborationServices = {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async () => ({ kind: 'error', reason: 'incompatible_host', message: 'raw compatibility details' }),
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',

@@ -1,5 +1,5 @@
 {
-  "epoch": 183,
+  "epoch": 189,
   "files": ["packages/runtime-host/src/protocol/plugin-platform.ts"],
-  "reason": "The browser-safe refactor moves the unchanged executor catalog normalizer from the Node-only runtime service into core and updates its import. Against the current epoch-183 protocol, this relocation does not change catalog validation, accepted values, output fields, errors, or wire encoding; the renderer no longer evaluates the service's Node crypto dependency."
+  "reason": "The browser-safe refactor moves the unchanged executor catalog normalizer from the Node-only runtime service into core and updates its import. Against the cumulative protocol through epoch 189, this relocation does not change catalog validation, accepted values, output fields, errors, or wire encoding; the renderer no longer evaluates the service's Node crypto dependency."
 }

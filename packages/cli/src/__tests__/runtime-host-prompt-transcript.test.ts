@@ -23,7 +23,6 @@ import { setImmediate } from 'node:timers/promises';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  RuntimeHostOperationError,
   RuntimeHostSubscriptionError,
   type DecodedSessionTranscriptPage,
   type RuntimeHostSessionSubscription,
@@ -316,42 +315,6 @@ test('recovery across root turns rereads the old prompt below the new bootstrap 
   assert.equal(observed[0]?.type === 'tool_result' && observed[0].toolUseId, 'tool');
   transcript.dispose();
   await channel.close();
-});
-
-test('prompt transcript recovers when a retired subscription page fails before its close frame', async () => {
-  const first = new TranscriptSubscription('first', 7);
-  const second = new TranscriptSubscription('second', 31);
-  let opens = 0;
-  const channel = await openChannel(async () => (++opens === 1 ? first : second));
-  const transcript = channel.trackPromptTranscript('turn');
-  try {
-    first.advance(31);
-    await setImmediate();
-    // The Host has removed the subscription but its close frame has not arrived.
-    first.readPage = async () => {
-      throw new RuntimeHostOperationError(
-        'session.transcript.page',
-        'not_found',
-        'Session subscription was not found',
-      );
-    };
-    const expected = [result('tool', 'Form completed'), terminal()];
-    second.readPage = async (input) =>
-      second.page(input, [
-        { identity: 16, message: expected[0]! },
-        { identity: 24, message: expected[1]! },
-      ]);
-    const observed: StoredMessage[] = [];
-    await transcript.reconcile(async (messages) => {
-      observed.push(...messages);
-    });
-    assert.equal(opens, 2);
-    assert.deepEqual(observed, expected);
-    assert.equal(second.pages[0]?.anchorSequence, 7);
-  } finally {
-    transcript.dispose();
-    await channel.close();
-  }
 });
 
 test('prompt transcript rejects nonadvancing cursors and propagates consumer failures', async () => {

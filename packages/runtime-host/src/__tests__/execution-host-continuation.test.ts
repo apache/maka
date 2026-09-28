@@ -346,7 +346,7 @@ test('startup parks a pre-claim continuation whose Client Capability is absent',
   });
 });
 
-test('Runtime Host keeps safe-boundary continuation opt-in', async () => {
+test('Runtime Host honors the explicit safe-boundary continuation opt-out', async () => {
   await withExecutionRoot(async (fixture) => {
     const source = await fixture.seedSafeBoundaryContinuationSource();
     const targetTurnId = 'turn-disabled-safe-boundary-continuation';

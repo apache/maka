@@ -38,13 +38,16 @@ import { describe, it } from 'node:test';
 import { act, createElement } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
-import { useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
+import {
+  ConversationServicesProvider,
+  useAppShellSessionUiState,
+} from '../../renderer/features/conversation/index.js';
 import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
-import type { LiveTurnProjection } from '@maka/ui';
+import { LocaleProvider, ToastProvider, type LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
-import { prepareTranscriptForSend } from '../../renderer/features/conversation/testing.js';
+import { prepareTranscriptForSend, stubConversationServices } from '../../renderer/features/conversation/testing.js';
 
 import {
   createActionsDeps,
@@ -473,9 +476,9 @@ describe('composer first-send cleanup', () => {
         addTransientMessage: () => {
           order.push('optimistic');
         },
-        activateSessionForFirstSend: async (sessionId) => {
+        activateSessionForFirstSend: async (session) => {
           order.push('observe');
-          activeIdRef.current = sessionId;
+          activeIdRef.current = session.id;
           await observation.promise;
           order.push('seeded');
         },
@@ -513,8 +516,8 @@ describe('composer first-send cleanup', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        activateSessionForFirstSend: async (sessionId) => {
-          activeIdRef.current = sessionId;
+        activateSessionForFirstSend: async (session) => {
+          activeIdRef.current = session.id;
           throw new Error('Timed out while preparing the new Session event stream');
         },
         retireSession: (sessionId) => {
@@ -715,6 +718,7 @@ describe('composer first-send cleanup', () => {
     const { root } = installReactRenderer();
     let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
     const catalog = createSessionCatalogController();
+    const services = stubConversationServices();
     function Probe(): null {
       publication = useAppShellSessionUiState(
         catalog, undefined, deps.activeIdRef,
@@ -723,7 +727,16 @@ describe('composer first-send cleanup', () => {
       return null;
     }
     try {
-      act(() => root.render(createElement(Probe)));
+      act(() => root.render(
+        createElement(LocaleProvider, {
+          locale: 'en',
+          children: createElement(ToastProvider, {
+            children: createElement(ConversationServicesProvider, {
+              services, children: createElement(Probe),
+            }),
+          }),
+        }),
+      ));
       const actions = createAppShellChatActions({
         ...deps, transcriptRangeRef: { current: controller },
         isMessagePublished: publication.isMessagePublished,

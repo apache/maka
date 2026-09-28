@@ -90,7 +90,6 @@ const OPEN_SESSION_ID = 'rail-a';
 const ROW_ACTIONS = {
   onToggleFlag: noop,
   onArchive: noop,
-  onUnarchive: noop,
   onRename: noop,
 };
 

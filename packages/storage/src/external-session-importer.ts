@@ -29,6 +29,7 @@ import {
 import type { SessionAuthorityStore } from './session-store.js';
 
 export type ExternalSessionImportTarget = Omit<CreateSessionInput, 'cwd' | 'name'> & {
+  /** Host-resolved destination; preserve its exact filesystem identity. */
   cwd?: string;
   name?: string;
 };
@@ -74,7 +75,7 @@ export class ExternalSessionImporter {
       sanitizeExternalSessionTitle(request.target.name ?? external.metadata.name) ||
       sanitizeExternalSessionTitle(request.sourceSessionId);
     if (name.length === 0) throw new Error('External Session title is empty after sanitization');
-    const cwd = sanitizeExternalSessionCwd(request.target.cwd ?? external.metadata.cwd);
+    const cwd = request.target.cwd ?? sanitizeExternalSessionCwd(external.metadata.cwd);
 
     return this.sessions.createImportedSession(
       {

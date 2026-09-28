@@ -100,7 +100,7 @@ describe('single live-turn handoff', () => {
         messages: [],
         transientMessages: [{
           id: 'message-pending', ts: 1, text: 'send now',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         }],
         activeTurn: { turnId: 'turn-pending' },
         scrollBehavior: 'smooth',
@@ -112,7 +112,7 @@ describe('single live-turn handoff', () => {
       );
       assert.ok(status, 'activity must occupy the top status row');
       assert.equal(document.querySelector('.maka-processing-block'), null);
-      assert.equal(document.querySelector('.maka-turn-footer'), null);
+      assert.equal(document.querySelector('.maka-turn-footer')?.textContent, '');
       assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
     }
   });
@@ -130,7 +130,7 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-pending', ts: 2,
-          text: 'send now', transientPlacement: 'current_turn',
+          text: 'send now', transientPlacement: 'transcript',
         },
       ],
       scrollBehavior: 'smooth',
@@ -153,7 +153,7 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-pending', ts: 1,
-          text: 'inspect this image', transientPlacement: 'current_turn',
+          text: 'inspect this image', transientPlacement: 'transcript',
         },
       ],
       scrollBehavior: 'smooth',
@@ -177,7 +177,7 @@ describe('single live-turn handoff', () => {
         {
           id: 'turn-1', ts: 1, text: 'send now',
           hostTurnId: 'turn-1',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         },
       ],
       messageLoading: true,
@@ -213,11 +213,11 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-1', ts: 1, text: 'send now',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         },
         {
           id: 'message-next', ts: 2, text: 'do this next',
-          transientPlacement: 'next_turn',
+          transientPlacement: 'follow_up',
         },
       ],
       scrollBehavior: 'smooth',

@@ -58,7 +58,6 @@ export function threadSearchMatchKind(message: StoredMessage): ThreadSearchMatch
       return 'tool_intent';
     case 'tool_result':
       return 'tool_result';
-    case 'form_interaction':
     case 'permission_decision':
     case 'token_usage':
     case 'turn_state':

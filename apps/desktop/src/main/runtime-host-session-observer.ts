@@ -764,7 +764,7 @@ export class RuntimeHostSessionObserver {
     state: ObservedSessionState,
     group: ObserverTargetGroup,
     observerId?: string,
-    events = state.projector?.seedActive(true) ?? [],
+    events = state.projector?.seedActive(true, { includeEmptyQueue: true }) ?? [],
   ): void {
     if (!state.snapshot || !state.replica) return;
     const observerIds = observerId ? [observerId] : [...group.observerIds];
@@ -1754,7 +1754,7 @@ function replacementProjection(
   const previousRoot = previous.rootTurn;
   const root = next.rootTurn;
   const terminalEvents: SessionEvent[] = [];
-  const seedEvents = projector.seedActive(true);
+  const seedEvents = projector.seedActive(true, { includeEmptyQueue: true });
   if (previousRoot && !isTerminalTurn(previousRoot)) {
     if (!root || root.runId !== previousRoot.runId) {
       const stored = projector.seedStoredTerminal(
