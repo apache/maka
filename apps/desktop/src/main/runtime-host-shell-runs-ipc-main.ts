@@ -17,34 +17,47 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
-import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '@maka/core/shell-run';
-import type { ShellRunUpdate } from '@maka/core/events';
-import type { ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
-import { decodeRuntimeResourceHandoffInput, type SessionDomainChange } from '@maka/runtime-host/protocol';
-import { setPrivateTerminalSurface, clearPrivateTerminalSurfaces, drainDesktopCaptures } from './private-terminal-surfaces.js';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { randomUUID } from "node:crypto";
+import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from "@maka/core/shell-run";
+import type { ShellRunUpdate } from "@maka/core/events";
+import type { ShellRunPtySnapshot } from "@maka/runtime/shell-run-contract";
+import {
+  decodeRuntimeResourceHandoffInput,
+  type SessionDomainChange,
+} from "@maka/runtime-host/protocol";
+import {
+  setPrivateTerminalSurface,
+  clearPrivateTerminalSurfaces,
+  drainDesktopCaptures,
+} from "./private-terminal-surfaces.js";
+import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
-} from './ipc-reconnect-policy.js';
-import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import type { RuntimeHostSessionObserverTarget } from './runtime-host-session-observer.js';
-import type { TerminalCloseIntents } from './terminal-close-intents.js';
+} from "./ipc-reconnect-policy.js";
+import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type { RuntimeHostSessionObserverTarget } from "./runtime-host-session-observer.js";
+import type { TerminalCloseIntents } from "./terminal-close-intents.js";
 
 export type RuntimeHostShellRunsClient = Pick<
   DesktopRuntimeHostClient,
-  | 'acquireRuntimeResourceController'
-  | 'controlRuntimeResource'
-  | 'listRuntimeResources'
-  | 'releaseRuntimeResourceController'
-  | 'startRuntimeResource'
-  | 'stopRuntimeResource'
-> & Partial<Pick<DesktopRuntimeHostClient, 'controlTerminalHandoff' | 'answerInteraction'>>;
+  | "acquireRuntimeResourceController"
+  | "controlRuntimeResource"
+  | "listRuntimeResources"
+  | "releaseRuntimeResourceController"
+  | "startRuntimeResource"
+  | "stopRuntimeResource"
+> &
+  Partial<
+    Pick<
+      DesktopRuntimeHostClient,
+      "controlTerminalHandoff" | "answerInteraction"
+    >
+  >;
 
 export type RuntimeHostShellRunQueriesClient = Pick<
   DesktopRuntimeHostClient,
-  'getRuntimeResource' | 'listRuntimeResources'
+  "getRuntimeResource" | "listRuntimeResources"
 >;
 
 export interface RuntimeHostShellRunQueriesIpcHandle {
@@ -60,16 +73,19 @@ export function registerRuntimeHostShellRunQueriesIpc(
   },
   ipcMain: ReconnectableReadIpcMain,
 ): RuntimeHostShellRunQueriesIpcHandle {
-  handleReconnectableRead(ipcMain, 'shell-runs:list', (_event, sessionId: unknown) =>
-    deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
+  handleReconnectableRead(
+    ipcMain,
+    "shell-runs:list",
+    (_event, sessionId: unknown) =>
+      deps.client.listRuntimeResources(requiredId(sessionId, "Session")),
   );
   return {
     sessionDomainChanged(change) {
-      if (change.domain !== 'runtime_resource') return;
+      if (change.domain !== "runtime_resource") return;
       void refreshRuntimeResources(deps, change.sessionId, change.resources);
     },
     sessionSubscriptionRecovered(sessionId) {
-      deps.sendToRenderer?.('shell-runs:resync', { sessionId });
+      deps.sendToRenderer?.("shell-runs:resync", { sessionId });
     },
   };
 }
@@ -102,33 +118,68 @@ export function registerRuntimeHostShellRunsIpc(
   // Private controls deliberately bypass reconnectable reads and command journals.
   // A transport failure must never replay a user's input.
   const privateWindows = new Set<number>();
-  ipcMain.handle('shell-runs:handoff', async (event, value: unknown) => {
-    if (!deps.client.controlTerminalHandoff) throw new Error('Terminal handoff is unavailable');
+  ipcMain.handle("shell-runs:handoff", async (event, value: unknown) => {
+    if (!deps.client.controlTerminalHandoff)
+      throw new Error("Terminal handoff is unavailable");
     const input = decodeRuntimeResourceHandoffInput(value);
-    const sender = event.sender as import('electron').WebContents;
-    if (input.action === 'ready') {
+    const sender = event.sender as import("electron").WebContents;
+    if (input.action === "ready") {
       setPrivateTerminalSurface(sender.id, input.controllerId, true);
       if (!privateWindows.has(sender.id)) {
         privateWindows.add(sender.id);
-        sender.once('destroyed', () => { privateWindows.delete(sender.id); clearPrivateTerminalSurfaces(sender.id); });
+        sender.once("destroyed", () => {
+          privateWindows.delete(sender.id);
+          clearPrivateTerminalSurfaces(sender.id);
+        });
         // Clear after navigation commits, when the old private document is gone.
         // Starting navigation (or a renderer crash) can leave its pixels visible.
-        sender.on('did-navigate', () => clearPrivateTerminalSurfaces(sender.id));
+        sender.on("did-navigate", () =>
+          clearPrivateTerminalSurfaces(sender.id),
+        );
       }
       await drainDesktopCaptures();
     }
-    if (input.action === 'release') setPrivateTerminalSurface(sender.id, input.controllerId, false);
-    return deps.client.controlTerminalHandoff(input);
+    if (input.action === "release")
+      setPrivateTerminalSurface(sender.id, input.controllerId, false);
+    try {
+      const result = await deps.client.controlTerminalHandoff(input);
+      if (input.action === "ready" && result.phase !== "human") {
+        setPrivateTerminalSurface(sender.id, input.controllerId, false);
+      }
+      return result;
+    } catch (error) {
+      if (input.action === "ready") {
+        setPrivateTerminalSurface(sender.id, input.controllerId, false);
+      }
+      throw error;
+    }
   });
-  ipcMain.handle('shell-runs:handoff-answer', async (_event, value: unknown) => {
-    if (!deps.client.answerInteraction || !value || typeof value !== 'object') throw new Error('Terminal handoff is unavailable');
-    const input = value as { sessionId?: unknown; requestId?: unknown; controllerId?: unknown; action?: unknown };
-    if (input.action !== 'resume' && input.action !== 'cancel') throw new Error('Invalid terminal handoff decision');
-    await deps.client.answerInteraction({ sessionId: requiredId(input.sessionId, 'Session'),
-      interactionId: requiredId(input.requestId, 'Request'), answer: { kind: 'terminal_handoff', action: input.action, controllerId: requiredId(input.controllerId, 'Controller') } });
-  });
-  ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
-    const normalizedSessionId = requiredId(sessionId, 'Session');
+  ipcMain.handle(
+    "shell-runs:handoff-answer",
+    async (_event, value: unknown) => {
+      if (!deps.client.answerInteraction || !value || typeof value !== "object")
+        throw new Error("Terminal handoff is unavailable");
+      const input = value as {
+        sessionId?: unknown;
+        requestId?: unknown;
+        controllerId?: unknown;
+        action?: unknown;
+      };
+      if (input.action !== "resume" && input.action !== "cancel")
+        throw new Error("Invalid terminal handoff decision");
+      await deps.client.answerInteraction({
+        sessionId: requiredId(input.sessionId, "Session"),
+        interactionId: requiredId(input.requestId, "Request"),
+        answer: {
+          kind: "terminal_handoff",
+          action: input.action,
+          controllerId: requiredId(input.controllerId, "Controller"),
+        },
+      });
+    },
+  );
+  ipcMain.handle("shell-runs:start", async (_event, sessionId: unknown) => {
+    const normalizedSessionId = requiredId(sessionId, "Session");
     const launchId = `${DESKTOP_TERMINAL_LAUNCH_PREFIX}${newId()}`;
     const started = await deps.client.startRuntimeResource({
       sessionId: normalizedSessionId,
@@ -136,43 +187,49 @@ export function registerRuntimeHostShellRunsIpc(
     });
     const update: ShellRunUpdate = {
       sessionId: normalizedSessionId,
-      ownership: { kind: 'local' },
+      ownership: { kind: "local" },
       sourceTurnId: launchId,
       sourceToolCallId: launchId,
       result: started.resource,
     };
     return update;
   });
-  ipcMain.handle('shell-runs:attach', (event, value: unknown) =>
+  ipcMain.handle("shell-runs:attach", (event, value: unknown) =>
     controllers.attach(
-      runtimeResourceIdentity(value, 'attach'),
+      runtimeResourceIdentity(value, "attach"),
       event.sender as RuntimeHostSessionObserverTarget,
     ),
   );
-  ipcMain.handle('shell-runs:detach', (_event, value: unknown) =>
-    controllers.detach(runtimeResourceIdentity(value, 'detach')),
+  ipcMain.handle("shell-runs:detach", (_event, value: unknown) =>
+    controllers.detach(runtimeResourceIdentity(value, "detach")),
   );
-  ipcMain.handle('shell-runs:write', (_event, value: unknown) =>
+  ipcMain.handle("shell-runs:write", (_event, value: unknown) =>
     controllers.control(runtimeResourceControl(value)),
   );
-  handleReconnectableRead(ipcMain, 'shell-runs:recover', (_event, sessionId: unknown) => {
-    const id = requiredId(sessionId, 'Session');
-    return closes.recover(id, () => deps.client.listRuntimeResources(id));
-  });
-  ipcMain.handle('shell-runs:stop', (_event, value: unknown) => {
-    const input = runtimeResourceIdentity(value, 'stop');
+  handleReconnectableRead(
+    ipcMain,
+    "shell-runs:recover",
+    (_event, sessionId: unknown) => {
+      const id = requiredId(sessionId, "Session");
+      return closes.recover(id, () => deps.client.listRuntimeResources(id));
+    },
+  );
+  ipcMain.handle("shell-runs:stop", (_event, value: unknown) => {
+    const input = runtimeResourceIdentity(value, "stop");
     return closes.stop(input, () => controllers.stop(input));
   });
 
-  return { close: async () => {
-    for (const id of privateWindows) clearPrivateTerminalSurfaces(id);
-    await controllers.close();
-  } };
+  return {
+    close: async () => {
+      for (const id of privateWindows) clearPrivateTerminalSurfaces(id);
+      await controllers.close();
+    },
+  };
 }
 
 async function refreshRuntimeResources(
   deps: {
-    client: Pick<DesktopRuntimeHostClient, 'getRuntimeResource'>;
+    client: Pick<DesktopRuntimeHostClient, "getRuntimeResource">;
     sendToRenderer?(channel: string, payload: unknown): void;
     onError?(error: unknown): void;
   },
@@ -181,8 +238,11 @@ async function refreshRuntimeResources(
 ): Promise<void> {
   for (const resource of resources) {
     try {
-      const update = await deps.client.getRuntimeResource(sessionId, resource.ref);
-      if (update) deps.sendToRenderer?.('shell-runs:update', update);
+      const update = await deps.client.getRuntimeResource(
+        sessionId,
+        resource.ref,
+      );
+      if (update) deps.sendToRenderer?.("shell-runs:update", update);
     } catch (error) {
       deps.onError?.(error);
     }
@@ -246,7 +306,13 @@ class RuntimeResourceControllers {
   ): Promise<ShellRunPtySnapshot> {
     return this.#run(input, async () => {
       const state = this.#state(input);
-      await this.#sessionObserver.observe(input.sessionId, state.observerId, target, false, input.ref);
+      await this.#sessionObserver.observe(
+        input.sessionId,
+        state.observerId,
+        target,
+        false,
+        input.ref,
+      );
       return this.#acquire(input, state);
     });
   }
@@ -258,7 +324,8 @@ class RuntimeResourceControllers {
         state = this.#state(input);
         await this.#acquire(input, state);
       }
-      if (!state) throw new Error('Runtime Resource controller was not acquired');
+      if (!state)
+        throw new Error("Runtime Resource controller was not acquired");
       const sequence = state.nextSequence;
       await this.#client.controlRuntimeResource({
         sessionId: input.sessionId,
@@ -310,12 +377,15 @@ class RuntimeResourceControllers {
       }),
     );
     const failed = results.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
+      (result): result is PromiseRejectedResult => result.status === "rejected",
     );
     if (failed) throw failed.reason;
   }
 
-  async #run<T>(input: RuntimeResourceIdentity, operation: () => Promise<T>): Promise<T> {
+  async #run<T>(
+    input: RuntimeResourceIdentity,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const key = resourceIdentity(input);
     const previous = this.#tails.get(key) ?? Promise.resolve();
     let release!: () => void;
@@ -353,7 +423,7 @@ class RuntimeResourceControllers {
   ): Promise<ShellRunPtySnapshot> {
     const key = resourceIdentity(input);
     let acquired: Awaited<
-      ReturnType<RuntimeHostShellRunsClient['acquireRuntimeResourceController']>
+      ReturnType<RuntimeHostShellRunsClient["acquireRuntimeResourceController"]>
     >;
     try {
       acquired = await this.#client.acquireRuntimeResourceController({
@@ -362,7 +432,10 @@ class RuntimeResourceControllers {
         controllerId: state.controllerId,
       });
     } catch (error) {
-      if (error instanceof RuntimeHostOperationError && this.#states.get(key) === state) {
+      if (
+        error instanceof RuntimeHostOperationError &&
+        this.#states.get(key) === state
+      ) {
         this.#states.delete(key);
         await this.#releaseObservation(state).catch(() => undefined);
       }
@@ -372,63 +445,78 @@ class RuntimeResourceControllers {
     return acquired.pty;
   }
 
-  async #releaseObservation(state: RuntimeResourceControllerState): Promise<void> {
+  async #releaseObservation(
+    state: RuntimeResourceControllerState,
+  ): Promise<void> {
     await this.#sessionObserver.unobserve(state.observerId);
   }
 }
 
 function protocolControl(input: RuntimeResourceControl) {
   if (input.input !== undefined && input.size !== undefined) {
-    return { kind: 'input_and_resize' as const, input: input.input, ...input.size };
+    return {
+      kind: "input_and_resize" as const,
+      input: input.input,
+      ...input.size,
+    };
   }
-  if (input.input !== undefined) return { kind: 'input' as const, input: input.input };
-  if (input.size !== undefined) return { kind: 'resize' as const, ...input.size };
-  throw new Error('Terminal control is empty');
+  if (input.input !== undefined)
+    return { kind: "input" as const, input: input.input };
+  if (input.size !== undefined)
+    return { kind: "resize" as const, ...input.size };
+  throw new Error("Terminal control is empty");
 }
 
-function runtimeResourceIdentity(value: unknown, action: string): RuntimeResourceIdentity {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+function runtimeResourceIdentity(
+  value: unknown,
+  action: string,
+): RuntimeResourceIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError(`Invalid terminal ${action} input`);
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== 'sessionId' && key !== 'ref')) {
+  if (Object.keys(record).some((key) => key !== "sessionId" && key !== "ref")) {
     throw new TypeError(`Invalid terminal ${action} input`);
   }
   return {
-    sessionId: requiredId(record.sessionId, 'Session'),
-    ref: requiredId(record.ref, 'terminal ref'),
+    sessionId: requiredId(record.sessionId, "Session"),
+    ref: requiredId(record.ref, "terminal ref"),
   };
 }
 
 function runtimeResourceControl(value: unknown): RuntimeResourceControl {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError('Invalid terminal control input');
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Invalid terminal control input");
   }
   const record = value as Record<string, unknown>;
   if (
     Object.keys(record).some(
-      (key) => key !== 'sessionId' && key !== 'ref' && key !== 'input' && key !== 'size',
+      (key) =>
+        key !== "sessionId" &&
+        key !== "ref" &&
+        key !== "input" &&
+        key !== "size",
     )
   ) {
-    throw new TypeError('Invalid terminal control input');
+    throw new TypeError("Invalid terminal control input");
   }
   const input = record.input;
   const size = record.size;
-  if (input !== undefined && typeof input !== 'string') {
-    throw new TypeError('Invalid terminal input');
+  if (input !== undefined && typeof input !== "string") {
+    throw new TypeError("Invalid terminal input");
   }
   let normalizedSize: { cols: number; rows: number } | undefined;
   if (size !== undefined) {
-    if (!size || typeof size !== 'object' || Array.isArray(size)) {
-      throw new TypeError('Invalid terminal size');
+    if (!size || typeof size !== "object" || Array.isArray(size)) {
+      throw new TypeError("Invalid terminal size");
     }
     const dimensions = size as Record<string, unknown>;
     if (
-      Object.keys(dimensions).some((key) => key !== 'cols' && key !== 'rows')
-      || !Number.isInteger(dimensions.cols)
-      || !Number.isInteger(dimensions.rows)
+      Object.keys(dimensions).some((key) => key !== "cols" && key !== "rows") ||
+      !Number.isInteger(dimensions.cols) ||
+      !Number.isInteger(dimensions.rows)
     ) {
-      throw new TypeError('Invalid terminal size');
+      throw new TypeError("Invalid terminal size");
     }
     normalizedSize = {
       cols: dimensions.cols as number,
@@ -436,12 +524,12 @@ function runtimeResourceControl(value: unknown): RuntimeResourceControl {
     };
   }
   if (input === undefined && normalizedSize === undefined) {
-    throw new TypeError('Terminal control is empty');
+    throw new TypeError("Terminal control is empty");
   }
   return {
     ...runtimeResourceIdentity(
       { sessionId: record.sessionId, ref: record.ref },
-      'control',
+      "control",
     ),
     ...(input === undefined ? {} : { input }),
     ...(normalizedSize === undefined ? {} : { size: normalizedSize }),
@@ -452,19 +540,22 @@ function resourceIdentity(input: RuntimeResourceIdentity): string {
   return `${input.sessionId}\0${input.ref}`;
 }
 
-function parseResourceIdentity(identity: string): [sessionId: string, ref: string] {
-  const separator = identity.indexOf('\0');
-  if (separator < 0) throw new Error('Invalid Runtime Resource controller identity');
+function parseResourceIdentity(
+  identity: string,
+): [sessionId: string, ref: string] {
+  const separator = identity.indexOf("\0");
+  if (separator < 0)
+    throw new Error("Invalid Runtime Resource controller identity");
   return [identity.slice(0, separator), identity.slice(separator + 1)];
 }
 
 function requiredId(value: unknown, name: string, maxLength = 512): string {
   if (
-    typeof value !== 'string'
-    || value.length === 0
-    || value.length > maxLength
-    || value.trim() !== value
-    || /[\u0000-\u001f\u007f]/.test(value)
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/.test(value)
   ) {
     throw new TypeError(`Invalid ${name} id`);
   }

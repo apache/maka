@@ -36,11 +36,6 @@
   color: var(--muted-foreground);
 }
 
-.maka-skill-install-complete-icon {
-  display: inline-flex;
-  color: var(--success);
-}
-
 .maka-skill-governance-summary {
   min-width: 0;
   display: flex;

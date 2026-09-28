@@ -17,89 +17,98 @@
  * under the License.
  */
 
-import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import { assertMaximalJsonPages } from "./fixtures/json-pages.js";
 import {
   RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
   type RuntimeResourceQueryInput,
   type RuntimeResourceQueryResult,
-} from '../protocol/index.js';
+} from "../protocol/index.js";
 
-import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
-import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from "@maka/core/shell-run";
 import {
   type ShellRunSnapshotResult,
   type ShellRunStateResult,
   type ShellRunUpdate,
-} from '@maka/core/events';
+} from "@maka/core/events";
 import type {
   ShellRunBashInput,
   ShellRunPtySnapshot,
   ShellRunWriteInput,
-} from '@maka/runtime/shell-run-contract';
-import { ShellPreferenceError } from '@maka/runtime/shell-detect';
-import { SessionNotFoundError } from '@maka/storage/session-store';
-import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
-import type { ConnectionContext } from '../server/operation-dispatcher.js';
+} from "@maka/runtime/shell-run-contract";
+import { ShellPreferenceError } from "@maka/runtime/shell-detect";
+import { SessionNotFoundError } from "@maka/storage/session-store";
+import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from "../protocol/runtime-resource.js";
+import type { ConnectionContext } from "../server/operation-dispatcher.js";
 import {
   HostRuntimeResourceCoordinator,
   type HostRuntimeResourceCoordinatorInput,
-} from '../server/runtime-resource-coordinator.js';
-import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { deferred } from '@maka/core/test-only/async-primitives';
-import type { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
+} from "../server/runtime-resource-coordinator.js";
+import { SessionAdmissionGate } from "../server/session-admission-gate.js";
+import { deferred } from "@maka/core/test-only/async-primitives";
+import type { HostInteractionCoordinator } from "../server/interaction-coordinator.js";
 
-const SESSION_ID = 'session-1';
-const RUNTIME_REF = 'maka://runtime/background-tasks/shell-1';
+const SESSION_ID = "session-1";
+const RUNTIME_REF = "maka://runtime/background-tasks/shell-1";
 
-describe('Host Runtime Resource coordinator', () => {
-  test('a handoff cannot gate or stop a terminal the model is not allowed to read', async () => {
+describe("Host Runtime Resource coordinator", () => {
+  test("a handoff cannot gate or stop a terminal the model is not allowed to read", async () => {
     const harness = createHarness({
       humanControl: {
         preparePtyHandoff: async () => {
-          assert.fail('must validate before preparing');
+          assert.fail("must validate before preparing");
         },
         writePrivatePtyInput: async () => {},
-        readPrivatePtySnapshot: async () => ({ sequence: 0, text: '', inputOpen: false }),
+        readPrivatePtySnapshot: async () => ({
+          sequence: 0,
+          text: "",
+          inputOpen: false,
+        }),
         resumePtyHandoff: async () => false,
         sharePrivatePtyObservation: async () => {},
       },
       interactionAuthority: () => ({
         requestTerminalHandoff: async () => {
-          throw new Error('must not request');
+          throw new Error("must not request");
         },
         closeTerminalHandoff: async () => {},
       }),
     });
-    harness.modelReadFailure = new Error('User-owned terminal');
-    await harness.coordinator.handlers['runtime.resource.handoff'](
-      { action: 'surface', sessionId: SESSION_ID, available: true },
-      connection('desktop'),
+    harness.modelReadFailure = new Error("User-owned terminal");
+    await harness.coordinator.handlers["runtime.resource.handoff"](
+      { action: "surface", sessionId: SESSION_ID, available: true },
+      connection("desktop"),
     );
     await assert.rejects(
-      harness.coordinator.requestHandoff(RUNTIME_REF, 'Authenticate', {
+      harness.coordinator.requestHandoff(RUNTIME_REF, "Authenticate", {
         sessionId: SESSION_ID,
-        runId: 'run-1',
-        turnId: 'turn-1',
-        toolCallId: 'tool-1',
-        cwd: '/workspace',
+        runId: "run-1",
+        turnId: "turn-1",
+        toolCallId: "tool-1",
+        cwd: "/workspace",
         abortSignal: new AbortController().signal,
         emitOutput: () => {},
       }),
       /User-owned/,
     );
     assert.equal(harness.stopCount, 0);
-    const lookup = await harness.coordinator.handlers['runtime.resource.handoff'](
-      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
-      connection('desktop'),
+    const lookup = await harness.coordinator.handlers[
+      "runtime.resource.handoff"
+    ](
+      { action: "lookup", sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection("desktop"),
     );
-    assert.equal(lookup.ok && lookup.result.status, 'unavailable');
+    assert.equal(lookup.ok && lookup.result.status, "unavailable");
   });
 
-  test('private handoff fences model writes, deduplicates input and survives controller disconnect', async () => {
+  test("private handoff fences model writes, deduplicates input and survives controller disconnect", async () => {
     const published = deferred();
-    const decision = deferred<import('@maka/core/interaction').InteractionCanonicalOutcome>();
-    let request!: Parameters<HostInteractionCoordinator['requestTerminalHandoff']>[0];
+    const decision =
+      deferred<import("@maka/core/interaction").InteractionCanonicalOutcome>();
+    let request!: Parameters<
+      HostInteractionCoordinator["requestTerminalHandoff"]
+    >[0];
     const inputs: string[] = [];
     const harness = createHarness({
       humanControl: {
@@ -107,7 +116,11 @@ describe('Host Runtime Resource coordinator', () => {
         writePrivatePtyInput: async (_session, _ref, input) => {
           inputs.push(input);
         },
-        readPrivatePtySnapshot: async () => ({ sequence: 1, text: 'private', inputOpen: true }),
+        readPrivatePtySnapshot: async () => ({
+          sequence: 1,
+          text: "private",
+          inputOpen: true,
+        }),
         resumePtyHandoff: async () => true,
         sharePrivatePtyObservation: async () => {},
       },
@@ -118,17 +131,21 @@ describe('Host Runtime Resource coordinator', () => {
           return decision.promise;
         },
         closeTerminalHandoff: async () => {
-          await request.apply('cancel');
-          decision.resolve({ kind: 'closure', reason: 'producer_cancelled', committedAt: 1 });
+          await request.apply("cancel");
+          decision.resolve({
+            kind: "closure",
+            reason: "producer_cancelled",
+            committedAt: 1,
+          });
         },
       }),
     });
     const host = harness.coordinator;
-    const control = host.handlers['runtime.resource.handoff'];
+    const control = host.handlers["runtime.resource.handoff"];
     assert.equal(host.isHandoffAvailable(SESSION_ID), false);
     await control(
-      { action: 'surface', sessionId: SESSION_ID, available: true },
-      connection('desktop'),
+      { action: "surface", sessionId: SESSION_ID, available: true },
+      connection("desktop"),
     );
     const held = deferred();
     const release = deferred();
@@ -137,12 +154,12 @@ describe('Host Runtime Resource coordinator', () => {
       await release.promise;
     });
     await held.promise;
-    const handoff = host.requestHandoff(RUNTIME_REF, 'Authenticate', {
+    const handoff = host.requestHandoff(RUNTIME_REF, "Authenticate", {
       sessionId: SESSION_ID,
-      runId: 'run-1',
-      turnId: 'turn-1',
-      toolCallId: 'tool-1',
-      cwd: '/workspace',
+      runId: "run-1",
+      turnId: "turn-1",
+      toolCallId: "tool-1",
+      cwd: "/workspace",
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
     });
@@ -150,7 +167,7 @@ describe('Host Runtime Resource coordinator', () => {
       host.writeStdin({
         sessionId: SESSION_ID,
         ref: RUNTIME_REF,
-        input: 'queued before handoff admission',
+        input: "queued before handoff admission",
       }),
       /expired/,
     );
@@ -161,27 +178,40 @@ describe('Host Runtime Resource coordinator', () => {
     const identity = {
       sessionId: SESSION_ID,
       requestId: request.requestId,
-      controllerId: 'card-1',
+      controllerId: "card-1",
     };
-    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), false);
-    assert.equal((await control({ ...identity, action: 'ready' }, connection('desktop'))).ok, true);
-    const invalid = await control(
-      { ...identity, action: 'input', sequence: 1, input: 'two\nlines' },
-      connection('desktop'),
+    assert.equal(request.canAnswer("resume", "desktop", "card-1"), false);
+    assert.equal(
+      (await control({ ...identity, action: "ready" }, connection("desktop")))
+        .ok,
+      true,
     );
-    assert.equal(invalid.ok && invalid.result.rejection, 'invalid_input');
+    const invalid = await control(
+      { ...identity, action: "input", sequence: 1, input: "two\nlines" },
+      connection("desktop"),
+    );
+    assert.equal(invalid.ok && invalid.result.rejection, "invalid_input");
     assert.equal(invalid.ok && invalid.result.nextSequence, 1);
     assert.deepEqual(inputs, []);
-    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), true);
+    assert.equal(request.canAnswer("resume", "desktop", "card-1"), true);
     await assert.rejects(
-      host.writeStdin({ sessionId: SESSION_ID, ref: RUNTIME_REF, input: 'model write' }),
+      host.writeStdin({
+        sessionId: SESSION_ID,
+        ref: RUNTIME_REF,
+        input: "model write",
+      }),
       /human/,
     );
     assert.equal(
       (
         await control(
-          { ...identity, action: 'input', sequence: 1, input: 'fixture-password' },
-          connection('desktop'),
+          {
+            ...identity,
+            action: "input",
+            sequence: 1,
+            input: "fixture-password",
+          },
+          connection("desktop"),
         )
       ).ok,
       true,
@@ -189,80 +219,130 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(
       (
         await control(
-          { ...identity, action: 'input', sequence: 1, input: 'must-not-replay' },
-          connection('desktop'),
+          {
+            ...identity,
+            action: "input",
+            sequence: 1,
+            input: "must-not-replay",
+          },
+          connection("desktop"),
         )
       ).ok,
       true,
     );
-    assert.deepEqual(inputs, ['fixture-password\r']);
-    host.releaseConnection('desktop');
-    assert.equal(request.canAnswer('resume', 'desktop', 'card-1'), false);
+    assert.deepEqual(inputs, ["fixture-password\r"]);
+    host.releaseConnection("desktop");
+    assert.equal(request.canAnswer("resume", "desktop", "card-1"), false);
     assert.equal(
       (
         await control(
-          { ...identity, action: 'input', sequence: 2, input: 'stale' },
-          connection('desktop'),
+          { ...identity, action: "input", sequence: 2, input: "stale" },
+          connection("desktop"),
         )
       ).ok,
       true,
     );
-    const expired = await control({ ...identity, action: 'observe' }, connection('desktop'));
-    assert.equal(expired.ok && expired.result.rejection, 'controller_expired');
+    const expired = await control(
+      { ...identity, action: "observe" },
+      connection("desktop"),
+    );
+    assert.equal(expired.ok && expired.result.rejection, "controller_expired");
     assert.equal(expired.ok && expired.result.display, undefined);
     await assert.rejects(
-      host.writeStdin({ sessionId: SESSION_ID, ref: RUNTIME_REF, input: 'model write' }),
+      host.writeStdin({
+        sessionId: SESSION_ID,
+        ref: RUNTIME_REF,
+        input: "model write",
+      }),
       /human/,
     );
     await control(
-      { action: 'surface', sessionId: SESSION_ID, available: true },
-      connection('reconnected'),
+      { action: "surface", sessionId: SESSION_ID, available: true },
+      connection("reconnected"),
     );
-    const reattached = { ...identity, controllerId: 'card-2' };
-    await control({ ...reattached, action: 'ready' }, connection('reconnected'));
-    assert.equal(request.canAnswer('resume', 'reconnected', 'card-2'), true);
-    assert.equal(request.canAnswer('resume', 'reconnected', 'card-1'), false);
+    const reattached = { ...identity, controllerId: "card-2" };
     await control(
-      { ...reattached, action: 'input', sequence: 2, input: 'second-factor' },
-      connection('reconnected'),
+      { ...reattached, action: "ready" },
+      connection("reconnected"),
     );
-    await request.apply('resume');
-    decision.resolve({ kind: 'terminal_handoff_answer', action: 'resume', committedAt: 2 });
-    assert.equal(JSON.parse(await handoff).outcome, 'resumed');
-    assert.deepEqual(inputs, ['fixture-password\r', 'second-factor\r']);
-    await host.writeStdin({ sessionId: SESSION_ID, ref: RUNTIME_REF, input: 'new model write' });
+    assert.equal(request.canAnswer("resume", "reconnected", "card-2"), true);
+    assert.equal(request.canAnswer("resume", "reconnected", "card-1"), false);
+    await control(
+      { ...reattached, action: "input", sequence: 2, input: "second-factor" },
+      connection("reconnected"),
+    );
+    await request.apply("resume");
+    decision.resolve({
+      kind: "terminal_handoff_answer",
+      action: "resume",
+      committedAt: 2,
+    });
+    assert.equal(JSON.parse(await handoff).outcome, "resumed");
+    assert.deepEqual(inputs, ["fixture-password\r", "second-factor\r"]);
+    await host.writeStdin({
+      sessionId: SESSION_ID,
+      ref: RUNTIME_REF,
+      input: "new model write",
+    });
     assert.equal(harness.writeCount, 1);
     host.observeShellRunUpdate({
       ...ptyUpdate(),
-      result: { ...ptySnapshot(), status: 'completed', exitCode: 0 },
+      result: { ...ptySnapshot(), status: "completed", exitCode: 0 },
     });
-    const ended = await control({ ...reattached, action: 'observe' }, connection('reconnected'));
-    assert.equal(ended.ok && ended.result.status, 'closed');
-    assert.equal(ended.ok && ended.result.closure, 'exited');
+    const ended = await control(
+      { ...reattached, action: "observe" },
+      connection("reconnected"),
+    );
+    assert.equal(ended.ok && ended.result.status, "closed");
+    assert.equal(ended.ok && ended.result.closure, "exited");
     assert.equal(ended.ok && ended.result.display, undefined);
     const closedLookup = await control(
-      { action: 'lookup', sessionId: SESSION_ID, ref: RUNTIME_REF },
-      connection('reconnected'),
+      { action: "lookup", sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection("reconnected"),
     );
-    assert.equal(closedLookup.ok && closedLookup.result.request?.requestId, request.requestId);
-    assert.equal(closedLookup.ok && closedLookup.result.closure, 'exited');
+    assert.equal(
+      closedLookup.ok && closedLookup.result.request?.requestId,
+      request.requestId,
+    );
+    assert.equal(closedLookup.ok && closedLookup.result.closure, "exited");
+    const released = await control(
+      { ...reattached, action: "release" },
+      connection("reconnected"),
+    );
+    assert.equal(released.ok && released.result.status, "closed");
+    const releasedLookup = await control(
+      { action: "lookup", sessionId: SESSION_ID, ref: RUNTIME_REF },
+      connection("reconnected"),
+    );
+    assert.equal(
+      releasedLookup.ok && releasedLookup.result.status,
+      "unavailable",
+    );
+    assert.equal(releasedLookup.ok && releasedLookup.result.request, undefined);
   });
 
-  test('uncertain delivery stays fenced across reconnect and never resends input', async () => {
+  test("uncertain delivery stays fenced across reconnect and never resends input", async () => {
     const published = deferred();
-    const decision = deferred<import('@maka/core/interaction').InteractionCanonicalOutcome>();
-    let request!: Parameters<HostInteractionCoordinator['requestTerminalHandoff']>[0];
+    const decision =
+      deferred<import("@maka/core/interaction").InteractionCanonicalOutcome>();
+    let request!: Parameters<
+      HostInteractionCoordinator["requestTerminalHandoff"]
+    >[0];
     let writes = 0;
     const harness = createHarness({
       humanControl: {
         preparePtyHandoff: async () => {},
         writePrivatePtyInput: async () => {
           writes++;
-          throw new Error('partial write');
+          throw new Error("partial write");
         },
-        readPrivatePtySnapshot: async () => ({ sequence: 1, text: 'private', inputOpen: true }),
+        readPrivatePtySnapshot: async () => ({
+          sequence: 1,
+          text: "private",
+          inputOpen: true,
+        }),
         resumePtyHandoff: async () => {
-          assert.fail('must not resume');
+          assert.fail("must not resume");
         },
         sharePrivatePtyObservation: async () => {},
       },
@@ -275,126 +355,157 @@ describe('Host Runtime Resource coordinator', () => {
         closeTerminalHandoff: async () => {},
       }),
     });
-    const control = harness.coordinator.handlers['runtime.resource.handoff'];
+    const control = harness.coordinator.handlers["runtime.resource.handoff"];
     await control(
-      { action: 'surface', sessionId: SESSION_ID, available: true },
-      connection('desktop'),
+      { action: "surface", sessionId: SESSION_ID, available: true },
+      connection("desktop"),
     );
-    const pending = harness.coordinator.requestHandoff(RUNTIME_REF, 'Authenticate', {
-      sessionId: SESSION_ID,
-      runId: 'run-1',
-      turnId: 'turn-1',
-      toolCallId: 'tool-1',
-      cwd: '/workspace',
-      abortSignal: new AbortController().signal,
-      emitOutput: () => {},
-    });
+    const pending = harness.coordinator.requestHandoff(
+      RUNTIME_REF,
+      "Authenticate",
+      {
+        sessionId: SESSION_ID,
+        runId: "run-1",
+        turnId: "turn-1",
+        toolCallId: "tool-1",
+        cwd: "/workspace",
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      },
+    );
     await published.promise;
     const identity = {
       sessionId: SESSION_ID,
       requestId: request.requestId,
-      controllerId: 'card-1',
+      controllerId: "card-1",
     };
-    await control({ ...identity, action: 'ready' }, connection('desktop'));
+    await control({ ...identity, action: "ready" }, connection("desktop"));
     const receipt = await control(
-      { ...identity, action: 'input', sequence: 1, input: 'secret' },
-      connection('desktop'),
+      { ...identity, action: "input", sequence: 1, input: "secret" },
+      connection("desktop"),
     );
-    assert.equal(receipt.ok && receipt.result.status, 'outcome_unknown');
+    assert.equal(receipt.ok && receipt.result.status, "outcome_unknown");
     await control(
-      { ...identity, action: 'input', sequence: 1, input: 'secret' },
-      connection('desktop'),
+      { ...identity, action: "input", sequence: 1, input: "secret" },
+      connection("desktop"),
     );
-    harness.coordinator.releaseConnection('desktop');
-    await control({ action: 'surface', sessionId: SESSION_ID, available: true }, connection('new'));
-    const reclaimed = await control({ ...identity, action: 'ready' }, connection('new'));
-    assert.equal(reclaimed.ok && reclaimed.result.status, 'outcome_unknown');
-    assert.equal(request.canAnswer('resume', 'new', 'card-1'), false);
+    harness.coordinator.releaseConnection("desktop");
+    await control(
+      { action: "surface", sessionId: SESSION_ID, available: true },
+      connection("new"),
+    );
+    const reclaimed = await control(
+      { ...identity, action: "ready" },
+      connection("new"),
+    );
+    assert.equal(reclaimed.ok && reclaimed.result.status, "outcome_unknown");
+    assert.equal(request.canAnswer("resume", "new", "card-1"), false);
     assert.equal(
       (
         await control(
-          { ...identity, action: 'input', sequence: 2, input: 'secret' },
-          connection('new'),
+          { ...identity, action: "input", sequence: 2, input: "secret" },
+          connection("new"),
         )
       ).ok,
       false,
     );
     assert.equal(writes, 1);
-    await request.apply('cancel');
-    decision.resolve({ kind: 'terminal_handoff_answer', action: 'cancel', committedAt: 1 });
-    assert.equal(JSON.parse(await pending).outcome, 'closed');
-    const ended = await control({ ...identity, action: 'observe' }, connection('new'));
-    assert.equal(ended.ok && ended.result.closure, 'cancelled');
+    await request.apply("cancel");
+    decision.resolve({
+      kind: "terminal_handoff_answer",
+      action: "cancel",
+      committedAt: 1,
+    });
+    assert.equal(JSON.parse(await pending).outcome, "closed");
+    const ended = await control(
+      { ...identity, action: "observe" },
+      connection("new"),
+    );
+    assert.equal(ended.ok && ended.result.closure, "cancelled");
   });
 
-  test('pages one stable bounded projection and rejects stale continuation revisions', async () => {
+  test("pages one stable bounded projection and rejects stale continuation revisions", async () => {
     const harness = createHarness();
-    harness.updates = Array.from({ length: 65 }, (_, index) => resourceUpdate(index));
-    const first = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'list_start', sessionId: SESSION_ID },
-      connection('connection-1'),
+    harness.updates = Array.from({ length: 65 }, (_, index) =>
+      resourceUpdate(index),
+    );
+    const first = await harness.coordinator.handlers["runtime.resource.query"](
+      { kind: "list_start", sessionId: SESSION_ID },
+      connection("connection-1"),
     );
     assert.equal(first.ok, true);
-    if (!first.ok || first.result.kind !== 'page') return;
+    if (!first.ok || first.result.kind !== "page") return;
     assert.equal(first.result.resources.length, 64);
-    assert.equal(first.result.nextCursor, '64');
+    assert.equal(first.result.nextCursor, "64");
 
     harness.updates.reverse();
-    const reordered = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'list_start', sessionId: SESSION_ID },
-      connection('connection-1'),
+    const reordered = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ](
+      { kind: "list_start", sessionId: SESSION_ID },
+      connection("connection-1"),
     );
     assert.deepEqual(reordered, first);
 
-    const second = await harness.coordinator.handlers['runtime.resource.query'](
+    const second = await harness.coordinator.handlers["runtime.resource.query"](
       {
-        kind: 'list_continue',
+        kind: "list_continue",
         sessionId: SESSION_ID,
         revision: first.result.revision,
         cursor: first.result.nextCursor,
       },
-      connection('connection-1'),
+      connection("connection-1"),
     );
     assert.equal(second.ok, true);
-    assert.equal(second.ok && second.result.kind === 'page' && second.result.resources.length, 1);
+    assert.equal(
+      second.ok &&
+        second.result.kind === "page" &&
+        second.result.resources.length,
+      1,
+    );
 
     harness.updates = [...harness.updates, resourceUpdate(65)];
-    const stale = await harness.coordinator.handlers['runtime.resource.query'](
+    const stale = await harness.coordinator.handlers["runtime.resource.query"](
       {
-        kind: 'list_continue',
+        kind: "list_continue",
         sessionId: SESSION_ID,
         revision: first.result.revision,
         cursor: first.result.nextCursor,
       },
-      connection('connection-1'),
+      connection("connection-1"),
     );
     assert.equal(stale.ok, true);
-    assert.equal(stale.ok && stale.result.kind, 'revision_changed');
+    assert.equal(stale.ok && stale.result.kind, "revision_changed");
 
     const currentRevision =
-      stale.ok && stale.result.kind === 'revision_changed'
+      stale.ok && stale.result.kind === "revision_changed"
         ? stale.result.actual
         : first.result.revision;
-    const invalid = await harness.coordinator.handlers['runtime.resource.query'](
+    const invalid = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ](
       {
-        kind: 'list_continue',
+        kind: "list_continue",
         sessionId: SESSION_ID,
         revision: currentRevision,
-        cursor: '0',
+        cursor: "0",
       },
-      connection('connection-1'),
+      connection("connection-1"),
     );
     assert.equal(invalid.ok, false);
-    assert.equal(!invalid.ok && invalid.error.code, 'invalid_request');
+    assert.equal(!invalid.ok && invalid.error.code, "invalid_request");
   });
 
-  test('keeps inherited unavailable state honest and bounds adversarial output encoding', async () => {
+  test("keeps inherited unavailable state honest and bounds adversarial output encoding", async () => {
     const harness = createHarness();
     const compact = compactState(0);
     harness.updates = [
       resourceUpdate(0, {
-        ownership: { kind: 'source_unavailable', sourceSessionId: 'source-session' },
-        sourceToolCallId: 'call.1/part',
+        ownership: {
+          kind: "source_unavailable",
+          sourceSessionId: "source-session",
+        },
+        sourceToolCallId: "call.1/part",
         result: compact,
       }),
       resourceUpdate(1, {
@@ -402,53 +513,60 @@ describe('Host Runtime Resource coordinator', () => {
       }),
     ];
 
-    const inherited = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'get', sessionId: SESSION_ID, ref: compact.ref },
-      connection('connection-1'),
+    const inherited = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ](
+      { kind: "get", sessionId: SESSION_ID, ref: compact.ref },
+      connection("connection-1"),
     );
     assert.deepEqual(
-      inherited.ok && inherited.result.kind === 'resource'
+      inherited.ok && inherited.result.kind === "resource"
         ? inherited.result.resource?.result
         : undefined,
       compact,
     );
 
-    const heavy = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'get', sessionId: SESSION_ID, ref: shellRef(1) },
-      connection('connection-1'),
+    const heavy = await harness.coordinator.handlers["runtime.resource.query"](
+      { kind: "get", sessionId: SESSION_ID, ref: shellRef(1) },
+      connection("connection-1"),
     );
     assert.equal(heavy.ok, true);
-    assert.ok(Buffer.byteLength(JSON.stringify(heavy), 'utf8') < RUNTIME_RESOURCE_RESULT_MAX_BYTES);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(heavy), "utf8") <
+        RUNTIME_RESOURCE_RESULT_MAX_BYTES,
+    );
     assert.equal(harness.listReadCount, 0);
     assert.equal(harness.pointReadCount, 2);
-    if (!heavy.ok || heavy.result.kind !== 'resource') return;
+    if (!heavy.ok || heavy.result.kind !== "resource") return;
     const output = heavy.result.resource?.result.output;
-    assert.equal(output?.mode, 'pipes');
-    assert.equal(output?.mode === 'pipes' && output.stdoutTruncated, true);
+    assert.equal(output?.mode, "pipes");
+    assert.equal(output?.mode === "pipes" && output.stdoutTruncated, true);
   });
 
-  test('uses point reads for a full invalidation batch without rebuilding the list', async () => {
+  test("uses point reads for a full invalidation batch without rebuilding the list", async () => {
     const harness = createHarness();
-    harness.updates = Array.from({ length: 64 }, (_, index) => resourceUpdate(index));
+    harness.updates = Array.from({ length: 64 }, (_, index) =>
+      resourceUpdate(index),
+    );
 
     const results = await Promise.all(
       harness.updates.map((update) =>
-        harness.coordinator.handlers['runtime.resource.query'](
-          { kind: 'get', sessionId: SESSION_ID, ref: update.result.ref },
-          connection('connection-1'),
+        harness.coordinator.handlers["runtime.resource.query"](
+          { kind: "get", sessionId: SESSION_ID, ref: update.result.ref },
+          connection("connection-1"),
         ),
       ),
     );
 
     assert.equal(
-      results.every((result) => result.ok && result.result.kind === 'resource'),
+      results.every((result) => result.ok && result.result.kind === "resource"),
       true,
     );
     assert.equal(harness.pointReadCount, 64);
     assert.equal(harness.listReadCount, 0);
   });
 
-  test('fences Guest reads to the exact active observation grant', async () => {
+  test("fences Guest reads to the exact active observation grant", async () => {
     let active = true;
     let releaseRead!: () => void;
     let markReadStarted!: () => void;
@@ -462,15 +580,15 @@ describe('Host Runtime Resource coordinator', () => {
       sessionAccessAuthority: {
         activeSessionGrant(principalId, sessionId, kind) {
           return active &&
-            principalId === 'guest-1' &&
+            principalId === "guest-1" &&
             sessionId === SESSION_ID &&
-            kind === 'session_observation'
+            kind === "session_observation"
             ? {
                 kind,
-                grantId: 'grant-1',
+                grantId: "grant-1",
                 principalId,
                 sessionId,
-                createdAt: '2026-01-01T00:00:00.000Z',
+                createdAt: "2026-01-01T00:00:00.000Z",
               }
             : undefined;
         },
@@ -478,31 +596,32 @@ describe('Host Runtime Resource coordinator', () => {
     });
     harness.pointReadBarrier = readBarrier;
     harness.pointReadStarted = markReadStarted;
-    const guest = guestConnection('guest-1');
+    const guest = guestConnection("guest-1");
 
-    const outsideGrant = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'list_start', sessionId: 'session-2' },
-      guest,
-    );
+    const outsideGrant = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ]({ kind: "list_start", sessionId: "session-2" }, guest);
     assert.equal(outsideGrant.ok, false);
-    assert.equal(!outsideGrant.ok && outsideGrant.error.code, 'not_found');
+    assert.equal(!outsideGrant.ok && outsideGrant.error.code, "not_found");
     assert.equal(harness.listReadCount, 0);
 
-    harness.updates = [resourceUpdate(0), resourceUpdate(1, { sessionId: 'parent-session' })];
-    const visible = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'list_start', sessionId: SESSION_ID },
-      guest,
-    );
+    harness.updates = [
+      resourceUpdate(0),
+      resourceUpdate(1, { sessionId: "parent-session" }),
+    ];
+    const visible = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ]({ kind: "list_start", sessionId: SESSION_ID }, guest);
     assert.equal(visible.ok, true);
     assert.deepEqual(
-      visible.ok && visible.result.kind === 'page'
+      visible.ok && visible.result.kind === "page"
         ? visible.result.resources.map((resource) => resource.result.ref)
         : [],
       [shellRef(0)],
     );
 
-    const pending = harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'get', sessionId: SESSION_ID, ref: shellRef(0) },
+    const pending = harness.coordinator.handlers["runtime.resource.query"](
+      { kind: "get", sessionId: SESSION_ID, ref: shellRef(0) },
       guest,
     );
     await readStarted;
@@ -511,46 +630,50 @@ describe('Host Runtime Resource coordinator', () => {
     releaseRead();
     const revoked = await pending;
     assert.equal(revoked.ok, false);
-    assert.equal(!revoked.ok && revoked.error.code, 'not_found');
+    assert.equal(!revoked.ok && revoked.error.code, "not_found");
   });
 
-  test('drains for canonical state failure but keeps projection failure scoped to its query', async (t) => {
-    t.mock.method(console, 'error', () => {});
+  test("drains for canonical state failure but keeps projection failure scoped to its query", async (t) => {
+    t.mock.method(console, "error", () => {});
     const harness = createHarness();
     harness.updates = [
       resourceUpdate(0, {
-        sourceToolCallId: 'x'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES + 1),
+        sourceToolCallId: "x".repeat(
+          SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES + 1,
+        ),
       }),
     ];
 
-    const result = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'list_start', sessionId: SESSION_ID },
-      connection('connection-1'),
+    const result = await harness.coordinator.handlers["runtime.resource.query"](
+      { kind: "list_start", sessionId: SESSION_ID },
+      connection("connection-1"),
     );
 
     assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.error.code, 'internal_failure');
+    assert.equal(!result.ok && result.error.code, "internal_failure");
     assert.equal(harness.drainCount, 0);
     assert.equal(harness.terminateCount, 0);
 
     harness.updates = [resourceUpdate(0)];
-    harness.stateReadFailure = new Error('canonical state unavailable');
-    const unavailable = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'list_start', sessionId: SESSION_ID },
-      connection('connection-1'),
+    harness.stateReadFailure = new Error("canonical state unavailable");
+    const unavailable = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ](
+      { kind: "list_start", sessionId: SESSION_ID },
+      connection("connection-1"),
     );
     assert.equal(unavailable.ok, false);
-    assert.equal(!unavailable.ok && unavailable.error.code, 'internal_failure');
+    assert.equal(!unavailable.ok && unavailable.error.code, "internal_failure");
     assert.equal(harness.drainCount, 1);
     assert.equal(harness.terminateCount, 0);
   });
 
-  test('logs a bounded redacted canonical state failure before draining', async (t) => {
+  test("logs a bounded redacted canonical state failure before draining", async (t) => {
     const logs: string[] = [];
     let drainCount = 0;
     let logCountAtDrain = 0;
-    t.mock.method(console, 'error', (...args: unknown[]) => {
-      logs.push(args.map(String).join(' '));
+    t.mock.method(console, "error", (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
     });
     const harness = createHarness({
       requestDrain: () => {
@@ -559,50 +682,52 @@ describe('Host Runtime Resource coordinator', () => {
       },
     });
     harness.stateReadFailure = new Error(
-      `canonical state unavailable api_key=sk-secretvalue123 ${'x'.repeat(16 * 1024)}`,
+      `canonical state unavailable api_key=sk-secretvalue123 ${"x".repeat(16 * 1024)}`,
     );
 
-    const result = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'list_start', sessionId: SESSION_ID },
-      connection('connection-1'),
+    const result = await harness.coordinator.handlers["runtime.resource.query"](
+      { kind: "list_start", sessionId: SESSION_ID },
+      connection("connection-1"),
     );
 
     assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.error.code, 'internal_failure');
+    assert.equal(!result.ok && result.error.code, "internal_failure");
     assert.equal(drainCount, 1);
     assert.equal(logCountAtDrain, 1);
     assert.equal(logs.length, 1);
-    assert.match(logs[0] ?? '', /canonical state unavailable/);
-    assert.match(logs[0] ?? '', /\[redacted\]/i);
-    assert.doesNotMatch(logs[0] ?? '', /sk-secretvalue123/);
-    assert.ok(Buffer.byteLength(logs[0] ?? '', 'utf8') < 9 * 1024);
+    assert.match(logs[0] ?? "", /canonical state unavailable/);
+    assert.match(logs[0] ?? "", /\[redacted\]/i);
+    assert.doesNotMatch(logs[0] ?? "", /sk-secretvalue123/);
+    assert.ok(Buffer.byteLength(logs[0] ?? "", "utf8") < 9 * 1024);
   });
 
-  test('fences PTY control by connection and retains only exact sequence retries', async () => {
+  test("fences PTY control by connection and retains only exact sequence retries", async () => {
     const harness = createHarness();
-    const firstConnection = connection('connection-1');
-    const secondConnection = connection('connection-2');
-    const identity = { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' };
+    const firstConnection = connection("connection-1");
+    const secondConnection = connection("connection-2");
+    const identity = {
+      sessionId: SESSION_ID,
+      ref: RUNTIME_REF,
+      controllerId: "controller-1",
+    };
 
-    const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
-      identity,
-      firstConnection,
-    );
+    const acquired = await harness.coordinator.handlers[
+      "runtime.resource.controller.acquire"
+    ](identity, firstConnection);
     assert.equal(acquired.ok, true);
     assert.equal(acquired.ok && acquired.result.nextSequence, 1);
 
-    const contested = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
-      { ...identity, controllerId: 'controller-2' },
-      secondConnection,
-    );
+    const contested = await harness.coordinator.handlers[
+      "runtime.resource.controller.acquire"
+    ]({ ...identity, controllerId: "controller-2" }, secondConnection);
     assert.equal(contested.ok, false);
-    assert.equal(!contested.ok && contested.error.code, 'operation_conflict');
+    assert.equal(!contested.ok && contested.error.code, "operation_conflict");
     await assert.rejects(
       () =>
         harness.coordinator.writeStdin({
           sessionId: SESSION_ID,
           ref: RUNTIME_REF,
-          input: 'model input',
+          input: "model input",
         }),
       /controlled by a connected Client/,
     );
@@ -610,91 +735,101 @@ describe('Host Runtime Resource coordinator', () => {
     const control = {
       ...identity,
       sequence: 1,
-      control: { kind: 'input' as const, input: 'client input' },
+      control: { kind: "input" as const, input: "client input" },
     };
-    const applied = await harness.coordinator.handlers['runtime.resource.controller.control'](
-      control,
-      firstConnection,
-    );
+    const applied = await harness.coordinator.handlers[
+      "runtime.resource.controller.control"
+    ](control, firstConnection);
     assert.equal(applied.ok, true);
     assert.equal(harness.writeCount, 1);
-    const retry = await harness.coordinator.handlers['runtime.resource.controller.control'](
-      control,
-      firstConnection,
-    );
+    const retry = await harness.coordinator.handlers[
+      "runtime.resource.controller.control"
+    ](control, firstConnection);
     assert.deepEqual(retry, applied);
     assert.equal(harness.writeCount, 1);
 
     const conflictingRetry = await harness.coordinator.handlers[
-      'runtime.resource.controller.control'
-    ]({ ...control, control: { kind: 'input', input: 'different' } }, firstConnection);
+      "runtime.resource.controller.control"
+    ](
+      { ...control, control: { kind: "input", input: "different" } },
+      firstConnection,
+    );
     assert.equal(conflictingRetry.ok, false);
-    assert.equal(!conflictingRetry.ok && conflictingRetry.error.code, 'operation_conflict');
-    const outOfOrder = await harness.coordinator.handlers['runtime.resource.controller.control'](
-      { ...control, sequence: 3 },
-      firstConnection,
+    assert.equal(
+      !conflictingRetry.ok && conflictingRetry.error.code,
+      "operation_conflict",
     );
+    const outOfOrder = await harness.coordinator.handlers[
+      "runtime.resource.controller.control"
+    ]({ ...control, sequence: 3 }, firstConnection);
     assert.equal(outOfOrder.ok, false);
-    assert.equal(!outOfOrder.ok && outOfOrder.error.code, 'operation_conflict');
+    assert.equal(!outOfOrder.ok && outOfOrder.error.code, "operation_conflict");
 
-    const released = await harness.coordinator.handlers['runtime.resource.controller.release'](
-      identity,
-      firstConnection,
-    );
+    const released = await harness.coordinator.handlers[
+      "runtime.resource.controller.release"
+    ](identity, firstConnection);
     assert.deepEqual(released, {
       ok: true,
-      result: { controllerId: 'controller-1', released: true },
+      result: { controllerId: "controller-1", released: true },
     });
     await harness.coordinator.writeStdin({
       sessionId: SESSION_ID,
       ref: RUNTIME_REF,
-      input: 'model input',
+      input: "model input",
     });
     assert.equal(harness.writeCount, 2);
   });
 
-  test('repairs a stale active record through the manager when no live PTY exists', async () => {
+  test("repairs a stale active record through the manager when no live PTY exists", async () => {
     const harness = createHarness();
     harness.livePty = null;
 
-    const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
-      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' },
-      connection('connection-1'),
+    const acquired = await harness.coordinator.handlers[
+      "runtime.resource.controller.acquire"
+    ](
+      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: "controller-1" },
+      connection("connection-1"),
     );
 
     assert.equal(acquired.ok, false);
-    assert.equal(!acquired.ok && acquired.error.code, 'operation_conflict');
-    assert.deepEqual(harness.inspectCalls, [{ sessionId: SESSION_ID, ref: RUNTIME_REF }]);
+    assert.equal(!acquired.ok && acquired.error.code, "operation_conflict");
+    assert.deepEqual(harness.inspectCalls, [
+      { sessionId: SESSION_ID, ref: RUNTIME_REF },
+    ]);
   });
 
-  test('maps a missing durable record to not_found without draining on acquire', async () => {
+  test("maps a missing durable record to not_found without draining on acquire", async () => {
     const harness = createHarness();
     harness.livePty = null;
     const missing = new Error(
-      'Runtime background task not found in this session',
+      "Runtime background task not found in this session",
     ) as NodeJS.ErrnoException;
-    missing.code = 'ENOENT';
+    missing.code = "ENOENT";
     harness.inspectFailure = missing;
 
-    const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
-      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' },
-      connection('connection-1'),
+    const acquired = await harness.coordinator.handlers[
+      "runtime.resource.controller.acquire"
+    ](
+      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: "controller-1" },
+      connection("connection-1"),
     );
 
     assert.equal(acquired.ok, false);
-    assert.equal(!acquired.ok && acquired.error.code, 'not_found');
+    assert.equal(!acquired.ok && acquired.error.code, "not_found");
     assert.equal(harness.drainCount, 0);
   });
 
-  test('starts an interactive login shell inside the canonical Session workspace', async () => {
+  test("starts an interactive login shell inside the canonical Session workspace", async () => {
     const harness = createHarness();
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'desktop-launch-1' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      { sessionId: SESSION_ID, launchId: "desktop-launch-1" },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, true);
-    assert.equal(started.ok && started.result.resource.mode, 'pty');
+    assert.equal(started.ok && started.result.resource.mode, "pty");
     assert.deepEqual(
       harness.lastBackgroundInput && {
         sessionId: harness.lastBackgroundInput.sessionId,
@@ -706,12 +841,12 @@ describe('Host Runtime Resource coordinator', () => {
       },
       {
         sessionId: SESSION_ID,
-        sourceTurnId: 'desktop-launch-1',
-        sourceToolCallId: 'desktop-launch-1',
+        sourceTurnId: "desktop-launch-1",
+        sourceToolCallId: "desktop-launch-1",
         // The interactive login shell carries no `command`, so it keeps its
         // prior model-visible visibility (#3210).
         visibility: undefined,
-        cwd: '/workspace',
+        cwd: "/workspace",
         pty: true,
       },
     );
@@ -719,35 +854,43 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.activeResidencies, 0);
   });
 
-  test('starts the interactive terminal with the Host-resolved Git Bash plan', async () => {
+  test("starts the interactive terminal with the Host-resolved Git Bash plan", async () => {
     const shell = {
-      kind: 'git-bash' as const,
-      displayName: 'Git Bash',
-      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+      kind: "git-bash" as const,
+      displayName: "Git Bash",
+      exe: "C:\\Program Files\\Git\\bin\\bash.exe",
     };
     const harness = createHarness({ resolveShell: async () => shell });
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'desktop-launch-git-bash' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      { sessionId: SESSION_ID, launchId: "desktop-launch-git-bash" },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, true);
     assert.deepEqual(harness.lastBackgroundInput?.shell, shell);
     assert.equal(harness.lastBackgroundInput?.command, 'exec "$SHELL" -l');
     assert.equal(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
-    assert.equal(harness.lastBackgroundInput?.env?.CHERE_INVOKING, '1');
+    assert.equal(harness.lastBackgroundInput?.env?.CHERE_INVOKING, "1");
     harness.finishBackground({ successful: true });
   });
 
-  test('stops a launched one-shot command when the start reply cannot be honored', async () => {
+  test("stops a launched one-shot command when the start reply cannot be honored", async () => {
     // The command is live once runBackgroundBash returns; if the launch result
     // cannot be encoded for the reply, the operation must report failure AND
     // stop the process, so a client retry cannot double-execute (#3210 review).
     const harness = createHarness();
     harness.malformedStartResult = true;
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'sleep 3600' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      {
+        sessionId: SESSION_ID,
+        launchId: "user-command-1",
+        command: "sleep 3600",
+      },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, false);
@@ -757,20 +900,20 @@ describe('Host Runtime Resource coordinator', () => {
     harness.finishBackground({ successful: false });
   });
 
-  test('bounds the start reply when a one-shot command finishes inside the launch', async () => {
+  test("bounds the start reply when a one-shot command finishes inside the launch", async () => {
     // A one-shot that reaches terminal status inside runBackgroundBash comes
     // back as a full pipes snapshot; the reply must still fit the wire limit.
     const harness = createHarness();
     const terminalResult: ShellRunSnapshotResult = {
       ...pipeSnapshot(0),
-      mode: 'pipes',
-      status: 'completed',
+      mode: "pipes",
+      status: "completed",
       exitCode: 0,
       completedAt: 2,
       output: {
-        mode: 'pipes',
-        stdout: 'x'.repeat(50 * 1024),
-        stderr: 'y'.repeat(50 * 1024),
+        mode: "pipes",
+        stdout: "x".repeat(50 * 1024),
+        stderr: "y".repeat(50 * 1024),
         stdoutTruncated: false,
         stderrTruncated: false,
         redacted: false,
@@ -778,99 +921,115 @@ describe('Host Runtime Resource coordinator', () => {
     };
     harness.backgroundResult = terminalResult;
 
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'user-command-big', command: 'printf big' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      {
+        sessionId: SESSION_ID,
+        launchId: "user-command-big",
+        command: "printf big",
+      },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, true);
     if (!started.ok) return;
     assert.ok(started.result.resource.output !== undefined);
     assert.equal(
-      started.result.resource.output?.mode === 'pipes' &&
+      started.result.resource.output?.mode === "pipes" &&
         started.result.resource.output.stdoutTruncated,
       true,
     );
     assert.ok(
-      Buffer.byteLength(JSON.stringify(started.result), 'utf8') <=
+      Buffer.byteLength(JSON.stringify(started.result), "utf8") <=
         RUNTIME_RESOURCE_RESULT_MAX_BYTES,
     );
     assert.equal(harness.stopCount, 0);
     assert.equal(harness.drainCount, 0);
   });
 
-  test('starts the legacy WSL shim with a Linux-visible login shell', async () => {
+  test("starts the legacy WSL shim with a Linux-visible login shell", async () => {
     const shell = {
-      kind: 'legacy-wsl-bash' as const,
-      displayName: 'Legacy WSL Bash',
-      exe: 'C:\\Windows\\System32\\bash.exe',
+      kind: "legacy-wsl-bash" as const,
+      displayName: "Legacy WSL Bash",
+      exe: "C:\\Windows\\System32\\bash.exe",
     };
     const harness = createHarness({ resolveShell: async () => shell });
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'desktop-launch-wsl' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      { sessionId: SESSION_ID, launchId: "desktop-launch-wsl" },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, true);
     assert.deepEqual(harness.lastBackgroundInput?.shell, shell);
-    assert.equal(harness.lastBackgroundInput?.command, 'exec bash -l');
+    assert.equal(harness.lastBackgroundInput?.command, "exec bash -l");
     assert.notEqual(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
     harness.finishBackground({ successful: true });
   });
 
-  test('rejects an unavailable saved shell without draining Runtime Host', async () => {
+  test("rejects an unavailable saved shell without draining Runtime Host", async () => {
     const harness = createHarness({
       resolveShell: async () => {
         throw new ShellPreferenceError(
-          'executable_missing',
-          'The configured Git Bash was not found',
+          "executable_missing",
+          "The configured Git Bash was not found",
         );
       },
     });
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'desktop-launch-missing-shell' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      { sessionId: SESSION_ID, launchId: "desktop-launch-missing-shell" },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, false);
-    assert.equal(!started.ok && started.error.code, 'invalid_request');
+    assert.equal(!started.ok && started.error.code, "invalid_request");
     assert.equal(harness.lastBackgroundInput, undefined);
     assert.equal(harness.drainCount, 0);
   });
 
-  test('keeps the caller-supplied turn plan authoritative over the settings snapshot', async () => {
+  test("keeps the caller-supplied turn plan authoritative over the settings snapshot", async () => {
     // The turn's Bash tool carries the plan resolved at turn admission. A
     // mid-turn settings change must not split model guidance from execution,
     // so the coordinator never overwrites a supplied plan — it does not even
     // consult the settings snapshot when one is present.
-    const callerPlan = { kind: 'cmd' as const, displayName: 'cmd.exe' };
+    const callerPlan = { kind: "cmd" as const, displayName: "cmd.exe" };
     let resolveCalls = 0;
     const harness = createHarness({
       resolveShell: async () => {
         resolveCalls += 1;
         return {
-          kind: 'git-bash' as const,
-          displayName: 'Git Bash',
-          exe: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+          kind: "git-bash" as const,
+          displayName: "Git Bash",
+          exe: "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe",
         };
       },
     });
 
-    await harness.coordinator.runForegroundBash({ ...backgroundInput(), shell: callerPlan });
+    await harness.coordinator.runForegroundBash({
+      ...backgroundInput(),
+      shell: callerPlan,
+    });
     assert.deepEqual(harness.lastForegroundInput?.shell, callerPlan);
     assert.equal(resolveCalls, 0);
 
-    await harness.coordinator.runBackgroundBash({ ...backgroundInput(), shell: callerPlan });
+    await harness.coordinator.runBackgroundBash({
+      ...backgroundInput(),
+      shell: callerPlan,
+    });
     assert.deepEqual(harness.lastBackgroundInput?.shell, callerPlan);
     assert.equal(resolveCalls, 0);
     harness.finishBackground({ successful: true });
   });
 
-  test('falls back to the Host-resolved plan only when the caller carries none', async () => {
+  test("falls back to the Host-resolved plan only when the caller carries none", async () => {
     const shell = {
-      kind: 'git-bash' as const,
-      displayName: 'Git Bash',
-      exe: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+      kind: "git-bash" as const,
+      displayName: "Git Bash",
+      exe: "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe",
     };
     const harness = createHarness({ resolveShell: async () => shell });
     await harness.coordinator.runForegroundBash(backgroundInput());
@@ -878,7 +1037,7 @@ describe('Host Runtime Resource coordinator', () => {
     assert.deepEqual(harness.lastForegroundInput?.shell, shell);
   });
 
-  test('does not start a process when draining begins during shell resolution', async () => {
+  test("does not start a process when draining begins during shell resolution", async () => {
     let announceResolution!: () => void;
     const resolving = new Promise<void>((resolve) => {
       announceResolution = resolve;
@@ -891,7 +1050,7 @@ describe('Host Runtime Resource coordinator', () => {
       resolveShell: async () => {
         announceResolution();
         await resolved;
-        return { kind: 'posix', displayName: '/bin/sh' };
+        return { kind: "posix", displayName: "/bin/sh" };
       },
     });
 
@@ -904,15 +1063,21 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.lastForegroundInput, undefined);
   });
 
-  test('starts a one-shot user command in pipes without exposing it to the model', async () => {
+  test("starts a one-shot user command in pipes without exposing it to the model", async () => {
     const harness = createHarness();
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'printf user-command' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      {
+        sessionId: SESSION_ID,
+        launchId: "user-command-1",
+        command: "printf user-command",
+      },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, true);
-    assert.equal(started.ok && started.result.resource.mode, 'pipes');
+    assert.equal(started.ok && started.result.resource.mode, "pipes");
     assert.deepEqual(
       harness.lastBackgroundInput && {
         sessionId: harness.lastBackgroundInput.sessionId,
@@ -925,18 +1090,18 @@ describe('Host Runtime Resource coordinator', () => {
       },
       {
         sessionId: SESSION_ID,
-        sourceTurnId: 'user-command-1',
-        sourceToolCallId: 'user-command-1',
-        visibility: 'user',
-        cwd: '/workspace',
-        command: 'printf user-command',
+        sourceTurnId: "user-command-1",
+        sourceToolCallId: "user-command-1",
+        visibility: "user",
+        cwd: "/workspace",
+        command: "printf user-command",
         pty: false,
       },
     );
     harness.finishBackground({ successful: true });
   });
 
-  test('rechecks Session activity after queued start admission', async () => {
+  test("rechecks Session activity after queued start admission", async () => {
     const harness = createHarness();
     let releaseAdmission!: () => void;
     const blocker = harness.sessionAdmission.run(
@@ -948,78 +1113,86 @@ describe('Host Runtime Resource coordinator', () => {
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    const starting = harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'user-command-race', command: 'pwd' },
-      connection('connection-1'),
+    const starting = harness.coordinator.handlers["runtime.resource.start"](
+      { sessionId: SESSION_ID, launchId: "user-command-race", command: "pwd" },
+      connection("connection-1"),
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
-    harness.sessionState = 'archived';
+    harness.sessionState = "archived";
     releaseAdmission();
     await blocker;
 
     const result = await starting;
     assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.error.code, 'session_archived');
+    assert.equal(!result.ok && result.error.code, "session_archived");
     assert.equal(harness.lastBackgroundInput, undefined);
   });
 
-  test('lets stop bypass the controller, releases terminal ownership, and keeps control replay safe', async () => {
+  test("lets stop bypass the controller, releases terminal ownership, and keeps control replay safe", async () => {
     const harness = createHarness();
-    const firstConnection = connection('connection-1');
-    const secondConnection = connection('connection-2');
-    const identity = { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' };
-    await harness.coordinator.handlers['runtime.resource.controller.acquire'](
+    const firstConnection = connection("connection-1");
+    const secondConnection = connection("connection-2");
+    const identity = {
+      sessionId: SESSION_ID,
+      ref: RUNTIME_REF,
+      controllerId: "controller-1",
+    };
+    await harness.coordinator.handlers["runtime.resource.controller.acquire"](
       identity,
       firstConnection,
     );
     const control = {
       ...identity,
       sequence: 1,
-      control: { kind: 'input' as const, input: 'exit\r' },
+      control: { kind: "input" as const, input: "exit\r" },
     };
-    const controlled = await harness.coordinator.handlers['runtime.resource.controller.control'](
-      control,
-      firstConnection,
-    );
+    const controlled = await harness.coordinator.handlers[
+      "runtime.resource.controller.control"
+    ](control, firstConnection);
     assert.equal(controlled.ok, true);
 
-    const stopped = await harness.coordinator.handlers['runtime.resource.stop'](
+    const stopped = await harness.coordinator.handlers["runtime.resource.stop"](
       { sessionId: SESSION_ID, ref: RUNTIME_REF },
       secondConnection,
     );
     assert.deepEqual(stopped.ok && stopped.result, {});
-    const retried = await harness.coordinator.handlers['runtime.resource.controller.control'](
-      control,
-      firstConnection,
-    );
+    const retried = await harness.coordinator.handlers[
+      "runtime.resource.controller.control"
+    ](control, firstConnection);
     assert.deepEqual(retried, controlled);
     assert.equal(harness.writeCount, 1);
 
     const releasedAfterStop = await harness.coordinator.handlers[
-      'runtime.resource.controller.release'
+      "runtime.resource.controller.release"
     ](identity, firstConnection);
     assert.deepEqual(releasedAfterStop, {
       ok: true,
-      result: { controllerId: 'controller-1', released: false },
+      result: { controllerId: "controller-1", released: false },
     });
-    harness.coordinator.releaseConnection('connection-1');
+    harness.coordinator.releaseConnection("connection-1");
     const retryAfterDisconnect = await harness.coordinator.handlers[
-      'runtime.resource.controller.control'
+      "runtime.resource.controller.control"
     ](control, firstConnection);
     assert.equal(retryAfterDisconnect.ok, false);
-    assert.equal(!retryAfterDisconnect.ok && retryAfterDisconnect.error.code, 'operation_conflict');
+    assert.equal(
+      !retryAfterDisconnect.ok && retryAfterDisconnect.error.code,
+      "operation_conflict",
+    );
   });
 
-  test('holds Host residency for a live background process and closes startup on drain', async () => {
+  test("holds Host residency for a live background process and closes startup on drain", async () => {
     const harness = createHarness();
-    assert.equal(await harness.coordinator.hasLiveSessionResources(SESSION_ID), true);
+    assert.equal(
+      await harness.coordinator.hasLiveSessionResources(SESSION_ID),
+      true,
+    );
     let callerCompletion = 0;
     const result = await harness.coordinator.runBackgroundBash(
       backgroundInput(() => {
         callerCompletion += 1;
       }),
     );
-    assert.equal(result.status, 'running');
+    assert.equal(result.status, "running");
     assert.equal(harness.activeResidencies, 1);
     harness.finishBackground({ successful: true });
     assert.equal(harness.activeResidencies, 0);
@@ -1028,13 +1201,16 @@ describe('Host Runtime Resource coordinator', () => {
       resourceUpdate(0, {
         result: {
           ...pipeSnapshot(0),
-          status: 'completed',
+          status: "completed",
           exitCode: 0,
           completedAt: 2,
         },
       }),
     ];
-    assert.equal(await harness.coordinator.hasLiveSessionResources(SESSION_ID), false);
+    assert.equal(
+      await harness.coordinator.hasLiveSessionResources(SESSION_ID),
+      false,
+    );
 
     harness.coordinator.beginDrain();
     assert.equal(harness.terminateCount, 1);
@@ -1046,16 +1222,20 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.terminateCount, 1);
   });
 
-  test('releases Session admission while a foreground process holds Host residency', async () => {
+  test("releases Session admission while a foreground process holds Host residency", async () => {
     const harness = createHarness();
     let announceStart!: () => void;
     const started = new Promise<void>((resolve) => {
       announceStart = resolve;
     });
-    let finishForeground!: (result: ReturnType<typeof foregroundResult>) => void;
-    const completion = new Promise<ReturnType<typeof foregroundResult>>((resolve) => {
-      finishForeground = resolve;
-    });
+    let finishForeground!: (
+      result: ReturnType<typeof foregroundResult>,
+    ) => void;
+    const completion = new Promise<ReturnType<typeof foregroundResult>>(
+      (resolve) => {
+        finishForeground = resolve;
+      },
+    );
     harness.foregroundRun = () => {
       announceStart();
       return completion;
@@ -1079,43 +1259,47 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.activeResidencies, 0);
   });
 
-  test('reports archived and missing Sessions without touching a Runtime Resource', async () => {
+  test("reports archived and missing Sessions without touching a Runtime Resource", async () => {
     const harness = createHarness();
-    harness.sessionState = 'archived';
-    const archived = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
-      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' },
-      connection('connection-1'),
+    harness.sessionState = "archived";
+    const archived = await harness.coordinator.handlers[
+      "runtime.resource.controller.acquire"
+    ](
+      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: "controller-1" },
+      connection("connection-1"),
     );
     assert.equal(archived.ok, false);
-    assert.equal(!archived.ok && archived.error.code, 'session_archived');
+    assert.equal(!archived.ok && archived.error.code, "session_archived");
 
-    harness.sessionState = 'missing';
-    const missing = await harness.coordinator.handlers['runtime.resource.stop'](
+    harness.sessionState = "missing";
+    const missing = await harness.coordinator.handlers["runtime.resource.stop"](
       { sessionId: SESSION_ID, ref: RUNTIME_REF },
-      connection('connection-1'),
+      connection("connection-1"),
     );
     assert.equal(missing.ok, false);
-    assert.equal(!missing.ok && missing.error.code, 'not_found');
+    assert.equal(!missing.ok && missing.error.code, "not_found");
     assert.equal(harness.stopCount, 0);
   });
 
-  test('drains when the admitted mutable Session read fails', async () => {
+  test("drains when the admitted mutable Session read fails", async () => {
     const harness = createHarness();
     harness.sessionReadFailureAt = 2;
 
-    const started = await harness.coordinator.handlers['runtime.resource.start'](
-      { sessionId: SESSION_ID, launchId: 'session-read-failure' },
-      connection('connection-1'),
+    const started = await harness.coordinator.handlers[
+      "runtime.resource.start"
+    ](
+      { sessionId: SESSION_ID, launchId: "session-read-failure" },
+      connection("connection-1"),
     );
 
     assert.equal(started.ok, false);
-    assert.equal(!started.ok && started.error.code, 'internal_failure');
+    assert.equal(!started.ok && started.error.code, "internal_failure");
     assert.equal(harness.drainCount, 1);
     assert.equal(harness.lastBackgroundInput, undefined);
   });
 });
 
-test('rejects a queued resource start when drain detaches from the active Session admission', async () => {
+test("rejects a queued resource start when drain detaches from the active Session admission", async () => {
   const harness = createHarness();
   let release!: () => void;
   let entered!: () => void;
@@ -1145,19 +1329,19 @@ function createHarness(
   options: Partial<
     Pick<
       HostRuntimeResourceCoordinatorInput,
-      | 'requestDrain'
-      | 'resolveShell'
-      | 'sessionAccessAuthority'
-      | 'humanControl'
-      | 'interactionAuthority'
+      | "requestDrain"
+      | "resolveShell"
+      | "sessionAccessAuthority"
+      | "humanControl"
+      | "interactionAuthority"
     >
   > = {},
 ) {
-  let backgroundCompletion: ShellRunBashInput['onCompletion'];
+  let backgroundCompletion: ShellRunBashInput["onCompletion"];
   let currentSnapshot = ptySnapshot();
   const state = {
     updates: [resourceUpdate(0)],
-    sessionState: 'active' as 'active' | 'archived' | 'missing',
+    sessionState: "active" as "active" | "archived" | "missing",
     sessionReadCount: 0,
     sessionReadFailureAt: undefined as number | undefined,
     writeCount: 0,
@@ -1171,7 +1355,11 @@ function createHarness(
     stateReadFailure: undefined as Error | undefined,
     malformedStartResult: false as boolean,
     backgroundResult: undefined as
-      | Awaited<ReturnType<HostRuntimeResourceCoordinatorInput['manager']['runBackgroundBash']>>
+      | Awaited<
+          ReturnType<
+            HostRuntimeResourceCoordinatorInput["manager"]["runBackgroundBash"]
+          >
+        >
       | undefined,
     livePty: undefined as ShellRunPtySnapshot | null | undefined,
     inspectCalls: [] as { sessionId: string; ref: string }[],
@@ -1181,13 +1369,15 @@ function createHarness(
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
     lastForegroundInput: undefined as ShellRunBashInput | undefined,
     foregroundRun: undefined as
-      | HostRuntimeResourceCoordinatorInput['manager']['runForegroundBash']
+      | HostRuntimeResourceCoordinatorInput["manager"]["runForegroundBash"]
       | undefined,
   };
-  const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
+  const manager: HostRuntimeResourceCoordinatorInput["manager"] = {
     runForegroundBash: (input) => {
       state.lastForegroundInput = input;
-      return state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult());
+      return (
+        state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult())
+      );
     },
     runBackgroundBash: async (input) => {
       state.lastBackgroundInput = input;
@@ -1211,12 +1401,12 @@ function createHarness(
       state.stopCount += 1;
       return {
         ...currentSnapshot,
-        status: 'cancelled',
+        status: "cancelled",
         exitCode: 130,
         completedAt: 2,
         updatedAt: 2,
         revision: 2,
-        operation: { kind: 'stop', applied: state.stopCount === 1 },
+        operation: { kind: "stop", applied: state.stopCount === 1 },
       };
     },
     writeStdin: async (input: ShellRunWriteInput) => {
@@ -1235,10 +1425,15 @@ function createHarness(
       return {
         ...currentSnapshot,
         operation: {
-          kind: 'pty_control',
+          kind: "pty_control",
           failed: false,
           ...(input.input
-            ? { input: { bytes: Buffer.byteLength(input.input, 'utf8'), queued: true } }
+            ? {
+                input: {
+                  bytes: Buffer.byteLength(input.input, "utf8"),
+                  queued: true,
+                },
+              }
             : {}),
           ...(input.size
             ? {
@@ -1259,8 +1454,11 @@ function createHarness(
             sessionId,
             ref,
             sequence: 0,
-            buffer: '',
-            size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
+            buffer: "",
+            size: {
+              cols: currentSnapshot.output.cols,
+              rows: currentSnapshot.output.rows,
+            },
           },
     inspectResource: async (sessionId, ref) => {
       state.inspectCalls.push({ sessionId, ref });
@@ -1295,12 +1493,13 @@ function createHarness(
       readHeader: async (sessionId) => {
         state.sessionReadCount += 1;
         if (state.sessionReadCount === state.sessionReadFailureAt) {
-          throw new Error('Session state unavailable');
+          throw new Error("Session state unavailable");
         }
-        if (state.sessionState === 'missing') throw new SessionNotFoundError(sessionId);
+        if (state.sessionState === "missing")
+          throw new SessionNotFoundError(sessionId);
         return {
-          cwd: '/workspace',
-          isArchived: state.sessionState === 'archived',
+          cwd: "/workspace",
+          isArchived: state.sessionState === "archived",
         };
       },
     },
@@ -1324,54 +1523,60 @@ function createHarness(
   return Object.assign(state, {
     coordinator,
     sessionAdmission,
-    finishBackground: (outcome: { successful: boolean }) => backgroundCompletion?.(outcome),
+    finishBackground: (outcome: { successful: boolean }) =>
+      backgroundCompletion?.(outcome),
   });
 }
 
 function foregroundResult() {
   return {
-    kind: 'terminal' as const,
-    cwd: '/workspace',
-    cmd: 'true',
-    status: 'completed' as const,
+    kind: "terminal" as const,
+    cwd: "/workspace",
+    cmd: "true",
+    status: "completed" as const,
     exitCode: 0,
-    output: pipeOutput(''),
+    output: pipeOutput(""),
   };
 }
 
 function connection(connectionId: string): ConnectionContext {
   return {
-    hostEpoch: 'host-1',
+    hostEpoch: "host-1",
     connectionId,
-    principal: 'local_os_user',
+    principal: "local_os_user",
     acquireResidency: () => ({ release: () => {} }),
   };
 }
 
 function guestConnection(principal: string): ConnectionContext {
   return {
-    ...connection('guest-connection'),
+    ...connection("guest-connection"),
     principal,
-    principalKind: 'session_guest',
+    principalKind: "session_guest",
   };
 }
 
-function backgroundInput(onCompletion?: ShellRunBashInput['onCompletion']): ShellRunBashInput {
+function backgroundInput(
+  onCompletion?: ShellRunBashInput["onCompletion"],
+): ShellRunBashInput {
   return {
     sessionId: SESSION_ID,
-    sourceTurnId: 'turn-1',
-    sourceToolCallId: 'tool-1',
-    cwd: '/workspace',
-    command: 'sleep 60',
+    sourceTurnId: "turn-1",
+    sourceToolCallId: "tool-1",
+    cwd: "/workspace",
+    command: "sleep 60",
     emitOutput: () => {},
     ...(onCompletion ? { onCompletion } : {}),
   };
 }
 
-function resourceUpdate(index: number, overrides: Partial<ShellRunUpdate> = {}): ShellRunUpdate {
+function resourceUpdate(
+  index: number,
+  overrides: Partial<ShellRunUpdate> = {},
+): ShellRunUpdate {
   return {
     sessionId: SESSION_ID,
-    ownership: { kind: 'local' },
+    ownership: { kind: "local" },
     sourceTurnId: `turn-${index}`,
     sourceToolCallId: `tool-${index}`,
     result: pipeSnapshot(index),
@@ -1382,9 +1587,9 @@ function resourceUpdate(index: number, overrides: Partial<ShellRunUpdate> = {}):
 function ptyUpdate(): ShellRunUpdate {
   return {
     sessionId: SESSION_ID,
-    ownership: { kind: 'local' },
-    sourceTurnId: 'turn-pty',
-    sourceToolCallId: 'tool-pty',
+    ownership: { kind: "local" },
+    sourceTurnId: "turn-pty",
+    sourceToolCallId: "tool-pty",
     result: ptySnapshot(),
   };
 }
@@ -1394,14 +1599,14 @@ function compactState(index: number): ShellRunStateResult {
   return state;
 }
 
-function pipeSnapshot(index: number, stdout = ''): ShellRunSnapshotResult {
+function pipeSnapshot(index: number, stdout = ""): ShellRunSnapshotResult {
   return {
-    kind: 'shell_run',
+    kind: "shell_run",
     ref: shellRef(index),
-    mode: 'pipes',
-    status: 'running',
-    cwd: '/workspace',
-    cmd: 'sleep 60',
+    mode: "pipes",
+    status: "running",
+    cwd: "/workspace",
+    cmd: "sleep 60",
     startedAt: 1,
     updatedAt: 1,
     revision: 1,
@@ -1409,21 +1614,21 @@ function pipeSnapshot(index: number, stdout = ''): ShellRunSnapshotResult {
   };
 }
 
-function ptySnapshot(): Extract<ShellRunSnapshotResult, { mode: 'pty' }> {
+function ptySnapshot(): Extract<ShellRunSnapshotResult, { mode: "pty" }> {
   return {
-    kind: 'shell_run',
+    kind: "shell_run",
     ref: RUNTIME_REF,
-    mode: 'pty',
-    status: 'running',
-    cwd: '/workspace',
-    cmd: 'sh',
+    mode: "pty",
+    status: "running",
+    cwd: "/workspace",
+    cmd: "sh",
     startedAt: 1,
     updatedAt: 1,
     revision: 1,
     output: {
-      mode: 'pty',
-      screen: '$ ',
-      scrollback: '',
+      mode: "pty",
+      screen: "$ ",
+      scrollback: "",
       cols: 80,
       rows: 24,
       cursor: { x: 2, y: 0, visible: true },
@@ -1434,11 +1639,13 @@ function ptySnapshot(): Extract<ShellRunSnapshotResult, { mode: 'pty' }> {
   };
 }
 
-function pipeOutput(stdout: string): Extract<ShellRunSnapshotResult['output'], { mode: 'pipes' }> {
+function pipeOutput(
+  stdout: string,
+): Extract<ShellRunSnapshotResult["output"], { mode: "pipes" }> {
   return {
-    mode: 'pipes',
+    mode: "pipes",
     stdout,
-    stderr: '',
+    stderr: "",
     stdoutTruncated: false,
     stderrTruncated: false,
     redacted: false,
@@ -1449,7 +1656,7 @@ function shellRef(index: number): string {
   return `maka://runtime/background-tasks/shell-${index}`;
 }
 
-test('Runtime Resource pages include output projections and their Session header in the byte budget', async () => {
+test("Runtime Resource pages include output projections and their Session header in the byte budget", async () => {
   const harness = createHarness();
   harness.updates = Array.from({ length: 20 }, (_, index) =>
     resourceUpdate(index, {
@@ -1458,23 +1665,31 @@ test('Runtime Resource pages include output projections and their Session header
   );
   const expected = [];
   for (const update of harness.updates) {
-    const outcome = await harness.coordinator.handlers['runtime.resource.query'](
-      { kind: 'get', sessionId: SESSION_ID, ref: update.result.ref },
-      connection('connection-1'),
+    const outcome = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ](
+      { kind: "get", sessionId: SESSION_ID, ref: update.result.ref },
+      connection("connection-1"),
     );
-    assert.ok(outcome.ok && outcome.result.kind === 'resource' && outcome.result.resource);
+    assert.ok(
+      outcome.ok &&
+        outcome.result.kind === "resource" &&
+        outcome.result.resource,
+    );
     expected.push(outcome.result.resource);
   }
   expected.sort((a, b) => a.result.ref.localeCompare(b.result.ref));
-  const pages: Extract<RuntimeResourceQueryResult, { kind: 'page' }>[] = [];
-  let input: RuntimeResourceQueryInput = { kind: 'list_start', sessionId: SESSION_ID };
+  const pages: Extract<RuntimeResourceQueryResult, { kind: "page" }>[] = [];
+  let input: RuntimeResourceQueryInput = {
+    kind: "list_start",
+    sessionId: SESSION_ID,
+  };
   let end = 0;
   do {
-    const outcome = await harness.coordinator.handlers['runtime.resource.query'](
-      input,
-      connection('connection-1'),
-    );
-    assert.ok(outcome.ok && outcome.result.kind === 'page');
+    const outcome = await harness.coordinator.handlers[
+      "runtime.resource.query"
+    ](input, connection("connection-1"));
+    assert.ok(outcome.ok && outcome.result.kind === "page");
     const page = outcome.result;
     assert.ok(page.resources.length > 0);
     pages.push(page);
@@ -1482,7 +1697,7 @@ test('Runtime Resource pages include output projections and their Session header
     assert.equal(page.nextCursor, end < expected.length ? String(end) : null);
     if (page.nextCursor === null) break;
     input = {
-      kind: 'list_continue',
+      kind: "list_continue",
       sessionId: SESSION_ID,
       revision: page.revision,
       cursor: page.nextCursor,

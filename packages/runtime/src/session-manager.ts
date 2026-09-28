@@ -35,7 +35,7 @@ import {
   listRecallCandidateSessions,
   type RecallCandidateStores,
 } from './recall-candidates.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import type {
@@ -187,13 +187,12 @@ import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
 import type { RuntimeContinuationFailpoint } from './agent-run.js';
-import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
 import {
   attributeSandboxBoundaryRestartClosure,
   classifyAgentRunRecovery,
   type AgentRunRecoveryDecision,
 } from './agent-run-recovery.js';
-import { buildInterruptedToolOutcomeCommits, resolveRuntimeRecovery } from './recovery-resolver.js';
+import { resolveRuntimeRecovery } from './recovery-resolver.js';
 import {
   isRuntimeHostedRootAuthority,
   RuntimeMessageAuthorityInvariantError,
@@ -256,16 +255,6 @@ function runtimeContinuationAuthority(
     typeof candidate.commitContinuationStart === 'function' &&
     typeof candidate.commitContinuationRepairStart === 'function'
     ? (candidate as RuntimeContinuationAuthorityStore)
-    : undefined;
-}
-
-function runtimeCommitSinkFromEventStore(
-  store: RuntimeEventStore | undefined,
-): RuntimeCommitSink | undefined {
-  const candidate = store as Partial<RuntimeCommitSink> | undefined;
-  return typeof candidate?.commitToolPrepared === 'function' &&
-    typeof candidate.commitToolOutcome === 'function'
-    ? (candidate as RuntimeCommitSink)
     : undefined;
 }
 
@@ -814,7 +803,6 @@ interface SessionManagerBaseDeps {
   planStore?: PlanStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
-  runtimeCommitSink?: RuntimeCommitSink;
   /** Host capability; RuntimeKernel gates it by the selected backend. */
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   backends: BackendRegistry;
@@ -908,7 +896,6 @@ export class SessionManager {
   private readonly runtimeKernel: RuntimeKernelLike;
   private readonly runtimeLedgerRepair?: RuntimeLedgerRepair;
   private readonly preparedTranscriptLedgers = new Set<string>();
-  private readonly runtimeCommitSink?: RuntimeCommitSink;
   private readonly activeHostedLinkedChildSessions = new Set<string>();
   private readonly childSessionSpawns = new Map<
     string,
@@ -927,8 +914,6 @@ export class SessionManager {
     if (deps.publishChildWorkspacePatch && !deps.listArtifactsForTurn) {
       throw new Error('Child workspace patch publication requires Artifact turn listing');
     }
-    this.runtimeCommitSink =
-      deps.runtimeCommitSink ?? runtimeCommitSinkFromEventStore(deps.runtimeEventStore);
     if (deps.runStore && deps.runtimeEventStore) {
       this.runtimeLedgerRepair = new RuntimeLedgerRepair({
         runtimeEventStore: deps.runtimeEventStore,
@@ -967,12 +952,42 @@ export class SessionManager {
     return this.runtimeKernel.runningTurnIds?.(sessionId) ?? [];
   }
 
+  /**
+   * The live run state's own order, bumped on every turn start and end. Two
+   * same-revision catalog reads can disagree about `runningTurnIds`; the epoch
+   * says which one is older (#5713). The counter is per-process — pair it with
+   * `sessionHostGeneration` to tell which process an observation came from.
+   */
+  sessionRunEpoch(sessionId: string): number {
+    return this.runtimeKernel.sessionRunEpoch?.(sessionId) ?? 0;
+  }
+
+  /**
+   * Identifies this process's run-epoch generation. Catalog rows survive a
+   * Host restart while the per-process epoch counters restart at zero, so
+   * clients order same-revision reads by generation first, never by epoch
+   * across restarts (#5713). Falls back to a random identity — fixed once,
+   * and drawn outside the `newId` sequence — when the kernel does not expose
+   * one.
+   */
+  readonly #hostGenerationFallback = randomUUID();
+
+  sessionHostGeneration(): string {
+    return this.runtimeKernel.sessionHostGeneration?.() ?? this.#hostGenerationFallback;
+  }
+
   #projectLiveRunState(sessions: SessionSummary[]): SessionSummary[] {
     const runningTurnIds = this.runtimeKernel.runningTurnIds?.bind(this.runtimeKernel);
     if (!runningTurnIds) return sessions;
+    const sessionRunEpoch = this.runtimeKernel.sessionRunEpoch?.bind(this.runtimeKernel);
+    const sessionHostGeneration = this.runtimeKernel.sessionHostGeneration?.bind(
+      this.runtimeKernel,
+    );
     return sessions.map((session) => ({
       ...session,
       runningTurnIds: runningTurnIds(session.id),
+      ...(sessionRunEpoch ? { runEpoch: sessionRunEpoch(session.id) } : {}),
+      ...(sessionHostGeneration ? { runHostGeneration: sessionHostGeneration() } : {}),
     }));
   }
 
@@ -4855,51 +4870,32 @@ export class SessionManager {
         // T1 states; generic app-restart repair must never write into them.
         continue;
       }
-      if (this.runtimeCommitSink) {
-        const interruptedOutcomes = buildInterruptedToolOutcomeCommits(
-          inspected.runtimeEvents,
-          this.deps.now(),
-          run.opening.configuration.toolMode,
-        );
-        let outcomeCommitFailed = false;
-        for (const outcome of interruptedOutcomes) {
-          const committed = await commitInterruptedOutcomeWithRetry(policy, () =>
-            this.runtimeCommitSink!.commitToolOutcome(outcome),
-          );
-          if (!committed) {
-            // Keep the run non-terminal so a later recovery pass can retry the
-            // missing outcome before any terminal repair seals the ledger.
-            outcomeCommitFailed = true;
-          } else {
-            recovered ||= committed.created;
-          }
-        }
-        if (outcomeCommitFailed) {
-          continue;
-        }
-        if (interruptedOutcomes.length > 0) {
-          inspected = await inspectAgentRunReadModel(
-            recoveryRunStore,
-            this.deps.runtimeEventStore,
-            {
-              sessionId,
-              runId: run.runId,
-              invocation: run,
-              includeModelReplay: false,
-              includeProjection: false,
-            },
-          );
-        }
-      }
+      let unknownDispatchedTools: {
+        operationId: string;
+        toolCallId: string;
+        toolName?: string;
+      }[] = [];
       if (!inspected.runtimeEvents.some(isTerminalRuntimeEvent)) {
         const toolRecovery = resolveRuntimeRecovery(inspected.runtimeEvents);
+        const indeterminate = toolRecovery.decisions.filter(
+          (decision) => decision.status === 'indeterminate',
+        );
+        unknownDispatchedTools = indeterminate
+          .filter(
+            (decision) =>
+              decision.reason === 'dispatch_without_response' && decision.operationId !== undefined,
+          )
+          .map(({ operationId, toolCallId, toolName }) => ({
+            operationId: operationId!,
+            toolCallId,
+            ...(toolName ? { toolName } : {}),
+          }));
         if (
           toolRecovery.hasCorruption ||
-          toolRecovery.decisions.some((decision) => decision.status === 'indeterminate')
+          (indeterminate.length > 0 && unknownDispatchedTools.length !== indeterminate.length)
         ) {
-          // Never seal an invocation while a dispatched operation still lacks
-          // a result or an explicit recovery decision. A later recovery pass
-          // may retry the durable settlement; corruption stays fail-closed.
+          // Only a structurally valid T1-without-T2 boundary can be sealed as
+          // unknown. Legacy gaps and corrupt recovery facts still fail closed.
           continue;
         }
       }
@@ -4915,11 +4911,34 @@ export class SessionManager {
       const runtimeDecision = this.classifyRuntimeEventRecovery(inspected);
       const classified = runtimeDecision ?? classifyAgentRunRecovery(run, inspected.events);
       if (!classified) continue;
-      const decision =
+      let decision =
         classified.status === 'failed'
           ? attributeSandboxBoundaryRestartClosure(classified, await readBoundaryClosures())
           : classified;
-      if (await this.applyAgentRunRecovery(sessionId, decision, inspected, policy)) {
+      if (unknownDispatchedTools.length > 0) {
+        decision = {
+          ...decision,
+          status: 'failed',
+          failureClass: 'outcome_unknown',
+          diagnostic: {
+            ...decision.diagnostic,
+            recoveryReason: 'outcome_unknown',
+            unresolvedToolCalls: unknownDispatchedTools.map(({ toolCallId, toolName }) => ({
+              toolCallId,
+              ...(toolName ? { toolName } : {}),
+            })),
+          },
+        };
+      }
+      if (
+        await this.applyAgentRunRecovery(
+          sessionId,
+          decision,
+          inspected,
+          policy,
+          unknownDispatchedTools.map(({ operationId }) => operationId),
+        )
+      ) {
         recovered = true;
       }
     }
@@ -4941,6 +4960,7 @@ export class SessionManager {
     decision: AgentRunRecoveryDecision,
     inspected: AgentRunInspectModel,
     policy: RecoveryPolicy = { kind: 'best_effort' },
+    unsettledOperationIds: readonly string[] = [],
   ): Promise<boolean> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) return false;
     const ts = this.deps.now();
@@ -4978,6 +4998,7 @@ export class SessionManager {
         terminalEvent,
         ...(failureClass ? { failureClass } : {}),
         ...(abortSource ? { abortSource } : {}),
+        ...(unsettledOperationIds.length > 0 ? { unsettledOperationIds } : {}),
       });
     } catch (error) {
       if (policy.kind === 'strict') throw error;
@@ -5030,8 +5051,6 @@ function groupContinuationClaimsBySession(
   return grouped;
 }
 
-const MAX_BEST_EFFORT_OUTCOME_COMMIT_ATTEMPTS = 2;
-
 function listSessionsForRecovery(
   store: SessionStore,
   policy: RecoveryPolicy,
@@ -5050,21 +5069,6 @@ async function recoverOr<T>(
     if (policy.kind === 'strict') throw error;
     return fallback;
   }
-}
-
-async function commitInterruptedOutcomeWithRetry(
-  policy: RecoveryPolicy,
-  operation: () => Promise<RuntimeCommitResult>,
-): Promise<RuntimeCommitResult | undefined> {
-  const attempts = policy.kind === 'strict' ? 1 : MAX_BEST_EFFORT_OUTCOME_COMMIT_ATTEMPTS;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      if (policy.kind === 'strict') throw error;
-    }
-  }
-  return undefined;
 }
 
 function continuationRepairEventId(

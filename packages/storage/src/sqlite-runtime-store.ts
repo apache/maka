@@ -278,6 +278,8 @@ export type SqliteRuntimeStoreFailpoint =
   | 'after_recovery_reconcile'
   | 'after_recovery_outcome'
   | 'after_recovery_decision'
+  | 'after_recovery_terminal_insert'
+  | 'after_recovery_terminal_projection'
   | 'after_continuation_claim_insert'
   | 'after_continuation_start_insert'
   | 'after_workspace_epoch_event_insert'
@@ -509,6 +511,96 @@ export class SqliteRuntimeStore
       throw new Error(`Run ${runId} already has terminal RuntimeEvent ${existingTerminal.id}`);
     }
     await this.importRuntimeEvent(sessionId, runId, canonicalEvent);
+  }
+
+  async ensureRecoveredTerminalRuntimeEventDurable(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+    unsettledOperationIds: readonly string[],
+  ): Promise<void> {
+    const terminal = canonicalizeRuntimeEventForStorage(event);
+    assertNoReservedToolLedgerFact(terminal);
+    if (
+      terminal.sessionId !== sessionId ||
+      terminal.runId !== runId ||
+      terminal.partial ||
+      !isTerminalRuntimeEvent(terminal) ||
+      terminal.status !== 'failed' ||
+      terminal.actions?.stateDelta?.recovered !== true ||
+      terminal.actions.stateDelta.recoveryReason !== 'outcome_unknown'
+    ) {
+      throw new Error('Unknown-outcome recovery requires a failed terminal RuntimeEvent');
+    }
+    const expected = new Set(unsettledOperationIds);
+    if (expected.size === 0 || expected.size !== unsettledOperationIds.length) {
+      throw new Error('Recovery terminal requires distinct unsettled operation ids');
+    }
+
+    this.transaction(() => {
+      const existing = this.readRuntimeEventJson(terminal.id);
+      if (existing !== undefined) {
+        assertStoredRuntimeEventEquals(terminal, existing);
+        const tail = this.db
+          .prepare(
+            'SELECT event_id FROM runtime_events WHERE session_id = ? AND run_id = ? ORDER BY event_seq DESC LIMIT 1',
+          )
+          .get(sessionId, runId) as { event_id: string } | undefined;
+        if (tail?.event_id !== terminal.id) {
+          throw new Error('Recovery terminal RuntimeEvent is not the immutable run tail');
+        }
+        const settled = this.db
+          .prepare(
+            "SELECT operation_id FROM tool_journal_events WHERE runtime_event_id = ? AND state IN ('abandoned', 'interrupted_unknown')",
+          )
+          .all(terminal.id) as { operation_id: string }[];
+        if (
+          settled.length !== expected.size ||
+          settled.some(({ operation_id }) => !expected.has(operation_id))
+        ) {
+          throw new Error('Recovery terminal settled operations do not match the durable ledger');
+        }
+        for (const operationId of expected) {
+          const operation = this.readToolOperationSync(operationId);
+          if (
+            !operation ||
+            operation.invocationId !== terminal.invocationId ||
+            operation.runId !== runId ||
+            operation.turnId !== terminal.turnId ||
+            operation.currentState !== terminalToolProjectionState(operation)
+          ) {
+            throw new Error(`Recovery terminal tool projection is incomplete: ${operationId}`);
+          }
+        }
+        return;
+      }
+
+      const pending = this.listUnsettledToolOperationsSync([sessionId]).filter(
+        (operation) => operation.invocationId === terminal.invocationId,
+      );
+      if (
+        pending.length !== expected.size ||
+        pending.some(
+          (operation) =>
+            !expected.has(operation.operationId) ||
+            operation.runId !== runId ||
+            operation.turnId !== terminal.turnId,
+        )
+      ) {
+        throw new Error('Recovery terminal unsettled operations do not match the durable ledger');
+      }
+      this.importRuntimeEventSync(terminal, true);
+      this.options.failpoint?.('after_recovery_terminal_insert');
+      const terminalRow = this.db
+        .prepare('SELECT event_id, event_seq, committed_at FROM runtime_events WHERE event_id = ?')
+        .get(terminal.id) as { event_id: string; event_seq: number; committed_at: number };
+      for (const operation of pending) {
+        if (!this.settleTerminalToolProjectionSync(operation, terminalRow)) {
+          throw new Error(`Recovery terminal precedes tool dispatch ${operation.operationId}`);
+        }
+      }
+      this.options.failpoint?.('after_recovery_terminal_projection');
+    });
   }
 
   async importRuntimeEvent(
@@ -3505,6 +3597,12 @@ export class SqliteRuntimeStore
   async listUnsettledToolOperations(
     sessionIds?: string | readonly string[],
   ): Promise<UnsettledToolOperationRecord[]> {
+    return this.listUnsettledToolOperationsSync(sessionIds);
+  }
+
+  private listUnsettledToolOperationsSync(
+    sessionIds?: string | readonly string[],
+  ): UnsettledToolOperationRecord[] {
     const selectedSessionIds =
       sessionIds === undefined
         ? undefined
@@ -3572,15 +3670,8 @@ export class SqliteRuntimeStore
    * or older than the RuntimeEvent schema understood by this build.
    */
   async rebuildTerminalToolProjectionsForSessions(sessionIds: readonly string[]): Promise<void> {
-    const operations = await this.listUnsettledToolOperations(sessionIds);
-    if (operations.length === 0) return;
-
     this.transaction(() => {
-      const dispatchSequence = this.db.prepare(`
-        SELECT event_seq
-        FROM runtime_events
-        WHERE event_id = ? AND session_id = ? AND invocation_id = ?
-      `);
+      const operations = this.listUnsettledToolOperationsSync(sessionIds);
       const firstTerminal = this.db.prepare(`
         SELECT event_id, event_seq, committed_at
         FROM runtime_events
@@ -3589,55 +3680,60 @@ export class SqliteRuntimeStore
         ORDER BY event_seq ASC, event_id ASC
         LIMIT 1
       `);
-      const insertJournal = this.db.prepare(`
+      for (const operation of operations) {
+        const terminal = firstTerminal.get(operation.sessionId, operation.invocationId) as
+          | { event_id: string; event_seq: number; committed_at: number }
+          | undefined;
+        if (terminal) this.settleTerminalToolProjectionSync(operation, terminal);
+      }
+    });
+  }
+
+  private settleTerminalToolProjectionSync(
+    operation: UnsettledToolOperationRecord,
+    terminal: { event_id: string; event_seq: number; committed_at: number },
+  ): boolean {
+    if (!operation.dispatchEventId) return false;
+    const dispatch = this.db
+      .prepare(
+        'SELECT event_seq FROM runtime_events WHERE event_id = ? AND session_id = ? AND invocation_id = ?',
+      )
+      .get(operation.dispatchEventId, operation.sessionId, operation.invocationId) as
+      | { event_seq: number }
+      | undefined;
+    if (!dispatch || terminal.event_seq <= dispatch.event_seq) return false;
+
+    const state = terminalToolProjectionState(operation);
+    this.db
+      .prepare(`
         INSERT INTO tool_journal_events (
           journal_event_id, operation_id, invocation_id, run_id, turn_id, state,
           runtime_event_id, canonical_args_hash, recovery_mode, committed_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      const updateOperation = this.db.prepare(`
+      `)
+      .run(
+        journalEventIdFor(operation.operationId, terminal.event_id, state),
+        operation.operationId,
+        operation.invocationId,
+        operation.runId,
+        operation.turnId,
+        state,
+        terminal.event_id,
+        operation.canonicalArgsHash,
+        operation.recoveryMode,
+        terminal.committed_at,
+      );
+    const updated = this.db
+      .prepare(`
         UPDATE tool_operations
         SET current_state = ?, version = version + 1
         WHERE operation_id = ? AND current_state = 'prepared' AND result_event_id IS NULL
-      `);
-
-      for (const operation of operations) {
-        if (!operation.dispatchEventId) continue;
-        const dispatch = dispatchSequence.get(
-          operation.dispatchEventId,
-          operation.sessionId,
-          operation.invocationId,
-        ) as { event_seq: number } | undefined;
-        if (!dispatch) continue;
-        const terminal = firstTerminal.get(operation.sessionId, operation.invocationId) as
-          | { event_id: string; event_seq: number; committed_at: number }
-          | undefined;
-        if (!terminal || terminal.event_seq <= dispatch.event_seq) continue;
-
-        const state =
-          operation.toolName === 'AskUserQuestion' && operation.recoveryMode === 'never_auto_retry'
-            ? 'abandoned'
-            : 'interrupted_unknown';
-        insertJournal.run(
-          journalEventIdFor(operation.operationId, terminal.event_id, state),
-          operation.operationId,
-          operation.invocationId,
-          operation.runId,
-          operation.turnId,
-          state,
-          terminal.event_id,
-          operation.canonicalArgsHash,
-          operation.recoveryMode,
-          terminal.committed_at,
-        );
-        const updated = updateOperation.run(state, operation.operationId);
-        if (updated.changes !== 1) {
-          throw new Error(
-            `Tool operation projection changed during export: ${operation.operationId}`,
-          );
-        }
-      }
-    });
+      `)
+      .run(state, operation.operationId);
+    if (updated.changes !== 1) {
+      throw new Error(`Tool operation projection changed: ${operation.operationId}`);
+    }
+    return true;
   }
 
   private rebuildToolProjectionsFromRuntimeEventsSync(
@@ -5351,6 +5447,14 @@ function requireRuntimeEventOrder(
   const order = eventOrder.get(eventId);
   if (order === undefined) throw new Error(`Missing RuntimeEvent order for ${eventId}`);
   return order;
+}
+
+function terminalToolProjectionState(
+  operation: Pick<ToolOperationRecord, 'toolName' | 'recoveryMode'>,
+): 'abandoned' | 'interrupted_unknown' {
+  return operation.toolName === 'AskUserQuestion' && operation.recoveryMode === 'never_auto_retry'
+    ? 'abandoned'
+    : 'interrupted_unknown';
 }
 
 function journalEventIdFor(

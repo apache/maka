@@ -22,7 +22,8 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { createDefaultMcpConfig, type McpConfigFile, type McpServerStatus } from '@maka/core/mcp';
-import { createFakeModuleHubServices, ModuleHubServicesProvider, useMcpController } from '../../renderer/features/module-hub/testing.js';
+import { mcpConfigFailureMessage, createFakeModuleHubServices, ModuleHubServicesProvider, useMcpController } from '../../renderer/features/module-hub/testing.js';
+import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
@@ -177,4 +178,50 @@ test('MCP follows a configured Chrome server until its extension connects', asyn
   const settled = reads;
   await act(async () => { t.mock.timers.tick(10_000); });
   assert.equal(reads, settled);
+});
+
+test('MCP controller decodes corrupt-file IPC data on load and every action', async () => {
+  const { root } = installReactRenderer();
+  const defaults = createFakeModuleHubServices();
+  const failure = { kind: 'invalid-mcp-config-file', path: '/profile/mcp.json' } as const;
+  let badRead = true;
+  const services = createFakeModuleHubServices({ mcp: {
+    ...defaults.mcp,
+    getConfig: async () => badRead ? structuredClone(failure) : createDefaultMcpConfig(),
+    add: async () => structuredClone(failure),
+    update: async () => structuredClone(failure),
+    setEnabled: async () => structuredClone(failure),
+    importConfig: async () => structuredClone(failure),
+    remove: async () => structuredClone(failure),
+    test: async () => structuredClone(failure),
+    login: async () => structuredClone(failure),
+    cancelLogin: async () => structuredClone(failure),
+    logout: async () => structuredClone(failure),
+  } });
+  let controller!: ReturnType<typeof useMcpController>;
+  function Probe() { controller = useMcpController(); return null; }
+  await act(async () => root.render(createElement(ModuleHubServicesProvider, { services }, createElement(Probe))));
+  const assertDiagnostic = () => {
+    assert.ok(controller.error instanceof Error);
+    assert.equal(mcpConfigFailureMessage(controller.error, getMcpCopy('en')), getMcpCopy('en').errors.invalidConfigFile(failure.path));
+    assert.deepEqual(controller.config, createDefaultMcpConfig());
+    assert.equal(controller.busy, null);
+  };
+  assertDiagnostic();
+  badRead = false;
+  const server = { command: 'node' };
+  for (const action of [
+    () => controller.add('id', server),
+    () => controller.update('id', server, server),
+    () => controller.setEnabled('id', true),
+    () => controller.importConfig('{}'),
+    () => controller.remove('id'),
+    () => controller.test('id'),
+    () => controller.login('id'),
+    () => controller.cancelLogin('id'),
+    () => controller.logout('id'),
+  ]) {
+    await act(async () => { assert.equal(await action(), undefined); });
+    assertDiagnostic();
+  }
 });

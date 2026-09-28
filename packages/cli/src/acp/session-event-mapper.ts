@@ -54,8 +54,9 @@ export class AcpSessionEventMapper {
     this.#sessionId = options.sessionId;
     this.#notify = options.notify;
     this.#signal = options.signal;
-    this.#tools = new AcpToolEventMapper((update) =>
-      this.#deliver({ sessionId: this.#sessionId, update }),
+    this.#tools = new AcpToolEventMapper(
+      (update) => this.#deliver({ sessionId: this.#sessionId, update }),
+      this.#sessionId,
     );
   }
 

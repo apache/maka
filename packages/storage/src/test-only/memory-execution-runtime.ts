@@ -103,6 +103,14 @@ type ToolJournalEntry = {
   committedAt: number;
 };
 
+function terminalToolProjectionState(
+  operation: Pick<ToolOperationRecord, 'toolName' | 'recoveryMode'>,
+): 'abandoned' | 'interrupted_unknown' {
+  return operation.toolName === 'AskUserQuestion' && operation.recoveryMode === 'never_auto_retry'
+    ? 'abandoned'
+    : 'interrupted_unknown';
+}
+
 /** Reconstruct projections from canonical facts, inside the import transaction. */
 function rebuildToolProjections(s: MemoryState, sessionId: string): void {
   const sessionEvents = allEvents(s)
@@ -553,8 +561,121 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
     ensureTerminalRuntimeEventDurable: async (sessionId, runId, event) => {
       if (!isTerminalRuntimeEvent(event) || event.partial)
         throw new Error('Terminal writer requires immutable terminal event');
-      await store.appendRuntimeEvent(sessionId, runId, event, { durable: true });
+      await a.write('runtime.terminal', (s) => {
+        if (event.sessionId !== sessionId || event.runId !== runId)
+          throw new Error('Runtime terminal identity mismatch');
+        if (
+          !immutable(s, sessionId, runId).some((candidate) => candidate.id === event.id) &&
+          [...operations(s).values()].some(
+            (operation) =>
+              operation.invocationId === event.invocationId &&
+              operation.currentState === 'prepared' &&
+              operation.resultEventId === undefined &&
+              operation.dispatchEventId !== undefined &&
+              immutable(s, sessionId, runId).some(
+                (candidate) => candidate.id === operation.dispatchEventId,
+              ),
+          )
+        ) {
+          throw new Error('Cannot terminalize invocation with unsettled tool operation');
+        }
+        insert(s, event);
+      });
     },
+    ensureRecoveredTerminalRuntimeEventDurable: async (
+      sessionId,
+      runId,
+      event,
+      unsettledOperationIds,
+    ) =>
+      a.write('runtime.recoveryTerminal', (s) => {
+        if (
+          event.sessionId !== sessionId ||
+          event.runId !== runId ||
+          event.partial ||
+          event.status !== 'failed' ||
+          event.actions?.stateDelta?.recovered !== true ||
+          event.actions.stateDelta.recoveryReason !== 'outcome_unknown' ||
+          !isTerminalRuntimeEvent(event)
+        ) {
+          throw new Error('Unknown-outcome recovery requires a failed terminal RuntimeEvent');
+        }
+        const expected = new Set(unsettledOperationIds);
+        if (expected.size === 0 || expected.size !== unsettledOperationIds.length) {
+          throw new Error('Recovery terminal requires distinct unsettled operation ids');
+        }
+        const existing = immutable(s, sessionId, runId).find(
+          (candidate) => candidate.id === event.id,
+        );
+        if (existing) {
+          insert(s, event);
+          if (immutable(s, sessionId, runId).at(-1)?.id !== event.id) {
+            throw new Error('Recovery terminal RuntimeEvent is not the immutable run tail');
+          }
+          const settled = [...rows<ToolJournalEntry>(s, 'toolJournal').values()].filter(
+            (entry) =>
+              entry.eventId === event.id &&
+              (entry.state === 'abandoned' || entry.state === 'interrupted_unknown'),
+          );
+          if (
+            settled.length !== expected.size ||
+            settled.some((entry) => !expected.has(entry.operationId))
+          ) {
+            throw new Error('Recovery terminal settled operations do not match the durable ledger');
+          }
+          for (const id of expected) {
+            const operation = operations(s).get(id);
+            if (
+              !operation ||
+              operation.invocationId !== event.invocationId ||
+              operation.runId !== runId ||
+              operation.turnId !== event.turnId ||
+              operation.currentState !== terminalToolProjectionState(operation)
+            ) {
+              throw new Error(`Recovery terminal tool projection is incomplete: ${id}`);
+            }
+          }
+          return;
+        }
+        const eventsById = new Map(allEvents(s).map((candidate) => [candidate.id, candidate]));
+        const pending = [...operations(s).values()].filter(
+          (operation) =>
+            operation.invocationId === event.invocationId &&
+            operation.currentState === 'prepared' &&
+            operation.resultEventId === undefined &&
+            operation.dispatchEventId !== undefined &&
+            eventsById.get(operation.callEventId)?.sessionId === sessionId,
+        );
+        if (
+          pending.length !== expected.size ||
+          pending.some(
+            (operation) =>
+              !expected.has(operation.operationId) ||
+              operation.runId !== runId ||
+              operation.turnId !== event.turnId,
+          )
+        ) {
+          throw new Error('Recovery terminal unsettled operations do not match the durable ledger');
+        }
+        insert(s, event);
+        for (const operation of pending) {
+          const state = terminalToolProjectionState(operation);
+          operations(s).set(operation.operationId, {
+            ...operation,
+            currentState: state,
+            version: operation.version + 1,
+          });
+          rows<ToolJournalEntry>(s, 'toolJournal').set(
+            `${operation.operationId}_${event.id}_journal`,
+            {
+              operationId: operation.operationId,
+              eventId: event.id,
+              state,
+              committedAt: event.ts,
+            },
+          );
+        }
+      }),
     readRuntimeEvents: async (sessionId, runId) =>
       a.read((s) =>
         mergeRuntimePartialSnapshots(
@@ -1007,11 +1128,7 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
           if (dispatchOrder === undefined || !terminal || terminal.order <= dispatchOrder) {
             continue;
           }
-          const state =
-            operation.toolName === 'AskUserQuestion' &&
-            operation.recoveryMode === 'never_auto_retry'
-              ? 'abandoned'
-              : 'interrupted_unknown';
+          const state = terminalToolProjectionState(operation);
           operations(s).set(operationId, {
             ...operation,
             currentState: state,

@@ -25,7 +25,7 @@ import {
   PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
-import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
@@ -49,7 +49,11 @@ import {
   llmCallUsageFields,
   recordLlmCallStrict,
 } from '@maka/runtime/telemetry';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import {
+  buildProviderOptions,
+  getAIModel,
+  leastReasoningThinkingLevel,
+} from '@maka/runtime/model-factory';
 import { stableHash } from '@maka/runtime/request-shape';
 import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
 import {
@@ -375,6 +379,7 @@ export function createHostDailyReviewModel(
           callKind: 'daily_review',
           callId: `daily_review_${callId}`,
           abortSignal: effectiveAbortSignal,
+          reasoning: 'least',
           buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
         });
         return {
@@ -392,6 +397,9 @@ export function createHostDailyReviewModel(
   });
 }
 
+const PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS = 128;
+const PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS = 1_024;
+
 export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
   const authority = createAuxiliaryModelCallAuthority(input);
   return async (
@@ -401,26 +409,24 @@ export function createHostPromptSuggestionModel(input: HostSessionEffectModelInp
     const result = await runHostAuxiliaryModelCall(authority, {
       transportContextId: source.sessionId,
       telemetrySessionId: source.sessionId,
-      header: { ...source.header, thinkingLevel: 'off' },
+      header: source.header,
       callKind: 'prompt_suggestion',
       callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
       abortSignal,
-      buildRequest: (target) => {
-        const variants = thinkingVariantsForConnection(target.connection, target.model);
-        if (variants.length && !variants.includes('off')) {
-          throw new AuxiliaryModelCallConfigurationError(
-            'Prompt suggestions require a model that can disable reasoning',
-          );
-        }
-        return {
-          prompt: buildPromptSuggestionPrompt(
-            source.messages,
-            source.header.role === 'workhub_coordination',
-          ),
-          maxOutputTokens: 128,
-          maxRetries: 0,
-        };
-      },
+      reasoning: 'least',
+      buildRequest: (_target, thinkingLevel) => ({
+        prompt: buildPromptSuggestionPrompt(
+          source.messages,
+          source.header.role === 'workhub_coordination',
+        ),
+        // Reasoning tokens count against the output budget. A model that cannot
+        // turn reasoning off spends some at its lowest effort before the line.
+        maxOutputTokens:
+          thinkingLevel === 'off'
+            ? PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS
+            : PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS,
+        maxRetries: 0,
+      }),
     });
     return result.finishReason === 'length' ? undefined : result.text;
   };
@@ -587,7 +593,16 @@ interface HostAuxiliaryModelCallInput {
   readonly callKind: ModelCallKind;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
-  readonly buildRequest: (target: ResolvedExecutionTarget) => AuxiliaryModelRequest;
+  /**
+   * `'least'` replaces the header's thinking level with the least reasoning
+   * the resolved model accepts (see `leastReasoningThinkingLevel`). Without it
+   * the call reasons at the header's level, as the Session's own turns do.
+   */
+  readonly reasoning?: 'least';
+  readonly buildRequest: (
+    target: ResolvedExecutionTarget,
+    thinkingLevel: ThinkingLevel | undefined,
+  ) => AuxiliaryModelRequest;
 }
 
 function createAuxiliaryModelCallAuthority(
@@ -648,7 +663,11 @@ async function runHostAuxiliaryModelCall(
   const pricingSnapshot = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(() => authority.usage.pricing.snapshot(), input.abortSignal),
   );
-  const request = input.buildRequest(target);
+  const thinkingLevel =
+    input.reasoning === 'least'
+      ? leastReasoningThinkingLevel(target.connection, target.model)
+      : input.header.thinkingLevel;
+  const request = input.buildRequest(target, thinkingLevel);
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
   const transport = authority.createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
@@ -693,7 +712,7 @@ async function runHostAuxiliaryModelCall(
         const providerOptions = buildProviderOptions(
           target.connection,
           target.model,
-          input.header.thinkingLevel,
+          thinkingLevel,
           runtime,
         );
         const model = getAIModel({

@@ -17,18 +17,23 @@
  * under the License.
  */
 
-import { requireCount, requireId, requireRecord, requireString } from './codec.js';
-import { invalidProtocolFrame, RuntimeHostProtocolError } from './errors.js';
+import {
+  requireCount,
+  requireId,
+  requireRecord,
+  requireString,
+} from "./codec.js";
+import { invalidProtocolFrame, RuntimeHostProtocolError } from "./errors.js";
 import {
   decodeHostActivitySnapshot,
   requireHostLifecycleState,
   type HostActivitySnapshot,
-} from './host-status.js';
+} from "./host-status.js";
 import {
   decodeSubscriptionFrame,
   isSubscriptionFrameKind,
   type SubscriptionFrame,
-} from './session-continuity.js';
+} from "./session-continuity.js";
 import {
   decodeClientCapabilityClientFrame,
   decodeClientCapabilityHostFrame,
@@ -36,75 +41,88 @@ import {
   isClientCapabilityHostFrameKind,
   type ClientCapabilityClientFrame,
   type ClientCapabilityHostFrame,
-} from './client-capability.js';
+} from "./client-capability.js";
 import {
   decodeConfigurationChangedFrame,
   type ConfigurationChangedFrame,
-} from './configuration-change.js';
+} from "./configuration-change.js";
 import {
   decodeSessionCatalogChangedFrame,
   type SessionCatalogChangedFrame,
-} from './session-catalog-change.js';
+} from "./session-catalog-change.js";
 import {
   decodeScheduledTaskChangedFrame,
   type ScheduledTaskChangedFrame,
-} from './scheduled-task-change.js';
+} from "./scheduled-task-change.js";
 import {
   decodeProjectCatalogChangedFrame,
   type ProjectCatalogChangedFrame,
-} from './project-catalog-change.js';
+} from "./project-catalog-change.js";
 import {
   decodeConnectionCatalogChangedFrame,
   type ConnectionCatalogChangedFrame,
-} from './connection-catalog-change.js';
+} from "./connection-catalog-change.js";
 import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
   type RequestFrame,
   type ResponseFrame,
-} from './operations.js';
-import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
-import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
+} from "./operations.js";
+import { isCanonicalRuntimeHostWebSocketPath } from "./websocket-path.js";
+import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from "../composition-identity.js";
 
-export * from './access-authority.js';
-export * from './agent-graph.js';
-export * from './interaction.js';
-export * from './daily-review.js';
-export * from './client-capability.js';
-export * from './configuration-change.js';
-export * from './connection-catalog-change.js';
-export * from './goal.js';
-export * from './hosted-execution.js';
-export * from './host-resources.js';
-export * from './plan.js';
-export * from './peer-mesh.js';
-export * from './project-catalog.js';
-export * from './project-catalog-change.js';
-export * from './execution-inspect.js';
-export * from './external-session.js';
-export * from './message.js';
-export * from './operations.js';
-export * from './runtime-resource.js';
-export * from './session-continuity.js';
-export * from './session-catalog-change.js';
-export * from './session-collaboration.js';
-export * from './scheduled-task-change.js';
-export * from './session-retirement.js';
-export * from './session-transcript.js';
-export * from './session-turns.js';
-export * from './session-todo.js';
-export * from './workspace.js';
-export * from './workhub-coordination.js';
-export * from './websocket-path.js';
-export { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
+export * from "./access-authority.js";
+export * from "./agent-graph.js";
+export * from "./interaction.js";
+export * from "./daily-review.js";
+export * from "./client-capability.js";
+export * from "./configuration-change.js";
+export * from "./connection-catalog-change.js";
+export * from "./goal.js";
+export * from "./hosted-execution.js";
+export * from "./host-resources.js";
+export * from "./plan.js";
+export * from "./peer-mesh.js";
+export * from "./project-catalog.js";
+export * from "./project-catalog-change.js";
+export * from "./execution-inspect.js";
+export * from "./external-session.js";
+export * from "./message.js";
+export * from "./operations.js";
+export * from "./runtime-resource.js";
+export * from "./session-continuity.js";
+export * from "./session-catalog-change.js";
+export * from "./session-collaboration.js";
+export * from "./scheduled-task-change.js";
+export * from "./session-retirement.js";
+export * from "./session-transcript.js";
+export * from "./session-turns.js";
+export * from "./session-todo.js";
+export * from "./workspace.js";
+export * from "./workhub-coordination.js";
+export * from "./websocket-path.js";
+export { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from "../composition-identity.js";
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 190 as const;
-// 190: Private terminal handoff Interaction and nonjournalled Runtime Resource control.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 197 as const;
+// 197: Private terminal handoff Interaction and nonjournalled Runtime Resource control.
+// 196: `turn.start` carries an optional durable external-message origin; older
+// peers would drop activation provenance and misclassify automated turns.
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
+// 194: Session catalog live run state may carry the runtime's run epoch, which
+// lets clients order same-revision reads. Epoch-193 peers reject the unknown
+// key, so a newer Desktop against an older Host loses session catalog reads.
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
+// 191: Session catalog change frames can carry attention events.
+// 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
 // 189: Remove form_interaction transcript messages and the transcript_changed close reason.
 // 188: Session capability replacement can require an atomic idle root check;
 // complete MCP configuration identities fence conflicting providers across ACP clients.
@@ -486,7 +504,7 @@ export interface ProtocolRange {
 }
 
 export interface ClientHello {
-  kind: 'hello';
+  kind: "hello";
   clientInstanceId: string;
   protocolMin: number;
   protocolMax: number;
@@ -499,7 +517,7 @@ export interface ClientHello {
 }
 
 export interface HostAccepted {
-  kind: 'accepted';
+  kind: "accepted";
   rootId: string;
   hostEpoch: string;
   connectionId: string;
@@ -507,12 +525,12 @@ export interface HostAccepted {
   compatibilityEpoch: number;
   compositionId: string;
   compositionRevision: string;
-  state: Exclude<HostLifecycleState, 'draining'>;
+  state: Exclude<HostLifecycleState, "draining">;
   cooperativeHandoff?: true;
 }
 
 export interface HostIncompatible {
-  kind: 'incompatible';
+  kind: "incompatible";
   hostEpoch: string;
   protocolMin: number;
   protocolMax: number;
@@ -521,20 +539,22 @@ export interface HostIncompatible {
   compositionRevision: string;
   generation?: string;
   state: HostLifecycleState;
-  replacement: 'blocked_by_residency' | 'wait_for_idle_exit';
+  replacement: "blocked_by_residency" | "wait_for_idle_exit";
   activity?: HostActivitySnapshot;
 }
 
 export interface HostDraining {
-  kind: 'draining';
+  kind: "draining";
   hostEpoch: string;
   compositionId: string;
   compositionRevision: string;
 }
 
-export type HostHandshakeResult = HostAccepted | HostIncompatible | HostDraining;
+export type HostHandshakeResult =
+  HostAccepted | HostIncompatible | HostDraining;
 
-export type ClientFrame = ClientHello | RequestFrame | ClientCapabilityClientFrame;
+export type ClientFrame =
+  ClientHello | RequestFrame | ClientCapabilityClientFrame;
 export type HostFrame =
   | HostHandshakeResult
   | ResponseFrame
@@ -547,7 +567,7 @@ export type HostFrame =
   | ScheduledTaskChangedFrame;
 
 export interface HostRegistration {
-  kind: 'maka-runtime-host';
+  kind: "maka-runtime-host";
   schemaVersion: typeof RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION;
   rootId: string;
   hostEpoch: string;
@@ -558,14 +578,17 @@ export interface HostRegistration {
   compatibilityEpoch: number;
   compositionId: string;
   compositionRevision: string;
-  lifecycleMode?: 'ephemeral' | 'service';
+  lifecycleMode?: "ephemeral" | "service";
   generation?: string;
   state: HostLifecycleState;
   pid: number;
   createdAt: string;
 }
 
-export function negotiateProtocol(client: ProtocolRange, host: ProtocolRange): number | undefined {
+export function negotiateProtocol(
+  client: ProtocolRange,
+  host: ProtocolRange,
+): number | undefined {
   validateProtocolRange(client);
   validateProtocolRange(host);
   const selected = Math.min(client.max, host.max);
@@ -579,33 +602,43 @@ export function validateProtocolRange(range: ProtocolRange): void {
     range.min < 0 ||
     range.max < range.min
   ) {
-    throw invalidProtocolFrame('Invalid protocol range');
+    throw invalidProtocolFrame("Invalid protocol range");
   }
 }
 
 export function requireClientInstanceId(value: unknown): string {
-  return requireId(value, 'clientInstanceId');
+  return requireId(value, "clientInstanceId");
 }
 
 export function requireHostGeneration(value: unknown): string {
-  return requireId(value, 'generation');
+  return requireId(value, "generation");
 }
 
 export function decodeClientFrame(value: unknown): ClientFrame {
-  const frame = requireRecord(value, 'client frame');
-  if (frame.kind === 'hello') {
-    const protocolMin = requireProtocolVersion(frame.protocolMin, 'protocolMin');
-    const protocolMax = requireProtocolVersion(frame.protocolMax, 'protocolMax');
+  const frame = requireRecord(value, "client frame");
+  if (frame.kind === "hello") {
+    const protocolMin = requireProtocolVersion(
+      frame.protocolMin,
+      "protocolMin",
+    );
+    const protocolMax = requireProtocolVersion(
+      frame.protocolMax,
+      "protocolMax",
+    );
     validateProtocolRange({ min: protocolMin, max: protocolMax });
     const generation =
-      frame.generation === undefined ? undefined : requireHostGeneration(frame.generation);
+      frame.generation === undefined
+        ? undefined
+        : requireHostGeneration(frame.generation);
     const takeover = decodeTakeover(frame.takeover);
     if (takeover !== undefined && generation === undefined) {
-      throw invalidProtocolFrame('Runtime Host takeover requires a generation');
+      throw invalidProtocolFrame("Runtime Host takeover requires a generation");
     }
     return {
-      kind: 'hello',
-      ...(frame.activitySnapshotVersion === 2 ? { activitySnapshotVersion: 2 as const } : {}),
+      kind: "hello",
+      ...(frame.activitySnapshotVersion === 2
+        ? { activitySnapshotVersion: 2 as const }
+        : {}),
       clientInstanceId: requireClientInstanceId(frame.clientInstanceId),
       protocolMin,
       protocolMax,
@@ -622,31 +655,47 @@ export function decodeClientFrame(value: unknown): ClientFrame {
 }
 
 export function decodeHostFrame(value: unknown): HostFrame {
-  const frame = requireRecord(value, 'host frame');
-  if (frame.kind === 'accepted') {
-    if (frame.cooperativeHandoff !== undefined && frame.cooperativeHandoff !== true) {
-      throw invalidProtocolFrame('Invalid Runtime Host cooperative handoff capability');
+  const frame = requireRecord(value, "host frame");
+  if (frame.kind === "accepted") {
+    if (
+      frame.cooperativeHandoff !== undefined &&
+      frame.cooperativeHandoff !== true
+    ) {
+      throw invalidProtocolFrame(
+        "Invalid Runtime Host cooperative handoff capability",
+      );
     }
     return {
-      kind: 'accepted',
-      ...(frame.cooperativeHandoff === true ? { cooperativeHandoff: true as const } : {}),
+      kind: "accepted",
+      ...(frame.cooperativeHandoff === true
+        ? { cooperativeHandoff: true as const }
+        : {}),
       rootId: requireHostRootId(frame.rootId),
-      hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
-      connectionId: requireId(frame.connectionId, 'connectionId'),
-      selectedProtocol: requireProtocolVersion(frame.selectedProtocol, 'selectedProtocol'),
+      hostEpoch: requireId(frame.hostEpoch, "hostEpoch"),
+      connectionId: requireId(frame.connectionId, "connectionId"),
+      selectedProtocol: requireProtocolVersion(
+        frame.selectedProtocol,
+        "selectedProtocol",
+      ),
       compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
       compositionId: decodeCompositionId(frame.compositionId),
       compositionRevision: decodeCompositionRevision(frame.compositionRevision),
       state: requireAcceptedState(frame.state),
     } satisfies HostAccepted;
   }
-  if (frame.kind === 'incompatible') {
-    const protocolMin = requireProtocolVersion(frame.protocolMin, 'protocolMin');
-    const protocolMax = requireProtocolVersion(frame.protocolMax, 'protocolMax');
+  if (frame.kind === "incompatible") {
+    const protocolMin = requireProtocolVersion(
+      frame.protocolMin,
+      "protocolMin",
+    );
+    const protocolMax = requireProtocolVersion(
+      frame.protocolMax,
+      "protocolMax",
+    );
     validateProtocolRange({ min: protocolMin, max: protocolMax });
     return {
-      kind: 'incompatible',
-      hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
+      kind: "incompatible",
+      hostEpoch: requireId(frame.hostEpoch, "hostEpoch"),
       protocolMin,
       protocolMax,
       compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
@@ -662,49 +711,62 @@ export function decodeHostFrame(value: unknown): HostFrame {
         : { activity: decodeHostActivitySnapshot(frame.activity) }),
     } satisfies HostIncompatible;
   }
-  if (frame.kind === 'draining') {
+  if (frame.kind === "draining") {
     return {
-      kind: 'draining',
-      hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
+      kind: "draining",
+      hostEpoch: requireId(frame.hostEpoch, "hostEpoch"),
       compositionId: decodeCompositionId(frame.compositionId),
       compositionRevision: decodeCompositionRevision(frame.compositionRevision),
     };
   }
-  if (isSubscriptionFrameKind(frame.kind)) return decodeSubscriptionFrame(frame);
+  if (isSubscriptionFrameKind(frame.kind))
+    return decodeSubscriptionFrame(frame);
   if (isClientCapabilityHostFrameKind(frame.kind)) {
     return decodeClientCapabilityHostFrame(frame);
   }
-  if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
-  if (frame.kind === 'connection.catalog.changed') {
+  if (frame.kind === "configuration.changed")
+    return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === "connection.catalog.changed") {
     return decodeConnectionCatalogChangedFrame(frame);
   }
-  if (frame.kind === 'project.catalog.changed') return decodeProjectCatalogChangedFrame(frame);
-  if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);
-  if (frame.kind === 'scheduled-task.changed') return decodeScheduledTaskChangedFrame(frame);
+  if (frame.kind === "project.catalog.changed")
+    return decodeProjectCatalogChangedFrame(frame);
+  if (frame.kind === "session.catalog.changed")
+    return decodeSessionCatalogChangedFrame(frame);
+  if (frame.kind === "scheduled-task.changed")
+    return decodeScheduledTaskChangedFrame(frame);
   return decodeResponseFrame(frame);
 }
 
 export function decodeHostRegistration(value: unknown): HostRegistration {
-  const registration = requireRecord(value, 'host registration');
-  if (registration.kind !== 'maka-runtime-host') {
-    throw invalidProtocolFrame('Invalid registration kind');
+  const registration = requireRecord(value, "host registration");
+  if (registration.kind !== "maka-runtime-host") {
+    throw invalidProtocolFrame("Invalid registration kind");
   }
   if (registration.schemaVersion !== RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION) {
-    throw invalidProtocolFrame('Unsupported registration schema');
+    throw invalidProtocolFrame("Unsupported registration schema");
   }
-  const protocolMin = requireProtocolVersion(registration.protocolMin, 'protocolMin');
-  const protocolMax = requireProtocolVersion(registration.protocolMax, 'protocolMax');
+  const protocolMin = requireProtocolVersion(
+    registration.protocolMin,
+    "protocolMin",
+  );
+  const protocolMax = requireProtocolVersion(
+    registration.protocolMax,
+    "protocolMax",
+  );
   validateProtocolRange({ min: protocolMin, max: protocolMax });
   const rootId = requireHostRootId(registration.rootId);
-  const websocketEndpoints = decodeRegistrationWebSocketEndpoints(registration.websocketEndpoints);
-  const pid = requireCount(registration.pid, 'pid');
-  if (pid === 0) throw invalidProtocolFrame('Invalid pid');
+  const websocketEndpoints = decodeRegistrationWebSocketEndpoints(
+    registration.websocketEndpoints,
+  );
+  const pid = requireCount(registration.pid, "pid");
+  if (pid === 0) throw invalidProtocolFrame("Invalid pid");
   return {
-    kind: 'maka-runtime-host',
+    kind: "maka-runtime-host",
     schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
     rootId,
-    hostEpoch: requireId(registration.hostEpoch, 'hostEpoch'),
-    endpoint: requireString(registration.endpoint, 'endpoint', 512),
+    hostEpoch: requireId(registration.hostEpoch, "hostEpoch"),
+    endpoint: requireString(registration.endpoint, "endpoint", 512),
     ...(websocketEndpoints === undefined ? {} : { websocketEndpoints }),
     protocolMin,
     protocolMax,
@@ -713,7 +775,9 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
         ? 0
         : requireCompatibilityEpoch(registration.compatibilityEpoch),
     compositionId: decodeCompositionId(registration.compositionId),
-    compositionRevision: decodeCompositionRevision(registration.compositionRevision),
+    compositionRevision: decodeCompositionRevision(
+      registration.compositionRevision,
+    ),
     ...(registration.lifecycleMode === undefined
       ? {}
       : {
@@ -724,62 +788,81 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
       : { generation: requireHostGeneration(registration.generation) }),
     state: requireHostLifecycleState(registration.state),
     pid,
-    createdAt: requireString(registration.createdAt, 'createdAt', 64),
+    createdAt: requireString(registration.createdAt, "createdAt", 64),
   };
 }
 
-function decodeRegistrationWebSocketEndpoints(value: unknown): readonly string[] | undefined {
+function decodeRegistrationWebSocketEndpoints(
+  value: unknown,
+): readonly string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length === 0 || value.length > 4) {
-    throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoints');
+    throw invalidProtocolFrame(
+      "Invalid Runtime Host registration WebSocket endpoints",
+    );
   }
   const endpoints = value.map((entry) => {
-    const endpoint = requireString(entry, 'Runtime Host WebSocket endpoint', 2_048);
+    const endpoint = requireString(
+      entry,
+      "Runtime Host WebSocket endpoint",
+      2_048,
+    );
     let url: URL;
     try {
       url = new URL(endpoint);
     } catch {
-      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+      throw invalidProtocolFrame(
+        "Invalid Runtime Host registration WebSocket endpoint",
+      );
     }
     if (
-      url.protocol !== 'ws:' ||
-      url.hostname !== '127.0.0.1' ||
+      url.protocol !== "ws:" ||
+      url.hostname !== "127.0.0.1" ||
       url.username ||
       url.password ||
-      url.port === '' ||
+      url.port === "" ||
       url.search ||
       url.hash ||
       !isCanonicalRuntimeHostWebSocketPath(url.pathname)
     ) {
-      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+      throw invalidProtocolFrame(
+        "Invalid Runtime Host registration WebSocket endpoint",
+      );
     }
     return url.toString();
   });
   if (new Set(endpoints).size !== endpoints.length) {
-    throw invalidProtocolFrame('Duplicate Runtime Host registration WebSocket endpoint');
+    throw invalidProtocolFrame(
+      "Duplicate Runtime Host registration WebSocket endpoint",
+    );
   }
   return Object.freeze(endpoints);
 }
 
-function requireHostLifecycleMode(value: unknown): 'ephemeral' | 'service' {
-  if (value === 'ephemeral' || value === 'service') return value;
-  throw invalidProtocolFrame('Invalid Runtime Host lifecycle mode');
+function requireHostLifecycleMode(value: unknown): "ephemeral" | "service" {
+  if (value === "ephemeral" || value === "service") return value;
+  throw invalidProtocolFrame("Invalid Runtime Host lifecycle mode");
 }
 
-function decodeTakeover(value: unknown): ClientHello['takeover'] {
+function decodeTakeover(value: unknown): ClientHello["takeover"] {
   if (value === undefined) return undefined;
-  const takeover = requireRecord(value, 'Runtime Host takeover');
+  const takeover = requireRecord(value, "Runtime Host takeover");
   return {
-    expectedHostEpoch: requireId(takeover.expectedHostEpoch, 'expectedHostEpoch'),
+    expectedHostEpoch: requireId(
+      takeover.expectedHostEpoch,
+      "expectedHostEpoch",
+    ),
   };
 }
 
-export function encodeProtocolMessage(value: ClientFrame | HostFrame): EncodedProtocolMessage {
-  const encoded = Buffer.from(JSON.stringify(value), 'utf8');
+export function encodeProtocolMessage(
+  value: ClientFrame | HostFrame,
+): EncodedProtocolMessage {
+  const encoded = Buffer.from(JSON.stringify(value), "utf8");
   if (encoded.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
     throw new RuntimeHostProtocolError(
-      'frame_too_large',
-      'Runtime Host message exceeds the byte limit',
+      "frame_too_large",
+      "Runtime Host message exceeds the byte limit",
     );
   }
   return encoded as EncodedProtocolMessage;
@@ -793,29 +876,31 @@ function requireProtocolVersion(value: unknown, label: string): number {
 }
 
 function requireCompatibilityEpoch(value: unknown): number {
-  const epoch = requireProtocolVersion(value, 'compatibilityEpoch');
-  if (epoch > 1_000_000) throw invalidProtocolFrame('Invalid compatibilityEpoch');
+  const epoch = requireProtocolVersion(value, "compatibilityEpoch");
+  if (epoch > 1_000_000)
+    throw invalidProtocolFrame("Invalid compatibilityEpoch");
   return epoch;
 }
 
 export function requireHostCompositionId(value: unknown): string {
-  const id = requireString(value, 'compositionId', 128);
+  const id = requireString(value, "compositionId", 128);
   if (!/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/.test(id)) {
-    throw invalidProtocolFrame('Invalid compositionId');
+    throw invalidProtocolFrame("Invalid compositionId");
   }
   return id;
 }
 
 export function requireHostRootId(value: unknown): string {
-  const rootId = requireString(value, 'rootId', 64);
-  if (!/^[a-f0-9]{64}$/.test(rootId)) throw invalidProtocolFrame('Invalid rootId');
+  const rootId = requireString(value, "rootId", 64);
+  if (!/^[a-f0-9]{64}$/.test(rootId))
+    throw invalidProtocolFrame("Invalid rootId");
   return rootId;
 }
 
 function requireCompositionRevision(value: unknown): string {
-  const revision = requireString(value, 'compositionRevision', 128);
+  const revision = requireString(value, "compositionRevision", 128);
   if (revision.length === 0 || /[\u0000-\u001f\u007f]/u.test(revision)) {
-    throw invalidProtocolFrame('Invalid compositionRevision');
+    throw invalidProtocolFrame("Invalid compositionRevision");
   }
   return revision;
 }
@@ -827,7 +912,7 @@ function decodeCompositionId(value: unknown): string {
 }
 
 function decodeCompositionRevision(value: unknown): string {
-  return value === undefined ? 'legacy' : requireCompositionRevision(value);
+  return value === undefined ? "legacy" : requireCompositionRevision(value);
 }
 
 function decodeCompatibilityEpoch(value: unknown): number {
@@ -835,13 +920,17 @@ function decodeCompatibilityEpoch(value: unknown): number {
   return value === undefined ? 0 : requireCompatibilityEpoch(value);
 }
 
-function requireAcceptedState(value: unknown): Exclude<HostLifecycleState, 'draining'> {
+function requireAcceptedState(
+  value: unknown,
+): Exclude<HostLifecycleState, "draining"> {
   const state = requireHostLifecycleState(value);
-  if (state === 'draining') throw invalidProtocolFrame('Accepted Host cannot be draining');
+  if (state === "draining")
+    throw invalidProtocolFrame("Accepted Host cannot be draining");
   return state;
 }
 
-function requireReplacement(value: unknown): HostIncompatible['replacement'] {
-  if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
-  throw invalidProtocolFrame('Invalid replacement disposition');
+function requireReplacement(value: unknown): HostIncompatible["replacement"] {
+  if (value === "blocked_by_residency" || value === "wait_for_idle_exit")
+    return value;
+  throw invalidProtocolFrame("Invalid replacement disposition");
 }

@@ -659,6 +659,7 @@ describe('Maka ACP stdio server', () => {
           agentCapabilities: {
             loadSession: true,
             sessionCapabilities: { list: {}, resume: {}, close: {} },
+            _meta: { '_maka/goalPlan': { version: 1 } },
           },
           authMethods: [],
           agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
@@ -785,6 +786,104 @@ describe('Maka ACP stdio server', () => {
 
     await assert.rejects(harness.run(), (error: unknown) => error === transportError);
   });
+
+  for (const method of ['_maka/goal/status', '_maka/plan/changed']) {
+    test(`${method} write failure closes ACP and releases the retained attachment`, {
+      timeout: 5_000,
+    }, async (t) => {
+      const stdin = new PassThrough();
+      const transportError = new Error(`${method} transport failed`);
+      const errors = t.mock.method(console, 'error', () => undefined);
+      let sessionId: string | undefined;
+      let subscription: FakeSubscription | undefined;
+      let closes = 0;
+      const connection = {
+        request: async (operation: string, input: { sessionId: string }) => {
+          if (operation === 'session.create') {
+            sessionId = input.sessionId;
+            return sessionProjection({ id: sessionId });
+          }
+          if (operation === 'connection.catalog.query') return connectionCatalogPage();
+          if (operation === 'goal.query') return { sessionId, goal: null };
+          if (operation === 'plan.query')
+            return {
+              kind: 'page',
+              sessionId,
+              storeVersion: 0,
+              latestProposalId: null,
+              activeExecutionId: null,
+              items: [],
+              nextCursor: null,
+            };
+          assert.fail(`Unexpected operation ${operation}`);
+        },
+        openSessionSubscription: async () => {
+          subscription = new FakeSubscription(
+            continuitySnapshot({ sessionId: sessionId!, projectionRevision: 1, rootTurn: null }),
+            Promise.resolve([]),
+          );
+          return subscription;
+        },
+        replaceClientCapabilities: async () => undefined,
+        unregisterClientCapabilities: async () => undefined,
+        close: async () => {
+          closes += 1;
+        },
+      } as unknown as RuntimeHostConnection;
+      const harness = createHarness([], {
+        stdin,
+        connection,
+        failWrite: { method, error: transportError },
+      });
+      const result = assert.rejects(harness.run(), (error: unknown) => error === transportError);
+      const send = (id: number, method: string, params: unknown) =>
+        stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      try {
+        send(1, 'initialize', {
+          protocolVersion: 1,
+          clientCapabilities: { _meta: { '_maka/goalPlanStatus': true } },
+        });
+        await waitFor(() =>
+          harness.stdoutMessages().some((message) => (message as { id?: number }).id === 1),
+        );
+        send(2, 'session/new', { cwd: '/workspace', mcpServers: [] });
+        await waitFor(() =>
+          harness.stdoutMessages().some((message) => (message as { id?: number }).id === 2),
+        );
+        send(3, '_maka/goal/query', { sessionId: sessionId! });
+        await waitFor(() =>
+          harness.stdoutMessages().some((message) => {
+            const record = message as { id?: number; method?: string };
+            return record.id === 3 || record.method === method;
+          }),
+        );
+        assert.ok(
+          harness
+            .stdoutMessages()
+            .some((message) => (message as { method?: string }).method === method),
+          JSON.stringify(harness.stdoutMessages()),
+        );
+        await result;
+        assert.ok(subscription);
+        assert.equal(subscription.closeCalls, 1);
+        assert.equal(closes, 1);
+        assert.equal(
+          harness
+            .stdoutMessages()
+            .filter((message) => (message as { method?: string }).method === method).length,
+          1,
+          'the failed connection must not retry the notification',
+        );
+        assert.ok(
+          errors.mock.calls.some((call) => call.arguments[1] === transportError),
+          'notification failure remains diagnosable',
+        );
+      } finally {
+        stdin.end();
+        await result;
+      }
+    });
+  }
 
   test('serializes Session creation and configuration through the Runtime Host catalog', async () => {
     const lifecycle: string[] = [];
@@ -985,6 +1084,7 @@ function createHarness(
     readonly stdin?: Readable;
     readonly connection?: RuntimeHostConnection;
     readonly connectError?: Error;
+    readonly failWrite?: { readonly method: string; readonly error: Error };
   } = {},
 ) {
   const stdin = options.stdin ?? Readable.from(chunks.map((chunk) => Buffer.from(chunk)));
@@ -997,8 +1097,18 @@ function createHarness(
     } as unknown as RuntimeHostConnection);
   const stdoutChunks: Buffer[] = [];
   const stdout = new Writable({
+    // Make the SDK await each transport write so the injected error rejects notify().
+    ...(options.failWrite ? { highWaterMark: 1 } : {}),
     write(chunk, _encoding, callback) {
       stdoutChunks.push(Buffer.from(chunk));
+      if (
+        options.failWrite &&
+        (JSON.parse(Buffer.from(chunk).toString('utf8')) as { method?: string }).method ===
+          options.failWrite.method
+      ) {
+        callback(options.failWrite.error);
+        return;
+      }
       callback();
     },
   });

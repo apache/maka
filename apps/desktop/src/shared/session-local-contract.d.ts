@@ -43,6 +43,8 @@ export interface DesktopLocalMessage {
   readonly inlineReferences: readonly InlineReference[];
   readonly turnId?: string;
   readonly error?: string;
+  /** Main can reach the Host, so it delivers the message without the user. */
+  readonly delivering?: true;
 }
 
 export interface DesktopCachedTranscript {

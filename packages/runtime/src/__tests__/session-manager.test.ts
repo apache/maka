@@ -65,7 +65,7 @@ import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-stor
 import { deriveTurnRecords } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import { buildInterruptedToolOutcomeCommits } from '../recovery-resolver.js';
+import { resolveRuntimeRecovery } from '../recovery-resolver.js';
 import { buildImmutableRuntimePrefix, decodeContinuationClaim } from '@maka/core/runtime-boundary';
 import type {
   CreateSandboxBoundaryRequest,
@@ -141,7 +141,6 @@ import { RuntimeReadModel, RuntimeReadModelError } from '../runtime-read-model.j
 import type { AgentBackend } from '@maka/core/backend-types';
 import type { MakaTool } from '../tool-runtime.js';
 import type { ShellRunProcessManager } from '../shell-run-manager.js';
-import type { RuntimeCommitSink } from '../runtime-commit-sink.js';
 import {
   buildHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
@@ -6414,6 +6413,16 @@ describe('SessionManager permission mode updates', () => {
       ['turn-1-final', 'turn-1-complete'],
     );
     assert.strictEqual(backend?.sendInputs[0]?.toolMode, 'code_mode');
+    assert.strictEqual(backend?.sendInputs[0]?.allowPriorUnknownToolOutcomes, true);
+
+    await collectSessionEvents(
+      manager.sendMessage(session.id, {
+        turnId: 'turn-2',
+        text: 'automated activation',
+        origin: { kind: 'cloud_activation', activationId: 'activation-2' },
+      }),
+    );
+    assert.strictEqual(backend?.sendInputs[1]?.allowPriorUnknownToolOutcomes, undefined);
 
     const [run] = await runtimeEventStore.listSessionInvocations(session.id);
     if (!run) throw new Error('the run opened no invocation');
@@ -12814,38 +12823,20 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await turnOf(activeDone.id, 'active-turn'))?.status, 'completed');
   });
 
-  test('startup recovery settles arbitrary dispatched tools before terminalizing the run', async () => {
+  test('startup recovery seals dispatched tools as unknown without inventing durable results', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
-    let sessionId = '';
-    let outcomeCommitFailuresRemaining = 3;
-    let outcomeCommitAttempts = 0;
-    const runtimeCommitSink: RuntimeCommitSink = {
-      commitToolPrepared: async () => {
-        throw new Error('not used during recovery');
-      },
-      commitToolOutcome: async (input) => {
-        outcomeCommitAttempts += 1;
-        if (outcomeCommitFailuresRemaining > 0) {
-          outcomeCommitFailuresRemaining -= 1;
-          throw new Error('transient outcome commit failure');
-        }
-        await runStore.appendRuntimeEvent(sessionId, 'run-1', input.runtimeEvent);
-        return { created: true, runtimeEventSeq: 4 };
-      },
-    };
     const manager = new SessionManager({
       store,
       runStore,
-      runtimeEventStore: Object.assign(runStore, runtimeCommitSink),
+      runtimeEventStore: runStore,
       backends,
       newId: nextId(),
       now: nextNow(12_825),
     });
     const session = await manager.createSession(makeInput({ status: 'running' }));
-    sessionId = session.id;
     await seedRunningTurn(store, session.id, 'turn-1');
     await seedRun(
       runStore,
@@ -12913,48 +12904,28 @@ describe('SessionManager permission mode updates', () => {
       }),
     );
 
-    const preRecoveryEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
-    assert.equal(
-      buildInterruptedToolOutcomeCommits(preRecoveryEvents, 12_825, 'code_mode').length,
-      1,
-    );
     await manager.recoverInterruptedSessions();
 
-    assert.equal((await readInvocation(runStore, session.id, 'run-1')).terminalEvent, undefined);
-    assert.equal(outcomeCommitAttempts, 2);
+    const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
+    const recovery = resolveRuntimeRecovery(runtimeEvents);
     assert.equal(
-      (await runStore.readRuntimeEvents(session.id, 'run-1')).some(
-        (event) => event.content?.kind === 'function_response',
-      ),
+      runtimeEvents.some((event) => event.content?.kind === 'function_response'),
       false,
     );
-
-    await manager.recoverInterruptedSessions();
-
-    assert.equal(outcomeCommitAttempts, 4);
-    const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
-    const response = runtimeEvents.find(
-      (event) => event.content?.kind === 'function_response' && event.content.id === 'exec-1',
-    );
-    assert.equal(response?.content?.kind, 'function_response');
-    assert.equal(response?.content?.kind === 'function_response' && response.content.isError, true);
     assert.deepEqual(
-      response?.content?.kind === 'function_response' ? response.content.result : undefined,
-      {
-        kind: 'text',
-        text: 'Tool Bash was interrupted before its result was committed. Its side effects may or may not have occurred. Do not retry it immediately; inspect the current state first.',
-        uncertainOutcome: { code: 'outcome_unknown', retrySafe: false },
-      },
+      recovery.decisions.map(({ toolCallId, status, reason }) => ({
+        toolCallId,
+        status,
+        reason,
+      })),
+      [{ toolCallId: 'exec-1', status: 'indeterminate', reason: 'dispatch_without_response' }],
     );
-    const responseIndex = runtimeEvents.findIndex(
-      (event) => event.content?.kind === 'function_response',
-    );
-    const terminalIndex = runtimeEvents.findIndex(isTerminalRuntimeEvent);
-    assert.ok(responseIndex >= 0 && terminalIndex > responseIndex);
-    assert.equal(
-      runtimeInvocationOutcome(await readInvocation(runStore, session.id, 'run-1')),
-      'failed',
-    );
+    const terminalEvent = runtimeEvents.find(isTerminalRuntimeEvent);
+    assert.equal(terminalEvent?.status, 'failed');
+    const invocation = await readInvocation(runStore, session.id, 'run-1');
+    assert.ok(invocation.terminalEvent);
+    assert.equal(runtimeInvocationFailureClass(invocation), 'outcome_unknown');
+    assert.equal(runtimeInvocationOutcome(invocation), 'failed');
   });
 
   test('startup recovery does not leave stale permission waits stuck', async () => {

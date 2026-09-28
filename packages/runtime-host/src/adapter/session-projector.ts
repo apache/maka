@@ -158,12 +158,33 @@ export class RuntimeHostSessionProjector {
     this.#projectMessageAdmissions = true;
   }
 
-  seedActive(includeAssistantText: boolean): SessionEvent[] {
+  seedActive(
+    includeAssistantText: boolean,
+    options: { includeEmptyQueue?: boolean } = {},
+  ): SessionEvent[] {
     const root = this.#snapshot.rootTurn;
-    if (!root) return [];
+    if (!root) {
+      // A Session whose root Turn is gone still owns an authoritative queue:
+      // a client resubscribing after navigating away may hold a stale queued
+      // card that only this seed can retire, because no live drain will run
+      // while it is the active view (apache/maka#5520 review). Snapshots that
+      // carry no queue at all project as empty.
+      const queue = this.#snapshot.queue ?? {
+        hostEpoch: '',
+        queueRevision: 0,
+        steering: [],
+        followup: [],
+      };
+      return [projectQueueUpdate(this.#unplacedQueue(queue), '', this.#now())];
+    }
     const events: SessionEvent[] = [];
+    // A queue-rendering client needs the empty seed to clear entries it saw
+    // before re-observing. ACP ignores queue_update, and delivering one after
+    // an output failure would stop the Host Turn it restored.
     const queueEvents =
-      this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
+      options.includeEmptyQueue ||
+      this.#projectMessageAdmissions ||
+      queueHasEntries(this.#snapshot.queue)
         ? [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())]
         : [];
     if (this.#projectMessageAdmissions) {
@@ -403,8 +424,18 @@ export class RuntimeHostSessionProjector {
     for (const interaction of newlyPendingInteractions(previousSnapshot, next)) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
     }
-    if (root && queueChanged(previousSnapshot.queue, next.queue)) {
-      events.push(projectQueueUpdate(this.#unplacedQueue(next.queue), root.turnId, this.#now()));
+    if (queueChanged(previousSnapshot.queue, next.queue)) {
+      // Project the authoritative queue even with no live Turn: a drain that
+      // lands after the root Turn is gone must still reach observers, or a
+      // queued card survives as a phantom whose retract fails with not_found
+      // (apache/maka#5520).
+      events.push(
+        projectQueueUpdate(
+          this.#unplacedQueue(next.queue),
+          root?.turnId ?? previousRoot?.turnId ?? '',
+          this.#now(),
+        ),
+      );
     }
     if (startedTurn) this.#accumulators.clear();
     // Emit the presentation-only compaction-started event when the root Turn

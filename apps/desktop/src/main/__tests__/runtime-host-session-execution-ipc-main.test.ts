@@ -1894,13 +1894,9 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
           calls.push({ operation: "promote", ...input });
           return { queueRevision: 4 };
         },
-        updateQueueEntry: async (input) => {
-          calls.push({ operation: "update", ...input });
-          return { queueRevision: 5 };
-        },
         reorderQueueEntries: async (input) => {
           calls.push({ operation: "reorder", ...input });
-          return { queueRevision: 6 };
+          return { queueRevision: 5 };
         },
       }),
       observer: unusedObserver(),
@@ -1916,13 +1912,6 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
 
   assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
   await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
-  await ipc.invoke(
-    "sessions:updateQueueEntry",
-    "session-1",
-    "entry-2",
-    4,
-    " revised ",
-  );
   await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"]);
 
   assert.deepEqual(calls, [
@@ -1939,25 +1928,13 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
       promoteId: "id-2",
     },
     {
-      operation: "update",
-      sessionId: "session-1",
-      entryId: "entry-2",
-      updateId: "id-3",
-      expectedQueueRevision: 4,
-      text: "revised",
-    },
-    {
       operation: "reorder",
       sessionId: "session-1",
-      reorderId: "id-4",
+      reorderId: "id-3",
       entryIds: ["entry-3", "entry-2"],
     },
   ]);
 
-  await assert.rejects(
-    () => ipc.invoke("sessions:updateQueueEntry", "session-1", "entry-1", 4, " "),
-    /Invalid Queued message text/,
-  );
   await assert.rejects(
     () => ipc.invoke("sessions:promoteQueueEntry", "session-1", 42),
     /Invalid queue entry identity/,
@@ -2318,7 +2295,6 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     openSession: unavailable,
     retractQueueEntry: unavailable,
     promoteQueueEntry: unavailable,
-    updateQueueEntry: unavailable,
     reorderQueueEntries: unavailable,
     setSessionReadMarker: unavailable,
     startTurnResume: unavailable,

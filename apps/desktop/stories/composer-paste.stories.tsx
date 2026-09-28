@@ -135,6 +135,23 @@ export const PasteIsItsOwnUndoStep: Story = {
   },
 };
 
+// Real path: 粘贴一大段日志或文档，再在里面改几个字后发送。
+// A long paste is draft text like any other: it lands inline and stays
+// editable, and the send carries it as typed. It is never folded into a chip.
+export const LongPasteStaysEditableText: Story = {
+  play: async ({ canvasElement }) => {
+    const composer = editor(canvasElement);
+    const pasted = Array.from({ length: 40 }, (_, i) => `line ${i}: ${'x'.repeat(80)}`).join('\n');
+    await userEvent.click(composer);
+    pastePlainText(composer, pasted);
+
+    await waitFor(() => expect(draftText(composer)).toBe(pasted));
+    await expect(composer.querySelector('[data-astryx-token-value]')).toBeNull();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(sent).toHaveBeenCalledWith(pasted));
+  },
+};
+
 // Real path: 从 Finder 或终端复制一个绝对路径，粘进 composer，直接回车。
 // A pasted absolute path is text, and Enter sends it. The slash it starts with
 // must not arm the command menu, or the first Enter would be swallowed

@@ -106,6 +106,8 @@ export interface RuntimeHostSessionChannelOptions {
    * channel for goal state — the same one the desktop observer diffs.
    */
   onGoalChanged: (goal: GoalProjection | null) => void;
+  /** Fired for a new authoritative subscription epoch, even if root/Goal are unchanged. */
+  onCanonicalReplacement?: (snapshot: SessionContinuitySnapshot) => void;
   /** Optional read-only projection observer; the channel remains the sole folder. */
   onSnapshotChanged?: (snapshot: SessionContinuitySnapshot) => void;
   /** Fired only after the channel's bounded recovery policy is exhausted. */
@@ -127,6 +129,7 @@ export class RuntimeHostSessionChannel {
   readonly #onTranscriptSettlement: (turnId: string) => void;
   readonly #onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
   readonly #onGoalChanged: (goal: GoalProjection | null) => void;
+  readonly #onCanonicalReplacement: ((snapshot: SessionContinuitySnapshot) => void) | undefined;
   readonly #onSnapshotChanged: ((snapshot: SessionContinuitySnapshot) => void) | undefined;
   readonly #onFailed: ((error: Error) => void) | undefined;
   readonly #onRecovered: () => void;
@@ -174,6 +177,7 @@ export class RuntimeHostSessionChannel {
     this.#onTranscriptSettlement = options.onTranscriptSettlement;
     this.#onTranscriptReplaced = options.onTranscriptReplaced;
     this.#onGoalChanged = options.onGoalChanged;
+    this.#onCanonicalReplacement = options.onCanonicalReplacement;
     this.#onSnapshotChanged = options.onSnapshotChanged;
     this.#onFailed = options.onFailed;
     this.#onRecovered = options.onRecovered;
@@ -733,6 +737,8 @@ export class RuntimeHostSessionChannel {
       this.#subscription.activeAssistantStreams,
     );
     this.#onSnapshotChanged?.(structuredClone(this.#projector.snapshot));
+    if (replacedLiveState)
+      this.#onCanonicalReplacement?.(structuredClone(this.#projector.snapshot));
     // A canonical replacement is a sequence cut. No queued event from the
     // retired subscription may replay after the transcript/snapshot has
     // established newer state; active, terminal, and interaction state is

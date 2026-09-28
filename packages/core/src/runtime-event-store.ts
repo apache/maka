@@ -198,6 +198,17 @@ export interface RuntimeEventStore {
     runId: string,
     event: RuntimeEvent,
   ): Promise<void>;
+  /**
+   * Recovery-only terminal barrier for a T1-without-T2 run. The writer must
+   * commit the terminal fact and settle exactly these dispatched operations in
+   * one transaction; an ordinary terminal append still rejects them.
+   */
+  ensureRecoveredTerminalRuntimeEventDurable?(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+    unsettledOperationIds: readonly string[],
+  ): Promise<void>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   /** Session-wide immutable append order. */
   readSessionRuntimeEventEntries(

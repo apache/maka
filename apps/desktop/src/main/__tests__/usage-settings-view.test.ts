@@ -167,6 +167,79 @@ const flush = async () => {
 };
 
 describe('Usage feature scope', () => {
+  it('renders large token totals and breakdowns in compact form on the Usage page', async () => {
+    const { container, root } = setupDom();
+    const base = mergeSettings(createDefaultSettings(), {
+      usage: { range: '24h', activeTab: 'providers' },
+    });
+    const stats = statsWithRequests(12_647_391);
+    Object.assign(stats.summary, {
+      totalTokens: 12_647_391,
+      inputTokens: 12_497_391,
+      outputTokens: 150_000,
+      cacheTokens: 10_000_000,
+      cacheMiss: 2_497_391,
+      cacheRead: 9_500_000,
+      cacheCreation: 500_000,
+    });
+    stats.byProvider = [
+      { provider: 'provider-a', requests: 1, tokens: 12_647_391, costUsd: 1 },
+    ];
+    stats.byModel = [
+      { model: 'model-a', requests: 1, tokens: 12_647_391, costUsd: 1 },
+    ];
+    const services: UsageServices = {
+      loadUsageStats: async () => stats,
+      updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+    };
+
+    try {
+      await act(async () => {
+        root.render(tree({ active: true, settings: base, targetKey: 'hostA:1', services }));
+        await flush();
+      });
+
+      const tiles = Array.from(container.querySelectorAll('[data-slot="stat-tile"]'));
+      for (const [label, value, detail] of [
+        ['Model calls', '12.6M', undefined],
+        ['Total tokens', '12.6M', 'Input 12.5M / output 150K'],
+        ['Cache tokens', '10M', 'New 2.5M / hit 9.5M / created 500K'],
+      ]) {
+        const tile = tiles.find(
+          (element) => element.querySelector('[data-slot="stat-tile-label"]')?.textContent === label,
+        );
+        assert.ok(tile, `${label} tile should render`);
+        assert.equal(tile.querySelector('[data-slot="stat-tile-value"]')?.textContent, value);
+        if (detail !== undefined) {
+          assert.equal(tile.querySelector('[data-slot="stat-tile-detail"]')?.textContent, detail);
+        }
+      }
+      assert.doesNotMatch(container.textContent ?? '', /12647391/);
+
+      const providerTable = container.querySelector('table');
+      assert.ok(providerTable, 'provider table should render');
+      assert.match(providerTable.textContent ?? '', /12\.6M/);
+      assert.doesNotMatch(providerTable.textContent ?? '', /12647391/);
+
+      const modelSettings = mergeSettings(base, { usage: { activeTab: 'models' } });
+      await act(async () => {
+        root.render(tree({
+          active: true,
+          settings: modelSettings,
+          targetKey: 'hostA:1',
+          services,
+        }));
+        await flush();
+      });
+      const modelTable = container.querySelector('table');
+      assert.ok(modelTable, 'model table should render');
+      assert.match(modelTable.textContent ?? '', /12\.6M/);
+      assert.doesNotMatch(modelTable.textContent ?? '', /12647391/);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('re-displays the last snapshot immediately when returning to the section, then refreshes', async () => {
     const { container, root } = setupDom();
     const base: AppSettings = mergeSettings(createDefaultSettings(), {
