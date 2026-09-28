@@ -24,6 +24,8 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 
 export const PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEWS = 16;
+const MAX_GLOBAL_PREVIEWS = 64;
+const MAX_GLOBAL_PREVIEW_BYTES = 128 * 1024 * 1024;
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
 const READ_DEADLINE_MS = 30_000;
 
@@ -42,12 +44,14 @@ interface Lease {
   server: Server;
   timer?: ReturnType<typeof setTimeout>;
   url?: string;
+  reservedBytes: number;
 }
 
 /** Desktop-owned, bounded, ephemeral HTML snapshots. No workspace directory is served. */
 export class ManagedArtifactPreview {
   private readonly leases = new Set<Lease>();
   private readonly retiredScopes = new Set<string>();
+  private reservedBytes = 0;
   private closed = false;
 
   constructor(private readonly ttlMs = PREVIEW_TTL_MS) {}
@@ -78,9 +82,12 @@ export class ManagedArtifactPreview {
     if (sessionLeases.length >= MAX_PREVIEWS) {
       throw new Error('Too many active previews; wait for expiry');
     }
+    if (this.leases.size >= MAX_GLOBAL_PREVIEWS) {
+      throw new Error('Too many active previews across the Desktop; wait for expiry');
+    }
     signal?.throwIfAborted();
     // Reserve before asynchronous reads, so concurrent preparations cannot exceed the bound.
-    const lease: Lease = { scope, sessionId, artifactId, server: createServer() };
+    const lease: Lease = { scope, sessionId, artifactId, server: createServer(), reservedBytes: 0 };
     this.leases.add(lease);
     const assertActive = () => {
       signal?.throwIfAborted();
@@ -93,6 +100,11 @@ export class ManagedArtifactPreview {
       if (!Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 0 || artifact.sizeBytes > PREVIEW_MAX_BYTES) {
         throw new Error('HTML preview exceeds the 8 MiB limit; use Save As instead');
       }
+      if (this.reservedBytes + artifact.sizeBytes > MAX_GLOBAL_PREVIEW_BYTES) {
+        throw new Error('The Desktop preview memory limit has been reached; wait for previews to expire');
+      }
+      lease.reservedBytes = artifact.sizeBytes;
+      this.reservedBytes += lease.reservedBytes;
       const chunks: Buffer[] = [];
       let size = 0;
       const total = await withDeadline(client.streamArtifact(sessionId, artifactId, async (chunk) => {
@@ -184,7 +196,10 @@ export class ManagedArtifactPreview {
   }
 
   private async release(lease: Lease): Promise<void> {
-    this.leases.delete(lease);
+    if (this.leases.delete(lease)) {
+      this.reservedBytes -= lease.reservedBytes;
+      lease.reservedBytes = 0;
+    }
     clearTimeout(lease.timer);
     await new Promise<void>((resolve) => {
       lease.server.close(() => resolve());

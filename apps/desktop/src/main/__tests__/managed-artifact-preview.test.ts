@@ -158,17 +158,40 @@ test('bounds previews per session instead of starving another session', async ()
   }
 });
 
-test('does not invalidate existing previews when another session prepares one', async () => {
+test('rejects previews above the global limit without invalidating existing sessions', async () => {
   const service = new ManagedArtifactPreview();
   try {
     const endpoints = [];
     for (let index = 0; index < 64; index += 1) {
       endpoints.push(await service.prepare('h', client(`preview-${index}`), `s${index}`, 'a1'));
     }
-    const replacement = await service.prepare('h', client('replacement'), 's64', 'a1');
+    await assert.rejects(service.prepare('h', client('replacement'), 's64', 'a1'), /across the Desktop/);
     assert.equal(await (await fetch(endpoints[0]!.url)).text(), 'preview-0');
-    assert.equal(await (await fetch(replacement.url)).text(), 'replacement');
+    assert.equal(await (await fetch(endpoints[63]!.url)).text(), 'preview-63');
   } finally {
+    await service.close();
+  }
+});
+
+test('reserves aggregate preview bytes before streaming and releases reservations on failure', async () => {
+  const service = new ManagedArtifactPreview();
+  let resume!: () => void;
+  const gate = new Promise<void>((resolve) => { resume = resolve; });
+  const large = {
+    getArtifact: async () => ({ id: 'a1', sessionId: 's1', turnId: 't1', createdAt: 0, name: 'large.html', kind: 'html' as const, sizeBytes: PREVIEW_MAX_BYTES, source: 'tool_result' as const }),
+    streamArtifact: async () => { await gate; throw new Error('test stream failure'); },
+  };
+  const pending = Array.from({ length: 16 }, (_, index) => service.prepare('h', large, `s${index + 1}`, 'a1'));
+  try {
+    // Each in-flight Artifact reserves 8 MiB, reaching the 128 MiB aggregate budget.
+    await new Promise((resolve) => setImmediate(resolve));
+    await assert.rejects(service.prepare('h', large, 's17', 'a1'), /memory limit/);
+    resume();
+    await Promise.all(pending.map((preparation) => assert.rejects(preparation, /test stream failure/)));
+    assert.equal((await service.prepare('h', client(), 's1', 'a1')).reachable, true);
+  } finally {
+    resume();
+    await Promise.allSettled(pending);
     await service.close();
   }
 });
