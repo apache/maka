@@ -489,6 +489,11 @@ describe('agent graph client read model', () => {
     assert.equal(first.activity, undefined);
     assert.equal(first.operator.operator.output?.preview, 'Reviewing ');
     assert.equal(first.operator.operator.output?.sampleStartedAt, 1_000);
+    assert.equal(
+      first.snapshot.snapshotVersion,
+      initial.snapshot.snapshotVersion,
+      'presentation-only output must not supersede supervisor wakes',
+    );
 
     const replayed = advanceMaterializedAgentGraphClientProjection(
       first.snapshot,
@@ -519,6 +524,7 @@ describe('agent graph client read model', () => {
       false,
     )!;
     assert.equal(second.operator.operator.output?.preview, 'Reviewing projection');
+    assert.equal(second.snapshot.snapshotVersion, initial.snapshot.snapshotVersion);
 
     const usage = advanceMaterializedAgentGraphClientProjection(
       second.snapshot,
@@ -537,6 +543,11 @@ describe('agent graph client read model', () => {
     assert.equal(usage.operator.operator.output?.sampleDurationMs, 2_000);
     assert.equal(usage.operator.operator.output?.tokensPerSecond, 10);
     assert.equal(usage.operator.operator.output?.sourceEventId, 'delta-2');
+    assert.notEqual(
+      usage.snapshot.snapshotVersion,
+      initial.snapshot.snapshotVersion,
+      'durable runtime activity must still advance the supervisor-facing version',
+    );
 
     const settled = advanceMaterializedAgentGraphClientProjection(
       usage.snapshot,
@@ -581,6 +592,31 @@ describe('agent graph client read model', () => {
         type: 'text_delta',
         ts: 2_000,
         messageId: 'gap-message',
+        startOffset: 20,
+        text: 'tail',
+      }),
+      false,
+    )!;
+
+    assert.equal(fragment.operator.operator.output?.preview, 'tail');
+    assert.equal(fragment.operator.operator.output?.previewTruncated, true);
+  });
+
+  test('marks the first output fragment after a rebuild as truncated', () => {
+    const graphId = 'graph-rebuilt-fragment';
+    const operatorId = 'operator-rebuilt-fragment';
+    const childSessionId = 'child-rebuilt-fragment';
+    const initial = materializeAgentGraphClientProjection(
+      runningInput(graphId, operatorId, childSessionId),
+    );
+    const fragment = advanceMaterializedAgentGraphClientProjection(
+      initial.snapshot,
+      initial.operators[0]!,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'rebuilt-fragment',
+        type: 'text_delta',
+        ts: 2_000,
+        messageId: 'rebuilt-message',
         startOffset: 20,
         text: 'tail',
       }),

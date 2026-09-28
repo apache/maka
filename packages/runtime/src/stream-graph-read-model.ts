@@ -413,7 +413,6 @@ export function advanceMaterializedAgentGraphClientProjection(
     snapshot.operators[visibleOperatorIndex] = structuredClone(inspection.operator);
   }
   if (!projected || !activity) {
-    snapshot.latestEventTime = Math.max(snapshot.latestEventTime ?? 0, runtime.event.ts);
     snapshot.snapshotVersion = clientSnapshotVersion(snapshot);
     inspection.snapshotVersion = snapshot.snapshotVersion;
     return { snapshot, operator: inspection };
@@ -887,10 +886,10 @@ function advanceClientOperatorOutput(
     const sameMessage = existing?.messageId === event.messageId;
     const append = event.type === 'text_delta' && sameMessage;
     const discontinuous =
-      append &&
+      event.type === 'text_delta' &&
       event.startOffset !== undefined &&
-      !existing.previewTruncated &&
-      event.startOffset > existing.preview.length;
+      event.startOffset >
+        (sameMessage && existing && !existing.previewTruncated ? existing.preview.length : 0);
     const text = append ? foldClientOutputDelta(existing, event) : event.text;
     const preview = boundClientOutputPreview(text);
     if (!preview.text) return undefined;
@@ -1570,9 +1569,13 @@ function clientSnapshotVersion(snapshot: AgentGraphClientSnapshot): string {
   const {
     snapshotVersion: _snapshotVersion,
     terminalHistory: _terminalHistory,
+    operators,
     ...boundedContent
   } = snapshot;
-  return stableHash(boundedContent);
+  return stableHash({
+    ...boundedContent,
+    operators: operators.map(({ output: _output, ...operator }) => operator),
+  });
 }
 
 function normalizeReconciliationFailures(
