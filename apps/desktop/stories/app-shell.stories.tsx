@@ -49,9 +49,7 @@ import { retractQueuedEntryToDraft, withQueuedSteeringTransients } from '../src/
 import { AppShellTitlebar } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
-import {
-  WorkbarServicesProvider,
-} from '../src/renderer/features/workbar';
+import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
 import { WorkbarSurface, WorkbarTitlebarActionsView } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
@@ -327,7 +325,9 @@ function ShellFrame(props: {
             sessionListCollapsed: props.sidebarCollapsed ?? false,
             sessionListWidth: SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
           }),
-          // Production publishes this from WorkbarProvider, above the frame.
+          /* Production publishes the width from WorkbarProvider above the
+             frame; the cap arrives through `appShellFrameStyle` — it reads
+             `--maka-sidenav-width`, which only this element defines. */
           '--maka-session-workbar-width': `${props.workbarWidth ?? SESSION_WORKBAR_DEFAULT_WIDTH}px`,
         } as CSSProperties
       }
@@ -3622,6 +3622,43 @@ export const PromptRailStaysInsideTheScrollport: Story = {
   },
 };
 
+// Real path: open a Session with history and resize the Desktop window. The
+// smoke runs this same state at 720, 824, 825 and 1280px, including native
+// pointer hover at the shown widths; the rail needs room for its whole hit box.
+export const PromptRailClearsUserMessagesInANarrowWindow: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const scrollport = tailScroller().getBoundingClientRect();
+    const visibleUserBubbles = () =>
+      [...document.querySelectorAll<HTMLElement>('.maka-chat-message-bubble-user')]
+        .map((bubble) => bubble.getBoundingClientRect())
+        .filter((box) => box.bottom > scrollport.top && box.top < scrollport.bottom);
+    // The rail lists every Turn at once; the transcript mounts its rows after.
+    // Without a user message on screen there is nothing the rail could cover.
+    await waitFor(() => expect(visibleUserBubbles().length).toBeGreaterThan(0));
+    const bubbles = visibleUserBubbles();
+
+    const rail = document.querySelector('.maka-prompt-rail');
+    if (!rail) throw new Error('the prompt rail is missing');
+    if (window.innerWidth < 825) {
+      expect(rail.closest('.maka-prompt-rail-host')).toHaveStyle({ display: 'none' });
+      expect(rail).not.toBeVisible();
+      expect(rail.getClientRects()).toHaveLength(0);
+      return;
+    }
+    expect(rail).toBeVisible();
+    const box = rail.getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(0);
+    expect(
+      bubbles
+        .filter((bubble) => bubble.bottom > box.top && bubble.top < box.bottom && bubble.right > box.left)
+        .map((bubble) => Math.round(bubble.right - box.left)),
+      'pixels of user messages under the rail',
+    ).toEqual([]);
+  },
+};
+
 export const PromptRailHasNoGapsBetweenTicks: Story = {
   render: () => <PromptRailHarness />,
   play: async () => {
@@ -3908,6 +3945,9 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
     panels: createSessionWorkbarPanelsState(),
     activeSessionId: 'session-active',
     collapsedBySession: {},
+    compact: false,
+    compactCollapsed: {},
+    spaceCollapsed: false,
     bottomOpen: false,
     rightWidth: SESSION_WORKBAR_DEFAULT_WIDTH,
     bottomHeight: SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
@@ -3915,7 +3955,14 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
 );
 
-function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean; togglePosition?: 'titlebar' | 'edge' } = {}) {
+function WorkbarInShell(props: {
+  longTitle?: boolean;
+  onShare?: () => void;
+  workbarWidth?: number;
+  withConversation?: boolean;
+  togglePosition?: 'titlebar' | 'edge';
+  composer?: Partial<ComposerProps>;
+} = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
@@ -3938,7 +3985,13 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
           detailChildren={
             <div className="maka-detail-with-artifacts">
               <div className="mainColumn">
-                {props.withConversation && <ChatSurfaceLayout composer={<Composer {...baseComposerProps} activeSession={activeSession} />}>
+                {props.withConversation && <ChatSurfaceLayout composer={(
+                  <Composer
+                    {...baseComposerProps}
+                    activeSession={activeSession}
+                    {...props.composer}
+                  />
+                )}>
                   <ChatView {...baseChatProps} messages={promptRailMessages} />
                 </ChatSurfaceLayout>}
               </div>
@@ -3988,21 +4041,22 @@ export const TitlebarWithWideWorkbar: Story = {
     const menuButton = title.querySelector<HTMLButtonElement>('[aria-label$="任务操作"]')!;
     const bounds = () => {
       const box = title.getBoundingClientRect();
-      const boundary = window.innerWidth > 990
-        ? workbar.getBoundingClientRect().left
-        : frame.getBoundingClientRect().right;
+      const boundary = workbar.getBoundingClientRect().left;
       expect(box.right).toBeLessThanOrEqual(boundary);
       const action = menuButton.getBoundingClientRect();
       expect(action.width).toBeGreaterThanOrEqual(24);
       expect(action.right).toBeLessThanOrEqual(boundary);
       expect(document.elementFromPoint(action.x + action.width / 2, action.y + action.height / 2)?.closest('button')).toBe(menuButton);
     };
-    // Read the rendered columns at several controller widths, including the resize limits.
+    // Read the rendered columns at several controller widths, including the
+    // resize limits. The column draws the controller's width unless the frame
+    // leaves it less room beside the conversation, which a narrow canvas does.
     for (const width of [340, 600, 480]) {
       frame.style.setProperty('--maka-session-workbar-width', `${width}px`);
-      if (window.innerWidth > 990) {
-        await waitFor(() => expect(workbar.getBoundingClientRect().width).toBe(width));
-      }
+      await waitFor(() => expect(workbar.getBoundingClientRect().width).toBeCloseTo(
+        Math.min(width, parseFloat(getComputedStyle(workbar).maxWidth)),
+        0,
+      ));
       await waitFor(bounds);
     }
     menuButton.focus();
@@ -4177,13 +4231,14 @@ export const WorkbarTitlebarRestore: Story = {
 };
 
 const narrowWorkbarShare = fn();
+const narrowWorkbarWidth = 600;
 
-export const NarrowWorkbarClearsTitlebarReserve: Story = {
+export const WorkbarClearsTitlebarReserve: Story = {
   render: () => (
     <WorkbarInShell
       longTitle
       onShare={narrowWorkbarShare}
-      workbarWidth={600}
+      workbarWidth={narrowWorkbarWidth}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -4224,10 +4279,12 @@ export const NarrowWorkbarClearsTitlebarReserve: Story = {
         titlebar.getBoundingClientRect().left,
       ),
     );
-    expect(workbar.getBoundingClientRect().width).toBeCloseTo(
-      detail.getBoundingClientRect().width,
-      0,
-    );
+    // The right Workbar keeps its configured width even when the narrow detail
+    // column has less room; titlebar clearance is asserted independently below.
+    // The restore ease is still interpolating when visibility flips, so the
+    // width read has to wait the transition out.
+    await waitFor(() =>
+      expect(workbar.getBoundingClientRect().width).toBeCloseTo(narrowWorkbarWidth, 0));
     expect(share.getBoundingClientRect().right).toBeLessThanOrEqual(
       titlebar.getBoundingClientRect().right,
     );
@@ -4235,6 +4292,140 @@ export const NarrowWorkbarClearsTitlebarReserve: Story = {
     await userEvent.click(share);
     await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole('menuitem', { name: '分享任务' }));
     expect(narrowWorkbarShare).toHaveBeenCalledOnce();
+  },
+};
+
+// Real path: on a window too narrow for the configured Workbar the frame caps
+// the column, and the titlebar must reserve the DRAWN width. Reserving the
+// configured width would squeeze the session identity out against space the
+// Workbar does not occupy. The `narrow` story id puts this render on the
+// smoke lane's 720px viewport (the runner keys width off the id, not the
+// toolbar pin below — the pin only keeps local dev narrow too); at 720px the
+// 600px Workbar is capped to ~52px, so the two reserve formulas differ by
+// ~548px of padding.
+export const NarrowWorkbarCappedTitlebarReserve: Story = {
+  parameters: {
+    viewport: {
+      options: {
+        workbarCapped: {
+          name: 'Maka desktop window narrower than the workbar fit',
+          styles: { width: '1100px', height: '800px' },
+          type: 'desktop' as const,
+        },
+      },
+    },
+  },
+  globals: { viewport: { value: 'workbarCapped', isRotated: false } },
+  render: () => (
+    <WorkbarInShell longTitle workbarWidth={narrowWorkbarWidth} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const titlebar = canvasElement.querySelector<HTMLElement>('.maka-window-titlebar');
+    const workbar = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar[data-placement="right"]:not([data-collapsed])',
+    );
+    if (!titlebar || !workbar) {
+      throw new Error('the titlebar or right workbar is missing');
+    }
+
+    // The gutter token is an unresolved calc() in computed style, so read it
+    // empirically: collapsed, the reserve rule is off and padding-right is the
+    // gutter alone. It eases, so poll until two reads agree.
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    await waitFor(() => expect(workbar).not.toBeVisible());
+    let gutter = 0;
+    await waitFor(async () => {
+      const next = parseFloat(getComputedStyle(titlebar).paddingRight);
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      expect(parseFloat(getComputedStyle(titlebar).paddingRight)).toBe(next);
+      gutter = next;
+    });
+
+    await userEvent.click(await canvas.findByRole('button', { name: '展开任务工作栏' }));
+    await waitFor(() => {
+      const drawnWorkbar = workbar.getBoundingClientRect().width;
+      expect(drawnWorkbar).toBeGreaterThan(0);
+      expect(drawnWorkbar).toBeLessThan(narrowWorkbarWidth);
+      const seam = parseFloat(
+        getComputedStyle(titlebar).getPropertyValue('--agents-content-area-gap'),
+      );
+      expect(parseFloat(getComputedStyle(titlebar).paddingRight)).toBeCloseTo(
+        gutter + drawnWorkbar + seam,
+        0,
+      );
+    });
+  },
+};
+
+// Real path: a session with the right workbar open while the conversation
+// column is narrow enough for a long model label to exercise the composer's
+// footer shrink contract. Model and thinking controls remain available while
+// the lower-priority usage action is hidden.
+export const NarrowComposerFooter: Story = {
+  parameters: {
+    viewport: {
+      options: {
+        composerNarrow: {
+          name: 'Maka desktop with a narrow conversation column',
+          styles: { width: '1200px', height: '800px' },
+          type: 'desktop' as const,
+        },
+      },
+    },
+  },
+  globals: { viewport: { value: 'composerNarrow', isRotated: false } },
+  render: () => (
+    <WorkbarInShell
+      withConversation
+      workbarWidth={600}
+      composer={{
+        activeModelLabel: 'provider/very-long-model-name-that-must-stay-inside-the-card',
+        planModeActive: true,
+        orchestrationMode: 'swarm',
+        contextUsage: {
+          usageTokens: 100_000,
+          declaredContextWindow: 100_000,
+          onOpen: noop,
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const mainColumn = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts > .mainColumn');
+    const card = mainColumn?.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!mainColumn || !card) throw new Error('the narrow conversation composer is missing');
+    // A 600px Workbar beside the default sidebar does not fit a 1200px window;
+    // the frame caps the Workbar so the conversation lands on its floor, which
+    // is the narrowest column this footer is measured at.
+    await waitFor(() => expect(mainColumn.getBoundingClientRect().width).toBeCloseTo(400, 0));
+
+    const leftControls = card.querySelector<HTMLElement>('.maka-composer-left-controls');
+    if (!leftControls) throw new Error('composer footer controls are missing');
+    expect(getComputedStyle(leftControls).flexWrap).toBe('nowrap');
+
+    const send = within(card).getByRole('button', { name: '发送' });
+    const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
+    const thinkingField = card.querySelector<HTMLElement>(
+      '.maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector)',
+    );
+    if (!thinkingField) throw new Error('thinking level field is missing');
+    await waitFor(() => {
+      const cardBox = card.getBoundingClientRect();
+      const sendBox = send.getBoundingClientRect();
+      expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
+      expect(contextGauge).toBeNull();
+      expect(getComputedStyle(thinkingField).display).not.toBe('none');
+      const thinkingBox = thinkingField.getBoundingClientRect();
+      expect(thinkingBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(thinkingBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+      // The remaining controls must stay inside their flex slot rather than
+      // painting over the fixed send slot when the window narrows.
+      const controlsBox = leftControls.getBoundingClientRect();
+      expect(leftControls.scrollWidth).toBeLessThanOrEqual(leftControls.clientWidth + 1);
+      expect(controlsBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+    });
   },
 };
 

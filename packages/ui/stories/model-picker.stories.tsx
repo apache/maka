@@ -243,8 +243,10 @@ export const ExecutorCatalogReady: Story = {
     const body = within(document.body);
     await userEvent.click(await body.findByRole('button', { name: /选择模型|Select model/ }));
     await userEvent.click(await body.findByRole('button', { name: 'Antigravity' }));
-    await expect(body.getByText('Gemini 3.8 Flash')).toBeVisible();
-    await expect(body.getByText('Gemini 3.1 Pro')).toBeVisible();
+    // Selecting the entry mounts the thinking control beside the trigger, so
+    // the footer reflows and the panel's group view lands a frame later.
+    await waitFor(() => expect(body.getByText('Gemini 3.8 Flash')).toBeVisible());
+    await waitFor(() => expect(body.getByText('Gemini 3.1 Pro')).toBeVisible());
   },
 };
 
