@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { writeSync } from 'node:fs';
+import { fstatSync, writeSync, type Stats } from 'node:fs';
 import type { IDisposable, IPty } from 'node-pty';
 
 import type { PtyStack } from './pty-stack.js';
@@ -53,6 +53,7 @@ export class PtyProcessDriver {
   private writeFailure?: Error;
   private readonly drains = new Set<{ resolve(): void; reject(error: Error): void }>();
   private readonly onWriteFailure: (error: Error) => void;
+  private readonly fencedUnixFd?: { fd: number; identity: UnixFdIdentity };
 
   constructor(options: PtyProcessDriverOptions) {
     this.onWriteFailure = options.onInvariantFailure;
@@ -67,6 +68,7 @@ export class PtyProcessDriver {
       handleFlowControl: false,
     });
     this.pty = pty;
+    this.fencedUnixFd = captureUnixFd(pty);
     const subscriptions: IDisposable[] = [];
     try {
       subscriptions.push(
@@ -127,7 +129,7 @@ export class PtyProcessDriver {
   }
 
   get supportsInputFence(): boolean {
-    return process.platform !== 'win32' && Number.isInteger(this.unixFd);
+    return this.fencedUnixFd !== undefined;
   }
 
   /** Wait for admitted bytes to reach the OS, not for the child to consume them. */
@@ -152,14 +154,10 @@ export class PtyProcessDriver {
     });
   }
 
-  private get unixFd(): number | undefined {
-    return (this.pty as IPty & { fd?: number }).fd;
-  }
-
   private flushWrites(): void {
     if (this.writeTimer || this.exited || this.disposed) return;
-    const fd = this.unixFd;
-    if (fd === undefined) return;
+    const target = this.fencedUnixFd;
+    if (!target) return;
     // A synchronous nonblocking write cannot outlive this PTY's fd ownership.
     // Yield under backpressure and between bounded batches, never in the write.
     let budget = 64 * 1024;
@@ -171,7 +169,8 @@ export class PtyProcessDriver {
           this.writes.shift();
           continue;
         }
-        const written = writeSync(fd, entry.buffer, entry.offset, length);
+        if (!ownsUnixFd(target)) throw new Error('PTY input file descriptor ownership was lost');
+        const written = writeSync(target.fd, entry.buffer, entry.offset, length);
         if (written === 0) break;
         entry.offset += written;
         this.queuedBytes -= written;
@@ -181,9 +180,7 @@ export class PtyProcessDriver {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EAGAIN' && code !== 'EWOULDBLOCK' && code !== 'EINTR') {
-        this.writeFailure = new Error('PTY input delivery failed');
-        this.closeWrites();
-        this.onWriteFailure(this.writeFailure);
+        this.failWrites();
         return;
       }
     }
@@ -195,6 +192,12 @@ export class PtyProcessDriver {
     } else {
       for (const waiter of [...this.drains]) waiter.resolve();
     }
+  }
+
+  private failWrites(): void {
+    this.writeFailure = new Error('PTY input delivery failed');
+    this.closeWrites();
+    this.onWriteFailure(this.writeFailure);
   }
 
   private closeWrites(): void {
@@ -225,6 +228,35 @@ export class PtyProcessDriver {
         // Subscription cleanup is best-effort and must remain idempotent.
       }
     }
+  }
+}
+
+type UnixFdIdentity = Pick<Stats, 'dev' | 'ino' | 'mode' | 'rdev'>;
+
+function captureUnixFd(pty: IPty): { fd: number; identity: UnixFdIdentity } | undefined {
+  if (process.platform === 'win32') return undefined;
+  const fd = (pty as IPty & { fd?: number }).fd;
+  if (typeof fd !== 'number' || !Number.isInteger(fd)) return undefined;
+  try {
+    return { fd, identity: fstatSync(fd) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EBADF') return undefined;
+    throw error;
+  }
+}
+
+function ownsUnixFd(target: { fd: number; identity: UnixFdIdentity }): boolean {
+  try {
+    const current = fstatSync(target.fd);
+    return (
+      current.dev === target.identity.dev &&
+      current.ino === target.identity.ino &&
+      current.mode === target.identity.mode &&
+      current.rdev === target.identity.rdev
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EBADF') return false;
+    throw error;
   }
 }
 
