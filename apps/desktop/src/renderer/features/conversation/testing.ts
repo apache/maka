@@ -22,6 +22,7 @@ import type { ConversationServices } from './ports.js';
 export {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
+  readCompleteTranscript,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
 export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';

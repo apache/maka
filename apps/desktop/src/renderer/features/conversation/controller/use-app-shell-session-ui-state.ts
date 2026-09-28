@@ -21,7 +21,7 @@ import { useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { valuesEqual, type TransientUserMessageProjection } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../../../shared/desktop-session-projection.js';
-import { currentTranscriptRange } from './transcript-reading-position.js';
+import { currentTranscriptRange, readCompleteTranscript } from './transcript-reading-position.js';
 import { createAppShellSessionUiStateController, type AppShellSessionUiStateController } from '../model/session-ui-state.js';
 import { sessionUiSelectors } from '../model/session-ui-selectors.js';
 import { useSessionMessageQueue } from './use-session-message-queue.js';
@@ -69,7 +69,12 @@ export function shellSessionRowEqual(
 }
 
 interface TranscriptSource {
-  range(): { readonly sessionId: string; readonly hasOlder: boolean };
+  range(): {
+    readonly sessionId: string;
+    readonly hasOlder: boolean;
+    readonly ready: boolean;
+    readonly generation?: string;
+  };
   snapshot(): { readonly messages: readonly StoredMessage[]; readonly ready: boolean };
 }
 
@@ -82,7 +87,10 @@ export type TranscriptPublisher<Controller> = (
 
 /** The rendered messages and the earlier-history flag are a single publication. */
 export function useAppShellSessionUiState<
-  Controller extends { readonly store: TranscriptSource },
+  Controller extends {
+    readonly store: TranscriptSource;
+    loadEarlier(throughSequence?: number): Promise<void>;
+  },
 >(
   catalog: SessionCatalogController,
   requestedSessionId: string | undefined,
@@ -112,6 +120,8 @@ export function useAppShellSessionUiState<
   // stable as the other workspace actions consumers receive.
   const [actions] = useState(() => ({
     isMessagePublished: (message: StoredMessage) => messagesRef.current.includes(message),
+    readCompleteTranscript: (sessionId: string) =>
+      readCompleteTranscript(transcriptRangeRef, activeIdRef, sessionId),
     setMessagesState(messages: StoredMessage[]) {
       setView({
         sessionId: activeIdRef.current,

@@ -109,7 +109,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
       openCount++;
       if (failFirstRead && openCount === 1) throw new Error('transient initial read failure');
       publish = handler;
-      handler({ messages: [], ready: true, hasOlder: false });
+      handler({ messages: [], ready: true, hasOlder: false, historyComplete: true });
       return {
         observationChanged: () => {},
         loadEarlier: async () => { earlierLoads += 1; },
@@ -159,7 +159,9 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     loseObservation() { projectExecution(false); },
     get earlierLoads() { return earlierLoads; },
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
-    publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false }); },
+    publish(messages: StoredMessage[]) {
+      publish({ messages, ready: true, hasOlder: false, historyComplete: true });
+    },
   };
 }
 
@@ -797,6 +799,40 @@ test('loading earlier history reaches WorkHub’s transcript', async () => {
   const h = await mountController();
   await h.controller.loadEarlier();
   assert.equal(h.earlierLoads, 1);
+});
+
+test('WorkHub completes transcript history before deriving whole-session state', async () => {
+  const targets: (number | undefined)[] = [];
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      const recent: StoredMessage = {
+        type: 'assistant', id: 'recent', turnId: 'recent-turn', ts: 2,
+        modelId: 'model', text: 'recent answer',
+      };
+      handler({ messages: [recent], ready: true, hasOlder: true, historyComplete: false });
+      return {
+        observationChanged() {},
+        async loadEarlier(throughSequence) {
+          targets.push(throughSequence);
+          handler({
+            messages: [
+              { type: 'user', id: 'old', turnId: 'old-turn', ts: 1, text: 'old request' },
+              recent,
+            ],
+            ready: true,
+            hasOlder: false,
+            historyComplete: true,
+          });
+        },
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+
+  assert.deepEqual(targets, [0]);
+  assert.equal(h.controller.transcript.historyComplete, true);
+  assert.deepEqual(h.controller.transcript.messages.map(({ id }) => id), ['old', 'recent']);
 });
 
 test('follow-up admission before an uncertain response keeps its successor placement', async () => {

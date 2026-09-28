@@ -57,7 +57,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
   const {
     messagesRef, transcriptRangeRef, setMessagesState,
-    messages, publishedTranscriptRange, publishTranscript, isMessagePublished,
   } = publication;
   const {
     transientMessagesBySessionRef,
@@ -104,11 +103,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     activeIdRef,
     bootstrapSelectionLease: bootstrapSelectionLeaseRef.current,
     ...actions,
-    messages,
-    publishedTranscriptRange,
-    publishTranscript,
-    isMessagePublished,
-    transcriptRangeRef,
+    ...publication,
     ...display,
     // The store's own surface, not a copy of it. Consumers reach setters and
     // claims through the controller.

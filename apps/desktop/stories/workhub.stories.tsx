@@ -87,7 +87,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
   let newWorkDefaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'> = {};
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
-  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
+  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, historyComplete: true, ready: true }); };
   return {
     inspector: {
       context: async () => ({ ok: true, data: { status: 'available', completedAt: 1, modelId: session.model, providerId: 'openai', inputTokens: 1000, contextWindow: 100_000 } }),

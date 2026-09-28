@@ -127,6 +127,28 @@ export function currentTranscriptRange<Range extends { readonly sessionId: strin
   }
 }
 
+export async function readCompleteTranscript<Message>(
+  controllerRef: { readonly current: TranscriptRangeController<Message> | undefined },
+  sessionRef: { readonly current: string | undefined },
+  sessionId: string,
+): Promise<readonly Message[]> {
+  const controller = controllerRef.current;
+  const current = () => sessionRef.current === sessionId && controllerRef.current === controller;
+  const available = currentTranscriptRange(controller, sessionId);
+  if (!controller || !current()) {
+    throw new Error('The active task changed before its transcript could be exported');
+  }
+  if (!available?.ready || available.generation?.startsWith('cached:')) {
+    throw new Error('The complete task transcript is not available');
+  }
+  await controller.loadEarlier(0);
+  const complete = currentTranscriptRange(controller, sessionId);
+  if (!current() || !complete?.ready || complete.generation?.startsWith('cached:') || complete.hasOlder) {
+    throw new Error('The complete task transcript is not available');
+  }
+  return controller.store.snapshot().messages;
+}
+
 export function transcriptRestoreTarget(
   anchor: TranscriptReadingAnchor | undefined,
   unavailableTurnId: string | undefined,

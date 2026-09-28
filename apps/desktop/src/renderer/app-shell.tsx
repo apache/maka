@@ -328,6 +328,7 @@ function AppShellContent({
     publishedTranscriptRange,
     publishTranscript,
     isMessagePublished,
+    readCompleteTranscript,
     messageLoadPending,
     setMessageLoadPending,
     sessionUiController,
@@ -1912,7 +1913,7 @@ function AppShellContent({
     canStageComposerContext &&
     !(revisionDraft && activeId === revisionDraft.draftSessionId);
 
-  const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
+  const activeMessageLoadError = activeId && messageLoadErrorBySession[activeId];
   const activeTranscriptReadingAnchor = activeId
     ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
     : undefined;
@@ -1938,7 +1939,7 @@ function AppShellContent({
         : projectCapabilities.viewClientPath,
     connections: defaultHostConnections.snapshot.connections,
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
-    messages,
+    readCompleteTranscript,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
     settingsProfileId: overlays.selectors.settings.request.profileId,

@@ -142,7 +142,11 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
     text: 'Earlier coordination record '.repeat(8_000),
   };
   const earlierReads: unknown[] = [];
-  const projections: Array<{ ids: string[]; hasOlder: boolean }> = [];
+  const projections: Array<{
+    ids: string[];
+    hasOlder: boolean;
+    historyComplete: boolean;
+  }> = [];
   const partialProjectionCounts: number[] = [];
   let bridge: MakaBridge | undefined;
   let consumerId: string;
@@ -245,7 +249,11 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
   });
   const handle = await services.openTranscript(
     sessionId,
-    (snapshot) => projections.push({ ids: snapshot.messages.map((message) => message.id), hasOlder: snapshot.hasOlder }),
+    (snapshot) => projections.push({
+      ids: snapshot.messages.map((message) => message.id),
+      hasOlder: snapshot.hasOlder,
+      historyComplete: snapshot.historyComplete,
+    }),
     new AbortController().signal,
     (error) => { throw error; },
   );
@@ -258,8 +266,8 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
     assert.ok(partialProjectionCounts.length > 0, 'the answer has to span more than one batch');
     assert.ok(partialProjectionCounts.every((count) => count === 1));
     assert.deepEqual(projections, [
-      { ids: ['tail-message'], hasOlder: true },
-      { ids: ['earlier-message', 'tail-message'], hasOlder: false },
+      { ids: ['tail-message'], hasOlder: true, historyComplete: false },
+      { ids: ['earlier-message', 'tail-message'], hasOlder: false, historyComplete: true },
     ]);
     await handle.loadEarlier();
     assert.equal(earlierReads.length, 1, 'nothing is read once no earlier history remains');
@@ -285,6 +293,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
     let onReady!: () => void;
     let onPhase!: (phase: 'pending' | 'ready') => void;
     let latest: readonly StoredMessage[] = [];
+    let latestHistoryComplete = false;
     const opening = deferred<void>();
     const errors: unknown[] = [];
     const services = createDesktopWorkHubServices({
@@ -323,16 +332,23 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
         },
       } satisfies Pick<MakaBridge['transcripts'], 'open'>,
     } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
-    const handle = await services.openTranscript(sessionId, (snapshot) => { latest = snapshot.messages; }, new AbortController().signal, (error) => errors.push(error));
+    const handle = await services.openTranscript(sessionId, (snapshot) => {
+      latest = snapshot.messages;
+      latestHistoryComplete = snapshot.historyComplete;
+    }, new AbortController().signal, (error) => errors.push(error));
     const unsubscribe = services.observe(sessionId, () => {}, (error) => errors.push(error), handle.observationChanged);
     try {
       if (initial === 'failure-after-ready') onReady();
       opening.resolve();
       if (initial !== 'cached') await waitFor(() => errors.length > 0, { timeoutMs: 5_000 });
-      else assert.deepEqual(latest.map(({ id }) => id), ['cached-message']);
+      else {
+        assert.deepEqual(latest.map(({ id }) => id), ['cached-message']);
+        assert.equal(latestHistoryComplete, false);
+      }
       onPhase('pending');
       onPhase('ready');
       await waitFor(() => latest.some(({ id }) => id === 'live-message'), { timeoutMs: 5_000 });
+      assert.equal(latestHistoryComplete, true);
       assert.equal(openCount, 2);
       assert.equal(closedCount, initial === 'cached' ? 1 : 0);
       assert.equal(errors.length, initial === 'cached' ? 0 : 1);

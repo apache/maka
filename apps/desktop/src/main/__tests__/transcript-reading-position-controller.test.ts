@@ -33,6 +33,7 @@ import {
 import {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
+  readCompleteTranscript,
   restoreSessionTranscriptRange,
 } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
@@ -56,6 +57,37 @@ function handle(overrides: Partial<DesktopTranscriptHandle> = {}): DesktopTransc
     ...overrides,
   };
 }
+
+test('complete transcript reads target the beginning and reject provisional ranges', async () => {
+  const messages = [answer('a'), answer('b')];
+  const reads: (number | undefined)[] = [];
+  let range = { sessionId: SESSION_ID, hasOlder: true, ready: true, generation: 'live-1' };
+  const controller = {
+    store: {
+      range: () => range,
+      snapshot: () => ({ messages }),
+    },
+    async loadEarlier(throughSequence?: number) {
+      reads.push(throughSequence);
+      range = { ...range, hasOlder: false };
+    },
+  };
+  const controllerRef = { current: controller };
+  const sessionRef = { current: SESSION_ID };
+
+  assert.deepEqual(
+    await readCompleteTranscript(controllerRef, sessionRef, SESSION_ID),
+    messages,
+  );
+  assert.deepEqual(reads, [0]);
+
+  range = { ...range, generation: 'cached:host-1' };
+  await assert.rejects(
+    readCompleteTranscript(controllerRef, sessionRef, SESSION_ID),
+    /complete task transcript is not available/,
+  );
+  assert.deepEqual(reads, [0], 'cached previews cannot be exported as complete history');
+});
 
 async function restoreFromEarlierHistory(lookupTurn?: (sessionId: string, turnId: string) => Promise<number | undefined>) {
   const store = new DesktopTranscriptRangeStore(SESSION_ID);

@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 51 |
-| platform-contract | 39 |
+| platform-contract | 40 |
 
-Total Windows-excluded declarations: **117**
+Total Windows-excluded declarations: **118**
 
 ## Inventory
 

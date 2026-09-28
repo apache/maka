@@ -53,6 +53,7 @@ import type { WorkHubServices, WorkHubTranscript, WorkHubTranscriptSnapshot } fr
 const emptyTranscript: WorkHubTranscriptSnapshot = {
   messages: [],
   hasOlder: false,
+  historyComplete: false,
   ready: false,
 };
 interface SendAttempt {
@@ -490,6 +491,22 @@ export function useWorkHubController(
       },
       (projection) => { if (!disposed) setExecution(projection); },
     );
+    let fullHistoryRequested = false;
+    const loadFullHistory = () => {
+      if (
+        disposed ||
+        fullHistoryRequested ||
+        !handle ||
+        !transcriptRef.current.ready ||
+        !transcriptRef.current.hasOlder
+      ) return;
+      fullHistoryRequested = true;
+      void handle.loadEarlier(0).then(() => {
+        if (!disposed && !transcriptRef.current.historyComplete) {
+          readFailed(new Error('WorkHub transcript history is incomplete'));
+        }
+      }, readFailed);
+    };
     const opening = services.openTranscript(sessionId, (snapshot) => {
       if (disposed) return;
       const attempt = pendingSend.current;
@@ -503,6 +520,7 @@ export function useWorkHubController(
         message.type === 'user' && message.id === queued.messageId)) queued.observed = true;
       transcriptRef.current = snapshot;
       setTranscript(snapshot);
+      loadFullHistory();
       if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
       setMessagePresentation((previous) => ({ ...previous, transientMessages: previous.transientMessages.filter((pending) =>
         !snapshot.messages.some((message) => message.type === 'user' &&
@@ -523,6 +541,7 @@ export function useWorkHubController(
         else {
           range.current = opened;
           opened.observationChanged(observationPhase);
+          loadFullHistory();
         }
       })
       .catch(readFailed);

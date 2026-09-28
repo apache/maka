@@ -32,11 +32,12 @@ import type { WorkHubWorkspaceServices } from '../../application/contracts/workh
 export interface WorkHubTranscriptSnapshot {
   readonly messages: readonly StoredMessage[];
   readonly hasOlder: boolean;
+  readonly historyComplete: boolean;
   readonly ready: boolean;
 }
 export interface WorkHubTranscript {
   observationChanged(phase: 'pending' | 'ready'): void;
-  loadEarlier(): Promise<void>;
+  loadEarlier(throughSequence?: number): Promise<void>;
   close(): Promise<void>;
 }
 export interface WorkHubServices extends WorkHubWorkspaceServices {
