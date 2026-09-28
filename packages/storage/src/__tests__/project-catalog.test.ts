@@ -95,8 +95,10 @@ const isRegularFileResolutionFailure = (
   canonicalPath: string | undefined,
 ): boolean =>
   canonicalPath !== undefined &&
-  error instanceof TypeError &&
-  error.message.endsWith(`not a directory: ${canonicalPath}`);
+  typeof error === 'object' &&
+  error !== null &&
+  TypeError.prototype.isPrototypeOf(error) &&
+  (error as TypeError).message.endsWith(`not a directory: ${canonicalPath}`);
 
 const createRegularFile = async (parent: string) => {
   const file = join(parent, 'project.txt');
