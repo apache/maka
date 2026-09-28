@@ -189,8 +189,9 @@ export interface PlanHistoryCompactionInput {
    * The invocations behind the ordered events, and the route this fold is
    * dispatched on. Together they name the newest reply this route produced,
    * which is the only span a retreat may target: a rejection of a larger one
-   * says nothing about a span another model accepted. A mid_turn fold never
-   * retreats — its proven boundary always precedes the head anchor.
+   * says nothing about a span another model accepted. Handoff counts too: a
+   * predecessor run's reply inside the same logical turn can sit after the
+   * head anchor and still prove a mid_turn retreat.
    */
   invocations?: readonly RuntimeInvocationRecord[];
   acceptedRoute?: { modelId: string; connectionId?: string };
@@ -388,16 +389,6 @@ export async function planHistoryCompaction(
           // is only one proven boundary; a rejection of that span too is the
           // provider saying this fold cannot be made, and the fold fails open
           // (#4559).
-          // Mid_turn has no retreat at all: the proven boundary is a prior-run
-          // reply, which always precedes the head anchor that mid_turn
-          // coverage must cover past, so the retreated cut could never fold.
-          if (phase === 'mid_turn') {
-            return {
-              decision: 'fail_open',
-              reason: 'summarizer_failed',
-              diagnosticReason: error.reason,
-            };
-          }
           const proven = acceptedInputBoundary(
             input.orderedEvents,
             input.invocations ?? [],

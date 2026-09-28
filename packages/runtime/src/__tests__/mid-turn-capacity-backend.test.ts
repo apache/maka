@@ -1109,9 +1109,8 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
   });
 
   test('bounds an input-too-large rejection across later steps in the same turn (#5790 review)', async () => {
-    // Mid_turn has no retreat — the proven boundary is a prior-turn reply
-    // before the head anchor — so the rejection is a plain summarizer failure
-    // and the Turn latches it.
+    // No invocation proves a boundary, so the rejection is a plain summarizer
+    // failure and the Turn latches it — a later step never re-dispatches it.
     const fixture = buildFixture({
       toolSteps: 3,
       summarize: () => {
