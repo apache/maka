@@ -20,6 +20,7 @@
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
 import { pluginInvocationSignal } from './plugin-invocation-signal.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 import {
   MakaPluginRuntimeError,
   pluginIdentity,
@@ -73,7 +74,7 @@ interface RegisteredAdapter extends MakaContributionIdentity {
 
 /** Metered Host model calls plus an ordered plugin adapter seam. */
 export class PluginLlmService extends Service {
-  private llmRuntime?: PluginLlmRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginLlmRuntime>;
   private readonly adapters = new PluginScopeRegistry<RegisteredAdapter>();
 
   constructor(
@@ -81,18 +82,11 @@ export class PluginLlmService extends Service {
     private readonly agents: PluginAgentService,
   ) {
     super(ctx, 'llm');
+    this.runtimeBinding = new PluginRuntimeBinding('llm', 'LLM');
   }
 
   bindRuntime(runtime: PluginLlmRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the LLM Runtime');
-    if (this.llmRuntime) throw new Error('Plugin LLM Runtime is already bound');
-    this.llmRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.llmRuntime === runtime) this.llmRuntime = undefined;
-      },
-      'llm.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   register(adapter: PluginLlmAdapter): Disposable<Promise<void>> {
@@ -138,7 +132,6 @@ export class PluginLlmService extends Service {
           .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0))[0]
       : undefined;
     if (adapter) return adapter.generate(effectiveInput, invocation);
-    if (!this.llmRuntime) throw new Error('Plugin LLM Runtime is unavailable');
-    return this.llmRuntime.generate(effectiveInput, invocation);
+    return this.runtimeBinding.get().generate(effectiveInput, invocation);
   }
 }
