@@ -8390,6 +8390,89 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('serializes an idle /session switch behind a retraction started during its activity wait', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const activities = new SessionActivityRegistry();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      turnActivity: createTestTurnActivity(activities),
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // End the turn: the runner is idle while the Host still holds the queued
+    // message and the quote riding it.
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    // Deliberately hold the session's activity lease, then start the idle
+    // `/session`: runControl parks on activities.acquire before it can reach
+    // the switch (#5265 review).
+    const heldLease = await activities.acquire(driver.getSessionId()!);
+    terminal.input('/session session-other');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    // Alt+Up during that wait: the root key handler still retracts, and the
+    // retraction must land before the parked switch re-keys the driver — the
+    // switched-session fence would otherwise discard what the Host already
+    // removed from the queue (#5265 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b[1;3A'); // Alt+Up
+    await waitFor(() => driver.retractCalls === 1);
+
+    heldLease.release();
+    // Give the parked switch every chance to race the retraction: without a
+    // guard it re-keys within a few ticks of the lease release, while the
+    // guarded path stays parked until the gate below opens.
+    await Promise.race([
+      waitFor(() => driver.eventLog.some((entry) => entry.startsWith('switch:'))),
+      delay(50),
+    ]);
+    driver.retractGate.resolve();
+    await waitFor(() => driver.getSessionId() === 'session-other');
+
+    const retractDone = driver.eventLog.findIndex((entry) => entry.startsWith('retract-done:'));
+    const switchDone = driver.eventLog.findIndex((entry) => entry.startsWith('switch:'));
+    assert.ok(retractDone !== -1, 'the retraction completed');
+    assert.ok(
+      switchDone !== -1 && retractDone < switchDone,
+      'the switch re-keys only after the retraction lands: ' + driver.eventLog.join(','),
+    );
+    assert.ok(
+      editorInputText(terminal)?.includes('queued resend') === true,
+      'the retracted text must reach the editor instead of being discarded by the switched-session fence',
+    );
+    assert.deepEqual(driver.retractedQuoteLoads.at(-1), [
+      { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('discards a retraction that lands after a mid-turn session switch', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
