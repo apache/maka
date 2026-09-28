@@ -52,7 +52,8 @@ async function submitSteeringDraft(
   composer: Locator,
   text: string,
 ): Promise<void> {
-  await composer.fill(text);
+  await composer.press("ControlOrMeta+A");
+  await composer.insertText(text);
   await composer.press("ControlOrMeta+Enter");
 }
 
@@ -254,11 +255,7 @@ test("a successor owns working status and remounting leaves accumulated output s
 
   await liveBubble.evaluate((element) => {
     const observed = { texts: [] as string[] };
-    (
-      window as typeof window & {
-        __makaStreamingRemountObserved?: typeof observed;
-      }
-    ).__makaStreamingRemountObserved = observed;
+    Object.assign(window, { __makaStreamingRemountObserved: observed });
     new MutationObserver(() => {
       observed.texts.push(element.textContent ?? "");
     }).observe(element, {
@@ -391,16 +388,11 @@ test("returning to a live conversation settles output accumulated while away", a
   expect(
     (await page.getByRole("log").textContent())?.split(accumulatedOutput),
   ).toHaveLength(2);
-  // Playwright's toContainText is a DOM check. Stop on the next animation
-  // frame so the already-queued sample() records that settled paint first.
-  const backgroundRestoreObserved = await page.evaluate(
-    stopStreamingPaintObserver,
-  );
-  expect(
-    backgroundRestoreObserved?.texts.some((text) =>
-      text.includes(backgroundSteering),
-    ),
-  ).toBe(true);
+  const stopObserver = stopStreamingPaintObserver;
+  const backgroundRestoreObserved = await page.evaluate(stopObserver);
+  const restoredAtPaint =
+    backgroundRestoreObserved?.texts.some((text) => text.includes(backgroundSteering)) ?? false;
+  expect(restoredAtPaint).toBe(true);
   expect(
     backgroundRestoreObserved?.texts.some(
       (text) =>

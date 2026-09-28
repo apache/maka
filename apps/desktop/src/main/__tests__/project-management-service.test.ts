@@ -22,7 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { createProjectCatalog, type ProjectCatalog } from '@maka/storage/project-catalog';
 import {
   createProjectManagementService,
@@ -90,53 +90,51 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
   }
 });
 
-test('add preserves the exact selected directory inside an existing repository', async () => {
+const verifyExactRepositorySelection = async (t: TestContext) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-exact-selection-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
   const repository = join(base, 'repository');
   const nestedDirectory = join(repository, 'nested');
   await mkdir(nestedDirectory, { recursive: true });
-  execFileSync('git', ['init', '--quiet'], { cwd: repository });
-
-  const choices = [repository, nestedDirectory];
+  execFileSync('git', ['init', '--quiet', repository]);
+  const choices = [repository, nestedDirectory].values();
+  const ids = ['project-repository', 'project-nested'].values();
   const selections: Array<{ id: string; path: string }> = [];
-  let nextId = 0;
-  const catalog = createProjectCatalog(join(base, 'storage'), {
-    createId: () => `project-${++nextId}`,
+  const catalogDeps = {
+    createId: () => ids.next().value ?? assert.fail('unexpected Project allocation'),
     now: () => 1_000,
-  });
-  const service = createProjectManagementService({
+  };
+  const catalog = createProjectCatalog(join(base, 'storage'), catalogDeps);
+  t.after(() => catalog.close());
+  const selection = {
+    currentSelection: async () => ({ path: repository, projectId: undefined }),
+    setSelection(id: string | null, path: string) {
+      assert.ok(id);
+      selections.push({ id, path });
+    },
+  };
+  const serviceOptions = {
     capabilities: LOCAL_CAPABILITIES,
     catalog: managementCatalog(catalog),
-    chooseDirectory: async () => choices.shift(),
-    selection: {
-      currentSelection: async () => ({ path: repository, projectId: undefined }),
-      setSelection: (id, path) => {
-        assert.ok(id);
-        assert.ok(path);
-        selections.push({ id, path });
-      },
-    },
-  });
-
-  try {
-    const repositoryResult = await service.add();
-    const nestedResult = await service.add();
-    assert.equal(repositoryResult.ok, true);
-    assert.equal(nestedResult.ok, true);
-    if (!repositoryResult.ok || !nestedResult.ok) assert.fail('Expected both Projects to be added');
-
-    assert.notEqual(repositoryResult.project.id, nestedResult.project.id);
-    assert.deepEqual(
-      selections.map(({ path }) => path),
-      [await realpath(repository), await realpath(nestedDirectory)],
-    );
-    assert.equal(nestedResult.path, await realpath(nestedDirectory));
-  } finally {
-    catalog.close();
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
+    chooseDirectory: async () => choices.next().value,
+    selection,
+  } satisfies Parameters<typeof createProjectManagementService>[0];
+  const service = createProjectManagementService(serviceOptions);
+  const results = await Promise.all([service.add(), service.add()]);
+  assert.ok(results.every((result) => result.ok));
+  const [repositoryResult, nestedResult] = results;
+  if (!repositoryResult?.ok || !nestedResult?.ok) assert.fail('Expected both Projects to be added');
+  const canonicalPaths = await Promise.all(
+    [repository, nestedDirectory].map((path) => realpath(path)),
+  );
+  assert.notEqual(repositoryResult.project.id, nestedResult.project.id);
+  assert.deepEqual(selections.map(({ path }) => path), canonicalPaths);
+  assert.deepEqual(
+    results.map((result) => result.ok && result.path),
+    canonicalPaths,
+  );
+};
+test('add preserves the exact selected directory inside an existing repository', verifyExactRepositorySelection);
 test('can register a draft Project without changing the Host selection', async () => {
   let selected = false;
   const service = createProjectManagementService({
@@ -285,7 +283,7 @@ test('does not silently replace a stale Project preference with another Project'
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
     catalog: {
-      list: async () => [{ id: 'other', name: 'Other', locations: [], available: true }],
+      list: async () => [Object.freeze({ id: 'other', name: 'Other', locations: [], available: true })],
       register: unexpected,
       relink: unexpected,
       rename: unexpected,

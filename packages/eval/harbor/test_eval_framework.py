@@ -15,38 +15,41 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import importlib.util
-import unittest
-from pathlib import Path
-
-
-def isolated_authority():
-    module_path = Path(__file__).with_name("eval_framework.py")
-    spec = importlib.util.spec_from_file_location("isolated_eval_framework", module_path)
+from importlib import util as module_util
+import unittest as testing
+from pathlib import Path as FilePath
+FRAMEWORK_CASES = [
+    ("harbor", "harbor", "harbor.agents.base"),
+    ("pier", "datacurve-pier", "pier.agents.base"),
+]
+def fresh_authority():
+    spec = module_util.spec_from_file_location(
+        "isolated_eval_framework", FilePath(__file__).with_name("eval_framework.py")
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("could not load eval framework authority")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    authority = module_util.module_from_spec(spec)
+    spec.loader.exec_module(authority)
+    return authority
 
 
-class FrameworkAuthorityContract(unittest.TestCase):
+def metadata(authority, name: str) -> tuple[str, str, str]:
+    spec = authority.framework_spec(name)
+    distribution = authority.framework_distribution(name)
+    agent_module = authority.framework_agent_module(name)
+    return spec.name, distribution, agent_module
+
+
+class FrameworkAuthorityContract(testing.TestCase):
     def test_framework_metadata_is_self_consistent(self) -> None:
-        authority = isolated_authority()
-        expected = {
-            "harbor": ("harbor", "harbor.agents.base"),
-            "pier": ("datacurve-pier", "pier.agents.base"),
-        }
-        for name, (distribution, agent_module) in expected.items():
+        authority = fresh_authority()
+        for name, distribution, agent_module in FRAMEWORK_CASES:
             with self.subTest(name=name):
-                spec = authority.framework_spec(name)
-                self.assertEqual(spec.name, name)
-                self.assertEqual(authority.framework_distribution(name), distribution)
-                self.assertEqual(authority.framework_agent_module(name), agent_module)
-
+                expected = (name, distribution, agent_module)
+                self.assertTupleEqual(metadata(authority, name), expected)
     def test_install_is_last_write_wins_without_an_implicit_default(self) -> None:
-        authority = isolated_authority()
-        with self.assertRaisesRegex(RuntimeError, "not installed"):
+        authority = fresh_authority()
+        with self.assertRaisesRegex(RuntimeError, r"not installed"):
             authority.current_framework()
         for name in ("harbor", "pier", "harbor"):
             authority.install(name)
@@ -54,24 +57,21 @@ class FrameworkAuthorityContract(unittest.TestCase):
 
     def test_invalid_operations_never_mutate_selection(self) -> None:
         for initial in (None, "harbor"):
-            authority = isolated_authority()
+            authority = fresh_authority()
             if initial is not None:
                 authority.install(initial)
-            for operation in (
-                lambda: authority.install("other"),
-                lambda: authority.framework_spec("other"),
-                lambda: authority.framework_distribution("other"),
-                lambda: authority.framework_agent_module("other"),
+            for method_name in (
+                "install",
+                "framework_spec",
+                "framework_distribution",
+                "framework_agent_module",
             ):
-                with self.subTest(initial=initial, operation=operation):
-                    with self.assertRaisesRegex(RuntimeError, "harbor or pier"):
-                        operation()
+                with self.subTest(initial=initial, operation=method_name):
+                    with self.assertRaisesRegex(RuntimeError, r"harbor or pier"):
+                        getattr(authority, method_name)("other")
                     if initial is None:
-                        with self.assertRaisesRegex(RuntimeError, "not installed"):
+                        with self.assertRaisesRegex(RuntimeError, r"not installed"):
                             authority.current_framework()
                     else:
                         self.assertEqual(authority.current_framework(), initial)
-
-
-if __name__ == "__main__":
-    unittest.main()
+testing.main(exit=False) if __name__ == "__main__" else None

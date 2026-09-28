@@ -17,81 +17,91 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { SessionHeader } from '@maka/core/session';
-import type { HistoryCompactCheckpoint } from '@maka/runtime/history-compact-checkpoint';
-import type { BackendFactoryContext } from '@maka/runtime/session-manager';
-import { createDesktopE2eCheckpoint } from '../test-only/desktop-e2e-checkpoint.js';
-import { DesktopE2eBackend } from '../test-only/desktop-e2e-backend.js';
-
-function runtimeEvent(text: string, id = 'event-1'): RuntimeEvent {
-  return {
+import nodeAssert from 'node:assert/strict';
+import { test as scenario } from 'node:test';
+import type { RuntimeEvent as EventRecord } from '@maka/core/runtime-event';
+import type { SessionHeader as HeaderRecord } from '@maka/core/session';
+import type { HistoryCompactCheckpoint as Checkpoint } from '@maka/runtime/history-compact-checkpoint';
+import type { BackendFactoryContext as FactoryContext } from '@maka/runtime/session-manager';
+import { createDesktopE2eCheckpoint as checkpointFor } from '../test-only/desktop-e2e-checkpoint.js';
+import { DesktopE2eBackend as DeterministicBackend } from '../test-only/desktop-e2e-backend.js';
+const IDS = Object.freeze({ session: 'session-1', turn: 'turn-1', run: 'run-1' });
+const eventFor = (text: string, id: string): EventRecord =>
+  Object.freeze({
     id,
     invocationId: 'invocation-1',
-    runId: 'run-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    ts: 1,
-    partial: false,
-    role: 'user',
-    author: 'user',
-    content: { kind: 'text', text },
+    runId: IDS.run,
+    sessionId: IDS.session,
+    turnId: IDS.turn,
+    ...Object.fromEntries([
+      ['ts', 1],
+      ['partial', false],
+      ['role', 'user'],
+      ['author', 'user'],
+    ]),
+    content: Object.freeze({ kind: 'text', text }),
+  } as EventRecord);
+
+const contextWith = (
+  recorder?: (checkpoint: Checkpoint, turnId: string) => Promise<void>,
+): FactoryContext =>
+  ({
+    ...Object.fromEntries([
+      ['sessionId', IDS.session],
+      ['workspaceRoot', '/tmp/workspace'],
+      ['header', { model: 'fake-model' } as HeaderRecord],
+      ['store', {} as FactoryContext['store']],
+    ]),
+    ...(recorder === undefined ? {} : { recordHistoryCompactCheckpoint: recorder }),
+  }) as FactoryContext;
+
+const compact = (backend: DeterministicBackend, events: EventRecord[]) =>
+  backend.compactHistory({ turnId: IDS.turn, runId: IDS.run, runtimeContext: events });
+const checkpointEnvelope = (checkpoint: Checkpoint) => {
+  if (checkpoint.version !== 2) nodeAssert.fail('Desktop E2E checkpoints must be textual');
+  return Object.freeze([
+    checkpoint.version,
+    checkpoint.summaryFormat,
+    /^## Goal\nDeterministic Desktop E2E context checkpoint\./u.test(checkpoint.summary),
+  ]);
+};
+const verifyMissingPersistencePort = async () => {
+  const operation = compact(new DeterministicBackend(contextWith()), [
+    eventFor('hello', 'event-1'),
+  ]);
+  await nodeAssert.rejects(operation, /requires a checkpoint recorder/);
+};
+scenario('compaction is unavailable without a persistence port', verifyMissingPersistencePort);
+const persistsCheckpoint = async () => {
+  const writes: Array<Readonly<{ checkpoint: Checkpoint; turnId: string }>> = [];
+  const recorder = async (checkpoint: Checkpoint, turnId: string) => {
+    writes.push(Object.freeze({ checkpoint, turnId }));
   };
-}
-
-function backendContext(
-  record?: (checkpoint: HistoryCompactCheckpoint, turnId: string) => Promise<void>,
-): BackendFactoryContext {
-  return {
-    sessionId: 'session-1',
-    workspaceRoot: '/tmp/workspace',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as BackendFactoryContext['store'],
-    ...(record ? { recordHistoryCompactCheckpoint: record } : {}),
-  };
-}
-
-function compactInput(events: RuntimeEvent[]) {
-  return { turnId: 'turn-1', runId: 'run-1', runtimeContext: events };
-}
-
-test('Desktop E2E compaction requires an explicit persistence boundary', async () => {
-  const backend = new DesktopE2eBackend(backendContext());
-  await assert.rejects(
-    backend.compactHistory(compactInput([runtimeEvent('hello')])),
-    /requires a checkpoint recorder/,
-  );
-});
-
-test('backend and pure factory produce the same checkpoint contract', async () => {
-  const events = [runtimeEvent('hello')];
-  const writes: Array<{ checkpoint: HistoryCompactCheckpoint; turnId: string }> = [];
-  const backend = new DesktopE2eBackend(
-    backendContext(async (checkpoint, turnId) => {
-      writes.push({ checkpoint, turnId });
-    }),
-  );
-  const outcome = await backend.compactHistory(compactInput(events));
-  assert.equal(writes.length, 1);
-  const persisted = writes[0];
-  assert.ok(persisted);
-  assert.equal(persisted.turnId, 'turn-1');
-  assert.deepEqual(persisted.checkpoint, createDesktopE2eCheckpoint('session-1', events));
-  assert.deepEqual(outcome, {
-    outcome: { kind: 'compacted', checkpointId: persisted.checkpoint.checkpointId },
-  });
-});
-
-test('checkpoint envelope stays stable while covered event content changes', () => {
-  const first = createDesktopE2eCheckpoint('session-1', [runtimeEvent('first')]);
-  const second = createDesktopE2eCheckpoint('session-1', [runtimeEvent('second', 'event-2')]);
-
-  for (const checkpoint of [first, second]) {
-    assert.equal(checkpoint.version, 2);
-    assert.equal(checkpoint.summaryFormat, 'sections_v1');
-    assert.match(checkpoint.summary, /^## Goal\nDeterministic Desktop E2E context checkpoint\./);
-  }
-  assert.notEqual(first.checkpointId, second.checkpointId);
-});
+  const backend = new DeterministicBackend(contextWith(recorder));
+  const events = [eventFor('hello', 'event-1')];
+  const result = await compact(backend, events);
+  const persisted = writes.at(0);
+  nodeAssert.ok(persisted);
+  nodeAssert.equal(writes.length, 1);
+  nodeAssert.equal(persisted.turnId, IDS.turn);
+  nodeAssert.deepEqual(persisted.checkpoint, checkpointFor(IDS.session, events));
+  nodeAssert.equal(result.outcome.kind, 'compacted');
+  const returnedCheckpointId =
+    result.outcome.kind === 'compacted' ? result.outcome.checkpointId : undefined;
+  nodeAssert.equal(returnedCheckpointId, persisted.checkpoint.checkpointId);
+};
+scenario('the backend persists the checkpoint returned by the pure factory', persistsCheckpoint);
+const preservesMetadataButChangesIdentity = () => {
+  const checkpoints = [
+    checkpointFor(IDS.session, [eventFor('first', 'event-1')]),
+    checkpointFor(IDS.session, [eventFor('second', 'event-2')]),
+  ];
+  const envelopes = checkpoints.map(checkpointEnvelope);
+  const observedMetadata = new Set(envelopes.map((envelope) => JSON.stringify(envelope)));
+  const expectedMetadata = new Set([JSON.stringify([2, 'sections_v1', true])]);
+  nodeAssert.deepEqual(observedMetadata, expectedMetadata);
+  nodeAssert.equal(new Set(checkpoints.map(({ checkpointId }) => checkpointId)).size, 2);
+};
+const identityScenario =
+  'checkpoint metadata is content-invariant while identity is content-sensitive';
+scenario(identityScenario, preservesMetadataButChangesIdentity);

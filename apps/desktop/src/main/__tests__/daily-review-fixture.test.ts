@@ -17,62 +17,57 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import test from 'node:test';
-import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
-import {
-  resolveStorageRoot,
-  tryAcquireInteractiveRootOwner,
-} from '@maka/storage/root-authority';
-import { writeDailyReviewArchives } from '../e2e-fixture/scenarios-settings.js';
-
+import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs/promises';
+import { tmpdir as temporaryDirectory } from 'node:os';
+import { join as joinPath } from 'node:path';
+import { test as verify } from 'node:test';
+import * as dailyReviewAuthority from '@maka/storage/daily-review-authority';
+import * as rootAuthority from '@maka/storage/root-authority';
+import { writeDailyReviewArchives as materializeDailyReviewArchives } from '../e2e-fixture/scenarios-settings.js';
 async function withWorkspace<T>(name: string, run: (workspaceRoot: string) => Promise<T>) {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), `${name}-`));
-  try {
-    return await run(workspaceRoot);
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
-  }
+  const workspaceRoot = await fs.mkdtemp(joinPath(temporaryDirectory(), `${name}-`));
+  return run(workspaceRoot).finally(() =>
+    fs.rm(workspaceRoot, { recursive: true, force: true }),
+  );
 }
 
-async function readArchiveIds(workspaceRoot: string): Promise<string[]> {
-  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
+async function readArchiveIds(workspaceRoot: string): Promise<readonly string[]> {
+  const capability = await rootAuthority.resolveStorageRoot({
+    path: workspaceRoot,
+    kind: 'interactive',
+  });
+  const owner = await rootAuthority.tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner, 'fixture operation must release the root owner');
+  const writer = await dailyReviewAuthority.openInteractiveDailyReviewAuthorityForWrite(owner.lease);
   try {
-    const writer = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
-    try {
-      return (await writer.listArchivePage(null, 180)).archives.map(({ id }) => id);
-    } finally {
-      writer.close();
-    }
+    const page = await writer.listArchivePage(null, 180);
+    return page.archives.map(({ id }) => id);
   } finally {
+    writer.close();
     await owner.close();
   }
 }
 
-test('Daily Review fixture derives deterministic one-day and seven-day archive identities', async () => {
-  await withWorkspace('maka-daily-review-fixture', async (workspaceRoot) => {
-    const noon = Date.UTC(2026, 4, 21, 12);
-    await writeDailyReviewArchives(workspaceRoot, noon);
-    assert.deepEqual(await readArchiveIds(workspaceRoot), ['2026-05-21-1d', '2026-05-15-7d']);
-  });
-});
+const expectedArchiveIds = ['2026-05-21-1d', '2026-05-15-7d'] as const;
 
-test('Daily Review fixture is idempotent for the same logical day', async () => {
-  await withWorkspace('maka-daily-review-idempotent', async (workspaceRoot) => {
-    await writeDailyReviewArchives(workspaceRoot, Date.UTC(2026, 4, 21, 1));
-    await writeDailyReviewArchives(workspaceRoot, Date.UTC(2026, 4, 21, 23));
-    assert.deepEqual(await readArchiveIds(workspaceRoot), ['2026-05-21-1d', '2026-05-15-7d']);
+for (const scenario of [
+  { name: 'deterministic identities', hours: [12] },
+  { name: 'same-day idempotence', hours: [1, 23] },
+] as const) {
+  verify(`Daily Review fixture preserves ${scenario.name}`, async () => {
+    await withWorkspace(`maka-daily-review-${scenario.hours.length}`, async (workspaceRoot) => {
+      for (const hour of scenario.hours) {
+        await materializeDailyReviewArchives(workspaceRoot, Date.UTC(2026, 4, 21, hour));
+      }
+      assert.deepEqual(await readArchiveIds(workspaceRoot), expectedArchiveIds);
+    });
   });
-});
+}
 
-test('Daily Review fixture rolls back ownership and storage after invalid input', async () => {
+verify('Daily Review fixture rolls back ownership and storage after invalid input', async () => {
   await withWorkspace('maka-daily-review-invalid', async (workspaceRoot) => {
-    await assert.rejects(writeDailyReviewArchives(workspaceRoot, Number.NaN), /generatedAt/);
+    await assert.rejects(materializeDailyReviewArchives(workspaceRoot, Number.NaN), /generatedAt/);
     assert.deepEqual(await readArchiveIds(workspaceRoot), []);
   });
 });

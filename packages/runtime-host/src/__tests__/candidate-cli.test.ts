@@ -17,24 +17,27 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import { parseInteractiveRuntimeHostCandidateArguments } from '../candidate-cli.js';
+import { strict as assert } from 'node:assert';
+import { test as verify } from 'node:test';
+import * as candidateCli from '../candidate-cli.js';
+const ROOT_ID = ''.padStart(64, 'a');
+const fixedUuid = (suffix: number) => `00000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`;
+const STARTUP_ATTEMPT_ID = fixedUuid(1);
+const DEPLOYMENT_ID = fixedUuid(2);
+type ArgumentPair = Readonly<[flag: string, value: string]>;
+const REQUIRED_ARGUMENTS: readonly ArgumentPair[] = [
+  ['--root', '/tmp/workspace'],
+  ['--expected-root-id', ROOT_ID],
+  ['--startup-attempt-id', STARTUP_ATTEMPT_ID],
+];
+const argv = (pairs: readonly ArgumentPair[]): string[] =>
+  pairs.flatMap(([flag, value]) => [flag, value]);
+const parse = (pairs: readonly ArgumentPair[]) =>
+  candidateCli.parseInteractiveRuntimeHostCandidateArguments(
+    argv([...REQUIRED_ARGUMENTS, ...pairs]),
+  );
 
-const ROOT_ID = 'a'.repeat(64);
-const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
-const DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000002';
-
-const required = [
-  '--root',
-  '/tmp/workspace',
-  '--expected-root-id',
-  ROOT_ID,
-  '--startup-attempt-id',
-  STARTUP_ATTEMPT_ID,
-] as const;
-
-test('candidate options are order-independent and preserve explicit values', () => {
+function verifyOrderIndependence() {
   const optionalPairs = [
     ['--idle-grace-ms', '10000'],
     ['--initial-connection-timeout-ms', '250'],
@@ -43,14 +46,10 @@ test('candidate options are order-independent and preserve explicit values', () 
     ['--managed-deployment-id', DEPLOYMENT_ID],
     ['--managed-config-revision', '7'],
   ] as const;
-  const forward = parseInteractiveRuntimeHostCandidateArguments([
-    ...required,
-    ...optionalPairs.flat(),
-  ]);
-  const reverse = parseInteractiveRuntimeHostCandidateArguments([
-    ...[...optionalPairs].reverse().flat(),
-    ...required,
-  ]);
+  const forward = parse(optionalPairs);
+  const reverse = candidateCli.parseInteractiveRuntimeHostCandidateArguments(
+    argv([...optionalPairs].reverse()).concat(argv(REQUIRED_ARGUMENTS)),
+  );
 
   assert.deepEqual(reverse, forward);
   assert.deepEqual(forward, {
@@ -63,10 +62,10 @@ test('candidate options are order-independent and preserve explicit values', () 
     generation: 'candidate-7',
     managedLaunchClaim: { deploymentId: DEPLOYMENT_ID, configRevision: 7 },
   });
-});
-
-test('candidate parser rejects malformed or ambiguous argument streams', () => {
-  const cases: ReadonlyArray<{ args: readonly string[]; error: RegExp }> = [
+}
+function verifyMalformedArguments() {
+  const required = argv(REQUIRED_ARGUMENTS);
+  const cases: readonly { args: readonly string[]; error: RegExp }[] = [
     { args: [...required, '--desktop-e2e', '1'], error: /--desktop-e2e/ },
     { args: [...required, '--root', '/other'], error: /--root/ },
     { args: [...required, '--idle-grace-ms'], error: /candidate arguments/ },
@@ -82,22 +81,33 @@ test('candidate parser rejects malformed or ambiguous argument streams', () => {
   ];
 
   for (const { args, error } of cases) {
-    assert.throws(() => parseInteractiveRuntimeHostCandidateArguments(args), error);
+    assert.throws(() => candidateCli.parseInteractiveRuntimeHostCandidateArguments(args), error);
   }
-});
+}
 
-test('integer fields accept safe integers and reject every non-integer spelling', () => {
-  for (const value of ['0', '-1', '9007199254740991']) {
-    assert.equal(
-      parseInteractiveRuntimeHostCandidateArguments([...required, '--idle-grace-ms', value])
-        .idleGraceMs,
-      Number(value),
-    );
+function verifyIntegerPartitions() {
+  const partitions = [
+    { values: ['0', '-1', '9007199254740991'], accepted: true },
+    { values: ['1.5', 'NaN', 'Infinity', '9007199254740992'], accepted: false },
+  ] as const;
+  for (const partition of partitions) {
+    for (const value of partition.values) {
+      const evaluate = () => parse([['--idle-grace-ms', value]]).idleGraceMs;
+      if (partition.accepted) assert.equal(evaluate(), Number(value));
+      else assert.throws(evaluate, /--idle-grace-ms/);
+    }
   }
-  for (const value of ['1.5', 'NaN', 'Infinity', '9007199254740992']) {
-    assert.throws(
-      () => parseInteractiveRuntimeHostCandidateArguments([...required, '--idle-grace-ms', value]),
-      /--idle-grace-ms/,
-    );
-  }
-});
+}
+
+verify(
+  'candidate options are order-independent and preserve explicit values',
+  verifyOrderIndependence,
+);
+verify(
+  'candidate parser rejects malformed or ambiguous argument streams',
+  verifyMalformedArguments,
+);
+verify(
+  'integer fields form two complete accepted and rejected partitions',
+  verifyIntegerPartitions,
+);

@@ -102,10 +102,9 @@ class EgressFilterTest(unittest.TestCase):
 
     @staticmethod
     def _request(url: str):
-        flow = SimpleNamespace(request=SimpleNamespace(pretty_url=url))
-        MODULE.request(flow)
-        return flow
-
+        observed = SimpleNamespace(request=SimpleNamespace(pretty_url=url))
+        MODULE.request(observed)
+        return observed
     def test_http_request_outcomes_are_auditable_and_fail_closed(self) -> None:
         expected = {
             "https://tbench.ai/tasks": (451, "tbench_domain"),
@@ -122,9 +121,8 @@ class EgressFilterTest(unittest.TestCase):
                         self.assertNotIn("response", vars(flow))
                         continue
                     self.assertEqual(flow.response["status"], status)
-                    self.assertEqual(
-                        flow.response["headers"]["X-Maka-Eval-Egress-Rule"], rule_id
-                    )
+                    header = flow.response["headers"].get("X-Maka-Eval-Egress-Rule")
+                    self.assertEqual(header, rule_id)
                     if status == 451:
                         self.assertEqual(
                             flow.response,
@@ -154,11 +152,11 @@ class EgressFilterTest(unittest.TestCase):
                 [record["ruleId"] for record in records],
                 ["tbench_domain", "policy_error"],
             )
+            first_record = records[0]
             self.assertEqual(
-                (records[0]["host"], records[0]["normalizedPath"]),
-                ("tbench.ai", "/tasks"),
-            )
-
+                {key: first_record[key] for key in ("host", "normalizedPath")},
+                {"host": "tbench.ai", "normalizedPath": "/tasks"},
+            )  # The audit record is the normalized policy input.
     def test_connect_decision_depends_only_on_the_validated_tunnel_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             self._enable_http_responses()
@@ -263,8 +261,7 @@ class EgressFilterTest(unittest.TestCase):
             with self.subTest(host=host):
                 with self.assertRaises(ValueError):
                     MODULE.parse_connect_target(host, 443)
-
-    def test_raw_tcp_hooks_erase_payload_close_flow_and_record_peer(self) -> None:
+    def test_raw_tcp_hooks_form_a_closed_audited_transition(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
             closed: list[str] = []
@@ -281,10 +278,13 @@ class EgressFilterTest(unittest.TestCase):
             self.assertEqual(flow.messages[-1].content, b"")
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
             self.assertEqual(
-                (record["ruleId"], record["host"], record["normalizedPath"]),
-                ("raw_tunnel", "ssh.github.com", ":443"),
-            )
-
+                {key: record[key] for key in ("ruleId", "host", "normalizedPath")},
+                {
+                    "ruleId": "raw_tunnel",
+                    "host": "ssh.github.com",
+                    "normalizedPath": ":443",
+                },
+            )  # Raw peers are reduced to one auditable tuple.
     def test_next_layer_closes_raw_tcp_before_the_builtin_classifier(self) -> None:
         class CloseConnection:
             def __init__(self, connection: object) -> None:
@@ -305,14 +305,15 @@ class EgressFilterTest(unittest.TestCase):
             nextlayer = SimpleNamespace(
                 layer=None, context=context, data_client=data_client, data_server=lambda: b""
             )
-            MODULE.next_layer(nextlayer)
+            getattr(MODULE, "next_layer")(nextlayer)
             self.assertIsInstance(nextlayer.layer, MODULE.RejectRawTransport)
             commands = list(nextlayer.layer.handle_event(object()))
             self.assertEqual([command.connection for command in commands], [client, server])
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(record["ruleId"], "raw_tunnel")
-            self.assertEqual(record["host"], "ssh.github.com")
-
+            self.assertEqual(
+                {key: record[key] for key in ("ruleId", "host")},
+                {"ruleId": "raw_tunnel", "host": "ssh.github.com"},
+            )  # Replacement preserves the peer classification.
     def test_next_layer_routes_tls_and_http_without_raw_fallback(self) -> None:
         class FakeServerTLSLayer:
             child_layer: object | None = None
@@ -505,7 +506,7 @@ class EgressFilterTest(unittest.TestCase):
             MODULE.response(SimpleNamespace())
             self.assertEqual(len(MODULE.AUDIT_PATH.read_text().splitlines()), 2)
 
-    def test_next_layer_replaces_raw_tcp_with_a_closer(self) -> None:
+    def test_raw_tcp_layer_is_replaced_by_a_connection_closer(self) -> None:
         class FakeTCPLayer:
             def __init__(self, context: object) -> None:
                 self.context = context
@@ -531,7 +532,7 @@ class EgressFilterTest(unittest.TestCase):
             )
             current = FakeTCPLayer(context)
             nextlayer = SimpleNamespace(layer=current, context=context)
-            MODULE.next_layer(nextlayer)
+            getattr(MODULE, "next_layer")(nextlayer)
             self.assertIsInstance(nextlayer.layer, MODULE.RejectRawTransport)
             self.assertIsInstance(nextlayer.layer, MODULE.Layer)
             self.assertEqual(context.layers, [sibling, nextlayer.layer])
@@ -540,13 +541,14 @@ class EgressFilterTest(unittest.TestCase):
             self.assertEqual([command.connection for command in commands], [client, server])
             self.assertTrue(all(isinstance(command, CloseConnection) for command in commands))
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(record["ruleId"], "raw_tunnel")
-            self.assertEqual(record["host"], "ssh.github.com")
-
+            self.assertEqual(
+                {key: record[key] for key in ("ruleId", "host")},
+                {"ruleId": "raw_tunnel", "host": "ssh.github.com"},
+            )
     def test_next_layer_leaves_an_unclassified_layer_alone(self) -> None:
         context = SimpleNamespace(layers=[])
         nextlayer = SimpleNamespace(layer=None, context=context)
-        MODULE.next_layer(nextlayer)
+        getattr(MODULE, "next_layer")(nextlayer)
         self.assertIsNone(nextlayer.layer)
         self.assertEqual(context.layers, [])
 
@@ -556,7 +558,7 @@ class EgressFilterTest(unittest.TestCase):
 
         original = HTTPLayer()
         nextlayer = SimpleNamespace(layer=original, context=SimpleNamespace())
-        MODULE.next_layer(nextlayer)
+        getattr(MODULE, "next_layer")(nextlayer)
         self.assertIs(nextlayer.layer, original)
 
     def test_raw_transport_helpers_preserve_peer_and_layer_boundaries(self) -> None:
