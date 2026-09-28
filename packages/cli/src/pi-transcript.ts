@@ -1067,24 +1067,21 @@ function storedMessagesToTranscriptEntries(
   messages: readonly StoredMessage[],
 ): MakaPiTranscriptEntry[] {
   const entries: MakaPiTranscriptEntry[] = [];
-  const callTurnIdsByUseId = new Map<string, Set<string>>();
-  const resultsByUseId = new Map<string, Extract<StoredMessage, { type: 'tool_result' }>>();
-  const resultsByTurnId = new Map<
-    string,
-    Map<string, Extract<StoredMessage, { type: 'tool_result' }>>
+  const latestCallsByUseId = new Map<string, Extract<StoredMessage, { type: 'tool_call' }>>();
+  const resultsByCall = new Map<
+    Extract<StoredMessage, { type: 'tool_call' }>,
+    Extract<StoredMessage, { type: 'tool_result' }>
   >();
+  // Append order bounds an opaque ID's ownership: a result belongs to the latest
+  // preceding call, and a later call with that ID starts a new interval.
   for (const message of messages) {
     if (message.type === 'tool_call') {
-      const turnIds = callTurnIdsByUseId.get(message.id);
-      if (turnIds) turnIds.add(message.turnId);
-      else callTurnIdsByUseId.set(message.id, new Set([message.turnId]));
+      latestCallsByUseId.set(message.id, message);
       continue;
     }
     if (message.type !== 'tool_result') continue;
-    resultsByUseId.set(message.toolUseId, message);
-    const turnResults = resultsByTurnId.get(message.turnId);
-    if (turnResults) turnResults.set(message.toolUseId, message);
-    else resultsByTurnId.set(message.turnId, new Map([[message.toolUseId, message]]));
+    const call = latestCallsByUseId.get(message.toolUseId);
+    if (call) resultsByCall.set(call, message);
   }
   const turnStatusById = new Map(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
@@ -1123,10 +1120,7 @@ function storedMessagesToTranscriptEntries(
         entries.push(
           storedToolToTranscriptEntry(
             message,
-            resultsByTurnId.get(message.turnId)?.get(message.id) ??
-              (callTurnIdsByUseId.get(message.id)?.size === 1
-                ? resultsByUseId.get(message.id)
-                : undefined),
+            resultsByCall.get(message),
             turnStatusById.get(message.turnId),
           ),
         );

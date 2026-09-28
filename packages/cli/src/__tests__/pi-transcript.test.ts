@@ -1471,6 +1471,34 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('does not attach a retained old result to a reused call id at a history boundary', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'tool_result',
+        id: 'old-result',
+        turnId: 'turn-old',
+        ts: 1,
+        toolUseId: 'provider-call-1',
+        isError: true,
+        outcome: 'error',
+        content: { kind: 'text', text: 'old failure' },
+      },
+      {
+        type: 'tool_call',
+        id: 'provider-call-1',
+        turnId: 'turn-new',
+        ts: 2,
+        toolName: 'Read',
+        args: { path: 'new.txt' },
+      },
+    ] satisfies StoredMessage[]);
+
+    const [tool] = state.entries.filter((entry): entry is MakaPiToolEntry => entry.kind === 'tool');
+    assert.equal(tool?.result, undefined);
+    assert.notEqual(toolStatus(tool), 'errored');
+  });
+
   test('explains a stored tool call whose turn ended without a result', () => {
     const state = createMakaPiTranscriptState();
     replaceTranscriptWithStoredMessages(state, [

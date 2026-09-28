@@ -411,6 +411,32 @@ test('scopes persisted tool results to their turn when opaque call ids repeat', 
   );
 });
 
+test('does not attach a retained old result to a reused call id at a history boundary', () => {
+  const [tool] = materializeTools([
+    {
+      type: 'tool_result',
+      id: 'old-result',
+      turnId: 'turn-old',
+      ts: 1,
+      toolUseId: 'provider-call-1',
+      isError: true,
+      outcome: 'error',
+      content: { kind: 'text', text: 'old failure' },
+    },
+    {
+      type: 'tool_call',
+      id: 'provider-call-1',
+      turnId: 'turn-new',
+      ts: 2,
+      toolName: 'Read',
+      args: { path: 'new.txt' },
+    },
+  ] satisfies StoredMessage[]);
+
+  assert.equal(tool?.result, undefined);
+  assert.notEqual(tool?.status, 'errored');
+});
+
 function shellRunResult(revision: number) {
   return {
     kind: "shell_run" as const,
