@@ -614,7 +614,7 @@ export const FilterWorkHistoryPages: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText('继续补充异常场景。')).toBeInTheDocument());
     expect(canvas.queryByText('请检查支付回调幂等性。')).toBeNull();
-    expect(canvas.queryByRole('button', { name: '载入更早的记录' })).toBeNull();
+    expect(canvas.getByRole('button', { name: '载入更早的记录' })).toBeInTheDocument();
     const scroller = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]');
     expect(scroller).not.toBeNull();
     scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
