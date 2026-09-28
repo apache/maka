@@ -15,26 +15,49 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Authoritative Eval harness framework selection.
-
-`run_trial.py` validates the argv framework and installs it here before Harbor,
-Pier, or the shared relay can import. The relay must not read the environment.
-"""
+"""Process-local framework authority shared by the trial runner and relay."""
 
 from __future__ import annotations
 
-_FRAMEWORKS = frozenset({"harbor", "pier"})
-_framework: str | None = None
+from typing import NamedTuple
 
 
-def install(framework: str) -> None:
-    if framework not in _FRAMEWORKS:
+class FrameworkSpec(NamedTuple):
+    name: str
+    distribution: str
+    agent_module: str
+
+
+_FRAMEWORKS = {
+    "harbor": FrameworkSpec("harbor", "harbor", "harbor.agents.base"),
+    "pier": FrameworkSpec("pier", "datacurve-pier", "pier.agents.base"),
+}
+_active: FrameworkSpec | None = None
+
+
+def framework_spec(name: str) -> FrameworkSpec:
+    try:
+        return _FRAMEWORKS[name]
+    except KeyError:
         raise RuntimeError("framework must be harbor or pier")
-    global _framework
-    _framework = framework
 
 
-def selected() -> str:
-    if _framework not in _FRAMEWORKS:
+def install(name: str) -> None:
+    """Select the framework before importing its process-wide relay module."""
+
+    global _active
+    _active = framework_spec(name)
+
+
+def current_framework() -> str:
+    if _active is None:
         raise RuntimeError("Eval framework selection is not installed")
-    return _framework
+    return _active.name
+
+
+def framework_distribution(name: str) -> str:
+    return framework_spec(name).distribution
+
+
+def framework_agent_module(name: str) -> str:
+    return framework_spec(name).agent_module

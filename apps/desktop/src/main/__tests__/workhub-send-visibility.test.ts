@@ -117,6 +117,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
       };
     },
     retractQueueEntry: async (...input: Parameters<WorkHubServices['retractQueueEntry']>) => { queueMutations.push(['retract', ...input]); },
+    updateQueueEntry: async (...input: Parameters<WorkHubServices['updateQueueEntry']>) => { queueMutations.push(['update', ...input]); },
     promoteQueueEntry: async (...input: Parameters<WorkHubServices['promoteQueueEntry']>) => { queueMutations.push(['promote', ...input]); },
     reorderQueueEntries: async (...input: Parameters<WorkHubServices['reorderQueueEntries']>) => { queueMutations.push(['reorder', ...input]); },
     enqueueMessage: async (...input: Parameters<WorkHubServices['enqueueMessage']>) => { steers.push(input); onSteer?.(input); return steerResult; },
@@ -683,16 +684,16 @@ test('WorkHub sends queue edits, withdrawal and both queue orders to the Host an
   await act(() => h.emit({ type: 'queue_update', id: 'queued', turnId: 'active-turn', ts: 2,
     queueRevision: 7, steering: ['first', 'second'], followup: [], steeringEntries: entries }));
   await act(async () => {
-    await h.controller.editQueuedEntry?.(entries[1]!);
-    await h.controller.reorderQueuedEntries(['second', 'first']);
+    await h.controller.updateQueuedEntry('second', 7, 'edited second');
+    await h.controller.reorderQueuedEntries(['second', 'first'], 7);
     await h.controller.deleteQueuedEntry('first');
   });
   assert.deepEqual(h.queueMutations, [
-    ['retract', h.controller.sessionId, 'second'],
-    ['reorder', h.controller.sessionId, ['second', 'first']],
+    ['update', h.controller.sessionId, 'second', 7, 'edited second'],
+    ['reorder', h.controller.sessionId, ['second', 'first'], 7],
     ['retract', h.controller.sessionId, 'first'],
   ]);
-  assert.deepEqual(h.restoredDrafts, [[h.controller.sessionId, 'second']], 'edit hands the retracted text back to the draft');
+  assert.deepEqual(h.restoredDrafts, [], 'Host-side edits stay in the queue projection');
   assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.entryId), ['first', 'second']);
   await act(() => h.emit({ type: 'queue_update', id: 'updated', turnId: 'active-turn', ts: 3,
     queueRevision: 10, steering: ['edited second'], followup: [], steeringEntries: [{ ...entries[1]!, content: { text: 'edited second' } }] }));

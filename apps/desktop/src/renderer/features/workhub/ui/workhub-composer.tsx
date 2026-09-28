@@ -24,6 +24,7 @@ import {
   useUiLocale,
   type ComposerHandle,
   type ComposerProps,
+  type ComposerMessageQueueHostProps,
 } from '@maka/ui';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { toSubmittedAttachments } from '@maka/ui/composer-attachments';
@@ -35,7 +36,7 @@ import type { RestoredDraftContent } from '../../../application/contracts/transi
 import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
-export type WorkHubComposerProps = Omit<ComposerProps, 'onSend' | 'draftKey'> & {
+export type WorkHubComposerProps = Omit<ComposerProps, 'onSend' | 'draftKey'> & ComposerMessageQueueHostProps & {
   sessionId?: string;
   onSend(text: string, attachments: AttachmentRef[], followUpMode?: FollowUpMode): Promise<boolean>;
   /**
@@ -86,7 +87,7 @@ export const WorkHubComposer = forwardRef<ComposerHandle, WorkHubComposerProps>(
       if (draft.attachments?.length) staged.restoreAttachments(key, draft.attachments);
       const handle = self.current;
       if (!handle || !draft.text.trim()) return;
-      handle.appendDraft(key, draft.text);
+      handle.appendDraft?.(key, draft.text);
     };
   }
   return <Composer {...composer}

@@ -73,6 +73,18 @@ const USAGE_SEARCH_DEBOUNCE_MS = 250;
 const EMPTY_USAGE_LOGS: UsageStats['logs'] = [];
 const normalizeUsageSearch = (search: string) => search.trim().toLowerCase();
 
+function UsageTokenCount(props: { count: number }) {
+  const locale = useUiLocale();
+  const value = formatCompactTokenCount(props.count);
+  const exactValue = props.count.toLocaleString(uiLocaleToIntlLocale(locale));
+  if (value === exactValue) return value;
+  return (
+    <Tooltip content={exactValue} hasHoverIndication={false}>
+      {value}
+    </Tooltip>
+  );
+}
+
 function TokenTooltipContent(props: {
   rows: ReadonlyArray<readonly [label: string, value: string]>;
 }) {
@@ -594,7 +606,7 @@ function UsageRequestsPanel(props: {
           usageRequestKindLabel(row.kind, props.copy),
           usageRequestTarget(row),
           usageRequestSessionCell(row, props.copy, props.onOpenSession),
-          row.inputTokens + row.outputTokens,
+          <UsageTokenCount key="tokens" count={row.inputTokens + row.outputTokens} />,
           row.kind === 'model' && row.costUsd !== undefined ? `$${row.costUsd.toFixed(2)}` : '-',
           row.latencyMs !== undefined ? `${row.latencyMs}ms` : '-',
           usageRequestStatusLabel(row.status, props.copy),
@@ -692,7 +704,7 @@ function UsageProvidersPanel(props: { stats: UsageStats | null; copy: UsageSetti
       rows={(props.stats?.byProvider ?? []).map((row) => [
         row.provider,
         row.requests,
-        formatCompactTokenCount(row.tokens),
+        <UsageTokenCount key="tokens" count={row.tokens} />,
         `$${row.costUsd.toFixed(2)}`,
       ])}
       empty={{ Icon: Database, title: props.copy.tables.providerEmptyTitle, body: props.copy.tables.providerEmptyBody }}
@@ -713,7 +725,7 @@ function UsageModelsPanel(props: { stats: UsageStats | null; copy: UsageSettings
       rows={(props.stats?.byModel ?? []).map((row) => [
         row.model,
         row.requests,
-        formatCompactTokenCount(row.tokens),
+        <UsageTokenCount key="tokens" count={row.tokens} />,
         `$${row.costUsd.toFixed(2)}`,
       ])}
       empty={{ Icon: Cpu, title: props.copy.tables.modelEmptyTitle, body: props.copy.tables.modelEmptyBody }}

@@ -1911,7 +1911,7 @@ test("ignores a stale seed failure after its replacement succeeds", async () => 
   assert.deepEqual(await attaching, ["session-1"]);
   await observing;
   assert.equal(ready, true);
-  assert.deepEqual(observations.observedSessionIds(), ["session-1"]);
+  assert.deepEqual(observations.observationSessionIds(), ["session-1"]);
   await observations.close();
 });
 
@@ -2554,7 +2554,7 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
   const interactionSnapshots: Array<readonly { requestId: string }[]> = [];
   const recoveredSessions: string[] = [];
-  const seedTimeline: string[] = [];
+  const observationPhases: string[] = [];
   const sessionChanges: string[] = [];
   const firstInteraction = pendingQuestion("interaction-1", "turn-1", "run-1");
   const secondInteraction = pendingQuestion("interaction-2", "turn-2", "run-2");
@@ -2623,12 +2623,7 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
     },
     now: () => 50,
   });
-  const target = eventTarget(15);
-  const originalSend = target.send.bind(target);
-  target.send = (channel, event) => {
-    seedTimeline.push(`event:${event.type}`);
-    originalSend(channel, event);
-  };
+  const target = eventTarget(15, (event) => observationPhases.push(event.type));
   await observer.observe("session-1", "observer-1", target);
   await observer.watchTurn("session-1", "turn-1");
 
@@ -2643,10 +2638,12 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
 
   assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
   assert.deepEqual(recoveredSessions, ["session-1"]);
-  const pendingAt = seedTimeline.indexOf('event:host_observation_pending');
-  const readyAt = seedTimeline.lastIndexOf('event:host_observation_seed');
-  assert.ok(pendingAt >= 0);
-  assert.ok(readyAt > pendingAt);
+  const pendingAt = observationPhases.indexOf('host_observation_pending');
+  const readyAt = observationPhases.lastIndexOf('host_observation_seed');
+  assert.deepEqual(
+    { pendingObserved: pendingAt >= 0, readyObservedLater: readyAt > pendingAt },
+    { pendingObserved: true, readyObservedLater: true },
+  );
   assert.ok(sessionChanges.includes("goal-change"));
   assert.deepEqual(
     interactionSnapshots.at(-1)?.map((interaction) => interaction.requestId),
@@ -3747,6 +3744,7 @@ function pendingQuestion(interactionId: string, turnId: string, runId: string) {
 
 function eventTarget(
   id: number,
+  onSend?: (event: SessionEvent | SessionObservationMessage) => void,
 ): RuntimeHostSessionObserverTarget & { events: SessionEvent[]; observations: SessionObservationMessage[] } {
   const events: SessionEvent[] = [];
   const observations: SessionObservationMessage[] = [];
@@ -3755,6 +3753,7 @@ function eventTarget(
     events,
     observations,
     send(_channel, event) {
+      onSend?.(event);
       if (event.type === 'host_observation_seed') {
         observations.push(event);
         events.push(...event.events);

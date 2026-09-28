@@ -25,6 +25,7 @@ import {
   type GoalCurrentExecution,
   type GoalPendingContinuation,
   type GoalState as DurableGoalState,
+  type GoalTextLimit,
 } from '@maka/core/goal';
 import { userFacingText, type StoredMessage } from '@maka/core/session';
 import {
@@ -38,6 +39,7 @@ import {
   GoalManager,
   GOAL_REASON_TEXT_LIMIT,
   TERMINAL_GOAL_STATUSES,
+  isGoalTextWithinLimit,
   truncateGoalText,
   type GoalCheckpoint,
   type GoalControlLease,
@@ -749,16 +751,52 @@ export class HostGoalCoordinator {
 
 function recentContext(messages: readonly StoredMessage[]): string {
   return messages
-    .filter(
-      (message): message is Extract<StoredMessage, { type: 'user' | 'assistant' }> =>
-        message.type === 'user' || message.type === 'assistant',
-    )
-    .slice(-6)
-    .map((message) => {
+    .flatMap((message) => {
+      if (message.type !== 'user' && message.type !== 'assistant') return [];
       const text = message.type === 'user' ? userFacingText(message) : message.text;
-      return `[${message.type}]: ${truncateGoalText(text, GOAL_REASON_TEXT_LIMIT)}`;
+      // A step that only thought or called a tool stores an assistant row with
+      // no text: it would take one of the six places and tell the evaluator nothing.
+      return /\S/.test(text) ? [{ type: message.type, text }] : [];
     })
+    .slice(-6)
+    .map(({ type, text }) => `[${type}]: ${evaluatorExcerpt(text)}`)
     .join('\n');
+}
+
+const EXCERPT_GAP = ' … ';
+const EXCERPT_END_LIMIT: GoalTextLimit = Object.freeze({
+  codeUnits: Math.floor((GOAL_REASON_TEXT_LIMIT.codeUnits - EXCERPT_GAP.length) / 2),
+  utf8Bytes: Math.floor(
+    (GOAL_REASON_TEXT_LIMIT.utf8Bytes - Buffer.byteLength(EXCERPT_GAP, 'utf8')) / 2,
+  ),
+});
+
+/**
+ * One message within the budget each context row has always had. A longer one
+ * keeps its opening and its end, since a report usually closes with what is
+ * verified and what remains.
+ */
+function evaluatorExcerpt(text: string): string {
+  if (isGoalTextWithinLimit(text, GOAL_REASON_TEXT_LIMIT)) return text;
+  return `${truncateGoalText(text, EXCERPT_END_LIMIT)}${EXCERPT_GAP}${goalTextTail(text, EXCERPT_END_LIMIT)}`;
+}
+
+/** The longest end of `text` within `limit`, never splitting a surrogate pair. */
+function goalTextTail(text: string, limit: GoalTextLimit): string {
+  // One code unit more than can fit: a pair cut by this slice leaves a lone
+  // half at the front, which the walk below always stops before.
+  const characters = Array.from(text.slice(-(limit.codeUnits + 1)));
+  let start = characters.length;
+  let codeUnits = 0;
+  let utf8Bytes = 0;
+  while (start > 0) {
+    const character = characters[start - 1]!;
+    codeUnits += character.length;
+    utf8Bytes += Buffer.byteLength(character, 'utf8');
+    if (codeUnits > limit.codeUnits || utf8Bytes > limit.utf8Bytes) break;
+    start -= 1;
+  }
+  return characters.slice(start).join('');
 }
 
 function tokenCount(messages: readonly StoredMessage[]): number {

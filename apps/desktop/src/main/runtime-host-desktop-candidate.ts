@@ -416,6 +416,26 @@ export async function startDesktopRuntimeHostCandidate(
   }
 }
 
+async function restoreSessionObservations(input: {
+  sessionIds(): string[];
+  announcePending(sessionId: string): void;
+  attach(): Promise<string[]>;
+}): Promise<string[]> {
+  const requested = input.sessionIds();
+  for (const sessionId of requested) input.announcePending(sessionId);
+
+  const restored = await input.attach();
+  const restoredSet = new Set(restored);
+  const registeredSet = new Set(input.sessionIds());
+  const failed = requested.filter(
+    (sessionId) => registeredSet.has(sessionId) && !restoredSet.has(sessionId),
+  );
+  if (failed.length > 0) {
+    throw new Error(`Failed to restore Session observations: ${failed.join(', ')}`);
+  }
+  return restored;
+}
+
 function noGuestBotService(): BotIncomingMainService {
   return {
     handleBotIncomingMessage: async () => {
@@ -747,37 +767,27 @@ export async function createDesktopRuntimeHostCandidate(
         }
       }
     }
-    const observedSessionIds = sessionObservations.observedSessionIds();
-    for (const sessionId of observedSessionIds) {
-      sendToRenderer(`sessions:event:${sessionId}`, { type: 'host_observation_pending' });
-    }
-    observationsAttached = true;
-    const restoredSessionIds = await sessionObservations.attach(
-      sessionObserver,
-      (target) => ({
-        id: target.id,
-        send: (channel, payload) =>
-          (target.send as (channel: string, ...args: unknown[]) => void)(
-            channel,
-            scope,
-            payload,
-          ),
-        once: target.once.bind(target),
-        off: target.off.bind(target),
-      }),
-      (missingSessionId) => emitSessionsChanged("deleted", missingSessionId),
-    );
-    const restoredSessionIdSet = new Set(restoredSessionIds);
-    // Attach forgets Sessions the Host no longer serves, so only Sessions
-    // that are still registered but failed to restore count as failures.
-    const failedSessionIds = sessionObservations
-      .observedSessionIds()
-      .filter((sessionId) => !restoredSessionIdSet.has(sessionId));
-    if (failedSessionIds.length > 0) {
-      throw new Error(
-        `Failed to restore Session observations: ${failedSessionIds.join(', ')}`,
-      );
-    }
+    observationsAttached = Boolean(sessionObserver);
+    const restoredSessionIds = await restoreSessionObservations({
+      sessionIds: () => sessionObservations.observationSessionIds(),
+      announcePending: (sessionId) =>
+        sendToRenderer(`sessions:event:${sessionId}`, { type: 'host_observation_pending' }),
+      attach: () => sessionObservations.attach(
+        sessionObserver,
+        (target) => ({
+          id: target.id,
+          send: (channel, payload) =>
+            (target.send as (channel: string, ...args: unknown[]) => void)(
+              channel,
+              scope,
+              payload,
+            ),
+          once: target.once.bind(target),
+          off: target.off.bind(target),
+        }),
+        (missingSessionId) => emitSessionsChanged("deleted", missingSessionId),
+      ),
+    });
     for (const sessionId of restoredSessionIds) {
       emitSessionsChanged("message-appended", sessionId);
       emitSessionsChanged("goal-change", sessionId);
