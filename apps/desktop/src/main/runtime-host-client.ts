@@ -101,10 +101,6 @@ import {
   PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
-  type QueueEntriesReorderInput,
-  type QueueEntryPromoteInput,
-  type QueueEntryRetractInput,
-  type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -164,6 +160,17 @@ const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
+
+type QueueMutationOperation =
+  | "queue.entry.promote"
+  | "queue.entry.retract"
+  | "queue.entry.update"
+  | "queue.entries.reorder";
+
+type QueueMutationInput<K extends QueueMutationOperation> = Omit<
+  OperationInput<K>,
+  "originHostEpoch"
+>;
 
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
@@ -1324,30 +1331,37 @@ export class DesktopRuntimeHostClient {
   }
 
   retractQueueEntry(
-    input: Omit<QueueEntryRetractInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.retract", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.retract">,
+  ): Promise<OperationOutput<"queue.entry.retract">> {
+    return this.#mutateQueue("queue.entry.retract", input);
   }
 
   promoteQueueEntry(
-    input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.promote", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.promote">,
+  ): Promise<OperationOutput<"queue.entry.promote">> {
+    return this.#mutateQueue("queue.entry.promote", input);
+  }
+
+  updateQueueEntry(
+    input: QueueMutationInput<"queue.entry.update">,
+  ): Promise<OperationOutput<"queue.entry.update">> {
+    return this.#mutateQueue("queue.entry.update", input);
   }
 
   reorderQueueEntries(
-    input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entries.reorder", {
+    input: QueueMutationInput<"queue.entries.reorder">,
+  ): Promise<OperationOutput<"queue.entries.reorder">> {
+    return this.#mutateQueue("queue.entries.reorder", input);
+  }
+
+  #mutateQueue<K extends QueueMutationOperation>(
+    operation: K,
+    input: QueueMutationInput<K>,
+  ): Promise<OperationOutput<K>> {
+    return this.request(operation, {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
-    });
+    } as OperationInput<K>);
   }
 
   interruptTurn(

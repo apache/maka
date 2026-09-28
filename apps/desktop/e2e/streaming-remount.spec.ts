@@ -20,22 +20,26 @@
 import {
   FAKE_HOLD_OPEN_PROMPT,
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
-} from '@maka/runtime/test-only/fake-backend';
-import type { Locator } from '@playwright/test';
+} from "@maka/runtime/test-only/fake-backend";
+import type { Locator } from "@playwright/test";
 import {
   awaitSendReady,
   COMPOSER_INPUT,
   ensureSidebarExpanded,
   expect,
   test,
-} from './fixtures';
+} from "./fixtures";
+import {
+  installStreamingPaintObserver,
+  stopStreamingPaintObserver,
+} from "./streaming-paint-observer";
 
 interface SessionObservationLatchWindow extends Window {
   /** E2E-only preload affordance; see the MAKA_E2E block in preload.ts. */
   makaE2eLatch?: {
     rejectNextSessionObservation(message: string): void;
-    arm(key: 'sessions.observe'): void;
-    release(key: 'sessions.observe'): void;
+    arm(key: "sessions.observe"): void;
+    release(key: "sessions.observe"): void;
     rejectNextTranscriptOpen(message: string): void;
   };
 }
@@ -44,116 +48,185 @@ function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`);
 }
 
-async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
-  // Mid-turn steering is Cmd/Ctrl+Enter: Send stays Send, and the modified
-  // submit hands the draft to the active Turn once.
+async function submitSteeringDraft(
+  composer: Locator,
+  text: string,
+): Promise<void> {
   await composer.fill(text);
-  await composer.press('ControlOrMeta+Enter');
+  await composer.press("ControlOrMeta+Enter");
 }
 
-test('ordinary Enter queues on an already-running Session before observation recovers', async ({ window: page }) => {
-  const nextPrompt = 'do this only after the current answer';
-  const sessionId = await page.evaluate(async ({ prompt, nextPrompt }) => {
-    const session = await window.maka.sessions.create({ name: 'Observation recovery' });
-    const result = await window.maka.sessions.submitMessage(session.id, 'next_turn', {
-      messageId: crypto.randomUUID(), text: prompt,
-    }, { waitForHostAdmission: true });
-    if (!result.ok) throw new Error('Failed to start the background Turn');
-    const evidence = { queued: false, steered: false };
-    (window as typeof window & { admissionEvidence?: typeof evidence }).admissionEvidence = evidence;
-    // This independent reader records the actual Host queue, without writing AppShell state.
-    await new Promise<void>((resolve) => {
-      window.maka.sessions.subscribeEvents(session.id, (event) => {
-        if (event.type !== 'queue_update') return;
-        evidence.queued ||= event.followupEntries?.some((entry) => entry.content.text === nextPrompt) ?? false;
-        evidence.steered ||= event.steeringEntries?.some((entry) => entry.content.text === nextPrompt) ?? false;
-      }, resolve);
-    });
-    const latch = (window as SessionObservationLatchWindow).makaE2eLatch!;
-    latch.arm('sessions.observe');
-    latch.rejectNextSessionObservation('forced first observation failure');
-    return session.id;
-  }, { prompt: FAKE_HOLD_OPEN_PROMPT, nextPrompt });
-  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+test("ordinary Enter queues on an already-running Session before observation recovers", async ({
+  window: page,
+}) => {
+  const nextPrompt = "do this only after the current answer";
+  const sessionId = await page.evaluate(
+    async ({ prompt, nextPrompt }) => {
+      const session = await window.maka.sessions.create({
+        name: "Observation recovery",
+      });
+      const result = await window.maka.sessions.submitMessage(
+        session.id,
+        "next_turn",
+        {
+          messageId: crypto.randomUUID(),
+          text: prompt,
+        },
+        { waitForHostAdmission: true },
+      );
+      if (!result.ok) throw new Error("Failed to start the background Turn");
+      const evidence = { queued: false, steered: false };
+      (
+        window as typeof window & { admissionEvidence?: typeof evidence }
+      ).admissionEvidence = evidence;
+      // This independent reader records the actual Host queue, without writing AppShell state.
+      await new Promise<void>((resolve) => {
+        window.maka.sessions.subscribeEvents(
+          session.id,
+          (event) => {
+            if (event.type !== "queue_update") return;
+            evidence.queued ||=
+              event.followupEntries?.some(
+                (entry) => entry.content.text === nextPrompt,
+              ) ?? false;
+            evidence.steered ||=
+              event.steeringEntries?.some(
+                (entry) => entry.content.text === nextPrompt,
+              ) ?? false;
+          },
+          resolve,
+        );
+      });
+      const latch = (window as SessionObservationLatchWindow).makaE2eLatch!;
+      latch.arm("sessions.observe");
+      latch.rejectNextSessionObservation("forced first observation failure");
+      return session.id;
+    },
+    { prompt: FAKE_HOLD_OPEN_PROMPT, nextPrompt },
+  );
+  const sidebar = page.getByRole("navigation", { name: "任务列表" });
   await ensureSidebarExpanded(page);
   await sessionRow(sidebar, sessionId).click();
   // No execution snapshot has reached this surface. Sending must still express next-turn intent.
-  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "停止", exact: true }),
+  ).toHaveCount(0);
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(nextPrompt);
   await awaitSendReady(page);
-  await composer.press('Enter');
-  await expect.poll(() => page.evaluate(() =>
-    (window as typeof window & { admissionEvidence?: { queued: boolean; steered: boolean } }).admissionEvidence,
-  )).toEqual({ queued: true, steered: false });
-  await page.evaluate(() => (window as SessionObservationLatchWindow).makaE2eLatch!.release('sessions.observe'));
-  await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting', { timeout: 20_000 });
-  await page.getByRole('button', { name: '停止', exact: true }).click();
-  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 20_000 });
+  await composer.press("Enter");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as typeof window & {
+              admissionEvidence?: { queued: boolean; steered: boolean };
+            }
+          ).admissionEvidence,
+      ),
+    )
+    .toEqual({ queued: true, steered: false });
+  await page.evaluate(() =>
+    (window as SessionObservationLatchWindow).makaE2eLatch!.release(
+      "sessions.observe",
+    ),
+  );
+  await expect(page.locator(".maka-bubble-streaming")).toContainText(
+    "Fake backend waiting",
+    { timeout: 20_000 },
+  );
+  await page.getByRole("button", { name: "停止", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "停止", exact: true }),
+  ).toHaveCount(0, { timeout: 20_000 });
 });
 
-test('a failed transcript open recovers when its Session observation becomes ready', async ({
+test("a failed transcript open recovers when its Session observation becomes ready", async ({
   window: page,
 }) => {
-  const originalPrompt = 'transcript recovery source';
+  const originalPrompt = "transcript recovery source";
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(originalPrompt);
   await awaitSendReady(page);
-  await composer.press('Enter');
-  await expect(page.getByRole('log')).toContainText(`Fake backend received: ${originalPrompt}`, {
-    timeout: 20_000,
-  });
+  await composer.press("Enter");
+  await expect(page.getByRole("log")).toContainText(
+    `Fake backend received: ${originalPrompt}`,
+    {
+      timeout: 20_000,
+    },
+  );
 
-  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const sidebar = page.getByRole("navigation", { name: "任务列表" });
   await ensureSidebarExpanded(page);
   const originalSessionId = await sidebar
     .locator('[data-session-id]:has([aria-current="page"])')
-    .getAttribute('data-session-id');
+    .getAttribute("data-session-id");
   expect(originalSessionId).toBeTruthy();
 
-  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await sidebar.getByRole("button", { name: "新任务", exact: true }).click();
 
   const latchInstalled = await page.evaluate(() => {
     const latch = (window as SessionObservationLatchWindow).makaE2eLatch;
     if (!latch) return false;
-    latch.rejectNextTranscriptOpen('forced first transcript failure');
+    latch.rejectNextTranscriptOpen("forced first transcript failure");
     return true;
   });
-  expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
+  expect(latchInstalled, "the preload E2E latch is installed").toBe(true);
 
   await sessionRow(sidebar, originalSessionId!).click();
-  await expect(page.getByRole('log')).toContainText(`Fake backend received: ${originalPrompt}`, {
-    timeout: 20_000,
-  });
+  await expect(page.getByRole("log")).toContainText(
+    `Fake backend received: ${originalPrompt}`,
+    {
+      timeout: 20_000,
+    },
+  );
 });
 
-test('a successor owns working status and remounting leaves accumulated output settled', async ({
+test("a successor owns working status and remounting leaves accumulated output settled", async ({
   window: page,
 }) => {
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  expect(
+    await page.evaluate(
+      () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+    ),
+  ).toBe(false);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill('complete the predecessor');
+  await composer.fill("complete the predecessor");
   await awaitSendReady(page);
-  await composer.press('Enter');
-  await expect(page.getByRole('log')).toContainText('Fake backend received: complete the predecessor');
-  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
-  const previousTurnId = await page.locator('[data-transcript-turn-id]').first().getAttribute('data-transcript-turn-id');
+  await composer.press("Enter");
+  await expect(page.getByRole("log")).toContainText(
+    "Fake backend received: complete the predecessor",
+  );
+  await expect(
+    page.getByRole("button", { name: "停止", exact: true }),
+  ).toHaveCount(0);
+  const previousTurnId = await page
+    .locator("[data-transcript-turn-id]")
+    .first()
+    .getAttribute("data-transcript-turn-id");
   expect(previousTurnId).toBeTruthy();
   await composer.fill(FAKE_HOLD_OPEN_REWRITE_PROMPT);
   await awaitSendReady(page);
-  await composer.press('Enter');
+  await composer.press("Enter");
 
-  const accumulatedOutput = 'prefix sk-123456789012345';
-  const liveBubble = page.locator('.maka-bubble-streaming');
-  await expect(liveBubble).toContainText(accumulatedOutput, { timeout: 20_000 });
-  await expect(page.locator(`[data-transcript-turn-id=${JSON.stringify(previousTurnId)}] .maka-turn-processing`)).toHaveCount(0);
-  await expect(page.locator('.maka-turn-processing')).toHaveCount(1);
+  const accumulatedOutput = "prefix sk-123456789012345";
+  const liveBubble = page.locator(".maka-bubble-streaming");
+  await expect(liveBubble).toContainText(accumulatedOutput, {
+    timeout: 20_000,
+  });
+  await expect(
+    page.locator(
+      `[data-transcript-turn-id=${JSON.stringify(previousTurnId)}] .maka-turn-processing`,
+    ),
+  ).toHaveCount(0);
+  await expect(page.locator(".maka-turn-processing")).toHaveCount(1);
 
-  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const sidebar = page.getByRole("navigation", { name: "任务列表" });
   await ensureSidebarExpanded(page);
-  await sidebar.getByRole('button', { name: '扩展' }).click();
+  await sidebar.getByRole("button", { name: "扩展" }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
   await expect(liveBubble).toHaveCount(0);
   // Return through the task row the product exposes. Module navigation can
@@ -167,187 +240,183 @@ test('a successor owns working status and remounting leaves accumulated output s
   await expect(liveBubble).toHaveCount(1);
   await expect(liveBubble).toContainText(accumulatedOutput);
 
-  expect((await liveBubble.textContent())?.split(accumulatedOutput)).toHaveLength(2);
+  expect(
+    (await liveBubble.textContent())?.split(accumulatedOutput),
+  ).toHaveLength(2);
   expect(
     await liveBubble.evaluate(
       (element) =>
         element
           .getAnimations({ subtree: true })
-          .filter((animation) => animation.playState !== 'finished').length,
+          .filter((animation) => animation.playState !== "finished").length,
     ),
   ).toBe(0);
 
   await liveBubble.evaluate((element) => {
     const observed = { texts: [] as string[] };
-    (window as typeof window & { __makaStreamingRemountObserved?: typeof observed })
-      .__makaStreamingRemountObserved = observed;
+    (
+      window as typeof window & {
+        __makaStreamingRemountObserved?: typeof observed;
+      }
+    ).__makaStreamingRemountObserved = observed;
     new MutationObserver(() => {
-      observed.texts.push(element.textContent ?? '');
-    }).observe(element, { childList: true, characterData: true, subtree: true });
+      observed.texts.push(element.textContent ?? "");
+    }).observe(element, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
   });
 
-  const steering = 'trigger rewrite after returning to this conversation';
-  await steerActiveTurn(composer, steering);
-  const finalText = 'prefix <redacted> NEW streamed after the remount';
+  const steering = "trigger rewrite after returning to this conversation";
+  await submitSteeringDraft(composer, steering);
+  const finalText = "prefix <redacted> NEW streamed after the remount";
   await expect(liveBubble).toContainText(finalText);
 
-  const observed = await page.evaluate(() => (
-    window as typeof window & {
-      __makaStreamingRemountObserved?: {
-        texts: string[];
-      };
-    }
-  ).__makaStreamingRemountObserved);
-  expect(observed?.texts.some((text) => text.includes('<redacted>') && !text.includes(finalText)))
-    .toBe(true);
+  const observed = await page.evaluate(
+    () =>
+      (
+        window as typeof window & {
+          __makaStreamingRemountObserved?: {
+            texts: string[];
+          };
+        }
+      ).__makaStreamingRemountObserved,
+  );
+  expect(
+    observed?.texts.some(
+      (text) => text.includes("<redacted>") && !text.includes(finalText),
+    ),
+  ).toBe(true);
 });
 
-test('returning to a live conversation settles output accumulated while away', async ({
+test("returning to a live conversation settles output accumulated while away", async ({
   window: page,
 }) => {
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  expect(
+    await page.evaluate(
+      () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+    ),
+  ).toBe(false);
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
   await awaitSendReady(page);
-  await composer.press('Enter');
+  await composer.press("Enter");
 
-  const accumulatedOutput = 'Fake backend waiting for the test to stop the Turn.';
-  const liveBubble = page.locator('.maka-bubble-streaming');
-  await expect(liveBubble).toContainText(accumulatedOutput, { timeout: 20_000 });
-
-  const sidebar = page.getByRole('navigation', { name: '任务列表' });
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await expect(page.locator('[data-agents-page]')).toHaveAttribute(
-    'data-sidebar-state',
-    'expanded',
-  );
-  const originalSessionId = await sidebar.locator('[data-session-id]').first()
-    .getAttribute('data-session-id');
-  expect(originalSessionId).toBeTruthy();
-  await composer.fill('draft before switching conversations');
-  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
-  await expect(composer).toHaveText('');
-  await composer.fill('temporary second conversation');
-  await awaitSendReady(page);
-  await composer.press('Enter');
-  await expect(page.getByRole('log')).toContainText(
-    'Fake backend received: temporary second conversation',
-    { timeout: 20_000 },
-  );
-  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
+  const accumulatedOutput =
+    "Fake backend waiting for the test to stop the Turn.";
+  const liveBubble = page.locator(".maka-bubble-streaming");
+  await expect(liveBubble).toContainText(accumulatedOutput, {
     timeout: 20_000,
   });
-  const backgroundSteering = 'background output accumulated while away';
+
+  const sidebar = page.getByRole("navigation", { name: "任务列表" });
+  await page.getByRole("button", { name: "展开侧边栏" }).click();
+  await expect(page.locator("[data-agents-page]")).toHaveAttribute(
+    "data-sidebar-state",
+    "expanded",
+  );
+  const originalSessionId = await sidebar
+    .locator("[data-session-id]")
+    .first()
+    .getAttribute("data-session-id");
+  expect(originalSessionId).toBeTruthy();
+  await composer.fill("draft before switching conversations");
+  await sidebar.getByRole("button", { name: "新任务", exact: true }).click();
+  await expect(composer).toHaveText("");
+  await composer.fill("temporary second conversation");
+  await awaitSendReady(page);
+  await composer.press("Enter");
+  await expect(page.getByRole("log")).toContainText(
+    "Fake backend received: temporary second conversation",
+    { timeout: 20_000 },
+  );
+  await expect(
+    page.locator('.maka-assistant-answer [data-action="copy"]'),
+  ).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  const backgroundSteering = "background output accumulated while away";
   await page.evaluate(
-    ({ sessionId, steering }) => new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        unsubscribe();
-        reject(new Error('Timed out waiting for background stream output'));
-      }, 10_000);
-      const unsubscribe = window.maka.sessions.subscribeEvents(sessionId, (event) => {
-        if (event.type !== 'text_delta' || !event.text.includes(steering)) return;
-        window.clearTimeout(timeout);
-        unsubscribe();
-        resolve();
-      });
-      // Runtime Host decides what this Message becomes; the test only needs it
-      // to reach the running Turn, so anything short of an accepted admission
-      // fails closed rather than waiting out the timeout.
-      void window.maka.sessions
-        .submitMessage(sessionId, 'current_turn', {
-          messageId: crypto.randomUUID(),
-          text: steering,
-        })
-        .then((result) => {
-          if (result.ok) return;
-          window.clearTimeout(timeout);
+    ({ sessionId, steering }) =>
+      new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
           unsubscribe();
-          reject(new Error(`Runtime Host refused the steering Message: ${result.reason}`));
-        })
-        .catch((error) => {
-          window.clearTimeout(timeout);
-          unsubscribe();
-          reject(error);
-        });
-    }),
+          reject(new Error("Timed out waiting for background stream output"));
+        }, 10_000);
+        const unsubscribe = window.maka.sessions.subscribeEvents(
+          sessionId,
+          (event) => {
+            if (event.type !== "text_delta" || !event.text.includes(steering))
+              return;
+            window.clearTimeout(timeout);
+            unsubscribe();
+            resolve();
+          },
+        );
+        // Runtime Host decides what this Message becomes; the test only needs it
+        // to reach the running Turn, so anything short of an accepted admission
+        // fails closed rather than waiting out the timeout.
+        void window.maka.sessions
+          .submitMessage(sessionId, "current_turn", {
+            messageId: crypto.randomUUID(),
+            text: steering,
+          })
+          .then((result) => {
+            if (result.ok) return;
+            window.clearTimeout(timeout);
+            unsubscribe();
+            reject(
+              new Error(
+                `Runtime Host refused the steering Message: ${result.reason}`,
+              ),
+            );
+          })
+          .catch((error) => {
+            window.clearTimeout(timeout);
+            unsubscribe();
+            reject(error);
+          });
+      }),
     { sessionId: originalSessionId!, steering: backgroundSteering },
   );
-  await page.evaluate(() => {
-    // Painted frames only. A MutationObserver on `document.body` fires on every
-    // shell mutation during the remount, including React commit intermediates
-    // that never paint. Those samples made this assertion machine-load
-    // dependent (#3061): the same restore passed in isolation and failed when
-    // the rest of the file had already warmed the compositor.
-    const observed = {
-      texts: [] as string[],
-      maxActiveAnimations: 0,
-      stop() {},
-    };
-    let stopped = false;
-    const sample = () => {
-      if (stopped) return;
-      // The steer ends the waiting message; its acknowledgement streams in the last bubble.
-      const bubbles = [...document.querySelectorAll<HTMLElement>('.maka-bubble-streaming')];
-      const bubble = bubbles.at(-1);
-      if (bubble) {
-        const text = bubble.textContent ?? '';
-        if (observed.texts.at(-1) !== text) observed.texts.push(text);
-        observed.maxActiveAnimations = Math.max(
-          observed.maxActiveAnimations,
-          ...bubbles.map((element) => element
-            .getAnimations({ subtree: true })
-            .filter((animation) => animation.playState !== 'finished').length),
-        );
-      }
-      window.requestAnimationFrame(sample);
-    };
-    observed.stop = () => {
-      stopped = true;
-    };
-    (
-      window as typeof window & {
-        __makaBackgroundRestoreObserved?: typeof observed;
-      }
-    ).__makaBackgroundRestoreObserved = observed;
-    window.requestAnimationFrame(sample);
-  });
+  // Sample the paint clock, not React's intermediate mutation commits.
+  await page.evaluate(installStreamingPaintObserver);
   await sessionRow(sidebar, originalSessionId!).click();
-  await expect(liveBubble.filter({ hasText: backgroundSteering })).toHaveCount(1);
+  await expect(liveBubble.filter({ hasText: backgroundSteering })).toHaveCount(
+    1,
+  );
 
-  expect((await page.getByRole('log').textContent())?.split(accumulatedOutput)).toHaveLength(2);
+  expect(
+    (await page.getByRole("log").textContent())?.split(accumulatedOutput),
+  ).toHaveLength(2);
   // Playwright's toContainText is a DOM check. Stop on the next animation
   // frame so the already-queued sample() records that settled paint first.
   const backgroundRestoreObserved = await page.evaluate(
-    () =>
-      new Promise<{
-        texts: string[];
-        maxActiveAnimations: number;
-      } | undefined>((resolve) => {
-        window.requestAnimationFrame(() => {
-          const observed = (
-            window as typeof window & {
-              __makaBackgroundRestoreObserved?: {
-                texts: string[];
-                maxActiveAnimations: number;
-                stop(): void;
-              };
-            }
-          ).__makaBackgroundRestoreObserved;
-          observed?.stop();
-          resolve(observed);
-        });
-      }),
+    stopStreamingPaintObserver,
   );
   expect(
-    backgroundRestoreObserved?.texts.some((text) => text.includes(backgroundSteering)),
+    backgroundRestoreObserved?.texts.some((text) =>
+      text.includes(backgroundSteering),
+    ),
   ).toBe(true);
-  expect(backgroundRestoreObserved?.texts.some((text) =>
-    text.includes('background output') && !text.includes(backgroundSteering)
-  )).toBe(false);
+  expect(
+    backgroundRestoreObserved?.texts.some(
+      (text) =>
+        text.includes("background output") &&
+        !text.includes(backgroundSteering),
+    ),
+  ).toBe(false);
   expect(backgroundRestoreObserved?.maxActiveAnimations).toBe(0);
-  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
-  await page.evaluate((sessionId) => window.maka.sessions.stop(sessionId), originalSessionId!);
-  await expect(sessionRow(sidebar, originalSessionId!).getByLabel('正在响应', { exact: true })).toHaveCount(0);
-
+  await sidebar.getByRole("button", { name: "新任务", exact: true }).click();
+  await page.evaluate(
+    (sessionId) => window.maka.sessions.stop(sessionId),
+    originalSessionId!,
+  );
+  await expect(
+    sessionRow(sidebar, originalSessionId!).getByLabel("正在响应", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
 });

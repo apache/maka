@@ -64,6 +64,7 @@ export function stubConversationServices(
       },
       promoteQueueEntry: async () => undefined,
       retractQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
       ...sessions,
     },

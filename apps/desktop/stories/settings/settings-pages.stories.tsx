@@ -2708,6 +2708,51 @@ export const UsageSingleProvider: Story = {
 export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement, globals }) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
+    const tabs = within(await canvas.findByRole('navigation', { name: copy.viewAria }));
+    await userEvent.click(tabs.getByRole('button', { name: new RegExp(`^${copy.tabs[2]}`) }));
+    const table = within(await canvas.findByRole('table', { name: copy.tables.modelsAria }));
+
+    async function expectExactTooltip(trigger: HTMLElement, exactValue: string) {
+      await waitFor(() => {
+        const tooltipId = trigger.getAttribute('aria-describedby');
+        expect(tooltipId).toBeTruthy();
+        const tooltip = canvasElement.ownerDocument.getElementById(tooltipId!);
+        expect(tooltip).toHaveAttribute('role', 'tooltip');
+        expect(tooltip).toBeVisible();
+        expect(tooltip?.textContent).toBe(exactValue);
+        expect(trigger).toHaveAccessibleDescription(exactValue);
+      });
+    }
+
+    for (const compact of ['624K', '318K', '214K', '96K', '32K']) {
+      const token = table.getByText(compact);
+      const cell = token.closest('td');
+      if (!cell) throw new Error('Token count did not render inside a table cell');
+      const range = canvasElement.ownerDocument.createRange();
+      range.selectNodeContents(token);
+      const cellStyle = getComputedStyle(cell);
+      const requiredWidth = range.getBoundingClientRect().width
+        + Number.parseFloat(cellStyle.paddingLeft) + Number.parseFloat(cellStyle.paddingRight);
+      expect(requiredWidth).toBeLessThanOrEqual(cell.clientWidth);
+    }
+
+    const first = table.getByText('624K');
+    await userEvent.hover(first);
+    await expectExactTooltip(first, '624,000');
+    await userEvent.unhover(first);
+    expect(first).toHaveAttribute('tabindex', '0');
+    first.focus();
+    await userEvent.tab();
+    const second = table.getByText('318K');
+    expect(second).toHaveFocus();
+    await expectExactTooltip(second, '318,000');
+    second.blur();
+  },
 };
 // Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {

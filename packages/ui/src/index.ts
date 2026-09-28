@@ -80,6 +80,7 @@ export * from './transcript-viewport-navigation.js';
 // Maka-owned product assets and compositions remain public only where they do
 // not duplicate a published Astryx component authority.
 export * from './bot-brand.js';
+export type { ComposerMessageQueueHostProps } from './composer-message-queue.js';
 export * from './bot-brand-logo.js';
 export * from './maka-wordmark.js';
 // #1565 PR 3: Card is the Astryx primitive now (the thin data-slot recipe is
