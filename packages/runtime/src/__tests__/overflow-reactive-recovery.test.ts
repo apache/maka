@@ -1258,6 +1258,24 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.model.doStreamCalls[2]?.maxOutputTokens, 8_000);
   });
 
+  test('sends no output cap on a Codex subscription retry after overflow recovery', async () => {
+    // Elsewhere recovery caps the retry at 8K; the Codex backend rejects any
+    // max_output_tokens, so the recovered request would fail with HTTP 400.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      modelMaxOutputTokens: 128_000,
+      providerNative: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    for (const call of fixture.model.doStreamCalls) {
+      assert.equal(call?.maxOutputTokens, undefined);
+    }
+  });
+
   test('drops hydrated images before the single overflow retry without rerunning tools', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow', 'done'],

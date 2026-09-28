@@ -175,6 +175,12 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
     listUnsettledToolOperations(
       sessionIds: string | readonly string[],
     ): Promise<UnsettledToolOperationRecord[]>;
+    ensureRecoveredTerminalRuntimeEventDurable(
+      sessionId: string,
+      runId: string,
+      event: RuntimeEvent,
+      unsettledOperationIds: readonly string[],
+    ): Promise<void>;
     /** Rebuild one Session's disposable tool projections from its immutable events. */
     rebuildToolProjectionsForSession?(sessionId: string): Promise<void>;
     /** Repair terminal projections for selected Sessions without decoding their full histories. */
@@ -739,6 +745,15 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.importConversationCopyRuntimeEvents(sessionId, batches)),
       ensureTerminalRuntimeEventDurable: (sessionId, runId, event) =>
         run(() => runtimeEventStore.ensureTerminalRuntimeEventDurable(sessionId, runId, event)),
+      ensureRecoveredTerminalRuntimeEventDurable: (sessionId, runId, event, operationIds) =>
+        run(() =>
+          runtimeEventStore.ensureRecoveredTerminalRuntimeEventDurable(
+            sessionId,
+            runId,
+            event,
+            operationIds,
+          ),
+        ),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
       scanRuntimeEvents: (sessionId, runId, budget, visit) =>

@@ -142,6 +142,16 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     surface.sessionId,
     shellSessionRowEqual,
   );
+  const automaticQueryBlocked = useExternalStoreSelector(
+    sessionCatalog,
+    (state, sessionId: string | undefined) =>
+      sessionId !== undefined
+      && (
+        state.automaticQueryBlockedSessionIds.has(sessionId)
+        || state.sessions.some((session) => session.id === sessionId && session.isArchived)
+      ),
+    surface.sessionId,
+  );
   const [catalog, setCatalog] = useState<{
     contextKey: string;
     loading: boolean;
@@ -182,6 +192,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     };
     const refresh = () => {
       const version = ++requestVersion;
+      if (automaticQueryBlocked) return;
       const request = surface.sessionId
         ? services.skills.listInvocable(surface.sessionId)
         : surface.newTaskTarget
@@ -193,7 +204,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
           : { contextKey, loading: true, settled: undefined, skills: EMPTY_SKILLS },
       );
       void request.then((next) => {
-        if (cancelled || version !== requestVersion) return;
+        if (cancelled || version !== requestVersion || automaticQueryBlocked) return;
         setCatalog((previous) => ({
           contextKey,
           loading: false,
@@ -204,7 +215,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
               : [...next],
         }));
       }).catch(() => {
-        if (!cancelled && version === requestVersion) {
+        if (!cancelled && version === requestVersion && !automaticQueryBlocked) {
           setCatalog({ contextKey, loading: false, settled: 'empty', skills: EMPTY_SKILLS });
         }
       });
@@ -219,6 +230,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
       unsubscribeContext();
     };
   }, [
+    automaticQueryBlocked,
     contextKey,
     services,
     skillRelevantRow,

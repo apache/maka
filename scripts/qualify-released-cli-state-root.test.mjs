@@ -38,7 +38,7 @@ const SHA_B = 'b'.repeat(64);
 const FIXTURE_LIFECYCLE = {
   startupTimeoutMs: 1_000,
   livenessMs: 50,
-  shutdownKillAfterMs: 1_000,
+  shutdownKillAfterMs: 15_000,
 };
 const workspaceCliPath = fileURLToPath(new URL('../packages/cli/dist/cli.js', import.meta.url));
 

@@ -110,9 +110,6 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS core_interaction_pending
       ON core_interaction_requests(session_id, created_at, request_id);
 
-    CREATE INDEX IF NOT EXISTS core_interaction_requests_by_turn
-      ON core_interaction_requests(session_id, turn_id, created_at, request_id);
-
     CREATE TABLE IF NOT EXISTS core_interaction_outcomes (
       request_id TEXT PRIMARY KEY,
       record_json TEXT NOT NULL,
@@ -193,6 +190,7 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
       WHERE json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation';
 
     DROP INDEX IF EXISTS core_agent_runs_identity;
+    DROP INDEX IF EXISTS core_interaction_requests_by_turn;
 
     DROP TABLE IF EXISTS core_message_receipts;
     DROP TABLE IF EXISTS core_message_host_epochs;

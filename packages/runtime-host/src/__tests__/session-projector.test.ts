@@ -431,6 +431,63 @@ test('reseeds an empty queue after queued successors completed while disconnecte
   assert.deepEqual(queue.followupEntries, []);
 });
 
+test('projects a queue drain that lands while no root Turn is live', () => {
+  // apache/maka#5520: a drain observed after the root Turn is gone must still
+  // reach the renderer, or a phantom queued card survives whose retract fails
+  // with not_found forever. Seeding stays silent for rootless snapshots — the
+  // Desktop observer pins an empty seed there — because a client that never
+  // observed the session has no stale card to clear.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const drained = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({ projectionRevision: 2, rootTurn: null, queue: queue(3, []) }),
+  });
+  assert.deepEqual(
+    drained.events.map((event) => event.type),
+    ['queue_update'],
+  );
+  const update = drained.events.find(
+    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+      event.type === 'queue_update',
+  );
+  assert.ok(update, 'the drained queue must be projected');
+  assert.deepEqual(update.steering, []);
+  assert.deepEqual(update.followup, []);
+});
+
+test('seeding a rootless snapshot conveys the authoritative queue', () => {
+  // A Desktop that navigates away unsubscribes; if the queue drains while the
+  // Session is inactive, the resubscribing client's stale queued card survives
+  // until a queue_update that the rootless seed never produced (apache/maka
+  // #5520 review). The rootless seed must carry the authoritative queue once.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ rootTurn: null, queue: queue(3, []) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const seeded = projector.seedActive(true);
+  assert.deepEqual(
+    seeded.map((event) => event.type),
+    ['queue_update'],
+  );
+  const update = seeded.find(
+    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+      event.type === 'queue_update',
+  );
+  assert.ok(update);
+  assert.deepEqual(update.steering, []);
+  assert.deepEqual(update.followup, []);
+});
+
 test('reseeds the latest provider retry when the active Turn still carries one', () => {
   const retry = {
     phase: 'scheduled' as const,
@@ -1032,6 +1089,21 @@ test('seeds a context-compaction-started event for a running compaction Turn', (
   assert.equal(seeded.length, 1);
   assert.equal(seeded[0]?.type, 'context_compaction_started');
   assert.equal(seeded[0]?.turnId, 'turn-compact');
+});
+
+test('seeds an empty queue only for a client that renders the queue', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'running' },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  assert.deepEqual(projector.seedActive(false), []);
+  const [cleared] = projector.seedActive(true, { includeEmptyQueue: true });
+  assert.equal(cleared?.type, 'queue_update');
+  if (cleared?.type !== 'queue_update') return;
+  assert.deepEqual([cleared.steeringEntries, cleared.followupEntries], [[], []]);
 });
 
 test('emits a context-compaction-started event when a compaction Turn starts', () => {

@@ -132,6 +132,25 @@ describe('tool activity presentation', () => {
     );
   });
 
+  it('shows AskUserQuestion answers against the offered options', () => {
+    const settled = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
+        toolUseId: 'question',
+        toolName: 'AskUserQuestion',
+        status: 'completed',
+        args: {
+          questions: [{ question: 'Which client?', options: [{ label: 'claude' }, { label: 'maka' }] }],
+        },
+        result: { kind: 'json', value: { answers: [{ question: 'Which client?', answer: 'maka' }] } },
+      },
+    }))
+      .split(/<[^>]+>/)
+      .filter((text) => text.trim() !== '')
+      .join('\n');
+    assert.ok(settled.includes('Which client?\n  claude\n✓ maka'), settled);
+    assert.doesNotMatch(settled, /answers:/);
+  });
+
   it('describes Computer Use proxy calls by action instead of the generic tool name', () => {
     const item: ToolActivityItem = {
       toolUseId: 'computer-observe',

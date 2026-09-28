@@ -25,19 +25,26 @@ export async function globFiles(input: {
   cwd: string;
   pattern: string;
   limit?: number;
-}): Promise<{ files: string[] }> {
+  abortSignal?: AbortSignal;
+}): Promise<{ files: string[]; truncated: boolean }> {
   let failure: NodeJS.ErrnoException | undefined;
   const directories = new Set([resolve(input.cwd)]);
+  const files: string[] = [];
+  const limit = input.limit ?? 200;
+  let probingOverflow = false;
+  let probeIncomplete = false;
   function record(error: NodeJS.ErrnoException, path: string): void {
     // Speculative literal components may miss. A directory already admitted by
     // cwd, stat, or enumeration disappearing instead makes this walk incomplete.
     if (directories.has(resolve(path)) || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) {
-      failure ??= error;
+      if (probingOverflow) probeIncomplete = true;
+      else failure ??= error;
     }
   }
-  const files: string[] = [];
+  let truncated = false;
   for await (const file of globIterate(input.pattern, {
     cwd: input.cwd,
+    signal: input.abortSignal,
     ignore: { childrenIgnored: (entry) => entry.isSymbolicLink() },
     fs: {
       readdir(path, options, callback) {
@@ -64,10 +71,15 @@ export async function globFiles(input: {
       },
     },
   })) {
+    if (files.length >= limit) {
+      // One match past the cap is the only proof the pattern had more to give.
+      truncated = true;
+      break;
+    }
     if (failure) throw failure;
     files.push(file);
-    if (files.length >= (input.limit ?? 200)) break;
+    if (files.length >= limit) probingOverflow = true;
   }
   if (failure) throw failure;
-  return { files };
+  return { files, truncated: truncated || probeIncomplete };
 }

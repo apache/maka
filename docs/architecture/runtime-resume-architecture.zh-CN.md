@@ -497,7 +497,34 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。启动恢复也会通过这条
+seam 重建已经 admission 的 continuation，但不会自动选择普通的 failed 或 cancelled Run。
+
+### 工具已派发但没有已提交结果：只在新用户 Turn 中临时投影
+
+工具副作用结果未知时，旧 Run 不能安全续跑。如果恢复时发现 T1 派发事实已经写入，但没有已提交的
+T2 结果，Runtime 会把旧 invocation 封存为 `outcome_unknown`；它不会伪造一条 durable tool response，
+也不会重试该工具。旧 Run 仍然是停止状态。
+
+之后用户显式发送新消息时，Runtime 会开启一个新的 Turn。只有这个新 Turn 中发给模型的请求会看到临时的
+历史投影：旧工具调用后面暂时附上一条 `outcome_unknown` 响应和 system 提醒，再接上新用户消息。这条临时响应
+和提醒不会写入 RuntimeEvent ledger 或 transcript。例如，`Bash("touch marker.txt")` 已派发、但结果来不及提交；
+用户新消息可以说“检查 `marker.txt` 是否存在”。模型可以先检查当前状态，再决定下一步；Maka 不会替模型
+判断文件是否写入，也不会自动重试命令。
+
+云端 activation、定时任务、Goal、WorkHub 结果和 Agent Graph 唤醒都不是用户显式消息。如果这类新 Turn
+遇到尚未确定结果的工具调用，Runtime 会在请求模型之前拒绝继续；需要用户检查当前状态并发送新消息。
+
+当对话确实在模型知情的情况下继续过之后，这个未知结果会退役：在崩溃封存之后开启并成功完成的一轮
+fresh 且无 lineage 标记的 invocation（显式用户消息——不是 retry、regenerate、branch、子 agent、continuation
+或自动化唤醒）。从下一轮开始，gate 不再触发，自动化入口恢复正常，这段历史也不再阻止压缩。如果显式那一轮
+失败或被中止，未知结果保持活跃，并在下一条显式消息时再次投影。退役判定完全从 ledger 已有的 invocation
+事实推导，永远不会写入伪造的工具结果。
+
+这个投影不能丢掉 T1 调用。如果已有 checkpoint 或当前 context budget 会把它隐藏，Runtime 会为这次请求
+退回完整的 effective history。这是有意的 fail-closed 取舍：未解决的历史很大时，可能超过 provider 的上下文
+限制；此时返回 provider 的真实错误，而不是删掉不确定事实或谎称工具成功。当前实现还不能在压缩其余历史的同时
+保留这份不确定性。
 
 ### 当前的 parked 原因边界
 
@@ -861,9 +888,16 @@ flowchart TD
 
 RuntimeEvent 迁移不再由开关控制；首次写入必然迁移。当前恢复行为开关如下：
 
-| 开关 | 作用 | 回滚含义 |
+| 设置 | 作用 | 回滚含义 |
 |---|---|---|
-| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 开启 Desktop 手动/自动 resume 与 CLI `/resume` | 可关闭用户可见 continuation，但不会删除或改写 durable facts |
+| 未设置 | 开启 Desktop 与 CLI/TUI 的显式 resume；保持 WorkHub 和 `maka activate` 自动 resume 关闭 | 默认产品行为 |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 额外开启 WorkHub 和 `maka activate` 自动 resume | 保留此前完整 opt-in 行为 |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` | 关闭显式和模型驱动 resume planning | 可能 park reconstruction，但不会删除 durable facts |
+
+未知的非空值与 `0` 一样 fail closed。所有已开启的入口仍使用同一个权威 planner；策略只决定
+新的 resume 尝试能否到达 planner。
+
+启用 `maka activate` 自动 resume 后，若有可续跑的 continuation，会续跑旧 Turn，而不提交本次 activation 的新 stimulus；若没有可续跑项，则正常提交 stimulus。需要确保每次 activation 的新内容都被处理时，不应启用这项旧式自动续跑行为。
 
 真正降级到不理解新 schema 的旧版本前，必须显式 export 并验证。Migration 失败不能删除 legacy JSONL；数据库版本比当前程序新时必须 fail closed。
 

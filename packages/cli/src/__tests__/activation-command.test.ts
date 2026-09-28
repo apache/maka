@@ -18,12 +18,14 @@
  */
 
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SessionSummary } from '@maka/core/session';
+import type { RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   decodeActivationRequest,
   parseMakaActivateArgs,
@@ -33,6 +35,8 @@ import {
   type MakaActivationRuntime,
 } from '../activation-command.js';
 import type { MakaRunOutcome } from '../run-command-core.js';
+import { createRuntimeHostRunContext } from '../runtime-host-run-command.js';
+import type { RuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
 
 const ROOTS = {
   stateRoot: '/tmp/maka-state',
@@ -42,6 +46,15 @@ const ROOTS = {
 
 before(async () => {
   await Promise.all(Object.values(ROOTS).map((root) => mkdir(root, { recursive: true })));
+  // The production adapter canonicalizes workspace roots with realpath; on
+  // macOS /tmp resolves to /private/tmp. Normalize the fixture roots the same
+  // way so fake Session summaries and canonicalized overrides agree on every
+  // platform instead of entering an unsupported relocation path.
+  await Promise.all(
+    (Object.keys(ROOTS) as Array<keyof typeof ROOTS>).map(async (key) => {
+      ROOTS[key] = await realpath(ROOTS[key]);
+    }),
+  );
 });
 
 after(async () => {
@@ -109,12 +122,13 @@ function fakeDeps(
     onCreateSession?: () => void;
     onClose?: () => void;
     safeBoundaryResume?: boolean;
+    automatedResumeEnabled?: boolean;
     onResume?: () => void;
     onSandboxBoundaryResponse?: (response: { requestId: string; decision: 'deny' }) => void;
     sendMessage?: (
       runtime: MakaActivationRuntime,
       sessionId: string,
-      input: { turnId: string; text: string },
+      input: UserMessageInput,
     ) => AsyncIterable<SessionEvent>;
   } = {},
 ): MakaActivationDeps {
@@ -151,6 +165,7 @@ function fakeDeps(
   };
 
   return {
+    automatedResumeEnabled: () => options.automatedResumeEnabled === true,
     createContext: async (input) => {
       options.onContext?.(input);
       observer = input.runOutcomeObserver;
@@ -550,9 +565,11 @@ describe('maka activate JSONL protocol', () => {
     }
   });
 
-  test('resumes an existing compatible session without creating another one', async () => {
+  test('preserves a new activation stimulus and origin instead of implicitly resuming an existing session', async () => {
     let created = false;
     let resumed = false;
+    let sentOrigin: unknown;
+    let sentText: string | undefined;
     let requestedConnection: string | undefined;
     const lines: string[] = [];
     const result = await runMakaActivationCli(
@@ -578,6 +595,11 @@ describe('maka activate JSONL protocol', () => {
           onResume: () => {
             resumed = true;
           },
+          sendMessage: async function* (_runtime, _sessionId, input) {
+            sentOrigin = input.origin;
+            sentText = input.text;
+            yield* completedEvents();
+          },
         }),
         writeStdout: (text) => lines.push(text.trim()),
       },
@@ -585,9 +607,148 @@ describe('maka activate JSONL protocol', () => {
 
     assert.equal(result, 0);
     assert.equal(created, false);
-    assert.equal(resumed, true);
+    assert.equal(resumed, false);
+    assert.deepEqual(sentOrigin, { kind: 'cloud_activation', activationId: 'activation-1' });
+    assert.equal(sentText, 'Inspect the workspace');
     assert.equal(requestedConnection, 'local');
     assert.equal(JSON.parse(lines.at(-1)!).makaSessionId, 'maka-session-1');
+  });
+
+  test('carries activation provenance through the production Runtime Host adapter', async () => {
+    const prepared: Array<{ prompt: string; origin: unknown }> = [];
+    const driver = {
+      switchSession: async (sessionId: string) => ({
+        summary: summary({ id: sessionId }),
+        messages: [],
+      }),
+      preparePrompt: async (prompt: string, options: { origin?: unknown }) => {
+        prepared.push({ prompt, origin: options.origin });
+        return {
+          sessionId: 'maka-session-1',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          events: (async function* () {
+            yield {
+              type: 'text_complete',
+              id: 'event-text',
+              turnId: 'turn-1',
+              messageId: 'message-1',
+              ts: 1,
+              text: 'done',
+            };
+            yield {
+              type: 'complete',
+              id: 'event-complete',
+              turnId: 'turn-1',
+              ts: 2,
+              stopReason: 'end_turn',
+            };
+          })(),
+        };
+      },
+      subscribePendingInteractions: () => () => {},
+      subscribeTranscriptReplacements: () => () => {},
+    } as unknown as RuntimeHostMakaSessionDriver;
+    const connection = {
+      request: async (operation: string) => {
+        throw new Error(`Unexpected Runtime Host operation: ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+    const catalog = {
+      revision: 1,
+      defaultTarget: { connectionId: 'connection-1', modelId: 'gpt-5' },
+      connections: [
+        {
+          connectionId: 'connection-1',
+          revision: 1,
+          slug: 'openai-main',
+          name: 'OpenAI',
+          providerType: 'openai' as const,
+          enabled: true,
+          enabledModelIds: ['gpt-5'],
+          catalogEntries: [],
+          models: [{ id: 'gpt-5' }],
+        },
+      ],
+    };
+    const deps = fakeDeps({
+      input: JSON.stringify(validRequest({ makaSessionId: 'maka-session-1' })),
+      sessions: [summary({ llmConnectionSlug: 'openai-main', model: 'gpt-5' })],
+    });
+    const output: string[] = [];
+    deps.writeStdout = (text) => output.push(text);
+    deps.createContext = async (input) => {
+      const context = createRuntimeHostRunContext(
+        connection,
+        catalog,
+        {
+          workspaceRoot: input.workspaceRoot,
+          cwd: input.cwd,
+          ...(input.requestedConnectionSlug
+            ? { requestedConnectionSlug: input.requestedConnectionSlug }
+            : {}),
+          ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+          ...(input.sessionCwdOverride ? { sessionCwdOverride: input.sessionCwdOverride } : {}),
+          ...(input.runOutcomeObserver ? { runOutcomeObserver: input.runOutcomeObserver } : {}),
+        },
+        { createDriver: () => driver },
+      );
+      return context;
+    };
+
+    const result = await runMakaActivationCli(
+      [
+        '--state-root',
+        ROOTS.stateRoot,
+        '--workspace-root',
+        ROOTS.workspaceRoot,
+        '--config-root',
+        ROOTS.configRoot,
+      ],
+      deps,
+    );
+
+    assert.equal(result, 0, JSON.stringify({ output, prepared }));
+    assert.deepEqual(prepared, [
+      {
+        prompt: 'Inspect the workspace',
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      },
+    ]);
+  });
+
+  test('only opts automated activation into resume when explicitly enabled', async () => {
+    let resumed = false;
+    let stimulusSent = false;
+    const result = await runMakaActivationCli(
+      [
+        '--state-root',
+        ROOTS.stateRoot,
+        '--workspace-root',
+        ROOTS.workspaceRoot,
+        '--config-root',
+        ROOTS.configRoot,
+      ],
+      {
+        ...fakeDeps({
+          input: JSON.stringify(validRequest({ makaSessionId: 'maka-session-1' })),
+          sessions: [summary()],
+          safeBoundaryResume: true,
+          automatedResumeEnabled: true,
+          onResume: () => {
+            resumed = true;
+          },
+          sendMessage: async function* () {
+            stimulusSent = true;
+            yield* completedEvents();
+          },
+        }),
+      },
+    );
+
+    assert.equal(result, 0);
+    assert.equal(resumed, true);
+    assert.equal(stimulusSent, false);
   });
 
   test('maps timeout to retryable_failure and emits one terminal outcome', async () => {

@@ -30,6 +30,8 @@ import type {
 export interface ClientCapabilityRegistrationOptions {
   readonly sessionId?: string;
   readonly timeoutMs?: number;
+  readonly requireIdleSession?: boolean;
+  readonly sessionConfigurationId?: string;
 }
 
 /** A Client-owned open-world capability provider registered on one Host connection. */

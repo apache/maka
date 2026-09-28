@@ -341,6 +341,7 @@
   display: none;
 }
 
+.maka-workbar-shell-vars,
 .maka-workbar-layout-vars,
 .maka-workbar-workspace-contents {
   display: contents;

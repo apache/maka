@@ -17,16 +17,37 @@
  * under the License.
  */
 
+import { useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor } from 'storybook/test';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
-import { ToastProvider } from '@maka/ui';
+import type { SessionSummary } from '@maka/core/session';
+import { ToastProvider, type ComposerHandle } from '@maka/ui';
+import { ChatComposerRegion } from '../src/renderer/chat-composer-region';
 import {
+  GuestTurnRequests,
   SessionCollaborationServicesProvider,
-  SessionTurnRequestComposer,
   type SessionCollaborationServices,
 } from '../src/renderer/features/session-collaboration/index.js';
+import { createFakeSessionCollaborationServices } from '../src/renderer/features/session-collaboration/testing.js';
 
 const SESSION_ID = 'shared-session-story';
+const SHARED_SESSION: SessionSummary = {
+  id: SESSION_ID,
+  name: '连接恢复方案评审',
+  isFlagged: false,
+  isArchived: false,
+  labels: [],
+  hasUnread: false,
+  status: 'active',
+  lastMessageAt: Date.UTC(2026, 8, 3, 1, 0, 0),
+  backend: 'ai-sdk',
+  llmConnectionId: 'connection-anthropic-main',
+  llmConnectionSlug: 'anthropic-main',
+  connectionLocked: false,
+  model: 'claude-sonnet-4-5',
+  permissionMode: 'ask',
+};
 const REQUESTS: readonly SessionTurnAccessRequest[] = [
   {
     requestId: 'pending-request',
@@ -70,6 +91,7 @@ function services(
   ) => Promise<{ readonly withdrawn: boolean }> = async () => ({ withdrawn: true }),
 ): SessionCollaborationServices {
   return {
+    ...createFakeSessionCollaborationServices(),
     importInvitation: async () => {
       throw new Error('unused');
     },
@@ -117,9 +139,48 @@ const reconnectServices = services(async () => {
   throw new Error('Runtime Host is reconnecting');
 });
 
+// The same wiring AppShell mounts: the Guest projection wraps the one
+// ChatComposerRegion, which sends Turn requests while the Session is shared.
+function GuestComposer(props: { sessionId: string }) {
+  const composerRef = useRef<ComposerHandle>(null);
+  return (
+    <GuestTurnRequests sessionId={props.sessionId} composerRef={composerRef}>
+      {(guest) => (
+        <ChatComposerRegion
+          composerRef={composerRef}
+          guest={guest}
+          active
+          onboardingComposerHidden={false}
+          activeInteraction={undefined}
+          activeSession={SHARED_SESSION}
+          activeModel={SHARED_SESSION.model}
+          activeModelLabel="Claude Sonnet 4.5"
+          activeModelConnectionId={SHARED_SESSION.llmConnectionId}
+          modelLabel="Claude Sonnet 4.5"
+          activeId={props.sessionId}
+          contextUsageSessionId={props.sessionId}
+          newTaskDraftKey="new-task:story"
+          newTaskSendPending={false}
+          stopPendingBySession={{}}
+          respondToSandboxBoundary={() => undefined}
+          respondToClientCapability={() => undefined}
+          respondToUserQuestion={() => undefined}
+          respondToUserForm={() => undefined}
+          stop={() => undefined}
+          onOpenContextUsage={() => undefined}
+          directoryComposerProps={{}}
+          directoryPickerEnabled={false}
+          onSend={() => false}
+          onStop={() => undefined}
+        />
+      )}
+    </GuestTurnRequests>
+  );
+}
+
 const meta = {
   title: 'Product/Shared Session Guest',
-  component: SessionTurnRequestComposer,
+  component: GuestComposer,
   parameters: { layout: 'fullscreen' },
   decorators: [
     (Story) => (
@@ -137,15 +198,15 @@ const meta = {
       </ToastProvider>
     ),
   ],
-} satisfies Meta<typeof SessionTurnRequestComposer>;
+} satisfies Meta<typeof GuestComposer>;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-// Real path: join a shared Session with Turn-request access. The queue is
-// expanded because one active request arrived, and terminal history remains
-// dismissible without pushing the composer away from the normal chat layout.
+// Real path: join a shared Session with Turn-request access. The Guest's
+// requests sit in the composer staging drawer as one-line rows: a pending one
+// can be withdrawn, a settled one dismissed.
 export const RequestQueue: Story = {
   args: { sessionId: SESSION_ID },
   decorators: [
@@ -155,6 +216,14 @@ export const RequestQueue: Story = {
       </SessionCollaborationServicesProvider>
     ),
   ],
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const rows = [...canvasElement.querySelectorAll('.maka-composer-queue-text')].map((row) => row.textContent);
+      expect(rows).toEqual(['请检查这个连接恢复方案，并给出可以直接执行的修复建议。', '重新生成回答']);
+    });
+    const labels = [...canvasElement.querySelectorAll('.maka-composer-queue button[aria-label]')].map((button) => button.getAttribute('aria-label'));
+    await expect(labels).toEqual(['撤回', '关闭']);
+  },
 };
 
 // Real path: a Guest who already has Turn-request access loses the Runtime

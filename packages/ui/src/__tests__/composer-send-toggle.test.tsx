@@ -28,12 +28,13 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { act } from 'react';
+import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
-import { Composer } from '../composer.js';
+import { Composer, type ComposerHandle } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
+import { ICON_SIZE, Search } from '../icons.js';
 
 function renderComposer(streaming: boolean): string {
   return renderToStaticMarkup(
@@ -230,6 +231,41 @@ test('the actual submit waits for Session references and keeps the draft on refu
   }
 });
 
+test('a send completing after navigation keeps the newer draft it left behind', async () => {
+  const original = { document: globalThis.document, window: globalThis.window, Node: globalThis.Node, HTMLElement: globalThis.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
+  Object.assign(window, { getSelection: () => null });
+  Object.assign(document, { getSelection: () => null });
+  Object.assign(globalThis, { document, window, Node: window.Node, HTMLElement: window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(document.querySelector('#root')!);
+  const handle = createRef<ComposerHandle>();
+  let finish!: (sent: boolean) => void;
+  const render = (draftKey: string) => root.render(
+    <LocaleProvider locale="en">
+      <Composer ref={handle} draftKey={draftKey}
+        onSend={() => new Promise<boolean>((resolve) => { finish = resolve; })}
+        onStop={() => undefined} />
+    </LocaleProvider>,
+  );
+  try {
+    await act(() => render('a'));
+    await act(() => handle.current!.setText('first request'));
+    await act(async () => {
+      document.querySelector('form')!.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    await act(() => handle.current!.setText('second unsent draft'));
+    await act(() => render('b'));
+    await act(async () => { finish(true); await Promise.resolve(); });
+    assert.equal(handle.current!.getDraft('a'), 'second unsent draft');
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
 test('keeps Host order visible until the reordered projection arrives', async () => {
   const original = {
     document: globalThis.document,
@@ -249,11 +285,7 @@ test('keeps Host order visible until the reordered projection arrives', async ()
   assert.ok(container);
   const root = createRoot(container);
   let requestedOrder: readonly string[] | undefined;
-  const updatedEntries: Array<{
-    entryId: string;
-    expectedQueueRevision: number;
-    text: string;
-  }> = [];
+  const editedEntryIds: string[] = [];
   const deletedEntryIds: string[] = [];
 
   try {
@@ -277,10 +309,9 @@ test('keeps Host order visible until the reordered projection arrives', async ()
               state: 'queued' as const,
             })),
           ]}
-          queuedMessageRevision={7}
           onPromoteQueuedEntry={() => undefined}
-          onUpdateQueuedEntry={(entryId, expectedQueueRevision, text) => {
-            updatedEntries.push({ entryId, expectedQueueRevision, text });
+          onEditQueuedEntry={(entry) => {
+            editedEntryIds.push(entry.entryId);
           }}
           onDeleteQueuedEntry={(entryId) => {
             deletedEntryIds.push(entryId);
@@ -294,30 +325,23 @@ test('keeps Host order visible until the reordered projection arrives', async ()
         />
       </LocaleProvider>,
     ));
-    const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
-    const editButtons = buttons.filter((button) => button.textContent === 'Edit');
+    const editButtons = [
+      ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Edit"]'),
+    ];
     const deleteButtons = [
       ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Delete"]'),
     ];
-    assert.equal(buttons.filter((button) => button.textContent === 'Steer').length, 2);
-    assert.equal(editButtons.length, 3);
-    assert.equal(deleteButtons.length, 3);
+    // Queued steering lives in the transcript, not the follow-up plate.
+    assert.equal(container.querySelectorAll('[aria-label="Send now"]').length, 2);
+    assert.equal(editButtons.length, 2);
+    assert.equal(deleteButtons.length, 2);
+    assert.equal(
+      [...container.querySelectorAll('.maka-composer-queue-text')]
+        .every((row) => !row.textContent?.includes('steering')),
+      true,
+    );
     await act(async () => {
       editButtons[0]?.dispatchEvent(new window.Event('click', { bubbles: true }));
-      await Promise.resolve();
-    });
-    const editInput = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit"]',
-    );
-    assert.ok(editInput);
-    await act(() => {
-      editInput.value = 'updated steering\nsecond line';
-      editInput.dispatchEvent(new window.Event('input', { bubbles: true }));
-    });
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>('[aria-label="Save"]')
-        ?.dispatchEvent(new window.Event('click', { bubbles: true }));
       await Promise.resolve();
     });
     await act(async () => {
@@ -326,36 +350,25 @@ test('keeps Host order visible until the reordered projection arrives', async ()
         ?.dispatchEvent(new window.Event('click', { bubbles: true }));
       await Promise.resolve();
     });
-    assert.deepEqual(updatedEntries, [{
-      entryId: 'steering',
-      expectedQueueRevision: 7,
-      text: 'updated steering\nsecond line',
-    }]);
-    assert.deepEqual(deletedEntryIds, ['steering']);
-    const grips = [...container.querySelectorAll<HTMLElement>('[data-queue-placement="next_turn"] .maka-composer-queue-grip')];
+    assert.deepEqual(editedEntryIds, ['first']);
+    assert.deepEqual(deletedEntryIds, ['first']);
+    const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
     assert.equal(grips.length, 2);
     const dragStart = new window.Event('dragstart', { bubbles: true });
     Object.defineProperty(dragStart, 'dataTransfer', {
       value: { effectAllowed: '', setData() {} },
     });
     await act(() => grips[1]?.dispatchEvent(dragStart));
-    const rows = [...container.querySelectorAll('li')];
-    const steeringRow = rows[0]?.parentElement;
-    assert.ok(steeringRow);
-    await act(() => steeringRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
-    assert.equal(requestedOrder, undefined);
-    await act(() => grips[1]?.dispatchEvent(dragStart));
     const firstRow = grips[0]?.closest('li')?.parentElement;
     assert.ok(firstRow);
-    await act(() => firstRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
+    const drop = new window.Event('drop', { bubbles: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: { types: [], files: [] } });
+    await act(() => firstRow.dispatchEvent(drop));
 
     assert.deepEqual(requestedOrder, ['second', 'first']);
     assert.deepEqual(
-      rows.map((row) => {
-        if (row.textContent?.includes('steering')) return 'steering';
-        return row.textContent?.includes('first') ? 'first' : 'second';
-      }),
-      ['steering', 'first', 'second'],
+      [...container.querySelectorAll('.maka-composer-queue-text')].map((row) => row.textContent),
+      ['first', 'second'],
     );
   } finally {
     await act(() => root.unmount());
@@ -364,26 +377,35 @@ test('keeps Host order visible until the reordered projection arrives', async ()
 });
 
 
-test('deduplicates pending steering against Host queue entries and keeps the plate through an empty queue snapshot', () => {
-  const pending = { id: 'steer', text: 'new direction', ts: 1, pendingSteering: true, transientPlacement: 'current_turn' as const };
-  const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
-  for (const entries of [[queued], []]) {
-    const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-      queuedMessages={entries} pendingMessages={[pending]} /></LocaleProvider>);
-    const document = parseHTML(`<html><body>${markup}</body></html>`).document;
-    assert.equal(document.querySelectorAll('.maka-composer-queue-text').length, 1);
-    assert.equal(document.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
-    assert.equal(document.querySelector('.maka-composer-queue-status')?.textContent, 'Steering · Applied together');
-  }
-});
-
-
-test('a locally saved follow-up keeps its delivery status and recovery actions in the pending list', () => {
+test('local sends share the flat staging list with icon-only delivery actions', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-    pendingMessages={[{ id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'next_turn',
-      deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
-      deliveryActions: [{ label: 'Check delivery', onClick() {} }] }]} /></LocaleProvider>);
+    queuedMessages={[{
+      entryId: 'admitted', messageId: 'message-admitted',
+      content: { text: 'admitted follow-up' }, placement: 'next_turn', state: 'queued',
+    }]}
+    pendingMessages={[
+      { id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'follow_up',
+        deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
+        deliveryActions: [{ label: 'Check delivery', icon: <Search size={ICON_SIZE.control} aria-hidden="true" />, onClick() {} }] },
+      { id: 'sending', text: 'still sending', ts: 2, transientPlacement: 'follow_up',
+        deliveryStatus: 'Sending…' },
+      { id: 'local-steer', text: 'steering in flight', ts: 3,
+        transientPlacement: 'transcript', deliveryStatus: 'Sending…' },
+    ]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
-  assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
-  assert.ok([...document.querySelectorAll('.maka-composer-queue-actions button')].some((button) => button.textContent === 'Check delivery'));
+  assert.deepEqual(
+    [...document.querySelectorAll('.maka-composer-queue-list li')].map((row) => row.textContent),
+    ['admitted follow-up', 'offline follow-up', 'still sending'],
+    'admitted entries and in-flight sends share one flat list',
+  );
+  assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'),
+    'the delivery action stays an accessible labelled icon control');
+  const gripRows = [...document.querySelectorAll('li')]
+    .filter((row) => row.querySelector('.maka-composer-queue-grip') !== null);
+  assert.equal(gripRows.length, 1, 'only the admitted row carries a drag grip');
+  const sendingRow = [...document.querySelectorAll('li')]
+    .find((row) => row.textContent?.includes('still sending'));
+  assert.ok(sendingRow);
+  assert.equal(sendingRow.querySelectorAll('.maka-composer-queue-actions button').length, 0,
+    'a local row without delivery actions offers no Host edit/steer/delete operations');
 });

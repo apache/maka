@@ -30,6 +30,7 @@ import { act, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { LocaleProvider } from '../locale-context.js';
+import { presentSessionName } from '../session-status-presentation.js';
 import { TitlebarSessionIdentity } from '../titlebar-session-identity.js';
 
 const originalGlobals = {
@@ -51,7 +52,7 @@ afterEach(async () => {
   });
 });
 
-async function renderIdentity(sessionName: string, readOnly = false) {
+async function renderIdentity(sessionName: string, readOnly = false, onRenameSession = (_name: string) => {}, parentSessionName?: string) {
   const { document, window } = parseHTML('<div id="root"></div>');
   window.getComputedStyle = () =>
     new Proxy(
@@ -76,8 +77,9 @@ async function renderIdentity(sessionName: string, readOnly = false) {
           <TitlebarSessionIdentity
             sessionName={sessionName}
             readOnly={readOnly}
-            onRenameSession={() => undefined}
+            onRenameSession={onRenameSession}
             project={{ name: 'p' }}
+            parentSession={parentSessionName === undefined ? undefined : { name: parentSessionName, onOpen() {} }}
           />
         </LocaleProvider>
       </StrictMode>,
@@ -103,4 +105,24 @@ test('both branches hand their rendered span to the truncation measurement', asy
   } finally {
     globalThis.ResizeObserver = originalObserver;
   }
+});
+
+test('the Host untitled name reads as the localized placeholder', async () => {
+  assert.equal((await renderIdentity('New Chat'))?.textContent, 'New task');
+  assert.equal((await renderIdentity('Fix the build'))?.textContent, 'Fix the build');
+  assert.equal(presentSessionName('New Chat', 'zh-CN'), '新建任务');
+  await renderIdentity('Child', false, undefined, 'New Chat');
+  assert.ok(document.querySelector('[aria-label="Return to parent task “New task”"]'));
+});
+
+test('committing the untitled placeholder unchanged keeps the stored name', async () => {
+  const renamed: string[] = [];
+  const span = await renderIdentity('New Chat', false, (name) => renamed.push(name));
+  window.HTMLInputElement.prototype.select ??= () => {};
+  await act(() => { span?.closest('button')?.click(); });
+  const input = document.querySelector<HTMLInputElement>('.maka-titlebar-identity__rename-input input, input.maka-titlebar-identity__rename-input');
+  assert.equal(input?.value, 'New task');
+  await act(() => { input?.dispatchEvent(new window.Event('focusout', { bubbles: true })); });
+  assert.equal(document.querySelector('.maka-titlebar-identity__rename-input'), null, 'the rename closed');
+  assert.deepEqual(renamed, []);
 });

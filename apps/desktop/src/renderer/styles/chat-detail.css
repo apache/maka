@@ -17,6 +17,19 @@
  * under the License.
  */
 
+/* A turn reads as one unit because its internal gap is well under the
+   between-turn gap, which the transcript row in chat-view.tsx owns. */
+.maka-turn {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: var(--space-3);
+  max-width: var(--maka-reading-measure);
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 /* Search-highlight ring on the turn the search panel just navigated to.
  * This styles the `.maka-turn` container (NOT a per-turn marker), so it
  * stays hand-written here alongside the other model-catalog-preview turn

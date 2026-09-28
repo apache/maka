@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
+import { formatUserQuestionResult } from '@maka/core/tool-quiet-preview';
 import { type ToolResultContent } from '@maka/core/events';
 import { type UiLocale } from '@maka/core/ui-locale';
 import {
@@ -284,6 +285,13 @@ function describeToolCall(
         truncated: item.outputTruncated === true,
       },
     };
+  }
+
+  const userQuestionAnswers = !ownsPanel && item.toolName === 'AskUserQuestion' && displayResult?.kind === 'json'
+    ? formatUserQuestionResult(item.args ?? item.argsPreview, displayResult.value, locale)
+    : undefined;
+  if (userQuestionAnswers) {
+    return { decorations, body: { kind: 'quietText', body: userQuestionAnswers } };
   }
 
   if (!ownsPanel && displayResult?.kind === 'json') {
@@ -571,11 +579,11 @@ function LinkedAgentList(props: {
             }
             label={(
               <span className="maka-subagent-session-label">
-                <Text type="label" maxLines={1}>
+                <Text type="supporting" weight="medium" maxLines={1}>
                   {row.name}
                 </Text>
                 {row.target ? (
-                  <Text type="body" color="secondary" maxLines={1} className="maka-subagent-session-summary">
+                  <Text type="supporting" color="secondary" maxLines={1} className="maka-subagent-session-summary">
                     {row.target}
                   </Text>
                 ) : null}

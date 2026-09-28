@@ -85,7 +85,6 @@ function makeSession(input: {
 const rowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onToggleFlag: noop,
   onArchive: noop,
-  onUnarchive: noop,
   onRename: noop,
 };
 
@@ -100,6 +99,7 @@ function panelProps(input: {
   groups?: SessionListPanelProps['groups'];
   projectActions?: SessionListPanelProps['projectActions'];
   worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
+  sessionLocation?: SessionListPanelProps['sessionLocation'];
   onSelectSession?: SessionListPanelProps['onSelectSession'];
 }): SessionListPanelProps {
   return {
@@ -115,6 +115,7 @@ function panelProps(input: {
     ...(input.groups ? { groups: input.groups } : {}),
     ...(input.projectActions ? { projectActions: input.projectActions } : {}),
     ...(input.worktreeSessionIds ? { worktreeSessionIds: input.worktreeSessionIds } : {}),
+    ...(input.sessionLocation ? { sessionLocation: input.sessionLocation } : {}),
     onSelectSession: input.onSelectSession ?? noop,
     onSelect: noop,
     onOpenSettings: noop,
@@ -339,6 +340,24 @@ export const ConversationStates: Story = {
       })} />
     </StoryFrame>
   ),
+  play: async ({ canvasElement }) => {
+    // The ring, every status dot and the ⋯ that replaces them on hover share
+    // one vertical axis.
+    const centerX = (element: Element | null) => {
+      if (!element) throw new Error('trailing element is missing');
+      const box = element.getBoundingClientRect();
+      return box.x + box.width / 2;
+    };
+    const axis = centerX(
+      canvasElement.querySelector('[data-session-id="status-running"] .maka-running-indicator'),
+    );
+    for (const row of canvasElement.querySelectorAll<HTMLElement>('.maka-session-row')) {
+      expect(Math.abs(centerX(row.querySelector('[data-session-status]')) - axis)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(centerX(row.querySelector(':scope > .maka-session-row-action')) - axis),
+      ).toBeLessThanOrEqual(1);
+    }
+  },
 };
 
 // Real path: switching between two ordinary Sessions in a populated rail. The
@@ -517,6 +536,20 @@ export const PinnedAndRecentSections: Story = {
       />
     </StoryFrame>
   ),
+  play: async ({ canvasElement }) => {
+    // The ring and the timestamps end on the row's padding edge, not on a
+    // centered column that leaves them floating inside the row.
+    for (const row of canvasElement.querySelectorAll<HTMLElement>('.maka-session-row')) {
+      const signal = row.querySelector('.maka-session-row-signal');
+      const content = signal?.firstElementChild;
+      if (!signal || !content) throw new Error(`${row.dataset.sessionId} has no signal`);
+      const item = row.querySelector('.astryx-side-nav-item');
+      if (!item) throw new Error('nav item is missing');
+      const paddingEdge =
+        item.getBoundingClientRect().right - Number.parseFloat(getComputedStyle(item).paddingRight);
+      expect(Math.abs(content.getBoundingClientRect().right - paddingEdge)).toBeLessThanOrEqual(1);
+    }
+  },
 };
 
 // Real path: group-by-project — collapsible project rows, sessions on the
@@ -580,6 +613,12 @@ export const ProjectGroups: Story = {
             streamingSessionIds: new Set(['proj-worktree']),
             viewMode: 'project',
             worktreeSessionIds: new Set(['proj-worktree']),
+            // The real selector only names a location for a project with more
+            // than one, so the fixture mirrors that: maka is the only one.
+            sessionLocation: (session) =>
+              maka.locations.some((location) => location.path === session.cwd)
+                ? session.cwd
+                : undefined,
             groups: [
               {
                 id: `project:${maka.id}`,
@@ -687,6 +726,17 @@ export const ProjectGroups: Story = {
     if (!taskHoverCard) throw new Error('task hover card is missing');
     await expect(within(taskHoverCard).getByText('worktree 上的修复')).toBeVisible();
     await expect(within(taskHoverCard).getByText(/glm-4\.7/)).toBeVisible();
+    // The visible location line, not just its accessible description: a task in
+    // a multi-location project says which working directory it actually uses.
+    const locationLine = within(taskHoverCard).getByText(
+      '/workspace/maka-agent/.worktree/sidebar',
+      { exact: true },
+    );
+    await expect(locationLine).toBeVisible();
+    expect(locationLine).toHaveAttribute(
+      'title',
+      '/workspace/maka-agent/.worktree/sidebar',
+    );
 
     await userEvent.hover(navigation);
     await waitFor(() => expect(

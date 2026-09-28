@@ -144,13 +144,19 @@ function ownsRenderer(contents: Electron.WebContents): boolean {
 }
 let browserViews: BrowserViewManager<BrowserViewController> | undefined;
 
-/** Broadcast existing app events once to each live owned renderer, even if the main window is closed. */
-export function safeSendToRenderer(channel: string, ...args: unknown[]): void {
+/** Broadcast once to each live owned renderer, even if the main window is closed.
+ * Returns whether at least one IPC send was issued, not a renderer acknowledgment. */
+export function safeSendToRenderer(channel: string, ...args: unknown[]): boolean {
   const recipients = new Set(auxiliaryRenderers.keys());
   if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
+  let emitted = false;
   for (const contents of recipients) {
-    if (!contents.isDestroyed()) contents.send(channel, ...args);
+    if (!contents.isDestroyed()) {
+      contents.send(channel, ...args);
+      emitted = true;
+    }
   }
+  return emitted;
 }
 
 // The close button's centre sits on the same vertical line as the sidebar's
