@@ -1291,6 +1291,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       await Promise.allSettled([...pendingEnqueueTasks]);
     }
   };
+  // An in-flight retraction serializes navigation: a session switch waits
+  // for it, so the retracted text and quotes land in the session they were
+  // asked for instead of being discarded after the driver re-keyed (#5109
+  // review).
+  const pendingRetractionTasks = new Set<Promise<void>>();
+  const trackRetraction = (task: Promise<void>): void => {
+    pendingRetractionTasks.add(task);
+    void task.finally(() => pendingRetractionTasks.delete(task));
+  };
+  const settleRetractions = async (): Promise<void> => {
+    while (pendingRetractionTasks.size > 0) {
+      await Promise.allSettled([...pendingRetractionTasks]);
+    }
+  };
 
   const requestTurnInterrupt = () => {
     // A detach in flight is not the running Turn's owner acting on it — the
@@ -1308,7 +1322,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // for re-editing, while anything already consumed stays in the transcript.
     // Serializing these operations also preserves that ordering over a Host
     // connection where both calls are asynchronous.
-    void (async () => {
+    const retractionTask = (async () => {
       // Fence the retraction and the stop to the session they were asked for:
       // a mid-turn `/session` landing while enqueues or the Host call are in
       // flight re-keys the driver, and the abandoned retraction must neither
@@ -1333,6 +1347,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       editor.disableSubmit = false;
       reportError(error);
     });
+    trackRetraction(retractionTask);
   };
 
   // Open a fresh turn from a submitted prompt (idle path). Control actions hold
@@ -1536,7 +1551,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Alt+↑: take back every queued message from the Runtime Host, joined and
   // prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
-    void (async () => {
+    const retractionTask = (async () => {
       // Same session fence as the interrupt path: a mid-turn `/session` that
       // lands while enqueues or the retraction are in flight must neither
       // retract the new session's queue nor inherit the quotes or the text
@@ -1553,6 +1568,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       acceptRetraction(retracted);
       requestRender();
     })().catch(reportError);
+    trackRetraction(retractionTask);
   };
 
   // Onboarding wizard (#1098 UX redesign): one overlay spans provider search,
@@ -2019,6 +2035,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // A failure leaves the active session untouched and the next prompt still
   // lands on the old one.
   const switchSession = async (sessionId: string, relocateCwd?: string) => {
+    // A session switch waits for an in-flight retraction: the retracted text
+    // and quotes must land in the session they were asked for before the
+    // driver re-keys (#5109 review).
+    await settleRetractions();
     resolvedInteractionIds.clear();
     const result = await input.driver.switchSession(
       sessionId,
@@ -2072,6 +2092,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // then either that tail or the startPendingAttachedTurn below starts the
   // freshly attached Turn, whichever observes an idle runner first.
   const switchAwayMidTurn = async (sessionId: string) => {
+    // Same serialization as the idle switch: the in-flight retraction lands
+    // its payload in the session it was asked for first (#5109 review).
+    await settleRetractions();
     resolvedInteractionIds.clear();
     detaching = true;
     try {

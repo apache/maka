@@ -8254,6 +8254,7 @@ Slug openai-work<cursor>
     driver.enqueueGate = deferred<void>();
     terminal.input('second queued');
     terminal.input('\r');
+    terminal.input('\x1b[1;3A'); // Alt+Up: waits on the parked enqueue
     driver.switchSession('session-other');
     driver.enqueueGate.resolve();
     await waitFor(() => driver.submittedQuotes.length === 2);
@@ -8310,6 +8311,72 @@ Slug openai-work<cursor>
     await waitFor(() => driver.retractedQuoteLoads.length === 1);
     await delay(30);
     assert.equal(driver.stopCalls, 0, 'the fenced stop must not hit the switched-to session');
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('serializes a mid-turn session switch behind an in-flight retraction', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // The Alt+Up retraction is held on the Host call; a mid-turn `/session`
+    // arriving while it is in flight must wait for it — the retracted text
+    // and quotes land in the session they were asked for before the driver
+    // re-keys (#5109 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b[1;3A'); // Alt+Up
+    await waitFor(() => driver.retractCalls === 1);
+    terminal.input('/session session-other');
+    terminal.input('\r');
+    driver.retractGate.resolve();
+    await delay(200);
+    if (process.env.PROFILE_DEBUG) {
+      console.log('DEBUG eventLog:', driver.eventLog.join(' | '));
+      console.log('DEBUG queuedRows:', driver.queuedRows.length);
+      console.log('DEBUG stopCalls:', driver.stopCalls);
+    }
+    await waitFor(() => driver.retractedQuoteLoads.length === 1);
+
+    const retractDone = driver.eventLog.findIndex((entry) => entry.startsWith('retract-done:'));
+    const switchDone = driver.eventLog.findIndex((entry) => entry.startsWith('switch:'));
+    assert.ok(retractDone !== -1, 'the retraction completed');
+    assert.ok(
+      switchDone === -1 || retractDone < switchDone,
+      'the switch waits behind the retraction: ' + driver.eventLog.join(','),
+    );
+    assert.deepEqual(driver.retractedQuoteLoads.at(-1), [
+      { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
 
     driver.turnGate.resolve();
     await waitFor(() => terminal.progressStates.at(-1) === false);
@@ -13820,6 +13887,7 @@ class MidTurnQuotesDriver extends QuotedRewindDriver {
 class RetractingQuotesDriver extends MidTurnQuotesDriver {
   readonly queuedRows: Array<{ messageId: string; text: string; quotes: readonly QuoteRef[] }> = [];
   readonly retractedQuoteLoads: Array<readonly QuoteRef[]> = [];
+  readonly eventLog: string[] = [];
   retractGate: ReturnType<typeof deferred<void>> | undefined = undefined;
   enqueueGate: ReturnType<typeof deferred<void>> | undefined = undefined;
   #retractCalls = 0;
@@ -13872,12 +13940,14 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
     };
     this.queuedRows.length = 0;
     this.retractedQuoteLoads.push(quotes);
+    this.eventLog.push(`retract-done:${this.sessionId}`);
     return retracted;
   }
 
   override async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
     // The base fake leaves `sessionId` alone; a mid-turn switch must move the
     // driver's session for the retraction-fence scenario to be reachable.
+    this.eventLog.push(`switch:${sessionId}`);
     this.sessionId = sessionId;
     return super.switchSession(sessionId);
   }
