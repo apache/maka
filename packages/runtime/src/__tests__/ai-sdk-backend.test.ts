@@ -8159,9 +8159,9 @@ describe('AiSdkBackend error surfaces', () => {
       { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
     );
 
-    // In-turn result folds in a bounded tail of stderr/stdout so
-    // the model can see *why* the command failed (the full structured content
-    // still goes to session history, asserted below).
+    // The direct caller receives a short error with a bounded tail of
+    // stderr/stdout. The model-visible result is the structured terminal
+    // content asserted below, not this return value.
     assert.deepEqual(result, {
       error: [
         '命令退出码 2',
