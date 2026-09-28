@@ -1108,6 +1108,35 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(failedOpen[0]?.failOpenReason, 'provider_error');
   });
 
+  test('bounds an input-too-large rejection whose retreat finds no safe span (#5790 review)', async () => {
+    // The only proven boundary is a prior-turn reply on this route, which sits
+    // before the head anchor, so the retreat has no mid-turn coverage. The
+    // summarizer was still called and failed, so the Turn must latch it.
+    const fixture = buildFixture({
+      toolSteps: 3,
+      extraPriorEvents: [
+        {
+          ...runtimeTextEvent('prior-reply', 'turn-0', 'model', 'accepted on this route'),
+          runId: 'run-0',
+          invocationId: 'run-0',
+        },
+      ],
+      priorInvocations: [priorRunInvocation()],
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('input_too_large');
+      },
+    });
+
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 0);
+    const failedOpen = compactionDecisions(fixture).filter(
+      (decision) => decision.decision === 'failedOpen',
+    );
+    assert.equal(failedOpen[0]?.failOpenReason, 'input_too_large');
+  });
+
   test('a no_safe_completed_span attempt does not suppress the fold once the pool grows (#5790)', async () => {
     // No prior turns: at the first trigger the pool is only the anchor plus
     // one completed tool pair, which mid-turn coverage cannot fold (the anchor

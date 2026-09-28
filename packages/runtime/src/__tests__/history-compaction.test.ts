@@ -339,6 +339,36 @@ describe('plan context compaction', () => {
     ]);
   });
 
+  test('a mid-turn retreat with no safe span reports the summarizer failure', async () => {
+    // The current run is not among the prior invocations, so the proven
+    // boundary is a prior-turn reply before the head anchor: the retreat has no
+    // mid-turn coverage. The summarizer was called and refused, so the result
+    // must say so rather than look like a pool that was never summarized.
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        orderedEvents: [
+          user('old-user', 'turn-0'),
+          modelOnRun('old-model', 'turn-0', 'run-0', 'accepted by this route'),
+          ...longTurnEvents().slice(2),
+        ],
+        invocations: [runOn('run-0', 'model-a', 'conn-a')],
+        acceptedRoute: ROUTE_A,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 1);
+    assert.deepEqual(result, {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'input_too_large',
+    });
+  });
+
   test('fails open when only another route has ever been accepted', async () => {
     let attempts = 0;
     const result = await planHistoryCompaction(
