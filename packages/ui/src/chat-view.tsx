@@ -56,7 +56,7 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText } from './materialize.js';
@@ -561,19 +561,34 @@ export function ChatView(props: {
   ) : null;
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
   const earlierReader = useRef({ sessionId: props.activeSession?.id, pending: false });
+  const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
+  const [earlierHistoryLoadFailed, setEarlierHistoryLoadFailed] = useState(false);
   if (earlierReader.current.sessionId !== props.activeSession?.id) {
     earlierReader.current = { sessionId: props.activeSession?.id, pending: false };
   }
+  useEffect(() => {
+    setLoadingEarlierHistory(false);
+    setEarlierHistoryLoadFailed(false);
+  }, [props.activeSession?.id]);
   const loadEarlierHistory = (): boolean => {
     if (!props.hasEarlierHistory || !props.onLoadEarlierHistory) return false;
     const reader = earlierReader.current;
     if (reader.pending) return true;
     reader.pending = true;
-    const settled = () => { reader.pending = false; };
+    setLoadingEarlierHistory(true);
+    const settled = (failed: boolean) => {
+      if (earlierReader.current !== reader) return;
+      reader.pending = false;
+      setLoadingEarlierHistory(false);
+      setEarlierHistoryLoadFailed(failed);
+    };
     try {
-      void Promise.resolve(props.onLoadEarlierHistory()).then(settled, settled);
+      void Promise.resolve(props.onLoadEarlierHistory()).then(
+        () => settled(false),
+        () => settled(true),
+      );
     } catch {
-      settled();
+      settled(true);
     }
     return true;
   };
@@ -900,6 +915,27 @@ export function ChatView(props: {
       : props.emptyOverride ?? (
           <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
         );
+  /**
+   * Nothing to show is exactly when this matters most: WorkHub filters the
+   * transcript to one Work, and a Work whose Turns are all still in unloaded
+   * history filters it down to nothing. So the control rides along with the
+   * empty state rather than sitting in the branch that replaces it — which
+   * also keeps the list's only child a single `null`, the shape that lets
+   * `ChatMessageList` render an empty state at all.
+   */
+  const loadEarlierHistoryControl = props.hasEarlierHistory && props.onLoadEarlierHistory ? (
+    <HStack hAlign="center">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        label={earlierHistoryLoadFailed ? copy.retryLoad : copy.loadEarlierHistory}
+        isDisabled={loadingEarlierHistory}
+        onClick={loadEarlierHistory}
+      />
+    </HStack>
+  ) : null;
+
   return (
     <MakaClientSessionScope sessionId={props.activeSession.id}>
       <SessionAttachmentProvider
@@ -936,7 +972,12 @@ export function ChatView(props: {
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
           isStreaming={streamingActive}
-          emptyState={showEmptyState ? emptyContent : undefined}
+          emptyState={showEmptyState ? (
+            <>
+              {loadEarlierHistoryControl}
+              {emptyContent}
+            </>
+          ) : undefined}
         >
           {showEmptyState ? null : (
             <>
@@ -948,6 +989,7 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
+              {loadEarlierHistoryControl}
               <div ref={listRef} className="maka-chat-session-swap" data-placed={placed || undefined}>
                 <Virtualizer
                   key={measurement.generation}

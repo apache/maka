@@ -835,6 +835,55 @@ test('WorkHub completes transcript history before deriving whole-session state',
   assert.deepEqual(h.controller.transcript.messages.map(({ id }) => id), ['old', 'recent']);
 });
 
+test('WorkHub retries an incomplete full-history read after the next ready snapshot', async () => {
+  let publishSnapshot!: Parameters<WorkHubServices['openTranscript']>[1];
+  let loads = 0;
+  const recent: StoredMessage = {
+    type: 'assistant', id: 'recent', turnId: 'recent-turn', ts: 2,
+    modelId: 'model', text: 'recent answer',
+  };
+  const incomplete = {
+    messages: [recent], ready: true, hasOlder: true, historyComplete: false,
+  };
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      publishSnapshot = handler;
+      handler(incomplete);
+      return {
+        observationChanged() {},
+        async loadEarlier() {
+          loads += 1;
+          if (loads === 1) return;
+          handler({
+            messages: [
+              { type: 'user', id: 'old', turnId: 'old-turn', ts: 1, text: 'old request' },
+              recent,
+            ],
+            ready: true,
+            hasOlder: false,
+            historyComplete: true,
+          });
+        },
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+
+  assert.equal(loads, 1);
+  assert.equal(
+    h.controller.error,
+    'Could not load the complete task history. Retry to restore WorkHub links and filters.',
+  );
+  await act(async () => {
+    publishSnapshot(incomplete);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+  assert.equal(loads, 2);
+  assert.equal(h.controller.transcript.historyComplete, true);
+  assert.equal(h.controller.error, undefined);
+});
+
 test('follow-up admission before an uncertain response keeps its successor placement', async () => {
   const h = await mountController();
   await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });

@@ -106,7 +106,7 @@ function harness() {
     },
     loadButton(): HTMLButtonElement | null {
       return [...current.container.querySelectorAll<HTMLButtonElement>('button')]
-        .find((button) => button.textContent === 'Load earlier history') ?? null;
+        .find((button) => button.textContent === 'Load earlier history' || button.textContent === 'Retry') ?? null;
     },
     readerScrollTo(scroller: HTMLElement, top: number): void {
       const wheel = new current.window.Event('wheel', { bubbles: true });
@@ -118,7 +118,7 @@ function harness() {
   };
 }
 
-test('upward reading near the beginning loads one range, without a button or mount-time prefetch', async () => {
+test('upward reading near the beginning loads one range while retaining the accessible button', async () => {
   const view = harness();
   await view.render({ messages: turnMessages(4, 8), onLoadEarlierHistory: () => {} });
   assert.equal(view.loadButton(), null, 'no button without earlier history');
@@ -130,17 +130,19 @@ test('upward reading near the beginning loads one range, without a button or mou
     return new Promise<void>((resolve) => { finish = resolve; });
   };
   const scroller = await view.render({ messages: turnMessages(4, 8), hasEarlierHistory: true, onLoadEarlierHistory });
-  assert.equal(view.loadButton(), null);
+  assert.ok(view.loadButton());
   assert.equal(loads, 0, 'opening a conversation must not read all older history');
   scroller.scrollTop = 1000;
   await act(async () => { view.readerScrollTo(scroller, 800); });
   assert.equal(loads, 0, 'reading far from the boundary does not load');
   await act(async () => { view.readerScrollTo(scroller, 400); });
   assert.equal(loads, 1);
+  assert.equal(view.loadButton()?.disabled, true);
   await act(async () => { view.readerScrollTo(scroller, 200); });
   assert.equal(loads, 1, 'a pending load cannot be requested again');
 
   await act(async () => { finish(); });
+  assert.equal(view.loadButton()?.disabled, false);
   assert.equal(loads, 1, 'settling a page does not recursively prefetch the rest');
   await act(async () => { view.readerScrollTo(scroller, 300); });
   assert.equal(loads, 1, 'downward reading does not load older history');
@@ -154,14 +156,14 @@ test('upward reading near the beginning loads one range, without a button or mou
  * an upward gesture: WorkHub may filter every loaded Turn out of the view.
  * Even when there is no scroll distance, the reader can request older rows.
  */
-test('upward input reaches earlier history even with nothing to show', async () => {
+test('upward input and the accessible control reach earlier history even with nothing to show', async () => {
   const view = harness();
   let loads = 0;
   const scroller = await view.render({ messages: [], hasEarlierHistory: true, onLoadEarlierHistory: () => { loads++; } });
   assert.equal(loads, 0);
   await act(async () => { view.readerScrollTo(scroller, 0); });
   assert.equal(loads, 1);
-  assert.equal(view.loadButton(), null);
+  assert.ok(view.loadButton());
 });
 
 test('a previous conversation finishing does not unlock another conversation pending page', async () => {
@@ -195,6 +197,7 @@ test('a failed automatic read retries only after another upward gesture', async 
   assert.equal(loads, 1);
   await act(async () => {});
   assert.equal(loads, 1, 'failure must not start a retry loop');
+  assert.equal(view.loadButton()?.textContent, 'Retry');
   await act(async () => { view.readerScrollTo(scroller, 0); });
   assert.equal(loads, 2);
 });

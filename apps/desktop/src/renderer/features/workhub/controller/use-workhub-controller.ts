@@ -108,6 +108,7 @@ export function useWorkHubController(
   const [error, setError] = useState<string>();
   const [modelSetupRequired, setModelSetupRequired] = useState(false);
   const [readError, setReadError] = useState<string>();
+  const [historyError, setHistoryError] = useState<string>();
   const [readRevision, setReadRevision] = useState(0);
   const retryResolution = useRef<() => void>(() => undefined);
   const refreshSessions = useRef<() => void>(() => undefined);
@@ -355,6 +356,7 @@ export function useWorkHubController(
 
   useEffect(() => {
     if (!sessionId) return;
+    setHistoryError(undefined);
     let disposed = false;
     void services
       .getNewWorkDefaults(sessionId)
@@ -502,10 +504,18 @@ export function useWorkHubController(
       ) return;
       fullHistoryRequested = true;
       void handle.loadEarlier(0).then(() => {
-        if (!disposed && !transcriptRef.current.historyComplete) {
-          readFailed(new Error('WorkHub transcript history is incomplete'));
+        if (disposed) return;
+        if (transcriptRef.current.historyComplete) {
+          setHistoryError(undefined);
+          return;
         }
-      }, readFailed);
+        fullHistoryRequested = false;
+        setHistoryError(workHubLiveCopy[localeRef.current].historyIncomplete);
+      }, () => {
+        if (disposed) return;
+        fullHistoryRequested = false;
+        setHistoryError(workHubLiveCopy[localeRef.current].historyIncomplete);
+      });
     };
     const opening = services.openTranscript(sessionId, (snapshot) => {
       if (disposed) return;
@@ -778,10 +788,10 @@ export function useWorkHubController(
     busy,
     sending,
     stopPending,
-    error: readError ?? error,
+    error: historyError ?? readError ?? error,
     modelSetupRequired,
     modelSetupChoicesReady,
-    canRetry: Boolean(readError || (!sessionId && error) || (error && (pendingSend.current?.admission === 'unknown' || pendingSend.current?.admission === 'rejected'))),
+    canRetry: Boolean(historyError || readError || (!sessionId && error) || (error && (pendingSend.current?.admission === 'unknown' || pendingSend.current?.admission === 'rejected'))),
     send,
     stop,
     changeModel,
@@ -810,7 +820,8 @@ export function useWorkHubController(
     },
     retry: () => {
       const attempt = pendingSend.current;
-      if (readError && sessionId) {
+      if ((historyError || readError) && sessionId) {
+        setHistoryError(undefined);
         setReadError(undefined);
         setReadRevision((revision) => revision + 1);
       } else if (attempt && attempt.sessionId === sessionId && attempt.admission === 'unknown') {
