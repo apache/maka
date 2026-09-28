@@ -23,23 +23,11 @@ import { HostChangeFeed } from '../server/host-change-feed.js';
 
 test('routes each change kind only to subscribed connections', () => {
   const feed = new HostChangeFeed();
-  const artifact: unknown[] = [];
-  const scopedArtifact: unknown[] = [];
   const configuration: unknown[] = [];
   const project: unknown[] = [];
   const scopedSession: unknown[] = [];
   const otherGuest: unknown[] = [];
   const all: unknown[] = [];
-  feed.attachConnection(
-    'artifact',
-    { artifact: true },
-    { send: async (frame) => void artifact.push(frame) },
-  );
-  feed.attachConnection(
-    'scoped-artifact',
-    { artifact: { sessionId: 'session-1' } },
-    { send: async (frame) => void scopedArtifact.push(frame) },
-  );
   feed.attachConnection(
     'configuration',
     { configuration: true },
@@ -53,7 +41,6 @@ test('routes each change kind only to subscribed connections', () => {
   feed.attachConnection(
     'all',
     {
-      artifact: true,
       configuration: true,
       connectionCatalog: true,
       projectCatalog: true,
@@ -73,8 +60,6 @@ test('routes each change kind only to subscribed connections', () => {
     { send: async (frame) => void otherGuest.push(frame) },
   );
 
-  feed.publishArtifactDeleted('session-1', 'artifact-1');
-  feed.publishArtifactSessionPurged('session-2');
   feed.publishConfiguration();
   feed.publishConnectionCatalog();
   feed.publishProjectCatalog();
@@ -85,27 +70,6 @@ test('routes each change kind only to subscribed connections', () => {
   feed.publishSessionCatalog('session-1', { kind: 'completed', eventId: 'terminal-1' });
   feed.publishScheduledTask(7, 'updated', 'task-1');
 
-  assert.deepEqual(artifact, [
-    {
-      kind: 'artifact.changed',
-      reason: 'deleted',
-      sessionId: 'session-1',
-      artifactId: 'artifact-1',
-    },
-    {
-      kind: 'artifact.changed',
-      reason: 'session_purged',
-      sessionId: 'session-2',
-    },
-  ]);
-  assert.deepEqual(scopedArtifact, [
-    {
-      kind: 'artifact.changed',
-      reason: 'deleted',
-      sessionId: 'session-1',
-      artifactId: 'artifact-1',
-    },
-  ]);
   assert.deepEqual(
     configuration.map((frame) => (frame as { kind: string }).kind),
     ['configuration.changed'],
@@ -115,7 +79,7 @@ test('routes each change kind only to subscribed connections', () => {
     project.map((frame) => (frame as { kind: string }).kind),
     ['project.catalog.changed'],
   );
-  assert.equal(all.length, 10);
+  assert.equal(all.length, 8);
   assert.deepEqual(all.slice(3, 5), [
     { kind: 'session.catalog.changed', revision: 1, sessionId: 'session-1', attention },
     {
@@ -130,6 +94,39 @@ test('routes each change kind only to subscribed connections', () => {
     { kind: 'session.catalog.changed', revision: 3, sessionId: 'session-1' },
   ]);
   assert.equal(otherGuest.length, 3);
+});
+
+test('routes Artifact invalidations by Session scope', () => {
+  const feed = new HostChangeFeed();
+  const all: unknown[] = [];
+  const scoped: unknown[] = [];
+  feed.attachConnection(
+    'all-artifacts',
+    { artifact: true },
+    {
+      send: async (frame) => void all.push(frame),
+    },
+  );
+  feed.attachConnection(
+    'session-artifacts',
+    { artifact: { sessionId: 'session-1' } },
+    {
+      send: async (frame) => void scoped.push(frame),
+    },
+  );
+
+  feed.publishArtifactDeleted('session-1', 'artifact-1');
+  feed.publishArtifactSessionPurged('session-2');
+
+  assert.equal(all.length, 2);
+  assert.deepEqual(scoped, [
+    {
+      kind: 'artifact.changed',
+      reason: 'deleted',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+    },
+  ]);
 });
 
 test('keeps catalog revisions independent and removes failed subscriptions', async () => {
