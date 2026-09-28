@@ -99,10 +99,14 @@ const OVERRIDES_BY_LOCALE = {
   },
   'zh-CN': chineseOverrides('zh-CN', ASTRYX_COPY_ZH),
   'zh-TW': chineseOverrides('zh-TW', ASTRYX_COPY_ZH_TW),
+  // Keyed by the locale it applies to: `ko: { en: … }` type-checks (Astryx's
+  // `Locale` is a bare `string`) but resolves to `undefined` at the
+  // `[locale]` lookup in `AstryxLocaleProvider`, so the strings would never
+  // reach a Korean reader. Wording is upstream's own ko-KR.json.
   ko: {
-    en: {
-      '@astryx.chatComposerDrawer.collapse': 'Click to collapse {label}',
-      '@astryx.chatComposerDrawer.expand': 'Click to expand {label}',
+    ko: {
+      '@astryx.chatComposerDrawer.collapse': '{label} 접기',
+      '@astryx.chatComposerDrawer.expand': '{label} 펼치기',
     },
   },
 } satisfies UiCatalog<Overrides>;

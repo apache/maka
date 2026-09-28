@@ -19,10 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createElement } from 'react';
+import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { useTranslator } from '@astryxdesign/core/i18n';
-import { AstryxLocaleProvider } from '../astryx-i18n.js';
+import { UI_LOCALES, type UiLocale } from '@maka/core/ui-locale';
+import { AstryxLocaleProvider, astryxMessageOverrides } from '../astryx-i18n.js';
 import { LocaleProvider } from '../locale-context.js';
 
 function TranslationProbe() {
@@ -31,6 +32,24 @@ function TranslationProbe() {
     'span',
     null,
     `${translate('@maka.test.outer')}|${translate('@maka.test.inner')}`,
+  );
+}
+
+function DrawerProbe() {
+  const translate = useTranslator();
+  return createElement(
+    'span',
+    null,
+    translate('@astryx.chatComposerDrawer.collapse', { label: 'Attachments' }),
+  );
+}
+
+function renderIn(locale: UiLocale, child: ReactNode) {
+  return renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale,
+      children: createElement(AstryxLocaleProvider, { children: child }),
+    }),
   );
 }
 
@@ -49,4 +68,19 @@ test('nested Astryx locale providers preserve ambient scoped overrides', () => {
   );
 
   assert.match(markup, />Outer copy\|Inner copy</);
+});
+
+test('every locale override map is keyed by the locale it applies to', () => {
+  for (const locale of UI_LOCALES) {
+    const overrides = astryxMessageOverrides(locale);
+    assert.deepEqual(
+      Object.keys(overrides),
+      [locale],
+      `${locale} override map must be keyed by "${locale}"`,
+    );
+  }
+});
+
+test('ko renders the Korean drawer label rather than the English fallback', () => {
+  assert.match(renderIn('ko', createElement(DrawerProbe)), />Attachments 접기</);
 });
