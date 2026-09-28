@@ -84,6 +84,7 @@ export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
 export * from './message.js';
+export * from './queue-mutation.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
@@ -103,7 +104,22 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 191 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 197 as const;
+// 197: Queue reorder requests carry the expected queue revision. Epoch-196
+// peers reject the required field or send an unfenced reorder request.
+// 196: `turn.start` carries an optional durable external-message origin; older
+// peers would drop activation provenance and misclassify automated turns.
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
+// 194: Session catalog live run state may carry the runtime's run epoch, which
+// lets clients order same-revision reads. Epoch-193 peers reject the unknown
+// key, so a newer Desktop against an older Host loses session catalog reads.
+// 193: Queue reorder requests require at least one entry identity. Epoch-192
+// peers can send an empty reorder request that the current Host rejects.
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
 // 191: Session catalog change frames can carry attention events.
 // 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
 // 189: Remove form_interaction transcript messages and the transcript_changed close reason.
@@ -440,8 +456,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 191 as const;
 // 41: Context compaction returns a typed terminal outcome on both Turn
 // snapshots and context.compact results. Epoch-40 peers reject these closed
 // shapes after admission, so mixed peers must fail during the handshake.
-// 40: The message queue gains per-entry mutation operations
-// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
+// 40: Queue entries become independently addressable for promotion,
+// retraction, and ordering. Epoch-39 peers do not recognize those commands.
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a

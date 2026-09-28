@@ -28,7 +28,6 @@ import {
   useRef,
   useState,
   type ComponentProps,
-  type ClipboardEvent,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -43,6 +42,7 @@ import {
   CircleGauge,
   FileText,
   ListTodo,
+  MessageSquareQuote,
   MessagesSquare,
   Network,
   Pencil,
@@ -65,10 +65,13 @@ import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helper
 import {
   appendPromptContextDraft,
   deriveComposerModelSwitchAvailability,
-  isReferenceSizedPaste,
   type ComposerModelSwitchAvailability,
 } from './composer-helpers.js';
-import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
+import {
+  QuoteHoverCardContent,
+  stripQuoteHeadingMarkers,
+} from './quote-ref-chip.js';
+import { QuoteCommentPanel } from './quote-comment-panel.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { FolderOpen } from './icons.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
@@ -104,11 +107,11 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerDrawer,
   ChatComposerInput,
+  HoverCard,
   IconButton,
   Lightbox,
   Token,
   Tooltip,
-  useChatPasteAsToken,
   type ChatComposerInputHandle,
   type ChatComposerToken,
   type ChatComposerTrigger,
@@ -125,6 +128,7 @@ import {
   DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { useIndicator } from '@astryxdesign/core/Indicator';
+import { Popover } from '@astryxdesign/core/Popover';
 import { PermissionModeSelect } from './permission-mode-menu.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { formatPreviewSize } from './artifact-preview-registry.js';
@@ -135,11 +139,19 @@ import {
   workspaceFileReferencePositions,
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
-import { ComposerMessageQueue, projectComposerMessageQueue } from './composer-message-queue.js';
+import {
+  ComposerMessageQueue,
+  projectComposerMessageQueue,
+  type ComposerMessageQueueHostProps,
+} from './composer-message-queue.js';
 import {
   MakaClientSessionScope,
   MakaClientSlotOutlet,
 } from './client-plugin-slots.js';
+import {
+  deriveComposerSendPolicy,
+  hasComposerStagedContext,
+} from './composer-send-policy.js';
 
 // Astryx keeps this selection helper internal, so the shell owns its small
 // equivalent instead of importing an unpublished root export.
@@ -328,20 +340,6 @@ export const Composer = forwardRef<
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
     pendingMessages?: readonly import('./chat-view.js').TransientUserMessageProjection[];
-    queuedMessages?: readonly MessageQueueEntryProjection[];
-    queuedMessageRevision?: number;
-    /** Promote a queued follow-up into the active Turn (调整方向). */
-    onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
-    /** Update one queued entry in place without changing its order or placement. */
-    onUpdateQueuedEntry?(
-      entryId: string,
-      expectedQueueRevision: number,
-      text: string,
-    ): void | Promise<void>;
-    /** Remove one queued entry without restoring it. */
-    onDeleteQueuedEntry?(entryId: string): void | Promise<void>;
-    /** Reorder the follow-up queue; entryIds is the full intended order. */
-    onReorderQueuedEntries?(entryIds: readonly string[]): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
     draftKey?: string;
     /** Optional host persistence for reload-safe draft scopes. */
@@ -378,16 +376,19 @@ export const Composer = forwardRef<
     /** Quoted excerpts staged for the next send; rendered as removable chips. */
     pendingQuotes?: readonly QuoteRef[];
     onRemoveQuote?(index: number): void;
+    /** Save the annotation written for one staged quote. Omitted by hosts that
+     *  only remove quotes, in which case the token stays read-only. */
+    onEditQuoteComment?(index: number, comment: string): void;
+    /**
+     * Open the note editor over the quote's own excerpt in the transcript.
+     * Returning false means the excerpt is not on screen and the token falls
+     * back to its own editor popover.
+     */
+    onAnnotateQuote?(index: number): boolean;
     /** Start staged context collapsed on compact secondary composer surfaces. */
     contextDrawerDefaultCollapsed?: boolean;
     /** Hide the unavailable dot when an inherited model is intentionally read-only. */
     showStaticModelUnavailableStatus?: boolean;
-    /**
-     * Stage a reference-sized paste as a quote chip rather than letting it
-     * flood the textarea. Omitted by hosts that don't compose quotes, in which
-     * case a large paste behaves like any other paste.
-     */
-    onPasteAsQuote?(input: { text: string; label?: string }): void;
     /** Other Sessions available for a read-only, bounded Composer reference. */
     sessionReferences?: ReadonlyArray<ComposerSessionReference>;
     /** Called when the user selects a Session from the `@` picker. */
@@ -589,7 +590,7 @@ export const Composer = forwardRef<
     mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
-  } & ComposerGoalProps
+  } & ComposerGoalProps & ComposerMessageQueueHostProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
@@ -1341,28 +1342,6 @@ export const Composer = forwardRef<
     return () => document.removeEventListener('selectionchange', onSelectionChange);
   }, []);
 
-  /**
-   * Reference-sized pastes never flood the input. When the host stages quotes
-   * they keep becoming drawer chips (the send path still carries them as
-   * structured `QuoteRef`s); otherwise Astryx's paste-as-token folds them into
-   * an expandable inline chip instead of dumping the whole blob inline.
-   */
-  const pasteAsInlineToken = useChatPasteAsToken({
-    inputRef: inputHandleRef,
-    threshold: 0,
-    toToken: (pasted) => ({ value: pasted, label: copy.pastedQuoteLabel }),
-  });
-  const pasteAsToken = {
-    onPaste: (event: ClipboardEvent<HTMLDivElement>, pasted: string) => {
-      if (props.disabled || !isReferenceSizedPaste(pasted)) return false;
-      if (props.onPasteAsQuote) {
-        props.onPasteAsQuote({ text: pasted, label: copy.pastedQuoteLabel });
-        return true;
-      }
-      return pasteAsInlineToken.onPaste(event, pasted);
-    },
-  };
-
   useImperativeHandle(
     ref,
     () => ({
@@ -1423,10 +1402,7 @@ export const Composer = forwardRef<
   // on the Host opt-in (`allowAttachmentOnlySend`), so the upstream flag
   // governs that half while staged quotes pass the same gates (send handler,
   // disabled state, send/stop toggle) as text.
-  const hasStagedContext =
-    (props.pendingQuotes?.length ?? 0) > 0 ||
-    (props.pendingSessionReferences?.length ?? 0) > 0 ||
-    (props.allowAttachmentOnlySend === true && (props.pendingAttachments?.length ?? 0) > 0);
+  const hasStagedContext = hasComposerStagedContext(props);
 
   async function sendCurrent(followUpMode?: FollowUpMode) {
     if (
@@ -1487,8 +1463,6 @@ export const Composer = forwardRef<
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // Mid-turn the host queues the draft as a follow-up by default; only
-    // Cmd/Ctrl+Enter (see onInputKeyDown) steers it into the active Turn.
     void sendCurrent();
   }
 
@@ -1652,14 +1626,18 @@ export const Composer = forwardRef<
 
   const importActionBusy = pendingImportAction !== null;
   const noModelConnection = props.noModelConnection === true;
-  const sendDisabled =
-    props.disabled ||
-    props.sendBlocked ||
-    executorModelPending ||
-    sendPending ||
-    importActionBusy ||
-    (!text.trim() && !hasStagedContext) ||
-    noModelConnection;
+  const sendPolicy = deriveComposerSendPolicy({
+    text,
+    hasStagedContext,
+    disabled: props.disabled,
+    sendBlocked: props.sendBlocked,
+    executorModelPending,
+    sendPending,
+    importActionBusy,
+    noModelConnection,
+    streaming: props.streaming,
+  });
+  const { sendDisabled, stopShown } = sendPolicy;
   // Hosts can explain a disabled Send without adding a second visible notice;
   // other disabled reasons (empty draft, in-flight import) keep the neutral label.
   const sendTitle = props.sendBlocked && props.sendBlockedReason?.trim()
@@ -1667,18 +1645,7 @@ export const Composer = forwardRef<
     : noModelConnection && !props.disabled
       ? copy.noModelSendTitle
       : copy.sendLabel;
-  // One slot, one button, two states — Astryx's send/stop toggle. Mid-turn an
-  // empty draft has nothing to submit, so the slot is Stop; the moment there is
-  // a draft, handing it over is the only meaningful action there and the button
-  // returns to Send (the host queues it as a follow-up). Stop is not lost in
-  // that window: Esc interrupts from the input, which is where the hands already
-  // are.
-  // Union of two contracts: a blocked send always shows Stop (#4979 — a dead
-  // Send helps nobody), and an unblocked structured-only draft (#4804) shows
-  // Send so the staged context can still be handed over as a follow-up.
-  const stopShown =
-    props.streaming === true
-    && (props.sendBlocked === true || (!text.trim() && !hasStagedContext));
+  // Send and Stop share one slot; structured staged content is also sendable.
   // A Host receipt is not model consumption. Keep steering above the composer
   // until the host surface retires its transient on steering_message.
   const queuedMessages = projectComposerMessageQueue(props.queuedMessages ?? [], props.pendingMessages ?? []);
@@ -1723,6 +1690,12 @@ export const Composer = forwardRef<
     caption: string;
   } | null>(null);
   const [attachmentLightboxOpen, setAttachmentLightboxOpen] = useState(false);
+  // Staged quotes are held by identity, not index: removing a token or sending
+  // shifts the indexes, and a stale index would reopen onto another quote.
+  const [editingQuote, setEditingQuote] = useState<QuoteRef | null>(null);
+  // The quote whose note is open over the transcript keeps its hover card
+  // down, or the card and the panel would describe it at once.
+  const [annotatedQuote, setAnnotatedQuote] = useState<QuoteRef | null>(null);
   useEffect(() => {
     if (attachmentLightboxOpen || !attachmentLightbox) return;
     // Unmount one commit AFTER the closed render, never in it: child effects
@@ -1916,12 +1889,13 @@ export const Composer = forwardRef<
           <ComposerMessageQueue
             queuedMessages={queuedMessages}
             queueRevision={props.queuedMessageRevision}
-          copy={copy}
-          onPromoteEntry={props.onPromoteQueuedEntry}
-          onUpdateEntry={props.onUpdateQueuedEntry}
-          onDeleteEntry={props.onDeleteQueuedEntry}
-          onReorderEntries={props.onReorderQueuedEntries}
-        />
+            copy={copy}
+            onPromoteEntry={props.onPromoteQueuedEntry}
+            onEditEntry={props.onEditQueuedEntry}
+            onUpdateEntry={props.onUpdateQueuedEntry}
+            onDeleteEntry={props.onDeleteQueuedEntry}
+            onReorderEntries={props.onReorderQueuedEntries}
+          />
       ) : null}
       <form
         ref={formRef}
@@ -1995,14 +1969,85 @@ export const Composer = forwardRef<
                     onRemove={props.onRemoveDirectory ? () => props.onRemoveDirectory?.(index) : undefined}
                   />
                 ))}
-                {props.pendingQuotes?.map((quote, index) => quote.sourceSessionId ? null : (
-                  <Token
-                    key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
-                    size="sm"
-                    label={quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48)) || copy.pastedQuoteLabel}
-                    onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
-                  />
-                ))}
+                {props.pendingQuotes?.map((quote, index) => {
+                  // Snapshot quotes stage in the session-references row
+                  // below, not as excerpt tokens.
+                  if (quote.sourceSessionId) return null;
+                  const label = quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48));
+                  const key = `${quote.sourceTurnId ?? 'quote'}-${index}`;
+                  const onRemove = props.onRemoveQuote
+                    ? () => props.onRemoveQuote?.(index)
+                    : undefined;
+                  // Without an annotation seam the token is display-only.
+                  if (!props.onEditQuoteComment) {
+                    return <Token key={key} size="sm" label={label} onRemove={onRemove} />;
+                  }
+                  const editing = editingQuote === quote;
+                  const cardSuppressed = editing || annotatedQuote === quote;
+                  return (
+                    <Popover
+                      key={key}
+                      isOpen={editing}
+                      onOpenChange={(open) => setEditingQuote(open ? quote : null)}
+                      label={copy.quoteCommentTitle}
+                      placement="above"
+                      hasLightDismiss={false}
+                      hasEscapeDismiss={false}
+                      content={
+                        <QuoteCommentPanel
+                          comment={quote.comment}
+                          title={copy.quoteCommentTitle}
+                          submitLabel={copy.quoteCommentSave}
+                          cancelLabel={copy.quoteCommentCancel}
+                          onSubmit={(comment) => {
+                            props.onEditQuoteComment?.(index, comment);
+                            setEditingQuote(null);
+                          }}
+                          onCancel={() => setEditingQuote(null)}
+                        />
+                      }
+                    >
+                      {(trigger) => (
+                        <HoverCard
+                          content={<QuoteHoverCardContent quote={quote} />}
+                          focusTrigger="always"
+                          // isEnabled only gates new triggers; the controlled
+                          // isOpen=false also cancels a pending hover delay
+                          // that would otherwise fire the card over the panel.
+                          isEnabled={!cardSuppressed}
+                          isOpen={cardSuppressed ? false : undefined}
+                        >
+                          <Token
+                            ref={trigger.ref}
+                            size="sm"
+                            className="maka-composer-quote-token"
+                            label={label}
+                            endContent={
+                              quote.comment ? (
+                                <MessageSquareQuote className="maka-quote-chip-icon" aria-hidden="true" />
+                              ) : undefined
+                            }
+                            onRemove={onRemove}
+                            onPointerLeave={() => setAnnotatedQuote(null)}
+                            onClick={(event) => {
+                              // The transcript owns the edit while it can still
+                              // point at the excerpt; otherwise open the popover.
+                              if (props.onAnnotateQuote?.(index)) {
+                                setAnnotatedQuote(quote);
+                                setEditingQuote(null);
+                                return;
+                              }
+                              trigger.onClick?.(event);
+                            }}
+                            aria-haspopup={trigger['aria-haspopup']}
+                            aria-expanded={trigger['aria-expanded']}
+                            aria-controls={trigger['aria-controls']}
+                          />
+                        </HoverCard>
+                      )}
+                    </Popover>
+                  );
+                })}
                 {props.pendingAttachments?.map((attachment, index) => {
                   const onRemove = props.onRemoveAttachment
                     ? () => props.onRemoveAttachment?.(index)
@@ -2072,8 +2117,8 @@ export const Composer = forwardRef<
               // the component's own handler is what we need to skip.
               onPasteCapture={(event) => {
                 if (!isChatInputComposing(event, compositionActiveRef.current)) return;
-                // Stand fully down: keep our file-attachment and paste-as-token
-                // handlers off the event, but let the browser complete the
+                // Stand fully down: keep our file-attachment and plain-text
+                // paste handlers off the event, but let the browser complete the
                 // paste itself. Cancelling it here would drop the payload and
                 // disturb the composition the guard exists to protect.
                 event.stopPropagation();
@@ -2133,10 +2178,12 @@ export const Composer = forwardRef<
                   // use-composer-history.ts).
                   hasHistory={false}
                   triggers={triggers}
-                  pasteAsToken={pasteAsToken}
+                  // Astryx folds pastes over 200 characters into a chip by
+                  // default; a paste here is always editable text.
+                  pasteAsToken={false}
                   onPaste={(event, pasted) => {
-                    // Astryx has already offered token-adjacent, file, and
-                    // reference-sized-token pastes before it reaches this seam.
+                    // Astryx has already offered token-adjacent and file
+                    // pastes before it reaches this seam.
                     const plainTextContainer = document.createElement('div');
                     plainTextContainer.textContent = pasted;
                     const menuWasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
@@ -2555,11 +2602,6 @@ export const Composer = forwardRef<
               icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
             />
           ) : (
-            // GLOBAL ANCHOR — DO NOT RESTYLE. This Send/Stop slot (its size,
-            // shape, glyph, and placement) is the one control the whole app
-            // navigates by; it has regressed multiple times from well-meaning
-            // "improvements". Queue affordances live in the pending plate
-            // above the card, never in this button.
             <IconButton
               variant="primary"
               type="submit"

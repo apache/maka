@@ -1238,6 +1238,449 @@ describe('CodexSessionAdapter', () => {
     }
   });
 
+  test('lists and imports a reverted thread along its history base chain', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-root';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn', 'first draft'],
+      });
+      // Each revert keeps the history up to its base and drops the rest: here
+      // an interrupted turn whose message was then edited and sent again.
+      const second = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['second turn', 'second draft'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '10',
+        sessionId,
+        rolloutId: 'codex-revert-2',
+        base: { rollout: second, keptTurns: 1 },
+        turns: ['third turn'],
+      });
+      // A separate thread whose own id merely looks like a reverted rollout's name.
+      const lookalikeId = `${sessionId}_lookalike`;
+      await seedThreadRollout(codexHome, {
+        day: '11',
+        sessionId: lookalikeId,
+        turns: ['unrelated thread'],
+      });
+
+      // Without a state database the filesystem scan lists each thread once
+      // and, as Codex does, starts from the thread's newest rollout.
+      assert.deepEqual(
+        (await listSessions(new CodexSessionAdapter({ codexHome })))
+          .map((session) => session.id)
+          .sort(),
+        [sessionId, lookalikeId],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(new CodexSessionAdapter({ codexHome }), sessionId)).map(
+          (message) => message.text,
+        ),
+        ['opening turn', 'second turn', 'third turn'],
+      );
+
+      // Codex points the thread row at the rollout its latest revert started.
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await listSessions(adapter)).map((session) => session.id),
+        [sessionId],
+      );
+
+      const users = await importedUserMessages(adapter, sessionId);
+      assert.deepEqual(
+        users.map((message) => message.text),
+        ['opening turn', 'second turn', 'third turn'],
+      );
+      assert.equal(new Set(users.map((message) => message.id)).size, users.length);
+      assert.deepEqual(
+        (await importedUserMessages(adapter, lookalikeId)).map((message) => message.text),
+        ['unrelated thread'],
+      );
+    });
+  });
+
+  test('reads a revert that kept no earlier turn on its own', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-restart';
+      await seedThreadRollout(codexHome, { day: '08', sessionId, turns: ['abandoned turn'] });
+      const restart = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-restart-1',
+        turns: ['fresh start'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, restart.path)]);
+
+      assert.deepEqual(
+        (await importedUserMessages(new CodexSessionAdapter({ codexHome }), sessionId)).map(
+          (message) => message.text,
+        ),
+        ['fresh start'],
+      );
+    });
+  });
+
+  test('reads the rollout the row names and follows an archived chain', async () => {
+    await withCodexHome(async (codexHome) => {
+      const activeId = 'codex-revert-active';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: activeId,
+        turns: ['active opening'],
+      });
+      await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: activeId,
+        rolloutId: 'codex-revert-active-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['never selected'],
+      });
+      const archivedId = 'codex-revert-archived';
+      const archivedOpening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: archivedId,
+        turns: ['archived opening', 'archived draft'],
+        archived: true,
+      });
+      const archivedNewest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: archivedId,
+        rolloutId: 'codex-revert-archived-1',
+        base: { rollout: archivedOpening, keptTurns: 1 },
+        turns: ['archived continuation'],
+        archived: true,
+      });
+      await seedStateDatabase(codexHome, [
+        threadStateRow(activeId, opening.path),
+        { ...threadStateRow(archivedId, archivedNewest.path), archived: true },
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      // The row, not the newest file name, selects the current rollout: a
+      // revert whose switch never landed is not part of the thread.
+      assert.deepEqual(
+        (await importedUserMessages(adapter, activeId)).map((message) => message.text),
+        ['active opening'],
+      );
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true }))
+          .map((session) => session.id)
+          .sort(),
+        [activeId, archivedId],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(adapter, archivedId)).map((message) => message.text),
+        ['archived opening', 'archived continuation'],
+      );
+    });
+  });
+
+  test('stops at a fork history base in its parent thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      const parentId = 'codex-fork-parent';
+      const parent = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: parentId,
+        turns: ['parent turn'],
+      });
+      const forkId = 'codex-fork-child';
+      const fork = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: forkId,
+        base: { rollout: parent, keptTurns: 1 },
+        turns: ['fork turn'],
+      });
+      const revertedForkId = 'codex-fork-reverted';
+      const revertedFork = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: revertedForkId,
+        base: { rollout: parent, keptTurns: 1 },
+        turns: ['fork turn', 'fork draft'],
+      });
+      const revertedForkNewest = await seedThreadRollout(codexHome, {
+        day: '10',
+        sessionId: revertedForkId,
+        rolloutId: 'codex-fork-reverted-1',
+        base: { rollout: revertedFork, keptTurns: 1 },
+        turns: ['fork again'],
+      });
+      await seedStateDatabase(codexHome, [
+        threadStateRow(parentId, parent.path),
+        threadStateRow(forkId, fork.path),
+        threadStateRow(revertedForkId, revertedForkNewest.path),
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      // The parent's history stays the parent's, whether the fork is read
+      // from its opening rollout or reached through a later revert.
+      assert.deepEqual(
+        (await importedUserMessages(adapter, forkId)).map((message) => message.text),
+        ['fork turn'],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(adapter, revertedForkId)).map((message) => message.text),
+        ['fork turn', 'fork again'],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(adapter, parentId)).map((message) => message.text),
+        ['parent turn'],
+      );
+    });
+  });
+
+  test('numbers lines across the lineage and tolerates a torn tail still being written', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-torn';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn', 'reverted draft'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-torn-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['still writing'],
+      });
+      // Codex is still appending to the newest file.
+      await appendFile(newest.path, '{"timestamp":"2026-08-09T00:00:02.000Z","type":"event_');
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await importedUserMessages(adapter, sessionId)).map((message) => message.text),
+        ['opening turn', 'still writing'],
+      );
+
+      // A corrupt record in a finished file is reported at its lineage-wide
+      // line: the two kept lines of the opening rollout, then the newest
+      // file's meta, then this.
+      const content = await readFile(newest.path, 'utf8');
+      const [meta, ...rest] = content.split('\n');
+      await writeFile(newest.path, [meta, 'not json', ...rest].join('\n'));
+      await assert.rejects(adapter.readSession(sessionId), /at line 4:/);
+    });
+  });
+
+  test('spends one rollout byte budget across the kept lineage', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-budget';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn', 'reverted draft'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-budget-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['second turn'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      // The reverted bytes past the base are never read, so they do not count.
+      const lineageBytes = opening.recordEnds[1]! + (await stat(newest.path)).size;
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome, maxRolloutBytes: lineageBytes - 1 }).readSession(
+          sessionId,
+        ),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'transcript_bytes' &&
+          error.limit.max === lineageBytes - 1,
+      );
+      assert.equal(
+        (
+          await importedUserMessages(
+            new CodexSessionAdapter({ codexHome, maxRolloutBytes: lineageBytes }),
+            sessionId,
+          )
+        ).length,
+        2,
+      );
+    });
+  });
+
+  test('refuses a reverted rollout whose session_meta names another thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-foreign';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn'],
+      });
+      const foreign = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-foreign-1',
+        metaId: 'codex-someone-else',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['not this thread'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, foreign.path)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
+  test('refuses an earlier rollout of the chain that names another thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-foreign-base';
+      await seedThreadRollout(codexHome, { day: '08', sessionId, turns: ['opening turn'] });
+      const impostor = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-foreign-base-1',
+        metaId: 'codex-someone-else',
+        turns: ['not this thread'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '10',
+        sessionId,
+        rolloutId: 'codex-revert-foreign-base-2',
+        base: { rollout: impostor, keptTurns: 1 },
+        turns: ['latest turn'],
+      });
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
+  test('fails rather than shortening a thread whose history base is missing or loops', async () => {
+    await withCodexHome(async (codexHome) => {
+      const missingId = 'codex-revert-missing';
+      const gone = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: missingId,
+        turns: ['deleted turn'],
+      });
+      const orphan = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId: missingId,
+        rolloutId: 'codex-revert-missing-1',
+        base: { rollout: gone, keptTurns: 1 },
+        turns: ['orphaned turn'],
+      });
+      await rm(gone.path);
+      const loopId = 'codex-revert-loop';
+      const loop = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId: loopId,
+        rolloutId: 'codex-revert-loop-1',
+        base: {
+          rollout: { rolloutId: 'codex-revert-loop-1', recordEnds: [1] },
+          keptTurns: 0,
+        },
+        turns: ['looping turn'],
+      });
+      await seedStateDatabase(codexHome, [
+        threadStateRow(missingId, orphan.path),
+        threadStateRow(loopId, loop.path),
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      await assert.rejects(adapter.readSession(missingId), /history base is missing/);
+      await assert.rejects(adapter.readSession(loopId), /loops back on itself/);
+    });
+  });
+
+  test('refuses a history base that ends past its rollout or inside a record', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-bad-offset';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn'],
+      });
+      const cutAt = (endByteOffset: number) =>
+        seedThreadRollout(codexHome, {
+          day: '09',
+          sessionId,
+          rolloutId: 'codex-revert-bad-offset-1',
+          base: { rollout: { ...opening, recordEnds: [endByteOffset] }, keptTurns: 0 },
+          turns: ['second turn'],
+        });
+      const newest = await cutAt((await stat(opening.path)).size + 1);
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      await assert.rejects(adapter.readSession(sessionId), /ends past its rollout/);
+
+      // Rewritten in place, so the row still names it.
+      await cutAt(opening.recordEnds[1]! - 2);
+      await assert.rejects(adapter.readSession(sessionId), /Invalid Codex rollout .* at line 2:/);
+    });
+  });
+
+  test('refuses a row-named rollout that never names its thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      // The opening file's metadata is valid, so a lineage-wide check passes
+      // while the file the state row actually points at proves nothing.
+      const sessionId = 'codex-revert-unnamed';
+      await seedThreadRollout(codexHome, { day: '08', sessionId, turns: ['opening turn'] });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-unnamed-1',
+        turns: ['unproven'],
+      });
+      const withoutMeta = (await readFile(newest.path, 'utf8'))
+        .split('\n')
+        .filter((line) => !line.includes('session_meta'))
+        .join('\n');
+      await writeFile(newest.path, withoutMeta);
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+
+      // The row names this file as the thread's current rollout while the
+      // file says nothing, so the store contradicts itself: refused rather
+      // than imported under the opening file's identity.
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
+  test('refuses a reverted rollout whose records precede its Session metadata', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-revert-late-meta';
+      const opening = await seedThreadRollout(codexHome, {
+        day: '08',
+        sessionId,
+        turns: ['opening turn'],
+      });
+      const newest = await seedThreadRollout(codexHome, {
+        day: '09',
+        sessionId,
+        rolloutId: 'codex-revert-late-meta-1',
+        base: { rollout: opening, keptTurns: 1 },
+        turns: ['after the fact'],
+      });
+      const [meta, ...rest] = (await readFile(newest.path, 'utf8')).split('\n');
+      await writeFile(newest.path, [...rest.filter((line) => line !== ''), meta, ''].join('\n'));
+      await seedStateDatabase(codexHome, [threadStateRow(sessionId, newest.path)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /records precede its Session metadata/,
+      );
+    });
+  });
+
   test('is registered by the internal default registry', async () => {
     await withCodexHome(async (codexHome) => {
       const registry = createExternalSessionAdapterRegistry({ codex: { codexHome } });
@@ -1308,6 +1751,93 @@ async function seedFixtureRollout(
     sessionId,
   );
   return seedRawRollout(codexHome, sessionId, fixture, archived);
+}
+
+interface SeededRollout {
+  rolloutId: string;
+  /** Byte offsets where each record ends: `session_meta`, then one per turn. */
+  recordEnds: readonly number[];
+}
+
+/**
+ * Seeds one rollout of a thread: its opening rollout, or with `rolloutId` one
+ * that `thread/revert` started, whose `history_base` keeps `base.rollout` up
+ * to the end of its `keptTurns`-th turn.
+ */
+async function seedThreadRollout(
+  codexHome: string,
+  options: {
+    day: string;
+    sessionId: string;
+    turns: readonly string[];
+    rolloutId?: string;
+    base?: { rollout: SeededRollout; keptTurns: number };
+    metaId?: string;
+    archived?: boolean;
+  },
+): Promise<SeededRollout & { path: string }> {
+  const directory = options.archived
+    ? join(codexHome, 'archived_sessions')
+    : join(codexHome, 'sessions', '2026', '08', options.day);
+  await mkdir(directory, { recursive: true });
+  const suffix = options.rolloutId ? `_${options.rolloutId}` : '';
+  const path = join(
+    directory,
+    `rollout-2026-08-${options.day}T00-00-00-${options.sessionId}${suffix}.jsonl`,
+  );
+  const metaId = options.metaId ?? options.sessionId;
+  const historyBase = options.base && {
+    thread_id: options.base.rollout.rolloutId,
+    end_ordinal_exclusive: options.base.keptTurns + 1,
+    end_byte_offset: options.base.rollout.recordEnds[options.base.keptTurns],
+  };
+  const lines = [
+    JSON.stringify({
+      timestamp: `2026-08-${options.day}T00:00:00.000Z`,
+      type: 'session_meta',
+      payload: {
+        session_id: metaId,
+        id: metaId,
+        cwd: '/workspace/project',
+        source: 'cli',
+        ...(historyBase ? { history_base: historyBase } : {}),
+      },
+    }),
+    ...options.turns.map((text, index) =>
+      JSON.stringify({
+        timestamp: `2026-08-${options.day}T00:00:${String(index + 1).padStart(2, '0')}.000Z`,
+        type: 'event_msg',
+        payload: { type: 'user_message', message: text },
+      }),
+    ),
+  ];
+  const recordEnds: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    offset += Buffer.byteLength(line, 'utf8') + 1;
+    recordEnds.push(offset);
+  }
+  await writeFile(path, lines.map((line) => `${line}\n`).join(''));
+  return { path, rolloutId: options.rolloutId ?? options.sessionId, recordEnds };
+}
+
+function threadStateRow(id: string, rolloutPath: string): StateRow {
+  return {
+    id,
+    rolloutPath,
+    cwd: '/workspace/project',
+    name: id,
+    createdAtMs: 1000,
+    updatedAtMs: 3000,
+    archived: false,
+    source: 'vscode',
+  };
+}
+
+async function importedUserMessages(adapter: CodexSessionAdapter, sessionId: string) {
+  return (await adapter.readSession(sessionId)).messages.filter(
+    (message) => message.type === 'user',
+  );
 }
 
 async function seedMinimalRollout(

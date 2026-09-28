@@ -38,6 +38,16 @@ A dialog instance belongs to one target Session. Changing targets remounts it,
 clears the previous invitation and access state, and releases its polling loop.
 Closing or unmounting ignores late projection reads and stops polling.
 
+## Guest composer
+
+A Guest writes in the same `ChatComposerRegion` as an owner, so switching
+between owned and shared Sessions keeps one Composer and its drafts.
+`GuestTurnRequests` wraps that region in AppShell and projects nothing for an
+owned Session. For a shared one, sends become Turn requests, the Guest's
+requests appear as rows in the composer staging drawer, and a Guest without
+request access sees a notice in place of the composer. Retrying the same text
+reuses its Turn id, so a request whose response was lost is not created twice.
+
 The dialog obtains its capabilities from `SessionCollaborationServices`.
 The Desktop adapter owns bridge and clipboard access. Remote access is checked
 before reading local sharing controls and again before creating an invitation;

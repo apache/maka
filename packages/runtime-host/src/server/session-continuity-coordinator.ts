@@ -53,8 +53,6 @@ import {
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SubscriptionOpenResult,
-  type LiveTurnSnapshot,
-  type TurnProviderRetry,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import type {
@@ -62,11 +60,17 @@ import type {
   SessionContinuityOperationHandlerMap,
 } from './operation-dispatcher.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
   type CanonicalSessionProjection,
   createSessionContinuitySnapshot,
 } from './canonical-session-projection.js';
+import {
+  carryProviderRetry,
+  clearProviderRetry,
+  recordProviderRetry,
+} from './provider-retry-projection.js';
 import type {
   SessionContinuityConnection,
   SessionContinuityFrameSink,
@@ -753,10 +757,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         throw new Error('Runtime event does not belong to the canonical active root Turn');
       }
       if (event.type === 'provider_retry') {
-        this.#publishCanonical(state, withProviderRetry(state.canonical, event));
+        this.#commitLiveProjection(state, recordProviderRetry(state.canonical, event));
         return;
       }
-      this.#publishCanonical(state, withoutProviderRetry(state.canonical));
+      this.#commitLiveProjection(state, clearProviderRetry(state.canonical));
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';
@@ -999,8 +1003,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             transcript = created.state;
             transcriptBootstrap = created.bootstrap;
           } catch (error) {
-            // The client can only retry, but a projection that outgrew its
-            // bounds is a Host defect and has to leave a trace here.
+            // Record the cause before the publication-failure hook can drain the Host.
+            console.error(
+              `[runtime-host] subscription.open transcript bootstrap failed: ${boundedFailureDiagnostic(error)}`,
+            );
             this.onPublicationFailure(error);
             return {
               ok: false as const,
@@ -1154,6 +1160,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             error: { code: 'invalid_request', message: error.message },
           };
         }
+        // The client can only retry, but a transcript page that failed for any
+        // other reason is a Host-side defect: the generic outcome the caller
+        // receives carries none of the cause, so record it here or it is lost.
+        console.error(
+          `[runtime-host] session.transcript.page failed: ${boundedFailureDiagnostic(error)}`,
+        );
         return {
           ok: false,
           error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
@@ -1710,7 +1722,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       this.#sessions.set(sessionId, state);
       return { changed: true, state, value };
     }
-    canonical = preserveProviderRetry(state.canonical, canonical);
+    canonical = carryProviderRetry(state.canonical, canonical);
     const changed = !isDeepStrictEqual(state.canonical, canonical);
     if (changed) {
       if (state.canonical.rootTurn?.runId !== canonical.rootTurn?.runId) {
@@ -1730,13 +1742,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
-  #publishCanonical(state: SessionProjectionState, canonical: CanonicalSessionProjection): void {
-    if (isDeepStrictEqual(state.canonical, canonical)) return;
-    const nextRevision = state.revision + 1;
-    const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
-    state.canonical = immutableClone(canonical);
-    state.revision = nextRevision;
-    this.#broadcastProjection(state, snapshot);
+  #commitLiveProjection(state: SessionProjectionState, next: CanonicalSessionProjection): void {
+    if (isDeepStrictEqual(state.canonical, next)) return;
+    state.revision += 1;
+    state.canonical = immutableClone(next);
+    this.#broadcastProjection(state, createSessionContinuitySnapshot(next, state.revision));
   }
 
   #broadcastProjection(state: SessionProjectionState, snapshot: SessionContinuitySnapshot): void {
@@ -1891,65 +1901,6 @@ function requirePublicationFenceIdentity(
 
 function isTerminalTurn(turn: TurnSnapshot): boolean {
   return turn.status === 'completed' || turn.status === 'failed' || turn.status === 'cancelled';
-}
-
-function isLiveTurn(turn: TurnSnapshot): turn is LiveTurnSnapshot {
-  return !isTerminalTurn(turn);
-}
-
-function withProviderRetry(
-  canonical: CanonicalSessionProjection,
-  event: Extract<SessionEvent, { type: 'provider_retry' }>,
-): CanonicalSessionProjection {
-  const rootTurn = canonical.rootTurn;
-  if (!rootTurn || !isLiveTurn(rootTurn)) return canonical;
-  const providerRetry: TurnProviderRetry =
-    event.phase === 'scheduled'
-      ? {
-          phase: 'scheduled',
-          attempt: event.attempt,
-          maxAttempts: event.maxAttempts,
-          delayMs: event.delayMs,
-          ts: event.ts,
-          reason: event.reason,
-        }
-      : {
-          phase: 'started',
-          attempt: event.attempt,
-          maxAttempts: event.maxAttempts,
-          reason: event.reason,
-        };
-  return { ...canonical, rootTurn: { ...rootTurn, providerRetry } };
-}
-
-function withoutProviderRetry(canonical: CanonicalSessionProjection): CanonicalSessionProjection {
-  const rootTurn = canonical.rootTurn;
-  if (!rootTurn || !isLiveTurn(rootTurn) || rootTurn.providerRetry === undefined) {
-    return canonical;
-  }
-  const { providerRetry: _providerRetry, ...cleared } = rootTurn;
-  return { ...canonical, rootTurn: cleared };
-}
-
-function preserveProviderRetry(
-  current: CanonicalSessionProjection,
-  next: CanonicalSessionProjection,
-): CanonicalSessionProjection {
-  const currentTurn = current.rootTurn;
-  const nextTurn = next.rootTurn;
-  if (
-    !currentTurn ||
-    !nextTurn ||
-    !isLiveTurn(currentTurn) ||
-    !isLiveTurn(nextTurn) ||
-    currentTurn.runId !== nextTurn.runId ||
-    currentTurn.turnId !== nextTurn.turnId ||
-    currentTurn.providerRetry === undefined
-  ) {
-    return next;
-  }
-  if (nextTurn.providerRetry !== undefined) return next;
-  return { ...next, rootTurn: { ...nextTurn, providerRetry: currentTurn.providerRetry } };
 }
 
 function wireTextByteLimit(frame: SessionDeltaFrame): number {

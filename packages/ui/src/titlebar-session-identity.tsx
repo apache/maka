@@ -73,6 +73,9 @@ export function TitlebarSessionIdentity(props: {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale);
   const sessionName = presentSessionName(props.sessionName, locale);
+  const parentLabel = props.parentSession
+    ? copy.chat.openParentSession(presentSessionName(props.parentSession.name, locale))
+    : '';
   const clipboard = useClipboardCopyFeedback(undefined, { redact: false });
   const [renaming, setRenaming] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -125,8 +128,8 @@ export function TitlebarSessionIdentity(props: {
       {props.parentSession ? (
         <IconButton
           className="maka-titlebar-identity__action"
-          label={copy.chat.openParentSession(props.parentSession.name)}
-          tooltip={copy.chat.openParentSession(props.parentSession.name)}
+          label={parentLabel}
+          tooltip={parentLabel}
           icon={<ArrowLeft size={14} />}
           variant="ghost"
           size="sm"

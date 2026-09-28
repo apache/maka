@@ -68,8 +68,8 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionUiController: AppShellSessionUiStateController;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
-  /** Advances after the active session's current observation generation finishes seeding. */
-  liveContentSeedRevision: number;
+  /** Identifies the active session observation whose seed is visible. */
+  liveContentSeedGeneration: number;
   sessionHealthNotice?: SessionHealthNoticeView;
   sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
@@ -100,7 +100,7 @@ function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
 export function ChatMessageSurface({
   sessionUiController,
   activeSessionId,
-  liveContentSeedRevision,
+  liveContentSeedGeneration,
   sessionHealthNotice,
   sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
@@ -139,20 +139,20 @@ export function ChatMessageSurface({
   };
   const liveTurns = useExternalStoreSelector(sessionUiController, selectLiveTurns, activeSessionId);
   const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
-  const seededLiveTurns = liveContentSeedRevision > 0 ? liveTurns : undefined;
+  const seededLiveTurns = liveContentSeedGeneration > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
-    seedRevision: liveContentSeedRevision,
-    initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
+    seedGeneration: liveContentSeedGeneration,
+    initialLiveContent: liveContentSeedGeneration > 0 ? captureLiveContent(liveTurn) : undefined,
   }));
   if (
     activation.sessionId !== activeSessionId
-    || activation.seedRevision !== liveContentSeedRevision
+    || activation.seedGeneration !== liveContentSeedGeneration
   ) {
     setActivation({
       sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
-      initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
+      seedGeneration: liveContentSeedGeneration,
+      initialLiveContent: liveContentSeedGeneration > 0 ? captureLiveContent(liveTurn) : undefined,
     });
   } else if (
     activation.initialLiveContent
@@ -162,7 +162,7 @@ export function ChatMessageSurface({
   ) {
     setActivation({
       sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
+      seedGeneration: liveContentSeedGeneration,
       initialLiveContent: undefined,
     });
   }

@@ -76,6 +76,7 @@ import {
   type GoalProjection,
   type SessionContinuitySnapshot,
   type SessionDomainChangedFrame,
+  type TurnResumePlan,
   type TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
@@ -154,6 +155,8 @@ export interface RuntimeHostMakaSessionDriverInput {
   prospectivePermissionMode?: PermissionMode;
   orchestrationMode?: OrchestrationMode;
   newId?: () => string;
+  /** Prepare client-owned Session capabilities before the Host creates it. */
+  prepareSession?: (sessionId: string) => Promise<void>;
   now?: () => number;
   inspectCwdChanges?: InspectCwdChanges;
   executionLocation?: { readonly kind: 'client_path' } | { readonly kind: 'host' };
@@ -173,6 +176,9 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   readMessages(): Promise<StoredMessage[]>;
   getWorkspaceTarget(): WorkspaceTarget | undefined;
   resumeLatest(): AsyncIterable<SessionEvent>;
+  resumeLatestTurn(
+    plan: Extract<TurnResumePlan, { disposition: 'ready' }>,
+  ): Promise<MakaPreparedSessionTurn>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   subscribeResolvedInteractions(
@@ -201,6 +207,7 @@ export function createRuntimeHostMakaSessionDriver(
 class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #connection: RuntimeHostSessionDriverConnection;
   readonly #newId: () => string;
+  readonly #prepareSession: ((sessionId: string) => Promise<void>) | undefined;
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
   readonly #executionLocation: NonNullable<RuntimeHostMakaSessionDriverInput['executionLocation']>;
@@ -260,6 +267,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   constructor(input: RuntimeHostMakaSessionDriverInput) {
     this.#connection = input.connection;
     this.#newId = input.newId ?? randomUUID;
+    this.#prepareSession = input.prepareSession;
     this.#now = input.now ?? Date.now;
     this.#inspectCwdChanges = input.inspectCwdChanges ?? inspectGitCwdChanges;
     this.#executionLocation = input.executionLocation ?? { kind: 'client_path' };
@@ -356,6 +364,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const events = channel.eventsForTurn(turnId);
     const modelText = options.modelText ?? prompt;
     try {
+      if (options.origin !== undefined && options.origin.kind !== 'cloud_activation') {
+        throw new Error('Runtime Host turn.start only supports cloud activation origins');
+      }
       const startInput = {
         sessionId,
         turnId,
@@ -365,6 +376,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         },
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+        ...(options.origin !== undefined ? { origin: options.origin } : {}),
       };
       const result = await this.#connection.request('turn.start', startInput);
       if (result.kind === 'blocked') {
@@ -496,6 +508,17 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (plan.disposition !== 'ready') {
       throw new SafeBoundaryResumeParkedError(plan.reason);
     }
+    const turn = await this.resumeLatestTurn(plan);
+    yield* turn.events;
+  }
+
+  async resumeLatestTurn(
+    plan: Extract<TurnResumePlan, { disposition: 'ready' }>,
+  ): Promise<MakaPreparedSessionTurn> {
+    const sessionId = this.#requireSession('resume');
+    if (plan.sessionId !== sessionId) {
+      throw new Error('Runtime Host resume plan changed Session identity');
+    }
     const channel = await this.#ensureChannel(sessionId);
     const turnId = this.#newId();
     this.#claimedTurnIds.add(turnId);
@@ -508,13 +531,18 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         sourceRuntimeEventHighWater: plan.sourceRuntimeEventHighWater,
       });
       if (result.kind !== 'started') {
-        channel.failTurn(turnId, new SafeBoundaryResumeParkedError(result.plan.reason));
+        throw new SafeBoundaryResumeParkedError(result.plan.reason);
       }
+      return {
+        sessionId: result.turn.sessionId,
+        turnId: result.turn.turnId,
+        runId: result.turn.runId,
+        events,
+      };
     } catch (error) {
       channel.failTurn(turnId, error);
       throw error;
     }
-    yield* events;
   }
 
   submitMessage(
@@ -1308,6 +1336,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (!this.#llmConnectionId) {
       throw new Error('Runtime Host Session creation requires an exact Connection identity');
     }
+    await this.#prepareSession?.(sessionId);
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,

@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-27
 owners:
   - maka-backend
 ---
@@ -40,11 +40,12 @@ Maka's frontend styling combines Astryx, `@maka/ui` product compositions, and re
 - `apps/desktop/src/renderer/styles.css` is an entry file only.
 - It may contain `@import` and other top-level orchestration statements.
 - New per-surface selector blocks belong in `apps/desktop/src/renderer/styles/**/*.css`.
-- Historical recipes at the end of `maka-tokens.css` and `reference-shell.css` are transitional exceptions. Do not add new surface rules to them.
+- `maka-tokens.css` holds tokens only, including the type-role table and its code-font rebind. Document-level defaults live in `styles/document.css`; surface rules never go into the token file.
 
 ### Selector naming
 
 - Shared renderer and `@maka/ui` selectors use the kebab-case `.maka-*` dialect.
+- `agents-*` class names are frozen: keep the existing ones, add no new `agents-*` selectors or class names.
 - The established `styles/settings/**` surface uses camelCase `.settings*` selectors. Keep that dialect for settings-local selectors instead of mixing both forms within one surface.
 - Moving existing settings selectors between concern files does not require a repository-wide rename; any future naming migration should be handled as an explicit compatibility change.
 

@@ -626,6 +626,25 @@ function analyze(repoRoot, rel, ctx) {
   return { path: rel, role, ...a };
 }
 
+function withFinalNewline(text) {
+  return text.endsWith('\n') ? text : `${text}\n`;
+}
+
+function buildInventoryArtifacts({ bySeverity, excluded, files, lines, rows, version }) {
+  return {
+    blockers: rows.flatMap((row) => [
+      ...(row.severity === 'blocker' ? [{ path: row.path, gaps: row.gaps }] : []),
+      ...(row.admissionGaps || []).map((gaps) => ({ path: row.path, gaps })),
+    ]),
+    excluded,
+    files,
+    markdown: withFinalNewline(lines.join('\n')),
+    paths: withFinalNewline(files.join('\n')),
+    totals: bySeverity,
+    version,
+  };
+}
+
 export function renderAstryxSurfaceInventory(repoRoot = root) {
   const { version, components } = loadAstryxComponents();
   const { reexports, shadowsByFile } = loadMakaUiBarrel(repoRoot);
@@ -703,19 +722,14 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
   lines.push('- **aligned** — no blocker smell found; Astryx usage noted when present.');
   lines.push('');
 
-  const markdown = lines.join('\n');
-  return {
-    markdown: markdown.endsWith('\n') ? markdown : `${markdown}\n`,
-    paths: `${files.join('\n')}\n`,
-    files,
+  return buildInventoryArtifacts({
+    bySeverity: bySev,
     excluded,
-    totals: bySev,
-    blockers: rows.flatMap((row) => [
-      ...(row.severity === 'blocker' ? [{ path: row.path, gaps: row.gaps }] : []),
-      ...(row.admissionGaps || []).map((gaps) => ({ path: row.path, gaps })),
-    ]),
+    files,
+    lines,
+    rows,
     version,
-  };
+  });
 }
 
 export function assertNoAstryxBlockers(rendered, legacyBaseline = new Map()) {
@@ -729,20 +743,31 @@ export function assertNoAstryxBlockers(rendered, legacyBaseline = new Map()) {
   );
 }
 
-function main() {
-  const rendered = renderAstryxSurfaceInventory(root);
-  const mdPath = join(root, 'docs/astryx-surface-file-inventory.md');
-  const pathsPath = join(root, 'docs/astryx-surface-file-inventory.paths');
-  writeFileSync(mdPath, rendered.markdown);
-  writeFileSync(pathsPath, rendered.paths);
-  console.log(`wrote ${relative(root, mdPath)} (${rendered.files.length} files)`);
-  console.log(`wrote ${relative(root, pathsPath)}`);
-  console.log(
+export function writeAstryxSurfaceInventory(repoRoot = root, output = console) {
+  const rendered = renderAstryxSurfaceInventory(repoRoot);
+  const artifacts = [
+    {
+      contents: rendered.markdown,
+      path: join(repoRoot, 'docs/astryx-surface-file-inventory.md'),
+      suffix: ` (${rendered.files.length} files)`,
+    },
+    {
+      contents: rendered.paths,
+      path: join(repoRoot, 'docs/astryx-surface-file-inventory.paths'),
+      suffix: '',
+    },
+  ];
+  for (const artifact of artifacts) {
+    writeFileSync(artifact.path, artifact.contents);
+    output.log(`wrote ${relative(repoRoot, artifact.path)}${artifact.suffix}`);
+  }
+  output.log(
     `astryx @${rendered.version}: blocker=${rendered.totals.blocker} reimplementation=${rendered.totals.reimplementation} polish=${rendered.totals.polish} aligned=${rendered.totals.aligned}`,
   );
+  return rendered;
 }
 
 const isDirect = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirect || process.argv[1]?.endsWith('generate-astryx-surface-inventory.mjs')) {
-  main();
+  writeAstryxSurfaceInventory();
 }

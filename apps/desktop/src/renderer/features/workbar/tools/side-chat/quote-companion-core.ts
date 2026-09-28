@@ -25,6 +25,7 @@ import {
   type InteractionQueues,
   type LiveTurnProjection,
 } from '@maka/ui';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { QuoteRef, SessionEvent } from '@maka/core/events';
@@ -37,7 +38,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   SideChatSessionPort,
   SideChatSendResult,
-  WorkbarIngestInput,
+  WorkbarSubmittedAttachments,
 } from '../../ports.js';
 import {
   acquireSessionCopyAttempt,
@@ -329,7 +330,12 @@ export type CompanionTurnResult =
   | { status: 'sent'; forkId: string; turnId: string; steered: true; messageId: string }
   | { status: 'pending'; forkId: string; messageId: string }
   | { status: 'disposed' }
-  | { status: 'error'; code: CompanionErrorCode };
+  | {
+      status: 'error';
+      code: CompanionErrorCode;
+      /** Set when `send_rejected` was an attachment the send path refused. */
+      attachmentBlocked?: AttachmentIngestBlockedCode;
+    };
 
 export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   /** The fork's id if one already exists (subsequent turns skip creation). */
@@ -337,7 +343,7 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   turnId: string;
   text: string;
   quotes: QuoteRef[] | undefined;
-  attachmentItems?: WorkbarIngestInput[];
+  attachments?: WorkbarSubmittedAttachments;
   /** Fired once a fork is ready, so the caller can commit it. */
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */
@@ -382,7 +388,7 @@ export async function performCompanionTurn(
       turnId: deps.turnId,
       text: deps.text,
       ...(deps.quotes ? { quotes: deps.quotes } : {}),
-      ...(deps.attachmentItems ? { attachmentItems: deps.attachmentItems } : {}),
+      ...deps.attachments,
     });
   } catch {
     if (deps.isDisposed()) return { status: 'disposed' };
@@ -395,6 +401,9 @@ export async function performCompanionTurn(
   if (!result.ok) {
     if (result.reason === 'outcome_unknown' && result.messageId) {
       return { status: 'pending', forkId, messageId: result.messageId };
+    }
+    if (result.reason === 'attachment_blocked' && 'code' in result) {
+      return { status: 'error', code: 'send_rejected', attachmentBlocked: result.code };
     }
     return { status: 'error', code: 'send_rejected' };
   }

@@ -20,6 +20,7 @@
 import { app, Notification } from 'electron';
 import type { AppSettings } from '@maka/core/settings';
 import type { createMainWindowController } from './main-window.js';
+import { showNativeNotification } from './native-notification.js';
 import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 import {
   type RunNotificationEvent,
@@ -55,11 +56,7 @@ export function createRunNotifier(deps: NotificationsDeps): (input: RunNotificat
       input,
       deps.locale.observe(settings),
     );
-    const notification = new Notification({ title: copy.title, body: copy.body });
-    // Clicking the banner should pull the (unfocused/minimized) window
-    // back to the foreground — `focus()` already restores + shows.
-    notification.on('click', () => deps.mainWindowController.focus());
-    notification.show();
+    showNativeNotification(copy, () => deps.mainWindowController.focus());
     app.dock?.bounce('informational');
   });
 }

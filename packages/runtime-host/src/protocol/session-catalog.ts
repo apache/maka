@@ -71,6 +71,7 @@ export const SESSION_CATALOG_MODEL_MAX_BYTES = SESSION_MODEL_ID_MAX_BYTES;
 export const SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES = 256;
 export const SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION = 1 as const;
 export const SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS = 64;
+export const SESSION_CATALOG_HOST_GENERATION_MAX_CHARS = 128;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -225,6 +226,23 @@ export interface SessionExecutionBoundaryQueryInput {
 export interface SessionCatalogLiveRunState {
   readonly schemaVersion: typeof SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION;
   readonly runningTurnIds: readonly string[];
+  /**
+   * The runtime's own order for this live state, bumped on every turn start
+   * and end. `revision` does not move for those transitions, so two
+   * same-revision reads can disagree about `runningTurnIds` — the epoch says
+   * which read is older (#5713). Absent from hosts that do not track it. The
+   * counter is per-process; across a Host restart only `hostGeneration`
+   * orders observations, never the epoch.
+   */
+  readonly runEpoch?: number;
+  /**
+   * Identifies the Host process generation that produced this live state.
+   * Rows survive a Host restart while the epoch counter restarts at zero, so
+   * clients must not order same-revision reads across generations by epoch —
+   * a restarted Host supersedes every observation its predecessor published.
+   * Absent from hosts that do not track it.
+   */
+  readonly hostGeneration?: string;
 }
 
 export interface SessionCatalogProjection {
@@ -1003,30 +1021,57 @@ function optionalLiveRunState(
   record: Record<string, unknown>,
 ): Pick<SessionCatalogProjection, 'liveRunState'> | Record<string, never> {
   if (record.liveRunState === undefined) return {};
-  const state = requireExactRecord(record.liveRunState, 'Session catalog live run state', [
+  const liveRunState = requireRecord(record.liveRunState, 'Session catalog live run state');
+  assertAllowedKeys(liveRunState, 'Session catalog live run state', [
     'schemaVersion',
     'runningTurnIds',
+    'runEpoch',
+    'hostGeneration',
   ]);
-  if (state.schemaVersion !== SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION) {
+  if (liveRunState.schemaVersion !== SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION) {
     throw invalidProtocolFrame('Unsupported Session catalog live run state schema version');
   }
   if (
-    !Array.isArray(state.runningTurnIds) ||
-    state.runningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS
+    !Object.hasOwn(liveRunState, 'runningTurnIds') ||
+    !Array.isArray(liveRunState.runningTurnIds) ||
+    liveRunState.runningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS
   ) {
     throw invalidProtocolFrame('Invalid Session catalog running turn ids');
   }
   const runningTurnIds: string[] = [];
-  for (let index = 0; index < state.runningTurnIds.length; index += 1) {
-    runningTurnIds.push(requireEntityId(state.runningTurnIds[index], 'Session running turn id'));
+  for (let index = 0; index < liveRunState.runningTurnIds.length; index += 1) {
+    runningTurnIds.push(
+      requireEntityId(liveRunState.runningTurnIds[index], 'Session running turn id'),
+    );
   }
   if (new Set(runningTurnIds).size !== runningTurnIds.length) {
     throw invalidProtocolFrame('Duplicate Session catalog running turn id');
+  }
+  if (
+    liveRunState.runEpoch !== undefined &&
+    (typeof liveRunState.runEpoch !== 'number' ||
+      !Number.isSafeInteger(liveRunState.runEpoch) ||
+      liveRunState.runEpoch < 0)
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog run epoch');
+  }
+  if (
+    liveRunState.hostGeneration !== undefined &&
+    (typeof liveRunState.hostGeneration !== 'string' ||
+      liveRunState.hostGeneration.length === 0 ||
+      liveRunState.hostGeneration.length > SESSION_CATALOG_HOST_GENERATION_MAX_CHARS ||
+      /[\u0000-\u001f\u007f]/.test(liveRunState.hostGeneration))
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog host generation');
   }
   return {
     liveRunState: {
       schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
       runningTurnIds,
+      ...(liveRunState.runEpoch === undefined ? {} : { runEpoch: liveRunState.runEpoch }),
+      ...(liveRunState.hostGeneration === undefined
+        ? {}
+        : { hostGeneration: liveRunState.hostGeneration }),
     },
   };
 }

@@ -52,7 +52,7 @@ afterEach(async () => {
   });
 });
 
-async function renderIdentity(sessionName: string, readOnly = false, onRenameSession = (_name: string) => {}) {
+async function renderIdentity(sessionName: string, readOnly = false, onRenameSession = (_name: string) => {}, parentSessionName?: string) {
   const { document, window } = parseHTML('<div id="root"></div>');
   window.getComputedStyle = () =>
     new Proxy(
@@ -79,6 +79,7 @@ async function renderIdentity(sessionName: string, readOnly = false, onRenameSes
             readOnly={readOnly}
             onRenameSession={onRenameSession}
             project={{ name: 'p' }}
+            parentSession={parentSessionName === undefined ? undefined : { name: parentSessionName, onOpen() {} }}
           />
         </LocaleProvider>
       </StrictMode>,
@@ -110,6 +111,8 @@ test('the Host untitled name reads as the localized placeholder', async () => {
   assert.equal((await renderIdentity('New Chat'))?.textContent, 'New task');
   assert.equal((await renderIdentity('Fix the build'))?.textContent, 'Fix the build');
   assert.equal(presentSessionName('New Chat', 'zh-CN'), '新建任务');
+  await renderIdentity('Child', false, undefined, 'New Chat');
+  assert.ok(document.querySelector('[aria-label="Return to parent task “New task”"]'));
 });
 
 test('committing the untitled placeholder unchanged keeps the stored name', async () => {

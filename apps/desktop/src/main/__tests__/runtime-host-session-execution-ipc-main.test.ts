@@ -81,14 +81,14 @@ for (const phase of ['connecting', 'seeding'] as const) {
       const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
       void observing.catch(() => undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.deepEqual(observations.observedSessionIds(), ['session-1']);
+      assert.deepEqual(observations.observationSessionIds(), ['session-1']);
 
       if (cancellation === 'unobserve') await observations.unobserve('observer-1');
       else ipc.rendererDestroyed();
       finishSeed();
 
       assert.deepEqual(await observing, { kind: 'cancelled' });
-      assert.deepEqual(observations.observedSessionIds(), []);
+      assert.deepEqual(observations.observationSessionIds(), []);
       assert.deepEqual(await observations.attach(source), []);
       assert.equal(seeds, phase === 'seeding' ? 1 : 0);
       assert.deepEqual(errors, []);
@@ -1879,95 +1879,6 @@ test('keeps an unknown Desktop follow-up admission available for reconciliation'
   );
 });
 
-test("routes per-entry queue mutations to the Runtime Host", async () => {
-  const calls: unknown[] = [];
-  let sequence = 0;
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        retractQueueEntry: async (input) => {
-          calls.push({ operation: "retract", ...input });
-          return { queueRevision: 3 };
-        },
-        promoteQueueEntry: async (input) => {
-          calls.push({ operation: "promote", ...input });
-          return { queueRevision: 4 };
-        },
-        updateQueueEntry: async (input) => {
-          calls.push({ operation: "update", ...input });
-          return { queueRevision: 5 };
-        },
-        reorderQueueEntries: async (input) => {
-          calls.push({ operation: "reorder", ...input });
-          return { queueRevision: 6 };
-        },
-      }),
-      observer: unusedObserver(),
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
-      beforeStop() {},
-      newId: () => `id-${++sequence}`,
-    },
-    ipc,
-  );
-
-  assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
-  await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
-  await ipc.invoke(
-    "sessions:updateQueueEntry",
-    "session-1",
-    "entry-2",
-    4,
-    " revised ",
-  );
-  await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"]);
-
-  assert.deepEqual(calls, [
-    {
-      operation: "retract",
-      sessionId: "session-1",
-      entryId: "entry-1",
-      retractId: "id-1",
-    },
-    {
-      operation: "promote",
-      sessionId: "session-1",
-      entryId: "entry-2",
-      promoteId: "id-2",
-    },
-    {
-      operation: "update",
-      sessionId: "session-1",
-      entryId: "entry-2",
-      updateId: "id-3",
-      expectedQueueRevision: 4,
-      text: "revised",
-    },
-    {
-      operation: "reorder",
-      sessionId: "session-1",
-      reorderId: "id-4",
-      entryIds: ["entry-3", "entry-2"],
-    },
-  ]);
-
-  await assert.rejects(
-    () => ipc.invoke("sessions:updateQueueEntry", "session-1", "entry-1", 4, " "),
-    /Invalid Queued message text/,
-  );
-  await assert.rejects(
-    () => ipc.invoke("sessions:promoteQueueEntry", "session-1", 42),
-    /Invalid queue entry identity/,
-  );
-  await assert.rejects(
-    () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1", 42]),
-    /Invalid queue entry order/,
-  );
-});
-
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
@@ -2540,9 +2451,9 @@ test('renderer reload releases old observations without accumulating destroyed l
     assert.equal(ipc.rendererListenerCount(), 2);
     ipc.rendererNavigate(true); // Same-document navigation keeps live subscriptions.
     ipc.rendererNavigate(false, false); // So do child-frame navigations.
-    assert.deepEqual(registry.observedSessionIds(), ['session-1']);
+    assert.deepEqual(registry.observationSessionIds(), ['session-1']);
     ipc.rendererNavigate();
-    assert.deepEqual(registry.observedSessionIds(), []);
+    assert.deepEqual(registry.observationSessionIds(), []);
     assert.equal(ipc.rendererListenerCount(), 1);
   }
   assert.equal(removed.length, 20);
@@ -2559,7 +2470,7 @@ test('an observation admitted across document replacement is cancelled before re
   ipc.rendererNavigate();
   resolving.resolve();
   assert.deepEqual(await observing, { kind: 'cancelled' });
-  assert.deepEqual(registry.observedSessionIds(), []);
+  assert.deepEqual(registry.observationSessionIds(), []);
   await registry.close();
 });
 

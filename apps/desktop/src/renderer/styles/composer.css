@@ -40,6 +40,21 @@
   max-width: var(--maka-reading-measure);
 }
 
+.maka-composer-editor {
+  --maka-editor-padding-block: var(--space-1);
+}
+
+/* An empty scrolling contenteditable can lose its line box when shown under
+   an inert session-switching parent (#5264). Astryx's outer minimum does not
+   protect the caret inside it. Keep one line plus the actual block padding,
+   including compact WorkHub's override, without fixing the multiline height.
+   Match only the editor, not nested contenteditable=false reference tokens;
+   keep the minimum while the editor itself is disabled, too. */
+.maka-composer-editor > [contenteditable] {
+  padding-block: var(--maka-editor-padding-block);
+  min-height: calc(1lh + 2 * var(--maka-editor-padding-block));
+}
+
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered
    compositing surface, so Chromium may re-raster the thin context-gauge paths
@@ -62,31 +77,33 @@
 }
 
 .maka-composer-queue {
-  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
-  max-width: var(--maka-reading-measure);
-  margin: 0 auto var(--space-1);
-  padding: var(--space-1);
   box-sizing: border-box;
-  border-radius: var(--radius-chat);
+  width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
+  max-width: var(--maka-reading-measure);
+  margin-inline: auto;
+  margin-block-end: var(--space-1);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-1);
+  border-radius: var(--radius-chat, 8px);
   background: var(--background-elevated);
   box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border);
-  /* Concentric with the plate, mirroring what ChatComposer derives for its
-     own footer buttons: max(--radius-element, radius - padding). The plate
-     sits outside the card, so the row ghost buttons must read it here. */
-  --_button-radius: max(var(--radius-element), calc(var(--radius-chat) - var(--spacing-3)));
+  --_button-radius: max(
+    var(--radius-element),
+    calc(var(--radius-chat) - var(--spacing-3))
+  );
 }
 
 .maka-composer-queue-list {
   min-width: 0;
   max-height: 132px;
-  overflow-y: auto;
+  overflow: hidden auto;
 }
 
 .maka-composer-queue-text {
   display: block;
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 
@@ -101,7 +118,7 @@
   width: 100%;
   min-width: 0;
   border: 0;
-  border-bottom: var(--border-width-hairline) solid var(--border-strong);
+  border-block-end: var(--border-width-hairline) solid var(--border-strong);
   outline: 0;
   background: transparent;
   color: inherit;
@@ -110,28 +127,9 @@
   resize: vertical;
 }
 
-.maka-composer-queue-grip {
-  display: grid;
-  place-items: center;
-  width: 16px;
-  color: var(--muted-foreground);
-  cursor: grab;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.maka-composer-queue-list li:hover .maka-composer-queue-grip,
-.maka-composer-queue-grip:focus-visible {
-  opacity: 1;
-}
-
-.maka-composer-queue-grip:active {
-  cursor: grabbing;
-}
-
 @media (max-width: 640px) {
   .maka-composer-queue {
-    width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-3))));
+    width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-3)));
   }
 
   .maka-composer-queue-actions {

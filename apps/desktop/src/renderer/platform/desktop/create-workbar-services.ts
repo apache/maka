@@ -19,6 +19,7 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ShellRunUpdate } from '@maka/core/events';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import {
   isDesktopTerminalShellRun,
   isTerminalShellRunStatus,
@@ -91,6 +92,7 @@ export function createDesktopWorkbarServices(
         // with its structured content (#4804).
         ...(content?.quotes ? { quotes: content.quotes } : {}),
         ...(content?.attachmentItems ? { attachmentItems: content.attachmentItems } : {}),
+        ...(content?.retainedAttachments ? { retainedAttachments: content.retainedAttachments } : {}),
       },
       { waitForHostAdmission: true },
     );
@@ -98,6 +100,9 @@ export function createDesktopWorkbarServices(
       if (result.reason === 'outcome_unknown') {
         return { kind: 'outcome_unknown' };
       }
+      // Keep the classified refusal so the companion can name the attachment
+      // rule that blocked the send, as the main composer does.
+      if (result.reason === 'attachment_blocked') throw new AttachmentIngestBlockedError(result.code);
       throw new Error('Runtime Host refused the follow-up Message');
     }
     return result.disposition === 'turn_started' && result.turnId
@@ -200,10 +205,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.retractQueueEntry(sessionId, entryId),
       promoteQueueEntry: (sessionId, entryId) =>
         bridge.sessions.promoteQueueEntry(sessionId, entryId),
-      updateQueueEntry: (sessionId, entryId, expectedQueueRevision, text) =>
-        bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
-      reorderQueueEntries: (sessionId, entryIds) =>
-        bridge.sessions.reorderQueueEntries(sessionId, entryIds),
+      reorderQueueEntries: (sessionId, entryIds, revision) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds, revision),
       setPermissionMode: async (sessionId, mode) =>
         expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
       respondToSandboxBoundary: (sessionId, response) =>

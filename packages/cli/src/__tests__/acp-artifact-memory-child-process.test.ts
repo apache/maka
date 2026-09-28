@@ -30,6 +30,7 @@ import type {
   MemoryQueryResult,
   MemoryMutateInput,
   MemoryMutateResult,
+  SessionTurnsQueryResult,
 } from '@maka/runtime-host/protocol';
 import { withAcpChildProcessHarness } from './acp-child-process-harness.js';
 
@@ -733,4 +734,210 @@ test('Memory private route preserves Host policy result and validates custom par
       model: { id: 'acp-disabled-memory-fixture', thinkingLevels: [] },
     },
   );
+});
+
+test('branch and revision targets continue with their own Artifacts and Session Memory', {
+  timeout: 90_000,
+}, async () => {
+  const modelInputs: string[] = [];
+  const model = createServer((request, response) => {
+    void readBody(request)
+      .then((body) => {
+        const input = JSON.parse(body) as { stream?: boolean };
+        if (input.stream === true) {
+          modelInputs.push(body);
+          respondEvents(response, [
+            modelChunk(
+              'acp-copy-integration-fixture',
+              { role: 'assistant', content: 'Done.' },
+              null,
+            ),
+            modelChunk('acp-copy-integration-fixture', {}, 'stop'),
+          ]);
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            id: 'copy-summary',
+            object: 'chat.completion',
+            created: 1,
+            model: 'acp-copy-integration-fixture',
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Summary' },
+                finish_reason: 'stop',
+              },
+            ],
+          }),
+        );
+      })
+      .catch((error: unknown) => response.destroy(error as Error));
+  });
+  await new Promise<void>((resolve, reject) => {
+    model.once('error', reject);
+    model.listen(0, '127.0.0.1', resolve);
+  });
+  const address = model.address();
+  assert.ok(address && typeof address !== 'string');
+  try {
+    await withAcpChildProcessHarness(
+      async (harness) => {
+        await harness.withClient(async ({ context }) => {
+          await context.request(methods.agent.initialize, { protocolVersion: 1 });
+          const source = await context.request(methods.agent.session.new, {
+            cwd: harness.workspaceRoot,
+            mcpServers: [],
+          });
+          assert.deepEqual(
+            await context.request(methods.agent.session.prompt, {
+              sessionId: source.sessionId,
+              prompt: [{ type: 'text', text: 'SOURCE_COPY_BOUNDARY' }],
+            }),
+            { stopReason: 'end_turn' },
+          );
+
+          let priorTargetMemory: string | undefined;
+          for (const copyKind of ['branch', 'revision'] as const) {
+            const sourcePage = await context.request<
+              SessionTurnsQueryResult & { expectedSourceRevision: number }
+            >('_maka/session/copy-source/query', {
+              sessionId: source.sessionId,
+              throughSequence: null,
+              position: 0,
+              maxContributions: 16,
+            });
+            const sourceTurn = sourcePage.contributions.find(
+              (contribution) => contribution.latestState?.message.status === 'completed',
+            );
+            assert.ok(sourceTurn, JSON.stringify(sourcePage));
+            const targetSessionId = randomUUID();
+            const copied = await context.request<{ kind: string }>(
+              `_maka/session/${copyKind}/create`,
+              {
+                sourceSessionId: source.sessionId,
+                targetSessionId,
+                sourceTurnId: sourceTurn.turnId,
+                expectedSourceRevision: sourcePage.expectedSourceRevision,
+              },
+            );
+            assert.equal(copied.kind, 'committed');
+            assert.deepEqual(
+              await context.request(methods.agent.session.prompt, {
+                sessionId: targetSessionId,
+                prompt: [{ type: 'text', text: `CONTINUE_${copyKind.toUpperCase()}_TARGET_3132` }],
+              }),
+              { stopReason: 'end_turn' },
+            );
+
+            const payload = Buffer.from(`TARGET_${copyKind.toUpperCase()}_ARTIFACT_3132`);
+            const uploadId = randomUUID();
+            const ingest = (input: ArtifactIngestInput) =>
+              context.request<ArtifactIngestResult, ArtifactIngestInput>(
+                '_maka/artifact/ingest',
+                input,
+              );
+            assert.equal(
+              (
+                await ingest({
+                  kind: 'begin',
+                  sessionId: targetSessionId,
+                  uploadId,
+                  name: `${copyKind}.txt`,
+                  mimeType: 'text/plain',
+                  totalBytes: payload.length,
+                  contentSha256: `sha256:${createHash('sha256').update(payload).digest('hex')}`,
+                })
+              ).kind,
+              'upload_opened',
+            );
+            assert.equal(
+              (
+                await ingest({
+                  kind: 'chunk',
+                  sessionId: targetSessionId,
+                  uploadId,
+                  offset: 0,
+                  chunkBase64: payload.toString('base64'),
+                })
+              ).kind,
+              'chunk_accepted',
+            );
+            const committed = await ingest({
+              kind: 'commit',
+              sessionId: targetSessionId,
+              uploadId,
+            });
+            assert.equal(committed.kind, 'committed');
+            if (committed.kind !== 'committed' || committed.attachment.ref.kind !== 'session_file')
+              throw new Error('Expected target Session Artifact');
+            const artifactId = committed.attachment.ref.relativePath;
+            const read = await context.request<ArtifactQueryResult>('_maka/artifact/query', {
+              kind: 'read_chunk',
+              sessionId: targetSessionId,
+              artifactId,
+              offset: 0,
+            });
+            assert.equal(read.kind, 'chunk');
+            if (read.kind !== 'chunk') throw new Error('Expected target Artifact chunk');
+            assert.deepEqual(Buffer.from(read.chunkBase64, 'base64'), payload);
+            const sourceArtifact = await context.request<ArtifactQueryResult>(
+              '_maka/artifact/query',
+              { kind: 'get', sessionId: source.sessionId, artifactId },
+            );
+            assert.equal(sourceArtifact.kind, 'artifact');
+            if (sourceArtifact.kind === 'artifact') assert.equal(sourceArtifact.artifact, null);
+
+            const state = await context.request<MemoryQueryResult>('_maka/memory/query', {
+              kind: 'state',
+            });
+            assert.equal(state.kind, 'state');
+            if (state.kind !== 'state') throw new Error('Expected Memory state');
+            const sentinel = `TARGET_${copyKind.toUpperCase()}_MEMORY_3132`;
+            const remembered = await context.request<MemoryMutateResult, MemoryMutateInput>(
+              '_maka/memory/mutate',
+              {
+                kind: 'remember',
+                expectedRevision: state.revision,
+                title: `${copyKind} target memory`,
+                content: sentinel,
+                scope: { kind: 'session', sessionId: targetSessionId },
+              },
+            );
+            assert.equal(remembered.kind, 'committed');
+            const marker = `PROMPT_${copyKind.toUpperCase()}_TARGET_3132`;
+            assert.deepEqual(
+              await context.request(methods.agent.session.prompt, {
+                sessionId: targetSessionId,
+                prompt: [{ type: 'text', text: marker }],
+              }),
+              { stopReason: 'end_turn' },
+            );
+            const targetInput = modelInputs.find((body) => body.includes(marker));
+            assert.ok(targetInput, JSON.stringify(modelInputs));
+            assert.ok(targetInput.includes(sentinel), JSON.stringify(modelInputs));
+            if (priorTargetMemory) assert.ok(!targetInput.includes(priorTargetMemory));
+            priorTargetMemory = sentinel;
+            await context.request(methods.agent.session.close, { sessionId: targetSessionId });
+          }
+          await context.request(methods.agent.session.close, { sessionId: source.sessionId });
+        });
+      },
+      {
+        startRuntimeHost: true,
+        memoryEnabled: true,
+        model: {
+          id: 'acp-copy-integration-fixture',
+          thinkingLevels: [],
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        },
+      },
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      model.close((error) => (error ? reject(error) : resolve()));
+      model.closeAllConnections();
+    });
+  }
 });
