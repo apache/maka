@@ -125,6 +125,9 @@ const decodeStoredMessage = (value: unknown): StoredMessage =>
 const MAX_CATALOG_ATTEMPTS = 3;
 // Sparse cwd or visibility matches must not turn a bounded lookup into a full Host scan.
 const MAX_SESSION_CATALOG_SCAN_PAGES = 8;
+const MAX_SESSION_CATALOG_READ_ATTEMPTS = 8;
+const SESSION_CATALOG_READ_RETRY_BASE_DELAY_MS = 8;
+const SESSION_CATALOG_READ_RETRY_MAX_DELAY_MS = 64;
 
 /**
  * The host declined to start a safe-boundary continuation and explained why.
@@ -362,7 +365,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       throw new Error(`Session catalog limit must be a non-negative safe integer: ${limit}`);
     }
     if (limit === 0) return [];
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_SESSION_CATALOG_READ_ATTEMPTS; attempt += 1) {
       try {
         const sessions: SessionCatalogProjection[] = [];
         const cursors = new Set<string>();
@@ -394,13 +397,28 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           cursors.add(cursor.cursor);
         }
         if (cursor !== undefined && pagesRead === MAX_SESSION_CATALOG_SCAN_PAGES) {
-          throw new MakaSessionCatalogIncompleteError(pagesRead);
+          throw new MakaSessionCatalogIncompleteError(
+            pagesRead,
+            sessions.map(projectSessionCatalogSummary),
+          );
         }
         return sessions;
       } catch (error) {
-        if (!(error instanceof RuntimeHostSessionCatalogRevisionChangedError) || attempt === 2) {
+        if (
+          !(error instanceof RuntimeHostSessionCatalogRevisionChangedError) ||
+          attempt + 1 === MAX_SESSION_CATALOG_READ_ATTEMPTS
+        ) {
           throw error;
         }
+        await new Promise<void>((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SESSION_CATALOG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt,
+              SESSION_CATALOG_READ_RETRY_MAX_DELAY_MS,
+            ),
+          ),
+        );
       }
     }
     throw new Error('Runtime Host Session catalog could not be read consistently');

@@ -3386,18 +3386,28 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
-    const readSessions = async (sessionOptions: MakaSessionListOptions) => {
-      try {
-        return await listSessions(sessionOptions);
-      } catch (error) {
-        if (error instanceof MakaSessionCatalogIncompleteError) {
-          throw new Error(pickerCopy.resumeCatalogIncompleteNotice);
-        }
-        throw error;
+  const showSessionCatalogIncompleteNotice = (): void => {
+    const text = pickerCopy.resumeCatalogIncompleteNotice;
+    if (state.entries.some((entry) => entry.kind === 'notice' && entry.text === text)) return;
+    state.entries.push({ kind: 'notice', level: 'info', text });
+    requestRender();
+  };
+  const readSessionCatalog = async (
+    sessionOptions: MakaSessionListOptions = {},
+  ): Promise<SessionSummary[]> => {
+    try {
+      return await listSessions(sessionOptions);
+    } catch (error) {
+      if (error instanceof MakaSessionCatalogIncompleteError) {
+        showSessionCatalogIncompleteNotice();
+        return [...error.sessions];
       }
-    };
-    let sessions = await readSessions(
+      throw error;
+    }
+  };
+
+  const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
+    let sessions = await readSessionCatalog(
       options.onlyResumable ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd } : {},
     );
     let sessionTree = projectRevisionLinkedSessionTree(
@@ -3571,7 +3581,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           const nextScope = pickerScope === 'current' ? 'all' : 'current';
           void (async () => {
             if (options.onlyResumable) {
-              sessions = await readSessions(
+              sessions = await readSessionCatalog(
                 nextScope === 'current'
                   ? { limit: MAX_SESSION_RESUME_CANDIDATES, cwd }
                   : { limit: MAX_SESSION_RESUME_CANDIDATES },
@@ -3607,10 +3617,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (!input.driver.getSessionResumeCandidateAvailability) return;
       const sessions = sessionId
         ? undefined
-        : await listSessions({ limit: MAX_SESSION_RESUME_CANDIDATES, cwd });
+        : await readSessionCatalog({ limit: MAX_SESSION_RESUME_CANDIDATES, cwd });
       const session = sessionId
         ? ((await input.driver.getSessionSummary?.(sessionId)) ??
-          (await listSessions()).find((candidate) => candidate.id === sessionId))
+          (await readSessionCatalog()).find((candidate) => candidate.id === sessionId))
         : sessions?.find((candidate) => candidate.cwd === cwd);
       if (!session) return;
       const availability = await runResumeAvailabilityCheck(() =>

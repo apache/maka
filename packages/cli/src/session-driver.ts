@@ -261,7 +261,10 @@ export interface MakaSessionListOptions {
 }
 
 export class MakaSessionCatalogIncompleteError extends Error {
-  constructor(readonly scannedPages: number) {
+  constructor(
+    readonly scannedPages: number,
+    readonly sessions: readonly SessionSummary[] = [],
+  ) {
     super(`Session catalog results may be incomplete after scanning ${scannedPages} pages.`);
     this.name = 'MakaSessionCatalogIncompleteError';
   }

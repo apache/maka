@@ -51,9 +51,10 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import type {
-  MakaAttachedSessionTurn,
-  MakaSideConversationParentStatus,
+import {
+  MakaSessionCatalogIncompleteError,
+  type MakaAttachedSessionTurn,
+  type MakaSideConversationParentStatus,
 } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
@@ -104,6 +105,37 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('retries bounded catalog reads through a burst of revision changes', async () => {
+    const connection = new FakeConnection([]);
+    const expectedRevision = `sha256:${'a'.repeat(64)}` as const;
+    const actualRevision = `sha256:${'b'.repeat(64)}` as const;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      connection.sessionCatalogPages.push({
+        kind: 'revision_changed',
+        expectedRevision,
+        actualRevision,
+      });
+    }
+    connection.sessionCatalogPages.push({
+      kind: 'page',
+      revision: actualRevision,
+      sessions: [],
+      nextCursor: null,
+    });
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    assert.deepEqual(await driver.listSessions({ limit: 1, cwd: '/repo' }), []);
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      5,
+    );
+  });
+
   test('returns a complete empty result when the catalog ends at the scan bound', async () => {
     const connection = new FakeConnection([]);
     const catalogSessions = Array.from({ length: 8 * 32 }, (_, index) => {
@@ -140,7 +172,7 @@ describe('Runtime Host Maka Session driver', () => {
   test('reports incomplete results when a current-workspace candidate is beyond the scan bound', async () => {
     const connection = new FakeConnection([]);
     const catalogSessions = Array.from({ length: 9 * 32 }, (_, index) => {
-      const cwd = index === 8 * 32 ? '/repo' : `/other-${index}`;
+      const cwd = index === 0 || index === 8 * 32 ? '/repo' : `/other-${index}`;
       return sessionProjection({
         id: `session-${index}`,
         workspace: { target: { kind: 'host_path', path: cwd }, hostCwd: cwd },
@@ -163,9 +195,14 @@ describe('Runtime Host Maka Session driver', () => {
       model: 'gpt-5',
     });
 
-    await assert.rejects(driver.listSessions({ limit: 200, cwd: '/repo' }), {
-      name: 'MakaSessionCatalogIncompleteError',
-      scannedPages: 8,
+    await assert.rejects(driver.listSessions({ limit: 200, cwd: '/repo' }), (error: unknown) => {
+      assert.ok(error instanceof MakaSessionCatalogIncompleteError);
+      assert.equal(error.scannedPages, 8);
+      assert.deepEqual(
+        error.sessions.map(({ id }) => id),
+        ['session-0'],
+      );
+      return true;
     });
     assert.equal(
       connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,

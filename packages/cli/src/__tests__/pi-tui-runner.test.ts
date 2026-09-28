@@ -6025,9 +6025,10 @@ Slug openai-work<cursor>
 
   test('/resume reports when current-workspace discovery is incomplete', async () => {
     const terminal = new FakeTerminal();
-    const driver = new BoundedResumeAvailabilityDriver([]);
+    const partial = fakeSessionSummary('partial-resume', '/repo', 'Partial workspace session');
+    const driver = new BoundedResumeAvailabilityDriver([partial]);
     driver.listSessions = async () => {
-      throw new MakaSessionCatalogIncompleteError(8);
+      throw new MakaSessionCatalogIncompleteError(8, [partial]);
     };
     (driver as unknown as { sessionId: string | null }).sessionId = null;
     const run = runMakaPiTui({
@@ -6043,13 +6044,47 @@ Slug openai-work<cursor>
     terminal.input('/resume');
     terminal.input('\r');
     const visibleOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
-    await waitFor(() =>
-      visibleOutput().includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice),
+    await waitFor(
+      () =>
+        visibleOutput().includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice) &&
+        visibleOutput().includes('Partial workspace session'),
     );
     assert.doesNotMatch(visibleOutput(), /No matching sessions/);
 
+    terminal.input('\r');
+    await waitFor(() => driver.resumeCalls === 1);
     terminal.input('/exit');
     terminal.input('\r');
+    await run;
+  });
+
+  test('startup resume hint uses sessions found before catalog discovery is incomplete', async () => {
+    const terminal = new FakeTerminal();
+    const partial = fakeSessionSummary('partial-startup-resume', '/repo');
+    const driver = new BoundedResumeAvailabilityDriver([partial]);
+    driver.setAttachedSessionId(null);
+    driver.listSessions = async () => {
+      throw new MakaSessionCatalogIncompleteError(8, [partial]);
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
+      return (
+        output.includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice) &&
+        output.includes(getTuiPickerCopy('en').resumeAvailabilityNotice)
+      );
+    });
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /This session/);
+    exitMaka(terminal);
     await run;
   });
 
@@ -6401,6 +6436,42 @@ Slug openai-work<cursor>
       await run;
     }
     assert.equal(switched, true);
+  });
+
+  test('/session shows and opens rows found before catalog discovery is incomplete', async () => {
+    const terminal = new FakeTerminal();
+    const partial = fakeSessionSummary('partial-session', '/repo', 'Partial session');
+    const driver = new SlashCommandDriver([partial]);
+    driver.listSessions = async () => {
+      throw new MakaSessionCatalogIncompleteError(8, [partial]);
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
+      return (
+        output.includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice) &&
+        output.includes('Partial session')
+      );
+    });
+
+    terminal.input('\r');
+    try {
+      await waitFor(() => driver.sessionIds.includes(partial.id));
+    } finally {
+      exitMaka(terminal);
+      await run;
+    }
   });
 
   test('surfaces a notice when the foreign-session scan fails', async () => {
