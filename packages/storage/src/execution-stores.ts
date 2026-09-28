@@ -175,6 +175,16 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
     listUnsettledToolOperations(
       sessionIds: string | readonly string[],
     ): Promise<UnsettledToolOperationRecord[]>;
+    ensureRecoveredTerminalRuntimeEventDurable(
+      sessionId: string,
+      runId: string,
+      event: RuntimeEvent,
+      unsettledOperationIds: readonly string[],
+    ): Promise<void>;
+    /** Rebuild one Session's disposable tool projections from its immutable events. */
+    rebuildToolProjectionsForSession?(sessionId: string): Promise<void>;
+    /** Repair terminal projections for selected Sessions without decoding their full histories. */
+    rebuildTerminalToolProjectionsForSessions(sessionIds: readonly string[]): Promise<void>;
     appendRuntimePartialBatch(
       sessionId: string,
       runId: string,
@@ -514,7 +524,7 @@ async function createExecutionStoresForWrite(
           Reflect.apply(persistence.graphControlStore[name], persistence.graphControlStore, args),
         ),
     ]),
-  ) as Omit<ExecutionGraphStore, 'close'>;
+  ) as Pick<ExecutionGraphStore, (typeof EXECUTION_GRAPH_METHODS)[number]>;
   const graphControlStore: ExecutionGraphStore = Object.freeze({
     ...graphMethods,
     ...(persistence.graphControlStore.listAgentGraphScheduleRecoveryGraphIds
@@ -553,11 +563,16 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
-      readActiveWorkHubAssignmentsByTarget: (targetSessionIds, maxAssignmentsPerTarget) =>
+      readActiveWorkHubAssignmentsByTarget: (
+        targetSessionIds,
+        maxAssignmentsPerTarget,
+        includeStopped,
+      ) =>
         run(() =>
           sessionStore.readActiveWorkHubAssignmentsByTarget(
             targetSessionIds,
             maxAssignmentsPerTarget,
+            includeStopped,
           ),
         ),
       readWorkHubReplacement: (delegationId) =>
@@ -566,10 +581,10 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
       readWorkHubSupersession: (delegationId) =>
         run(() => sessionStore.readWorkHubSupersession(delegationId)),
-      readWorkHubStopRequest: (delegationId) =>
-        run(() => sessionStore.readWorkHubStopRequest(delegationId)),
-      readWorkHubStopResolution: (delegationId) =>
-        run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      readWorkHubStopRequest: (delegationId, actionId) =>
+        run(() => sessionStore.readWorkHubStopRequest(delegationId, actionId)),
+      readWorkHubStopResolution: (delegationId, actionId) =>
+        run(() => sessionStore.readWorkHubStopResolution(delegationId, actionId)),
       claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
       readWorkHubActionClaim: (actionId) =>
         run(() => sessionStore.readWorkHubActionClaim(actionId)),
@@ -730,6 +745,15 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.importConversationCopyRuntimeEvents(sessionId, batches)),
       ensureTerminalRuntimeEventDurable: (sessionId, runId, event) =>
         run(() => runtimeEventStore.ensureTerminalRuntimeEventDurable(sessionId, runId, event)),
+      ensureRecoveredTerminalRuntimeEventDurable: (sessionId, runId, event, operationIds) =>
+        run(() =>
+          runtimeEventStore.ensureRecoveredTerminalRuntimeEventDurable(
+            sessionId,
+            runId,
+            event,
+            operationIds,
+          ),
+        ),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
       scanRuntimeEvents: (sessionId, runId, budget, visit) =>
@@ -811,6 +835,12 @@ async function createExecutionStoresForWrite(
         run(() => runtimePersistence.runtimeCommitStore.commitToolOutcome(input)),
       listUnsettledToolOperations: (sessionIds) =>
         run(() => runtimePersistence.runtimeCommitStore.listUnsettledToolOperations(sessionIds)),
+      rebuildTerminalToolProjectionsForSessions: (sessionIds) =>
+        run(() =>
+          runtimePersistence.runtimeCommitStore.rebuildTerminalToolProjectionsForSessions(
+            sessionIds,
+          ),
+        ),
     },
   };
   freezeExecutionStoresFacade(stores);

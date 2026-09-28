@@ -137,6 +137,7 @@ interface ActiveConfirm {
 
 const DEFAULT_DURATION = 4000;
 const ToastContext = createContext<ToastApi | null>(null);
+const ConfirmOpenContext = createContext(false);
 
 export function ToastProvider(props: { children: ReactNode; errorAction?: ToastErrorAction }) {
   return (
@@ -341,7 +342,7 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
 
   return (
     <ToastContext.Provider value={api}>
-      {props.children}
+      <ConfirmOpenContext.Provider value={confirmState != null}>{props.children}</ConfirmOpenContext.Provider>
       {confirmState && (
         <ConfirmDialog
           key={confirmState.request.id}
@@ -383,6 +384,11 @@ export function useToast(): ToastApi {
   const ctx = useContext(ToastContext);
   if (!ctx) throw new Error('useToast must be used inside a <ToastProvider>');
   return ctx;
+}
+
+/** True while a `confirm` dialog is on screen, so other dialogs can step aside. */
+export function useConfirmOpen(): boolean {
+  return useContext(ConfirmOpenContext);
 }
 
 const VARIANT_ICON: Record<ToastVariant, ReactNode> = {

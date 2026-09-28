@@ -1004,7 +1004,8 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
       connection: {
         slug: 'profiled-relay',
         name: 'Profiled relay',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: 'https://relay.example/v1',
         enabled: true,
         enabledModelIds: [],
@@ -1143,7 +1144,8 @@ test('catalog protocol preserves an extra request body after a committed update'
       connection: {
         slug: 'custom-request',
         name: 'Custom request',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: `https://example.test/${'a'.repeat(2_048 - 'https://example.test/'.length)}`,
         enabled: true,
         enabledModelIds: ['deepseek/deepseek-v4-flash-0731'],

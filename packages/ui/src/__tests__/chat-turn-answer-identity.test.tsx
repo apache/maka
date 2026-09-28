@@ -87,12 +87,20 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
 function renderTurn(
   root: ReturnType<typeof createRoot>,
   turn: TurnViewModel,
-  liveStreaming?: { runningStatus?: boolean; onStreamingSettled?: (messageId?: string) => void },
+  liveStreaming?: {
+    runningStatus?: boolean;
+    onStreamingSettled?: (messageId?: string) => void;
+  },
+  safeResumeAction?: { pending: boolean; onResume(): void },
 ): Promise<void> {
   return act(() => {
     root.render(
       <LocaleProvider locale="en">
-        <TurnView turn={turn} liveStreaming={liveStreaming} />
+        <TurnView
+          turn={turn}
+          liveStreaming={liveStreaming}
+          safeResumeAction={safeResumeAction}
+        />
       </LocaleProvider>,
     );
   }) as unknown as Promise<void>;
@@ -145,6 +153,31 @@ test('places the turn status row at the top of the assistant content', async () 
   assert.ok(content && statusbar && answer);
   // No work log: the standalone status row leads the assistant content.
   assert.equal(content.firstElementChild?.isSameNode(statusbar), true);
+});
+
+test('offers Safe resume in the Desktop Stop outcome notice', async () => {
+  const { container, root } = domRoot();
+  let resumeCalls = 0;
+  await renderTurn(
+    root,
+    {
+      ...turnWith([{ ...ANSWER, live: false }]),
+      status: 'aborted',
+      abortSource: 'renderer.stop_button',
+    },
+    undefined,
+    { pending: false, onResume: () => resumeCalls++ },
+  );
+
+  const statusbar = container.querySelector('.maka-turn-statusbar');
+  const button = [...container.querySelectorAll('button')].find(
+    (candidate) => candidate.textContent?.trim() === 'Continue this turn',
+  );
+  assert.ok(statusbar, 'the existing turn status row remains the single outcome indicator');
+  assert.ok(button, 'the action stays attached to the stopped turn it continues');
+  assert.equal(button.textContent, 'Continue this turn');
+  await act(() => button.click());
+  assert.equal(resumeCalls, 1);
 });
 
 /**
@@ -311,6 +344,25 @@ test('gives each answer in a steered turn its own stable element', async () => {
   assert.equal(settledAnswers.length, 2);
   assert.equal(settledAnswers[0]?.isSameNode(answers[0]), true, 'the first answer keeps its element');
   assert.equal(settledAnswers[1]?.isSameNode(answers[1]), true, 'the second answer keeps its element');
+});
+
+test('a turn identity header appears once, above the root prompt', async () => {
+  const { container, root } = domRoot();
+  const turn = turnWith([
+    { kind: 'text', text: 'first answer', messageId: 'answer-1', live: false },
+    { kind: 'user', message: { id: 'steer-1', role: 'user', text: 'actually...', ts: 2 }, messageId: 'steer-1' },
+    { kind: 'text', text: 'second answer', messageId: 'answer-2', live: false },
+  ]);
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} messageHeader={<span className="turn-identity">Work</span>} />
+      </LocaleProvider>,
+    );
+  });
+  const headers = [...container.querySelectorAll('.turn-identity')];
+  assert.equal(headers.length, 1);
+  assert.ok(headers[0]!.closest('.maka-user-message:not(.maka-steering-message)'));
 });
 
 test('uses human conversation context instead of raw ids in action names', async () => {

@@ -518,6 +518,48 @@ test('turn.start enforces the admitted step cap at the backend boundary', async 
   }
 });
 
+test('turn.start retains an external trigger origin for runtime authority and recovery', async () => {
+  let backend: StepCapProbeBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new StepCapProbeBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const origin = { kind: 'cloud_activation' as const, activationId: 'activation-1' };
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-activation-origin',
+        content: { text: 'Inspect the workspace' },
+        origin,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      'turn-activation-origin',
+    );
+    assert.deepEqual(admission?.execution, { kind: 'external_message', origin });
+    assert.equal(backend?.sendInputs[0]?.allowPriorUnknownToolOutcomes, undefined);
+    const userMessage = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.turnId === 'turn-activation-origin');
+    assert.ok(userMessage?.type === 'user');
+    if (userMessage?.type === 'user') assert.deepEqual(userMessage.origin, origin);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('does not advance a finished graph for an ordinary default Turn', async () => {
   let cutovers = 0;
   const fixture = await createFailureFixture({
@@ -3879,6 +3921,46 @@ test('successor admission failure retains the terminal transition and its confir
   }
 });
 
+test('Host close records its own stop source on an active root Turn', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-host-shutdown-source',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    assert.ok(backend);
+    await backend.externalHoldStarted.promise;
+    await fixture.coordinator.close();
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
+    const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
+    const terminal = classifyTerminalRuntimeLedger(run, events);
+    assert.equal(terminal.kind, 'fact');
+    if (terminal.kind === 'fact') {
+      assert.equal(terminal.fact.runStatus, 'cancelled');
+      assert.equal(terminal.fact.abortSource, 'runtime_host.shutdown');
+    }
+  } finally {
+    backend?.release();
+    await fixture.dispose();
+  }
+});
+
 test('shutdown contains a successor backend start rejected by Interaction drain', {
   timeout: 20_000,
 }, async () => {
@@ -4283,7 +4365,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
   }
 });
 
-test('Client Capability ambiguity fails before durable root admission', async () => {
+test('unrelated Client Capability publishers do not block a root Turn', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
@@ -4306,6 +4388,10 @@ test('Client Capability ambiguity fails before durable root admission', async ()
     {
       send: async () => {},
     },
+  );
+  const observer = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('observer'),
+    { send: async () => {} },
   );
 
   try {
@@ -4343,19 +4429,89 @@ test('Client Capability ambiguity fails before durable root admission', async ()
       {
         sessionId: fixture.sessionId,
         turnId,
-        content: { text: 'must not be admitted' },
+        content: { text: 'start without unrelated MCP tools' },
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
     );
-    assert.equal(started.ok, false);
-    if (!started.ok) assert.equal(started.error.code, 'operation_conflict');
-    assert.equal(
-      await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
-      undefined,
-    );
+    assert.equal(started.ok, true);
+    assert.equal(clientCapabilities.snapshotForSession(fixture.sessionId), undefined);
+    assert.ok(await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId));
   } finally {
+    observer.close();
     first.close();
     second.close();
+    await clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('Host-owned idle message submission starts a Turn without a Client initiator', async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => new FakeBackend(context));
+    },
+  });
+  const provider = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-a'),
+    { send: async () => {} },
+  );
+
+  try {
+    const replaced = await clientCapabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'plugin-agent-provider',
+        offers: [
+          {
+            offerId: 'opaque',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'cwd',
+            label: 'Opaque',
+            tools: [{ serverId: 'opaque', name: 'inspect', inputSchema: { type: 'object' } }],
+          },
+        ],
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(replaced.ok, true);
+    const submitted = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'plugin-agent-followup',
+        content: { text: 'Continue the agent task.' },
+        placement: 'current_turn',
+      },
+      {
+        hostEpoch: fixture.hostEpoch,
+        connectionId: 'plugin-agent',
+        principal: 'runtime_host',
+        acquireResidency: fixture.acquireResidency,
+      },
+    );
+    assert.equal(submitted.ok, true, JSON.stringify(submitted));
+    if (!submitted.ok) return;
+    assert.equal(submitted.result.disposition, 'turn_started');
+    if (submitted.result.disposition !== 'turn_started') return;
+    const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(snapshot?.registrationIds, ['plugin-agent-provider']);
+    snapshot?.release();
+    assert.ok(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        submitted.result.turnId,
+      ),
+    );
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+  } finally {
+    await fixture.coordinator.close();
+    provider.close();
     await clientCapabilities.close();
     await fixture.dispose();
   }
@@ -6513,7 +6669,7 @@ async function createFailureFixture(options: {
   ): Promise<void>;
   prepareWorkHubRoutingDecision?(
     input: HostWorkHubRoutingDecisionPreparation,
-  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision>;
+  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision | undefined>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -7912,3 +8068,70 @@ async function waitForContinuityFrame(
     description,
   );
 }
+
+test('WorkHub action admission skips routing and undefined decisions preserve unbound admission', async () => {
+  for (const action of [true, false]) {
+    let calls = 0;
+    const fixture = await createFailureFixture({
+      withInteractions: true,
+      prepareWorkHubRoutingDecision: async () => {
+        calls++;
+        return action ? { kind: 'routing', disposition: 'clarify' } : undefined;
+      },
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    });
+    try {
+      const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+      await fixture.stores.sessionStore.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          cwd: ordinary.cwd,
+          llmConnectionId: ordinary.llmConnectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+          toolProfile: 'workhub-coordination-v1',
+          permissionMode: 'explore',
+        },
+      });
+      const turnId = 'routing-admission-test';
+      const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          turnId,
+          execution: {
+            kind: 'workhub_coordination',
+            inputDigest: `sha256:${'b'.repeat(64)}`,
+            ...(action ? { operation: 'action' as const } : {}),
+          },
+          ...(action
+            ? {
+                operation: async () => ({
+                  actionId: 'test-action',
+                  userText: 'Hello',
+                  result: { disposition: 'answer_here' as const, coordinationTurnId: turnId },
+                }),
+              }
+            : {}),
+          archivedMessage: 'Archived',
+          prepareFreshContent: async () => ({ kind: 'ready', content: { text: 'Hello' } }),
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+        WORKHUB_COORDINATION_SESSION_ID,
+        turnId,
+      );
+      assert.ok(admission);
+      assert.equal('routingDecision' in admission.execution, false);
+      assert.equal(calls, action ? 0 : 1);
+      assert.equal(fixture.drainRequested(), false);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.dispose();
+    }
+  }
+});

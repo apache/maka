@@ -18,5 +18,6 @@
  */
 
 export { SessionSettingsServicesProvider } from './services-context.js';
-export { useSessionSettingIntent } from './use-session-setting-intent.js';
+export { useSessionSettingIntent } from './ui/use-session-setting-intent.js';
 export type { SessionSettingsServices } from './ports.js';
+export { SessionSettingsProvider } from './ui/session-settings-provider.js';

@@ -26,3 +26,8 @@ export { SearchModalHost } from './ui/search-modal-host.js';
 export type { OverlaysServices } from './ports.js';
 export type { Command } from './model/command.js';
 export type { OverlaysShellProjection } from './model/overlays-projection.js';
+export {
+  createAgentGraphPanelModel,
+  reduceAgentGraphPanelModel,
+  shouldShowAgentGraphPanel,
+} from './model/agent-graph-panel-model.js';

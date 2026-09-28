@@ -469,17 +469,18 @@ THE SOFTWARE.
 
 electron-builder dependency patches
 
-Source: https://www.npmjs.com/package/app-builder-lib/v/26.15.3
+Source: https://www.npmjs.com/package/app-builder-lib/v/26.16.1
         https://www.npmjs.com/package/electron-updater/v/6.8.9
 Repository: https://github.com/electron-userland/electron-builder
-Versions: app-builder-lib 26.15.3; electron-updater 6.8.9
-Dependency patch: patches/app-builder-lib+26.15.3.patch
+Versions: app-builder-lib 26.16.1; electron-updater 6.8.9
+Dependency patch: patches/app-builder-lib+26.16.1.patch
                   patches/electron-updater+6.8.9.patch
 License: MIT
 
 Maka redistributes source patches that omit modification and access times
-from ZIP archives and skip withdrawn prereleases whose update metadata is
-missing. The following MIT License applies to that material:
+from 7-Zip ZIP archives, keep macOS ZIP archives on the system zip, and skip
+withdrawn prereleases whose update metadata is missing. The following MIT
+License applies to that material:
 
 The MIT License (MIT)
 
@@ -555,6 +556,41 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Copyright (c) 2018 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+virtua dependency patch
+
+Source: https://www.npmjs.com/package/virtua/v/0.52.7
+Repository: https://github.com/inokawa/virtua
+Version: 0.52.7
+Dependency patch: patches/virtua+0.52.7.patch
+Copyright (c) 2022 inokawa
+License: MIT
+
+Maka redistributes a source patch that applies virtua's scroll correction
+absolutely after the browser clamps the scroll offset. The following MIT
+License applies to that material:
+
+MIT License
+
+Copyright (c) 2022 inokawa
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

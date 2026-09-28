@@ -44,6 +44,16 @@
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
+.maka-browser-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-browser-panel[data-preview-focused="true"] .maka-browser-strip {
+  margin-bottom: var(--maka-focused-composer-space, 180px);
+}
+
 /* Astryx sizes its toolbar slots to content; only the product knows the address
    field, not the nav buttons, should eat the free width. */
 .maka-browser-toolbar div:has(> .maka-browser-address-field) {

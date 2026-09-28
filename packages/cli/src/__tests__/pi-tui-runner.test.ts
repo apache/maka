@@ -65,7 +65,7 @@ import type {
 } from '../session-driver.js';
 import { skillInvocationBlockedMessage } from '../session-driver.js';
 import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
-import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
+import { listApiKeyOnboardableProviders, onboardingCreateTarget } from '../onboarding-catalog.js';
 import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
 import {
   getTuiPickerCopy,
@@ -189,7 +189,7 @@ function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
 function defaultOnboardingProviders(): OnboardingProviderEntry[] {
   return listApiKeyOnboardableProviders().map((provider) => ({
     ...provider,
-    target: { kind: 'create', providerType: provider.providerType },
+    target: onboardingCreateTarget(provider),
     label: provider.label,
     suggestedSlug: deriveConnectionSlug(provider.providerType),
     enabledModelIds: [],
@@ -2071,7 +2071,7 @@ describe('Maka Pi TUI runner', () => {
   test('wizard collects a base URL for a custom relay and threads it through verify and save', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
-    const verifyCalls: Array<{ baseUrl?: string }> = [];
+    const verifyCalls: OnboardingVerifyInput[] = [];
     const saveCalls: Array<{ baseUrl?: string }> = [];
     const run = runMakaPiTui({
       title: 'Maka',
@@ -2103,8 +2103,8 @@ describe('Maka Pi TUI runner', () => {
         return false;
       }
     });
-    // Filter down to the relay entries and pick the first (OpenAI Chat).
-    terminal.input('relay');
+    // Filter down to the custom entries and pick the first (OpenAI Chat).
+    terminal.input('custom connection');
     terminal.input('\r'); // pick relay -> identity step
     terminal.input('\r'); // accept default name -> slug field
     terminal.input('\r'); // accept derived slug -> base URL step
@@ -2130,6 +2130,10 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => verifyCalls.length === 1);
     assert.equal(verifyCalls[0]?.baseUrl, 'https://relay.example.test/v1');
+    assert.equal(
+      verifyCalls[0]?.target.kind === 'create' ? verifyCalls[0].target.defaultApiProtocol : null,
+      'openai-chat',
+    );
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('5/5'));
     terminal.input(' '); // toggle the discovered model on
     terminal.input('\r'); // save
@@ -9081,11 +9085,40 @@ Slug openai-work<cursor>
       terminal.input('\r');
       await waitFor(() =>
         plainTerminalOutput(terminal.output()).includes(
-          'Safe-boundary resume is not enabled on this runtime',
+          'Safe-boundary resume is disabled by this runtime policy',
         ),
       );
       assert.equal(driver.resumeCalls, 1);
 
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/resume starts the latest safe-boundary continuation for the selected session', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('resumed safely'));
+
+      assert.equal(driver.resumeCalls, 1);
       terminal.input('/exit');
       terminal.input('\r');
       await run;

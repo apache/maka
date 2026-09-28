@@ -83,6 +83,10 @@ import type {
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
+import {
+  registerRuntimeHostQueueMutationIpc,
+  type RuntimeHostQueueMutationClient,
+} from "./runtime-host-queue-mutation-ipc.js";
 
 type SideConversationBranchResult =
   | { readonly ok: true; readonly session: ReturnType<typeof toDesktopHostSessionSummary> }
@@ -112,6 +116,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "compactContext"
   | "copySession"
   | "getSession"
+  | "generatePromptSuggestion"
   | "ingestAttachment"
   | "interruptTurn"
   | "openSession"
@@ -121,16 +126,12 @@ type RuntimeHostSessionExecutionClient = Pick<
   | 'queryMessages'
   | "queryTurnResume"
   | "readExecutionBoundary"
-  | "retractQueueEntry"
-  | "promoteQueueEntry"
-  | "updateQueueEntry"
-  | "reorderQueueEntries"
   | "setSessionReadMarker"
   | "startTurnResume"
   | "submitMessage"
   | "updateSessionMetadata"
   | "updateSessionConfiguration"
->;
+> & RuntimeHostQueueMutationClient;
 
 /** No Skill was named, so the Host resolved none. */
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
@@ -390,6 +391,10 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
 
+  ipcMain.handle('sessions:generatePromptSuggestion', async (_event, sessionId: unknown) =>
+    deps.client.generatePromptSuggestion(requiredId(sessionId, 'Session')),
+  );
+
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
     deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
   );
@@ -644,67 +649,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       };
     },
   );
-  ipcMain.handle(
-    "sessions:retractQueueEntry",
-    async (_event, sessionId: string, entryId: unknown) => {
-      if (typeof entryId !== "string") {
-        throw new TypeError("Invalid queue entry identity");
-      }
-      await deps.client.retractQueueEntry({
-        sessionId,
-        entryId,
-        retractId: newId(),
-      });
-    },
-  );
-  ipcMain.handle(
-    "sessions:promoteQueueEntry",
-    async (_event, sessionId: string, entryId: unknown) => {
-      if (typeof entryId !== "string") {
-        throw new TypeError("Invalid queue entry identity");
-      }
-      await deps.client.promoteQueueEntry({
-        sessionId,
-        entryId,
-        promoteId: newId(),
-      });
-    },
-  );
-  ipcMain.handle(
-    "sessions:updateQueueEntry",
-    async (
-      _event,
-      sessionId: unknown,
-      entryId: unknown,
-      expectedQueueRevision: unknown,
-      text: unknown,
-    ) => {
-      const normalizedText = requiredText(text, "Queued message").trim();
-      await deps.client.updateQueueEntry({
-        sessionId: requiredId(sessionId, "Session"),
-        entryId: requiredId(entryId, "Queue entry"),
-        updateId: newId(),
-        expectedQueueRevision: requiredSequence(expectedQueueRevision, "Queue"),
-        text: normalizedText,
-      });
-    },
-  );
-  ipcMain.handle(
-    "sessions:reorderQueueEntries",
-    async (_event, sessionId: string, entryIds: unknown) => {
-      if (
-        !Array.isArray(entryIds) ||
-        entryIds.some((entryId) => typeof entryId !== "string")
-      ) {
-        throw new TypeError("Invalid queue entry order");
-      }
-      await deps.client.reorderQueueEntries({
-        sessionId,
-        reorderId: newId(),
-        entryIds,
-      });
-    },
-  );
+  registerRuntimeHostQueueMutationIpc(ipcMain, deps.client, newId);
   ipcMain.handle(
     "sessions:stop",
     async (_event, sessionId: string, input: unknown) => {

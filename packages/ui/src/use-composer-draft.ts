@@ -46,13 +46,9 @@ import {
 export interface ComposerDraftApi {
   /** Persist the current (or given) input value under the active draft key. */
   saveCurrentDraft(value?: string): void;
-  /**
-   * Clear the draft stored under an explicit key. A successful send clears
-   * the key it was submitted from (which may no longer be the active key
-   * after a new-session swap) in addition to the active draft.
-   */
+  /** Clear one session's draft; the active key's draft is the input itself. */
   clearDraft(key: string | undefined): void;
-  /** Persist text under an explicit session key before the host switches it. */
+  /** Replace one session's draft; the active key's draft is the input itself. */
   setDraft(key: string | undefined, value: string): void;
   /** Read one draft without changing which draft is active. */
   getDraft(key: string | undefined): string;
@@ -86,11 +82,11 @@ export function useComposerDraft(input: {
   }
 
   function clearDraft(key: string | undefined) {
-    rememberComposerDraft(draftStoreRef.current, key, '');
-    input.persistence?.write(key, '');
+    setDraft(key, '');
   }
 
   function setDraft(key: string | undefined, value: string) {
+    if (activeDraftKeyRef.current === key) input.text.setValue(value);
     rememberComposerDraft(draftStoreRef.current, key, value);
     input.persistence?.write(key, value);
   }
@@ -105,11 +101,7 @@ export function useComposerDraft(input: {
   }
 
   function appendDraft(key: string | undefined, value: string) {
-    const current =
-      activeDraftKeyRef.current === key
-        ? input.text.getValue()
-        : readComposerDraft(draftStoreRef.current, key);
-    const next = appendPromptContextDraft(current, value);
+    const next = appendPromptContextDraft(getDraft(key), value);
     setDraft(key, next);
     return next;
   }

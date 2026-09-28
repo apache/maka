@@ -457,10 +457,16 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   let projection = canonical({
     rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
   });
+  const attention: unknown[] = [];
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => projection,
     new SessionAdmissionGate(),
+    () => undefined,
+    undefined,
+    (sessionId, event) => {
+      if (event) attention.push({ sessionId, ...event });
+    },
   );
   const sink = new RecordingSink();
   const connection = attachTestConnection(coordinator, 'connection-1', sink);
@@ -490,7 +496,51 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
     assert.equal(frame.snapshot.projectionRevision, 2);
     assert.equal(frame.snapshot.rootTurn?.status, 'completed');
   }
+  assert.deepEqual(attention, [
+    {
+      sessionId: SESSION_ID,
+      kind: 'completed',
+      eventId: 'event-terminal',
+    },
+  ]);
   coordinator.close();
+});
+
+test('silent successful Turns and cancellations do not notify, but failures still do', async () => {
+  for (const status of ['completed', 'cancelled', 'failed'] as const) {
+    let projection = canonical();
+    const attention: unknown[] = [];
+    const coordinator = new SessionContinuityCoordinator(
+      HOST_EPOCH,
+      async () => projection,
+      new SessionAdmissionGate(),
+      () => undefined,
+      undefined,
+      (_sessionId, event) => {
+        if (event) attention.push(event);
+      },
+    );
+    await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
+    projection = canonical({
+      rootTurn: {
+        sessionId: SESSION_ID,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        terminalEventId: 'terminal',
+        ...(status === 'failed'
+          ? { status, failureClass: 'provider', failureMessage: 'Unavailable' }
+          : status === 'cancelled'
+            ? { status, abortSource: 'user' }
+            : { status }),
+      },
+    });
+    await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1', undefined, false);
+    assert.deepEqual(
+      attention,
+      status === 'failed' ? [{ kind: 'errored', eventId: 'terminal', body: 'Unavailable' }] : [],
+    );
+    coordinator.close();
+  }
 });
 
 test('detached canonical refreshes coalesce before Store I/O', async () => {
@@ -1134,21 +1184,33 @@ test('open returns a bounded immutable durable tail', async () => {
   coordinator.close();
 });
 
-test('reports a durable bootstrap read failure as unavailable persistence', async () => {
+test('logs a durable bootstrap failure before reporting unavailable persistence', async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  });
+  const failure = new Error(
+    `injected durable bootstrap failure: api_key=sk-secretvalue123\n${'细'.repeat(4096)}`,
+  );
+  const publicationFailures: unknown[] = [];
   const reader: SessionTranscriptReader = {
     ...transcriptReader([]),
     readDurableHighWater: async () => 0,
     readDurablePage: async () => {
-      throw new Error('injected durable bootstrap failure');
+      throw failure;
     },
   };
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
-    undefined,
+    (error) => {
+      assert.equal(logs.length, 1, 'log the cause before the publication-failure hook');
+      publicationFailures.push(error);
+    },
     reader,
   );
+  t.after(() => coordinator.close());
   attachTestConnection(coordinator, 'connection-failed-bootstrap', new RecordingSink());
   const outcome = await coordinator.handlers['subscription.open'](
     {
@@ -1161,7 +1223,16 @@ test('reports a durable bootstrap read failure as unavailable persistence', asyn
     ok: false,
     error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
   });
-  coordinator.close();
+  assert.deepEqual(publicationFailures, [failure]);
+  assert.equal(logs.length, 1);
+  const prefix = '[runtime-host] subscription.open transcript bootstrap failed: ';
+  const diagnostic = logs[0] ?? '';
+  assert.ok(diagnostic.startsWith(prefix));
+  assert.match(diagnostic, /Error: injected durable bootstrap failure/);
+  assert.match(diagnostic, /\[redacted\]/i);
+  assert.doesNotMatch(diagnostic, /sk-secretvalue123/);
+  assert.match(diagnostic, /<diagnostic truncated>$/);
+  assert.ok(Buffer.byteLength(diagnostic.slice(prefix.length), 'utf8') <= 8 * 1024);
 });
 
 test('rejects a subscription open whose connection closes during transcript bootstrap', async () => {
@@ -1440,6 +1511,93 @@ test('a later message cannot complete ahead of the prefix a subscriber is still 
   await waitFor(() => completionOrder(sink).length === 2);
 
   assert.deepEqual(completionOrder(sink), ['message-1', 'message-2']);
+  coordinator.close();
+});
+
+test('a steering message cannot overtake the prefix a subscriber is still being paid', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let first = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    first += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-steer-order', sink);
+  const opened = await open(coordinator, 'connection-steer-order');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('message-1', first));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'redirect' },
+  });
+  sink.release();
+  await waitFor(() => sink.frames.some((frame) => frame.kind === 'subscription.session_event'));
+
+  const order = sink.frames.flatMap((frame) =>
+    frame.kind === 'subscription.session_delta' && frame.delta.complete
+      ? [`complete:${frame.delta.messageId}`]
+      : frame.kind === 'subscription.session_event'
+        ? [frame.event.type]
+        : [],
+  );
+  assert.deepEqual(order, ['complete:message-1', 'steering_message']);
+  coordinator.close();
+});
+
+test('events held behind an unpaid prefix spend the slow-consumer budget', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  for (let index = 0; index < 24; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      ...textEvent(index),
+      text: `${index}:${'x'.repeat(8 * 1024)}`,
+    });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-held-budget', sink);
+  const opened = await open(coordinator, 'connection-held-budget');
+  connection.activate(opened.subscriptionId);
+
+  for (let seq = 0; seq < 40; seq += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      type: 'tool_output_delta',
+      id: `output-${seq}`,
+      turnId: 'turn-1',
+      ts: seq,
+      sessionId: SESSION_ID,
+      toolCallId: 'tool-1',
+      toolUseId: 'tool-1',
+      seq,
+      stream: 'stdout',
+      chunk: 'z'.repeat(8 * 1024),
+      redacted: false,
+      createdAt: seq,
+    });
+  }
+  sink.release();
+  await waitFor(() => sink.frames.some((frame) => frame.kind === 'subscription.closed'));
+
+  // Evicted while the sink was still stuck on its first frame, not after the
+  // whole prefix and the held events had been drained into the queue.
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.closed' ? `closed:${frame.reason}` : frame.kind,
+    ),
+    ['subscription.session_delta', 'closed:slow_consumer'],
+  );
   coordinator.close();
 });
 
@@ -1845,67 +2003,45 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
   coordinator.close();
 });
 
-test('keeps the current provider retry on the live Turn until the next content event', async () => {
+test('publishes retry state to reconnecting clients until the Turn makes progress', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const liveSink = new RecordingSink();
-  const live = attachTestConnection(coordinator, 'connection-live', liveSink);
-  const opened = await open(coordinator, 'connection-live');
-  assert.equal(opened.snapshot.rootTurn && 'providerRetry' in opened.snapshot.rootTurn, false);
-  live.activate(opened.subscriptionId);
-
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
     type: 'provider_retry',
-    id: 'retry-1',
+    id: 'retry-scheduled',
     turnId: 'turn-1',
-    ts: 1,
+    ts: 5_000,
     phase: 'scheduled',
-    attempt: 8,
-    maxAttempts: 10,
-    delayMs: 40_000,
+    attempt: 2,
+    maxAttempts: 4,
+    delayMs: 30_000,
     reason: 'rate_limit',
   });
 
-  const retry = {
-    phase: 'scheduled' as const,
-    attempt: 8,
-    maxAttempts: 10,
-    delayMs: 40_000,
-    // The host-clock schedule time is kept so a re-projection mid-wait can
-    // recompute the authoritative remaining duration (#3393).
-    ts: 1,
-    reason: 'rate_limit' as const,
-  };
-  attachTestConnection(coordinator, 'connection-remount', new RecordingSink());
-  const remounted = await open(coordinator, 'connection-remount');
-  assert.deepEqual(
-    remounted.snapshot.rootTurn && 'providerRetry' in remounted.snapshot.rootTurn
-      ? remounted.snapshot.rootTurn.providerRetry
-      : undefined,
-    retry,
-  );
-  assert.ok(
-    liveSink.frames.some(
-      (frame) =>
-        frame.kind === 'subscription.session_projection' &&
-        frame.snapshot.rootTurn &&
-        'providerRetry' in frame.snapshot.rootTurn &&
-        frame.snapshot.rootTurn.providerRetry?.phase === 'scheduled',
-    ),
-  );
+  attachTestConnection(coordinator, 'connection-during-wait', new RecordingSink());
+  const waiting = await open(coordinator, 'connection-during-wait');
+  const waitingTurn = waiting.snapshot.rootTurn;
+  assert.equal(waitingTurn?.status, 'running');
+  if (waitingTurn?.status !== 'running') return;
+  assert.deepEqual(waitingTurn.providerRetry, {
+    phase: 'scheduled',
+    attempt: 2,
+    maxAttempts: 4,
+    delayMs: 30_000,
+    ts: 5_000,
+    reason: 'rate_limit',
+  });
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  attachTestConnection(coordinator, 'connection-after-text', new RecordingSink());
-  const afterText = await open(coordinator, 'connection-after-text');
-  assert.equal(
-    afterText.snapshot.rootTurn && 'providerRetry' in afterText.snapshot.rootTurn,
-    false,
-  );
-
-  live.abort(opened.subscriptionId);
+  attachTestConnection(coordinator, 'connection-after-progress', new RecordingSink());
+  const progressed = await open(coordinator, 'connection-after-progress');
+  const progressedTurn = progressed.snapshot.rootTurn;
+  assert.equal(progressedTurn?.status, 'running');
+  if (progressedTurn?.status !== 'running') return;
+  assert.equal(progressedTurn.providerRetry, undefined);
   coordinator.close();
 });
 
@@ -2195,6 +2331,69 @@ function completionOrder(sink: { frames: SubscriptionFrame[] }): string[] {
       : [],
   );
 }
+
+test('a failed transcript page records the underlying cause before the generic outcome', async () => {
+  const message = assistantMessage('界'.repeat(20_000));
+  const baseReader = transcriptReader([message]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    // The bootstrap request carries no position; a page always does. Throw only
+    // for the page so the subscription still opens.
+    readDurablePage: async (sessionId, request, project) => {
+      if (request.position !== undefined) throw new Error('injected oversized Turn');
+      return baseReader.readDurablePage(sessionId, request, project);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  attachTestConnection(coordinator, 'connection-page-failure', new RecordingSink());
+  const opened = await open(coordinator, 'connection-page-failure', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  const transcript = opened.transcript;
+  const cursor = transcript?.durable.nextCursor;
+  assert.ok(transcript);
+  assert.ok(cursor);
+  if (!transcript || !cursor) {
+    coordinator.close();
+    return;
+  }
+
+  // The generic outcome carries no cause, so the Host has to log one instead.
+  const logged: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => logged.push(values.map(String).join(' '));
+  try {
+    const outcome = await coordinator.handlers['session.transcript.page'](
+      {
+        subscriptionId: opened.subscriptionId,
+        direction: 'older',
+        throughSequence: transcript.durable.throughSequence,
+        cursor,
+        anchorSequence: null,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      },
+      connectionContext('connection-page-failure'),
+    );
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+    });
+  } finally {
+    console.error = originalConsoleError;
+    coordinator.close();
+  }
+
+  assert.equal(logged.length, 1);
+  assert.match(logged[0] ?? '', /session\.transcript\.page failed/);
+  assert.match(logged[0] ?? '', /injected oversized Turn/);
+});
 
 function textCompleteEvent(messageId: string, text: string) {
   return {

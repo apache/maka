@@ -50,7 +50,7 @@ export {
 } from './controller/use-app-shell-session-ui-state.js';
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
-export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';
+export { type PendingAttachment, toSubmittedAttachments } from '@maka/ui/composer-attachments';
 export {
   NEW_TASK_PENDING_KEY,
   selectPending,
@@ -74,6 +74,8 @@ export { activeHostTurn, chatTurnActivity } from '../../application/contracts/se
 export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
+export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
+export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';
 export * from './model/shell-chat-model-selection.js';

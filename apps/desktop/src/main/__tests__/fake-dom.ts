@@ -37,8 +37,30 @@ type ActGlobal = typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 
 const cleanupTasks: Array<() => void> = [];
 
+/** Media queries the fake window reports as matching; set before mounting. */
+export const fakeMediaQueryMatches = new Map<string, boolean>();
+
+/** The viewport width the fake window reports; set before mounting. */
+export let fakeWindowInnerWidth = 1280;
+
+const fakeWindowListeners = new Map<string, Set<EventListener>>();
+
+export function setFakeWindowInnerWidth(width: number): void {
+  fakeWindowInnerWidth = width;
+}
+
+/** Sets the reported width and fires the window's 'resize' listeners. */
+export function resizeFakeWindow(width: number): void {
+  fakeWindowInnerWidth = width;
+  for (const listener of fakeWindowListeners.get('resize') ?? [])
+    listener(new Event('resize'));
+}
+
 /** Runs every teardown registered by `installFakeDom` / `installReactRenderer`. */
 export function cleanupFakeDom(): void {
+  fakeMediaQueryMatches.clear();
+  fakeWindowInnerWidth = 1280;
+  fakeWindowListeners.clear();
   while (cleanupTasks.length > 0) cleanupTasks.pop()?.();
 }
 
@@ -63,10 +85,21 @@ export function installFakeDom(): void {
   const fakeDocument = createFakeDocument();
   const fakeWindow = {
     document: fakeDocument,
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    get innerWidth() {
+      return fakeWindowInnerWidth;
+    },
+    addEventListener: (type: string, listener: EventListener) => {
+      const listeners = fakeWindowListeners.get(type) ?? new Set<EventListener>();
+      listeners.add(listener);
+      fakeWindowListeners.set(type, listeners);
+    },
+    removeEventListener: (type: string, listener: EventListener) => {
+      fakeWindowListeners.get(type)?.delete(listener);
+    },
     matchMedia: (media: string) => ({
-      matches: false,
+      get matches() {
+        return fakeMediaQueryMatches.get(media) ?? false;
+      },
       media,
       onchange: null,
       addListener() {},

@@ -285,6 +285,17 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('accepts XML text source inputs', async () => {
+    const fixture = createFixtureCandidate({
+      'website/public/sitemap.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<urlset></urlset>\n',
+    });
+    try {
+      await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('rejects unknown non-text release inputs', async () => {
     const fixture = createFixtureCandidate({ 'fixtures/unknown.bin': Buffer.from([0x01, 0x02]) });
     try {

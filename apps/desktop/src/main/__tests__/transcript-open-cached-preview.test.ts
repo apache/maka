@@ -69,8 +69,9 @@ async function preloadHarness(options: { liveOpenFails?: boolean }): Promise<Har
     off(channel: string) { listeners.delete(channel); },
     send() {},
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
-      if (channel === 'runtime-host:activeIdentity') return OWNER;
-      if (channel === 'runtime-host:identities') return [OWNER];
+      if (channel === 'runtime-host:identities') {
+        return [{ ...OWNER, epoch: OWNER.targetEpoch, isDefault: true }];
+      }
       if (channel === 'runtime-host:awaitReady') return { ready: true };
       if (channel === 'session-local:transcript') {
         state.cacheReads += 1;

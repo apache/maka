@@ -376,6 +376,8 @@ export interface SessionSummary {
   isArchived: boolean;
   labels: string[];
   hasUnread: boolean;
+  /** Host-owned recency, including creation before the first message; present on catalog rows. */
+  activityAt?: number;
   lastMessageAt?: number;
   lastMessagePreview?: string;
   status: SessionStatus;
@@ -403,6 +405,26 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /**
+   * Bumped by the runtime each time a turn of this session starts or ends.
+   * `revision` does not move for those transitions, so two same-revision
+   * summaries can disagree about `runningTurnIds` — the epoch orders them:
+   * the higher epoch is the newer observation (#5713). Present alongside
+   * `runningTurnIds` under the same population rules.
+   *
+   * The counter restarts at zero with a fresh Host process, so it only orders
+   * observations of one host generation: summaries whose `runHostGeneration`
+   * differs are not comparable by epoch, and the newer generation's host owns
+   * the row outright.
+   */
+  runEpoch?: number;
+  /**
+   * Identifies the Host process generation that produced this live-run
+   * observation. Summaries from different generations are not ordered by
+   * `runEpoch` — a restarted Host supersedes every observation its
+   * predecessor published, whatever the epoch counters read (#5713).
+   */
+  runHostGeneration?: string;
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagent?: SessionSubagentProjection;
@@ -1166,7 +1188,7 @@ export interface WorkHubDelegationStopResolvedMessage {
  * The exact durable operation one WorkHub action identity is allowed to own.
  *
  * Per-record identity is keyed by the thing each record is about — an
- * assignment by its action, a stop or replacement by its delegation — so no
+ * assignment by its action, a replacement by its delegation, a stop by its delegation and action — so no
  * single record can reject an action id that crossed to another delegation or
  * another disposition. This vocabulary names the one global owner that can.
  */
@@ -1251,7 +1273,6 @@ export interface TurnRecord {
 export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_compacted',
   'context_compaction_failed_open',
-  'context_provider_dropping',
   'context_window_suggestion',
   'context_window_overrun',
   'context_reported_window_exceeded',
@@ -1260,9 +1281,9 @@ export const RUNTIME_SYSTEM_NOTE_KINDS = [
 ] as const;
 
 /**
- * Notes only legacy transcripts carry, still decoded so those rows stay
- * readable. Nothing writes them: the Session header and the invocation's
- * opening and terminal facts already own what each of them said.
+ * Notes nothing writes any more, still decoded so old transcripts and run
+ * ledgers stay readable, and never shown. The session-level ones are owned by
+ * the Session header and the invocation's opening and terminal facts.
  */
 export const RETIRED_SYSTEM_NOTE_KINDS = [
   'session_start',
@@ -1271,6 +1292,7 @@ export const RETIRED_SYSTEM_NOTE_KINDS = [
   'model_change',
   'error',
   'abort',
+  'context_provider_dropping',
 ] as const;
 
 export type RuntimeSystemNoteKind = (typeof RUNTIME_SYSTEM_NOTE_KINDS)[number];
@@ -1278,6 +1300,12 @@ export type SystemNoteKind = RuntimeSystemNoteKind | (typeof RETIRED_SYSTEM_NOTE
 
 export function isRuntimeSystemNoteKind(kind: string): kind is RuntimeSystemNoteKind {
   return (RUNTIME_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
+}
+
+export function isSystemNoteKind(kind: string): kind is SystemNoteKind {
+  return (
+    isRuntimeSystemNoteKind(kind) || (RETIRED_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind)
+  );
 }
 
 export interface SystemNoteMessage {
@@ -1540,10 +1568,6 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-const SYSTEM_NOTE_KINDS = new Set<string>([
-  ...RUNTIME_SYSTEM_NOTE_KINDS,
-  ...RETIRED_SYSTEM_NOTE_KINDS,
-]);
 
 export function decodeCanonicalMessage(value: unknown): StoredMessage {
   return decodeMessage(value, decodeCanonicalToolResultContent);
@@ -1695,7 +1719,7 @@ function decodeMessage(
         hasExactShape(message, SYSTEM_NOTE_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, false) &&
         isOptionalString(message.turnId) &&
-        SYSTEM_NOTE_KINDS.has(message.kind as string)
+        isSystemNoteKind(message.kind as string)
       )
         return message as unknown as SystemNoteMessage;
       break;

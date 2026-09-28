@@ -34,6 +34,7 @@ type WidenCopy<T> = T extends string
     ? (...args: Args) => string
     : { [K in keyof T]: WidenCopy<T[K]> };
 
+
 // Capability-section strings for the connection detail page — the add-provider
 // form deliberately carries no declaration controls (capabilities are edited
 // after the connection exists).
@@ -68,10 +69,16 @@ const zhCapabilitiesCopy = {
   compactionThresholdHelp: '达到此 token 数时压缩上下文。留空则不主动压缩。',
   maxOutputTokens: '输出上限',
   maxOutputTokensHelp: '单次回复的输出 token 上限，含思考。留空自动设置。',
+  maxOutputTokensUnsupported: 'ChatGPT 订阅（Codex）不接受输出上限，Maka 不会发送此设置。',
   fastMode: 'Fast 模式',
   fastModeHelp: '选择更快的服务档位，可能产生额外费用。',
   fastAuto: '自动',
   fastEnabled: 'Fast',
+  apiProtocol: '请求协议',
+  apiProtocolHelp: '此模型使用的接口格式。同一地址同时提供多种协议时，可为单个模型单独选择。',
+  apiProtocolDefaultOption: (protocol: string) => `跟随连接 · ${protocol}`,
+  connectionApiProtocol: '默认请求协议',
+  connectionApiProtocolHelp: '模型未单独选择协议时使用。创建后不可更改，可在每个模型上单独覆盖。',
 };
 
 const zhTwCapabilitiesCopy = {
@@ -105,10 +112,16 @@ const zhTwCapabilitiesCopy = {
   compactionThresholdHelp: '達到此 token 數時壓縮上下文。留空則不主動壓縮。',
   maxOutputTokens: '輸出上限',
   maxOutputTokensHelp: '單次回覆的輸出 token 上限，含思考。留空自動設定。',
+  maxOutputTokensUnsupported: 'ChatGPT 訂閱（Codex）不接受輸出上限，Maka 不會送出此設定。',
   fastMode: 'Fast 模式',
   fastModeHelp: '選擇更快的服務檔位，可能產生額外費用。',
   fastAuto: '自動',
   fastEnabled: 'Fast',
+  apiProtocol: '請求協定',
+  apiProtocolHelp: '此模型使用的介面格式。同一位址同時提供多種協定時，可為單一模型單獨選擇。',
+  apiProtocolDefaultOption: (protocol: string) => `跟隨連線 · ${protocol}`,
+  connectionApiProtocol: '預設請求協定',
+  connectionApiProtocolHelp: '模型未單獨選擇協定時使用。建立後不可變更，可在每個模型上單獨覆寫。',
 };
 const enCapabilitiesCopy = {
   capabilities: 'Capabilities',
@@ -142,10 +155,16 @@ const enCapabilitiesCopy = {
   compactionThresholdHelp: 'Compact at this token count. Leave empty to disable proactive compaction.',
   maxOutputTokens: 'Maximum output',
   maxOutputTokensHelp: 'Output token budget per reply, including thinking. Leave empty for automatic limits.',
+  maxOutputTokensUnsupported: 'The ChatGPT subscription (Codex) does not accept an output limit, so Maka does not send this setting.',
   fastMode: 'Fast mode',
   fastModeHelp: 'Use the faster service tier. Additional charges may apply.',
   fastAuto: 'Auto',
   fastEnabled: 'Fast',
+  apiProtocol: 'Request protocol',
+  apiProtocolHelp: 'The API format this model uses. When one address serves several protocols, choose one per model.',
+  apiProtocolDefaultOption: (protocol: string) => `Connection default: ${protocol}`,
+  connectionApiProtocol: 'Default request protocol',
+  connectionApiProtocolHelp: 'Used by models without their own protocol. It cannot be changed after the connection is added; each model can override it.',
 };
 
 const zhCopy = {
@@ -253,6 +272,7 @@ const zhCopy = {
     },
   },
   shared: {
+    requestUrlLabel: '请求地址：',
     connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
@@ -455,6 +475,7 @@ const zhTwCopy = {
     },
   },
   shared: {
+    requestUrlLabel: '請求地址：',
     connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
@@ -656,6 +677,7 @@ const enCopy: ProviderSettingsCopy = {
     },
   },
   shared: {
+    requestUrlLabel: 'Request URL:',
     connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',

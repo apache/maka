@@ -95,7 +95,8 @@ describe('model catalog picker helpers', () => {
       connection({
         slug: 'openrouter',
         name: 'Openrouter',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         models: [{ id: 'anthropic/claude-sonnet-5' }],
         modelSource: 'fetched',
       }),

@@ -61,6 +61,8 @@ import {
   FolderOpen,
   Copy,
   Trash2,
+  Maximize2,
+  Minimize2,
 } from '@maka/ui/icons';
 import { canUserDeleteArtifact, type ArtifactDescriptor, type ArtifactKind } from '@maka/core/artifacts';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -77,7 +79,7 @@ import {
   valuesEqual,
 } from '@maka/ui';
 import { EmptyState as AstryxEmptyState } from '@astryxdesign/core';
-import { ArtifactPreview } from './artifact-preview';
+import { ArtifactPreview, isUnsupportedOfficeFile } from './artifact-preview';
 import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
 import { openPathFailureCopy } from '../../../../open-path';
@@ -89,6 +91,9 @@ export function ArtifactPane(props: {
   refreshEnabled: boolean;
   onCountChange?: (count: number) => void;
   onDismiss?: () => void;
+  focused?: boolean;
+  onToggleFocus?: () => void;
+  onPreviewExit?: () => void;
 }) {
   const { sessionId } = props;
   const { artifacts } = useWorkbarServices();
@@ -219,10 +224,11 @@ export function ArtifactPane(props: {
 
   useEffect(() => {
     if (view.kind === 'preview' && recordsSessionId === sessionId && !previewRecord) {
+      props.onPreviewExit?.();
       setView({ kind: 'list' });
       requestAnimationFrame(() => listRef.current?.focus());
     }
-  }, [previewRecord, recordsSessionId, sessionId, view]);
+  }, [previewRecord, recordsSessionId, sessionId, view, props.onPreviewExit]);
 
   // ---- actions -----------------------------------------------------------
 
@@ -316,7 +322,7 @@ export function ArtifactPane(props: {
     // a copy button (review gate #5). We still defensively guard so a stray
     // call doesn't leak base64 into the clipboard.
     const record = activeRecords.find((entry) => entry.id === artifactId);
-    if (!record || !isTextKind(record.kind)) return;
+    if (!record || !isTextKind(record)) return;
     const actionSessionId = sessionId;
     let result: Awaited<ReturnType<typeof artifacts.readText>>;
     try {
@@ -434,6 +440,7 @@ export function ArtifactPane(props: {
   }
 
   function returnToList() {
+    props.onPreviewExit?.();
     setMoreMenuOpen(false);
     setView({ kind: 'list' });
     requestAnimationFrame(() => listRef.current?.focus());
@@ -468,6 +475,10 @@ export function ArtifactPane(props: {
     if (!(target instanceof Node) || !event.currentTarget.contains(target)) return;
     event.preventDefault();
     event.stopPropagation();
+    if (props.focused) {
+      props.onToggleFocus?.();
+      return;
+    }
     if (view.kind === 'preview') {
       returnToList();
     } else {
@@ -476,7 +487,16 @@ export function ArtifactPane(props: {
   }
 
   return (
-    <div className="maka-artifact-pane" role="region" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
+    <div className="maka-artifact-pane" role="region" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}
+      onDragOver={(event) => {
+        if (view.kind === 'preview' && event.dataTransfer.types.includes('application/x-maka-composer')) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        if (view.kind !== 'preview' || !props.onToggleFocus || props.focused ||
+            event.dataTransfer.getData('application/x-maka-composer') !== sessionId) return;
+        event.preventDefault();
+        props.onToggleFocus();
+      }}>
       {activeListError && (
         <Banner
           status="error"
@@ -566,6 +586,17 @@ export function ArtifactPane(props: {
                 {formatBytes(previewRecord.sizeBytes)} · {formatRelativeTimestamp(previewRecord.createdAt, Date.now(), locale)}
               </span>
             </div>
+            {props.onToggleFocus && (
+              <Button
+                variant="ghost"
+                size="sm"
+                isIconOnly
+                icon={props.focused ? <Minimize2 size={ICON_SIZE.chrome} aria-hidden="true" /> : <Maximize2 size={ICON_SIZE.chrome} aria-hidden="true" />}
+                label={props.focused ? copy.pane.restorePreview : copy.pane.focusPreview}
+                aria-pressed={Boolean(props.focused)}
+                onClick={props.onToggleFocus}
+              />
+            )}
             <MoreMenu
               className="maka-artifact-preview-more"
               size="sm"
@@ -584,7 +615,7 @@ export function ArtifactPane(props: {
                       : showInFinder(previewRecord.id),
                   ),
                 },
-                ...(previewRecord.kind === 'html' ? [{
+                ...(previewRecord.kind === 'html' || isUnsupportedOfficeFile(previewRecord) ? [{
                   label: copy.pane.openInFinder,
                   icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(
@@ -597,7 +628,7 @@ export function ArtifactPane(props: {
                   icon: <Save size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(`${previewRecord.id}:save`, () => saveAs(previewRecord.id)),
                 },
-                ...(isTextKind(previewRecord.kind)
+                ...(isTextKind(previewRecord)
                   ? [{
                       label: copy.pane.copy,
                       icon: <Copy size={ICON_SIZE.control} aria-hidden="true" />,
@@ -639,8 +670,8 @@ export function ArtifactPane(props: {
 
 // ---- helpers ---------------------------------------------------------------
 
-function isTextKind(kind: ArtifactKind): boolean {
-  return kind === 'file' || kind === 'diff' || kind === 'html';
+function isTextKind(record: ArtifactDescriptor): boolean {
+  return (record.kind === 'file' && !isUnsupportedOfficeFile(record)) || record.kind === 'diff' || record.kind === 'html';
 }
 
 function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {

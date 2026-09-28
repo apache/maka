@@ -18,12 +18,13 @@
  */
 
 import {
+  isModelApiProtocol,
   isModelModality,
-  isRelayProviderType,
   effectiveBaseUrl,
   PROVIDER_REGISTRY,
   providerDefaultsOf,
   validateSlug,
+  type ModelApiProtocol,
   type ModelModality,
   type ProviderType,
   type SlugValidationIssue,
@@ -152,6 +153,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
       'name',
       'providerType',
       'baseUrl',
+      'defaultApiProtocol',
       'enabled',
       'enabledModelIds',
       'modelOverrides',
@@ -161,6 +163,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
   );
   const providerType = decodeProviderType(item.providerType);
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl, providerType);
+  const defaultApiProtocol = decodeDefaultApiProtocol(item.defaultApiProtocol, providerType);
   const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
   const requestBodyOverlay =
     item.requestBodyOverlay === undefined
@@ -174,6 +177,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     name: decodeConnectionName(item.name),
     providerType,
     ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
     enabled: booleanValue(item.enabled, 'connection enabled'),
     enabledModelIds,
     ...profiles,
@@ -361,33 +365,41 @@ export function decodeModelOverridesTable(value: unknown): Readonly<Record<strin
  * `contextWindow` and `vision` state facts about a model. A user has them when
  * Maka does not — a model newer than the bundled snapshot, or any model on a
  * provider with no model-list endpoint — and that need is not confined to
- * relays (#1584), so they are legal everywhere.
+ * custom connections (#1584), so they are legal everywhere.
  *
- * `thinkingLevels` and `serviceTier` name a wire feature instead. They encode
- * into request shapes only the OpenAI-compatible relays accept —
- * `reasoning_effort` tiers and priority processing — and
- * `supportsRelayFastServiceTier` gates the read side by provider for the same
- * reason. A table carrying them on another provider describes a request Maka
- * would never send: dead state at best, and on a provider whose wire rejects
- * the unknown value, a 400 the user cannot explain.
+ * `thinkingLevels` and `serviceTier` name a wire feature instead. Built-in
+ * providers take thinking levels from model metadata and never send a declared
+ * one; a table carrying them there describes a request Maka would never send.
  */
 function assertProfileFieldsFitProvider(
   profiles: Readonly<Record<string, ModelOverride>> | null | undefined,
   providerType: ProviderType,
 ): void {
-  if (!profiles || isRelayProviderType(providerType)) return;
+  if (!profiles || providerType === 'custom') return;
   for (const [modelId, profile] of Object.entries(profiles)) {
     if (profile.thinkingLevels !== undefined) {
-      throw domainError(
-        `declared thinking levels for ${modelId} require an OpenAI-compatible connection`,
-      );
+      throw domainError(`declared thinking levels for ${modelId} require a custom connection`);
     }
     if (profile.serviceTier !== undefined) {
-      throw domainError(
-        `declared service tier for ${modelId} requires an OpenAI-compatible connection`,
-      );
+      throw domainError(`declared service tier for ${modelId} requires a custom connection`);
     }
   }
+}
+
+export function decodeDefaultApiProtocol(
+  value: unknown,
+  providerType: ProviderType,
+): ModelApiProtocol | undefined {
+  if (providerType !== 'custom') {
+    if (value !== undefined) {
+      throw domainError('only a custom connection has a default API protocol');
+    }
+    return undefined;
+  }
+  if (!isModelApiProtocol(value)) {
+    throw domainError('custom connection default API protocol is invalid');
+  }
+  return value;
 }
 
 // An empty table is not a state worth storing: drafts/canonical entries omit
@@ -410,6 +422,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'name',
       'providerType',
       'baseUrl',
+      'defaultApiProtocol',
       'enabled',
       'enabledModelIds',
       'modelOverrides',
@@ -435,6 +448,9 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     name: item.name,
     providerType: item.providerType,
     ...(item.baseUrl === undefined ? {} : { baseUrl: item.baseUrl }),
+    ...(item.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: item.defaultApiProtocol }),
     enabled: item.enabled,
     enabledModelIds: item.enabledModelIds,
     ...(item.modelOverrides === undefined ? {} : { modelOverrides: item.modelOverrides }),
@@ -577,12 +593,7 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
     ],
     ['id'],
   );
-  if (
-    item.apiProtocol !== undefined &&
-    item.apiProtocol !== 'openai-chat' &&
-    item.apiProtocol !== 'openai-responses' &&
-    item.apiProtocol !== 'anthropic-messages'
-  ) {
+  if (item.apiProtocol !== undefined && !isModelApiProtocol(item.apiProtocol)) {
     throw domainError('connection model API protocol is invalid');
   }
   let capabilities: ConnectionModel['capabilities'];

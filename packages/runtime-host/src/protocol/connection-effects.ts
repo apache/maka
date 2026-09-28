@@ -23,6 +23,7 @@ import {
   decodeConnectionModel,
   decodeConnectionName,
   decodeConnectionSlug,
+  decodeDefaultApiProtocol,
   decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
@@ -370,11 +371,16 @@ function decodeConnectionOnboardingTarget(value: unknown): ConnectionOnboardingT
       target,
       'create connection onboarding target',
       ['kind', 'providerType'],
-      ['slug', 'name'],
+      ['slug', 'name', 'defaultApiProtocol'],
+    );
+    const providerType = decodeDomain(() => decodeProviderType(exact.providerType));
+    const defaultApiProtocol = decodeDomain(() =>
+      decodeDefaultApiProtocol(exact.defaultApiProtocol, providerType),
     );
     return {
       kind: 'create',
-      providerType: decodeDomain(() => decodeProviderType(exact.providerType)),
+      providerType,
+      ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
       ...(exact.slug === undefined
         ? {}
         : { slug: decodeDomain(() => decodeConnectionSlug(exact.slug)) }),

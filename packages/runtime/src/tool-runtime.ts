@@ -3340,10 +3340,11 @@ function coerceTerminalFailure(
           }
         : {}),
     },
-    // The in-turn result the model acts on is just this message (the structured
-    // content above goes to session history). Without the actual output the
-    // model is blind to *why* the command failed, so fold in a bounded tail of
-    // stderr/stdout — the tail is where shell errors land.
+    // Short error for the direct caller, built from the tail because that is
+    // where shell errors land; Code Mode's nested callTool throws it as an
+    // Error. It is not the model-visible result: each step is rebuilt from
+    // durable events, where `content` above is what the model reads. When that
+    // result is pruned, failure details stay pageable content (#5247).
     message: buildTerminalFailureMessage(error.code, stdout, stderr, sandboxDenied),
     sandboxDenied,
   };

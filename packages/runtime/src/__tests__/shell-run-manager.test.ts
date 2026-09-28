@@ -2091,25 +2091,22 @@ describe('ShellRunProcessManager', () => {
       const control = await pending;
 
       assert.equal(await readFile(sizeBeforeExit, 'utf8'), '80x24');
-      const terminal =
-        control.status === 'starting' || control.status === 'running'
-          ? await waitForTerminalShellRun(manager, initial.ref, 15_000)
-          : control;
-      assertShellRunSnapshot(terminal);
-      assert.equal(terminal.status, 'completed');
-      assert.equal(terminal.exitCode, 0);
       assert.deepEqual(control.operation, {
         kind: 'pty_control',
         failed: false,
         resize: { cols: 81, rows: 25, applied: false, changed: false },
       });
-      assert.equal(terminal.output.mode, 'pty');
-      if (terminal.output.mode !== 'pty') throw new Error('expected pty output');
-      assert.deepEqual([terminal.output.cols, terminal.output.rows], [80, 24]);
+      const settled = await waitForTerminalShellRun(manager, initial.ref, 15_000);
+      assertShellRunSnapshot(settled);
+      assert.equal(settled.status, 'completed');
+      assert.equal(settled.exitCode, 0);
+      assert.equal(settled.output.mode, 'pty');
+      if (settled.output.mode !== 'pty') throw new Error('expected pty output');
+      assert.deepEqual([settled.output.cols, settled.output.rows], [80, 24]);
 
       const durable = await store.readShellRun('session-1', 'shell-run-1');
       assert.equal(durable.status, 'completed');
-      assert.equal(durable.revision, terminal.revision);
+      assert.equal(durable.revision, settled.revision);
       assert.equal(manager.liveCount(), 0);
     } finally {
       Terminal.prototype.write = originalWrite;
@@ -2120,39 +2117,28 @@ describe('ShellRunProcessManager', () => {
     }
   });
 
-  test('writeStdin itself returns terminal status when persist is held through finalization', async () => {
+  test('a PTY exit during control persistence is reflected in the reply', async () => {
     const cwd = await workspace();
-    const exitGate = join(cwd, 'exit-gate');
+    const exitGate = join(cwd, 'allow-exit');
     const backingStore = sqliteShellRunStore(await workspace());
-    const persistHeld = deferred<void>();
-    const releasePersist = deferred<void>();
-    let holdNextObservation = false;
-    let persistIsHeld = false;
+    const resumePersist = deferred<void>();
+    let pauseControlPersist = false;
+    let controlPersistPaused = false;
     const store: ShellRunStore = {
       createShellRun: (...args) => backingStore.createShellRun(...args),
       async updateShellRun(sessionId, shellRunId, patch) {
-        if (holdNextObservation && patch.status === undefined) {
-          holdNextObservation = false;
-          persistIsHeld = true;
-          persistHeld.resolve();
-          await releasePersist.promise;
+        if (pauseControlPersist && patch.status === undefined) {
+          pauseControlPersist = false;
+          controlPersistPaused = true;
+          await resumePersist.promise;
         }
         return backingStore.updateShellRun(sessionId, shellRunId, patch);
       },
       readShellRun: (...args) => backingStore.readShellRun(...args),
       listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
     };
-    const flushes = manualFlushScheduler();
-    const manager = createManager(store, undefined, {
-      flushIntervalMs: 60_000,
-      scheduleFlush: flushes.schedule,
-    });
-    const originalDispose = PtyProcessDriver.prototype.dispose;
-    let driverDisposed = false;
-    PtyProcessDriver.prototype.dispose = function dispose(this: PtyProcessDriver) {
-      driverDisposed = true;
-      return originalDispose.call(this);
-    };
+    const manager = createManager(store);
+    const liveRuns = (manager as unknown as { live: Map<string, { driverExit?: unknown }> }).live;
     let ref: string | undefined;
 
     try {
@@ -2160,19 +2146,14 @@ describe('ShellRunProcessManager', () => {
         shellInput({
           cwd,
           command: nodeCommand(`
-            const { readFileSync } = require('node:fs');
+            const { existsSync } = require('node:fs');
             process.stdout.write('READY\\n');
-            const wait = () => {
-              try {
-                readFileSync(${JSON.stringify(exitGate)});
-              } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
-                setImmediate(wait);
-                return;
+            const timer = setInterval(() => {
+              if (existsSync(${JSON.stringify(exitGate)})) {
+                clearInterval(timer);
+                process.exit(0);
               }
-              process.exit(0);
-            };
-            wait();
+            }, 10);
           `),
           pty: true,
           timeoutMs: 120_000,
@@ -2182,18 +2163,20 @@ describe('ShellRunProcessManager', () => {
       ref = initial.ref;
       await waitForPtyText(manager, initial.ref, /READY/);
 
-      holdNextObservation = true;
+      pauseControlPersist = true;
       const pending = manager.writeStdin({
         sessionId: 'session-1',
         ref: initial.ref,
         size: { cols: 81, rows: 25 },
         abortSignal: NO_ABORT,
       });
-      await waitUntil(() => persistIsHeld, 15_000);
-      await persistHeld.promise;
+      await waitUntil(() => controlPersistPaused, 15_000);
       await writeFile(exitGate, 'exit');
-      await waitUntil(() => driverDisposed, 15_000);
-      releasePersist.resolve();
+      await waitUntil(
+        () => [...liveRuns.values()].some((live) => live.driverExit !== undefined),
+        15_000,
+      );
+      resumePersist.resolve();
 
       const control = await pending;
       assertShellRunSnapshot(control);
@@ -2207,10 +2190,11 @@ describe('ShellRunProcessManager', () => {
       assert.equal(control.output.mode, 'pty');
       if (control.output.mode !== 'pty') throw new Error('expected pty output');
       assert.deepEqual([control.output.cols, control.output.rows], [81, 25]);
+      const durable = await backingStore.readShellRun('session-1', 'shell-run-1');
+      assert.equal(durable.revision, control.revision);
       assert.equal(manager.liveCount(), 0);
     } finally {
-      PtyProcessDriver.prototype.dispose = originalDispose;
-      releasePersist.resolve();
+      resumePersist.resolve();
       if (ref && manager.liveCount() > 0) {
         await manager.stopBackgroundTask('session-1', ref, NO_ABORT).catch(() => undefined);
       }

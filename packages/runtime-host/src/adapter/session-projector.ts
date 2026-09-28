@@ -17,25 +17,23 @@
  * under the License.
  */
 
-import { isDeepStrictEqual } from 'node:util';
-import type {
-  ActiveInteractionRequestEvent,
-  ContextCompactionStartedEvent,
-  SessionEvent,
+import {
+  type ActiveInteractionRequestEvent,
+  type ContextCompactionStartedEvent,
+  foldAssistantDelta,
+  type SessionEvent,
 } from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
   SessionContinuitySnapshot,
-  SessionAssistantDelta,
   SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
   SessionSteeringEvent,
-  SteeringMessageSnapshot,
   SubscriptionFrame,
-  LiveTurnSnapshot,
   TurnSnapshot,
 } from '../protocol/index.js';
+import { projectProviderRetryChange, seedProviderRetry } from './provider-retry-projector.js';
 
 interface AssistantAccumulator {
   interrupted?: true;
@@ -44,7 +42,8 @@ interface AssistantAccumulator {
   messageId: string;
   text: string;
   complete: boolean;
-  replacing: boolean;
+  /** A Host reset replaced the streamed text; its deltas are withheld until completion. */
+  replaced: boolean;
 }
 
 export interface RuntimeHostSessionProjectionSeed {
@@ -92,11 +91,8 @@ export class RuntimeHostSessionProjector {
   #snapshot: SessionContinuitySnapshot;
   readonly #now: () => number;
   readonly #durableTurnByMessage: Map<string, string>;
-  // Only live/synthesized messages for the current root belong here. Durable
-  // transcript identity stays in the admission map above, so this render
-  // ledger cannot grow with the lifetime of the session.
-  readonly #renderedSteeringMessageIds = new Set<string>();
   readonly #accumulators = new Map<string, AssistantAccumulator>();
+  readonly #placedSteeringMessageIds = new Set<string>();
   #projectMessageAdmissions: boolean;
 
   constructor(
@@ -123,7 +119,7 @@ export class RuntimeHostSessionProjector {
           messageId: message.id,
           text: message.thinking.text,
           complete: true,
-          replacing: false,
+          replaced: false,
         });
       }
       if (message.text || message.interrupted) {
@@ -134,7 +130,7 @@ export class RuntimeHostSessionProjector {
           text: message.text,
           ...(message.interrupted ? { interrupted: true } : {}),
           complete: true,
-          replacing: false,
+          replaced: false,
         });
       }
     }
@@ -148,7 +144,7 @@ export class RuntimeHostSessionProjector {
         messageId: stream.messageId,
         text: current?.text ?? '',
         complete: false,
-        replacing: false,
+        replaced: false,
       });
     }
   }
@@ -161,13 +157,34 @@ export class RuntimeHostSessionProjector {
     this.#projectMessageAdmissions = true;
   }
 
-  seedActive(includeAssistantText: boolean): SessionEvent[] {
+  seedActive(
+    includeAssistantText: boolean,
+    options: { includeEmptyQueue?: boolean } = {},
+  ): SessionEvent[] {
     const root = this.#snapshot.rootTurn;
-    if (!root) return [];
+    if (!root) {
+      // A Session whose root Turn is gone still owns an authoritative queue:
+      // a client resubscribing after navigating away may hold a stale queued
+      // card that only this seed can retire, because no live drain will run
+      // while it is the active view (apache/maka#5520 review). Snapshots that
+      // carry no queue at all project as empty.
+      const queue = this.#snapshot.queue ?? {
+        hostEpoch: '',
+        queueRevision: 0,
+        steering: [],
+        followup: [],
+      };
+      return [projectQueueUpdate(this.#unplacedQueue(queue), '', this.#now())];
+    }
     const events: SessionEvent[] = [];
+    // A queue-rendering client needs the empty seed to clear entries it saw
+    // before re-observing. ACP ignores queue_update, and delivering one after
+    // an output failure would stop the Host Turn it restored.
     const queueEvents =
-      this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
-        ? [projectQueueUpdate(this.#snapshot.queue, root.turnId, this.#now())]
+      options.includeEmptyQueue ||
+      this.#projectMessageAdmissions ||
+      queueHasEntries(this.#snapshot.queue)
+        ? [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())]
         : [];
     if (this.#projectMessageAdmissions) {
       events.push(
@@ -186,11 +203,9 @@ export class RuntimeHostSessionProjector {
     if (root.rootExecutionKind === 'context_compact') {
       events.push(contextCompactionStartedEvent(root, this.#now()));
     }
-    let seededAssistantText = false;
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
         if (accumulator.complete) continue;
-        seededAssistantText = true;
         events.push({
           type: accumulator.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
@@ -202,27 +217,15 @@ export class RuntimeHostSessionProjector {
         });
       }
     }
-    if (root.providerRetry && !seededAssistantText) {
-      events.push(providerRetryEvent(root, this.#now()));
+    const seededAssistantContent = events.some(
+      (event) => event.type === 'text_delta' || event.type === 'thinking_delta',
+    );
+    if (!seededAssistantContent) {
+      const retry = seedProviderRetry(root, this.#now());
+      if (retry) events.push(retry);
     }
     for (const interaction of this.#snapshot.interactions.pending) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
-    }
-    for (const entry of rootQueueInFlight(this.#snapshot.queue)) {
-      if (
-        this.#durableTurnByMessage.has(entry.messageId) ||
-        this.#renderedSteeringMessageIds.has(entry.messageId)
-      )
-        continue;
-      this.#renderedSteeringMessageIds.add(entry.messageId);
-      events.push({
-        type: 'steering_message',
-        id: `host-queue:${this.#snapshot.queue.hostEpoch}:${this.#snapshot.queue.queueRevision}:${entry.entryId}`,
-        turnId: root.turnId,
-        messageId: entry.messageId,
-        ts: this.#now(),
-        content: structuredClone(entry.content),
-      });
     }
     return [...events, ...queueEvents];
   }
@@ -363,7 +366,7 @@ export class RuntimeHostSessionProjector {
       const key = accumulatorKey(delta.kind, delta.messageId);
       const current = this.#accumulators.get(key);
       const folded = foldRuntimeHostAssistantDelta(delta.reset ? '' : (current?.text ?? ''), delta);
-      const replacing = delta.reset === true || (current?.replacing ?? false);
+      const replaced = delta.reset === true || (current?.replaced ?? false);
       this.#accumulators.set(key, {
         kind: delta.kind,
         turnId: delta.turnId,
@@ -371,7 +374,7 @@ export class RuntimeHostSessionProjector {
         text: folded.text,
         ...(delta.interrupted ? { interrupted: true } : {}),
         complete: delta.complete === true,
-        replacing: delta.complete === true ? false : replacing,
+        replaced,
       });
       if (delta.complete === true) {
         events.push({
@@ -383,7 +386,7 @@ export class RuntimeHostSessionProjector {
           text: folded.text,
           ...(delta.interrupted ? { interrupted: true } : {}),
         });
-      } else if (folded.tail && !replacing) {
+      } else if (folded.tail && !replaced) {
         events.push({
           type: delta.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: frameIdentity(frame),
@@ -399,13 +402,12 @@ export class RuntimeHostSessionProjector {
     if (frame.kind === 'subscription.session_event') {
       const event = projectSessionEvent(frame);
       if (event.type === 'steering_message') {
-        if (
-          this.#durableTurnByMessage.has(event.messageId) ||
-          this.#renderedSteeringMessageIds.has(event.messageId)
-        ) {
-          return emptyUpdate(events);
+        if (this.#durableTurnByMessage.has(event.messageId)) return emptyUpdate(events);
+        this.#placedSteeringMessageIds.add(event.messageId);
+        const { queue, rootTurn } = this.#snapshot;
+        if (rootTurn && queue.steering.some((entry) => entry.messageId === event.messageId)) {
+          events.push(projectQueueUpdate(this.#unplacedQueue(queue), rootTurn.turnId, this.#now()));
         }
-        this.#renderedSteeringMessageIds.add(event.messageId);
       }
       events.push(event);
       return emptyUpdate(events);
@@ -420,32 +422,21 @@ export class RuntimeHostSessionProjector {
     const root = next.rootTurn;
     const startedTurn =
       root && (!previousRoot || root.runId !== previousRoot.runId) ? root : undefined;
-    if (startedTurn) this.#renderedSteeringMessageIds.clear();
     for (const interaction of newlyPendingInteractions(previousSnapshot, next)) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
     }
-    const enteredActiveTurn =
-      root && queueChanged(previousSnapshot.queue, next.queue)
-        ? newlyInFlight(previousSnapshot.queue, next.queue)
-        : [];
-    if (root && queueChanged(previousSnapshot.queue, next.queue)) {
-      for (const entry of enteredActiveTurn) {
-        if (
-          this.#durableTurnByMessage.has(entry.messageId) ||
-          this.#renderedSteeringMessageIds.has(entry.messageId)
-        )
-          continue;
-        this.#renderedSteeringMessageIds.add(entry.messageId);
-        events.push({
-          type: 'steering_message',
-          id: `host-queue:${next.queue.hostEpoch}:${next.queue.queueRevision}:${entry.entryId}`,
-          turnId: root.turnId,
-          messageId: entry.messageId,
-          ts: this.#now(),
-          content: structuredClone(entry.content),
-        });
-      }
-      events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
+    if (queueChanged(previousSnapshot.queue, next.queue)) {
+      // Project the authoritative queue even with no live Turn: a drain that
+      // lands after the root Turn is gone must still reach observers, or a
+      // queued card survives as a phantom whose retract fails with not_found
+      // (apache/maka#5520).
+      events.push(
+        projectQueueUpdate(
+          this.#unplacedQueue(next.queue),
+          root?.turnId ?? previousRoot?.turnId ?? '',
+          this.#now(),
+        ),
+      );
     }
     if (startedTurn) this.#accumulators.clear();
     // Emit the presentation-only compaction-started event when the root Turn
@@ -462,7 +453,7 @@ export class RuntimeHostSessionProjector {
     if (root && rootIsCompaction && !previousWasCompaction) {
       events.push(contextCompactionStartedEvent(root, this.#now()));
     }
-    const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
+    const retry = projectProviderRetryChange(previousRoot, root, this.#now());
     if (retry) events.push(retry);
     const terminalTurn =
       root && isRuntimeHostTerminalTurn(root) && !sameRuntimeHostTerminalTurn(previousRoot, root)
@@ -527,6 +518,17 @@ export class RuntimeHostSessionProjector {
       });
     }
     return events;
+  }
+
+  // The runtime writes a steering message before the Host acknowledges its
+  // lease, so the queue can still list an entry the timeline already shows.
+  #unplacedQueue(queue: SessionMessageQueueProjection): SessionMessageQueueProjection {
+    const steering = queue.steering.filter(
+      (entry) =>
+        !this.#placedSteeringMessageIds.has(entry.messageId) &&
+        !this.#durableTurnByMessage.has(entry.messageId),
+    );
+    return steering.length === queue.steering.length ? queue : { ...queue, steering };
   }
 }
 
@@ -706,19 +708,16 @@ function projectSessionEvent(
 
 export function foldRuntimeHostAssistantDelta(
   current: string,
-  delta: Pick<SessionAssistantDelta, 'startOffset' | 'text'>,
+  delta: { readonly startOffset?: number; readonly text: string },
 ): { text: string; tail: string } {
-  if (delta.startOffset > current.length) throw new Error('Runtime Host assistant delta has a gap');
-  const overlapLength = Math.min(current.length - delta.startOffset, delta.text.length);
-  if (
-    overlapLength > 0 &&
-    current.slice(delta.startOffset, delta.startOffset + overlapLength) !==
-      delta.text.slice(0, overlapLength)
-  ) {
+  const folded = foldAssistantDelta(current.length, delta);
+  if (!folded) throw new Error('Runtime Host assistant delta has a gap');
+  const startOffset = delta.startOffset ?? current.length;
+  const overlap = delta.text.slice(0, delta.text.length - folded.tail.length);
+  if (current.slice(startOffset, startOffset + overlap.length) !== overlap) {
     throw new Error('Runtime Host assistant delta conflicts with prior output');
   }
-  const tail = delta.text.slice(overlapLength);
-  return { text: current + tail, tail };
+  return { text: current + folded.tail, tail: folded.tail };
 }
 
 function newlyPendingInteractions(
@@ -750,23 +749,6 @@ function queueChanged(
   next: SessionMessageQueueProjection,
 ): boolean {
   return previous.hostEpoch !== next.hostEpoch || previous.queueRevision !== next.queueRevision;
-}
-
-function newlyInFlight(
-  previous: SessionMessageQueueProjection,
-  next: SessionMessageQueueProjection,
-): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
-  const previousIds = new Set(rootQueueInFlight(previous).map((entry) => entry.entryId));
-  return rootQueueInFlight(next).filter((entry) => !previousIds.has(entry.entryId));
-}
-
-function rootQueueInFlight(
-  queue: SessionMessageQueueProjection,
-): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
-  return queue.steering.filter(
-    (entry): entry is Extract<SteeringMessageSnapshot, { state: 'in_flight' }> =>
-      entry.state === 'in_flight',
-  );
 }
 
 function queueHasEntries(queue: SessionMessageQueueProjection): boolean {
@@ -828,61 +810,6 @@ export function sameRuntimeHostTerminalTurn(
     previous.runId === next.runId &&
     previous.terminalEventId === next.terminalEventId
   );
-}
-
-function liveProviderRetryEvent(
-  previous: TurnSnapshot | null | undefined,
-  next: TurnSnapshot | null | undefined,
-  ts: number,
-): Extract<SessionEvent, { type: 'provider_retry' }> | undefined {
-  if (!next || isRuntimeHostTerminalTurn(next) || !next.providerRetry) return undefined;
-  const previousRetry =
-    previous && !isRuntimeHostTerminalTurn(previous) ? previous.providerRetry : undefined;
-  if (previous?.runId === next.runId && isDeepStrictEqual(previousRetry, next.providerRetry)) {
-    return undefined;
-  }
-  return providerRetryEvent(next, ts);
-}
-
-function providerRetryEvent(
-  root: LiveTurnSnapshot,
-  ts: number,
-): Extract<SessionEvent, { type: 'provider_retry' }> {
-  const retry = root.providerRetry;
-  if (!retry) {
-    throw new Error('Non-terminal Turn snapshot has no provider retry');
-  }
-  if (retry.phase !== 'scheduled') {
-    return {
-      type: 'provider_retry',
-      id: `host-seed:${root.runId}:provider_retry`,
-      turnId: root.turnId,
-      ts,
-      phase: 'started',
-      attempt: retry.attempt,
-      maxAttempts: retry.maxAttempts,
-      reason: retry.reason,
-    };
-  }
-  // remainingMs is the skew-free countdown authority for clients on another
-  // machine: a duration, recomputed from the host-clock schedule time stored
-  // in the snapshot, so a mid-wait re-projection (reconnect) does not restart
-  // the countdown. Snapshots from older runtimes lack `ts` and degrade to the
-  // full delay.
-  const remainingMs =
-    retry.ts === undefined ? retry.delayMs : Math.max(0, retry.delayMs - (ts - retry.ts));
-  return {
-    type: 'provider_retry',
-    id: `host-seed:${root.runId}:provider_retry`,
-    turnId: root.turnId,
-    ts,
-    phase: 'scheduled',
-    attempt: retry.attempt,
-    maxAttempts: retry.maxAttempts,
-    delayMs: retry.delayMs,
-    remainingMs,
-    reason: retry.reason,
-  };
 }
 
 function abortReason(source: string): Extract<SessionEvent, { type: 'abort' }>['reason'] {
