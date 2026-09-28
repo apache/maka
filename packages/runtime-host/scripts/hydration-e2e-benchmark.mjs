@@ -17,8 +17,20 @@
  * under the License.
  */
 
-// End-to-end hydration measurement for the #4677 budget item:
+// End-to-end hydration measurement related to the #4677 budget item:
 // "long Session @30ms RTT: open to visible tail p95 <= 800ms".
+//
+// IMPORTANT - proxy metric, not the visible point: the #4677 800ms budget
+// applies to the Desktop visible tail (renderer paint). This script stops
+// its `hostDecodeTail` timer immediately after
+// `ClientSessionSubscription.decodeTranscriptPage`; no
+// `DesktopTranscriptReplica` installation, Electron IPC, renderer update
+// or paint has occurred. The `wire` wrapper also invokes Host handlers
+// directly rather than exercising protocol serialization/transport.
+// Treat `hostDecodeTail` and `fullHydration` as Host-client decode
+// proxies with no budget verdict here; measuring the actual visible
+// point needs a Desktop/Electron harness extension (open acceptance
+// work).
 //
 // Faithful path: a real execution composition (FakeBackend), turns seeded
 // through `turn.start`, then per round the client RPCs
@@ -47,7 +59,9 @@ const RTT_MS = Number(process.env.RTT_MS ?? 30);
 const ROUNDS = Number(process.env.ROUNDS ?? 10);
 const TURNS = Number(process.env.TURNS ?? 1000);
 const TURN_TEXT_BYTES = Number(process.env.TURN_TEXT_BYTES ?? 40);
-const TAIL_VISIBLE_BUDGET_MS = 800;
+// The #4677 800ms budget belongs to the Desktop visible tail (renderer
+// paint), which this script does not measure; no PASS/FAIL verdict is
+// emitted against it here (see header note).
 
 const HOST_EPOCH = 'hydration-benchmark';
 const CONNECTION_ID = 'hydration-benchmark-client';
@@ -185,9 +199,11 @@ async function openAndMeasure(sessionId) {
     },
   );
 
-  // Visible tail: production decode path over the bootstrap page.
+  // Host-client decode proxy for the visible tail: production decode
+  // path over the bootstrap page; stops here, before any replica
+  // installation / IPC / renderer work (see header note).
   const tail = await subscription.decodeTranscriptPage(bootstrap.durable, (value) => value);
-  const openToTailMs = performance.now() - openStart;
+  const hostDecodeTailMs = performance.now() - openStart;
 
   // Full hydration: page in the entire transcript through cursors.
   const materialized = await subscription.loadTranscript((value) => value);
@@ -195,7 +211,7 @@ async function openAndMeasure(sessionId) {
   await subscription.close();
 
   return {
-    openToTailMs,
+    hostDecodeTailMs,
     fullHydrationMs,
     pageRequests,
     tailMessages: tail.messages.length,
@@ -208,26 +224,26 @@ async function openAndMeasure(sessionId) {
 function report({ TURNS, TURN_TEXT_BYTES, RTT_MS, seedSeconds, samples }) {
   const pick = (key) => samples.map((sample) => sample[key]);
   const mean = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
-  const openToTail = stats(pick('openToTailMs'));
+  const hostDecodeTail = stats(pick('hostDecodeTailMs'));
   const fullHydration = stats(pick('fullHydrationMs'));
   console.log(
     `\nfixture: ${TURNS} turns (~${TURN_TEXT_BYTES}B user text/turn), ` +
       `seed ${seedSeconds.toFixed(0)}s, ${ROUNDS} rounds @ ${RTT_MS}ms RTT`,
   );
+  // Both rows are Host-client decode proxies (see header note); the
+  // #4677 800ms visible-tail budget is not judged here.
   console.table([
     {
-      metric: 'openToTail (budget 800ms)',
-      medianMs: openToTail.medianMs.toFixed(1),
-      p95Ms: openToTail.p95Ms.toFixed(1),
-      maxMs: openToTail.maxMs.toFixed(1),
-      verdict: openToTail.p95Ms <= TAIL_VISIBLE_BUDGET_MS ? 'PASS' : 'FAIL',
+      metric: 'hostDecodeTail (Host-client decode proxy)',
+      medianMs: hostDecodeTail.medianMs.toFixed(1),
+      p95Ms: hostDecodeTail.p95Ms.toFixed(1),
+      maxMs: hostDecodeTail.maxMs.toFixed(1),
     },
     {
-      metric: 'fullHydration (no budget)',
+      metric: 'fullHydration (Host-client decode proxy)',
       medianMs: fullHydration.medianMs.toFixed(1),
       p95Ms: fullHydration.p95Ms.toFixed(1),
       maxMs: fullHydration.maxMs.toFixed(1),
-      verdict: '-',
     },
   ]);
   console.log(
