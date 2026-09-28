@@ -465,6 +465,72 @@ describe('agent graph client read model', () => {
     assert.equal(completed.operator.operator.output?.previewTruncated, true);
   });
 
+  test('does not append a late delta after the same message completes', () => {
+    const graphId = 'graph-completed-output';
+    const operatorId = 'operator-completed-output';
+    const childSessionId = 'child-completed-output';
+    const initial = materializeAgentGraphClientProjection(
+      runningInput(graphId, operatorId, childSessionId),
+    );
+    const text = `${'x'.repeat(284)}YZ`;
+    const streamed = advanceMaterializedAgentGraphClientProjection(
+      initial.snapshot,
+      initial.operators[0]!,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'text-delta',
+        type: 'text_delta',
+        ts: 999,
+        messageId: 'message-1',
+        startOffset: 0,
+        text,
+      }),
+      false,
+    )!;
+    const settled = advanceMaterializedAgentGraphClientProjection(
+      streamed.snapshot,
+      streamed.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'operator-complete',
+        type: 'complete',
+        ts: 1_000,
+        stopReason: 'end_turn',
+      }),
+      false,
+    )!;
+    const completed = advanceMaterializedAgentGraphClientProjection(
+      settled.snapshot,
+      settled.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'text-complete',
+        type: 'text_complete',
+        ts: 1_000,
+        messageId: 'message-1',
+        text,
+      }),
+      false,
+    )!;
+    const late = advanceMaterializedAgentGraphClientProjection(
+      completed.snapshot,
+      completed.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'late-delta',
+        type: 'text_delta',
+        ts: 1_000,
+        messageId: 'message-1',
+        startOffset: text.length,
+        text: 'YZ',
+      }),
+      false,
+    );
+
+    assert.equal(completed.operator.operator.output?.phase, 'completed');
+    assert.equal(
+      completed.operator.operator.output?.preview,
+      Array.from(text).slice(-280).join(''),
+    );
+    assert.equal(late, undefined);
+  });
+
   test('advances a bounded streaming preview and provider-reported TPS without activity records', () => {
     const graphId = 'graph-output';
     const operatorId = 'operator-output';

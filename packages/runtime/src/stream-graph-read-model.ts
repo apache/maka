@@ -884,6 +884,9 @@ function advanceClientOperatorOutput(
   }
   if (event.type === 'text_delta' || event.type === 'text_complete') {
     const sameMessage = existing?.messageId === event.messageId;
+    if (event.type === 'text_delta' && sameMessage && existing.phase === 'completed') {
+      return undefined;
+    }
     const append = event.type === 'text_delta' && sameMessage;
     const discontinuous =
       event.type === 'text_delta' &&
