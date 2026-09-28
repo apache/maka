@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 40 |
-| platform-contract | 38 |
+| portable-candidate | 51 |
+| platform-contract | 39 |
 
-Total Windows-excluded declarations: **105**
+Total Windows-excluded declarations: **117**
 
 ## Inventory
 
@@ -33,7 +33,10 @@ Total Windows-excluded declarations: **105**
 | portable-candidate | `apps/desktop/src/main/__tests__/opencli-chrome.test.ts` launchers run the entry in Node mode with the mode each caller needs | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/opencli-chrome.test.ts` Windows opens the store page in installed Chrome, not the default browser | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
+| platform-contract | `apps/desktop/src/main/__tests__/runtime-host-local-remote-access.test.ts` adopts a released handoff through its existing legacy operator | `process.platform === 'win32' && 'Legacy POSIX handoff requires POSIX deployment paths'` |
 | platform-contract | `apps/desktop/src/main/__tests__/runtime-host-skills-ipc-main.test.ts` reports create_failed without opening when a Skill directory parent is not writable | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory parent read-only' : process.getuid?.() === 0` |
+| portable-candidate | `apps/desktop/src/main/__tests__/settings-recovery-startup.test.ts` early-window presents recovery guidance despite ${nativeFailure} | `nativeFailure === 'commit-unknown' && process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/settings-recovery.test.ts` published reset failure is independently reported and consumers reread without replaying a mutation | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
@@ -121,6 +124,15 @@ Total Windows-excluded declarations: **105**
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/settings-store-onboarding.test.ts` preserves a restrictive umask-derived settings.json mode and leaves no temp file behind | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` corrupt settings behind a symlink are not reset and the link survives | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a valid settings symlink keeps its existing read behavior | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a symlink installed during temp preparation is not replaced or followed for recovery | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a completed backup survives directory sync failure and is fenced again before reuse | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` a ${unsafe} backup candidate is never reused or replaced | `process.platform === 'win32' && (unsafe === 'public mode' \|\| unsafe === 'hard link')` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` private backups do not change the normal settings umask policy | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` backup ${phase} failure preserves source and reports the original cause | `process.platform === 'win32' && (phase === 'chmod' \|\| phase === 'directory')` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` refuses a preexisting backup ${planted} without deleting it | `process.platform === 'win32' && planted === 'symlink'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-recovery.test.ts` post-publication failure remains commit-unknown through ${mutation} | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` rejects a symlink instead of following it | `process.platform === 'win32' ? 'POSIX no-follow semantics are required' : false` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |

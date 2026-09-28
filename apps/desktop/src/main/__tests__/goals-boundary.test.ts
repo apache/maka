@@ -112,7 +112,7 @@ describe('Goals feature boundary', () => {
       const source = readFileSync(path, 'utf8');
       for (const match of source.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
         if (match[1]?.includes('controller/use-goal-controller')) {
-          importers.push(relative(desktopRoot, path));
+          importers.push(relative(desktopRoot, path).replace(/\\/g, '/'));
         }
       }
     }

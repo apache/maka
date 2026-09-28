@@ -2901,6 +2901,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/workbar": 1,
           "../locales/settings-projects-copy.js": 1,
           "../theme": 1,
           "@astryxdesign/core/Dialog": 1,

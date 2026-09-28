@@ -78,6 +78,8 @@ const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_extract',
 ]);
 const DESKTOP_SETTINGS_TOOLS = new Set(['MakaClientSettingsGet', 'MakaClientSettingsUpdate']);
+// Provider IDs are `cc_` digests. This cannot match a registered provider.
+const UNATTACHED_INITIATING_PROVIDER_ID = 'unattached_client';
 
 export { ClientCapabilityInvocationError };
 
@@ -471,14 +473,13 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       };
     }
     const selectedInitiatingProvider = directProvider ?? associatedProviders[0];
-    // A remote Client must never inherit an unrelated provider merely because
-    // it is the only candidate. Local-owner and recovery flows retain their
-    // existing provider-independent fallback when no provider was selected.
+    // An explicit initiating Client may use only its own publication (or its
+    // authenticated companion). Provider-independent selection is reserved
+    // for Host-originated recovery, which has no initiating connection.
     const initiatingProviderId =
       selectedInitiatingProvider?.providerId ??
-      (initiatingProvider?.principalKind === 'remote_owner'
-        ? initiatingProvider.providerId
-        : undefined);
+      initiatingProvider?.providerId ??
+      (initiatingConnectionId ? UNATTACHED_INITIATING_PROVIDER_ID : undefined);
     const previousState = this.#sessions.get(sessionId);
     const serviceProviderId =
       previousState?.serviceProviderId ??
@@ -1664,6 +1665,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       state.sessionBindings.size === 0 &&
       state.turnBindings.size === 0 &&
       !state.serviceProviderId &&
+      state.initiatingProviderId === undefined &&
       !this.#hasCallOffers()
     ) {
       this.#sessions.delete(sessionId);
@@ -1678,7 +1680,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       if (
         state.sessionBindings.size === 0 &&
         state.turnBindings.size === 0 &&
-        !state.serviceProviderId
+        !state.serviceProviderId &&
+        state.initiatingProviderId === undefined
       ) {
         this.#sessions.delete(sessionId);
       }

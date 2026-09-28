@@ -26,7 +26,11 @@ import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-aut
 import { parseSkillInvocationTokens } from '@maka/runtime/skill-invocation';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import type { TurnStartInput } from '../protocol/index.js';
-import type { ConnectionContext, TurnOperationHandlerMap } from './operation-dispatcher.js';
+import {
+  capabilityInitiatingConnectionId,
+  type ConnectionContext,
+  type TurnOperationHandlerMap,
+} from './operation-dispatcher.js';
 import type {
   RootMessageContentPreparation,
   RootMessageStartRequest,
@@ -79,6 +83,7 @@ export class HostInteractiveTurnCoordinator {
           kind: 'external_message',
           inputDigest: hostedExternalInputDigest(content, skillIds),
           ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+          ...(input.origin !== undefined ? { origin: input.origin } : {}),
         },
         context,
       );
@@ -90,6 +95,7 @@ export class HostInteractiveTurnCoordinator {
         execution: {
           kind: 'external_message',
           ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+          ...(input.origin !== undefined ? { origin: input.origin } : {}),
         },
         ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
         archivedMessage: 'Cannot start a new Turn in an archived Session',
@@ -141,7 +147,7 @@ export class HostInteractiveTurnCoordinator {
           input.turnId,
           content,
           skillIds,
-          context.connectionId,
+          capabilityInitiatingConnectionId(context),
         );
         if (prepared.kind === 'ready' || !prepared.skillInvocation) return prepared;
         const committed = await this.#turns.commitRootTurnStartRejection({
