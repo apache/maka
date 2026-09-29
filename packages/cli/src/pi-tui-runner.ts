@@ -2318,11 +2318,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       });
       requestRender();
     };
+    // Opening re-keys the driver onto the side Session through asynchronous
+    // work (the Host forks the parent and switches onto the fork), the same
+    // switchSession re-key path as `/session`, so both entry paths hold the
+    // switch window: a retraction asked inside it would address the parent
+    // while the Host removes its queued entries, and the side-session fence
+    // would then discard what the Host removed (#5265 review).
     if (turnRunning) {
       if (detaching) return;
       detaching = true;
       try {
-        await adopt();
+        await holdSwitchWindow(adopt);
       } catch (error) {
         reportError(error);
       } finally {
@@ -2330,14 +2336,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         startPendingAttachedTurn();
       }
     } else {
-      await runControl(adopt);
+      await runControl(() => holdSwitchWindow(adopt));
     }
     if (!opened || !prompt) return;
     await previousActivity?.catch(() => undefined);
     submitPrompt(prompt);
   };
 
-  const closeSideConversation = async (): Promise<void> => {
+  const runCloseSideConversation = async (): Promise<void> => {
     const pair = sideConversation;
     if (!pair || !input.driver.closeSideConversation) return;
     const result = await input.driver.closeSideConversation(
@@ -2357,6 +2363,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     requestRender();
   };
+  // Same window as the open: closing re-keys the driver back onto the parent
+  // Session through its own asynchronous switch, so Alt+Up waits it out
+  // (#5265 review).
+  const closeSideConversation = (): Promise<void> => holdSwitchWindow(runCloseSideConversation);
   const interruptAndCloseSideConversation = (): void => {
     if (interruptRequested) return;
     const completion = currentActivityCompletion;
