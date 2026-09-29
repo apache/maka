@@ -21,6 +21,13 @@ import type { DirectoryReference, QuoteRef, FollowUpMode } from '@maka/core/even
 import type { ComposerSendMetadata } from '@maka/ui';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
 
+export interface ComposerMessageContext {
+  replacesLocalMessageId?: string;
+  directoryReferences?: readonly DirectoryReference[];
+  quotes?: readonly QuoteRef[];
+  workspaceFileReferences?: ComposerSendMetadata['workspaceFileReferences'];
+}
+
 /** Hold the captured sources before readiness checks or any other async work. */
 export function composerSend(deps: {
   pending: readonly PendingAttachment[] | undefined;
@@ -47,11 +54,7 @@ export function composerFollowUp(deps: {
   quotes: readonly QuoteRef[];
   directoryOptions: { directoryReferences?: readonly DirectoryReference[] };
   enqueueMessage(sessionId: string, text: string, placement: 'current_turn' | 'next_turn',
-    pending: readonly PendingAttachment[] | undefined, options: {
-      directoryReferences?: readonly DirectoryReference[];
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: ComposerSendMetadata['workspaceFileReferences'];
-    }): Promise<boolean>;
+    pending: readonly PendingAttachment[] | undefined, options: ComposerMessageContext): Promise<boolean>;
   clearSubmittedContext(pending: readonly PendingAttachment[] | undefined): void;
   clearQuotes(): void;
   onError(sessionId: string, error: unknown): void;
@@ -64,6 +67,7 @@ export function composerFollowUp(deps: {
       const sent = await deps.enqueueMessage(sessionId, text,
         mode === 'steer' ? 'current_turn' : 'next_turn', pending, {
           ...deps.directoryOptions,
+          ...(metadata?.replacesLocalMessageId ? { replacesLocalMessageId: metadata.replacesLocalMessageId } : {}),
           ...(quotes ? { quotes: [...quotes] } : {}),
           ...(metadata?.workspaceFileReferences?.length
             ? { workspaceFileReferences: [...metadata.workspaceFileReferences] } : {}),

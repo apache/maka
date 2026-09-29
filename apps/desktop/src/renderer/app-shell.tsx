@@ -1512,10 +1512,11 @@ function AppShellContent({
       const pending = submittableAttachments;
       const quotes = quotesForSend();
       const ok = await send(swarmCommand.task, pending, {
+        replacesLocalMessageId: metadata?.replacesLocalMessageId,
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...directoryOptions,
-        ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
+        quotes,
+        ...(metadata?.workspaceFileReferences
           ? {
               workspaceFileReferences: rebaseWorkspaceFileReferences(
                 text,
@@ -1561,10 +1562,11 @@ function AppShellContent({
       const pending = submittableAttachments;
       const quotes = quotesForSend();
       const ok = await send(graphCommand.task, pending, {
+        replacesLocalMessageId: metadata?.replacesLocalMessageId,
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...directoryOptions,
-        ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
+        quotes,
+        ...(metadata?.workspaceFileReferences
           ? {
               workspaceFileReferences: rebaseWorkspaceFileReferences(
                 text,
@@ -1587,11 +1589,12 @@ function AppShellContent({
       : undefined;
     const quotes = quotesForSend();
     const ok = await send(text, pending, {
+      replacesLocalMessageId: metadata?.replacesLocalMessageId,
       waitForHostAdmission: revisionSend,
       targetSessionId: expectedRevisionDraft?.draftSessionId,
       onSessionResolved: commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
-      ...(quotes ? { quotes } : {}),
+      quotes,
       ...(workspaceFileReferences.length
         ? { workspaceFileReferences }
         : {}),

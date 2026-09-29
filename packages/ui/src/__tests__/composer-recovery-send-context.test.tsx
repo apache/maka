@@ -19,10 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act } from 'react';
+import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { Composer, type ComposerSendMetadata } from '../composer.js';
+import { Composer, type ComposerHandle, type ComposerSendMetadata } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
 import { useComposerAttachments } from '../use-composer-attachments.js';
 
@@ -79,6 +79,7 @@ async function harness(path: SendPath = 'submit') {
   const sends: Array<{ available: boolean; metadata?: ComposerSendMetadata }> = [];
   let attachments!: ReturnType<typeof useComposerAttachments>;
   let mounted = true;
+  const composer = createRef<ComposerHandle>();
 
   function Probe({ draftKey }: { draftKey: string }) {
     const staged = useComposerAttachments({
@@ -99,6 +100,7 @@ async function harness(path: SendPath = 'submit') {
     });
     attachments = staged;
     return <Composer
+      ref={composer}
       draftKey={draftKey}
       streaming={path !== 'submit'}
       allowAttachmentOnlySend
@@ -139,6 +141,17 @@ async function harness(path: SendPath = 'submit') {
     stagedAttachments: [{ approvalId: recoveryId, name: 'recovered.txt', mimeType: 'text/plain', size: 1 }],
   }));
   return {
+    async typeDraft(value: string) {
+      const input = document.querySelector<HTMLElement>('[contenteditable="true"]')!;
+      await act(() => {
+        input.textContent = value;
+        input.dispatchEvent(new window.Event('input', { bubbles: true }));
+      });
+    },
+    readDraft() { return composer.current!.getDraft('original'); },
+    async restoreOriginal(text = 'editable original') {
+      await act(() => composer.current!.appendDraft('original', text, [], 'paused-original'));
+    },
     released, events, sends, render, unmount,
     async submit() {
       await act(async () => {
@@ -163,6 +176,18 @@ async function harness(path: SendPath = 'submit') {
 }
 
 for (const path of ['submit', 'follow-up-enter', 'steer-enter'] as const) {
+  test(`${path} carries the paused original identity through the real composer send`, async () => {
+    const h = await harness(path);
+    await h.restoreOriginal();
+    await h.render('another');
+    await h.render('original');
+    await h.submit();
+    await h.resolveReference(true);
+    assert.equal(h.sends[0]?.metadata?.replacesLocalMessageId, 'paused-original');
+    await h.resolveAdmission(false);
+    await h.submit();
+    assert.equal(h.sends[1]?.metadata?.replacesLocalMessageId, 'paused-original', 'a refused send keeps replacement ownership');
+  });
   test(`${path} retains removed recovery attachments before waiting for Session references`, async () => {
     const h = await harness(path);
     await h.submit();
@@ -177,6 +202,53 @@ for (const path of ['submit', 'follow-up-enter', 'steer-enter'] as const) {
     assert.deepEqual(h.events, ['retain', 'wait', 'end']);
   });
 }
+
+test('an attachment-only edit keeps replacement ownership across Session switches', async () => {
+  const h = await harness();
+  await h.restoreOriginal('');
+  await h.render('another');
+  await h.render('original');
+  await h.submit();
+  await h.resolveReference(true);
+  assert.equal(h.sends[0]?.metadata?.replacesLocalMessageId, 'paused-original');
+  await h.resolveAdmission(true);
+});
+
+test('clearing only the body preserves the attachment edit identity', async () => {
+  const h = await harness();
+  await h.restoreOriginal();
+  await h.typeDraft('');
+  await h.render('another');
+  await h.render('original');
+  await h.submit();
+  await h.resolveReference(true);
+  assert.equal(h.sends[0]?.metadata?.replacesLocalMessageId, 'paused-original');
+});
+
+test('removing the last context after clearing the body abandons the edit', async () => {
+  const h = await harness();
+  await h.restoreOriginal();
+  await h.typeDraft('');
+  await h.removeAttachment();
+  await h.typeDraft('unrelated new message');
+  await h.submit();
+  await h.resolveReference(true);
+  assert.equal(h.sends[0]?.metadata?.replacesLocalMessageId, undefined);
+});
+
+test('successful replacement preserves newer text without tying its next send to the consumed original', async () => {
+  const h = await harness();
+  await h.restoreOriginal();
+  await h.submit();
+  await h.resolveReference(true);
+  assert.equal(h.sends[0]?.metadata?.replacesLocalMessageId, 'paused-original');
+  await h.typeDraft('newer draft');
+  await h.resolveAdmission(true);
+  assert.equal(h.readDraft(), 'newer draft');
+  await h.submit();
+  assert.equal(h.sends.length, 2);
+  assert.equal(h.sends[1]?.metadata?.replacesLocalMessageId, undefined);
+});
 
 for (const cancellation of ['reference-refused', 'draft-switch', 'unmount'] as const) {
   test(`${cancellation} ends the early send lease without calling onSend`, async () => {

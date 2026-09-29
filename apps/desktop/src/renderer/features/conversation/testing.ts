@@ -48,6 +48,7 @@ export function stubConversationServices(
     readFailedMessage: async () => { throw new Error('Failed-message recovery is not stubbed'); },
     releaseRecoveryAttachments: async () => undefined,
     cancelMessage: async () => undefined,
+    resumeMessage: async () => undefined,
     reconcileMessage: async () => undefined,
     subscribeChanges: () => () => undefined,
     skills: { listInvocable: async () => [] },

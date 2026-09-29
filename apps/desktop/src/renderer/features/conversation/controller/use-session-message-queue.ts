@@ -90,7 +90,8 @@ export function useSessionMessageQueue(options: {
     const handle = composer.current;
     if (!handle) return false;
     draftContextRestorer.current?.(targetSessionId, draft);
-    if (draft.text.trim()) handle.appendDraft(targetSessionId, draft.text, draft.inlineReferences);
+    if (draft.text.trim() || draft.replacesLocalMessageId)
+      handle.appendDraft(targetSessionId, draft.text, draft.inlineReferences, draft.replacesLocalMessageId);
     return true;
   }, []);
   // Surfaces the failure, then rethrows so the pending plate can settle its

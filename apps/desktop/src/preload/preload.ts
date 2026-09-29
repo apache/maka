@@ -2240,6 +2240,10 @@ const makaBridge = {
         throw error;
       }
     },
+    async resumeMessage(sessionId, messageId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      await invokeWhenReady('session-local:resume', session.scope, session.sessionId, messageId);
+    },
     async reconcileMessage(sessionId, messageId) {
       const session = await runtimeHostSessionRef(sessionId);
       await invokeWhenReady('session-local:reconcile', session.scope, session.sessionId, messageId);
@@ -2337,7 +2341,9 @@ const makaBridge = {
     },
     async submitMessage(sessionId, placement, command, options) {
       const session = await runtimeHostSessionRef(sessionId);
-      const { localDisplayPlacement, ...submitCommand } = command;
+      const { localDisplayPlacement, replacesLocalMessageId, ...submitCommand } = command;
+      if (replacesLocalMessageId && options?.waitForHostAdmission)
+        throw new Error('A paused local message must be replaced through local admission');
       if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
         throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
       }
@@ -2359,6 +2365,7 @@ const makaBridge = {
         placement,
         {
           ...submitCommand,
+          ...(replacesLocalMessageId ? { replacesLocalMessageId } : {}),
           ...(!options?.waitForHostAdmission && localDisplayPlacement ? { localDisplayPlacement } : {}),
           ...(command.retainedAttachments ? { retainedAttachments: hostAttachmentRefs(session, command.retainedAttachments) } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),

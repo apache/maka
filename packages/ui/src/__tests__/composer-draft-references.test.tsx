@@ -46,15 +46,20 @@ test('keyed draft appends preserve file reference offsets, isolation and clearin
     draft.setDraft('a', 'old @old.ts  ', [{ kind: 'workspace_file', value: '@old.ts', label: 'old.ts', start: 4 }]);
     await render('b');
     draft.setDraft('b', 'unrelated');
-    draft.appendDraft('a', '  check @src/index.ts  ', [{ kind: 'workspace_file', value: '@src/index.ts', label: 'index.ts', start: 8 }]);
+    draft.appendDraft('a', '  check @src/index.ts  ', [{ kind: 'workspace_file', value: '@src/index.ts', label: 'index.ts', start: 8 }], 'paused-original');
+    assert.equal(draft.replacementMessageId('a'), 'paused-original');
+    assert.equal(draft.replacementMessageId('b'), undefined);
     assert.equal(value, 'unrelated');
     assert.deepEqual(references, []);
     await render('a');
+    draft.saveCurrentDraft('edited @old.ts\n\ncheck @src/index.ts');
+    assert.equal(draft.replacementMessageId('a'), 'paused-original', 'typing preserves replacement ownership');
     assert.equal(value, 'old @old.ts\n\ncheck @src/index.ts');
     assert.deepEqual(references.map(({ value, start }) => ({ value, start })), [
       { value: '@old.ts', start: 4 }, { value: '@src/index.ts', start: 19 },
     ]);
     draft.clearDraft('a');
+    assert.equal(draft.replacementMessageId('a'), undefined);
     assert.deepEqual(references, []);
     await render('b');
     await render('a');
@@ -64,6 +69,15 @@ test('keyed draft appends preserve file reference offsets, isolation and clearin
     draft.appendDraft('a', '@same.ts', [{ kind: 'workspace_file', value: '@same.ts', label: 'same.ts', start: 0 }]);
     draft.setDraft('a', '@same.ts');
     assert.deepEqual(references, []);
+    draft.appendDraft('a', 'original', [], 'evicted-original');
+    await render('b');
+    for (let index = 0; index < 33; index++) draft.setDraft(`other-${index}`, 'other draft');
+    await render('a');
+    assert.equal(value, '');
+    assert.equal(draft.replacementMessageId('a'), undefined, 'evicting text also abandons replacement ownership');
+    value = 'unrelated new message';
+    draft.saveCurrentDraft();
+    assert.equal(draft.replacementMessageId('a'), undefined);
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, originals);

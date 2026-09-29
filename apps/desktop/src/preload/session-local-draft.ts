@@ -33,6 +33,7 @@ export function projectLocalMessageDraft(draft: DesktopLocalMessageDraft): Deskt
       ...(item.mimeType !== undefined ? { mimeType: item.mimeType } : {}) };
   });
   return {
+    ...(draft.replacesLocalMessageId ? { replacesLocalMessageId: draft.replacesLocalMessageId } : {}),
     messageId: draft.messageId, text: draft.text, attachments: draft.attachments,
     stagedAttachments, directoryReferences: draft.directoryReferences,
     quotes: draft.quotes, inlineReferences: draft.inlineReferences,

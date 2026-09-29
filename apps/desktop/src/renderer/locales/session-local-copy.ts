@@ -21,6 +21,10 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 const en = {
   saved: 'Waiting to send',
+  paused: 'Sending paused', resume: 'Continue sending',
+  pausedDetail: 'The original is saved. Edit it again to recover it after a restart. Clear the draft to discard edits; sending stays paused until you choose Continue sending.',
+  restoreUnavailable: 'Unable to restore the draft. The original is saved and paused. Try editing it again.',
+  resumeBlocked: 'Clear the draft, attachments and quotes before continuing to send the original message.',
   unknown: 'Delivery not confirmed', failed: 'Message not sent', checking: 'Checking delivery',
   offline: 'Waiting for a connection',
   remove: 'Delete failed message', cancel: 'Cancel sending', check: 'Check delivery',
@@ -39,6 +43,10 @@ const catalog = {
   en,
   'zh-CN': {
     saved: '等待发送',
+    paused: '已暂停发送', resume: '继续发送',
+    pausedDetail: '原消息已保存，重启后可再次编辑恢复。清空草稿即可放弃修改；只有选择“继续发送”才会发送原消息。',
+    restoreUnavailable: '无法恢复到输入框，原消息已保存并暂停发送，请再次编辑。',
+    resumeBlocked: '请先清空草稿、附件和引用，再继续发送原消息。',
     unknown: '发送结果待确认', failed: '消息未发送', checking: '正在确认发送结果',
     offline: '等待连接恢复',
     remove: '删除失败消息', cancel: '取消发送', check: '确认发送结果',
@@ -54,6 +62,10 @@ const catalog = {
   },
   'zh-TW': {
     saved: '等待傳送',
+    paused: '已暫停傳送', resume: '繼續傳送',
+    pausedDetail: '原訊息已儲存，重新啟動後可再次編輯恢復。清空草稿即可放棄修改；只有選擇「繼續傳送」才會傳送原訊息。',
+    restoreUnavailable: '無法恢復到輸入框，原訊息已儲存並暫停傳送，請再次編輯。',
+    resumeBlocked: '請先清空草稿、附件和引用，再繼續傳送原訊息。',
     unknown: '傳送結果待確認', failed: '訊息未傳送', checking: '正在確認傳送結果',
     offline: '等待連線恢復',
     remove: '刪除失敗訊息', cancel: '取消傳送', check: '確認傳送結果',

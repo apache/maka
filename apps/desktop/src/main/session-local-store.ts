@@ -50,6 +50,8 @@ export interface LocalMessageIntent {
   /** Written durably before the first dispatch, and immutable thereafter. */
   readonly originHostEpoch?: string;
   readonly attachmentsPrepared?: true;
+  /** Client-only replacement identity, never forwarded to the Host. */
+  readonly replacesLocalMessageId?: string;
 }
 
 export interface LocalOutboxRecord {
@@ -131,9 +133,11 @@ export class DesktopSessionLocalStore {
   }
 
   enqueue(partition: string, intent: LocalMessageIntent): LocalOutboxRecord {
+    const replacementId = intent.replacesLocalMessageId;
     const digest = createHash('sha256').update(JSON.stringify(intent.command));
     for (const staged of intent.staged)
       digest.update(JSON.stringify([staged.name, staged.mimeType, staged.base64]));
+    if (replacementId) digest.update(JSON.stringify(['replaces', replacementId]));
     const fingerprint = digest.digest('hex');
     const previous = this.get(partition, intent.command.messageId);
     if (previous) {
@@ -143,6 +147,10 @@ export class DesktopSessionLocalStore {
       }
       return previous;
     }
+    const source = replacementId ? this.get(partition, replacementId) : undefined;
+    if (replacementId && (!source || source.sessionId !== intent.command.sessionId ||
+        source.state !== 'paused' || source.intent.originHostEpoch || replacementId === intent.command.messageId))
+      throw new Error('The original message is no longer paused for editing');
     const { staged, ...metadata } = intent;
     const record: LocalOutboxRecord = {
       partition,
@@ -164,19 +172,26 @@ export class DesktopSessionLocalStore {
         .prepare('SELECT COALESCE(SUM(length(content)), 0) AS bytes FROM outbox_attachments')
         .get()!.bytes,
     );
+    const replacedBytes = source ? Number(this.#db.prepare(
+      'SELECT length(CAST(payload AS BLOB)) AS bytes FROM outbox WHERE partition = ? AND message_id = ?',
+    ).get(partition, source.messageId)!.bytes) + Number(this.#db.prepare(
+      'SELECT COALESCE(SUM(length(content)), 0) AS bytes FROM outbox_attachments WHERE partition = ? AND message_id = ?',
+    ).get(partition, source.messageId)!.bytes) : 0;
     const messageBytes =
       Buffer.byteLength(payload) +
       staged.reduce((bytes, item) => bytes + Buffer.byteLength(item.base64, 'base64'), 0);
     if (
-      Number(usage.count) >= 256 ||
+      Number(usage.count) - (source ? 1 : 0) >= 256 ||
       messageBytes > MAX_LOCAL_MESSAGE_BYTES ||
-      Number(usage.bytes) + storedBytes + messageBytes > MAX_OUTBOX_BYTES
+      Number(usage.bytes) + storedBytes - replacedBytes + messageBytes > MAX_OUTBOX_BYTES
     ) {
       throw new Error(
         'Local message storage is full; keep the draft and resolve pending messages first',
       );
     }
     this.#transaction(() => {
+      if (source) this.#db.prepare('DELETE FROM outbox WHERE partition = ? AND message_id = ?')
+        .run(partition, source.messageId);
       this.#db
         .prepare('INSERT INTO outbox VALUES (?, ?, ?, ?, ?, ?)')
         .run(

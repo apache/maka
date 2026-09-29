@@ -54,7 +54,9 @@ export interface ComposerDraftApi {
   /** Read one draft without changing which draft is active. */
   getDraft(key: string | undefined): string;
   /** Append text under an explicit session key without overwriting its draft. */
-  appendDraft(key: string | undefined, value: string, references?: readonly InlineReference[]): string;
+  appendDraft(key: string | undefined, value: string, references?: readonly InlineReference[], replacesMessageId?: string): string;
+  replacementMessageId(key: string | undefined): string | undefined;
+  consumeReplacement(key: string | undefined, messageId: string | undefined): void;
   /** The key the current input content is persisted under. */
   activeDraftKey(): string | undefined;
 }
@@ -72,14 +74,24 @@ export function useComposerDraft(input: {
   onDraftKeyChange(): void;
   /** Optional host persistence for drafts that must survive renderer replacement. */
   persistence?: ComposerDraftPersistence;
+  /** Structured context belonging to the rendered draft key, independent of body text. */
+  hasPendingContext?: boolean;
   references?: { read(): readonly InlineReference[]; write(value: readonly InlineReference[]): void };
 }): ComposerDraftApi {
   const draftStoreRef = useRef<Map<string, string>>(new Map());
+  const replacementsByKey = useRef(new Map<string, string>());
   const referencesByKey = useRef(new Map<string, readonly InlineReference[]>());
   const activeDraftKeyRef = useRef<string | undefined>(input.draftKey);
 
   function remember(key: string | undefined, value: string, references: readonly InlineReference[]) {
+    const previousKeys = [...draftStoreRef.current.keys()];
     rememberComposerDraft(draftStoreRef.current, key, value);
+    // Capacity eviction abandons the old edit. Emptying the current body is
+    // handled separately because its attachments or quotes may still remain.
+    for (const previousKey of previousKeys) {
+      if (previousKey !== key && !draftStoreRef.current.has(previousKey))
+        replacementsByKey.current.delete(previousKey);
+    }
     if (key && draftStoreRef.current.has(key)) {
       const retained = draftStoreRef.current.get(key)!;
       const removedPrefix = value.length - retained.length;
@@ -94,6 +106,8 @@ export function useComposerDraft(input: {
 
   function saveCurrentDraft(value?: string) {
     const nextValue = value ?? input.text.getValue();
+    if (!nextValue.trim() && !input.hasPendingContext)
+      replacementsByKey.current.delete(activeDraftKeyRef.current ?? '');
     remember(activeDraftKeyRef.current, nextValue, input.references?.read() ?? []);
     input.persistence?.write(activeDraftKeyRef.current, nextValue);
   }
@@ -103,6 +117,7 @@ export function useComposerDraft(input: {
   }
 
   function setDraft(key: string | undefined, value: string, references: readonly InlineReference[] = []) {
+    replacementsByKey.current.delete(key ?? '');
     if (activeDraftKeyRef.current === key) {
       input.text.setValue(value);
       input.references?.write(references);
@@ -116,11 +131,12 @@ export function useComposerDraft(input: {
     const remembered = readComposerDraft(draftStoreRef.current, key);
     if (remembered) return remembered;
     const persisted = input.persistence?.read(key) ?? '';
-    if (persisted) rememberComposerDraft(draftStoreRef.current, key, persisted);
+    if (persisted) remember(key, persisted, []);
     return persisted;
   }
 
-  function appendDraft(key: string | undefined, value: string, references: readonly InlineReference[] = []) {
+  function appendDraft(key: string | undefined, value: string, references: readonly InlineReference[] = [], replacesMessageId?: string) {
+    const replacement = replacesMessageId ?? replacementsByKey.current.get(key ?? '');
     const current = getDraft(key);
     const previous = activeDraftKeyRef.current === key ? input.references?.read() ?? [] : referencesByKey.current.get(key ?? '') ?? [];
     const next = appendPromptContextDraft(current, value);
@@ -128,6 +144,7 @@ export function useComposerDraft(input: {
     const combined = [...previous, ...references.map((reference) => ({ ...reference, start: reference.start + offset }))]
       .filter((reference) => reference.start >= 0 && next.slice(reference.start, reference.start + reference.value.length) === reference.value);
     setDraft(key, next, combined);
+    if (key && replacement) replacementsByKey.current.set(key, replacement);
     return next;
   }
 
@@ -146,7 +163,7 @@ export function useComposerDraft(input: {
     const rememberedDraft = readComposerDraft(draftStoreRef.current, nextKey);
     const nextDraft = rememberedDraft || input.persistence?.read(nextKey) || '';
     if (!rememberedDraft && nextDraft) {
-      rememberComposerDraft(draftStoreRef.current, nextKey, nextDraft);
+      remember(nextKey, nextDraft, []);
     }
     input.text.setValue(nextDraft);
     input.references?.write(referencesByKey.current.get(nextKey ?? '') ?? []);
@@ -156,9 +173,16 @@ export function useComposerDraft(input: {
     const key = activeDraftKeyRef.current;
     const persisted = input.persistence?.read(key);
     if (!persisted) return;
-    rememberComposerDraft(draftStoreRef.current, key, persisted);
+    remember(key, persisted, []);
     input.text.setValue(persisted);
   }, []);
+
+  useEffect(() => {
+    // This runs after the key swap, so the rendered context and text belong
+    // to the same draft. Removing the last chip also abandons an empty edit.
+    if (!input.hasPendingContext && !input.text.getValue().trim())
+      replacementsByKey.current.delete(input.draftKey ?? '');
+  });
 
   return {
     saveCurrentDraft,
@@ -167,5 +191,10 @@ export function useComposerDraft(input: {
     getDraft,
     appendDraft,
     activeDraftKey,
+    replacementMessageId: (key) => replacementsByKey.current.get(key ?? ''),
+    consumeReplacement: (key, messageId) => {
+      if (messageId && replacementsByKey.current.get(key ?? '') === messageId)
+        replacementsByKey.current.delete(key ?? '');
+    },
   };
 }

@@ -24,6 +24,8 @@ import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../shared
 import type { QuoteRef } from '@maka/core/events';
 import type { ComposerHandle } from '@maka/ui';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
+import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { createActionsDeps, installWindow, EMPTY_SKILL_INVOCATION } from './app-shell-chat-actions-fixture.js';
 
 const message: DesktopLocalMessage = {
   sessionId: 'session', messageId: 'message', text: 'hello', state: 'accepted', createdAt: 1,
@@ -37,12 +39,38 @@ test('ordinary delivery stays silent and admission receipts never claim live pro
   assert.deepEqual(localMessagePresentation({ ...message, state: 'saved', delivering: true }, 'en'), { tone: 'neutral' });
 });
 
+test('normal and follow-up sends carry local replacement identity to durable admission', async () => {
+  const received: Array<{ sessionId: string; replacement?: string }> = [];
+  const restoreWindow = installWindow({ sessions: {
+    submitMessage: async (sessionId: string, _placement: string, command: { replacesLocalMessageId?: string }) => {
+      received.push({ sessionId, replacement: command.replacesLocalMessageId });
+      return { ok: true, disposition: 'locally_saved', attachments: [], skillInvocation: EMPTY_SKILL_INVOCATION };
+    },
+  } });
+  try {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    const actions = createAppShellChatActions(deps);
+    assert.equal(await actions.send('edited', undefined, { replacesLocalMessageId: 'original' }), true);
+    assert.equal(await actions.enqueueMessage('session', 'edited', 'next_turn', undefined, { replacesLocalMessageId: 'original' }), true);
+    assert.deepEqual(received, [
+      { sessionId: 'session', replacement: 'original' }, { sessionId: 'session', replacement: 'original' },
+    ]);
+  } finally { restoreWindow(); }
+});
+
 test('offline or failed delivery retains actionable feedback', () => {
   const saved = { ...message, state: 'saved' as const };
   assert.equal(localMessagePresentation(saved, 'en').status, 'Waiting to send');
   assert.equal(localMessagePresentation({ ...saved, waitingForConnection: true }, 'en').status, 'Waiting for a connection');
   assert.equal(localMessagePresentation({ ...saved, delivering: true, error: 'Host not ready' }, 'en').status, 'Waiting to send');
   assert.equal(localMessagePresentation({ ...saved, state: 'failed', delivering: true }, 'en').status, 'Message not sent');
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const paused = localMessagePresentation({ ...saved, state: 'paused', delivering: true }, locale);
+    assert.ok(paused.status);
+    assert.ok(paused.detail);
+    assert.equal(paused.tone, 'neutral');
+  }
 });
 test('unknown outcome only promises checking when a check is active or scheduled', () => {
   const unknown = { ...message, state: 'unknown' as const };
@@ -74,13 +102,14 @@ test('follow-up recovery consumes context only after admission and preserves it 
         assert.equal(placement, 'next_turn');
         assert.equal(pending, undefined);
         assert.deepEqual(options.quotes, quotes);
+        assert.equal(options.replacesLocalMessageId, 'paused-original');
         if (outcome === 'error') throw new Error('delivery failed');
         return outcome;
       },
       clearSubmittedContext() { assert.equal(held, true); cleared++; }, clearQuotes() { cleared++; },
       onError() { errors++; },
     });
-    assert.equal(await submit('session', 'recovered', 'queue'), outcome === true);
+    assert.equal(await submit('session', 'recovered', 'queue', { replacesLocalMessageId: 'paused-original' }), outcome === true);
     assert.equal(cleared, outcome === true ? 2 : 0);
     assert.equal(errors, outcome === 'error' ? 1 : 0);
     assert.equal(held, false);

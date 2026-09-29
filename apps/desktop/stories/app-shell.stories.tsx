@@ -751,14 +751,14 @@ export const PromptSentBeforeTurnLands: Story = {
   },
 };
 
-function FailedLocalMessageHarness() {
+function FailedLocalMessageHarness({ paused = false }: { paused?: boolean }) {
   const locale = useUiLocale();
   const copy = getSessionLocalCopy(locale);
   const message: DesktopLocalMessage = {
     sessionId: activeSession.id, messageId: 'failed-local', createdAt: NOW,
-    state: 'failed', canCancel: true, placement: 'next_turn', localDisplayPlacement: 'current_turn',
+    state: paused ? 'paused' : 'failed', canCancel: true, placement: 'next_turn', localDisplayPlacement: 'current_turn',
     text: '请保留这条未发送的问题，我需要编辑后重新发送。',
-    attachments: [], inlineReferences: [], error: 'Host rejected the message before admission.',
+    attachments: [], inlineReferences: [], error: paused ? undefined : 'Host rejected the message before admission.',
   };
   const presentation = localMessagePresentation(message, locale);
   return <ComposedShell chat={{
@@ -767,7 +767,9 @@ function FailedLocalMessageHarness() {
       id: message.messageId, text: message.text, ts: message.createdAt, transientPlacement: 'transcript',
       deliveryStatus: presentation.status, deliveryDetail: presentation.detail, deliveryTone: presentation.tone,
       deliveryDiagnostic: message.error, deliveryDiagnosticLabel: copy.diagnostics,
-      deliveryActions: [{ label: copy.edit, onClick: noop }, { label: copy.remove, onClick: noop }],
+      deliveryActions: paused
+        ? [{ label: copy.editUnsent, onClick: noop }, { label: copy.resume, onClick: noop }, { label: copy.removeUnsent, onClick: noop }]
+        : [{ label: copy.edit, onClick: noop }, { label: copy.remove, onClick: noop }],
     }],
   }} />;
 }
@@ -815,6 +817,24 @@ export const FailedLocalMessage: Story = {
     (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
     await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
     await expect(getComputedStyle(failedMetadata).opacity).toBe('1');
+  },
+};
+
+// Real path: edit a locally waiting message, then discard the draft or restart.
+// The original remains paused, with recovery and explicit resumption available.
+// State transitions are tested through SessionLocalMessages; this story checks
+// the production message frame's status and action visibility in a browser.
+export const PausedLocalMessage: Story = {
+  render: () => <FailedLocalMessageHarness paused />,
+  play: async ({ canvasElement }) => {
+    const row = canvasElement.querySelector('[data-transient-message-id="failed-local"]')!;
+    await expect(row.querySelector('.maka-message-delivery [role="status"]')).toBeVisible();
+    const actions = row.querySelectorAll<HTMLButtonElement>('.maka-message-delivery-actions button');
+    await expect(actions).toHaveLength(3);
+    for (const button of actions) await expect(button).toBeVisible();
+    actions[1]!.focus();
+    await expect(actions[1]).toHaveFocus();
+    await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
   },
 };
 

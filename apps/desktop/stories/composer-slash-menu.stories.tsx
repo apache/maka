@@ -153,6 +153,7 @@ const conversationServices: ConversationServices = {
   readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in slash menu stories'); },
   releaseRecoveryAttachments: async () => undefined,
   cancelMessage: async () => undefined,
+  resumeMessage: async () => undefined,
   reconcileMessage: async () => undefined,
   subscribeChanges: () => () => undefined,
   sessions: {

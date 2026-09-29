@@ -25,6 +25,7 @@ export function localMessagePresentation(
   message: DesktopLocalMessage, locale: UiLocale,
 ): { status?: string; detail?: string; tone: 'neutral' | 'warning' | 'danger' } {
   const copy = getSessionLocalCopy(locale);
+  if (message.state === 'paused') return { status: copy.paused, detail: copy.pausedDetail, tone: 'neutral' };
   // Ordinary delivery keeps the prompt and answer geometry stable. Only a
   // condition the user can act on needs a separate local-delivery status.
   if (message.state === 'accepted' || message.state === 'sending'

@@ -38,6 +38,7 @@ type TransientUserMessage = TransientUserMessageProjection;
  * content carries a separate model-facing `text`.
  */
 export interface RestoredDraftContent {
+  replacesLocalMessageId?: string;
   text: string;
   stagedAttachments?: readonly { approvalId: string; name: string; mimeType?: string; size: number }[];
   inlineReferences?: readonly import('@maka/core/events').InlineReference[];

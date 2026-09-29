@@ -112,6 +112,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     releaseSnapshot = resolve;
   });
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
     ...sessionLocalServices,
     sessions: {
       readSnapshot: async () => snapshot,
@@ -254,6 +255,7 @@ test('send resolves the selected Session snapshot at the send boundary', async (
   };
   let reads = 0;
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
     ...sessionLocalServices,
     sessions: {
       ...queueStubs,
@@ -360,6 +362,7 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
   });
   let release!: (snapshot: SessionSnapshot) => void;
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
     ...sessionLocalServices,
     sessions: {
       ...queueStubs,

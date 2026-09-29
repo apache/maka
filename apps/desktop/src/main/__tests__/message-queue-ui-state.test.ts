@@ -45,11 +45,13 @@ function localDeliveryHarness(initial: readonly DesktopLocalMessage[]) {
   const published: string[] = [];
   const retired: string[] = [];
   const restored: Array<[string, RestoredDraftContent]> = [];
+  const draftState = { empty: true, available: true };
+  const released: string[] = [];
   let changed: (sessionId: string) => void = () => {};
   const services = stubConversationServices({
     listMessages: async (sessionId) => snapshots.get(sessionId) ?? [],
     readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
-    releaseRecoveryAttachments: async () => {},
+    releaseRecoveryAttachments: async (ids) => { released.push(...ids); },
     subscribeChanges: (handler) => { changed = handler; return () => {}; },
     cancelMessage: async () => {}, reconcileMessage: async () => {},
     sessions: {
@@ -79,14 +81,17 @@ function localDeliveryHarness(initial: readonly DesktopLocalMessage[]) {
     transient.delete(key);
   };
   return {
-    snapshots, transient, published, retired, restored, services, retire,
+    snapshots, transient, published, retired, restored, services, retire, draftState, released,
     refresh: async (sessionId: string) => act(async () => changed(sessionId)),
     render: async (sessionId: string, queue: readonly MessageQueueEntryProjection[] = [], runningTurnIds: readonly string[] = []) => {
       await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
         createElement(ConversationServicesProvider, { services, children: createElement(SessionLocalMessages, {
           sessionId, queue, session: { runningTurnIds }, publish, update, retire,
-          canRestoreDraft: () => true,
-          restoreUnsentDraft: (id, draft) => { restored.push([id, draft]); },
+          canRestoreDraft: () => draftState.empty,
+          restoreUnsentDraft: (id, draft) => {
+            if (!draftState.available) return false;
+            restored.push([id, draft]); return true;
+          },
           restoreDraft: () => { throw new Error('Failed-message drafts are not used in this test'); },
         }) }),
       })));
@@ -94,7 +99,7 @@ function localDeliveryHarness(initial: readonly DesktopLocalMessage[]) {
   };
 }
 
-test('unsent editing restores the Main snapshot to the original Session after navigation', async () => {
+test('navigation during unsent editing releases the unused approval without deleting the original', async () => {
   const message: DesktopLocalMessage = {
     sessionId: 'session-1', messageId: 'unsent', createdAt: 1, state: 'saved', canCancel: true,
     placement: 'next_turn', text: 'display summary', attachments: [], inlineReferences: [],
@@ -120,9 +125,46 @@ test('unsent editing restores the Main snapshot to the original Session after na
     directoryReferences: [], quotes: [], inlineReferences: [],
   };
   await act(async () => { complete(draft); await pending; });
-  assert.deepEqual(harness.restored, [['session-1', draft]]);
-  assert.equal(harness.transient.has('session-1:unsent'), false);
+  assert.deepEqual(harness.restored, []);
+  assert.deepEqual(harness.released, ['local-recovery:unsent']);
+  assert.equal(harness.transient.has('session-1:unsent'), true);
+  harness.snapshots.set('session-1', [{ ...message, state: 'paused' }]);
+  await harness.render('session-1');
+  assert.equal(harness.transient.get('session-1:unsent')?.deliveryStatus, 'Sending paused');
 });
+
+for (const refusal of ['unmounted', 'new-draft'] as const) {
+  test(`unsent restoration refused by ${refusal} retains paused recovery actions`, async () => {
+    const harness = localDeliveryHarness([{
+      sessionId: 'session-1', messageId: 'unsent', createdAt: 1, state: 'saved', canCancel: true,
+      placement: 'next_turn', text: 'original', attachments: [], inlineReferences: [],
+    }]);
+    harness.services.cancelMessage = async () => {
+      if (refusal === 'unmounted') harness.draftState.available = false;
+      else harness.draftState.empty = false;
+      return { messageId: 'unsent', text: 'original', attachments: [], directoryReferences: [], quotes: [], inlineReferences: [],
+        stagedAttachments: [{ approvalId: 'local-recovery:unused', name: 'note.txt', size: 1 }] };
+    };
+    let resumes = 0;
+    harness.services.resumeMessage = async () => { resumes++; };
+    await harness.render('session-1');
+    await act(async () => { await harness.transient.get('session-1:unsent')!.deliveryActions![0]!.onClick(); });
+    const row = () => harness.transient.get('session-1:unsent')!;
+    assert.deepEqual(harness.restored, []);
+    assert.deepEqual(harness.released, ['local-recovery:unused']);
+    assert.equal(row().deliveryStatus, 'Sending paused');
+    assert.match(row().deliveryDetail!, refusal === 'unmounted' ? /Unable to restore/ : /current draft/);
+    assert.deepEqual(row().deliveryActions!.map((action) => action.label), ['Edit', 'Continue sending', 'Delete unsent message']);
+    assert.equal(resumes, 0, 'a refused restore never resumes automatically');
+    harness.draftState.empty = false;
+    await act(async () => { await row().deliveryActions![1]!.onClick(); });
+    assert.equal(resumes, 0, 'an edited draft must be discarded before sending the original');
+    harness.draftState.empty = true;
+    assert.equal(resumes, 0, 'discarding edits alone keeps sending paused');
+    await act(async () => { await row().deliveryActions![1]!.onClick(); });
+    assert.equal(resumes, 1);
+  });
+}
 
 test('a failed unsent withdrawal leaves the row and draft untouched', async () => {
   const harness = localDeliveryHarness([{
@@ -408,7 +450,7 @@ test('local delivery recovery respects started Turns without republishing accept
   assert.deepEqual(cancelled, [['session-1', 'followup']]);
   assert.deepEqual(restored, [['session-1', 'followup']],
     'editing a never-dispatched message returns its text to the composer');
-  assert.equal(transient.has('followup'), false, 'edit retires the local row');
+  assert.equal(transient.get('followup')?.deliveryStatus, 'Sending paused', 'edit keeps the original recoverable');
   messages = messages.filter((message) => message.messageId !== 'followup')
     .map((message) => ({ ...message, delivering: true }));
   await act(async () => changed('session-1'));

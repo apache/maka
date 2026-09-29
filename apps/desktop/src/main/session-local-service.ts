@@ -184,7 +184,7 @@ export class DesktopSessionLocalService {
         const record = this.store.list(target.partition).find((record) => {
           // Settled messages retain their local copy without reserving delivery order.
           // Unresolved Host outcomes must still hold later messages behind them.
-          if (record.state === 'accepted' || record.state === 'failed') return false;
+          if (record.state === 'accepted' || record.state === 'failed' || record.state === 'paused') return false;
           if (blockedSessions.has(record.sessionId)) return false;
           blockedSessions.add(record.sessionId);
           return this.#probed.get(`${target.partition}:${record.messageId}`) !== target.client;
@@ -244,19 +244,31 @@ export class DesktopSessionLocalService {
     target: DesktopSessionLocalTarget, sessionId: string, messageId: string, senderId: number,
   ): DesktopLocalMessageDraft {
     const record = this.store.get(target.partition, messageId);
-    if (!record || record.sessionId !== sessionId || record.state !== 'saved' || record.intent.originHostEpoch) {
+    if (!record || record.sessionId !== sessionId || (record.state !== 'saved' && record.state !== 'paused') || record.intent.originHostEpoch) {
       throw new Error('Only a never-dispatched message can be withdrawn for editing');
     }
-    // Snapshot and cancellation are synchronous: delivery cannot claim the row
-    // between them. If snapshotting fails, the original remains in the outbox.
+    // Snapshot and pause are synchronous. Keep the original and its bytes until
+    // explicit deletion, resumption, or atomic replacement on send. Delivery
+    // preparation re-checks ownership after each await before dispatching.
     const draft = this.#editableDraft(target, record, senderId);
     try {
-      this.store.cancel(target.partition, messageId);
-      return draft;
+      this.store.update({ ...record, state: 'paused' });
+      return { ...draft, replacesLocalMessageId: messageId };
     } catch (error) {
       this.attachmentRecovery.release(senderId, draft.stagedAttachments.map((item) => item.approvalId));
       throw error;
     }
+  }
+
+  resumeMessage(target: DesktopSessionLocalTarget, sessionId: string, messageId: string): void {
+    const record = this.store.get(target.partition, messageId);
+    if (!record || record.sessionId !== sessionId || record.state !== 'paused' || record.intent.originHostEpoch)
+      throw new Error('Only a paused, never-dispatched message can resume');
+    this.store.update({ ...record, state: 'saved', error: undefined });
+    const key = `${target.partition}:${messageId}`;
+    clearTimeout(this.#retries.get(key));
+    this.#retries.delete(key);
+    this.#probed.delete(key);
   }
 
   #editableDraft(target: DesktopSessionLocalTarget, record: LocalOutboxRecord, senderId: number): DesktopLocalMessageDraft {
@@ -508,7 +520,7 @@ export class DesktopSessionLocalService {
     const stillOwned = () => {
       if (!this.#current(target)) return false;
       const current = this.store.get(record.partition, record.messageId);
-      return current !== undefined && current.state !== 'failed';
+      return current !== undefined && current.state !== 'failed' && current.state !== 'paused';
     };
     try {
       // A Message whose immutable dispatch epoch is gone cannot be replayed:
@@ -637,7 +649,7 @@ export class DesktopSessionLocalService {
     const stillOwned = () => {
       if (!this.#current(target)) return false;
       const current = this.store.get(target.partition, record.messageId);
-      return current !== undefined && current.state !== 'failed';
+      return current !== undefined && current.state !== 'failed' && current.state !== 'paused';
     };
     let resolution: TurnMessageExecutionResolution | undefined;
     try {
@@ -743,6 +755,12 @@ export function registerDesktopSessionLocalIpc(deps: {
   ipcMain.handle('session-local:edit', (event, scope: unknown, sessionId: string, messageId: string) =>
     service.readFailedMessage(service.target(scope), requiredId(sessionId), requiredId(messageId), event.sender.id),
   );
+  ipcMain.handle('session-local:resume', (_event, scope: unknown, sessionId: string, messageId: string) => {
+    const target = service.target(scope);
+    service.resumeMessage(target, requiredId(sessionId), requiredId(messageId));
+    deps.changed(target.scope, sessionId);
+    service.wake();
+  });
   ipcMain.handle('session-local:release-attachments', (event, approvalIds: unknown) =>
     service.attachmentRecovery.release(event.sender.id, approvalIds),
   );
@@ -842,6 +860,8 @@ export function registerDesktopSessionLocalIpc(deps: {
         throw new Error('Invalid message placement');
       const submitted = value && typeof value === 'object' ? value as Record<string, unknown> : {};
       const { localDisplayPlacement } = submitted;
+      const replacesLocalMessageId = submitted.replacesLocalMessageId === undefined
+        ? undefined : requiredId(submitted.replacesLocalMessageId);
       if (localDisplayPlacement !== undefined && localDisplayPlacement !== 'current_turn'
         && localDisplayPlacement !== 'next_turn')
         throw new Error('Invalid local display placement');
@@ -896,6 +916,7 @@ export function registerDesktopSessionLocalIpc(deps: {
         recovery.commit(() => prepared.commit(() =>
           service.store.enqueue(target.partition, {
             staged,
+            ...(replacesLocalMessageId ? { replacesLocalMessageId } : {}),
             ...(localDisplayPlacement ? { localDisplayPlacement } : {}),
             command: {
               sessionId,

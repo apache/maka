@@ -265,7 +265,7 @@ export interface ComposerHandle {
   /** Read a specific draft without changing the active input. */
   getDraft(draftKey: string): string;
   /** Append to a specific session draft without replacing newer text. */
-  appendDraft(draftKey: string, text: string, references?: readonly InlineReference[]): void;
+  appendDraft(draftKey: string, text: string, references?: readonly InlineReference[], replacesMessageId?: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
   /** Open the active Session's existing account-and-model picker. */
@@ -273,6 +273,7 @@ export interface ComposerHandle {
 }
 
 export interface ComposerSendMetadata {
+  replacesLocalMessageId?: string;
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
   followUpMode?: FollowUpMode;
 }
@@ -924,11 +925,15 @@ export const Composer = forwardRef<
     getDraft,
     appendDraft,
     activeDraftKey,
+    replacementMessageId,
+    consumeReplacement,
   } = useComposerDraft({
     text: textPort,
     draftKey: props.draftKey,
     onDraftKeyChange: resetPromptHistoryNavigation,
     persistence: props.draftPersistence,
+    hasPendingContext: Boolean(props.pendingAttachments?.length || props.pendingQuotes?.length
+      || props.pendingDirectories?.length || props.pendingSessionReferences?.length),
     references: { read: readDraftReferences, write: (references) => { restoredReferencesRef.current = references; } },
   });
   const { resetNavigation, rememberSentEntry, handleArrowKey } = useComposerHistory({
@@ -1399,9 +1404,9 @@ export const Composer = forwardRef<
       getDraft(draftKey: string) {
         return getDraft(draftKey);
       },
-      appendDraft(draftKey: string, nextText: string, references?: readonly InlineReference[]) {
+      appendDraft(draftKey: string, nextText: string, references?: readonly InlineReference[], replacesMessageId?: string) {
         focusIfActive(draftKey);
-        appendDraft(draftKey, nextText, references);
+        appendDraft(draftKey, nextText, references, replacesMessageId);
       },
       focus() {
         focusInput();
@@ -1440,6 +1445,7 @@ export const Composer = forwardRef<
     const editable = editableNode();
     const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
+    const replacesLocalMessageId = replacementMessageId(submittedDraftKey);
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
@@ -1454,6 +1460,7 @@ export const Composer = forwardRef<
       }
       if (!composerMountedRef.current || activeDraftKey() !== submittedDraftKey) return;
       const metadata: ComposerSendMetadata = {
+        ...(replacesLocalMessageId ? { replacesLocalMessageId } : {}),
         ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
         ...(followUpMode ? { followUpMode } : {}),
       };
@@ -1465,6 +1472,9 @@ export const Composer = forwardRef<
     }
     if (!composerMountedRef.current) return;
     if (sent === false) return;
+    // Admission already replaced the paused original. New text typed while
+    // awaiting it remains a fresh draft, even when it prevents text clearing.
+    consumeReplacement(submittedDraftKey, replacesLocalMessageId);
     // Save to both local ref and global persistence so the history
     // survives page reloads and is shared across all input surfaces.
     rememberSentEntry(text);

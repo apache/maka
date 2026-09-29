@@ -37,7 +37,7 @@ export function SessionLocalMessages(props: {
   readonly retire: (sessionId: string, messageId: string) => void;
   readonly canRestoreDraft: () => boolean;
   readonly restoreDraft: (draft: DesktopLocalMessageDraft) => void;
-  /** Queue editing retracts first and restores to the original Session's keyed draft. */
+  /** Local editing pauses the durable original before handing it to the composer. */
   readonly restoreUnsentDraft?: (sessionId: string, draft: RestoredDraftContent) => boolean | void;
 }): null {
   const services = useConversationServices();
@@ -148,23 +148,43 @@ export function SessionLocalMessages(props: {
         }
       }) });
       const restoreUnsentDraft = props.restoreUnsentDraft;
-      if (message.state === 'saved' && message.canCancel && restoreUnsentDraft) actions.push({
+      if ((message.state === 'saved' || message.state === 'paused') && message.canCancel && restoreUnsentDraft) actions.push({
         label: copy.editUnsent, icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />, disabled: !!busy,
         onClick: run(async () => {
+          const owner = generation.current;
+          if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
+            setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
+          }
           const draft = await services.cancelMessage(sessionId, message.messageId, { restoreDraft: true });
           if (!draft) throw new Error('The withdrawn draft is unavailable');
-          states.set(message.messageId, 'retired');
           setSnapshot((current) => current?.sessionId === sessionId
-            ? { ...current, messages: current.messages.filter((item) => item.messageId !== message.messageId) }
+            ? { ...current, messages: current.messages.map((item) => item.messageId === message.messageId
+              ? { ...item, state: 'paused' } : item) }
             : current);
-          retire(sessionId, message.messageId);
           let restored = false;
           try {
-            if (restoreUnsentDraft(sessionId, draft) === false) return;
+            if (generation.current !== owner || latest.current.sessionId !== sessionId) return;
+            if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
+              setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
+            }
+            if (restoreUnsentDraft(sessionId, draft) === false) {
+              setFeedback((current) => ({ ...current, [key]: copy.restoreUnavailable })); return;
+            }
             restored = true;
+            setFeedback((current) => ({ ...current, [key]: copy.pausedDetail }));
           } finally {
             if (!restored) await services.releaseRecoveryAttachments(draft.stagedAttachments.map((item) => item.approvalId));
           }
+        }),
+      });
+      if (message.state === 'paused') actions.push({
+        label: copy.resume, disabled: !!busy, onClick: run(async () => {
+          // Clear the edited draft first: resuming the original must not leave
+          // an editable duplicate ready to send from this composer.
+          if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
+            setFeedback((current) => ({ ...current, [key]: copy.resumeBlocked })); return;
+          }
+          await services.resumeMessage(sessionId, message.messageId);
         }),
       });
       if (message.canCancel && message.state !== 'unknown') actions.push({

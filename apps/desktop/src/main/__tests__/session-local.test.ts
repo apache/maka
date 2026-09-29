@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, stat, writeFile, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
@@ -1369,7 +1370,7 @@ test('repeated not_admitted proof refreshes an already failed dispatched row wit
   assert.equal(changed.length, 2, 'removed rows are never recreated or advertised as recoverable');
 });
 
-test('withdrawing a never-dispatched draft snapshots its attachment bytes before deleting the outbox row', async (t) => {
+test('editing a never-dispatched draft retains a paused durable original and its attachment bytes', async (t) => {
   const { store } = await database(t);
   const target: DesktopSessionLocalTarget = {
     partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
@@ -1383,15 +1384,134 @@ test('withdrawing a never-dispatched draft snapshots its attachment bytes before
   assert.equal(draft.text, 'hello');
   assert.equal(draft.stagedAttachments.length, 1);
   assert.deepEqual(projectLocalMessageDraft(draft), draft, 'only opaque approvals cross the preload boundary');
-  assert.equal(store.get(target.partition, source.messageId), undefined);
-  assert.deepEqual(store.stagedAttachments(target.partition, source.messageId), []);
+  assert.equal(store.get(target.partition, source.messageId)?.state, 'paused');
+  assert.equal(draft.replacesLocalMessageId, source.messageId);
+  assert.equal(store.stagedAttachments(target.partition, source.messageId).length, 1);
   const owner = { senderId: 7, partition: target.partition, scope: target.scope, sessionId: 'session-1' };
   assert.throws(() => service.attachmentRecovery.prepare({ ...owner, senderId: 8 }, draft.stagedAttachments), AttachmentIngestBlockedError);
   const prepared = service.attachmentRecovery.prepare(owner, draft.stagedAttachments);
-  assert.deepEqual(prepared.items, intent().staged, 'removing the original row does not lose the recoverable bytes');
+  assert.deepEqual(prepared.items, intent().staged);
   prepared.commit(() => undefined);
   prepared.dispose();
   assert.throws(() => service.attachmentRecovery.prepare(owner, draft.stagedAttachments), AttachmentIngestBlockedError);
+});
+
+test('paused originals survive approval expiry and restart without dispatching until explicitly resumed', async (t) => {
+  const db = await database(t);
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  const submitted: string[] = [];
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    client: client('epoch'), submit: async (command) => { submitted.push(command.messageId); return accepted; },
+  };
+  let service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  db.store.enqueue(target.partition, intent());
+  const draft = service.cancelUnsentToDraft(target, 'session-1', 'message-1', 7);
+  now += 31 * 60 * 1000;
+  const owner = { senderId: 7, partition: target.partition, scope: target.scope, sessionId: 'session-1' };
+  assert.throws(() => service.attachmentRecovery.prepare(owner, draft.stagedAttachments), AttachmentIngestBlockedError);
+  const renewed = service.cancelUnsentToDraft(target, 'session-1', 'message-1', 7);
+  const prepared = service.attachmentRecovery.prepare(owner, renewed.stagedAttachments);
+  assert.deepEqual(prepared.items, intent().staged);
+  prepared.dispose();
+  service.close();
+  db.reopen();
+  service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  service.wake();
+  await nextTurn(); await nextTurn();
+  assert.deepEqual(submitted, []);
+  assert.equal(db.store.get(target.partition, 'message-1')?.state, 'paused');
+  assert.equal(service.cancelUnsentToDraft(target, 'session-1', 'message-1', 7).stagedAttachments.length, 1);
+  assert.throws(() => service.resumeMessage(target, 'other-session', 'message-1'), /paused/);
+  service.resumeMessage(target, 'session-1', 'message-1');
+  service.wake();
+  await nextTurn(); await nextTurn();
+  assert.deepEqual(submitted, ['message-1']);
+  assert.equal(db.store.get(target.partition, 'message-1')?.state, 'accepted');
+});
+
+test('editing fences an in-flight attachment upload and retains bytes instead of dispatching', async (t) => {
+  const db = await database(t);
+  const entered = deferred<void>();
+  const uploaded = deferred<void>();
+  const base = client('epoch');
+  let submits = 0;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    client: { ...base, ingestAttachment: async (input) => {
+      entered.resolve(); await uploaded.promise; return base.ingestAttachment(input);
+    } },
+    submit: async () => { submits++; return accepted; },
+  };
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  db.store.enqueue(target.partition, intent());
+  service.wake();
+  await entered.promise;
+  service.cancelUnsentToDraft(target, 'session-1', 'message-1', 7);
+  uploaded.resolve();
+  await nextTurn(); await nextTurn();
+  assert.equal(submits, 0);
+  assert.equal(db.store.get(target.partition, 'message-1')?.state, 'paused');
+  assert.equal(Buffer.from(db.store.stagedAttachments(target.partition, 'message-1')[0]!.content).toString(), 'original bytes');
+  // A paused original does not block unrelated later input in the same Session.
+  db.store.enqueue(target.partition, { ...intent('later'), staged: [] });
+  service.wake();
+  await nextTurn(); await nextTurn();
+  assert.equal(submits, 1);
+  assert.equal(db.store.get(target.partition, 'message-1')?.state, 'paused');
+});
+
+test('local submit atomically replaces only a paused original, retaining it on failure', async (t) => {
+  const db = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  db.store.enqueue(target.partition, intent());
+  type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+  const handlers = new Map<string, Parameters<Ipc['handle']>[1]>();
+  registerDesktopSessionLocalIpc({
+    ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler); } },
+    service, approvals: createAttachmentApprovalRegistry(), resizeImage: async (bytes) => bytes,
+    resolveWorkspace: async () => { throw new Error('Unexpected workspace request'); }, changed() {},
+  });
+  const event = { sender: { id: 7 } } as IpcMainInvokeEvent;
+  const draft = projectLocalMessageDraft(await handlers.get('session-local:cancel')!(
+    event, target.scope, 'session-1', 'message-1', { restoreDraft: true },
+  ));
+  const submit = (messageId: string, attachmentItems = draft.stagedAttachments, sessionId = 'session-1') =>
+    handlers.get('session-local:submit')!(event, target.scope, sessionId, 'next_turn', {
+      messageId, text: 'edited input', replacesLocalMessageId: draft.replacesLocalMessageId, attachmentItems,
+    });
+  assert.deepEqual(await submit('bad-attachment', [{ approvalId: 'local-recovery:expired', name: 'lost', size: 1 }]),
+    { ok: false, reason: 'attachment_blocked', code: 'source_expired' });
+  await assert.rejects(() => submit('wrong-session', [], 'session-2'), /no longer paused/);
+  assert.equal(db.store.get(target.partition, 'message-1')?.state, 'paused');
+  assert.equal(db.store.stagedAttachments(target.partition, 'message-1').length, 1);
+  const connection = new DatabaseSync(db.path);
+  try {
+    connection.exec("CREATE TRIGGER reject_replacement BEFORE INSERT ON outbox WHEN NEW.message_id = 'replacement' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END");
+    await assert.rejects(() => submit('replacement'), /injected write failure/);
+    assert.equal(db.store.get(target.partition, 'message-1')?.state, 'paused', 'rollback restores the deleted source row');
+    assert.equal(db.store.stagedAttachments(target.partition, 'message-1').length, 1, 'cascade deletion also rolls back');
+    assert.equal(db.store.get(target.partition, 'replacement'), undefined);
+    connection.exec('DROP TRIGGER reject_replacement');
+  } finally { connection.close(); }
+  // Replacing one entry at the quota must not need space for a duplicate copy.
+  for (let index = 0; index < 255; index++) db.store.enqueue(target.partition, { ...intent(`full-${index}`), staged: [] });
+  assert.equal((await submit('replacement')).disposition, 'locally_saved');
+  assert.equal(db.store.get(target.partition, 'message-1'), undefined);
+  assert.equal(db.store.get(target.partition, 'replacement')?.state, 'saved');
+  assert.equal(Buffer.from(db.store.stagedAttachments(target.partition, 'replacement')[0]!.content).toString(), 'original bytes');
+  await assert.rejects(() => submit('duplicate', []), /no longer paused/);
+  assert.equal(db.store.get(target.partition, 'duplicate'), undefined);
+  service.close(); db.reopen();
+  assert.equal(db.store.get(target.partition, 'message-1'), undefined);
+  assert.equal(db.store.get(target.partition, 'replacement')?.state, 'saved');
 });
 
 test('withdrawing for editing never cancels dispatched or uncertain messages', async (t) => {

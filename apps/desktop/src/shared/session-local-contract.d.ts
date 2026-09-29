@@ -25,7 +25,7 @@ import type {
 } from '@maka/core/events';
 import type { DesktopTranscriptBatchPayload } from '../preload/transcript-contract.js';
 
-export type DesktopLocalMessageState = 'saved' | 'sending' | 'accepted' | 'unknown' | 'failed';
+export type DesktopLocalMessageState = 'saved' | 'paused' | 'sending' | 'accepted' | 'unknown' | 'failed';
 
 /** Presentation only; the durable command and attachment bytes stay in Main. */
 export interface DesktopLocalMessage {
@@ -54,6 +54,8 @@ export interface DesktopLocalMessage {
 /** Read on demand for editing a definite failure; reading never consumes the original. */
 export interface DesktopLocalMessageDraft {
   readonly messageId: string;
+  /** Original paused message replaced only when this draft is durably enqueued. */
+  readonly replacesLocalMessageId?: string;
   readonly text: string;
   readonly attachments: readonly AttachmentRef[];
   /** Opaque, scoped, one-shot approvals; attachment bytes never cross into the renderer. */
@@ -73,8 +75,10 @@ export interface DesktopSessionLocalBridge {
   readFailedMessage(sessionId: string, messageId: string): Promise<DesktopLocalMessageDraft>;
   /** Release exact recovery approvals owned by this renderer, even after changing Host or Session. */
   releaseRecoveryAttachments(approvalIds: readonly string[]): Promise<void>;
-  /** Only an intent that has never been dispatched can be cancelled locally. */
+  /** Delete a cancellable local copy; restoreDraft pauses a never-dispatched original without deleting it. */
   cancelMessage(sessionId: string, messageId: string, options?: { restoreDraft: true }): Promise<DesktopLocalMessageDraft | void>;
+  /** Explicitly resume the original, never-dispatched paused message. */
+  resumeMessage(sessionId: string, messageId: string): Promise<void>;
   /** Reconcile the same immutable command; never turn an unknown outcome into a new execution. */
   reconcileMessage(sessionId: string, messageId: string): Promise<void>;
   readTranscript(sessionId: string): Promise<DesktopCachedTranscript | null>;
