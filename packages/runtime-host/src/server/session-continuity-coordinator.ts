@@ -756,11 +756,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       ) {
         throw new Error('Runtime event does not belong to the canonical active root Turn');
       }
-      if (event.type === 'provider_retry') {
-        this.#commitLiveProjection(state, recordProviderRetry(state.canonical, event));
-        return;
-      }
-      this.#commitLiveProjection(state, clearProviderRetry(state.canonical));
+      const projection =
+        event.type === 'provider_retry'
+          ? recordProviderRetry(state.canonical, event)
+          : clearProviderRetry(state.canonical);
+      this.#commitLiveProjection(state, projection);
+      if (event.type === 'provider_retry') return;
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';

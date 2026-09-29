@@ -892,12 +892,14 @@ export async function resolveProjectLocation(input: {
   if (input.intent === 'selected' && canonicalPath !== git.worktreeRoot) {
     return folder();
   }
-  return {
-    canonicalPath,
-    identity: `git:${git.commonDir}`,
-    kind: 'git',
-    git,
-  };
+  return gitLocation(canonicalPath, git);
+}
+
+function gitLocation(
+  canonicalPath: string,
+  git: NonNullable<ResolvedProjectLocation['git']>,
+): ResolvedProjectLocation {
+  return { canonicalPath, identity: `git:${git.commonDir}`, kind: 'git', git };
 }
 
 function isPathWithin(root: string, candidate: string): boolean {
