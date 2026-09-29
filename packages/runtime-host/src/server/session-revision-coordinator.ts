@@ -20,6 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
@@ -345,7 +346,10 @@ export class HostSessionRevisionCoordinator {
         input.sourceTurnId === undefined
           ? { messages: [], events: [] }
           : await this.options.manager.readConversationCopySnapshot(input.sourceSessionId);
-    } catch {
+    } catch (error) {
+      console.error(
+        `[runtime-host] session conversation copy could not read the source ledger (${input.sourceSessionId}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
       return copyFailure('persistence_failed', 'Source conversation ledger is unavailable');
     }
     // An empty copy carries no source transcript: skip the slice so a side
@@ -384,6 +388,9 @@ export class HostSessionRevisionCoordinator {
           'Session conversation copy does not yet support continuation authority facts',
         );
       }
+      console.error(
+        `[runtime-host] session conversation copy could not prepare the source lineage (${input.sourceSessionId}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
       return copyFailure('persistence_failed', 'Source conversation lineage is unavailable');
     }
     if (

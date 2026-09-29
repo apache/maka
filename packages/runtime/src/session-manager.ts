@@ -4948,11 +4948,12 @@ export class SessionManager {
   private classifyRuntimeEventRecovery(
     inspected: AgentRunInspectModel,
   ): AgentRunRecoveryDecision | undefined {
-    if (!inspected.terminalRuntimeFact) return undefined;
-    return runtimeTerminalFactToRecoveryDecision(
-      inspected.invocation,
-      inspected.terminalRuntimeFact,
-    );
+    const fact = inspected.terminalRuntimeFact;
+    // A handed-off run ended on purpose; its continuation is owned by the
+    // handoff claim saga, and generic restart repair must not manufacture an
+    // outcome for it.
+    if (!fact || fact.runStatus === 'handed_off') return undefined;
+    return runtimeTerminalFactToRecoveryDecision(inspected.invocation, fact);
   }
 
   private async applyAgentRunRecovery(
@@ -5520,6 +5521,11 @@ function runtimeTerminalFactToRecoveryDecision(
   invocation: RuntimeInvocationRecord,
   fact: RuntimeEventTerminalFact,
 ): AgentRunRecoveryDecision {
+  // classifyRuntimeEventRecovery filters handed-off runs before this; the
+  // guard keeps the recovery status type honest at the boundary.
+  if (fact.runStatus === 'handed_off') {
+    throw new Error('A handed-off run has no recovery decision');
+  }
   return {
     runId: fact.runId,
     turnId: fact.turnId,

@@ -812,7 +812,13 @@ export async function cloneConversationRuntimeLedger(
       await input.runStore.appendEvent(input.referenceMap.targetSessionId, runId, clonedEvent);
     }
 
-    if (plan.terminal.kind === 'fact' && terminalEvent) {
+    // A handed-off run's pause terminal travels with the run's imported events
+    // and carries no committable status by design; the copy keeps it as-is.
+    if (
+      plan.terminal.kind === 'fact' &&
+      plan.terminal.fact.runStatus !== 'handed_off' &&
+      terminalEvent
+    ) {
       await commitTerminalRunWithRuntimeFact({
         runtimeEventStore: input.runtimeEventStore,
         newId: input.newId,
