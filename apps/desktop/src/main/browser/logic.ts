@@ -119,6 +119,7 @@ export interface BrowserStateSnapshot {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
+  loadError?: BrowserState['loadError'];
 }
 
 /**
@@ -135,5 +136,6 @@ export function deriveBrowserState(snapshot: BrowserStateSnapshot): BrowserState
     loading: snapshot.loading,
     secure: /^https:\/\//i.test(snapshot.url),
     hasPage: snapshot.url !== '' && !snapshot.url.startsWith('about:'),
+    loadError: snapshot.loadError ?? null,
   };
 }

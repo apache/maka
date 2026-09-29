@@ -9,7 +9,7 @@ Policy: every package must resolve to an ASF-compatible SPDX license. Compound
 expressions record the compatible selected license. Packages without a shipped
 license file require an exact name@version text override in the generator.
 
-Package: @agentclientprotocol/sdk@1.4.0
+Package: @agentclientprotocol/sdk@1.5.0
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/agentclientprotocol/typescript-sdk.git
@@ -616,7 +616,7 @@ Apache License
 
 ================================================================================
 
-Package: @earendil-works/pi-tui@0.85.1
+Package: @earendil-works/pi-tui@0.87.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/earendil-works/pi.git#packages/tui
@@ -700,7 +700,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: @larksuiteoapi/node-sdk@1.73.3
+Package: @larksuiteoapi/node-sdk@1.74.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/larksuite/node-sdk.git
@@ -752,7 +752,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 
-Package: @modelcontextprotocol/client@2.0.0
+Package: @modelcontextprotocol/client@2.1.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -977,7 +977,7 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/core@2.0.0
+Package: @modelcontextprotocol/core@2.1.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -1723,7 +1723,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @types/node@26.5.1
+Package: @types/node@26.6.3
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git#types/node
@@ -4721,7 +4721,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: image-dimensions@2.5.1
+Package: image-dimensions@2.6.0
 Declared license: MIT
 Selected license: MIT
 Repository: sindresorhus/image-dimensions
@@ -5574,10 +5574,10 @@ software or this license, under any kind of legal claim.***
 
 ================================================================================
 
-Package: marked@18.0.5
+Package: marked@18.0.11
 Declared license: MIT
 Selected license: MIT
-Repository: git://github.com/markedjs/marked.git
+Repository: git+https://github.com/markedjs/marked.git
 
 --- LICENSE ---
 # License information
@@ -7361,7 +7361,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: systeminformation@5.33.10
+Package: systeminformation@5.33.13
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/sebhildebrandt/systeminformation.git
@@ -7444,67 +7444,7 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: undici@7.29.1
-Declared license: MIT
-Selected license: MIT
-Repository: git+https://github.com/nodejs/undici.git
-
---- LICENSE ---
-MIT License
-
-Copyright (c) Matteo Collina and Undici contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
 Package: undici@7.30.0
-Declared license: MIT
-Selected license: MIT
-Repository: git+https://github.com/nodejs/undici.git
-
---- LICENSE ---
-MIT License
-
-Copyright (c) Matteo Collina and Undici contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
-Package: undici@8.10.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git

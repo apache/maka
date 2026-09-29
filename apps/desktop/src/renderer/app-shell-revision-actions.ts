@@ -57,7 +57,6 @@ export type TurnRevisionDraft = {
   copyPhase: SessionCopyAttemptPhase;
   /** Active owner of the draft. Changes to the branch child after prepare. */
   draftSessionId: string;
-  originalText: string;
   /** Composer text that was present before edit began; restored on cancel.
    *  Staged Skills ride along inside it as `/skill:<id>` chips. */
   previousComposerText: string;
@@ -173,7 +172,6 @@ export function createAppShellRevisionActions(deps: {
       copyId: copyAttempt.copyId,
       copyPhase: copyAttempt.phase,
       draftSessionId: sessionId,
-      originalText: prompt,
       previousComposerText: composerRef.current?.getText() ?? '',
     });
     composerRef.current?.setText(prompt);

@@ -20,6 +20,7 @@
 import type { WorkbarServices } from './ports.js';
 
 export { WorkbarServicesProvider } from './services-context.js';
+export { BrowserPanel } from './tools/browser/browser-panel.js';
 export type {
   WorkbarServices,
   SessionTracePage,
