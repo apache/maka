@@ -31,11 +31,27 @@ export function capLines(text: string): { body: string; capped: number } {
   };
 }
 
-export function formatBytes(bytes: number): string {
+const BYTE_UNITS = ['KB', 'MB', 'GB', 'TB'] as const;
+
+/**
+ * Binary-scaled size (1 KB = 1024 B), one decimal above bytes. A locale only
+ * changes the decimal separator; the unit labels stay the same.
+ */
+export function formatBytes(bytes: number, locale?: UiLocale): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   if (bytes < 1024) return `${Math.round(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const number = locale
+    ? new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(
+        value,
+      )
+    : value.toFixed(1);
+  return `${number} ${BYTE_UNITS[unit]}`;
 }
 
 export function formatDuration(ms: number | undefined): string | null {

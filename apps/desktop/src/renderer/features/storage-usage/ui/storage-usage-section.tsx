@@ -19,32 +19,27 @@
 
 import { useEffect, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
-import { Button, useUiLocale } from '@maka/ui';
-import type { StorageUsageKind, StorageUsageQueryResult } from '@maka/runtime-host/protocol';
+import { Button, formatBytes, useUiLocale } from '@maka/ui';
+import { STORAGE_USAGE_KINDS, type StorageUsageQueryResult } from '@maka/runtime-host/protocol';
 import {
   SettingsRow,
   SettingsSection,
+  useOptionalRuntimeHostSettingsGenerationKey,
   useOptionalRuntimeHostSettingsTarget,
 } from '../../../application/contracts/settings-presentation/index.js';
 import { getStorageUsageCopy } from '../../../locales/storage-usage-copy.js';
-import { formatStorageSize } from '../model/format-storage-size.js';
 import { useOptionalStorageUsageServices } from '../services-context.js';
-
-/** Largest-first would reorder between measurements; a fixed order reads the same each visit. */
-const KIND_ORDER: readonly StorageUsageKind[] = [
-  'transcript',
-  'runtime',
-  'artifacts',
-  'context_offload',
-  'memory',
-  'usage_history',
-  'database',
-];
 
 type Measurement =
   | { readonly status: 'loading'; readonly previous?: StorageUsageQueryResult }
   | { readonly status: 'ready'; readonly usage: StorageUsageQueryResult }
   | { readonly status: 'failed' };
+
+/** Measurements belong to one Host generation; another Host's numbers are never shown. */
+interface ScopedMeasurement {
+  readonly hostKey: string | undefined;
+  readonly measurement: Measurement;
+}
 
 /**
  * Settings · Data · Storage: what the selected Runtime Host's data occupies.
@@ -52,33 +47,45 @@ type Measurement =
  */
 export function StorageUsageSection(props: { readonly hostVerified: boolean }) {
   const host = useOptionalRuntimeHostSettingsTarget();
+  const hostKey = useOptionalRuntimeHostSettingsGenerationKey();
   const services = useOptionalStorageUsageServices();
   const locale = useUiLocale();
   const copy = getStorageUsageCopy(locale);
-  const [measurement, setMeasurement] = useState<Measurement>({ status: 'loading' });
+  const [scoped, setScoped] = useState<ScopedMeasurement>({
+    hostKey,
+    measurement: { status: 'loading' },
+  });
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!host || !services || !props.hostVerified) return;
     let current = true;
-    setMeasurement((previous) => ({
-      status: 'loading',
-      ...(previous.status === 'ready' ? { previous: previous.usage } : {}),
+    setScoped((previous) => ({
+      hostKey,
+      measurement: {
+        status: 'loading',
+        // A refresh keeps the last figures on screen; a new Host starts empty.
+        ...(previous.hostKey === hostKey && previous.measurement.status === 'ready'
+          ? { previous: previous.measurement.usage }
+          : {}),
+      },
     }));
     services.loadUsage(host).then(
       (usage) => {
-        if (current) setMeasurement({ status: 'ready', usage });
+        if (current) setScoped({ hostKey, measurement: { status: 'ready', usage } });
       },
       () => {
-        if (current) setMeasurement({ status: 'failed' });
+        if (current) setScoped({ hostKey, measurement: { status: 'failed' } });
       },
     );
     return () => {
       current = false;
     };
-  }, [attempt, host, props.hostVerified, services]);
+  }, [attempt, host, hostKey, props.hostVerified, services]);
 
   if (!host || !services) return null;
+  const measurement: Measurement =
+    scoped.hostKey === hostKey ? scoped.measurement : { status: 'loading' };
   const usage =
     measurement.status === 'ready'
       ? measurement.usage
@@ -86,11 +93,11 @@ export function StorageUsageSection(props: { readonly hostVerified: boolean }) {
         ? measurement.previous
         : undefined;
   const size = (bytes: number, exact: boolean) => {
-    const formatted = formatStorageSize(bytes, locale);
+    const formatted = formatBytes(bytes, locale);
     return exact ? formatted : copy.approximately(formatted);
   };
   const totals = usage
-    ? KIND_ORDER.flatMap((kind) => usage.totals.filter((total) => total.kind === kind))
+    ? STORAGE_USAGE_KINDS.flatMap((kind) => usage.totals.filter((total) => total.kind === kind))
     : [];
   const totalBytes = totals.reduce((sum, total) => sum + total.bytes, 0);
   const placeholder = measurement.status === 'failed' ? copy.loadFailed : copy.loading;
@@ -140,7 +147,7 @@ export function StorageUsageSection(props: { readonly hostVerified: boolean }) {
             align="start"
             end={(
               <span className="settingsReadOnlyValue">
-                {formatStorageSize(usage.reclaimableBytes, locale)}
+                {formatBytes(usage.reclaimableBytes, locale)}
               </span>
             )}
           />

@@ -18,43 +18,30 @@
  */
 
 import { generalizedErrorMessage } from '@maka/core/redaction';
-import type {
-  InteractiveStorageFootprintReader,
-  StorageFootprint,
-} from '@maka/storage/storage-writer-composition';
-import type {
-  OperationOutcome,
-  StorageUsageQueryInput,
-  StorageUsageQueryResult,
-} from '../protocol/index.js';
+import type { InteractiveStorageFootprintReader } from '@maka/storage/storage-writer-composition';
+import type { OperationOutcome, StorageUsageQueryResult } from '../protocol/index.js';
 import type { StorageUsageOperationHandlerMap } from './operation-dispatcher.js';
-
-/**
- * State Root totals scan whole tables, so they are shared for a short while.
- * Per-Session figures are index lookups and are always read fresh.
- */
-export const STORAGE_USAGE_TOTALS_TTL_MS = 15_000;
-
-interface MeasuredTotals {
-  readonly measuredAt: number;
-  readonly footprint: StorageFootprint;
-}
 
 export interface HostStorageUsageCoordinatorOptions {
   readonly footprint: InteractiveStorageFootprintReader;
   readonly now?: () => number;
 }
 
+type Failure = Extract<OperationOutcome<'storage.usage.query'>, { ok: false }>;
+
 /** Read-only storage visibility: measures, never reclaims or deletes. */
 export class HostStorageUsageCoordinator {
   readonly handlers: StorageUsageOperationHandlerMap = {
-    'storage.usage.query': (input) => this.#query(input),
+    'storage.usage.query': () => this.#queryTotals(),
+    'storage.usage.sessions.query': (input) =>
+      this.#run(async () => ({
+        sessions: await this.#footprint.measureSessions(input.sessionIds),
+      })),
   };
 
   readonly #footprint: InteractiveStorageFootprintReader;
   readonly #now: () => number;
-  #totals: MeasuredTotals | undefined;
-  #measuring: Promise<MeasuredTotals> | undefined;
+  #measuring: Promise<StorageUsageQueryResult> | undefined;
   #draining = false;
 
   constructor(options: HostStorageUsageCoordinatorOptions) {
@@ -66,23 +53,26 @@ export class HostStorageUsageCoordinator {
     this.#draining = true;
   }
 
-  async #query(input: StorageUsageQueryInput): Promise<OperationOutcome<'storage.usage.query'>> {
+  #queryTotals(): Promise<OperationOutcome<'storage.usage.query'>> {
+    // Requests that arrive while a measurement runs share it; the next one
+    // after it settles measures again, so a refresh always reads fresh sizes.
+    return this.#run(() => {
+      this.#measuring ??= this.#footprint
+        .measure()
+        .then((footprint) => ({ measuredAt: this.#now(), ...footprint }))
+        .finally(() => {
+          this.#measuring = undefined;
+        });
+      return this.#measuring;
+    });
+  }
+
+  async #run<T>(measure: () => Promise<T>): Promise<{ ok: true; result: T } | Failure> {
     if (this.#draining) {
       return { ok: false, error: { code: 'host_draining', message: 'Runtime Host is draining' } };
     }
     try {
-      const [totals, sessions] = await Promise.all([
-        this.#readTotals(),
-        input.sessionIds ? this.#footprint.measureSessions(input.sessionIds) : undefined,
-      ]);
-      const result: StorageUsageQueryResult = {
-        measuredAt: totals.measuredAt,
-        totals: totals.footprint.totals,
-        reclaimableBytes: totals.footprint.reclaimableBytes,
-        worktreeCount: totals.footprint.worktreeCount,
-        ...(sessions ? { sessions } : {}),
-      };
-      return { ok: true, result };
+      return { ok: true, result: await measure() };
     } catch (error) {
       console.error(
         `[runtime-host] storage usage could not be measured: ${generalizedErrorMessage(error)}`,
@@ -92,24 +82,5 @@ export class HostStorageUsageCoordinator {
         error: { code: 'persistence_failed', message: 'Storage usage could not be measured' },
       };
     }
-  }
-
-  #readTotals(): Promise<MeasuredTotals> {
-    const cached = this.#totals;
-    if (cached && this.#now() - cached.measuredAt < STORAGE_USAGE_TOTALS_TTL_MS) {
-      return Promise.resolve(cached);
-    }
-    // Concurrent readers share one scan instead of each walking the tables.
-    this.#measuring ??= this.#footprint
-      .measure()
-      .then((footprint) => {
-        const measured = { measuredAt: this.#now(), footprint };
-        this.#totals = measured;
-        return measured;
-      })
-      .finally(() => {
-        this.#measuring = undefined;
-      });
-    return this.#measuring;
   }
 }

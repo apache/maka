@@ -17,12 +17,7 @@
  * under the License.
  */
 
-/**
- * Test-only surface. The loader is where row requests become Host queries, so
- * its batching and retry rules are worth checking without mounting a list.
- */
-export {
-  createSessionStorageLoader,
-  SESSION_STORAGE_FAILURE_COOLDOWN_MS,
-  SESSION_STORAGE_RESULT_TTL_MS,
-} from './model/session-storage-loader.js';
+/** The files SQLite may keep beside a database, in any journal mode. */
+export function sqliteDatabaseSidecars(path: string): readonly string[] {
+  return [`${path}-wal`, `${path}-shm`, `${path}-journal`];
+}

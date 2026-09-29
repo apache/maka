@@ -17,17 +17,33 @@
  * under the License.
  */
 
-import { createContext, type ReactNode, useContext } from 'react';
+import { createContext, type ReactNode, useContext, useMemo } from 'react';
+import { createSessionStorageLoader, type SessionStorageLoader } from './model/session-storage-loader.js';
 import type { StorageUsageServices } from './ports.js';
 
-const StorageUsageServicesContext = createContext<StorageUsageServices | undefined>(undefined);
+interface StorageUsageContextValue {
+  readonly services: StorageUsageServices;
+  /** One per-task size cache for every list that shows task sizes. */
+  readonly sessionLoader: SessionStorageLoader;
+}
+
+const StorageUsageServicesContext = createContext<StorageUsageContextValue | undefined>(undefined);
 
 export function StorageUsageServicesProvider(props: {
   readonly services: StorageUsageServices;
   readonly children?: ReactNode;
 }) {
+  const value = useMemo<StorageUsageContextValue>(
+    () => ({
+      services: props.services,
+      sessionLoader: createSessionStorageLoader((sessionIds) =>
+        props.services.loadSessionUsage(sessionIds),
+      ),
+    }),
+    [props.services],
+  );
   return (
-    <StorageUsageServicesContext.Provider value={props.services}>
+    <StorageUsageServicesContext.Provider value={value}>
       {props.children}
     </StorageUsageServicesContext.Provider>
   );
@@ -35,5 +51,9 @@ export function StorageUsageServicesProvider(props: {
 
 /** Undefined outside a Desktop composition; the surfaces then render nothing. */
 export function useOptionalStorageUsageServices(): StorageUsageServices | undefined {
-  return useContext(StorageUsageServicesContext);
+  return useContext(StorageUsageServicesContext)?.services;
+}
+
+export function useOptionalSessionStorageLoader(): SessionStorageLoader | undefined {
+  return useContext(StorageUsageServicesContext)?.sessionLoader;
 }

@@ -23,33 +23,25 @@ import type {
   InteractiveStorageFootprintReader,
   StorageFootprint,
 } from '@maka/storage/storage-writer-composition';
-import { HOST_OPERATION_SPECS } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import {
-  HostStorageUsageCoordinator,
-  STORAGE_USAGE_TOTALS_TTL_MS,
-} from '../server/storage-usage-coordinator.js';
+import { HostStorageUsageCoordinator } from '../server/storage-usage-coordinator.js';
 
 const context = {} as ConnectionContext;
-const footprint: StorageFootprint = {
-  totals: [{ kind: 'database', bytes: 4096, exact: false }],
-  reclaimableBytes: 1024,
-  worktreeCount: 1,
-};
 
-test('storage usage shares one totals scan and reads Sessions fresh', async () => {
-  let now = 1_000;
-  let measures = 0;
-  let release: (() => void) | undefined;
+function footprint(bytes: number): StorageFootprint {
+  return {
+    totals: [{ kind: 'database', bytes, exact: true }],
+    reclaimableBytes: 1024,
+    worktreeCount: 1,
+  };
+}
+
+/** A reader whose every `measure()` waits until the test settles it. */
+function deferredReader() {
+  const pending: Array<(value: StorageFootprint) => void> = [];
   const sessionQueries: Array<readonly string[]> = [];
   const reader: InteractiveStorageFootprintReader = {
-    measure: async () => {
-      measures += 1;
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      return footprint;
-    },
+    measure: () => new Promise<StorageFootprint>((resolve) => pending.push(resolve)),
     measureSessions: async (sessionIds) => {
       sessionQueries.push(sessionIds);
       return sessionIds.map((sessionId) => ({
@@ -59,47 +51,56 @@ test('storage usage shares one totals scan and reads Sessions fresh', async () =
       }));
     },
   };
+  return { reader, pending, sessionQueries };
+}
+
+test('concurrent totals requests share one measurement and a later request re-measures', async () => {
+  let now = 1_000;
+  const { reader, pending } = deferredReader();
   const coordinator = new HostStorageUsageCoordinator({ footprint: reader, now: () => now });
   const query = coordinator.handlers['storage.usage.query'];
 
   const first = query({}, context);
-  const second = query({ sessionIds: ['session-1'] }, context);
-  await new Promise((resolve) => setImmediate(resolve));
-  release?.();
-  const [totalsOnly, withSessions] = await Promise.all([first, second]);
-  assert.equal(measures, 1);
-  assert.deepEqual(totalsOnly, {
+  const second = query({}, context);
+  assert.equal(pending.length, 1, 'concurrent requests share one scan');
+  pending[0]!(footprint(4096));
+  assert.deepEqual(await first, {
     ok: true,
-    result: { measuredAt: 1_000, ...footprint },
+    result: { measuredAt: 1_000, ...footprint(4096) },
   });
-  assert.ok(withSessions.ok);
-  assert.deepEqual(withSessions.result.sessions, [
-    {
-      sessionId: 'session-1',
-      bytes: { transcript: 1, runtime: 2, artifacts: 3 },
-      worktreeCount: 0,
-    },
-  ]);
-  const spec = HOST_OPERATION_SPECS['storage.usage.query'];
-  assert.doesNotThrow(() =>
-    spec.assertOutputForInput?.({ sessionIds: ['session-1'] }, withSessions.result),
-  );
+  assert.deepEqual(await second, await first);
 
-  now += STORAGE_USAGE_TOTALS_TTL_MS - 1;
-  const cached = await query({ sessionIds: ['session-2'] }, context);
-  assert.equal(measures, 1);
-  assert.ok(cached.ok);
-  assert.equal(cached.result.measuredAt, 1_000);
-  assert.deepEqual(sessionQueries, [['session-1'], ['session-2']]);
-
-  now += 1;
+  now = 1_001;
   const refreshed = query({}, context);
-  await new Promise((resolve) => setImmediate(resolve));
-  release?.();
-  const next = await refreshed;
-  assert.equal(measures, 2);
-  assert.ok(next.ok);
-  assert.equal(next.result.measuredAt, now);
+  assert.equal(pending.length, 2, 'a request after the scan settles measures again');
+  pending[1]!(footprint(8192));
+  assert.deepEqual(await refreshed, {
+    ok: true,
+    result: { measuredAt: 1_001, ...footprint(8192) },
+  });
+});
+
+test('Session usage never computes totals', async () => {
+  const { reader, pending, sessionQueries } = deferredReader();
+  const coordinator = new HostStorageUsageCoordinator({ footprint: reader });
+  const outcome = await coordinator.handlers['storage.usage.sessions.query'](
+    { sessionIds: ['session-1'] },
+    context,
+  );
+  assert.deepEqual(outcome, {
+    ok: true,
+    result: {
+      sessions: [
+        {
+          sessionId: 'session-1',
+          bytes: { transcript: 1, runtime: 2, artifacts: 3 },
+          worktreeCount: 0,
+        },
+      ],
+    },
+  });
+  assert.deepEqual(sessionQueries, [['session-1']]);
+  assert.equal(pending.length, 0);
 });
 
 test('storage usage reports measurement failures and refuses work while draining', async () => {
@@ -108,7 +109,7 @@ test('storage usage reports measurement failures and refuses work while draining
     footprint: {
       measure: async () => {
         if (fail) throw new Error('disk I/O error');
-        return footprint;
+        return footprint(1);
       },
       measureSessions: async () => [],
     },
@@ -124,7 +125,6 @@ test('storage usage reports measurement failures and refuses work while draining
   } finally {
     console.error = originalError;
   }
-  // A failed scan is not cached.
   fail = false;
   assert.equal((await query({}, context)).ok, true);
 

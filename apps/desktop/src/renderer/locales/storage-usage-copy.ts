@@ -18,8 +18,7 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
-type StorageUsageKindCopy = { label: string; detail: string };
+import type { StorageUsageKind } from '@maka/runtime-host/protocol';
 
 export type StorageUsageCopy = {
   title: string;
@@ -29,22 +28,14 @@ export type StorageUsageCopy = {
   refresh: string;
   total: string;
   totalDetail: string;
-  kinds: Record<
-    | 'transcript'
-    | 'runtime'
-    | 'artifacts'
-    | 'context_offload'
-    | 'memory'
-    | 'usage_history'
-    | 'database',
-    StorageUsageKindCopy
-  >;
+  /** Every kind the Host can report, so a new kind cannot render unlabeled. */
+  kinds: Record<StorageUsageKind, { label: string; detail: string }>;
   reclaimable: string;
   reclaimableDetail: string;
   worktrees: string;
   worktreesDetail: string;
   worktreeCount(count: number): string;
-  /** Prefix for a logical estimate rather than bytes on disk. */
+  /** Prefix for an estimate rather than bytes on disk. */
   approximately(size: string): string;
   /** Label for a task's size in the archived-task list. */
   taskSize(size: string): string;
@@ -60,24 +51,21 @@ const STORAGE_USAGE_COPY = {
     loadFailed: '无法统计存储占用',
     refresh: '重新统计',
     total: '合计',
-    totalDetail: '下列各项之和。标注 ≈ 的是按记录内容估算的大小，不含索引等开销。',
+    totalDetail: '下列各项之和。标注 ≈ 的是按记录估算的大小，可能与其他项略有重叠。',
     kinds: {
-      transcript: { label: '任务对话', detail: '任务的消息记录。' },
-      runtime: { label: '运行日志', detail: '任务运行过程中记录的事件。' },
-      artifacts: { label: '产物文件', detail: '任务生成或导入的文件。' },
+      database: {
+        label: '任务数据库',
+        detail: '任务的对话、运行日志、用量历史和索引。用量历史在删除任务后仍会保留，以保证用量统计完整。',
+      },
+      artifacts: { label: '产物文件', detail: '任务生成或导入的文件，按记录的文件大小统计。' },
       context_offload: {
         label: '卸载的上下文',
         detail: '为节省上下文而移出的长内容，相同内容只保存一份。',
       },
       memory: { label: '长期记忆', detail: '跨任务保留的记忆条目。' },
-      usage_history: {
-        label: '用量历史',
-        detail: '模型调用与工具使用记录。删除任务后仍会保留，以保证用量统计完整。',
-      },
-      database: { label: '其他数据与索引', detail: '其余任务记录、索引以及数据库中的空闲空间。' },
     },
     reclaimable: '可回收空间',
-    reclaimableDetail: '数据库中已释放但尚未归还磁盘的空间，已计入「其他数据与索引」。',
+    reclaimableDetail: '任务数据库中已释放但尚未归还磁盘的空间，已计入「任务数据库」。',
     worktrees: '子代理工作树',
     worktreesDetail: '只统计数量；每个工作树的大小取决于对应项目的检出内容。',
     worktreeCount: (count: number) => `${count} 个`,
@@ -93,24 +81,21 @@ const STORAGE_USAGE_COPY = {
     loadFailed: '無法統計儲存空間占用',
     refresh: '重新統計',
     total: '合計',
-    totalDetail: '下列各項之和。標註 ≈ 的是依記錄內容估算的大小，不含索引等開銷。',
+    totalDetail: '下列各項之和。標註 ≈ 的是依記錄估算的大小，可能與其他項略有重疊。',
     kinds: {
-      transcript: { label: '任務對話', detail: '任務的訊息記錄。' },
-      runtime: { label: '執行日誌', detail: '任務執行過程中記錄的事件。' },
-      artifacts: { label: '產物檔案', detail: '任務生成或匯入的檔案。' },
+      database: {
+        label: '任務資料庫',
+        detail: '任務的對話、執行日誌、用量歷史和索引。用量歷史在刪除任務後仍會保留，以確保用量統計完整。',
+      },
+      artifacts: { label: '產物檔案', detail: '任務生成或匯入的檔案，依記錄的檔案大小統計。' },
       context_offload: {
         label: '卸載的上下文',
         detail: '為節省上下文而移出的長內容，相同內容只儲存一份。',
       },
       memory: { label: '長期記憶', detail: '跨任務保留的記憶條目。' },
-      usage_history: {
-        label: '用量歷史',
-        detail: '模型呼叫與工具使用記錄。刪除任務後仍會保留，以確保用量統計完整。',
-      },
-      database: { label: '其他資料與索引', detail: '其餘任務記錄、索引以及資料庫中的閒置空間。' },
     },
     reclaimable: '可回收空間',
-    reclaimableDetail: '資料庫中已釋放但尚未歸還磁碟的空間，已計入「其他資料與索引」。',
+    reclaimableDetail: '任務資料庫中已釋放但尚未歸還磁碟的空間，已計入「任務資料庫」。',
     worktrees: '子代理工作樹',
     worktreesDetail: '只統計數量；每個工作樹的大小取決於對應專案的檢出內容。',
     worktreeCount: (count: number) => `${count} 個`,
@@ -127,28 +112,26 @@ const STORAGE_USAGE_COPY = {
     refresh: 'Measure again',
     total: 'Total',
     totalDetail:
-      'The sum of the rows below. Values marked ≈ are estimated from record contents and exclude index overhead.',
+      'The sum of the rows below. Values marked ≈ are estimated from records and may overlap slightly with another row.',
     kinds: {
-      transcript: { label: 'Task conversations', detail: 'Message history of your tasks.' },
-      runtime: { label: 'Run logs', detail: 'Events recorded while tasks run.' },
-      artifacts: { label: 'Artifacts', detail: 'Files that tasks produced or imported.' },
+      database: {
+        label: 'Task database',
+        detail:
+          'Task conversations, run logs, usage history, and indexes. Usage history is kept after a task is deleted so usage totals stay complete.',
+      },
+      artifacts: {
+        label: 'Artifacts',
+        detail: 'Files that tasks produced or imported, by their recorded size.',
+      },
       context_offload: {
         label: 'Offloaded context',
         detail: 'Long content moved out of the model context. Identical content is stored once.',
       },
       memory: { label: 'Long-term memory', detail: 'Memories kept across tasks.' },
-      usage_history: {
-        label: 'Usage history',
-        detail: 'Model call and tool usage records. Kept after a task is deleted so usage totals stay complete.',
-      },
-      database: {
-        label: 'Other data and indexes',
-        detail: 'Remaining task records, indexes, and free space inside the database.',
-      },
     },
     reclaimable: 'Reclaimable space',
     reclaimableDetail:
-      'Space the database has freed but not returned to the disk. Included in Other data and indexes.',
+      'Space the task database has freed but not returned to the disk. Included in Task database.',
     worktrees: 'Subagent worktrees',
     worktreesDetail: 'Counted only. Each worktree’s size depends on its project checkout.',
     worktreeCount: (count: number) => (count === 1 ? '1 worktree' : `${count} worktrees`),

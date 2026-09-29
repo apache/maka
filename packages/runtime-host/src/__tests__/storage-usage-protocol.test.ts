@@ -25,19 +25,24 @@ import {
   decodeHostFrame,
   HOST_OPERATION_SPECS,
   STORAGE_USAGE_SESSION_MAX_ITEMS,
+  type StorageSessionUsageQueryResult,
   type StorageUsageQueryResult,
 } from '../protocol/index.js';
 
-const spec = HOST_OPERATION_SPECS['storage.usage.query'];
+const totalsSpec = HOST_OPERATION_SPECS['storage.usage.query'];
+const sessionsSpec = HOST_OPERATION_SPECS['storage.usage.sessions.query'];
 
-const result: StorageUsageQueryResult = {
+const totals: StorageUsageQueryResult = {
   measuredAt: 1_700_000_000_000,
   totals: [
-    { kind: 'database', bytes: 4096, exact: false },
-    { kind: 'artifacts', bytes: 12, exact: true },
+    { kind: 'database', bytes: 4096, exact: true },
+    { kind: 'artifacts', bytes: 12, exact: false },
   ],
   reclaimableBytes: 8192,
   worktreeCount: 2,
+};
+
+const sessions: StorageSessionUsageQueryResult = {
   sessions: [
     {
       sessionId: 'session-1',
@@ -45,7 +50,7 @@ const result: StorageUsageQueryResult = {
       worktreeCount: 1,
     },
     {
-      sessionId: 'session-2',
+      sessionId: 'session-3',
       bytes: { transcript: 0, runtime: 0, artifacts: 0 },
       worktreeCount: 0,
     },
@@ -54,75 +59,101 @@ const result: StorageUsageQueryResult = {
 
 describe('storage usage protocol', () => {
   test('round-trips totals and per-Session usage through request and response frames', () => {
-    const request = decodeClientFrame({
-      requestId: 'request-storage',
-      operation: 'storage.usage.query',
-      input: { sessionIds: ['session-1', 'session-2'] },
-    });
-    assert.deepEqual(request, {
-      requestId: 'request-storage',
-      operation: 'storage.usage.query',
-      input: { sessionIds: ['session-1', 'session-2'] },
-    });
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-totals',
+        operation: 'storage.usage.query',
+        input: {},
+      }),
+      { requestId: 'request-totals', operation: 'storage.usage.query', input: {} },
+    );
     assert.deepEqual(
       decodeHostFrame(
         JSON.parse(
           JSON.stringify({
-            requestId: 'request-storage',
+            requestId: 'request-totals',
             operation: 'storage.usage.query',
             ok: true,
-            result,
+            result: totals,
           }),
         ),
       ),
-      { requestId: 'request-storage', operation: 'storage.usage.query', ok: true, result },
+      { requestId: 'request-totals', operation: 'storage.usage.query', ok: true, result: totals },
     );
-    assert.deepEqual(spec.decodeInput({}), {});
+    const input = { sessionIds: ['session-1', 'session-2', 'session-3'] };
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-sessions',
+        operation: 'storage.usage.sessions.query',
+        input,
+      }),
+      { requestId: 'request-sessions', operation: 'storage.usage.sessions.query', input },
+    );
+    assert.deepEqual(
+      decodeHostFrame(
+        JSON.parse(
+          JSON.stringify({
+            requestId: 'request-sessions',
+            operation: 'storage.usage.sessions.query',
+            ok: true,
+            result: sessions,
+          }),
+        ),
+      ),
+      {
+        requestId: 'request-sessions',
+        operation: 'storage.usage.sessions.query',
+        ok: true,
+        result: sessions,
+      },
+    );
+    // Unknown Sessions are omitted, so the answer is an ordered subsequence.
+    assert.doesNotThrow(() => sessionsSpec.assertOutputForInput?.(input, sessions));
   });
 
-  test('rejects unbounded, duplicate, or malformed input', () => {
+  test('rejects unbounded, empty, duplicate, or malformed input', () => {
     const tooMany = Array.from(
       { length: STORAGE_USAGE_SESSION_MAX_ITEMS + 1 },
       (_, index) => `session-${index}`,
     );
     for (const input of [
       { sessionIds: tooMany },
+      { sessionIds: [] },
       { sessionIds: ['session-1', 'session-1'] },
       { sessionIds: ['../escape'] },
       { sessionIds: 'session-1' },
-      { sessionId: 'session-1' },
+      {},
     ]) {
-      assert.throws(() => spec.decodeInput(input), isInvalidFrame, JSON.stringify(input));
+      assert.throws(() => sessionsSpec.decodeInput(input), isInvalidFrame, JSON.stringify(input));
     }
+    assert.throws(() => totalsSpec.decodeInput({ sessionIds: ['session-1'] }), isInvalidFrame);
   });
 
   test('rejects results with unknown kinds, open shapes, or Sessions that were not asked for', () => {
-    const malformed: unknown[] = [
-      { ...result, totals: [{ kind: 'worktrees', bytes: 1, exact: true }] },
-      { ...result, totals: [result.totals[0], result.totals[0]] },
-      { ...result, reclaimableBytes: -1 },
-      { ...result, extra: true },
-      {
-        ...result,
-        sessions: [
-          { ...result.sessions![0], bytes: { transcript: 1, runtime: 1, artifacts: 1, other: 1 } },
-        ],
-      },
-    ];
-    for (const value of malformed) {
-      assert.throws(() => spec.decodeOutput(value), isInvalidFrame, JSON.stringify(value));
+    for (const value of [
+      { ...totals, totals: [{ kind: 'transcript', bytes: 1, exact: false }] },
+      { ...totals, totals: [totals.totals[0], totals.totals[0]] },
+      { ...totals, reclaimableBytes: -1 },
+      { ...totals, sessions: [] },
+    ]) {
+      assert.throws(() => totalsSpec.decodeOutput(value), isInvalidFrame, JSON.stringify(value));
     }
-    const { sessions: _sessions, ...totalsOnly } = result;
     assert.throws(
-      () => spec.assertOutputForInput?.({ sessionIds: ['session-2', 'session-1'] }, result),
+      () =>
+        sessionsSpec.decodeOutput({
+          sessions: [
+            { ...sessions.sessions[0], bytes: { transcript: 1, runtime: 1, artifacts: 1, x: 1 } },
+          ],
+        }),
       isInvalidFrame,
     );
-    assert.throws(
-      () => spec.assertOutputForInput?.({ sessionIds: ['session-1', 'session-2'] }, totalsOnly),
-      isInvalidFrame,
-    );
-    assert.throws(() => spec.assertOutputForInput?.({}, result), isInvalidFrame);
-    assert.doesNotThrow(() => spec.assertOutputForInput?.({}, totalsOnly));
+    for (const sessionIds of [['session-3', 'session-1'], ['session-1'], ['session-2']]) {
+      assert.throws(
+        () => sessionsSpec.assertOutputForInput?.({ sessionIds }, sessions),
+        isInvalidFrame,
+        sessionIds.join(','),
+      );
+    }
   });
 });
 

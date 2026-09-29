@@ -20,35 +20,27 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ContextOffloadStore } from '@maka/core/context-offload';
+import { SUBAGENT_WORKTREE_DIRECTORY } from './git-worktree-child-executor.js';
 import { LONG_TERM_MEMORY_DATABASE_NAME } from './long-term-memory-store.js';
 import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
+import { CONTEXT_OFFLOAD_DATABASE_NAME } from './sqlite-context-offload-store.js';
+import { sqliteDatabaseSidecars } from './sqlite-file-set.js';
 
 /**
- * Non-overlapping parts of the State Root footprint.
- *
- * `transcript`, `runtime` and `usage_history` are logical payload bytes stored
- * inside runtime.sqlite; `database` is what remains of that file set once they
- * are subtracted: other operational records, indexes, page overhead and free
- * pages. The parts therefore add up to the measured files without counting a
- * byte twice.
+ * State Root parts whose size is cheap to learn. Nothing here scans the rows of
+ * the operational database: a full-table payload sum reads every leaf page and
+ * blocks the Host for as long as that takes.
  */
-export type StorageFootprintKind =
-  | 'database'
-  | 'transcript'
-  | 'runtime'
-  | 'usage_history'
-  | 'artifacts'
-  | 'context_offload'
-  | 'memory';
+export type StorageFootprintKind = 'database' | 'artifacts' | 'context_offload' | 'memory';
 
 export interface StorageFootprintTotal {
   readonly kind: StorageFootprintKind;
   readonly bytes: number;
-  /** False when the figure is logical payload size rather than bytes on disk. */
+  /** False when the figure comes from recorded metadata rather than the files on disk. */
   readonly exact: boolean;
 }
 
@@ -63,8 +55,11 @@ export interface StorageFootprint {
 export interface SessionStorageFootprint {
   readonly sessionId: string;
   readonly bytes: {
+    /** Logical message bytes as stored in rows; excludes page and index overhead. */
     readonly transcript: number;
+    /** Logical runtime event bytes as stored in rows. */
     readonly runtime: number;
+    /** Artifact sizes recorded in their metadata. */
     readonly artifacts: number;
     /**
      * Logical context-offload bytes referenced by this Session. Blobs are
@@ -79,6 +74,11 @@ export interface SessionStorageFootprint {
 
 export interface StorageFootprintReader {
   measure(): Promise<StorageFootprint>;
+  /**
+   * Measures the Sessions that exist, in input order; unknown ids are omitted.
+   * Callers bound the list (the Host protocol admits 25 per request), which
+   * keeps every `IN (...)` far below SQLite's bound-parameter limit.
+   */
   measureSessions(sessionIds: readonly string[]): Promise<readonly SessionStorageFootprint[]>;
   close(): void;
 }
@@ -87,15 +87,11 @@ export interface OpenStorageFootprintReaderOptions {
   readonly contextOffload?: Pick<ContextOffloadStore, 'usage'>;
 }
 
-const SUBAGENT_WORKTREE_DIRECTORY = 'subagent-worktrees';
-const SQLITE_SIDECAR_SUFFIXES = ['', '-wal', '-shm'] as const;
-const SESSION_BATCH_SIZE = 100;
-
 /**
- * Sums of logical payload bytes. `octet_length` on a TEXT column and `length`
- * on a BLOB column read the record header only, so none of these loads the
- * overflow pages that hold large payloads. Every table is scanned through an
- * existing `session_id`-leading index when a Session filter is present.
+ * Per-Session payload sums. Each statement is a range scan over an index that
+ * leads with `session_id`, so its cost grows with the requested Sessions' rows
+ * rather than with the table. `octet_length` on TEXT and `length` on BLOB skip
+ * the overflow pages of large values, but every matching row is still read.
  */
 const TRANSCRIPT_SOURCES = [
   { table: 'session_messages', bytes: 'octet_length(record_json)' },
@@ -111,27 +107,18 @@ const RUNTIME_SOURCES = [
   { table: 'core_agent_run_events', bytes: 'octet_length(record_json)' },
 ] as const;
 
-const USAGE_HISTORY_SOURCES = [
-  { table: 'usage_llm_calls', bytes: 'octet_length(record_json)' },
-  { table: 'usage_tool_invocations', bytes: 'octet_length(record_json)' },
-  {
-    table: 'usage_model_call_attempts',
-    bytes: `octet_length(attempt_id) + COALESCE(octet_length(session_id), 0)
-      + COALESCE(octet_length(logical_call_id), 0) + COALESCE(octet_length(turn_id), 0)
-      + COALESCE(octet_length(connection_slug), 0) + COALESCE(octet_length(provider_id), 0)
-      + COALESCE(octet_length(model_id), 0)`,
-  },
-] as const;
-
-const ARTIFACT_BYTES = "COALESCE(json_extract(record_json, '$.sizeBytes'), 0)";
+const ARTIFACT_SOURCE = {
+  table: 'artifact_records',
+  bytes: "COALESCE(json_extract(record_json, '$.sizeBytes'), 0)",
+} as const;
 const HAS_WORKTREE = "json_extract(payload_json, '$.subagentWorkspace') IS NOT NULL";
 
 /**
  * Opens a read-only footprint reader over one State Root. It shares the
  * process-local runtime.sqlite connection and adds no triggers or counters, so
- * the write path pays nothing for it (#5038). Measurements run one statement
- * at a time and yield between them rather than holding a read transaction, so
- * the totals are a close estimate, not a snapshot.
+ * the write path pays nothing for it (#5038). Every statement runs on its own
+ * and the reader yields to the event loop after it, so no read transaction is
+ * held and the Host keeps serving between statements.
  */
 export function openStorageFootprintReader(
   root: string,
@@ -153,26 +140,29 @@ class SqliteStorageFootprintReader implements StorageFootprintReader {
   async measure(): Promise<StorageFootprint> {
     this.#assertOpen();
     const databaseBytes = await fileSetBytes(join(this.root, OPERATIONAL_STATE_DATABASE_NAME));
-    const transcript = await this.#sumAll(TRANSCRIPT_SOURCES);
-    const runtime = await this.#sumAll(RUNTIME_SOURCES);
-    const usageHistory = await this.#sumAll(USAGE_HISTORY_SOURCES);
-    const artifacts = await this.#sumAll([{ table: 'artifact_records', bytes: ARTIFACT_BYTES }]);
     const reclaimableBytes = this.#readReclaimableBytes();
-    const memoryBytes = await fileSetBytes(join(this.root, LONG_TERM_MEMORY_DATABASE_NAME));
+    await yieldToEventLoop();
+    // One small metadata row per artifact file, so the whole table stays cheap.
+    const artifacts = this.#readAllArtifactBytes();
+    await yieldToEventLoop();
     const contextUsage = await this.contextOffload?.usage();
+    const contextFileBytes = contextUsage
+      ? await fileSetBytes(join(this.root, CONTEXT_OFFLOAD_DATABASE_NAME))
+      : 0;
+    const memoryBytes = await fileSetBytes(join(this.root, LONG_TERM_MEMORY_DATABASE_NAME));
     const worktreeCount = await countDirectories(join(this.root, SUBAGENT_WORKTREE_DIRECTORY));
     const totals: StorageFootprintTotal[] = [
-      {
-        kind: 'database',
-        bytes: Math.max(0, databaseBytes - transcript - runtime - usageHistory),
-        exact: false,
-      },
-      { kind: 'transcript', bytes: transcript, exact: false },
-      { kind: 'runtime', bytes: runtime, exact: false },
-      { kind: 'usage_history', bytes: usageHistory, exact: false },
-      { kind: 'artifacts', bytes: artifacts, exact: true },
+      { kind: 'database', bytes: databaseBytes, exact: true },
+      { kind: 'artifacts', bytes: artifacts, exact: false },
       ...(contextUsage
-        ? [{ kind: 'context_offload' as const, bytes: contextUsage.physicalBytes, exact: false }]
+        ? [
+            {
+              kind: 'context_offload' as const,
+              // Inline blobs are counted in both terms, so this can overstate.
+              bytes: contextUsage.physicalBytes + contextFileBytes,
+              exact: false,
+            },
+          ]
         : []),
       { kind: 'memory', bytes: memoryBytes, exact: true },
     ];
@@ -183,33 +173,30 @@ class SqliteStorageFootprintReader implements StorageFootprintReader {
     sessionIds: readonly string[],
   ): Promise<readonly SessionStorageFootprint[]> {
     this.#assertOpen();
-    const unique = [...new Set(sessionIds)];
+    const requested = [...new Set(sessionIds)];
+    if (requested.length === 0) return [];
+    const known = await this.#readKnownSessions(requested);
+    const sessions = requested.filter((sessionId) => known.has(sessionId));
+    if (sessions.length === 0) return [];
+    const transcript = await this.#sumBySession(TRANSCRIPT_SOURCES, sessions);
+    const runtime = await this.#sumBySession(RUNTIME_SOURCES, sessions);
+    const artifacts = await this.#sumBySession([ARTIFACT_SOURCE], sessions);
+    const worktrees = await this.#countWorktreesBySession(sessions);
     const results: SessionStorageFootprint[] = [];
-    for (let offset = 0; offset < unique.length; offset += SESSION_BATCH_SIZE) {
-      const batch = unique.slice(offset, offset + SESSION_BATCH_SIZE);
-      const transcript = this.#sumBySession(TRANSCRIPT_SOURCES, batch);
-      const runtime = this.#sumBySession(RUNTIME_SOURCES, batch);
-      const artifacts = this.#sumBySession(
-        [{ table: 'artifact_records', bytes: ARTIFACT_BYTES }],
-        batch,
-      );
-      const worktrees = this.#countWorktreesBySession(batch);
-      for (const sessionId of batch) {
-        const context = this.contextOffload
-          ? (await this.contextOffload.usage(sessionId)).logicalBytes
-          : undefined;
-        results.push({
-          sessionId,
-          bytes: {
-            transcript: transcript.get(sessionId) ?? 0,
-            runtime: runtime.get(sessionId) ?? 0,
-            artifacts: artifacts.get(sessionId) ?? 0,
-            ...(context === undefined ? {} : { context }),
-          },
-          worktreeCount: worktrees.get(sessionId) ?? 0,
-        });
-      }
-      await yieldToEventLoop();
+    for (const sessionId of sessions) {
+      const context = this.contextOffload
+        ? (await this.contextOffload.usage(sessionId)).logicalBytes
+        : undefined;
+      results.push({
+        sessionId,
+        bytes: {
+          transcript: transcript.get(sessionId) ?? 0,
+          runtime: runtime.get(sessionId) ?? 0,
+          artifacts: artifacts.get(sessionId) ?? 0,
+          ...(context === undefined ? {} : { context }),
+        },
+        worktreeCount: worktrees.get(sessionId) ?? 0,
+      });
     }
     return results;
   }
@@ -220,55 +207,64 @@ class SqliteStorageFootprintReader implements StorageFootprintReader {
     this.lease.close();
   }
 
-  async #sumAll(sources: readonly SqlByteSource[]): Promise<number> {
-    let total = 0;
-    for (const source of sources) {
-      const row = this.lease.database
-        .prepare(`SELECT COALESCE(SUM(${source.bytes}), 0) AS bytes FROM ${source.table}`)
-        .get() as { bytes: number | bigint };
-      total += toSafeCount(row.bytes);
-      await yieldToEventLoop();
-    }
-    return total;
+  async #readKnownSessions(sessionIds: readonly string[]): Promise<Set<string>> {
+    const rows = this.lease.database
+      .prepare(
+        `SELECT session_id AS sessionId FROM session_metadata
+         WHERE session_id IN (${placeholders(sessionIds)})`,
+      )
+      .all(...sessionIds) as Array<{ sessionId: string }>;
+    await yieldToEventLoop();
+    return new Set(rows.map((row) => row.sessionId));
   }
 
-  #sumBySession(
+  async #sumBySession(
     sources: readonly SqlByteSource[],
     sessionIds: readonly string[],
-  ): Map<string, number> {
+  ): Promise<Map<string, number>> {
     const totals = new Map<string, number>();
-    const placeholders = sessionIds.map(() => '?').join(', ');
     for (const source of sources) {
       const rows = this.lease.database
         .prepare(
           `SELECT session_id AS sessionId, COALESCE(SUM(${source.bytes}), 0) AS bytes
            FROM ${source.table}
-           WHERE session_id IN (${placeholders})
+           WHERE session_id IN (${placeholders(sessionIds)})
            GROUP BY session_id`,
         )
         .all(...sessionIds) as Array<{ sessionId: string; bytes: number | bigint }>;
       for (const row of rows) {
         totals.set(row.sessionId, (totals.get(row.sessionId) ?? 0) + toSafeCount(row.bytes));
       }
+      await yieldToEventLoop();
     }
     return totals;
   }
 
-  #countWorktreesBySession(sessionIds: readonly string[]): Map<string, number> {
-    const placeholders = sessionIds.map(() => '?').join(', ');
+  async #countWorktreesBySession(sessionIds: readonly string[]): Promise<Map<string, number>> {
+    const list = placeholders(sessionIds);
     const rows = this.lease.database
       .prepare(
         `SELECT owner AS sessionId, COUNT(*) AS count FROM (
            SELECT session_id AS owner FROM session_metadata
-           WHERE session_id IN (${placeholders}) AND ${HAS_WORKTREE}
+           WHERE session_id IN (${list}) AND ${HAS_WORKTREE}
            UNION ALL
            SELECT subagent_parent_session_id AS owner FROM session_metadata
-           WHERE subagent_parent_session_id IN (${placeholders}) AND ${HAS_WORKTREE}
+           WHERE subagent_parent_session_id IN (${list}) AND ${HAS_WORKTREE}
          )
          GROUP BY owner`,
       )
       .all(...sessionIds, ...sessionIds) as Array<{ sessionId: string; count: number | bigint }>;
+    await yieldToEventLoop();
     return new Map(rows.map((row) => [row.sessionId, toSafeCount(row.count)]));
+  }
+
+  #readAllArtifactBytes(): number {
+    const row = this.lease.database
+      .prepare(
+        `SELECT COALESCE(SUM(${ARTIFACT_SOURCE.bytes}), 0) AS bytes FROM ${ARTIFACT_SOURCE.table}`,
+      )
+      .get() as { bytes: number | bigint };
+    return toSafeCount(row.bytes);
   }
 
   #readReclaimableBytes(): number {
@@ -291,11 +287,15 @@ interface SqlByteSource {
   readonly bytes: string;
 }
 
+function placeholders(values: readonly unknown[]): string {
+  return values.map(() => '?').join(', ');
+}
+
 async function fileSetBytes(databasePath: string): Promise<number> {
   let total = 0;
-  for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
+  for (const path of [databasePath, ...sqliteDatabaseSidecars(databasePath)]) {
     try {
-      total += (await stat(`${databasePath}${suffix}`)).size;
+      total += (await stat(path)).size;
     } catch (error) {
       if (!isMissingFile(error)) throw error;
     }

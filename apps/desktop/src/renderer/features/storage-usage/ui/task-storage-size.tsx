@@ -17,43 +17,23 @@
  * under the License.
  */
 
-import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Text } from '@astryxdesign/core/Text';
-import { useUiLocale } from '@maka/ui';
+import { formatBytes, useUiLocale } from '@maka/ui';
 import type { SessionStorageUsage } from '@maka/runtime-host/protocol';
 import { getStorageUsageCopy } from '../../../locales/storage-usage-copy.js';
-import { formatStorageSize } from '../model/format-storage-size.js';
-import {
-  createSessionStorageLoader,
-  sessionStorageBytes,
-  type SessionStorageLoader,
-} from '../model/session-storage-loader.js';
-import { useOptionalStorageUsageServices } from '../services-context.js';
-
-const SessionStorageLoaderContext = createContext<SessionStorageLoader | undefined>(undefined);
+import { sessionStorageBytes } from '../model/session-storage-loader.js';
+import { useOptionalSessionStorageLoader } from '../services-context.js';
 
 /**
- * Owns the per-task size cache for one list. Rows measure themselves as they
- * mount, and rows mounted together share one Host query, so only the rows on
- * screen are ever measured.
+ * A task's measured size, or nothing while unknown. Never a guess.
+ *
+ * Each mounted row asks for its own size. The archived-task list is not
+ * virtualized, so every row that passes the search mounts; the shared loader
+ * measures them sequentially, one bounded Host request at a time.
  */
-export function TaskStorageSizeScope(props: { readonly children?: ReactNode }) {
-  const services = useOptionalStorageUsageServices();
-  const [loader] = useState(() =>
-    services
-      ? createSessionStorageLoader((sessionIds) => services.loadSessionUsage(sessionIds))
-      : undefined,
-  );
-  return (
-    <SessionStorageLoaderContext.Provider value={loader}>
-      {props.children}
-    </SessionStorageLoaderContext.Provider>
-  );
-}
-
-/** A task's measured size, or nothing while unknown. Never a guess. */
 export function TaskStorageSize(props: { readonly sessionId: string }) {
-  const loader = useContext(SessionStorageLoaderContext);
+  const loader = useOptionalSessionStorageLoader();
   const locale = useUiLocale();
   const [usage, setUsage] = useState<SessionStorageUsage | undefined>(undefined);
 
@@ -72,9 +52,7 @@ export function TaskStorageSize(props: { readonly sessionId: string }) {
   if (!usage) return null;
   return (
     <Text type="supporting" size="sm" color="secondary">
-      {getStorageUsageCopy(locale).taskSize(
-        formatStorageSize(sessionStorageBytes(usage), locale),
-      )}
+      {getStorageUsageCopy(locale).taskSize(formatBytes(sessionStorageBytes(usage), locale))}
     </Text>
   );
 }

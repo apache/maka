@@ -32,7 +32,7 @@ import type { SessionCatalogController } from '../application/contracts/session-
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { getStorageUsageCopy } from '../locales/storage-usage-copy.js';
-import { TaskStorageSize, TaskStorageSizeScope } from '../features/storage-usage/index.js';
+import { TaskStorageSize } from '../features/storage-usage/index.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import {
@@ -219,59 +219,57 @@ export function TasksSettingsPage(
         {visible.length === 0 ? (
           <EmptyState isCompact title={copy.noMatchTitle} description={copy.noMatchBody} />
         ) : (
-          <TaskStorageSizeScope>
-            <List density="balanced" hasDividers aria-label={copy.listAria}>
-              {visible.map((session) => {
-                const updated = session.lastMessageAt
-                  ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
-                  : undefined;
-                const description = [
-                  isOrphanedSubagentTask(session, knownSessionIds)
-                    ? copy.deletedParent
-                    : undefined,
-                  projectLabelOf(session),
-                  updated,
-                ]
-                  .filter(Boolean)
-                  .join(' · ');
-                return (
-                  <ListItem
-                    key={session.id}
-                    label={session.name}
-                    description={description.length > 0 ? description : undefined}
-                    startContent={<Archive size={ICON_SIZE.control} aria-hidden="true" />}
-                    endContent={
-                      <>
-                        <TaskStorageSize sessionId={session.id} />
-                        <IconButton
-                          variant="ghost"
-                          size="sm"
-                          isDisabled={purging}
-                          clickAction={() => props.onRestore(session.id)}
-                          label={copy.unarchiveTask(session.name)}
-                          tooltip={copy.unarchive}
-                          icon={<Unarchive size={ICON_SIZE.control} aria-hidden="true" />}
-                        />
-                        {/* No 打开 here. An archived task has no rail row to
-                            land on, and giving it one would make "the open task
-                            is always visible in the rail" an invariant the rail
-                            does not otherwise hold. Unarchive first. */}
-                        <IconButton
-                          variant="ghost"
-                          size="sm"
-                          isDisabled={purging}
-                          clickAction={() => props.onDelete(session.id)}
-                          label={copy.deleteTask(session.name)}
-                          tooltip={copy.delete}
-                          icon={<Trash2 size={ICON_SIZE.control} aria-hidden="true" />}
-                        />
-                      </>
-                    }
-                  />
-                );
-              })}
-            </List>
-          </TaskStorageSizeScope>
+          <List density="balanced" hasDividers aria-label={copy.listAria}>
+            {visible.map((session) => {
+              const updated = session.lastMessageAt
+                ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
+                : undefined;
+              const description = [
+                isOrphanedSubagentTask(session, knownSessionIds)
+                  ? copy.deletedParent
+                  : undefined,
+                projectLabelOf(session),
+                updated,
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              return (
+                <ListItem
+                  key={session.id}
+                  label={session.name}
+                  description={description.length > 0 ? description : undefined}
+                  startContent={<Archive size={ICON_SIZE.control} aria-hidden="true" />}
+                  endContent={
+                    <>
+                      <TaskStorageSize sessionId={session.id} />
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        isDisabled={purging}
+                        clickAction={() => props.onRestore(session.id)}
+                        label={copy.unarchiveTask(session.name)}
+                        tooltip={copy.unarchive}
+                        icon={<Unarchive size={ICON_SIZE.control} aria-hidden="true" />}
+                      />
+                      {/* No 打开 here. An archived task has no rail row to
+                          land on, and giving it one would make "the open task
+                          is always visible in the rail" an invariant the rail
+                          does not otherwise hold. Unarchive first. */}
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        isDisabled={purging}
+                        clickAction={() => props.onDelete(session.id)}
+                        label={copy.deleteTask(session.name)}
+                        tooltip={copy.delete}
+                        icon={<Trash2 size={ICON_SIZE.control} aria-hidden="true" />}
+                      />
+                    </>
+                  }
+                />
+              );
+            })}
+          </List>
         )}
       </SettingsSection>
     </SettingsPage>

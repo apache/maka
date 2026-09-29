@@ -360,6 +360,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'skill.catalog.preview-update',
   'skill.catalog.query',
   'storage.usage.query',
+  'storage.usage.sessions.query',
   'subscription.close',
   'subscription.open',
   'subscription.pty_interest.set',

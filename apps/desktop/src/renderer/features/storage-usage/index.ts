@@ -21,6 +21,6 @@
 // from this barrel and render these surfaces; they hold no storage state.
 
 export { StorageUsageSection } from './ui/storage-usage-section.js';
-export { TaskStorageSize, TaskStorageSizeScope } from './ui/task-storage-size.js';
+export { TaskStorageSize } from './ui/task-storage-size.js';
 export { StorageUsageServicesProvider } from './services-context.js';
 export type { StorageUsageHostTarget, StorageUsageServices } from './ports.js';

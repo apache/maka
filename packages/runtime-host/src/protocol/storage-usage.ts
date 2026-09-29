@@ -21,41 +21,50 @@ import { requireCount, requireEntityId, requireExactRecord, requireShapedRecord 
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
-/** Upper bound on Sessions measured by one query; a page of visible rows fits well inside it. */
-export const STORAGE_USAGE_SESSION_MAX_ITEMS = 100;
+/**
+ * Sessions measured by one `storage.usage.sessions.query`. Each Session costs
+ * several indexed range scans on the Host, so a request stays small and a
+ * Client pages through a longer list one request at a time.
+ */
+export const STORAGE_USAGE_SESSION_MAX_ITEMS = 25;
 
 /**
- * Non-overlapping parts of the Host's State Root footprint.
+ * State Root parts the Host can size without scanning database rows.
  *
- * `transcript`, `runtime` and `usage_history` are logical payload bytes inside
- * the operational database; `database` is the rest of that database's files
- * (other records, indexes, free pages). `context_offload` is deduplicated blob
- * bytes. Worktrees are counted separately and never sized.
+ * `database` is the operational SQLite file set. `artifacts` sums recorded
+ * artifact sizes. `context_offload` is stored blob bytes plus its own SQLite
+ * file set. `memory` is the long-term memory SQLite file set. Worktrees are
+ * counted separately and never sized.
  */
-export const STORAGE_USAGE_KINDS = [
-  'database',
-  'transcript',
-  'runtime',
-  'usage_history',
-  'artifacts',
-  'context_offload',
-  'memory',
-] as const;
+export const STORAGE_USAGE_KINDS = ['database', 'artifacts', 'context_offload', 'memory'] as const;
 
 export type StorageUsageKind = (typeof STORAGE_USAGE_KINDS)[number];
 
 export interface StorageUsageTotal {
   readonly kind: StorageUsageKind;
   readonly bytes: number;
-  /** False when the figure is a logical payload size rather than bytes on disk. */
+  /** False when the figure comes from recorded metadata or may overlap another figure. */
   readonly exact: boolean;
+}
+
+export type StorageUsageQueryInput = Record<string, never>;
+
+export interface StorageUsageQueryResult {
+  /** Host clock, epoch milliseconds. */
+  readonly measuredAt: number;
+  readonly totals: readonly StorageUsageTotal[];
+  /** Free pages in the operational database that compaction could release. */
+  readonly reclaimableBytes: number;
+  readonly worktreeCount: number;
 }
 
 export interface SessionStorageUsage {
   readonly sessionId: string;
+  /** Logical bytes stored for the Session, excluding page and index overhead. */
   readonly bytes: {
     readonly transcript: number;
     readonly runtime: number;
+    /** Recorded artifact sizes. */
     readonly artifacts: number;
     /**
      * Logical context-offload bytes referenced by the Session. Blobs are shared
@@ -68,20 +77,16 @@ export interface SessionStorageUsage {
   readonly worktreeCount: number;
 }
 
-export interface StorageUsageQueryInput {
-  /** Also measure these Sessions. Omit to read the State Root totals only. */
-  readonly sessionIds?: readonly string[];
+export interface StorageSessionUsageQueryInput {
+  readonly sessionIds: readonly string[];
 }
 
-export interface StorageUsageQueryResult {
-  /** Host clock, epoch milliseconds. */
-  readonly measuredAt: number;
-  readonly totals: readonly StorageUsageTotal[];
-  /** Free pages in the operational database that compaction could release. */
-  readonly reclaimableBytes: number;
-  readonly worktreeCount: number;
-  /** Present exactly when the input named Sessions, in input order. */
-  readonly sessions?: readonly SessionStorageUsage[];
+export interface StorageSessionUsageQueryResult {
+  /**
+   * The requested Sessions that exist, in request order. A Session the Host
+   * does not hold is omitted rather than reported as empty.
+   */
+  readonly sessions: readonly SessionStorageUsage[];
 }
 
 const STORAGE_USAGE_ERRORS = [
@@ -103,39 +108,45 @@ export const STORAGE_USAGE_OPERATION_SPECS = {
     errors: STORAGE_USAGE_ERRORS,
     decodeInput: decodeStorageUsageQueryInput,
     decodeOutput: decodeStorageUsageQueryResult,
+  }),
+  'storage.usage.sessions.query': defineOperation<
+    StorageSessionUsageQueryInput,
+    StorageSessionUsageQueryResult,
+    (typeof STORAGE_USAGE_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: STORAGE_USAGE_ERRORS,
+    decodeInput: decodeStorageSessionUsageQueryInput,
+    decodeOutput: decodeStorageSessionUsageQueryResult,
     assertOutputForInput: (input, output) => {
-      const requested = input.sessionIds;
-      const measured = output.sessions;
-      if (requested === undefined) {
-        if (measured !== undefined) {
-          throw invalidProtocolFrame('Storage usage returned Sessions that were not requested');
+      // A subsequence of the request: each id at most once, in request order.
+      let next = 0;
+      for (const session of output.sessions) {
+        while (next < input.sessionIds.length && input.sessionIds[next] !== session.sessionId) {
+          next += 1;
         }
-        return;
-      }
-      if (
-        measured === undefined ||
-        measured.length !== requested.length ||
-        measured.some((session, index) => session.sessionId !== requested[index])
-      ) {
-        throw invalidProtocolFrame('Storage usage Sessions do not match the request');
+        if (next === input.sessionIds.length) {
+          throw invalidProtocolFrame('Storage usage Sessions do not match the request');
+        }
+        next += 1;
       }
     },
   }),
 } as const;
 
 export function decodeStorageUsageQueryInput(value: unknown): StorageUsageQueryInput {
-  const input = requireShapedRecord(value, 'storage usage input', [], ['sessionIds']);
-  if (input.sessionIds === undefined) return {};
-  return { sessionIds: decodeSessionIds(input.sessionIds) };
+  requireExactRecord(value, 'storage usage input', []);
+  return {};
 }
 
 export function decodeStorageUsageQueryResult(value: unknown): StorageUsageQueryResult {
-  const result = requireShapedRecord(
-    value,
-    'storage usage result',
-    ['measuredAt', 'totals', 'reclaimableBytes', 'worktreeCount'],
-    ['sessions'],
-  );
+  const result = requireExactRecord(value, 'storage usage result', [
+    'measuredAt',
+    'totals',
+    'reclaimableBytes',
+    'worktreeCount',
+  ]);
   if (!Array.isArray(result.totals) || result.totals.length > STORAGE_USAGE_KINDS.length) {
     throw invalidProtocolFrame('Invalid storage usage totals');
   }
@@ -143,37 +154,42 @@ export function decodeStorageUsageQueryResult(value: unknown): StorageUsageQuery
   if (new Set(totals.map((total) => total.kind)).size !== totals.length) {
     throw invalidProtocolFrame('Duplicate storage usage kind');
   }
-  let sessions: SessionStorageUsage[] | undefined;
-  if (result.sessions !== undefined) {
-    if (
-      !Array.isArray(result.sessions) ||
-      result.sessions.length > STORAGE_USAGE_SESSION_MAX_ITEMS
-    ) {
-      throw invalidProtocolFrame('Invalid storage usage Sessions');
-    }
-    sessions = result.sessions.map(decodeSessionUsage);
-    if (new Set(sessions.map((session) => session.sessionId)).size !== sessions.length) {
-      throw invalidProtocolFrame('Duplicate storage usage Session');
-    }
-  }
   return {
     measuredAt: requireCount(result.measuredAt, 'storage usage measuredAt'),
     totals,
     reclaimableBytes: requireCount(result.reclaimableBytes, 'storage usage reclaimableBytes'),
     worktreeCount: requireCount(result.worktreeCount, 'storage usage worktreeCount'),
-    ...(sessions === undefined ? {} : { sessions }),
   };
 }
 
-function decodeSessionIds(value: unknown): readonly string[] {
-  if (!Array.isArray(value) || value.length > STORAGE_USAGE_SESSION_MAX_ITEMS) {
+export function decodeStorageSessionUsageQueryInput(value: unknown): StorageSessionUsageQueryInput {
+  const input = requireExactRecord(value, 'storage Session usage input', ['sessionIds']);
+  if (
+    !Array.isArray(input.sessionIds) ||
+    input.sessionIds.length === 0 ||
+    input.sessionIds.length > STORAGE_USAGE_SESSION_MAX_ITEMS
+  ) {
     throw invalidProtocolFrame('Invalid storage usage sessionIds');
   }
-  const sessionIds = value.map((sessionId) => requireEntityId(sessionId, 'sessionId'));
+  const sessionIds = input.sessionIds.map((sessionId) => requireEntityId(sessionId, 'sessionId'));
   if (new Set(sessionIds).size !== sessionIds.length) {
     throw invalidProtocolFrame('Duplicate storage usage sessionId');
   }
-  return sessionIds;
+  return { sessionIds };
+}
+
+export function decodeStorageSessionUsageQueryResult(
+  value: unknown,
+): StorageSessionUsageQueryResult {
+  const result = requireExactRecord(value, 'storage Session usage result', ['sessions']);
+  if (!Array.isArray(result.sessions) || result.sessions.length > STORAGE_USAGE_SESSION_MAX_ITEMS) {
+    throw invalidProtocolFrame('Invalid storage usage Sessions');
+  }
+  const sessions = result.sessions.map(decodeSessionUsage);
+  if (new Set(sessions.map((session) => session.sessionId)).size !== sessions.length) {
+    throw invalidProtocolFrame('Duplicate storage usage Session');
+  }
+  return { sessions };
 }
 
 function decodeTotal(value: unknown): StorageUsageTotal {

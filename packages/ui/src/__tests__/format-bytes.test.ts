@@ -17,22 +17,17 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { formatBytes } from '../tool-activity/preview-utils.js';
 
-const UNITS = ['byte', 'kilobyte', 'megabyte', 'gigabyte', 'terabyte'] as const;
-
-/** Binary-scaled byte size in the reader's locale, e.g. "1.5 GB". */
-export function formatStorageSize(bytes: number, locale: UiLocale): string {
-  let value = Math.max(0, bytes);
-  let unit = 0;
-  while (value >= 1024 && unit < UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return new Intl.NumberFormat(locale, {
-    style: 'unit',
-    unit: UNITS[unit],
-    unitDisplay: 'short',
-    maximumFractionDigits: unit === 0 || value >= 100 ? 0 : 1,
-  }).format(value);
-}
+test('formatBytes keeps its sub-gigabyte output and scales on to GB and TB', () => {
+  assert.equal(formatBytes(0), '0 B');
+  assert.equal(formatBytes(512), '512 B');
+  assert.equal(formatBytes(1536), '1.5 KB');
+  assert.equal(formatBytes(5 * 1024 * 1024), '5.0 MB');
+  assert.equal(formatBytes(1.5 * 1024 ** 3), '1.5 GB');
+  assert.equal(formatBytes(2 * 1024 ** 4), '2.0 TB');
+  assert.equal(formatBytes(3 * 1024 ** 5), '3072.0 TB');
+  assert.equal(formatBytes(1.5 * 1024 ** 3, 'en'), '1.5 GB');
+});

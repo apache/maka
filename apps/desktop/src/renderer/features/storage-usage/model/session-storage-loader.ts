@@ -17,66 +17,90 @@
  * under the License.
  */
 
-import type { SessionStorageUsage } from '@maka/runtime-host/protocol';
+import {
+  STORAGE_USAGE_SESSION_MAX_ITEMS,
+  type SessionStorageUsage,
+} from '@maka/runtime-host/protocol';
 
-/** One Host query measures at most this many Sessions. */
-const BATCH_SIZE = 100;
+/** A measured size is reused this long before a remounted row asks again. */
+export const SESSION_STORAGE_RESULT_TTL_MS = 60_000;
+/** A task that could not be measured is not asked about again this soon. */
+export const SESSION_STORAGE_FAILURE_COOLDOWN_MS = 30_000;
 
 export interface SessionStorageLoader {
-  /** Resolves undefined when the size could not be measured. */
+  /** Resolves undefined when the size is unknown: unmeasurable or not on its Host. */
   load(sessionId: string): Promise<SessionStorageUsage | undefined>;
 }
 
+interface Entry {
+  readonly result: Promise<SessionStorageUsage | undefined>;
+  settledAt?: number;
+  measured?: boolean;
+}
+
 /**
- * Coalesces the size requests of rows that mount together into one query, so
- * a list asks for exactly the rows it renders. Results live as long as the
- * loader; a failed measurement is forgotten so a later row can retry it.
+ * Turns row requests into Host queries. Rows that mount together are queued
+ * and measured one request at a time, `STORAGE_USAGE_SESSION_MAX_ITEMS` per
+ * request, so a long list never puts more than one measurement on a Host at
+ * once. Results and failures are both remembered for a while, so remounting a
+ * list neither re-measures every row nor hammers a Host that just failed.
  */
 export function createSessionStorageLoader(
   loadSessionUsage: (
     sessionIds: readonly string[],
   ) => Promise<Readonly<Record<string, SessionStorageUsage>>>,
+  options: { readonly now?: () => number } = {},
 ): SessionStorageLoader {
-  const results = new Map<string, Promise<SessionStorageUsage | undefined>>();
-  let pending = new Map<string, (usage: SessionStorageUsage | undefined) => void>();
-  let scheduled = false;
+  const now = options.now ?? Date.now;
+  const entries = new Map<string, Entry>();
+  const queue = new Map<string, (usage: SessionStorageUsage | undefined) => void>();
+  let draining = false;
 
-  const flush = () => {
-    scheduled = false;
-    const batch = pending;
-    pending = new Map();
-    const ids = [...batch.keys()];
-    for (let offset = 0; offset < ids.length; offset += BATCH_SIZE) {
-      const chunk = ids.slice(offset, offset + BATCH_SIZE);
-      loadSessionUsage(chunk).then(
-        (usage) => {
-          for (const id of chunk) {
-            const measured = usage[id];
-            if (!measured) results.delete(id);
-            batch.get(id)?.(measured);
-          }
-        },
-        () => {
-          for (const id of chunk) {
-            results.delete(id);
-            batch.get(id)?.(undefined);
-          }
-        },
-      );
+  const settle = (sessionId: string, usage: SessionStorageUsage | undefined) => {
+    const entry = entries.get(sessionId);
+    if (entry) {
+      entry.settledAt = now();
+      entry.measured = usage !== undefined;
     }
+  };
+
+  const drain = async () => {
+    while (queue.size > 0) {
+      const chunk = [...queue.entries()].slice(0, STORAGE_USAGE_SESSION_MAX_ITEMS);
+      for (const [sessionId] of chunk) queue.delete(sessionId);
+      let usage: Readonly<Record<string, SessionStorageUsage>> = {};
+      try {
+        usage = await loadSessionUsage(chunk.map(([sessionId]) => sessionId));
+      } catch {
+        // Every id in the chunk settles as unknown and enters its cooldown.
+      }
+      for (const [sessionId, resolve] of chunk) {
+        const measured = usage[sessionId];
+        settle(sessionId, measured);
+        resolve(measured);
+      }
+    }
+    draining = false;
+  };
+
+  const isFresh = (entry: Entry): boolean => {
+    if (entry.settledAt === undefined) return true;
+    const ttl = entry.measured ? SESSION_STORAGE_RESULT_TTL_MS : SESSION_STORAGE_FAILURE_COOLDOWN_MS;
+    return now() - entry.settledAt < ttl;
   };
 
   return {
     load(sessionId) {
-      const existing = results.get(sessionId);
-      if (existing) return existing;
+      const existing = entries.get(sessionId);
+      if (existing && isFresh(existing)) return existing.result;
       const result = new Promise<SessionStorageUsage | undefined>((resolve) => {
-        pending.set(sessionId, resolve);
+        queue.set(sessionId, resolve);
       });
-      results.set(sessionId, result);
-      if (!scheduled) {
-        scheduled = true;
-        void Promise.resolve().then(flush);
+      entries.set(sessionId, { result });
+      if (!draining) {
+        draining = true;
+        // Wait a microtask so every row mounted in this commit joins the batch.
+        void Promise.resolve().then(drain);
       }
       return result;
     },

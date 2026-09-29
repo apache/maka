@@ -102,6 +102,8 @@ function request(
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'storage.usage.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'storage.usage.sessions.query':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'web-search.execute':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
   }

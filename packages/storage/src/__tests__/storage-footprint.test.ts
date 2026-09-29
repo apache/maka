@@ -29,7 +29,7 @@ import {
 } from '../operational-state-store.js';
 import { openStorageFootprintReader } from '../storage-footprint.js';
 
-test('storage footprint measures Sessions from their rows and totals without double counting', async () => {
+test('storage footprint measures known Sessions from their rows and totals from files', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-footprint-'));
   const owner = acquireOperationalStateDatabase(root);
   const contextCalls: Array<string | undefined> = [];
@@ -80,6 +80,8 @@ test('storage footprint measures Sessions from their rows and totals without dou
       'INSERT INTO usage_llm_calls(storage_key, id, ts, record_json, session_id) VALUES (?, ?, ?, ?, ?)',
     ).run('usage-1', 'usage-1', 1, 'u'.repeat(30), 'gone');
     await writeFile(join(root, 'memory.sqlite'), Buffer.alloc(2048));
+    await writeFile(join(root, 'memory.sqlite-journal'), Buffer.alloc(16));
+    await writeFile(join(root, 'context-offload.sqlite'), Buffer.alloc(4096));
     await mkdir(join(root, 'subagent-worktrees', 'lease-a'), { recursive: true });
     await mkdir(join(root, 'subagent-worktrees', 'lease-b'), { recursive: true });
 
@@ -96,34 +98,29 @@ test('storage footprint measures Sessions from their rows and totals without dou
         bytes: { transcript: 0, runtime: 0, artifacts: 0, context: 700 },
         worktreeCount: 1,
       },
-      {
-        sessionId: 'missing',
-        bytes: { transcript: 0, runtime: 0, artifacts: 0, context: 700 },
-        worktreeCount: 0,
-      },
     ]);
-    assert.deepEqual(contextCalls, ['parent', 'child', 'missing']);
+    // Unknown ids are omitted rather than reported as empty.
+    assert.deepEqual(contextCalls, ['parent', 'child']);
 
     const footprint = await reader.measure();
     const totals = new Map(footprint.totals.map((total) => [total.kind, total]));
-    assert.equal(totals.get('transcript')?.bytes, 102 + 22 + 300 + 52);
-    assert.equal(totals.get('runtime')?.bytes, 40);
-    assert.equal(totals.get('usage_history')?.bytes, 30);
-    assert.deepEqual(totals.get('artifacts'), { kind: 'artifacts', bytes: 1234, exact: true });
+    assert.deepEqual(
+      footprint.totals.map((total) => total.kind),
+      ['database', 'artifacts', 'context_offload', 'memory'],
+    );
+    assert.deepEqual(totals.get('database'), {
+      kind: 'database',
+      bytes: await databaseFileBytes(root),
+      exact: true,
+    });
+    assert.deepEqual(totals.get('artifacts'), { kind: 'artifacts', bytes: 1234, exact: false });
     assert.deepEqual(totals.get('context_offload'), {
       kind: 'context_offload',
-      bytes: 400,
+      bytes: 400 + 4096,
       exact: false,
     });
-    assert.deepEqual(totals.get('memory'), { kind: 'memory', bytes: 2048, exact: true });
+    assert.deepEqual(totals.get('memory'), { kind: 'memory', bytes: 2048 + 16, exact: true });
     assert.equal(footprint.worktreeCount, 2);
-
-    const databaseFiles = await databaseFileBytes(root);
-    const insideDatabase = ['database', 'transcript', 'runtime', 'usage_history'] as const;
-    assert.equal(
-      insideDatabase.reduce((sum, kind) => sum + (totals.get(kind)?.bytes ?? 0), 0),
-      databaseFiles,
-    );
     const pageSize = Number(
       (db.prepare('PRAGMA page_size').get() as { page_size: number }).page_size,
     );
@@ -143,6 +140,7 @@ test('storage footprint omits context usage when the Store is unavailable', asyn
   const owner = acquireOperationalStateDatabase(root);
   const reader = openStorageFootprintReader(root);
   try {
+    insertSession(owner.database, 'alone', {});
     const [session] = await reader.measureSessions(['alone']);
     assert.deepEqual(session?.bytes, { transcript: 0, runtime: 0, artifacts: 0 });
     const footprint = await reader.measure();
@@ -188,7 +186,7 @@ function insertMessage(db: DatabaseSync, sessionId: string, sequence: number, te
 
 async function databaseFileBytes(root: string): Promise<number> {
   let total = 0;
-  for (const suffix of ['', '-wal', '-shm']) {
+  for (const suffix of ['', '-wal', '-shm', '-journal']) {
     try {
       total += (await stat(join(root, `${OPERATIONAL_STATE_DATABASE_NAME}${suffix}`))).size;
     } catch {}

@@ -1842,8 +1842,8 @@ export interface MakaBridge {
     /** One Runtime Host's State Root footprint. Read-only; nothing is reclaimed. */
     usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult>;
     /**
-     * Per-task storage keyed by Desktop session id. A task whose Runtime Host is
-     * unavailable is absent from the result rather than failing the others.
+     * Per-task storage keyed by Desktop session id. A task is absent when its
+     * Runtime Host is unavailable or fails, or when that Host no longer holds it.
      */
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
   };

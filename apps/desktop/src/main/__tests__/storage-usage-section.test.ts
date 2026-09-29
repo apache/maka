@@ -59,9 +59,9 @@ test('the Storage section reads the selected Host once and states its caveats', 
   const usage: StorageUsageQueryResult = {
     measuredAt: 1,
     totals: [
-      { kind: 'database', bytes: 3 * 1024 * 1024, exact: false },
-      { kind: 'artifacts', bytes: 1024 * 1024, exact: true },
-      { kind: 'usage_history', bytes: 2048, exact: false },
+      { kind: 'memory', bytes: 2048, exact: true },
+      { kind: 'database', bytes: 3 * 1024 * 1024, exact: true },
+      { kind: 'artifacts', bytes: 1024 * 1024, exact: false },
     ],
     reclaimableBytes: 512 * 1024,
     worktreeCount: 2,
@@ -96,11 +96,15 @@ test('the Storage section reads the selected Host once and states its caveats', 
   const text = container.textContent ?? '';
   assert.deepEqual(requests, [host]);
   assert.match(text, /Total/);
-  assert.match(text, /≈ 4 MB/);
-  assert.match(text, /Artifacts/);
-  assert.match(text, /Kept after a task is deleted/);
+  assert.match(text, /≈ 4\.0 MB/);
+  // Rows follow the protocol's kind order, not the order the Host sent them in.
+  assert.ok(text.indexOf('Task database') < text.indexOf('Artifacts'));
+  assert.ok(text.indexOf('Artifacts') < text.indexOf('Long-term memory'));
+  assert.match(text, /3\.0 MB/);
+  assert.match(text, /≈ 1\.0 MB/);
+  assert.match(text, /Usage history is kept after a task is deleted/);
   assert.match(text, /2 worktrees/);
-  assert.match(text, /512 kB/);
+  assert.match(text, /512\.0 KB/);
   // Only measured kinds are listed; nothing offers to delete or compact.
   assert.doesNotMatch(text, /Offloaded context/);
   assert.doesNotMatch(text, /Delete|Compact|Vacuum/);
