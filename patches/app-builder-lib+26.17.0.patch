@@ -11,14 +11,14 @@ index 467df9d..2a02a7e 100644
      return args;
  }
 @@ -179,6 +180,11 @@ async function archive(format, outFile, dirToArchive, options = {}) {
-     if (storedMembers.length > 0 && !use7z) {
-         throw new Error("storedPaths is not supported with the native zip fallback");
-     }
 +    // Maka: keep macOS ZIPs on the system zip, as 26.15.3 did, so the update
 +    // archive Squirrel.Mac unpacks is built the way shipped releases were.
 +    if (process.platform === "darwin" && format === "zip" && options.preserveSymlinks) {
 +        use7z = false;
 +    }
+     if (storedMembers.length > 0 && !use7z) {
+         throw new Error("storedPaths is not supported with the native zip fallback");
+     }
      if (use7z) {
          const args = compute7zCompressArgs(format, options);
          // Modern 7-Zip (24.09) dereferences symlinks by default; the 7-Zip 16.02 bundled before

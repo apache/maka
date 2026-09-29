@@ -650,7 +650,7 @@ index 96babc5..881f060 100644
      /**
       * Citation sources keyed by ID. When provided, `[id]` and `【id】` markers
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
-index 2a294a5..bcc73c1 100644
+index 2a294a5..052de46 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 @@ -8,7 +8,7 @@
@@ -784,6 +784,7 @@ index 2a294a5..bcc73c1 100644
    return rendered;
  }
  Markdown.displayName = 'Markdown';
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/parser.js b/node_modules/@astryxdesign/core/dist/Markdown/parser.js
 index 107ef3f..5c4dede 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/parser.js
@@ -902,7 +903,7 @@ index b56c9d5..463f665 100644
        role: "group",
        "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
-index 0c81fd3..9186693 100644
+index 0c81fd3..cd61fc7 100644
 --- a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
 +++ b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
 @@ -205,8 +205,19 @@ function syncRotationPhase(svg) {
@@ -911,17 +912,17 @@ index 0c81fd3..9186693 100644
    }
 +  // Moving a mounted spinner (a list re-sorting its rows) restarts the arc's
 +  // CSS animation without running this ref again; pin the restarted one too.
-+  const repin = () => {
-+    for (const animation of svg.getAnimations({
-+      subtree: true
-+    })) {
++  const host = svg.parentElement ?? svg;
++  const repin = (event) => {
++    if (event.target !== host) return;
++    for (const animation of host.getAnimations()) {
 +      animation.startTime = 0;
 +    }
 +  };
-+  svg.addEventListener('animationstart', repin);
++  host.addEventListener('animationstart', repin);
    return () => {
      pendingRings.delete(svg);
-+    svg.removeEventListener('animationstart', repin);
++    host.removeEventListener('animationstart', repin);
    };
  }
  
@@ -943,10 +944,18 @@ index 0c81fd3..9186693 100644
    },
    circle: {
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
-index 69573c6..30e96b2 100644
+index 69573c6..a32e7a4 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
 +++ b/node_modules/@astryxdesign/core/dist/astryx.css
-@@ -577,7 +577,7 @@
+@@ -65,6 +65,7 @@
+   @keyframes xv1hr86-B{from{opacity:0;transform:translateY(calc(-1 * var(--spacing-2))) scale(.95);}to{opacity:1;transform:translateY(0) scale(1);}}
+   @keyframes x1b6yrix-B{from{opacity:0;transform:translateY(var(--spacing-2));}to{opacity:1;transform:translateY(0);}}
+   @keyframes xiylxmw-B{from{opacity:0;transform:translateY(calc(-1 * var(--spacing-2)));}to{opacity:1;transform:translateY(0);}}
++  @keyframes xqng64z-B{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
+   @keyframes x1wbvqyn-B{0%{stroke-dashoffset:0;}100%{stroke-dashoffset:calc(var(--_spinner-ring-diameter) * -3.141592653589793);}}
+   @keyframes x1c2q33o-B{0%{transform:translateX(100%);}100%{transform:translateX(-250%);}}
+   @keyframes xr3m334-B{0%{transform:translateX(-100%);}100%{transform:translateX(250%);}}
+@@ -577,7 +578,7 @@
    .xk2sxw7:focus-within:not(#\#):not(#\#){border-color:var(--color-error)}
    .xyq33ac:focus-within:not(#\#):not(#\#){border-color:var(--color-success)}
    .xa1yw2k:focus-within:not(#\#):not(#\#){border-color:var(--color-warning)}
@@ -955,7 +964,15 @@ index 69573c6..30e96b2 100644
    .x1dordxg:focus-within:not(#\#):not(#\#){overflow:visible}
    .xb0m1lw:has(> div > .astryx-layout-content):not(#\#):not(#\#){margin-inline:0}
    .x16s19ga:has(:focus-visible):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
-@@ -663,6 +663,7 @@
+@@ -650,6 +651,7 @@
+   .x3psbcj:not(#\#):not(#\#):not(#\#){animation-name:x1ahk7ht-B}
+   .x1dvww92:not(#\#):not(#\#):not(#\#){animation-name:x1b6yrix-B}
+   .x97zbip:not(#\#):not(#\#):not(#\#){animation-name:x1k48ry3-B}
++  .x1ka1v4i:not(#\#):not(#\#):not(#\#){animation-name:xqng64z-B}
+   .x1nlxm0d:not(#\#):not(#\#):not(#\#){animation-name:x1wbvqyn-B}
+   .x1gbn2au:not(#\#):not(#\#):not(#\#){animation-name:x1xhkexc-B}
+   .xeuoslp:not(#\#):not(#\#):not(#\#){animation-name:xgnty7z-B}
+@@ -663,6 +665,7 @@
    .x4hg4is:not(#\#):not(#\#):not(#\#){animation-timing-function:ease-in-out}
    .x1esw782:not(#\#):not(#\#):not(#\#){animation-timing-function:linear}
    .x193epu2:not(#\#):not(#\#):not(#\#){animation-timing-function:steps(10,end)}
@@ -963,7 +980,7 @@ index 69573c6..30e96b2 100644
    .x128ha8g:not(#\#):not(#\#):not(#\#){animation-timing-function:var(--ease-standard)}
    .xjyslct:not(#\#):not(#\#):not(#\#){appearance:none}
    .x1plog1:not(#\#):not(#\#):not(#\#){aspect-ratio:1}
-@@ -1367,7 +1368,7 @@
+@@ -1367,7 +1370,7 @@
    .x1l5jwag:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:calc(0px - var(--focus-outline-width))}
    .x13aywxo:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--button-focus-offset)}
    .x1vwwbsn:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
@@ -972,7 +989,7 @@ index 69573c6..30e96b2 100644
    .x1jhp3zv:focus-visible:not(#\#):not(#\#):not(#\#){outline-style:var(--focus-outline-style)}
    .x1vidyx5:focus-visible:not(#\#):not(#\#):not(#\#){outline-width:var(--focus-outline-width)}
    .x1n6uwha:is([dir="rtl"] *):not(#\#):not(#\#):not(#\#){padding-inline-end:max(var(--spacing-4),env(safe-area-inset-left,0px))}
-@@ -1850,8 +1851,8 @@
+@@ -1850,8 +1853,8 @@
    .x5lhr3w:not(#\#):not(#\#):not(#\#):not(#\#){width:var(--x-width)}
    .x1wp2rvj.x1wp2rvj:where(.x139im0d:last-child *):not(#\#):not(#\#):not(#\#):not(#\#){border-bottom-width:0}
    .x132qfvm:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){height:auto}
@@ -2084,28 +2101,30 @@ index 6c581d4..d3a9857 100644
          <div
            id={`${id}-children`}
 diff --git a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
-index 7f7dedd..5611a4a 100644
+index 7f7dedd..27dfa76 100644
 --- a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
 +++ b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
-@@ -199,8 +199,17 @@ function syncRotationPhase(
+@@ -199,8 +199,19 @@ function syncRotationPhase(
      flushScheduled = true;
      requestAnimationFrame(pinRingsToTimelineOrigin);
    }
 +  // Moving a mounted spinner (a list re-sorting its rows) restarts the arc's
 +  // CSS animation without running this ref again; pin the restarted one too.
-+  const repin = () => {
-+    for (const animation of svg.getAnimations({subtree: true})) {
++  const host = svg.parentElement ?? svg;
++  const repin = (event: AnimationEvent) => {
++    if (event.target !== host) return;
++    for (const animation of host.getAnimations()) {
 +      animation.startTime = 0;
 +    }
 +  };
-+  svg.addEventListener('animationstart', repin);
++  host.addEventListener('animationstart', repin);
    return () => {
      pendingRings.delete(svg);
-+    svg.removeEventListener('animationstart', repin);
++    host.removeEventListener('animationstart', repin);
    };
  }
  
-@@ -273,9 +282,24 @@ const styles = stylex.create({
+@@ -273,9 +284,24 @@ const styles = stylex.create({
      // moment it sets `min-width: 0` on its items. A spinner that does not fit
      // overflows its host visibly instead of being silently sliced.
      flexShrink: 0,
