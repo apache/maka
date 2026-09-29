@@ -10804,7 +10804,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: ip-address@10.4.0
+Package: ip-address@10.7.2
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/beaugunderson/ip-address.git
@@ -15022,7 +15022,7 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: undici@6.28.0
+Package: undici@6.29.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -15052,7 +15052,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@7.29.0
+Package: undici@7.30.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -15082,7 +15082,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@8.10.2
+Package: undici@8.11.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
