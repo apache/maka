@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 51 |
+| portable-candidate | 52 |
 | platform-contract | 40 |
 
-Total Windows-excluded declarations: **118**
+Total Windows-excluded declarations: **119**
 
 ## Inventory
 
@@ -137,6 +137,7 @@ Total Windows-excluded declarations: **118**
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
+| portable-candidate | `packages/storage/src/__tests__/windows-directory-sync.test.ts` syncDirectory synchronizes a directory on POSIX | `process.platform === 'win32' ? 'POSIX-only path' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
 | platform-contract | `scripts/macos-update-archive.test.mjs` the macOS update ZIP keeps bundle symlinks and modification times | `process.platform !== 'darwin' && 'the macOS update ZIP is built on macOS'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after a delayed Runtime Host Ready | `process.platform === 'win32'` |
