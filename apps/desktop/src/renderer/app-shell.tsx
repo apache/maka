@@ -1417,16 +1417,6 @@ function AppShellContent({
       if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
       return queued;
     }
-    if (
-      revisionSend &&
-      revision &&
-      text.trim() === revision.originalText.trim() &&
-      !hasPendingContext
-    ) {
-      const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
-      return false;
-    }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
       if (hasPendingContext) {
