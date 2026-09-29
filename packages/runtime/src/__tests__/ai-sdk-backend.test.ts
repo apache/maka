@@ -3613,6 +3613,10 @@ describe('AiSdkBackend model history', () => {
       JSON.stringify(firstEvents),
     );
     const call = durable.ledger.find((event) => event.content?.kind === 'function_call');
+    assert.equal(
+      call?.content?.kind === 'function_call' ? call.content.providerExecuted : false,
+      true,
+    );
     assert.deepEqual(
       call?.content?.kind === 'function_call'
         ? (call.content.providerOptions?.deepseek as Record<string, unknown> | undefined)
@@ -3620,9 +3624,13 @@ describe('AiSdkBackend model history', () => {
         : undefined,
       item,
     );
+    const results = durable.ledger.filter((event) => event.content?.kind === 'function_response');
+    assert.equal(results.length, 1);
     assert.equal(
-      durable.ledger.filter((event) => event.content?.kind === 'function_response').length,
-      1,
+      results[0]?.content?.kind === 'function_response'
+        ? results[0].content.providerExecuted
+        : false,
+      true,
     );
 
     const second = createBackend(options);
