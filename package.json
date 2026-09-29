@@ -137,6 +137,22 @@
     },
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.12"
-    }
+    },
+    "@ai-sdk/provider-utils": {
+      "undici": "7.29.1"
+    },
+    "@electron/get": {
+      "undici": "7.30.0"
+    },
+    "@jackwener/opencli": {
+      "undici": "6.29.0"
+    },
+    "node-gyp": {
+      "undici": "6.29.0"
+    },
+    "unifont": {
+      "undici": "8.11.2"
+    },
+    "ip-address": "10.7.2"
   }
 }
