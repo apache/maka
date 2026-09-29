@@ -516,16 +516,17 @@ export function createAppShellChatActions(deps: {
       onApplied?.(sessionId);
       settleInteraction(sessionId, response.requestId);
     } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
-      } else {
-        toastApi.error(
-          copy.responseFailedTitle,
-          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
-          undefined,
-          { sessionId },
-        );
+      if (activeIdRef.current === sessionId) {
+        if (isSessionWorkspaceUnavailableError(error)) {
+          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+        } else {
+          toastApi.error(
+            copy.responseFailedTitle,
+            localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+            undefined,
+            { sessionId },
+          );
+        }
       }
       throw error;
     }

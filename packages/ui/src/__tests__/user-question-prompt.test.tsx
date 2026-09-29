@@ -188,6 +188,122 @@ test('switching between pending requests without unmounting restores each wizard
   }
 });
 
+test('successful submit clears remembered progress after unmount', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  clearUserQuestionWizardState(request.requestId);
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <UserQuestionPrompt
+          request={request}
+          onRespond={async () => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+
+    const beta = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Beta'));
+    assert.ok(beta);
+    await act(() => beta.click());
+    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Next');
+    assert.ok(nextButton);
+    await act(() => nextButton.click());
+
+    const yes = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Yes'));
+    assert.ok(yes);
+    await act(() => yes.click());
+
+    const submitButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Submit answers');
+    assert.ok(submitButton);
+    await act(async () => submitButton.click());
+
+    assert.equal(readUserQuestionWizardState(request.requestId), undefined);
+    await act(() => root.unmount());
+    assert.equal(readUserQuestionWizardState(request.requestId), undefined);
+  } finally {
+    clearUserQuestionWizardState(request.requestId);
+    Object.assign(globalThis, original);
+  }
+});
+
+test('late rejection after unmount keeps remembered progress', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  clearUserQuestionWizardState(request.requestId);
+  let rejectResponse: (() => void) | undefined;
+  const response = new Promise<void>((_resolve, reject) => {
+    rejectResponse = () => reject(new Error('host rejected'));
+  });
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <UserQuestionPrompt
+          request={request}
+          onRespond={async () => response}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+
+    const beta = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Beta'));
+    assert.ok(beta);
+    await act(() => beta.click());
+    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Next');
+    assert.ok(nextButton);
+    await act(() => nextButton.click());
+
+    const yes = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Yes'));
+    assert.ok(yes);
+    await act(() => yes.click());
+
+    const submitButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Submit answers');
+    assert.ok(submitButton);
+    await act(() => submitButton.click());
+    await act(() => root.unmount());
+    assert.equal(readUserQuestionWizardState(request.requestId)?.questionIndex, 1);
+
+    rejectResponse?.();
+    await act(async () => {
+      await response.catch(() => undefined);
+    });
+    assert.equal(readUserQuestionWizardState(request.requestId)?.questionIndex, 1);
+  } finally {
+    clearUserQuestionWizardState(request.requestId);
+    Object.assign(globalThis, original);
+  }
+});
+
 test('failed responses keep wizard progress for retry', async () => {
   const original = {
     document: globalThis.document,
