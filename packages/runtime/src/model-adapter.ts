@@ -168,13 +168,12 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // DeepSeek's bare item codec replays only completed web_search_call items
-      // with their original wire payload. Other Open Responses provider tools
-      // still lack a lossless replay codec.
+      // General Open Responses provider tool replay remains unsupported.
+      // AiSdkMessageProjection admits only DeepSeek calls with a paired,
+      // original web_search_call item through its narrower per-item check.
       providerExecutedTools:
         this.runtime.reasoningReplay.kind !== 'responses' ||
-        this.runtime.reasoningReplay.contract.adapter !== 'open-responses' ||
-        this.supportsDeepSeekWebSearchReplay(),
+        this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
       signedThinking: this.runtime.reasoningReplay.kind === 'anthropic-signed',
       // openai-compatible transports replay stored reasoning unconditionally:
       // DeepSeek-style endpoints 400 tool calls whose history lacks it, and

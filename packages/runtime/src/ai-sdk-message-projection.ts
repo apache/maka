@@ -196,9 +196,8 @@ export class AiSdkMessageProjection {
       if (
         (item.kind === 'tool_call' || item.kind === 'tool_result') &&
         item.providerExecuted === true &&
-        (!support.providerExecutedTools ||
-          (this.input.modelAdapter.supportsDeepSeekWebSearchReplay() &&
-            !replayableDeepSeekPairs.has(item.eventId)))
+        !support.providerExecutedTools &&
+        !replayableDeepSeekPairs.has(item.eventId)
       ) {
         return false;
       }
@@ -224,9 +223,8 @@ export class AiSdkMessageProjection {
           if (!support.toolCalls || !support.toolResults) return false;
           if (
             item.providerExecuted === true &&
-            (!support.providerExecutedTools ||
-              (this.input.modelAdapter.supportsDeepSeekWebSearchReplay() &&
-                !replayableDeepSeekPairs.has(item.eventId)))
+            !support.providerExecutedTools &&
+            !replayableDeepSeekPairs.has(item.eventId)
           )
             return false;
         }

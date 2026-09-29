@@ -24,7 +24,6 @@ import type {
 import type { RuntimeEventReplayToolCallItem } from './model-history.js';
 
 const EXTENSION_ID = 'deepseek.web_search';
-const MAX_ITEM_JSON_CHARS = 128 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -36,12 +35,7 @@ function completedWebSearchItem(
   if (!isRecord(value) || value.type !== 'web_search_call' || value.status !== 'completed') {
     return false;
   }
-  if (typeof value.id !== 'string' || !value.id || !isRecord(value.action)) return false;
-  try {
-    return JSON.stringify(value).length <= MAX_ITEM_JSON_CHARS;
-  } catch {
-    return false;
-  }
+  return typeof value.id === 'string' && value.id.length > 0 && isRecord(value.action);
 }
 
 /** Only original, completed provider output is eligible for exact replay. */
@@ -61,14 +55,12 @@ export function deepSeekWebSearchReplayOptions(
 }
 
 /**
- * Decode old DeepSeek Responses web search output. Current DeepSeek models
- * ignore built-in web_search; Maka does not route any tool to this encoder.
+ * Decode historical DeepSeek Responses web search output. Current DeepSeek
+ * models ignore built-in web_search; this codec declares no outgoing tool.
  */
 export const deepSeekWebSearchCodec: Experimental_OpenResponsesBareExtension = {
   id: EXTENSION_ID,
   allowBareTypes: true,
-  bareToolType: 'web_search',
-  encodeTool: () => ({}),
   bareItemTypes: ['web_search_call'],
   decodeItem: ({ item }) => {
     if (!completedWebSearchItem(item)) return undefined;
