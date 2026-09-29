@@ -706,15 +706,18 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     ['sessionId', 'turnId', 'runId', 'status'],
     ['providerRetry', 'rootExecutionKind'],
   );
+  const optionalFields = {
+    ...(record.providerRetry === undefined
+      ? {}
+      : { providerRetry: decodeTurnProviderRetry(record.providerRetry) }),
+    ...(record.rootExecutionKind === undefined
+      ? {}
+      : { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }),
+  };
   return {
     ...base,
     status,
-    ...(record.providerRetry !== undefined
-      ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
-      : {}),
-    ...(record.rootExecutionKind !== undefined
-      ? { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }
-      : {}),
+    ...optionalFields,
   };
 }
 

@@ -179,13 +179,10 @@ def response(flow: object) -> None:
 
 def http_connect(flow: object) -> None:
     request = getattr(flow, "request", None)
-    try:
-        target = parse_connect_target(
-            getattr(request, "host", None),
-            getattr(request, "port", None),
-        ).url
-    except (TypeError, ValueError):
-        target = ""
+    target = _safe_connect_url(
+        getattr(request, "host", None),
+        getattr(request, "port", None),
+    )
     enforce_url_policy(flow, target)
 
 
@@ -195,9 +192,7 @@ def tcp_start(flow: object) -> None:
 
 
 def tcp_message(flow: object) -> None:
-    messages = getattr(flow, "messages", None)
-    if messages and hasattr(messages[-1], "content"):
-        messages[-1].content = b""
+    _clear_latest_tcp_message(getattr(flow, "messages", None))
     close_flow(flow)
 
 
@@ -253,6 +248,21 @@ def enforce_url_policy(flow: object, raw_url: str) -> None:
 
 def connect_url(host: object, port: object) -> str:
     return parse_connect_target(host, port).url
+
+
+def _safe_connect_url(host: object, port: object) -> str:
+    try:
+        return connect_url(host, port)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _clear_latest_tcp_message(messages: object) -> None:
+    if not isinstance(messages, list) or not messages:
+        return
+    latest = messages[-1]
+    if hasattr(latest, "content"):
+        latest.content = b""
 
 
 def parse_connect_target(host: object, port: object) -> ConnectTarget:
@@ -344,21 +354,27 @@ def _next_layer_bytes(nextlayer: object, name: str) -> bytes:
 def peer_label(owner: object) -> tuple[str, str]:
     server = getattr(owner, "server_conn", None) or getattr(owner, "server", None)
     address = getattr(server, "address", None)
-    if isinstance(address, (tuple, list)) and address:
-        host = str(address[0])[:255]
-        port = address[1] if len(address) > 1 else ""
-        return host, f":{port}" if port != "" else ""
-    return "", ""
+    return _format_peer_address(address)
+
+
+def _format_peer_address(address: object) -> tuple[str, str]:
+    if not isinstance(address, (tuple, list)) or not address:
+        return "", ""
+    host = str(address[0])[:255]
+    port = address[1] if len(address) > 1 else ""
+    return host, f":{port}" if port != "" else ""
 
 
 def reject_raw_transport(owner: object, *, close: bool = True) -> None:
     host, port = peer_label(owner)
-    try:
-        audit_event("raw_tunnel", host, port)
-    except Exception:
-        pass
+    _audit_safely("raw_tunnel", host, port)
     if close:
         close_flow(owner)
+
+
+def _audit_safely(rule_id: str, host: str, normalized_path: str) -> None:
+    with suppress(Exception):
+        audit_event(rule_id, host, normalized_path)
 
 
 def close_flow(flow: object) -> None:
@@ -400,11 +416,11 @@ class RejectRawTransport(Layer):
     def handle_event(self, event: object):
         if self._close_connection is None:
             return
-            yield
-        for name in ("client", "server"):
-            connection = getattr(self.context, name, None)
-            if connection is not None:
-                yield self._close_connection(connection)
+        yield from (
+            self._close_connection(connection)
+            for name in ("client", "server")
+            if (connection := getattr(self.context, name, None)) is not None
+        )
 
 
 def blocked_response(rule_id: str):

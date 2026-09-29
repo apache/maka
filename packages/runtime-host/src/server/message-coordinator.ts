@@ -1117,40 +1117,48 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   ): Promise<void> {
     const admissions = await this.#admissions.listMessageAdmissions(sessionId);
     if (admissions.length === 0) return;
-    const pending = [] as PendingMessageAdmission[];
-    for (const admission of admissions) {
-      const source = await this.#durableProof.readRootTurnSourceMessageReceipt(
-        sessionId,
-        admission.messageId,
-      );
-      if (
-        source?.admission.turnId === admission.turnId &&
-        source.admission.runId === admission.runId &&
-        source.sourceMessage.messageId === admission.messageId
-      ) {
-        await this.materializeMessageHandoffsForRun({
+    const dispositions = await Promise.all(
+      admissions.map(async (admission) => {
+        const source = await this.#durableProof.readRootTurnSourceMessageReceipt(
           sessionId,
-          turnId: source.admission.turnId,
-          runId: source.admission.runId,
-          messageIds: [admission.messageId],
-        });
-      } else {
+          admission.messageId,
+        );
+        if (
+          source?.admission.turnId === admission.turnId &&
+          source.admission.runId === admission.runId &&
+          source.sourceMessage.messageId === admission.messageId
+        ) {
+          return {
+            kind: 'handoff' as const,
+            turnId: source.admission.turnId,
+            runId: source.admission.runId,
+            messageIds: [admission.messageId],
+          };
+        }
         const steering = await this.#durableProof.readImmutableSteeringMessageProof(
           sessionId,
           admission.messageId,
         );
-        if (steering) {
-          await this.materializeMessageHandoffsForRun({
-            sessionId,
-            turnId: steering.event.turnId,
-            runId: steering.event.runId,
-            messageIds: [],
-          });
-        } else {
-          pending.push(admission);
-        }
-      }
-    }
+        return steering
+          ? {
+              kind: 'handoff' as const,
+              turnId: steering.event.turnId,
+              runId: steering.event.runId,
+              messageIds: [],
+            }
+          : { kind: 'pending' as const, admission };
+      }),
+    );
+    await Promise.all(
+      dispositions
+        .filter((disposition) => disposition.kind === 'handoff')
+        .map(({ turnId, runId, messageIds }) =>
+          this.materializeMessageHandoffsForRun({ sessionId, turnId, runId, messageIds }),
+        ),
+    );
+    const pending = dispositions.flatMap((disposition) =>
+      disposition.kind === 'pending' ? [disposition.admission] : [],
+    );
     if (pending.length === 0) return;
     const rootState = await this.#root.readRootState(sessionId);
     if (rootState.kind !== 'active') {
@@ -1686,34 +1694,32 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const admitted = await this.#openQueueMutation(input.sessionId, true);
     if (!admitted.ok) return admitted;
     const state = admitted.result;
+    const plan = planQueueRetraction(state);
     if (
-      !retractionResultFits(
-        state,
-        state.revision + (queuedEntryCount(state) > 0 ? 1 : 0),
-        MESSAGE_OPERATION_RESULT_MAX_BYTES,
-      )
+      !retractionResultFits(state, plan.result.queueRevision, MESSAGE_OPERATION_RESULT_MAX_BYTES)
     ) {
       return failure('session_busy', 'Retract result exceeds protocol capacity');
     }
-    const queued = [...state.steering, ...state.followup];
-    const result = {
-      queueRevision: state.revision + (queued.length > 0 ? 1 : 0),
-      retracted: queued.map(retractedSnapshot),
-    };
     await this.#admissions.cancelMessageAdmissions(
       input.sessionId,
-      queued.map((entry) => entry.messageId),
+      plan.queued.map((entry) => entry.messageId),
     );
     const retracted = this.#retractQueued(state);
     if (retracted.length > 0) this.#mutated(state);
-    if (!isDeepStrictEqual(result, { queueRevision: state.revision, retracted })) {
+    if (!isDeepStrictEqual(plan.result, { queueRevision: state.revision, retracted })) {
       throw new RuntimeMessageAuthorityInvariantError(
         'Retract mutation did not match its prepared result',
       );
     }
     this.#maybeReclaim(input.sessionId, state);
-    this.#rememberCompletedOperation('retract', input.sessionId, input.retractId, input, result);
-    return success(result);
+    this.#rememberCompletedOperation(
+      'retract',
+      input.sessionId,
+      input.retractId,
+      input,
+      plan.result,
+    );
+    return success(plan.result);
   }
 
   async #retractQueuedEntryAdmitted(
@@ -1764,10 +1770,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       placement: 'current_turn',
       disposition: 'steering',
     } satisfies RootTurnSourceMessage;
-    const prospectiveSteering = [...state.inFlight.values(), ...state.steering].map(
-      sourceFromEntry,
-    );
-    prospectiveSteering.push(promotedSource);
+    const prospectiveSteering = [
+      ...[...state.inFlight.values(), ...state.steering].map(sourceFromEntry),
+      promotedSource,
+    ];
     const prospectiveFollowup = state.followup
       .filter((queued) => queued !== entry)
       .map(sourceFromEntry);
@@ -2517,13 +2523,15 @@ function queueEntrySelectionFailure(
   selection: Exclude<QueuedEntrySelection<LiveEntry>, { readonly kind: 'found' }>,
   wrongLaneMessage = 'Message queue entry is not in the required lane',
 ): MessageOutcome<never> {
-  if (selection.kind === 'in_flight') {
-    return failure('operation_conflict', 'Message entry is already being delivered');
-  }
-  if (selection.kind === 'wrong_lane') {
-    return failure('operation_conflict', wrongLaneMessage);
-  }
-  return failure('not_found', 'Message queue entry does not exist');
+  const messages = {
+    in_flight: 'Message entry is already being delivered',
+    wrong_lane: wrongLaneMessage,
+    missing: 'Message queue entry does not exist',
+  } as const;
+  return failure(
+    selection.kind === 'missing' ? 'not_found' : 'operation_conflict',
+    messages[selection.kind],
+  );
 }
 
 function operationKey(sessionId: string, operationId: string): string {
@@ -2535,7 +2543,21 @@ function queuedMutationKey(
   sessionId: string,
   operationId: string,
 ): string {
-  return `${kind}\0${sessionId}\0${operationId}`;
+  return [kind, sessionId, operationId].join('\0');
+}
+
+function planQueueRetraction(state: SessionState): {
+  readonly queued: readonly LiveEntry[];
+  readonly result: QueueRetractResult;
+} {
+  const queued = [...state.steering, ...state.followup];
+  return {
+    queued,
+    result: {
+      queueRevision: state.revision + (queued.length > 0 ? 1 : 0),
+      retracted: queued.map(retractedSnapshot),
+    },
+  };
 }
 
 function relocateInlineReferences(
