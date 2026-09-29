@@ -92,7 +92,6 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
 
 const verifyExactRepositorySelection = async (t: TestContext) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-exact-selection-'));
-  t.after(() => rm(base, { recursive: true, force: true }));
   const repository = join(base, 'repository');
   const nestedDirectory = join(repository, 'nested');
   await mkdir(nestedDirectory, { recursive: true });
@@ -105,7 +104,12 @@ const verifyExactRepositorySelection = async (t: TestContext) => {
     now: () => 1_000,
   };
   const catalog = createProjectCatalog(join(base, 'storage'), catalogDeps);
-  t.after(() => catalog.close());
+  // One hook, close before remove: `after` hooks run in registration order, and
+  // Windows cannot unlink runtime.sqlite while the catalog still holds it.
+  t.after(async () => {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  });
   const selection = {
     currentSelection: async () => ({ path: repository, projectId: undefined }),
     setSelection(id: string | null, path: string) {
@@ -120,7 +124,9 @@ const verifyExactRepositorySelection = async (t: TestContext) => {
     selection,
   } satisfies Parameters<typeof createProjectManagementService>[0];
   const service = createProjectManagementService(serviceOptions);
-  const results = await Promise.all([service.add(), service.add()]);
+  // Sequential on purpose: concurrent adds settle in completion order, so the
+  // selection order this test pins would depend on which add finishes first.
+  const results = [await service.add(), await service.add()];
   assert.ok(results.every((result) => result.ok));
   const [repositoryResult, nestedResult] = results;
   if (!repositoryResult?.ok || !nestedResult?.ok) assert.fail('Expected both Projects to be added');
