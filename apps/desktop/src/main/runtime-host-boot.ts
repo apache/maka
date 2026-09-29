@@ -39,6 +39,7 @@ import { join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
@@ -1653,8 +1654,15 @@ function registerHostClientIpc(
   const clientNetworkProxy = createClientNetworkProxyApplier({
     profileKind: target.kind,
     resolve: () => client.resolveNetworkProxy(),
+    // Reported on the same redacted support-log channel as the bot connection
+    // failures this causes, so the two appear together when a user attaches
+    // their log. Retries continue, so this states what is degraded meanwhile.
     onError: (error) =>
-      console.error("[runtime-host] Client network proxy resolution failed:", error),
+      console.warn(
+        `[bots:proxy] proxy_unresolved: bot traffic stays direct until the Runtime Host answers — ${redactSecrets(
+          error instanceof Error ? error.message : String(error),
+        )}`,
+      ),
   });
   void clientNetworkProxy.refresh();
   const runtimeHostSettings = createRuntimeHostSettingsModule({

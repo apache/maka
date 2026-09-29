@@ -132,21 +132,33 @@ describe("createClientNetworkProxyApplier", () => {
     assert.deepStrictEqual(applied, [RESOLVED.proxy]);
   });
 
-  test("bounds the retry budget instead of reconnecting forever", async () => {
+  test("backs off but never stops retrying while the proxy is unapplied", async () => {
     const { applier, scheduled } = harness("local", async () => {
       throw new Error("host_not_ready");
     });
     await applier.refresh();
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       const pending = scheduled[index];
-      if (!pending) break;
+      assert.ok(pending, `no retry scheduled after failure ${index + 1}`);
       pending.run();
       await flush();
     }
+    // Exhausting a budget would leave bot traffic going direct, past the
+    // policy the user configured, until the next proxy edit or restart.
     assert.deepStrictEqual(
       scheduled.map((entry) => entry.delayMs),
-      [1_000, 5_000, 15_000],
+      [1_000, 5_000, 15_000, 60_000, 60_000, 60_000],
     );
+  });
+
+  test("keeps one retry in flight when an explicit refresh also fails", async () => {
+    const { applier, scheduled } = harness("local", async () => {
+      throw new Error("host_not_ready");
+    });
+    await applier.refresh();
+    await applier.refresh();
+    await applier.refresh();
+    assert.strictEqual(scheduled.length, 1);
   });
 
   test("serializes concurrent refreshes so the last resolution wins", async () => {
