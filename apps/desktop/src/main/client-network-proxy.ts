@@ -35,10 +35,14 @@ import { setActiveProxy } from "@maka/runtime/network/active-proxy-state";
 
 /**
  * The first resolution runs while the Host connection is still settling, so a
- * `host_not_ready` refusal is expected rather than terminal. Without a retry a
- * Client that loses that race stays direct until the user next edits the proxy.
+ * `host_not_ready` refusal is expected rather than terminal.
+ *
+ * The ladder backs off but never runs out: while the policy asks for a proxy
+ * and this Client cannot obtain it, bot traffic is going direct, past the
+ * network policy the user configured. Giving up would leave that in place
+ * until the next proxy edit or restart, so the last delay repeats instead.
  */
-const RETRY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
+const RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000] as const;
 
 export interface ClientNetworkProxyDeps {
   readonly profileKind: RuntimeHostProfileKind;
@@ -65,6 +69,9 @@ export function createClientNetworkProxyApplier(
   let lane: Promise<void> = Promise.resolve();
   let lastReportedError: string | undefined;
   let attempt = 0;
+  // One retry in flight at a time: an explicit refresh that also fails must not
+  // fan out into a second ladder.
+  let retryPending = false;
 
   const refreshWithoutLane = async (): Promise<void> => {
     // A non-local Host describes a different machine's network. The bot
@@ -85,10 +92,15 @@ export function createClientNetworkProxyApplier(
         lastReportedError = message;
         deps.onError?.(error);
       }
-      const delayMs = RETRY_DELAYS_MS[attempt];
-      if (delayMs !== undefined) {
-        attempt += 1;
-        schedule(() => void enqueue(), delayMs);
+      const delayMs =
+        RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)] ?? 60_000;
+      attempt += 1;
+      if (!retryPending) {
+        retryPending = true;
+        schedule(() => {
+          retryPending = false;
+          void enqueue();
+        }, delayMs);
       }
       return;
     }
@@ -108,8 +120,8 @@ export function createClientNetworkProxyApplier(
 
   return {
     refresh() {
-      // An explicit refresh means the policy changed, so the pending retry
-      // budget from an earlier failure no longer applies.
+      // An explicit refresh means the policy changed, so the backoff earned by
+      // an earlier failure no longer applies.
       attempt = 0;
       return enqueue();
     },
