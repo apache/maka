@@ -445,12 +445,15 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
-test('binds message controls to the current Host Epoch', async () => {
+test('binds every message command to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
     { queueRevision: 3 },
+    { queueRevision: 4 },
+    { queueRevision: 5 },
+    { queueRevision: 6 },
     {
-      queueRevision: 4,
+      queueRevision: 7,
       retracted: [],
       turn: {
         sessionId: 'session-1',
@@ -473,6 +476,24 @@ test('binds message controls to the current Host Epoch', async () => {
     sessionId: 'session-1',
     entryId: 'entry-1',
     retractId: 'retract-1',
+  });
+  await client.promoteQueueEntry({
+    sessionId: 'session-1',
+    entryId: 'entry-2',
+    promoteId: 'promote-1',
+  });
+  await client.updateQueueEntry({
+    sessionId: 'session-1',
+    entryId: 'entry-1',
+    updateId: 'update-1',
+    expectedQueueRevision: 3,
+    text: 'Updated steer',
+  });
+  await client.reorderQueueEntries({
+    sessionId: 'session-1',
+    reorderId: 'reorder-1',
+    expectedQueueRevision: 5,
+    entryIds: ['entry-2', 'entry-1'],
   });
   await client.interruptTurn({
     sessionId: 'session-1',
@@ -498,6 +519,36 @@ test('binds message controls to the current Host Epoch', async () => {
         sessionId: 'session-1',
         entryId: 'entry-1',
         retractId: 'retract-1',
+        originHostEpoch: 'host-current',
+      },
+    },
+    {
+      operation: 'queue.entry.promote',
+      input: {
+        sessionId: 'session-1',
+        entryId: 'entry-2',
+        promoteId: 'promote-1',
+        originHostEpoch: 'host-current',
+      },
+    },
+    {
+      operation: 'queue.entry.update',
+      input: {
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        updateId: 'update-1',
+        expectedQueueRevision: 3,
+        text: 'Updated steer',
+        originHostEpoch: 'host-current',
+      },
+    },
+    {
+      operation: 'queue.entries.reorder',
+      input: {
+        sessionId: 'session-1',
+        reorderId: 'reorder-1',
+        expectedQueueRevision: 5,
+        entryIds: ['entry-2', 'entry-1'],
         originHostEpoch: 'host-current',
       },
     },

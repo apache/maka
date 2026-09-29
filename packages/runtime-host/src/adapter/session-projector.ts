@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { isDeepStrictEqual } from 'node:util';
 import {
   type ActiveInteractionRequestEvent,
   type ContextCompactionStartedEvent,
@@ -32,9 +31,9 @@ import type {
   SessionMessageQueueProjection,
   SessionSteeringEvent,
   SubscriptionFrame,
-  LiveTurnSnapshot,
   TurnSnapshot,
 } from '../protocol/index.js';
+import { projectProviderRetryChange, seedProviderRetry } from './provider-retry-projector.js';
 
 interface AssistantAccumulator {
   interrupted?: true;
@@ -204,11 +203,9 @@ export class RuntimeHostSessionProjector {
     if (root.rootExecutionKind === 'context_compact') {
       events.push(contextCompactionStartedEvent(root, this.#now()));
     }
-    let seededAssistantText = false;
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
         if (accumulator.complete) continue;
-        seededAssistantText = true;
         events.push({
           type: accumulator.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
@@ -220,8 +217,12 @@ export class RuntimeHostSessionProjector {
         });
       }
     }
-    if (root.providerRetry && !seededAssistantText) {
-      events.push(providerRetryEvent(root, this.#now()));
+    const seededAssistantContent = events.some(
+      (event) => event.type === 'text_delta' || event.type === 'thinking_delta',
+    );
+    if (!seededAssistantContent) {
+      const retry = seedProviderRetry(root, this.#now());
+      if (retry) events.push(retry);
     }
     for (const interaction of this.#snapshot.interactions.pending) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
@@ -452,7 +453,7 @@ export class RuntimeHostSessionProjector {
     if (root && rootIsCompaction && !previousWasCompaction) {
       events.push(contextCompactionStartedEvent(root, this.#now()));
     }
-    const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
+    const retry = projectProviderRetryChange(previousRoot, root, this.#now());
     if (retry) events.push(retry);
     const terminalTurn =
       root && isRuntimeHostTerminalTurn(root) && !sameRuntimeHostTerminalTurn(previousRoot, root)
@@ -809,61 +810,6 @@ export function sameRuntimeHostTerminalTurn(
     previous.runId === next.runId &&
     previous.terminalEventId === next.terminalEventId
   );
-}
-
-function liveProviderRetryEvent(
-  previous: TurnSnapshot | null | undefined,
-  next: TurnSnapshot | null | undefined,
-  ts: number,
-): Extract<SessionEvent, { type: 'provider_retry' }> | undefined {
-  if (!next || isRuntimeHostTerminalTurn(next) || !next.providerRetry) return undefined;
-  const previousRetry =
-    previous && !isRuntimeHostTerminalTurn(previous) ? previous.providerRetry : undefined;
-  if (previous?.runId === next.runId && isDeepStrictEqual(previousRetry, next.providerRetry)) {
-    return undefined;
-  }
-  return providerRetryEvent(next, ts);
-}
-
-function providerRetryEvent(
-  root: LiveTurnSnapshot,
-  ts: number,
-): Extract<SessionEvent, { type: 'provider_retry' }> {
-  const retry = root.providerRetry;
-  if (!retry) {
-    throw new Error('Non-terminal Turn snapshot has no provider retry');
-  }
-  if (retry.phase !== 'scheduled') {
-    return {
-      type: 'provider_retry',
-      id: `host-seed:${root.runId}:provider_retry`,
-      turnId: root.turnId,
-      ts,
-      phase: 'started',
-      attempt: retry.attempt,
-      maxAttempts: retry.maxAttempts,
-      reason: retry.reason,
-    };
-  }
-  // remainingMs is the skew-free countdown authority for clients on another
-  // machine: a duration, recomputed from the host-clock schedule time stored
-  // in the snapshot, so a mid-wait re-projection (reconnect) does not restart
-  // the countdown. Snapshots from older runtimes lack `ts` and degrade to the
-  // full delay.
-  const remainingMs =
-    retry.ts === undefined ? retry.delayMs : Math.max(0, retry.delayMs - (ts - retry.ts));
-  return {
-    type: 'provider_retry',
-    id: `host-seed:${root.runId}:provider_retry`,
-    turnId: root.turnId,
-    ts,
-    phase: 'scheduled',
-    attempt: retry.attempt,
-    maxAttempts: retry.maxAttempts,
-    delayMs: retry.delayMs,
-    remainingMs,
-    reason: retry.reason,
-  };
 }
 
 function abortReason(source: string): Extract<SessionEvent, { type: 'abort' }>['reason'] {

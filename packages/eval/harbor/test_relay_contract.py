@@ -764,17 +764,24 @@ class SubjectCapabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pin the Eval egress proxy hostname", str(raised.exception))
 
 
-class FrameworkSelectionTest(unittest.TestCase):
-    def test_relay_loads_harbor_and_pier_from_the_installed_selection(self):
-        for framework in ("harbor", "pier"):
-            with self.subTest(framework):
-                relay = load_relay(framework)
-                self.assertEqual(relay.framework, framework)
+class RelayFrameworkAuthorityTest(unittest.TestCase):
+    def test_relay_import_uses_only_the_context_selection(self):
+        cases = (
+            ("harbor", None),
+            ("pier", None),
+            ("harbor", "pier"),
+        )
 
-    def test_relay_does_not_select_a_framework_from_the_environment(self):
-        os.environ["MAKA_EVAL_FRAMEWORK"] = "pier"
-        relay = load_relay("harbor")
-        self.assertEqual(relay.framework, "harbor")
+        for selected, environment_value in cases:
+            with self.subTest(selected=selected, environment=environment_value):
+                environment = (
+                    {"MAKA_EVAL_FRAMEWORK": environment_value}
+                    if environment_value is not None
+                    else {}
+                )
+                with patch.dict(os.environ, environment, clear=True):
+                    relay = load_relay(selected)
+                self.assertEqual(relay.framework, selected)
 
 
 if __name__ == "__main__":

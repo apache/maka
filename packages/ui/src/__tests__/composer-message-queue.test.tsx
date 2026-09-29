@@ -25,6 +25,7 @@ import { act, createElement } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import type { ComposerMessageQueueProps } from '../composer-message-queue.js';
 import { getConversationCopy } from '../conversation-copy.js';
+import type { ComposerQueueEntry } from '../composer-message-queue.js';
 import { installDom } from './mermaid-test-dom.js';
 
 const copy = getConversationCopy('en').composer;
@@ -94,6 +95,38 @@ test('edit hands the whole entry to its owner and leaves the row to the Host pro
     assert.deepEqual(edited, [entry]);
     assert.equal(view.document.querySelector('textarea'), null, 'there is no in-place editor');
     assert.deepEqual(queueTexts(view.document), ['first follow-up', 'second follow-up']);
+  } finally {
+    await view.close();
+  }
+});
+
+test('Host inline edits keep their revision and remain editable when admission fails', async () => {
+  const entries = [queued('entry-1', 'original')];
+  const updates: Array<[string, number, string]> = [];
+  let accepted = false;
+  const onUpdateEntry = async (id: string, revision: number, text: string) => {
+    updates.push([id, revision, text]);
+    if (!accepted) throw new Error('stale revision');
+  };
+  const view = await mountQueue({ queuedMessages: entries, queueRevision: 4, onUpdateEntry,
+    onEditEntry: () => assert.fail('Host updates must not retract into the composer'),
+  });
+  try {
+    await click(actionButton(view.document, copy.editQueuedEntry));
+    const editor = view.document.querySelector('textarea')!;
+    assert.ok(editor);
+    await act(() => {
+      editor.value = 'edited';
+      editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    await view.rerender({ queuedMessages: entries, queueRevision: 5, onUpdateEntry });
+    await click(actionButton(view.document, copy.quoteCommentSave));
+    assert.deepEqual(updates, [['entry-1', 4, 'edited']]);
+    assert.equal(view.document.querySelector('textarea')?.value, 'edited');
+    accepted = true;
+    await click(actionButton(view.document, copy.quoteCommentSave));
+    assert.equal(view.document.querySelector('textarea'), null);
+    assert.deepEqual(queueTexts(view.document), ['original'], 'only the Host projection updates the row');
   } finally {
     await view.close();
   }
@@ -247,14 +280,15 @@ test('local messages without delivery actions never inherit Host queue controls'
 });
 
 test('dragging reorders the Host-owned id list', async () => {
-  const reordered: string[][] = [];
+  const reordered: Array<{ ids: readonly string[]; revision: number }> = [];
   const view = await mountQueue({
     queuedMessages: [
       queued('entry-1', 'first follow-up'),
       queued('entry-2', 'second follow-up'),
       queued('entry-3', 'retract this follow-up'),
     ],
-    onReorderEntries: (ids) => { reordered.push([...ids]); },
+    queueRevision: 1,
+    onReorderEntries: (ids, revision) => { reordered.push({ ids: [...ids], revision }); },
   });
   try {
     const grips = view.document.querySelectorAll('[draggable="true"]');
@@ -266,7 +300,134 @@ test('dragging reorders the Host-owned id list', async () => {
       }));
       target.dispatchEvent(new window.Event('drop', { bubbles: true }));
     });
-    assert.deepEqual(reordered, [['entry-2', 'entry-1', 'entry-3']]);
+    assert.deepEqual(reordered, [{ ids: ['entry-2', 'entry-1', 'entry-3'], revision: 1 }]);
+  } finally {
+    await view.close();
+  }
+});
+
+test('queued entries cannot start a reorder without a Host queue revision', async () => {
+  const view = await mountQueue({
+    queuedMessages: [queued('entry-1', 'first'), queued('entry-2', 'second')],
+    onReorderEntries: () => assert.fail('reorder must remain unavailable'),
+  });
+  try {
+    assert.equal(view.document.querySelectorAll('[draggable="true"]').length, 0);
+    assert.equal(view.document.querySelectorAll('[data-maka-queue-drop-target="true"]').length, 0);
+  } finally {
+    await view.close();
+  }
+});
+
+test('a drag submits its captured revision so the Host can reject stale order', async () => {
+  const reordered: Array<{ ids: string[]; revision: number }> = [];
+  const entries = [queued('entry-1', 'first'), queued('entry-2', 'second')];
+  const onReorderEntries = (ids: readonly string[], revision: number) => {
+    reordered.push({ ids: [...ids], revision });
+  };
+  const view = await mountQueue({ queuedMessages: entries, queueRevision: 1, onReorderEntries });
+  try {
+    const source = view.document.querySelectorAll('[draggable="true"]')[1]!;
+    await act(async () => {
+      source.dispatchEvent(Object.assign(new window.Event('dragstart', { bubbles: true }), {
+        dataTransfer: { effectAllowed: '', setData: () => {} },
+      }));
+    });
+    await view.rerender({ queuedMessages: entries, queueRevision: 2, onReorderEntries });
+    await act(async () => {
+      view.document.querySelectorAll('[data-maka-queue-drop-target="true"]')[0]!
+        .dispatchEvent(new window.Event('drop', { bubbles: true }));
+    });
+    assert.deepEqual(reordered, [{ ids: ['entry-2', 'entry-1'], revision: 1 }]);
+  } finally {
+    await view.close();
+  }
+});
+
+test('promote and delete dispatch only for Host-owned queued entries', async () => {
+  const promoted: string[] = [];
+  const deleted: string[] = [];
+  const view = await mountQueue({
+    queuedMessages: [
+      queued('entry-1', 'first'),
+      { ...queued('entry-2', 'second'), state: 'in_flight' },
+    ],
+    queueRevision: 4,
+    onPromoteEntry: (entryId) => { promoted.push(entryId); },
+    onDeleteEntry: (entryId) => { deleted.push(entryId); },
+  });
+  try {
+    assert.equal(actionButton(view.document, copy.promoteQueuedEntry, 1).disabled, true);
+    assert.equal(
+      actionButton(view.document, copy.deleteQueuedEntry, 1).getAttribute('aria-disabled'),
+      'true',
+    );
+    await click(actionButton(view.document, copy.promoteQueuedEntry, 0));
+    await click(actionButton(view.document, copy.deleteQueuedEntry, 0));
+    assert.deepEqual(promoted, ['entry-1']);
+    assert.deepEqual(deleted, ['entry-1']);
+  } finally {
+    await view.close();
+  }
+});
+
+test('one render cannot dispatch two mutations for the same pending queue', async () => {
+  let settlePromotion!: () => void;
+  const promotion = new Promise<void>((resolve) => {
+    settlePromotion = resolve;
+  });
+  const calls: string[] = [];
+  const view = await mountQueue({
+    queuedMessages: [queued('entry-1', 'first')],
+    queueRevision: 4,
+    onPromoteEntry: () => {
+      calls.push('promote');
+      return promotion;
+    },
+    onDeleteEntry: () => {
+      calls.push('delete');
+    },
+  });
+  try {
+    const promote = actionButton(view.document, copy.promoteQueuedEntry);
+    const remove = actionButton(view.document, copy.deleteQueuedEntry);
+    await act(async () => {
+      promote.dispatchEvent(new window.Event('click', { bubbles: true }));
+      remove.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+    assert.deepEqual(calls, ['promote']);
+    settlePromotion();
+    await act(async () => promotion);
+  } finally {
+    settlePromotion();
+    await view.close();
+  }
+});
+
+test('a local pending row exposes only renderer-owned delivery actions', async () => {
+  const local: ComposerQueueEntry = {
+    ...queued('local', 'pending follow-up'),
+    state: 'local',
+    localMessage: {
+      id: 'msg-local',
+      text: 'pending follow-up',
+      ts: 1,
+      transientPlacement: 'follow_up',
+    },
+  };
+  const view = await mountQueue({
+    queuedMessages: [local],
+    onEditEntry: () => assert.fail('local rows are not Host-editable'),
+    onDeleteEntry: () => assert.fail('local rows are not Host-deletable'),
+    onPromoteEntry: () => assert.fail('local rows are not Host-promotable'),
+  });
+  try {
+    const labels = [...view.document.querySelectorAll('button')].map(
+      (button) => button.getAttribute('aria-label') ?? button.textContent,
+    );
+    assert.equal(labels.includes(copy.editQueuedEntry), false);
+    assert.equal(labels.includes(copy.deleteQueuedEntry), false);
+    assert.equal(labels.includes(copy.promoteQueuedEntry), false);
   } finally {
     await view.close();
   }

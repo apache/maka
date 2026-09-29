@@ -55,20 +55,19 @@ export interface AppShellSessionEventHandlers {
   handleEvent(sessionId: string, event: SessionEvent): void;
   reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void;
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
-  flushDisplayEvents(sessionId: string): void;
-  dropDisplayEvents(sessionId: string): void;
-  markDisplayPending(sessionId: string): void;
-  markDisplayReady(sessionId: string): void;
+  holdDisplayEvents(sessionId: string): void;
+  releaseDisplayEvents(sessionId: string): void;
+  discardDisplayEvents(sessionId: string): void;
 }
 
 export interface AppShellSessionDisplayBatch {
   readonly pendingEvents: Map<string, SessionEvent[]>;
-  readonly displayPendingSessions: Set<string>;
+  readonly heldSessions: Set<string>;
   framePending: boolean;
 }
 
 export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch {
-  return { pendingEvents: new Map(), displayPendingSessions: new Set(), framePending: false };
+  return { pendingEvents: new Map(), heldSessions: new Set(), framePending: false };
 }
 
 export function createAppShellSessionEventHandlers(options: {
@@ -183,29 +182,16 @@ export function createAppShellSessionEventHandlers(options: {
     });
   }
 
-  function flushDisplayEvents(sessionId: string): void {
-    const events = takePendingDisplayEvents(sessionId);
-    if (!events.length) return;
-    updateLiveTurn(sessionId, events);
-  }
-
-  function dropDisplayEvents(sessionId: string): void {
+  const holdDisplayEvents = (sessionId: string): void => void displayBatch.heldSessions.add(sessionId);
+  const releaseDisplayEvents = (sessionId: string): void => {
+    const queued = takePendingDisplayEvents(sessionId);
+    if (queued.length > 0) updateLiveTurn(sessionId, queued);
+    displayBatch.heldSessions.delete(sessionId);
+  };
+  const discardDisplayEvents = (sessionId: string): void => {
     displayBatch.pendingEvents.delete(sessionId);
-    displayBatch.displayPendingSessions.delete(sessionId);
-  }
-
-  function markDisplayPending(sessionId: string): void {
-    displayBatch.displayPendingSessions.add(sessionId);
-  }
-
-  function markDisplayReady(sessionId: string): void {
-    displayBatch.displayPendingSessions.delete(sessionId);
-  }
-
-  function canBatchDisplayEvents(sessionId: string): boolean {
-    return !displayBatch.displayPendingSessions.has(sessionId);
-  }
-
+    displayBatch.heldSessions.delete(sessionId);
+  };
   function updateLiveTurn(sessionId: string, events: readonly SessionEvent[]): void {
     setLiveTurnBySession((current) => replaceLiveTurns(current, new Map([[sessionId, events]])));
   }
@@ -282,7 +268,7 @@ export function createAppShellSessionEventHandlers(options: {
     if (
       scheduleFrame
       && activeIdRef.current === sessionId
-      && canBatchDisplayEvents(sessionId)
+      && !displayBatch.heldSessions.has(sessionId)
       && (
         event.type === 'text_delta'
         || event.type === 'thinking_delta'
@@ -415,10 +401,9 @@ export function createAppShellSessionEventHandlers(options: {
     handleEvent,
     reconcilePersistedMessages,
     settleAssistantStreaming,
-    flushDisplayEvents,
-    dropDisplayEvents,
-    markDisplayPending,
-    markDisplayReady,
+    holdDisplayEvents,
+    releaseDisplayEvents,
+    discardDisplayEvents,
   };
 }
 

@@ -58,3 +58,26 @@ test('Daily Review fixture seeds archives through the storage authority', async 
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+test('Daily Review fixture releases its root owner after a rejected archive', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-daily-review-fixture-error-'));
+  try {
+    await assert.rejects(writeDailyReviewArchives(workspaceRoot, Number.NaN), /generatedAt/);
+
+    const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner, 'a failed fixture write must not retain the root owner');
+    try {
+      const writer = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
+      try {
+        assert.deepEqual((await writer.listArchivePage(null, 180)).archives, []);
+      } finally {
+        writer.close();
+      }
+    } finally {
+      await owner.close();
+    }
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});

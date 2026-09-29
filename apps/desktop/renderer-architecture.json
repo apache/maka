@@ -45,7 +45,6 @@
     "src/renderer/desktop-slash-command.ts",
     "src/renderer/error-boundary.tsx",
     "src/renderer/follow-up-submit-routing.ts",
-    "src/renderer/live-content-seed.ts",
     "src/renderer/local-memory-digest.ts",
     "src/renderer/locales/agent-graph-copy.ts",
     "src/renderer/locales/artifact-copy.ts",
@@ -209,7 +208,6 @@
   "legacyFeatureImports": [
     "src/renderer/features/module-hub/controller/use-daily-review-controller.ts -> src/renderer/daily-review-actions",
     "src/renderer/features/session-navigation/model/session-list-layout.ts -> src/renderer/browser-storage",
-    "src/renderer/features/session-navigation/model/session-rail-layout-store.ts -> src/renderer/browser-storage",
     "src/renderer/features/task-entry/ui/task-entry-host.tsx -> src/renderer/remote-project-directory-dialog",
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/side-chat-command",
@@ -487,7 +485,7 @@
           "react": 1
         },
         "importSpecifiers": 14,
-        "nonTriviaTokens": 3507
+        "nonTriviaTokens": 3494
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -593,7 +591,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2590
+        "nonTriviaTokens": 2557
       },
       "src/renderer/app-shell-session-ui-state.ts": {
         "importDeclarations": 0,
@@ -650,7 +648,7 @@
         "nonTriviaTokens": 571
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 56,
+        "importDeclarations": 55,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -747,7 +745,6 @@
           "./features/workbar": 1,
           "./features/workhub": 1,
           "./follow-up-submit-routing": 1,
-          "./live-content-seed": 1,
           "./locales/shell-copy": 1,
           "./locales/shell-remaining-copy.js": 1,
           "./model-connection-errors": 1,
@@ -785,8 +782,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 92,
-        "nonTriviaTokens": 12062
+        "importSpecifiers": 91,
+        "nonTriviaTokens": 12101
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -917,7 +914,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "./application/contracts/agent-graph-panel-visibility.js": 1
+        }
       },
       "src/renderer/agent-graph-panel.tsx": {
         "bridgePaths": {
@@ -1200,15 +1199,6 @@
         }
       },
       "src/renderer/follow-up-submit-routing.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/live-content-seed.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -3118,6 +3108,7 @@
         "dependencyPaths": {
           "../../shared/settings-ownership.js": 1,
           "../application/contracts/session-catalog/catalog-sessions.js": 1,
+          "../application/contracts/shell-layout-contract.js": 1,
           "../browser-storage": 1,
           "../features/connection-settings": 1,
           "../features/external-agent-settings/index.js": 1,

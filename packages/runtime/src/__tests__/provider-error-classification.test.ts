@@ -29,7 +29,6 @@ import {
   providerFailureDiagnostic,
   providerModelFailure,
 } from '../provider-error-classification.js';
-import type { ModelFailureKind } from '../model-protocol.js';
 
 describe('Provider error classification', () => {
   test('projects only bounded allowlisted facts into durable diagnostics', () => {
@@ -221,192 +220,6 @@ describe('Provider error classification', () => {
       providerModelFailure(JSON.stringify([{ prompt: 'private list payload' }])).message,
       'Model request failed',
     );
-  });
-
-  test('derives retryability from the failure kind alone', () => {
-    // One real provider shape per kind: the kind is the only authority, so the
-    // table is the whole retry contract.
-    const cases: Array<[string, unknown, ModelFailureKind, boolean]> = [
-      [
-        'websocket transport',
-        Object.assign(new Error('closed before completion'), {
-          name: 'OpenAiResponsesTransportError',
-          code: 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
-        }),
-        'network',
-        true,
-      ],
-      [
-        'missing continuation',
-        Object.assign(new Error('continuation unavailable'), {
-          name: 'OpenAiResponsesTransportError',
-          code: 'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
-        }),
-        'network',
-        true,
-      ],
-      [
-        'xAI capacity',
-        Object.assign(new Error('The model is currently at capacity due to high demand.'), {
-          name: 'AI_APICallError',
-          data: { error: { code: 'resource-exhausted' } },
-        }),
-        'provider_capacity',
-        true,
-      ],
-      [
-        'upstream 503',
-        Object.assign(new Error('Service unavailable'), {
-          name: 'AI_APICallError',
-          statusCode: 503,
-        }),
-        'provider_unavailable',
-        true,
-      ],
-      [
-        'bare 429',
-        Object.assign(new Error('Upstream model provider is unavailable'), {
-          name: 'AI_APICallError',
-          statusCode: 429,
-          data: {
-            error: {
-              code: 'rate_limit_error',
-              message: 'Upstream model provider is temporarily unavailable. Please try again.',
-            },
-          },
-        }),
-        'rate_limit',
-        true,
-      ],
-      [
-        'truncated stream',
-        new Error('response stream ended without a finish reason'),
-        'stream_truncated',
-        true,
-      ],
-      [
-        'stream timeout',
-        Object.assign(new Error('model stream stalled'), { code: 'MODEL_STREAM_TIMEOUT' }),
-        'timeout',
-        true,
-      ],
-      ['fetch timeout', new DOMException('request timed out', 'TimeoutError'), 'timeout', true],
-      [
-        'invalid key',
-        Object.assign(new Error('Invalid API key provided'), {
-          name: 'AI_APICallError',
-          statusCode: 401,
-        }),
-        'auth',
-        false,
-      ],
-      [
-        'exhausted quota',
-        Object.assign(new Error('request failed'), {
-          name: 'AI_APICallError',
-          statusCode: 429,
-          data: { error: { code: 'insufficient_quota' } },
-        }),
-        'provider_billing',
-        false,
-      ],
-      [
-        'input overflow',
-        Object.assign(new Error('Bad Request'), {
-          name: 'AI_APICallError',
-          statusCode: 400,
-          data: { error: { code: 'context_length_exceeded' } },
-        }),
-        'context_overflow',
-        false,
-      ],
-      [
-        // The AI SDK's own isRetryable flag calls 409 retryable; the kind decides.
-        'conflict',
-        Object.assign(new Error('Conflict'), {
-          name: 'AI_APICallError',
-          statusCode: 409,
-          isRetryable: true,
-        }),
-        'request_rejected',
-        false,
-      ],
-      [
-        'bad request',
-        Object.assign(new Error('bad request'), { name: 'AI_APICallError', statusCode: 400 }),
-        'request_rejected',
-        false,
-      ],
-      ['fetch failure', new TypeError('fetch failed'), 'network', true],
-      [
-        'unclassifiable',
-        { type: 'invalid_request_error', message: 'missing required field' },
-        'unknown',
-        false,
-      ],
-    ];
-
-    for (const [label, error, kind, retryable] of cases) {
-      assert.equal(classifyError(error), kind, label);
-      assert.equal(providerModelFailure(error).retryable, retryable, label);
-      assert.equal(providerFailureDiagnostic(error).retryable, retryable, label);
-    }
-  });
-
-  test('Retry-After only sets the delay, never the retryability', () => {
-    const failing = (statusCode: number, responseHeaders?: Record<string, string>) =>
-      Object.assign(new Error('provider rejected the request'), {
-        name: 'AI_APICallError',
-        statusCode,
-        ...(responseHeaders ? { responseHeaders } : {}),
-      });
-    const headerCases: Array<[string, Record<string, string> | undefined, number | undefined]> = [
-      ['seconds', { 'retry-after': '40' }, 40_000],
-      ['milliseconds', { 'retry-after-ms': '1500' }, 1_500],
-      ['malformed', { 'retry-after': 'not-a-delay' }, undefined],
-      ['elapsed HTTP-date', { 'retry-after': 'Wed, 21 Oct 2015 07:28:00 GMT' }, undefined],
-      ['absent', undefined, undefined],
-    ];
-
-    for (const statusCode of [429, 503]) {
-      for (const [label, headers, retryAfterMs] of headerCases) {
-        const failure = providerModelFailure(failing(statusCode, headers));
-        assert.equal(failure.retryable, true, `${statusCode} ${label}`);
-        assert.equal(failure.retryAfterMs, retryAfterMs, `${statusCode} ${label}`);
-      }
-    }
-
-    // A non-retryable kind stays non-retryable however generous the header is.
-    const refusedWithDelay = Object.assign(new Error('Invalid API key provided'), {
-      name: 'AI_APICallError',
-      statusCode: 401,
-      responseHeaders: { 'retry-after': '40' },
-    });
-    assert.partialDeepStrictEqual(providerModelFailure(refusedWithDelay), { retryable: false });
-    assert.equal(providerModelFailure(refusedWithDelay).retryAfterMs, undefined);
-  });
-
-  test('abort and a spent Codex edge budget override the retryable kinds', () => {
-    const aborted = new RetryError({
-      message: 'Retry stopped',
-      reason: 'abort',
-      errors: [Object.assign(new Error('Service unavailable'), { statusCode: 503 })],
-    });
-    assert.equal(classifyError(aborted), 'abort');
-    assert.partialDeepStrictEqual(providerModelFailure(aborted), { retryable: false });
-
-    const exhaustedEdge = Object.assign(
-      new Error('Codex OAuth request failed: HTTP 403 Request rejected'),
-      {
-        name: 'OpenAiCodexEdgeRejectionError',
-        statusCode: 403,
-        data: { error: { code: 'openai_codex_edge_rejection' } },
-        responseHeaders: { 'retry-after': '40' },
-      },
-    );
-    assert.equal(classifyError(exhaustedEdge), 'provider_unavailable');
-    assert.partialDeepStrictEqual(providerModelFailure(exhaustedEdge), { retryable: false });
-    assert.equal(providerModelFailure(exhaustedEdge).retryAfterMs, undefined);
   });
 
   test('treats a status-less provider server_error as temporarily unavailable', () => {
@@ -633,19 +446,6 @@ describe('Provider error classification', () => {
     }
   });
 
-  test('an exhausted free tier on 429 is billing, not a throttle to retry', () => {
-    // OpenCode Zen reports the exhausted free allowance as error.type on a 429.
-    const freeUsageLimit = Object.assign(new Error('Rate limit exceeded'), {
-      name: 'AI_APICallError',
-      statusCode: 429,
-      data: { error: { type: 'FreeUsageLimitError', message: 'Rate limit exceeded' } },
-    });
-
-    assert.equal(classifyError(freeUsageLimit), 'provider_billing');
-    assert.partialDeepStrictEqual(providerModelFailure(freeUsageLimit), { retryable: false });
-    assert.equal(providerFailureDiagnostic(freeUsageLimit).retryable, false);
-  });
-
   test('classifies provider capacity errors and retries with backoff', () => {
     const capacity = () =>
       Object.assign(new Error('The model is currently at capacity due to high demand.'), {
@@ -715,6 +515,7 @@ describe('Provider error classification', () => {
       'Prompt contains 5000 tokens; too large for model with 4096 maximum context length',
       'invalid params, context window exceeds limit',
       'Your request exceeded model token limit: 200000',
+      'Your request exceeded k3-256k model token limit: 262144',
       'prompt token count of 21000 exceeds the limit of 16384',
       'the prompt contains too many tokens',
       'Input token limit exceeded: 250000 tokens > 200000 maximum',

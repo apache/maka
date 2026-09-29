@@ -250,6 +250,20 @@ test('successful replacement preserves newer text without tying its next send to
   assert.equal(h.sends[1]?.metadata?.replacesLocalMessageId, undefined);
 });
 
+test('replacement completion after navigation preserves newer text in its original Session', async () => {
+  const h = await harness();
+  await h.restoreOriginal();
+  await h.submit();
+  await h.resolveReference(true);
+  await h.typeDraft('newer draft');
+  await h.render('another');
+  await h.resolveAdmission(true);
+  assert.equal(h.readDraft(), 'newer draft');
+  await h.render('original');
+  await h.submit();
+  assert.equal(h.sends[1]?.metadata?.replacesLocalMessageId, undefined);
+});
+
 for (const cancellation of ['reference-refused', 'draft-switch', 'unmount'] as const) {
   test(`${cancellation} ends the early send lease without calling onSend`, async () => {
     const h = await harness();

@@ -18,11 +18,11 @@
  */
 
 import { deferred } from '@maka/core/test-only/async-primitives';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import {
-  AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
   recoverAgentGraphSupervisorContextOverflow,
   type AgentGraphSupervisorWakeDiagnostic,
@@ -180,6 +180,126 @@ describe('Agent Graph supervisor wake delivery', () => {
     }
   });
 
+  test('exhausts provider rejection without invoking the Host fatal-error callback', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let turns = 0;
+    let hostErrors = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => {
+        turns += 1;
+        return { kind: 'errored', turnId: input.turnId, reason: 'request_rejected' };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+      maxDeliveryAttempts: 2,
+      onError: () => {
+        hostErrors += 1;
+      },
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 2);
+      assert.equal(hostErrors, 0);
+      const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(wake?.status, 'exhausted');
+      assert.equal(wake?.attemptCount, 2);
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 2);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
+  test('bounds a long provider error before exhausting a wake', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let hostErrors = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => ({
+        kind: 'errored',
+        turnId: input.turnId,
+        reason: 'x'.repeat(4_100),
+      }),
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+      maxDeliveryAttempts: 1,
+      onError: () => {
+        hostErrors += 1;
+      },
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(wake?.status, 'exhausted');
+      assert.equal(wake?.failureReason?.length, 4_000);
+      assert.equal(hostErrors, 0);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
+  test('parks a preexisting over-limit wake during startup recovery', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    await store.claimAgentGraphSupervisorWake({
+      schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+      graphId: 'graph-1',
+      wakeId: 'graph-1:snapshot-1',
+      snapshotVersion: 'snapshot-1',
+      rootSessionId: 'root-session',
+    });
+    for (let index = 0; index < 4; index += 1) {
+      const attemptId = `old-attempt-${index}`;
+      await store.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'graph-1:snapshot-1',
+        attemptId,
+        turnId: `old-turn-${index}`,
+      });
+      await store.completeAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'graph-1:snapshot-1',
+        attemptId,
+        status: 'retryable_failed',
+        failureReason: 'request_rejected',
+      });
+    }
+    let turns = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => {
+        turns += 1;
+        return { kind: 'completed', turnId: input.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+      maxDeliveryAttempts: 3,
+    });
+    try {
+      await coordinator.recover();
+      await coordinator.waitForIdle();
+      assert.equal(turns, 0);
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1'))?.status,
+        'exhausted',
+      );
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('aggressively compacts after a context overflow before delivering a fresh turn', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     let turns = 0;
@@ -286,20 +406,12 @@ describe('Agent Graph supervisor wake delivery', () => {
 
       assert.equal(turns, 2);
       assert.equal(recoveries, 1);
-      assert.ok(reportedError instanceof AgentGraphSupervisorContextOverflowError);
-      assert.equal(reportedError.recoveryAttempted, true);
-      assert.deepEqual(reportedError.partialResult.work, [
-        {
-          workId: 'work-1',
-          status: 'requested',
-          target: { kind: 'agent', agentId: 'reviewer' },
-        },
-      ]);
-      assert.match(reportedError.message, /graph remains durable and recoverable/);
-      assert.equal(
-        (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1'))?.attemptCount,
-        2,
-      );
+      assert.equal(reportedError, undefined);
+      const exhausted = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(exhausted?.status, 'exhausted');
+      assert.equal(exhausted?.attemptCount, 2);
+      assert.match(exhausted?.failureReason ?? '', /graph remains durable and recoverable/);
+      assert.match(exhausted?.failureReason ?? '', /"workId":"work-1"/);
       assert.deepEqual(
         diagnostics.map((diagnostic) => diagnostic.event),
         [
@@ -322,6 +434,27 @@ describe('Agent Graph supervisor wake delivery', () => {
           omittedTerminalRecordIds: 0,
         },
       });
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 2);
+      assert.deepEqual(await store.listRetryableAgentGraphSupervisorWakes(), []);
+      await coordinator.close();
+      const restarted = new AgentGraphSupervisorWakeCoordinator({
+        activityRegistry: new SessionActivityRegistry(),
+        wakeStore: store,
+        readSnapshot: async () => snapshot(),
+        startTurn: async (_sessionId, input) => {
+          turns += 1;
+          return { kind: 'completed', turnId: input.turnId };
+        },
+        inspectAttempt: async () => 'missing',
+        newId: sequentialIds(),
+      });
+      await restarted.recover();
+      restarted.notify('root-session', reconciliation());
+      await restarted.waitForIdle();
+      assert.equal(turns, 2);
+      await restarted.close();
     } finally {
       await coordinator.close();
       store.close();
@@ -351,12 +484,41 @@ describe('Agent Graph supervisor wake delivery', () => {
       await coordinator.waitForIdle();
 
       assert.equal(turns, 1);
-      assert.ok(reportedError instanceof AgentGraphSupervisorContextOverflowError);
-      assert.equal(reportedError.recoveryAttempted, false);
-      assert.equal(
-        (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1'))?.attemptCount,
-        1,
-      );
+      assert.equal(reportedError, undefined);
+      const exhausted = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(exhausted?.status, 'exhausted');
+      assert.equal(exhausted?.attemptCount, 1);
+      assert.match(exhausted?.failureReason ?? '', /No overflow recovery was available/);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
+  test('parks an overflow when compaction leaves the context unchanged', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let turns = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => {
+        turns += 1;
+        return { kind: 'context_overflow', turnId: input.turnId, reason: 'context_overflow' };
+      },
+      inspectAttempt: async () => 'missing',
+      recoverContextOverflow: async () => ({
+        outcome: { kind: 'unchanged', reason: 'no_compactable_history' },
+      }),
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 1);
+      const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(wake?.status, 'exhausted');
+      assert.match(wake?.failureReason ?? '', /no_compactable_history/);
     } finally {
       await coordinator.close();
       store.close();
@@ -389,6 +551,41 @@ describe('Agent Graph supervisor wake delivery', () => {
         'waiting_permission',
       );
       assert.equal(attempt, 1);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
+  test('does not drain the Host when a permission waiter reaches the attempt cap', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let turns = 0;
+    let hostErrors = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input) => {
+        turns += 1;
+        return { kind: 'suspended', turnId: input.turnId, reason: 'permission_required' };
+      },
+      inspectAttempt: async () => 'running',
+      newId: sequentialIds(),
+      maxDeliveryAttempts: 1,
+      onError: () => {
+        hostErrors += 1;
+      },
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 1);
+      assert.equal(hostErrors, 0);
+      const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(wake?.status, 'waiting_permission');
+      assert.equal(wake?.attemptCount, 1);
     } finally {
       await coordinator.close();
       store.close();

@@ -17,36 +17,44 @@
  * under the License.
  */
 
-import type { SessionViewMode } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 
 export const SESSION_LIST_EXPANDED_DEFAULT_WIDTH = 260;
 export const SESSION_LIST_EXPANDED_MIN_WIDTH = 180;
 export const SESSION_LIST_EXPANDED_MAX_WIDTH = 480;
-
+const SESSION_LIST_WIDTH_KEY = 'maka-chat-list-width-v1';
+const SESSION_LIST_COLLAPSED_KEY = 'maka-chat-list-collapsed-v1';
 const SESSION_LIST_VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
 
-export function readSessionListViewMode(): SessionViewMode {
-  const stored = safeLocalStorageGet(SESSION_LIST_VIEW_MODE_KEY);
-  if (stored === 'project' || stored === 'conversation') return stored;
-  return 'conversation';
-}
-
-export function writeSessionListViewMode(mode: SessionViewMode): void {
-  safeLocalStorageSet(SESSION_LIST_VIEW_MODE_KEY, mode);
-}
-
 export function readSessionListWidth(): number {
-  const stored = Number(safeLocalStorageGet('maka-chat-list-width-v1'));
+  const stored = Number(safeLocalStorageGet(SESSION_LIST_WIDTH_KEY));
   if (Number.isFinite(stored) && stored > 0) return clampSessionListWidth(stored);
   return SESSION_LIST_EXPANDED_DEFAULT_WIDTH;
 }
 
 export function readSessionListCollapsed(): boolean {
-  const stored = safeLocalStorageGet('maka-chat-list-collapsed-v1');
+  const stored = safeLocalStorageGet(SESSION_LIST_COLLAPSED_KEY);
   if (stored === 'false') return false;
   if (stored === 'true') return true;
   return true;
+}
+
+export function readSessionListViewMode(): 'conversation' | 'project' {
+  return safeLocalStorageGet(SESSION_LIST_VIEW_MODE_KEY) === 'project'
+    ? 'project'
+    : 'conversation';
+}
+
+export function writeSessionListCollapsed(value: boolean): void {
+  safeLocalStorageSet(SESSION_LIST_COLLAPSED_KEY, value ? 'true' : 'false');
+}
+
+export function writeSessionListWidth(value: number): void {
+  safeLocalStorageSet(SESSION_LIST_WIDTH_KEY, String(value));
+}
+
+export function writeSessionListViewMode(value: 'conversation' | 'project'): void {
+  safeLocalStorageSet(SESSION_LIST_VIEW_MODE_KEY, value);
 }
 
 function clamp(value: number, min: number, max: number): number {

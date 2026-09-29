@@ -63,7 +63,8 @@ export function useSessionMessageQueue(options: {
   promoteQueuedEntry: (entryId: string) => Promise<void>;
   editQueuedEntry: (entry: Pick<MessageQueueEntryProjection, 'entryId' | 'content'>) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
-  reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
+  updateQueuedEntry: (entryId: string, expectedQueueRevision: number, text: string) => Promise<void>;
+  reorderQueuedEntries: (entryIds: readonly string[], expectedQueueRevision?: number) => Promise<void>;
 } {
   const { sessionId, queue, transientMessages, activeSessionId } = options;
   const services = useConversationServices();
@@ -130,6 +131,19 @@ export function useSessionMessageQueue(options: {
       restoreDraft: (draft) => restoreDraft(targetSessionId, draft),
     })),
     deleteQueuedEntry: (entryId) => runAction((targetSessionId) => services.sessions.retractQueueEntry(targetSessionId, entryId)),
-    reorderQueuedEntries: (entryIds) => runAction((targetSessionId) => services.sessions.reorderQueueEntries(targetSessionId, entryIds)),
+    updateQueuedEntry: (entryId, expectedQueueRevision, text) =>
+      services.sessions.updateQueueEntry
+        ? runAction((targetSessionId) =>
+            services.sessions.updateQueueEntry!(targetSessionId, entryId, expectedQueueRevision, text),
+          )
+        : Promise.reject(new Error('Message queue updates are unavailable')),
+    reorderQueuedEntries: (entryIds, expectedQueueRevision = queue?.queueRevision) => {
+      if (expectedQueueRevision === undefined) {
+        return Promise.reject(new Error('Message queue is not ready for reordering'));
+      }
+      return runAction((targetSessionId) =>
+        services.sessions.reorderQueueEntries(targetSessionId, entryIds, expectedQueueRevision),
+      );
+    },
   };
 }

@@ -76,6 +76,8 @@ export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
 export { composerSend, composerFollowUp, type ComposerMessageContext } from './controller/composer-follow-up.js';
 export { composerMessageRecovery } from './controller/composer-message-recovery.js';
+export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
+export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';
 export * from './model/shell-chat-model-selection.js';

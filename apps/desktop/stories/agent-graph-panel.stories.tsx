@@ -32,8 +32,8 @@ import { withScopedMakaBridge } from './maka-bridge';
 //
 // Real host: app-shell.tsx mounts <AgentGraphPanel> in the conversation column
 // when the active session runs in `graph` orchestration mode. The panel reads
-// its snapshot from `window.maka.graphs` itself (not props or context), so each
-// story installs a scoped bridge that serves one pinned snapshot rather than
+// its snapshot through the explicit backend port, so each story installs a
+// scoped bridge that serves one pinned snapshot rather than
 // driving a live graph. The panel renders operators as a flat list — it draws
 // no edges or hierarchy — so tree depth and cycles have no distinct rendering
 // and are not enumerated here.
