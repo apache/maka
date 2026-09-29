@@ -258,13 +258,11 @@ longer schedule would silently no-op.
    strength of that probe.
 7. **One account per provider.** Onboarding runs a single session per provider;
    there is no multi-account or parallel-onboarding support.
-8. **DingTalk cannot reply to a 1:1 conversation.** The send route is picked by
-   testing the chat ID for a `cid` prefix, which every DingTalk conversation ID
-   carries — including direct ones — so direct replies are posted to the group
-   endpoint and rejected. The 1:1 endpoint needs the payload's `senderStaffId`,
-   which the bridge never captures. Reproduced against a live app, along with
-   the send that does succeed; see the DingTalk setup section. A fix is open as
-   apache/maka#5112.
+8. **A DingTalk direct reply needs `senderStaffId`.** Direct conversations are
+   answered by the sender's staff ID, stamped at receive time. A direct message
+   whose payload lacks `senderStaffId` is still delivered to the agent, but a
+   reply to it goes to the group endpoint and is rejected. See the DingTalk
+   setup section.
 9. **No Maka proxy setting reaches bot traffic.** The per-channel `proxyUrl` is
    read by no bridge, and the app's network proxy is never handed to
    `proxiedFetch`. A blocked provider needs a system-level route. See
@@ -305,8 +303,10 @@ on to confine or observe what the bridges send. See
 
 > **Verification status.** Telegram, Slack, Discord, Feishu/Lark, WeCom and QQ
 > were each walked end-to-end against a real account — connect, receive, send.
-> DingTalk is verified for setup and receive only; replying to a 1:1
-> conversation is broken and that section records the defect. WeChat is
+> DingTalk setup and receive were walked live, as was the direct-reply request
+> the bridge now sends; the bridge's addressing changed afterwards in
+> apache/maka#5112 and has not been re-run live, and group replies were not
+> exercised. WeChat is
 > verified against its local-bridge *contract* using a mock, not against WeChat
 > itself; its section states exactly what that does and does not cover.
 >
@@ -545,56 +545,53 @@ The bridge subscribes to `EVENT` topic `*` plus the `CALLBACK` topic
 every disconnect to a resumable reconnect, so a misconfigured DingTalk channel
 retries forever instead of stopping with a diagnosable reason.
 
-> **Replying to a 1:1 conversation does not work.** This was reproduced against
-> a live app and is a defect, not a setup step you can work around from the
-> console.
->
-> An inbound direct message arrives with `conversationType: "1"`, so the bridge
-> correctly derives `isGroup: false`. But it stamps `chatId` as the payload's
-> `conversationId`, and a **1:1 conversation ID also begins with `cid`**.
-> `pickDingTalkSendRoute` decides the destination with
-> `targetId.startsWith('cid')`, so the reply is posted to the group endpoint
-> `/v1.0/robot/groupMessages/send` and fails with `resource.not.found`. The
-> code comment describes the intended prefix as `cidp`, which the implementation
-> does not match.
->
-> Routing to the 1:1 endpoint does not help either, because the bridge does not
-> capture the identifier that endpoint needs.
-> `/v1.0/robot/oToMessages/batchSend` expects staff user IDs, and the payload's
-> `senderId` is an opaque `$:LWCP_v1:$…` token it rejects with
-> `staffId.notExisted`.
->
-> The field that works is **`senderStaffId`**, which DingTalk does send on every
-> bot message and which `DingTalkBotMessagePayload` does not declare. Posting to
-> the 1:1 endpoint with `userIds: [senderStaffId]` succeeds and returns a
-> `processQueryKey`. Three sends against one live conversation, varying only the
-> target:
->
-> | Target passed as `chatId` | Route taken | Result |
-> | --- | --- | --- |
-> | `conversationId` — what the bridge stamps | group | `resource.not.found` |
-> | `senderId` | 1:1 | `staffId.notExisted` |
-> | `senderStaffId` | 1:1 | delivered |
->
-> `isGroup` is known accurately at receive time and discarded before send, which
-> is what forces the prefix guess in the first place.
->
-> The same payload also carries a `sessionWebhook` with an explicit
-> `sessionWebhookExpiredTime` (about 90 minutes out). Posting a reply there
-> needs neither a robot code nor a staff ID and works for both conversation
-> kinds, so it is a second possible route the bridge does not use.
->
-> Two things this exercise settled: `robotCode` in the payload equals the app's
-> `appId`, so the bridge's reuse of `appId` as the robot code is correct. Group
-> replies were not exercised, so whether the group path works with a genuine
-> group conversation ID remains unverified.
->
-> **A fix is in flight.** apache/maka#5112 replaces the prefix guess with chat
-> IDs stamped explicitly at receive time — `oto:<senderStaffId>` routes to the
-> 1:1 endpoint and `group:<conversationId>` to the group one, with unprefixed
-> IDs staying on the group endpoint so already-persisted scheduled-task targets
-> keep working. This section describes the behaviour on `main` and should be
-> rewritten around that scheme once it merges.
+**How replies are addressed.** The conversation kind is only knowable at
+receive time — DingTalk sends `conversationType`, `"1"` for a direct chat and
+`"2"` for a group — so the bridge stamps the route into the chat ID as the
+message arrives:
+
+| Inbound conversation | `chatId` stamped | Send route |
+| --- | --- | --- |
+| group (`conversationType: "2"`) | `group:<conversationId>` | `/v1.0/robot/groupMessages/send` |
+| direct, with `senderStaffId` | `oto:<senderStaffId>` | `/v1.0/robot/oToMessages/batchSend` |
+| direct, without `senderStaffId` | bare `conversationId` | group endpoint — **fails** |
+
+A direct reply is addressed to the sender's **staff ID**, not to the
+conversation. The route cannot be recovered from DingTalk's own IDs, because
+direct and group conversation IDs both begin with `cid`.
+
+> **A direct message without `senderStaffId` cannot be answered.** The bridge
+> still delivers it to the agent under its bare conversation ID, but a reply to
+> that ID takes the group endpoint and is rejected with `resource.not.found`.
+> Every direct message observed during verification carried `senderStaffId`.
+
+Unstamped chat IDs — scheduled-task targets saved before stamping existed, or
+IDs typed into the scheduled-task form — are still routed by shape: a `cid`
+prefix goes to the group endpoint, anything else is treated as a staff ID.
+
+**Why the staff ID.** Before apache/maka#5112 the bridge stamped the bare
+`conversationId` and chose the route with a `cid` prefix test, which sent every
+direct reply to the group endpoint. Three sends against one live direct
+conversation, varying only the target, showed which identifier the 1:1
+endpoint accepts:
+
+| Target | Route taken | Result |
+| --- | --- | --- |
+| `conversationId` | group | `resource.not.found` |
+| `senderId` (an opaque `$:LWCP_v1:$…` token) | 1:1 | `staffId.notExisted` |
+| `senderStaffId` | 1:1 | delivered |
+
+The merged bridge sends exactly the request in the last row. That request was
+verified live; the merged bridge itself has not been re-run against a live app
+since.
+
+The same exercise confirmed that the payload's `robotCode` equals the app's
+`appId`, so the bridge's reuse of `appId` as the robot code is correct.
+
+Two things remain unexercised: **group replies**, and the payload's
+`sessionWebhook`, which carries an explicit `sessionWebhookExpiredTime` (about
+90 minutes out). DingTalk offers it as a reply route that needs neither a robot
+code nor a staff ID; the bridge does not use it, and it was not tested here.
 
 ### Feishu 飞书 / Lark
 
