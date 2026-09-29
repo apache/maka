@@ -3622,6 +3622,43 @@ export const PromptRailStaysInsideTheScrollport: Story = {
   },
 };
 
+// Real path: open a Session with history and resize the Desktop window. The
+// smoke runs this same state at 720, 824, 825 and 1280px, including native
+// pointer hover at the shown widths; the rail needs room for its whole hit box.
+export const PromptRailClearsUserMessagesInANarrowWindow: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const scrollport = tailScroller().getBoundingClientRect();
+    const visibleUserBubbles = () =>
+      [...document.querySelectorAll<HTMLElement>('.maka-chat-message-bubble-user')]
+        .map((bubble) => bubble.getBoundingClientRect())
+        .filter((box) => box.bottom > scrollport.top && box.top < scrollport.bottom);
+    // The rail lists every Turn at once; the transcript mounts its rows after.
+    // Without a user message on screen there is nothing the rail could cover.
+    await waitFor(() => expect(visibleUserBubbles().length).toBeGreaterThan(0));
+    const bubbles = visibleUserBubbles();
+
+    const rail = document.querySelector('.maka-prompt-rail');
+    if (!rail) throw new Error('the prompt rail is missing');
+    if (window.innerWidth < 825) {
+      expect(rail.closest('.maka-prompt-rail-host')).toHaveStyle({ display: 'none' });
+      expect(rail).not.toBeVisible();
+      expect(rail.getClientRects()).toHaveLength(0);
+      return;
+    }
+    expect(rail).toBeVisible();
+    const box = rail.getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(0);
+    expect(
+      bubbles
+        .filter((bubble) => bubble.bottom > box.top && bubble.top < box.bottom && bubble.right > box.left)
+        .map((bubble) => Math.round(bubble.right - box.left)),
+      'pixels of user messages under the rail',
+    ).toEqual([]);
+  },
+};
+
 export const PromptRailHasNoGapsBetweenTicks: Story = {
   render: () => <PromptRailHarness />,
   play: async () => {

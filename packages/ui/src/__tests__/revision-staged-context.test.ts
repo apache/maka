@@ -26,7 +26,6 @@ import {
   clearRevisionStagedContext,
   createRevisionActions,
   revisionSendGate,
-  revisionStagedContextUnchanged,
   stageRevisionSourceContext,
   type RevisionActionsEnv,
   type RevisionEditCopy,
@@ -47,7 +46,6 @@ const copy: RevisionEditCopy = {
   revisionStartedDescription: 'started-description',
   revisionReadyTitle: 'ready',
   revisionReadyDescription: 'ready-description',
-  revisionUnchanged: 'unchanged',
   operationFailedTitle: 'failed',
   operationFailedFallback: 'failed-fallback',
 };
@@ -264,7 +262,7 @@ describe('revision lifecycle (#5109)', () => {
     });
   });
 
-  it('blocks a no-op replacement as unchanged', async () => {
+  it('lets an unchanged replacement through (#5815)', async () => {
     const h = createEnv({
       messages: [userMessage('turn-1', 'explain this')],
       staged: emptyStagedLog(),
@@ -272,8 +270,12 @@ describe('revision lifecycle (#5109)', () => {
     const actions = createRevisionActions(h.env);
 
     actions.beginEditUserMessage('turn-1');
-    assert.equal(await actions.prepareRevisionSend('explain this'), false);
-    assert.deepEqual(h.toasts.at(-1), { kind: 'info', title: 'ready', description: 'unchanged' });
+    assert.equal(await actions.prepareRevisionSend('explain this'), true);
+    assert.deepEqual(h.toasts.at(-1), {
+      kind: 'info',
+      title: 'ready',
+      description: 'ready-description',
+    });
   });
 
   it('blocks a replacement that mixes newly staged quotes into the edit', async () => {
@@ -370,105 +372,20 @@ describe('revision send gate', () => {
     originalQuotes: [{ text: 'q' }],
     originalAttachments: [],
   };
-  const originalText = 'explain this';
   const restored = { quotes: [{ text: 'q' }] as readonly QuoteRef[], attachments: [] };
 
   it('passes a genuine replacement', () => {
-    assert.equal(
-      revisionSendGate(source, originalText, 'edited', restored, false),
-      'pass',
-    );
+    assert.equal(revisionSendGate(source, restored, false), 'pass');
   });
 
-  it('blocks a no-op retry as unchanged', () => {
-    assert.equal(
-      revisionSendGate(source, originalText, '  explain this  ', restored, false),
-      'unchanged',
-    );
-  });
-
-  it('passes a provenance-only snapshot replacement at the same text', () => {
-    // Same text and turn, but a fresher capture of a cross-Session snapshot:
-    // the QuoteRef provenance fields are part of what the user staged, so
-    // replacing them is a real edit, not a no-op (#5274 review).
-    const recapturedSource: RevisionStagedSource = {
-      originalQuotes: [
-        {
-          text: 'q',
-          sourceSessionId: 'session-9',
-          sourceSessionName: 'Research',
-          sourceCapturedAt: 100,
-        },
-      ],
-      originalAttachments: [],
-    };
-    const recaptured = {
-      quotes: [
-        {
-          text: 'q',
-          sourceSessionId: 'session-9',
-          sourceSessionName: 'Research',
-          sourceCapturedAt: 200,
-        },
-      ] as readonly QuoteRef[],
-      attachments: [],
-    };
-    assert.equal(
-      revisionSendGate(recapturedSource, originalText, originalText, recaptured, false),
-      'pass',
-    );
-    // The stale capture of the same snapshot is still refused as a no-op.
-    const stale = {
-      quotes: [
-        {
-          text: 'q',
-          sourceSessionId: 'session-9',
-          sourceSessionName: 'Research',
-          sourceCapturedAt: 100,
-        },
-      ] as readonly QuoteRef[],
-      attachments: [],
-    };
-    assert.equal(
-      revisionSendGate(recapturedSource, originalText, originalText, stale, false),
-      'unchanged',
-    );
-  });
-
-  it('passes a comment-only annotation change at the same text', () => {
-    // The composer exposes onEditQuoteComment, so changing only a quote's
-    // model-facing annotation is a real edit: the no-op gate must not refuse
-    // it just because the excerpt and its provenance are unchanged (#5274
-    // review).
-    const annotatedSource: RevisionStagedSource = {
-      originalQuotes: [{ text: 'q', comment: 'why I quoted this' }],
-      originalAttachments: [],
-    };
-    const reannotated = {
-      quotes: [{ text: 'q', comment: 'actually the other reason' }] as readonly QuoteRef[],
-      attachments: [],
-    };
-    assert.equal(
-      revisionSendGate(annotatedSource, originalText, originalText, reannotated, false),
-      'pass',
-    );
-    // The same annotation back again is still a no-op.
-    const sameAnnotation = {
-      quotes: [{ text: 'q', comment: 'why I quoted this' }] as readonly QuoteRef[],
-      attachments: [],
-    };
-    assert.equal(
-      revisionSendGate(annotatedSource, originalText, originalText, sameAnnotation, false),
-      'unchanged',
-    );
+  it('passes an unchanged retry through (#5815)', () => {
+    assert.equal(revisionSendGate(source, restored, false), 'pass');
   });
 
   it('blocks newly staged quotes as a conflict', () => {
     assert.equal(
       revisionSendGate(
         source,
-        originalText,
-        'edited',
         { quotes: [{ text: 'q' }, { text: 'own' }], attachments: [] },
         false,
       ),
@@ -477,7 +394,7 @@ describe('revision send gate', () => {
   });
 
   it('blocks pending directories with an empty attachment plate as a conflict', () => {
-    assert.equal(revisionSendGate(source, originalText, 'edited', restored, true), 'conflict');
+    assert.equal(revisionSendGate(source, restored, true), 'conflict');
   });
 });
 
@@ -541,24 +458,6 @@ describe('revision staged-context helpers', () => {
       restored,
       [{ ownerKey: 'session-1', quotes: [identical, identical] }],
       'only the edit-owned entry is dropped; both user copies survive',
-    );
-  });
-
-  it('compares text and quotes for the unchanged retry', () => {
-    const source: RevisionStagedSource = { originalQuotes: [quotedQuote], originalAttachments: [] };
-    assert.equal(
-      revisionStagedContextUnchanged(source, 'explain', 'explain', [quotedQuote], []),
-      true,
-    );
-    assert.equal(
-      revisionStagedContextUnchanged(source, 'explain', 'edited', [quotedQuote], []),
-      false,
-      'a text change is a genuine replacement',
-    );
-    assert.equal(
-      revisionStagedContextUnchanged(source, 'explain', 'explain', [], []),
-      false,
-      'a removed quote is a genuine replacement',
     );
   });
 });

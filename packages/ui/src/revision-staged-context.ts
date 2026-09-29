@@ -58,7 +58,6 @@ export type TurnRevisionDraftBase<Phase> = {
   copyPhase: Phase;
   /** Active owner of the draft. Changes to the branch child after prepare. */
   draftSessionId: string;
-  originalText: string;
   previousComposerText: string;
   originalQuotes: readonly QuoteRef[];
   originalAttachments: readonly AttachmentRef[];
@@ -84,52 +83,10 @@ function quoteKey(quote: QuoteRef): string {
   ]);
 }
 
-function attachmentToPending(attachment: AttachmentRef): PendingAttachment {
-  return {
-    stagingKey: `revision:${JSON.stringify(attachment)}`,
-    displayName: attachment.name,
-    mimeType: attachment.mimeType,
-    kind: attachment.kind,
-    size: attachment.bytes,
-    source: { type: 'retained', attachment },
-  };
-}
-
-function attachmentKey(attachment: PendingAttachment): string {
-  return JSON.stringify(
-    attachment.source.type === 'retained' ? attachment.source.attachment : attachment.source,
-  );
-}
-
 /**
- * A send whose text and staged context both match what the edit staged is a
- * no-op retry: the replacement would duplicate the source turn verbatim.
- * Compared in plate order — the restaged source context is the whole plate,
- * because editing is refused while the user has own context staged.
- */
-export function revisionStagedContextUnchanged(
-  source: RevisionStagedSource,
-  originalText: string,
-  text: string,
-  stagedQuotes: readonly QuoteRef[],
-  stagedAttachments: readonly PendingAttachment[],
-): boolean {
-  if (text.trim() !== originalText.trim()) return false;
-  if (stagedQuotes.map(quoteKey).join('\n') !== source.originalQuotes.map(quoteKey).join('\n')) {
-    return false;
-  }
-  return (
-    stagedAttachments.map(attachmentKey).join('\n') ===
-    source.originalAttachments.map(attachmentToPending).map(attachmentKey).join('\n')
-  );
-}
-
-/**
- * The pre-send gate for a revision replacement: 'unchanged' blocks a no-op
- * retry that would duplicate the source turn verbatim; 'conflict' blocks a
- * send mixing user-staged context into the restored set (pending directories
- * have no plate snapshot — flagged through pendingContext with an empty
- * attachment plate).
+ * Snapshot the source message's context at edit start and restage its quotes
+ * under the edit's owner key, so the gate can later tell the edit's own
+ * staging from the user's.
  */
 export function stageRevisionSourceContext(
   staged: Pick<RevisionStagedContext, 'restoreQuotes'>,
@@ -142,22 +99,16 @@ export function stageRevisionSourceContext(
 }
 
 /**
- * The pre-send gate for a revision replacement: 'unchanged' blocks a no-op
- * retry that would duplicate the source turn verbatim; 'conflict' blocks a
- * send mixing user-staged context into the restored set (pending directories
- * have no plate snapshot — flagged through pendingContext with an empty
- * attachment plate).
+ * The pre-send gate for a revision replacement: 'conflict' blocks a send
+ * mixing user-staged context into the restored set (pending directories have
+ * no plate snapshot — flagged through pendingContext with an empty attachment
+ * plate). An unchanged-text retry is allowed through (#5815).
  */
 export function revisionSendGate(
   source: RevisionStagedSource,
-  originalText: string,
-  text: string,
   staged: Pick<RevisionStagedContext, 'quotes' | 'attachments'>,
   pendingContext: boolean,
-): 'pass' | 'unchanged' | 'conflict' {
-  if (revisionStagedContextUnchanged(source, originalText, text, staged.quotes, staged.attachments)) {
-    return 'unchanged';
-  }
+): 'pass' | 'conflict' {
   if (
     staged.quotes.length > source.originalQuotes.length ||
     staged.attachments.length > source.originalAttachments.length ||
@@ -215,7 +166,6 @@ export interface RevisionEditCopy {
   revisionStartedDescription: string;
   revisionReadyTitle: string;
   revisionReadyDescription: string;
-  revisionUnchanged: string;
   operationFailedTitle: string;
   operationFailedFallback: string;
 }
@@ -393,7 +343,6 @@ export function createRevisionActions<
       copyId: copyAttempt.copyId,
       copyPhase: copyAttempt.phase,
       draftSessionId: sessionId,
-      originalText: prompt,
       previousComposerText: composerRef.current?.getText() ?? '',
       originalQuotes,
       originalAttachments,
@@ -480,16 +429,12 @@ export function createRevisionActions<
     let selectionIsCurrent = captureSelection();
     let draft = revisionDraftRef.current;
     if (!draft || activeIdRef.current !== draft.draftSessionId) return false;
-    // A no-op retry (text and staged context unchanged) would duplicate the
-    // source turn verbatim; a send mixing user-staged context into the
-    // restored set cannot carry it truthfully. Both stop here, toasting.
+    // A send mixing user-staged context into the restored set cannot carry it
+    // truthfully; it stops here, toasting. An unchanged-text retry goes
+    // through (#5815).
     const staged = stagedContext();
-    const gate = revisionSendGate(draft, draft.originalText, text, staged, hasPendingAttachments());
-    if (gate !== 'pass') {
-      toastApi.info(
-        copy.revisionReadyTitle,
-        gate === 'unchanged' ? copy.revisionUnchanged : copy.revisionMixedContextUnsupported,
-      );
+    if (revisionSendGate(draft, staged, hasPendingAttachments()) !== 'pass') {
+      toastApi.info(copy.revisionReadyTitle, copy.revisionMixedContextUnsupported);
       return false;
     }
     // A previous attempt already prepared the version; retry normal send there.

@@ -41,12 +41,14 @@ export function formatRetryDelay(seconds: number, units: DurationUnits): string 
   const h = Math.floor((s % 86_400) / 3_600);
   const m = Math.floor((s % 3_600) / 60);
   const sec = s % 60;
-  const parts: string[] = [];
-  if (d > 0) parts.push(`${d}${units.day}`);
-  if (h > 0) parts.push(`${h}${units.hour}`);
-  if (m > 0) parts.push(`${m}${units.minute}`);
-  if (sec > 0 || parts.length === 0) parts.push(`${sec}${units.second}`);
-  return parts.join(' ');
+  return [
+    d > 0 ? `${d}${units.day}` : undefined,
+    h > 0 ? `${h}${units.hour}` : undefined,
+    m > 0 ? `${m}${units.minute}` : undefined,
+    sec > 0 || d === 0 && h === 0 && m === 0 ? `${sec}${units.second}` : undefined,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(' ');
 }
 
 /** One shared elapsed ladder so the zh/en goalElapsed entries cannot drift. */

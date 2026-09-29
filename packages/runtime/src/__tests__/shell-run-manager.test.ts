@@ -45,7 +45,7 @@ import {
   type ShellRunProcessManagerInput,
 } from '../shell-run-contract.js';
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
-import { PtyProcessDriver } from '../pty-process-driver.js';
+import { PtyProcessDriver as NativePtyDriver } from '../pty-process-driver.js';
 import xtermHeadless from '@xterm/headless';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
 import { waitFor } from '@maka/core/test-only/async-primitives';
@@ -337,15 +337,21 @@ describe('ShellRunProcessManager', () => {
       const store = sqliteShellRunStore(cwd);
       const flushes = manualFlushScheduler();
       const manager = createManager(store, undefined, { scheduleFlush: flushes.schedule });
-      const nativePid = Object.getOwnPropertyDescriptor(PtyProcessDriver.prototype, 'pid')!.get!;
+      const nativePid = Object.getOwnPropertyDescriptor(NativePtyDriver.prototype, 'pid')!.get!;
       let publishPid = false;
-      let driver: PtyProcessDriver | undefined;
-      t.mock.getter(PtyProcessDriver.prototype, 'pid', function (this: PtyProcessDriver) {
+      let driver: NativePtyDriver | undefined;
+      t.mock.getter(NativePtyDriver.prototype, 'pid', function (this: NativePtyDriver) {
         driver = this;
         return publishPid ? nativePid.call(this) : 0;
       });
-      let ref: string | undefined;
-      try {
+      const active = { ref: undefined as string | undefined };
+      t.after(async () => {
+        t.mock.restoreAll();
+        if (active.ref && manager.liveCount() > 0) {
+          await manager.stopBackgroundTask('session-1', active.ref, NO_ABORT);
+        }
+      });
+      {
         const initial = await manager.runBackgroundBash(
           shellInput({
             cwd,
@@ -360,7 +366,7 @@ describe('ShellRunProcessManager', () => {
             timeoutMs: 30_000,
           }),
         );
-        ref = initial.ref;
+        active.ref = initial.ref;
         assert.equal(initial.status, 'running');
         assert.equal(initial.pid, undefined);
         // The PTY may deliver READY and its newline in separate chunks. Wait
@@ -368,7 +374,7 @@ describe('ShellRunProcessManager', () => {
         // leaves the output snapshot unchanged.
         await waitForShellRun(
           manager,
-          ref,
+          initial.ref,
           (result) =>
             result.output?.mode === 'pty' &&
             /READY/u.test(terminalText(result.output)) &&
@@ -387,7 +393,7 @@ describe('ShellRunProcessManager', () => {
           await writeFile(exitGate, 'exit');
           await waitUntil(() => manager.liveCount() === 0, 15_000);
         }
-        const result = await manager.readRuntimeResource('session-1', ref, NO_ABORT);
+        const result = await manager.readRuntimeResource('session-1', initial.ref, NO_ABORT);
         assertShellRun(result);
         assert.equal(result.pid, expectedPid);
         assert.equal(result.status, observation === 'exit' ? 'completed' : 'running');
@@ -402,7 +408,7 @@ describe('ShellRunProcessManager', () => {
         const health = JSON.parse(
           String(
             await tool.impl(
-              { ref },
+              { ref: initial.ref },
               {
                 sessionId: 'session-1',
                 turnId: 'turn-1',
@@ -417,14 +423,9 @@ describe('ShellRunProcessManager', () => {
         assert.equal(health.process.pid, expectedPid);
         assert.deepEqual(health.endpoint, { state: 'not_checked' });
         if (observation === 'read') {
-          const repeated = await manager.readRuntimeResource('session-1', ref, NO_ABORT);
+          const repeated = await manager.readRuntimeResource('session-1', initial.ref, NO_ABORT);
           assertShellRun(repeated);
           assert.equal(repeated.revision, stored.revision);
-        }
-      } finally {
-        t.mock.restoreAll();
-        if (ref && manager.liveCount() > 0) {
-          await manager.stopBackgroundTask('session-1', ref, NO_ABORT);
         }
       }
     });
@@ -2117,90 +2118,80 @@ describe('ShellRunProcessManager', () => {
     }
   });
 
-  test('a PTY exit during control persistence is reflected in the reply', async () => {
+  const verifyPtyExitDuringControlPersistence = async (t: TestContext) => {
     const cwd = await workspace();
     const exitGate = join(cwd, 'allow-exit');
     const backingStore = sqliteShellRunStore(await workspace());
     const resumePersist = deferred<void>();
-    let pauseControlPersist = false;
-    let controlPersistPaused = false;
-    const store: ShellRunStore = {
-      createShellRun: (...args) => backingStore.createShellRun(...args),
-      async updateShellRun(sessionId, shellRunId, patch) {
-        if (pauseControlPersist && patch.status === undefined) {
-          pauseControlPersist = false;
-          controlPersistPaused = true;
-          await resumePersist.promise;
-        }
-        return backingStore.updateShellRun(sessionId, shellRunId, patch);
-      },
-      readShellRun: (...args) => backingStore.readShellRun(...args),
-      listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
-    };
-    const manager = createManager(store);
+    const persistence = controlPersistenceGate(backingStore, resumePersist.promise);
+    const manager = createManager(persistence.store);
     const liveRuns = (manager as unknown as { live: Map<string, { driverExit?: unknown }> }).live;
-    let ref: string | undefined;
+    const active = { ref: undefined as string | undefined };
+    t.after(async () => {
+      resumePersist.resolve();
+      if (active.ref && manager.liveCount() > 0) {
+        await manager.stopBackgroundTask('session-1', active.ref, NO_ABORT).catch(() => undefined);
+      }
+    });
 
-    try {
-      const initial = await manager.runBackgroundBash(
-        shellInput({
-          cwd,
-          command: nodeCommand(`
-            const { existsSync } = require('node:fs');
-            process.stdout.write('READY\\n');
-            const timer = setInterval(() => {
-              if (existsSync(${JSON.stringify(exitGate)})) {
-                clearInterval(timer);
-                process.exit(0);
-              }
-            }, 10);
-          `),
-          pty: true,
-          timeoutMs: 120_000,
-        }),
-      );
-      assert.equal(initial.kind, 'shell_run');
-      ref = initial.ref;
-      await waitForPtyText(manager, initial.ref, /READY/);
-
-      pauseControlPersist = true;
-      const pending = manager.writeStdin({
+    const command = nodeCommand(
+      [
+        "const fs = require('node:fs');",
+        "process.stdout.write('READY\\n');",
+        'function poll() {',
+        `  if (fs.existsSync(${JSON.stringify(exitGate)})) process.exit(0);`,
+        '  setTimeout(poll, 10);',
+        '}',
+        'poll();',
+      ].join('\n'),
+    );
+    const initial = await manager.runBackgroundBash(ptyShellInput(cwd, command));
+    assert.equal(initial.kind, 'shell_run');
+    active.ref = initial.ref;
+    await waitForPtyText(manager, initial.ref, /READY/);
+    persistence.arm();
+    const pending = manager.writeStdin(
+      Object.freeze({
         sessionId: 'session-1',
         ref: initial.ref,
         size: { cols: 81, rows: 25 },
         abortSignal: NO_ABORT,
-      });
-      await waitUntil(() => controlPersistPaused, 15_000);
-      await writeFile(exitGate, 'exit');
-      await waitUntil(
-        () => [...liveRuns.values()].some((live) => live.driverExit !== undefined),
-        15_000,
-      );
-      resumePersist.resolve();
-
-      const control = await pending;
-      assertShellRunSnapshot(control);
-      assert.equal(control.status, 'completed');
-      assert.equal(control.exitCode, 0);
-      assert.deepEqual(control.operation, {
-        kind: 'pty_control',
-        failed: false,
-        resize: { cols: 81, rows: 25, applied: true, changed: true },
-      });
-      assert.equal(control.output.mode, 'pty');
-      if (control.output.mode !== 'pty') throw new Error('expected pty output');
-      assert.deepEqual([control.output.cols, control.output.rows], [81, 25]);
-      const durable = await backingStore.readShellRun('session-1', 'shell-run-1');
-      assert.equal(durable.revision, control.revision);
-      assert.equal(manager.liveCount(), 0);
-    } finally {
-      resumePersist.resolve();
-      if (ref && manager.liveCount() > 0) {
-        await manager.stopBackgroundTask('session-1', ref, NO_ABORT).catch(() => undefined);
-      }
-    }
-  });
-
+      }),
+    );
+    await waitUntil(persistence.isPaused, 15_000);
+    await writeFile(exitGate, 'exit');
+    await waitUntil(
+      () => [...liveRuns.values()].some(({ driverExit }) => driverExit !== undefined),
+      15_000,
+    );
+    resumePersist.resolve();
+    const control = await pending;
+    assertShellRunSnapshot(control);
+    assert.deepEqual(
+      { status: control.status, exitCode: control.exitCode, operation: control.operation },
+      {
+        status: 'completed',
+        exitCode: 0,
+        operation: {
+          kind: 'pty_control',
+          failed: false,
+          resize: { cols: 81, rows: 25, applied: true, changed: true },
+        },
+      },
+    );
+    assert.equal(control.output.mode, 'pty');
+    if (control.output.mode !== 'pty') throw new Error('expected pty output');
+    assert.equal(control.output.cols * control.output.rows, 81 * 25);
+    const durable = await backingStore.readShellRun('session-1', 'shell-run-1');
+    assert.deepEqual(
+      [durable.revision, control.revision, manager.liveCount()],
+      [control.revision, control.revision, 0],
+    );
+  };
+  test(
+    'a PTY exit during control persistence is reflected in the reply',
+    verifyPtyExitDuringControlPersistence,
+  );
   test('rejects WriteStdin aborted before commit without stopping the PTY', async () => {
     const manager = await createTestManager();
     const initial = await manager.runBackgroundBash(
@@ -2927,6 +2918,41 @@ describe('ShellRunProcessManager', () => {
   });
 });
 
+type ControlPersistenceGateState = Readonly<{ armed: boolean; paused: boolean }>;
+
+function advanceControlPersistenceGate(
+  state: ControlPersistenceGateState,
+  isControlPatch: boolean,
+): Readonly<{ next: ControlPersistenceGateState; pause: boolean }> {
+  const pause = state.armed && isControlPatch;
+  return {
+    next: pause ? Object.freeze({ armed: false, paused: true }) : state,
+    pause,
+  };
+}
+
+function controlPersistenceGate(backingStore: ShellRunStore, release: Promise<void>) {
+  let state: ControlPersistenceGateState = Object.freeze({ armed: false, paused: false });
+  const store: ShellRunStore = {
+    createShellRun: (...args) => backingStore.createShellRun(...args),
+    updateShellRun: (sessionId, shellRunId, patch) => {
+      const transition = advanceControlPersistenceGate(state, patch.status === undefined);
+      state = transition.next;
+      const persist = () => backingStore.updateShellRun(sessionId, shellRunId, patch);
+      return transition.pause ? release.then(persist) : persist();
+    },
+    readShellRun: (...args) => backingStore.readShellRun(...args),
+    listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+  };
+  return {
+    store,
+    arm: () => {
+      state = Object.freeze({ ...state, armed: true });
+    },
+    isPaused: () => state.paused,
+  };
+}
+
 function createManager(
   store: ShellRunStore,
   onShellRunUpdate?: (update: ShellRunUpdate) => void,
@@ -3044,6 +3070,9 @@ function shellInput(input: {
     emitOutput: input.emitOutput ?? (() => undefined),
   };
 }
+
+const ptyShellInput = (cwd: string, command: string) =>
+  shellInput({ cwd, command, pty: true, timeoutMs: 120_000 });
 
 function windowsPowerShellPlan(): ShellPlan | undefined {
   if (process.platform !== 'win32') return undefined;

@@ -138,6 +138,7 @@ import {
   readWithFallback,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
+import { auxiliaryWindowRegistry } from "./auxiliary-window-registry.js";
 import type { DesktopRuntimeHostProfileChangedEvent } from "../preload/bridge-contract.js";
 import {
   defaultRuntimeHostRecoveryDialog,
@@ -409,6 +410,7 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
 });
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
+  revealMode,
   locale: desktopLocale,
   keepSystemAwake,
   mainWindow: mainWindowController,
@@ -432,6 +434,7 @@ const releaseDesktopInteractionSession = (sessionId: string): void => {
 };
 const permissionOverlay = createPermissionOverlayMain({
   resolveLocale: () => desktopLocale.resolve(),
+  revealMode,
 });
 mainWindowDelegates.onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
@@ -766,7 +769,8 @@ const workHubControl = createWorkHubControl({
     if (!window) throw new Error('Maka window is unavailable');
     return window.webContents;
   },
-  authorizedRenderer: (contents) => mainWindowController.ownsRenderer(contents),
+  authorizedRenderer: (contents) =>
+    mainWindowController.isMainRenderer(contents) || auxiliaryWindowRegistry.rendererParent(contents) !== undefined,
   send: (channel, payload) => mainWindowController.send(channel, payload),
   readSettings: () => settingsStore.get(),
   client: (scope) => requireWorkHubTarget(scope).client,
@@ -775,6 +779,7 @@ const workHubControl = createWorkHubControl({
 });
 const browserIpc = registerBrowserIpc({
   mainWindowController,
+  auxiliaryWindowRegistry,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
 });
 let workHubEnabled = false;
@@ -791,7 +796,7 @@ const workHubPresentation = createWorkHubPresentation({
   mainModuleDirectory: import.meta.dirname,
   viteDevServerUrl: process.env.VITE_DEV_SERVER_URL,
   preloadPath: join(import.meta.dirname, '..', 'preload', 'preload.cjs'),
-  onViewCreated: (contents, container) => mainWindowController.registerAuxiliaryRenderer(contents, container),
+  onViewCreated: (contents, container) => auxiliaryWindowRegistry.registerRenderer(contents, container),
   onVisibilityChanged: () => browserIpc.refreshVisibility(),
 });
 workHubPresentation.registerIpc();
