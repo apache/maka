@@ -274,7 +274,7 @@ jobs:
       # code-validation run checks it even when the triggering diff is outside
       # an Astryx surface. Keep it before Build so stale output is reported
       # directly instead of being hidden behind an earlier compilation failure.
-      - name: Verify Astryx surface inventory
+      - name: Astryx surface inventory
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
         run: |
           npm run astryx:surface-inventory

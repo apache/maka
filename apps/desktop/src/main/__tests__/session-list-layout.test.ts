@@ -109,12 +109,12 @@ testing.describe('session rail width persistence', () => {
   });
 });
 
-describe('session rail compact spell', () => {
+testing.describe('session rail compact spell', () => {
   const COLLAPSED_KEY = 'maka-chat-list-collapsed-v1';
 
-  it('hides the rail on a compact window without touching the stored preference', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('hides the rail on a compact window without touching the stored preference', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createLayoutStore();
 
       store.setCompact(true);
       assert.equal(store.getState().collapsed, true);
@@ -124,9 +124,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('promotes a rail opened while compact into the stored preference', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'true' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('promotes a rail opened while compact into the stored preference', () => {
+    withStorage({ [COLLAPSED_KEY]: 'true' }, (storage) => {
+      const store = createLayoutStore();
 
       store.setCompact(true);
       store.setCollapsed(false);
@@ -137,9 +137,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('keeps a rail the user closed while compact closed when the window widens', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('keeps a rail the user closed while compact closed when the window widens', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createLayoutStore();
 
       store.setCompact(true);
       store.setCollapsed(false);
@@ -152,9 +152,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('conceals the rail for the Workbar without touching the stored preference', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('conceals the rail for the Workbar without touching the stored preference', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createLayoutStore();
 
       // The Workbar's compact band is wider than the rail's own: concealment
       // must also work while the rail itself is not compact.
@@ -166,9 +166,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('lets a user toggle end a space concealment', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, () => {
-      const store = createSessionRailLayoutStore();
+  testing.it('lets a user toggle end a space concealment', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, () => {
+      const store = createLayoutStore();
 
       store.setSpaceConcealed(true);
       store.setCollapsed(false);
