@@ -201,6 +201,49 @@ test('side conversation fork preserves the parent provider prefix before the for
     const divergentContent = messageText(divergentMessage);
     assert.match(divergentContent, new RegExp(SIDE_CONVERSATION_BOUNDARY_MARKER));
     assert.match(divergentContent, /What did I just ask in this side chat\?/);
+
+    // The boundary transform never reaches RuntimeEvents, so a follow-up turn
+    // replays a plain first fork user message and must still carry the boundary
+    // on that same message to keep the cached prefix reusable.
+    const streamRequestsBeforeForkTurn2 = streamProviderRequests(provider.requests).length;
+    const forkTurnId2 = 'fork-turn-2';
+    const forkTerminal2 = await waitForTerminal(
+      composition,
+      forkSessionId,
+      forkTurnId2,
+      await startTurn(
+        composition,
+        forkSessionId,
+        forkTurnId2,
+        'And what was the original task?',
+        context,
+      ),
+      context,
+    );
+    assert.equal(forkTerminal2.status, 'completed');
+
+    const forkSecondRequest = firstMainTurnStreamRequest(
+      streamProviderRequests(provider.requests),
+      streamRequestsBeforeForkTurn2,
+    );
+    const forkSecondMessages = withoutRuntimeEnvironmentContext(
+      providerMessages(forkSecondRequest.body),
+    );
+
+    assert.deepEqual(
+      forkSecondMessages.slice(0, forkMessages.length),
+      forkMessages,
+      'second fork turn must replay the first fork turn prefix unchanged',
+    );
+    const boundaryUserMessagesAcrossTurns = forkSecondMessages.filter(
+      (message) =>
+        message.role === 'user' && messageText(message).includes(SIDE_CONVERSATION_BOUNDARY_MARKER),
+    );
+    assert.equal(
+      boundaryUserMessagesAcrossTurns.length,
+      1,
+      'boundary must stay on exactly one user message across follow-up turns',
+    );
   } finally {
     await composition?.close();
     await owner?.close();

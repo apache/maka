@@ -78,6 +78,19 @@ export interface SideConversationModelMessage {
   content: unknown;
 }
 
+/**
+ * Resolve which user message carries the side-conversation boundary.
+ *
+ * The boundary belongs to the FIRST fork-owned user message visible to the
+ * request, not to whichever turn is being submitted now. On the fork's first
+ * request the replayed history holds only inherited parent messages, so the
+ * first user message after the inherited prefix is the new fork turn itself.
+ * On follow-up requests the same first fork user message is already inside the
+ * replayed history and must keep carrying the boundary so the fork's cached
+ * provider prefix stays byte-identical across turns — see
+ * {@link resolveSideConversationForkBoundaryReplayItem} for how callers pin
+ * the owner inside replayed history.
+ */
 export function applySideConversationUserMessageBoundary<T extends SideConversationModelMessage>(
   messages: readonly T[],
   input: { inheritedPrefixLength: number; labels?: readonly string[] },
@@ -110,6 +123,33 @@ export function applySideConversationUserMessageBoundary<T extends SideConversat
   }
 
   return [...messages];
+}
+
+/**
+ * Prefix the boundary onto exactly the replay item that owns it (by event id)
+ * and leave every other item untouched.
+ *
+ * Idempotent: an item already carrying the marker passes through unchanged.
+ * The boundary is a provider-request transform that never persists to
+ * RuntimeEvents, so the owner item replays un-prefixed on every request and is
+ * re-prefixed here — the same bytes on the same message, every time.
+ */
+export function applySideConversationReplayItemBoundary<
+  T extends { role?: string; content?: unknown; eventId?: string },
+>(
+  items: readonly T[],
+  input: { boundaryEventId: string | undefined; labels?: readonly string[] },
+): T[] {
+  if (!isSideConversationSession(input.labels) || input.boundaryEventId === undefined) {
+    return [...items];
+  }
+  return items.map((item) => {
+    if (item.eventId !== input.boundaryEventId) return item;
+    const content = item.content as SideConversationUserContent | undefined;
+    if (content === undefined) return item;
+    if (userContentIncludesSideConversationBoundary(content)) return item;
+    return { ...item, content: prependSideConversationBoundaryToUserContent(content) };
+  });
 }
 
 export function resolveSideConversationPromptCacheSessionId(input: {

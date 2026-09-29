@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  applySideConversationReplayItemBoundary,
   applySideConversationUserMessageBoundary,
   buildSideConversationUserMessageBoundary,
   resolveSideConversationPromptCacheSessionId,
@@ -84,5 +85,39 @@ describe('side-conversation prompt cache helpers', () => {
       ]),
       true,
     );
+  });
+
+  it('prefixes the boundary onto exactly the owning replay item, idempotently', () => {
+    const boundary = buildSideConversationUserMessageBoundary();
+    const items = [
+      {
+        kind: 'text' as const,
+        role: 'user' as const,
+        content: 'inherited parent question',
+        eventId: 'inherited-user',
+      },
+      {
+        kind: 'text' as const,
+        role: 'user' as const,
+        content: 'fork question',
+        eventId: 'fork-user-1',
+      },
+    ];
+    const once = applySideConversationReplayItemBoundary(items, {
+      boundaryEventId: 'fork-user-1',
+      labels: [SIDE_CONVERSATION_SESSION_LABEL],
+    });
+    assert.match(String(once[0]?.content), /^inherited parent question$/);
+    assert.match(String(once[1]?.content), /^Side conversation boundary:\n/);
+    assert.match(String(once[1]?.content), /fork question/);
+
+    // The boundary never persists to RuntimeEvents: every later request
+    // re-applies it to the SAME item and the bytes stay identical.
+    const twice = applySideConversationReplayItemBoundary(once, {
+      boundaryEventId: 'fork-user-1',
+      labels: [SIDE_CONVERSATION_SESSION_LABEL],
+    });
+    assert.equal(String(twice[1]?.content), String(once[1]?.content));
+    assert.match(String(once[1]?.content), new RegExp(`^${boundary}`));
   });
 });

@@ -48,7 +48,11 @@ import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import { applySideConversationUserMessageBoundary } from '@maka/core/side-conversation';
+import {
+  applySideConversationReplayItemBoundary,
+  applySideConversationUserMessageBoundary,
+  isSideConversationSession,
+} from '@maka/core/side-conversation';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
   resolveEffectiveOrchestration,
@@ -143,6 +147,7 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
+import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
 import type { ContextBudgetPolicy } from './context-budget.js';
 import {
   toolSchemaCharsForDiagnostics,
@@ -216,6 +221,13 @@ type PriorReplayResult = {
   runtimeEventCount?: number;
   contextBudget?: ContextBudgetDiagnostic;
   latestHistoryCompactCheckpoint?: HistoryCompactCheckpoint;
+  /**
+   * RuntimeEvent id of the replay item that owns the side-conversation
+   * boundary, when the replay already contains the fork's first user message.
+   * Absent on the fork's first send (the caller prefixes the new user turn
+   * instead) and for non-side-conversation sessions.
+   */
+  forkBoundaryEventId?: string;
 };
 
 const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
@@ -1303,8 +1315,15 @@ export class AiSdkTurn {
                   content: currentUserContent,
                 } as ModelMessage,
               ],
+          // Follow-up turns: the fork's first user message already replays and
+          // carries the boundary — the request adds nothing new to prefix.
+          // First send: the replay is the inherited parent prefix only, so the
+          // new user message IS the first fork-owned turn and owns the
+          // boundary. Either way the cached prefix stays byte-identical.
           {
-            inheritedPrefixLength: priorReplay.messages.length,
+            inheritedPrefixLength: priorReplay.forkBoundaryEventId
+              ? Number.MAX_SAFE_INTEGER
+              : priorReplay.messages.length,
             labels: this.deps.backend.header.labels,
           },
         );
@@ -1409,12 +1428,19 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
+          // Same rule as the composer above: on follow-up turns the
+          // replayed first fork user message already carries the boundary and
+          // the projection must not prefix anything new; on the first send the
+          // inherited prefix ends at the new fork turn, which owns the
+          // boundary.
           return applySideConversationUserMessageBoundary(
             effectiveProjectionCheckpoint
               ? currentTurnMessages
               : [...priorReplay.messages, ...currentTurnMessages],
             {
-              inheritedPrefixLength: priorReplay.messages.length,
+              inheritedPrefixLength: priorReplay.forkBoundaryEventId
+                ? Number.MAX_SAFE_INTEGER
+                : priorReplay.messages.length,
               labels: this.deps.backend.header.labels,
             },
           );
@@ -2724,6 +2750,48 @@ export class AiSdkTurn {
     return this.deps.modelAdapter.makeErrorEvent(turnId, err, reasonOverride);
   }
 
+  /**
+   * The RuntimeEvent id of the replay item that owns the side-conversation
+   * boundary — the fork's first OWN user message — or undefined.
+   *
+   * `buildPriorMessages` reads the replay up to but not including the current
+   * turn, so on the fork's FIRST send the replay holds only inherited parent
+   * history (no owner → the caller prefixes the new user turn), while on every
+   * FOLLOW-UP the first user turn inside the replay is the fork's own first
+   * one and keeps carrying the boundary across turns.
+   *
+   * The fork-owned cut is authoritative, not inferred: a conversation copy
+   * clones the parent's history up to and INCLUDING the turn the fork branches
+   * through (`header.conversationCopy.sourceTurnId`), so everything after the
+   * last event of that turn is fork-owned. An empty copy (no sourceTurnId)
+   * cloned nothing, so every replayed event is fork-owned.
+   */
+  private sideConversationForkBoundaryEventId(events: readonly RuntimeEvent[]): string | undefined {
+    const labels = this.deps.backend.header.labels;
+    if (!isSideConversationSession(labels)) return undefined;
+    const sourceTurnId = this.deps.backend.header.conversationCopy?.sourceTurnId;
+    let cutIndex = -1;
+    if (sourceTurnId !== undefined) {
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        if (events[index]?.turnId === sourceTurnId) {
+          cutIndex = index;
+          break;
+        }
+      }
+    }
+    for (let index = cutIndex + 1; index < events.length; index += 1) {
+      const event = events[index];
+      if (
+        event.role === 'user' &&
+        event.content?.kind === 'text' &&
+        runtimeEventHasModelVisibleContent(event)
+      ) {
+        return event.id;
+      }
+    }
+    return undefined;
+  }
+
   /** Materialize canonical RuntimeEvent history into ai-sdk's message format. */
   private async buildPriorMessages(
     input: BackendSendInput,
@@ -2845,64 +2913,79 @@ export class AiSdkTurn {
         allowRepairedAssistantPrefix: input.continuation !== undefined,
       },
     );
+    // Side-conversation fork (#4540 review): the boundary belongs to the
+    // fork's FIRST user message on EVERY request. The transform never persists
+    // to RuntimeEvents, so the owner item replays un-prefixed on follow-ups
+    // and is re-prefixed here — the same bytes on the same message, every time
+    // (eventId-pinned), so the fork's cached provider prefix stays stable.
+    const forkBoundaryEventId = this.sideConversationForkBoundaryEventId(runtimeContext);
+    const boundedPlanItems = applySideConversationReplayItemBoundary(plan.items, {
+      boundaryEventId: forkBoundaryEventId,
+      labels: this.deps.backend.header.labels,
+    });
+    const boundedPlan =
+      boundedPlanItems === plan.items ? plan : { ...plan, items: boundedPlanItems };
     const hasProviderHistoryCompactCheckpoint =
       projectedHistoryCompactCheckpoint !== undefined &&
       isProviderHistoryCompactCheckpoint(projectedHistoryCompactCheckpoint);
     const materializeReplayFallback = (): Promise<ModelMessage[]> =>
       this.deps.messageProjection.materializeRuntimeReplayTextOnly(
         this.imageBudget,
-        plan,
+        boundedPlan,
         projectedHistoryCompactCheckpoint,
       );
-    if (plan.items.length === 0 && !hasProviderHistoryCompactCheckpoint) {
+    if (boundedPlan.items.length === 0 && !hasProviderHistoryCompactCheckpoint) {
       return {
         status: 'ready',
         messages: await materializeReplayFallback(),
         gate: 'runtime_replay_text_only',
-        diagnostics: plan.diagnostics,
+        diagnostics: boundedPlan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
+        ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
         ...replayBoundary(true),
       };
     }
 
-    if (hasBlockingReplayDiagnostics(plan)) {
+    if (hasBlockingReplayDiagnostics(boundedPlan)) {
       return {
         status: 'ready',
         messages: await materializeReplayFallback(),
         gate: input.continuation
           ? 'runtime_replay_text_only'
           : 'runtime_replay_unsupported_semantics',
-        diagnostics: plan.diagnostics,
+        diagnostics: boundedPlan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
+        ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
         ...replayBoundary(true),
       };
     }
 
-    if (!plan.hasProviderNativeSemantics) {
+    if (!boundedPlan.hasProviderNativeSemantics) {
       return {
         status: 'ready',
         messages: await this.deps.messageProjection.materializeRuntimeReplayPlan(
-          plan,
+          boundedPlan,
           this.imageBudget,
           projectedHistoryCompactCheckpoint,
           providerReasoningReplayEventIds,
         ),
         gate: 'runtime_replay_text_only',
-        diagnostics: plan.diagnostics,
+        diagnostics: boundedPlan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
+        ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
         ...replayBoundary(true),
       };
     }
 
-    if (!this.deps.messageProjection.canReplayProviderNative(plan)) {
+    if (!this.deps.messageProjection.canReplayProviderNative(boundedPlan)) {
       // Degrade per item, not per plan: an unsupported provider-executed pair
       // must not cost unrelated client tool history (#2972). Thinking items
       // stay in the plan; materializeRuntimeReplayPlan degrades unsupported
       // reasoning per item via reasoningReplay.
-      const degradedPlan = this.deps.messageProjection.dropUnsupportedReplayItems(plan);
+      const degradedPlan = this.deps.messageProjection.dropUnsupportedReplayItems(boundedPlan);
       return {
         status: 'ready',
         messages:
@@ -2917,9 +3000,10 @@ export class AiSdkTurn {
         gate: input.continuation
           ? 'runtime_replay_text_only'
           : 'runtime_replay_unsupported_semantics',
-        diagnostics: plan.diagnostics,
+        diagnostics: boundedPlan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
+        ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
         ...replayBoundary(true),
       };
     }
@@ -2927,15 +3011,16 @@ export class AiSdkTurn {
     return {
       status: 'ready',
       messages: await this.deps.messageProjection.materializeRuntimeReplayPlan(
-        plan,
+        boundedPlan,
         this.imageBudget,
         projectedHistoryCompactCheckpoint,
         providerReasoningReplayEventIds,
       ),
       gate: 'runtime_replay_provider_native',
-      diagnostics: plan.diagnostics,
+      diagnostics: boundedPlan.diagnostics,
       runtimeEventCount: runtimeContext.length,
       ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
+      ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
       ...replayBoundary(true),
     };
   }
