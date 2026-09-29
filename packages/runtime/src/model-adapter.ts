@@ -715,7 +715,6 @@ function streamEventCountsAsStepOutput(event: ModelStreamEvent): boolean {
       return event.text.length > 0;
     case 'tool-call':
     case 'provider-tool-result':
-    case 'tool-input':
       return true;
     default:
       return false;

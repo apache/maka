@@ -483,6 +483,30 @@ describe('ModelAdapter.startStream onError', () => {
     assert.equal(outcome.failure.retryable, true);
   });
 
+  for (const providerExecuted of [false, true]) {
+    test(`rejects an output-free stop after only a tool-input marker (providerExecuted=${providerExecuted})`, async () => {
+      const outcome = await settle([
+        { type: 'stream-start', warnings: [] },
+        {
+          type: 'tool-input-start',
+          id: 'search-1',
+          toolName: 'web_search',
+          ...(providerExecuted ? { providerExecuted: true } : {}),
+        },
+        {
+          type: 'finish',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: UNAVAILABLE_USAGE,
+        },
+      ]);
+
+      assert.equal(outcome.kind, 'failed');
+      if (outcome.kind !== 'failed') return;
+      assert.equal(outcome.failure.kind, 'provider_unavailable');
+      assert.equal(outcome.failure.retryable, true);
+    });
+  }
+
   test('preserves a provider reason hidden by the SDK other bucket', async () => {
     const outcome = await settle([
       { type: 'stream-start', warnings: [] },
