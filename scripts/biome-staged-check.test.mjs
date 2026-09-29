@@ -27,21 +27,16 @@ import test from 'node:test';
 import { checkStagedWithBiome, resolveBiomePath } from './biome-staged-check.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const biomePath = join(
-  repoRoot,
-  'node_modules',
-  '.bin',
-  process.platform === 'win32' ? 'biome.cmd' : 'biome',
-);
+const biomePath = resolveBiomePath(repoRoot);
 
 test('uses the native Biome executable on Windows', () => {
   assert.equal(
     resolveBiomePath('/repo', 'win32', 'x64'),
-    '/repo/node_modules/@biomejs/cli-win32-x64/biome.exe',
+    join('/repo', 'node_modules', '@biomejs', 'cli-win32-x64', 'biome.exe'),
   );
   assert.equal(
     resolveBiomePath('/repo', 'win32', 'arm64'),
-    '/repo/node_modules/@biomejs/cli-win32-arm64/biome.exe',
+    join('/repo', 'node_modules', '@biomejs', 'cli-win32-arm64', 'biome.exe'),
   );
 });
 
