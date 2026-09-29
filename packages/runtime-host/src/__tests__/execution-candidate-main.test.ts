@@ -77,7 +77,7 @@ verify(
     process.argv.splice(1, 0, ${JSON.stringify(CANDIDATE_ENTRYPOINT)});
     await import(${JSON.stringify(new URL('../execution-candidate-main.js', import.meta.url).href)});
   `;
-    const run = () =>
+    const run = (startupAttemptId: string) =>
       runProcess(
         process.execPath,
         [
@@ -90,12 +90,12 @@ verify(
           '--expected-root-id',
           capability.rootId,
           '--startup-attempt-id',
-          uuid(),
+          startupAttemptId,
         ],
         { encoding: 'utf8', timeout: 20_000, windowsHide: true },
       );
     try {
-      const winner = run();
+      const winner = run(uuid());
       assert.equal(winner.status, 70, winner.stderr);
       assert.match(winner.stdout, /listener reachable before execution import/u);
       assert.match(winner.stderr, /\[runtime-host\] startup failed:/u);
@@ -104,10 +104,21 @@ verify(
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       try {
-        const loser = run();
+        const loserAttemptId = uuid();
+        const loser = run(loserAttemptId);
         assert.equal(loser.status, 2, loser.stderr);
         assert.equal(loser.stderr, '');
         assert.equal(loser.stdout, '');
+        // A losing candidate must leave the startup diagnostic the failure
+        // paths write: a silent exit left nothing on disk, which is what made
+        // replacement storms undiagnosable (issue #5843).
+        const loserDiagnostic = await candidateStartup.readCandidateStartupDiagnostic(
+          capability.rootId,
+          loserAttemptId,
+        );
+        assert.ok(loserDiagnostic);
+        assert.deepEqual({ reason: loserDiagnostic.reason }, { reason: 'launch_election_lost' });
+        assert.match(loserDiagnostic.errorChain[0].message, /launch election/u);
       } finally {
         await owner.close();
       }
