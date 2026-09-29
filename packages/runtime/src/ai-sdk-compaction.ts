@@ -29,6 +29,7 @@
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { SessionHeader } from '@maka/core/session';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type {
   BackendCompactHistoryInput,
@@ -100,6 +101,8 @@ import { toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import { planHistoryCompaction } from './history-compaction.js';
+import { resolveSideConversationForkBoundaryEventId } from './side-conversation-fork-boundary.js';
+import { applySideConversationReplayItemBoundary } from '@maka/core/side-conversation';
 import { resolveDeclaredContextWindow } from './context-budget-policy.js';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
@@ -152,6 +155,14 @@ export interface AutomaticMemoryCompactionDecision {
 export interface AiSdkCompactionDeps {
   input: AiSdkCompactionCapabilities;
   sessionId: string;
+  /**
+   * The Session header, for side-conversation boundary decisions. A mid-turn
+   * fold or overflow recovery rebuilds the provider request from raw events,
+   * so it must re-apply the same eventId-pinned boundary the pre-turn replay
+   * applied, or the replacement request loses the boundary and busts the
+   * fork's cached provider prefix (#4543 review).
+   */
+  header?: Pick<SessionHeader, 'labels' | 'conversationCopy'>;
   targetConnectionId: string | undefined;
   targetProviderStateIdentity: `sha256:${string}` | undefined;
   now: () => number;
@@ -184,6 +195,7 @@ export interface AiSdkCompactionDeps {
 export class AiSdkCompaction {
   private readonly input: AiSdkCompactionCapabilities;
   private readonly sessionId: string;
+  private readonly header: AiSdkCompactionDeps['header'];
   private readonly targetConnectionId: string | undefined;
   private readonly targetProviderStateIdentity: `sha256:${string}` | undefined;
   private readonly now: () => number;
@@ -215,6 +227,7 @@ export class AiSdkCompaction {
   constructor(deps: AiSdkCompactionDeps) {
     this.input = deps.input;
     this.sessionId = deps.sessionId;
+    this.header = deps.header;
     this.targetConnectionId = deps.targetConnectionId;
     this.targetProviderStateIdentity = deps.targetProviderStateIdentity;
     this.now = deps.now;
@@ -1142,8 +1155,21 @@ export class AiSdkCompaction {
         diagnosticReason: 'replacement_unmaterializable',
       };
     }
+    // The fold rebuilds the request from raw events, so the side-conversation
+    // boundary transform must ride along: without it the replacement request
+    // loses the boundary and busts the fork's cached provider prefix.
+    const boundedReplayItems = applySideConversationReplayItemBoundary(replayPlan.items, {
+      boundaryEventId: this.header
+        ? resolveSideConversationForkBoundaryEventId(effectiveReplacement, this.header)
+        : undefined,
+      labels: this.header?.labels,
+    });
+    const boundedReplayPlan =
+      boundedReplayItems === replayPlan.items
+        ? replayPlan
+        : { ...replayPlan, items: boundedReplayItems };
     const replacementMessages = await this.materializeRuntimeReplayPlan(
-      replayPlan,
+      boundedReplayPlan,
       input.origin.imageBudget,
       plan.checkpoint,
       compatibleProviderReasoningReplayEventIds(

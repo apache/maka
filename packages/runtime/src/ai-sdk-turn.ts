@@ -147,7 +147,7 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
-import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
+import { resolveSideConversationForkBoundaryEventId } from './side-conversation-fork-boundary.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
 import {
   toolSchemaCharsForDiagnostics,
@@ -2760,36 +2760,11 @@ export class AiSdkTurn {
    * FOLLOW-UP the first user turn inside the replay is the fork's own first
    * one and keeps carrying the boundary across turns.
    *
-   * The fork-owned cut is authoritative, not inferred: a conversation copy
-   * clones the parent's history up to and INCLUDING the turn the fork branches
-   * through (`header.conversationCopy.sourceTurnId`), so everything after the
-   * last event of that turn is fork-owned. An empty copy (no sourceTurnId)
-   * cloned nothing, so every replayed event is fork-owned.
+   * See `resolveSideConversationForkBoundaryEventId` for the fork-owned cut
+   * semantics (fresh forks vs revisions/branches of side conversations).
    */
   private sideConversationForkBoundaryEventId(events: readonly RuntimeEvent[]): string | undefined {
-    const labels = this.deps.backend.header.labels;
-    if (!isSideConversationSession(labels)) return undefined;
-    const sourceTurnId = this.deps.backend.header.conversationCopy?.sourceTurnId;
-    let cutIndex = -1;
-    if (sourceTurnId !== undefined) {
-      for (let index = events.length - 1; index >= 0; index -= 1) {
-        if (events[index]?.turnId === sourceTurnId) {
-          cutIndex = index;
-          break;
-        }
-      }
-    }
-    for (let index = cutIndex + 1; index < events.length; index += 1) {
-      const event = events[index];
-      if (
-        event.role === 'user' &&
-        event.content?.kind === 'text' &&
-        runtimeEventHasModelVisibleContent(event)
-      ) {
-        return event.id;
-      }
-    }
-    return undefined;
+    return resolveSideConversationForkBoundaryEventId(events, this.deps.backend.header);
   }
 
   /** Materialize canonical RuntimeEvent history into ai-sdk's message format. */

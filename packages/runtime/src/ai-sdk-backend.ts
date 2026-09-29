@@ -390,6 +390,7 @@ export class AiSdkBackend implements AgentBackend {
     this.compaction = new AiSdkCompaction({
       input,
       sessionId: this.sessionId,
+      header: input.header,
       targetConnectionId: input.header.llmConnectionId,
       targetProviderStateIdentity: input.providerStateIdentity,
       now: this.now,
