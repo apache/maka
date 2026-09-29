@@ -31,6 +31,7 @@ import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
 } from '../.artifacts/live-api.mjs';
+import { createLiveReviewer } from './live-review.js';
 const key = process.env.MAKA_SCENARIO_API_KEY;
 if (!key) throw Error('Provide MAKA_SCENARIO_API_KEY in the process environment');
 const modelId = process.env.MAKA_SCENARIO_MODEL ?? 'deepseek-flash';
@@ -45,6 +46,7 @@ const report: any = {
   turns: [],
   usage: [],
   errors: [],
+  reviews: [],
 };
 const redact = (s: string) => s.split(key).join('[REDACTED]');
 const log = (event: string, detail: any = {}) =>
@@ -148,8 +150,33 @@ async function run(text: string, turnId: string) {
     log('turn-ended');
   }
 }
+driver.runtime.transcript = async () => structuredClone(ledger);
+driver.runtime.inbox = async () => [];
 try {
-  f = await platformFixture({ root, driver, timeout: 120000 });
+  const reviewModel = getAIModel({
+    apiKey: key,
+    modelId,
+    connection: {
+      slug: 'live',
+      providerType: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      defaultModel: modelId,
+    },
+  });
+  f = await platformFixture({
+    root,
+    driver,
+    timeout: 120000,
+    review: createLiveReviewer(reviewModel, modelId, {
+      beforeRequest: () => {
+        if (++requests > 85) throw Error('Live model request budget exceeded');
+      },
+      onResult: (entry) => {
+        report.reviews.push(entry);
+        log('review', { count: report.reviews.length, text: entry.text });
+      },
+    }),
+  });
   await f.remote('matters.authorize-session', { sessionId: 'session-1' });
   backend = createTestAiSdkBackend({
     sessionId: 'session-1',
@@ -250,6 +277,8 @@ try {
   assert.equal(world.calls.length, calls);
   assert.equal(report.turns.length, turns);
   assert.equal(report.errors.length, 0);
+  assert.ok(report.reviews.length > 0, 'Real reviewer must have been invoked');
+  assert.ok(report.reviews.some((r: any) => JSON.parse(r.text).approved === true));
   report.ok = true;
 } catch (e) {
   report.errors.push(redact(String(e)));

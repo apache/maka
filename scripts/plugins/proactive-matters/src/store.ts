@@ -100,6 +100,31 @@ class SqliteMatterStore implements MatterStore {
         matter_id TEXT NOT NULL, record_key TEXT UNIQUE NOT NULL, document TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS matter_history_order ON matter_history(matter_id,sequence);
       CREATE INDEX IF NOT EXISTS matter_events_pending ON matter_events(matter_id,acknowledged,sequence);`);
+    // Version the review journal separately: older local builds used an incompatible
+    // eight-column table. Archive it verbatim; its approvals lack this protocol's
+    // execution/basis proof and must never be reused.
+    this.transaction(() => {
+      db.exec(
+        'CREATE TABLE IF NOT EXISTS matter_schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)',
+      );
+      const version = db
+        .prepare('SELECT version FROM matter_schema_versions WHERE name=?')
+        .get('matter_reviews');
+      if (version && Number(version.version) > 2)
+        throw new Error('Review database was created by a newer plugin version');
+      const columns = db.prepare('PRAGMA table_info(matter_reviews)').all();
+      const names = columns.map((column) => column.name);
+      if (
+        names.length !== 3 ||
+        !['id', 'fingerprint', 'payload'].every((name) => names.includes(name))
+      ) {
+        db.exec(`ALTER TABLE matter_reviews RENAME TO matter_reviews_legacy_v1;
+          CREATE TABLE matter_reviews (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, payload TEXT NOT NULL);`);
+      }
+      db.prepare(
+        'INSERT INTO matter_schema_versions(name,version) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET version=excluded.version',
+      ).run('matter_reviews', 2);
+    });
     // Preserve existing revisions when opening a workspace created before the operation journal.
     this.transaction(() => {
       for (const row of db
@@ -678,7 +703,7 @@ class SqliteMatterStore implements MatterStore {
           })),
       };
       this.db
-        .prepare('INSERT INTO matter_reviews VALUES(?,?,?)')
+        .prepare('INSERT INTO matter_reviews(id,fingerprint,payload) VALUES(?,?,?)')
         .run(operationId, fingerprint, JSON.stringify(review));
       return review;
     });

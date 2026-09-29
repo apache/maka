@@ -113,3 +113,11 @@ MatterSettle 通过现有 `ctx.llm.generate` 调用独立审核，包含原始�
 新增覆盖：审核跨 store 重启、定时过期与去重、操作指纹绑定、四次拒绝后通过、持久拒绝幂等重放、输入/草稿/checkpoint/暂停竞态、执行记录变化、Host 失效与模型伪造失效字段。真实 Maka AiSdkBackend loop 使用受控模型连续四次被审核打回，在同一 turn 中继续，批准后仅产生一次完成事件。此次未调用付费模型，未做新的 Electron 人工操作；本次测试证明协议与集成行为，不衡量审核模型判断质量。
 
 最终 `npm run verify` 通过：43 项测试，含真实插件安装包导入、Client DOM 集成、SQLite 竞态/重启、Maka loop 端到端测试；插件构建与类型检查通过。
+
+### 2026-09-29 — Review journal migration and bounded model review
+
+Added regression coverage for migration of an incompatible eight-column journal, repeated reopening without losing legacy records, refusal to reuse a legacy approval even with the same operation ID, bounded reviewer input, changes in omitted execution history invalidating approval, oversized essential input, and a timed-out provider that ignores cancellation followed by successful retry without pausing.
+
+The live reviewer adapter has a controlled model transport test for prompt/output-budget forwarding and preservation of a rejection. The live scenario now calls the real reviewer and records its output and usage instead of accepting the fixture's default approval. No real-provider run was performed for this revision: `MAKA_SCENARIO_API_KEY` is not available in the current process environment. Controlled-model tests are not evidence of real review quality.
+
+Validation: `npm run verify` passed (build, generated runtime adapters, extension packing, tests, TypeScript). After the final legacy-operation collision regression, all 49 tests passed; Biome and `git diff --check` passed.

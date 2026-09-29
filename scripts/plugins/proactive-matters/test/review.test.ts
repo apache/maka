@@ -309,3 +309,115 @@ test('checkpoint between approval and commit uses the invalidation channel', (t)
   );
   assert.equal(f.store.get(f.m.id).matter.stateText, 'Updated facts');
 });
+
+test('legacy eight-column review journal is archived verbatim and never reused', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'matter-legacy-review-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const db = new DatabaseSync(join(root, 'matters.sqlite'));
+  db.exec(`CREATE TABLE matter_reviews (id TEXT PRIMARY KEY, matter_id TEXT, activation_id TEXT,
+    fingerprint TEXT, submitted_at INTEGER, approved INTEGER, feedback TEXT, payload TEXT);
+    INSERT INTO matter_reviews VALUES ('old', 'm', 'a', 'fingerprint', 1, 1, 'accepted', '{"approved":true}');`);
+  const before = db.prepare('SELECT * FROM matter_reviews').all();
+  db.close();
+  for (let i = 0; i < 2; i++) {
+    const store = createMatterStore(root);
+    store.close();
+  }
+  const migrated = new DatabaseSync(join(root, 'matters.sqlite'));
+  t.after(() => migrated.close());
+  assert.deepEqual(migrated.prepare('SELECT * FROM matter_reviews_legacy_v1').all(), before);
+  assert.equal(migrated.prepare('SELECT COUNT(*) AS n FROM matter_reviews').get()!.n, 0);
+  assert.equal(
+    migrated
+      .prepare("SELECT version FROM matter_schema_versions WHERE name='matter_reviews'")
+      .get()!.version,
+    2,
+  );
+  // The actual old failure was a positional three-value insertion into eight columns.
+  migrated
+    .prepare('INSERT INTO matter_reviews(id,fingerprint,payload) VALUES(?,?,?)')
+    .run('old', 'new', '{}');
+});
+
+test('review input is bounded and complete transcript still controls invalidation', async (t) => {
+  const f = setup(t);
+  let transcript = [{ text: 'old'.repeat(50000) }, { text: 'recent evidence' }];
+  const original = structuredClone(transcript);
+  const ctx = {
+    agents: { current: () => ({ transcript: async () => transcript, inbox: async () => [] }) },
+    llm: {
+      generate: async (input: any) => {
+        assert.ok(Buffer.byteLength(input.prompt) <= 96000);
+        assert.equal(input.maxOutputTokens, 8192);
+        const evidence = JSON.parse(input.prompt).execution.transcript;
+        assert.equal(evidence.truncated, true);
+        assert.ok(evidence.recentTranscript.includes('recent evidence'));
+        // Change omitted history, not the visible tail.
+        transcript = [{ text: 'NEW' + original[0].text.slice(3) }, original[1]];
+        return { text: JSON.stringify(approved), modelId: 'test' };
+      },
+    },
+  };
+  await assert.rejects(reviewMatter(ctx, f.begin()), MatterReviewInvalidated);
+});
+
+test('oversized objective is not silently truncated or approved', async (t) => {
+  const f = setup(t);
+  const review = f.begin();
+  review.userInputs = [{ text: 'x'.repeat(100000) }];
+  await assert.rejects(
+    reviewMatter(
+      {
+        agents: { current: () => ({ transcript: async () => [], inbox: async () => [] }) },
+        llm: { generate: async () => assert.fail('must not call model') },
+      },
+      review,
+    ),
+    /safety budget/,
+  );
+});
+
+test('review timeout aborts ignored calls without a verdict or pause; resubmission works', async (t) => {
+  const f = setup(t);
+  let signal: AbortSignal;
+  const ctx = {
+    agents: { current: () => ({ transcript: async () => [], inbox: async () => [] }) },
+    llm: {
+      generate: async (input: any) => {
+        signal = input.signal;
+        return new Promise(() => {});
+      },
+    },
+  };
+  await assert.rejects(reviewMatter(ctx, f.begin(), { timeoutMs: 10 }), /timed out/);
+  assert.equal(signal!.aborted, true);
+  assert.equal(f.begin().verdict, undefined);
+  assert.equal(f.store.get(f.m.id).matter.status, 'active');
+  assert.equal(f.store.get(f.m.id).matter.activation!.settled, false);
+  const retried = f.begin('retry');
+  const verdict = await reviewMatter(
+    {
+      ...ctx,
+      llm: { generate: async () => ({ text: JSON.stringify(approved), modelId: 'test' }) },
+    },
+    retried,
+  );
+  f.store.recordReview(retried, verdict);
+  f.store.settle(f.m.id, f.activation, f.input, 'retry', retried);
+});
+
+test('a legacy approval with the same operation ID cannot authorize a new settlement', (t) => {
+  const f = setup(t);
+  const db = new DatabaseSync(join(f.root, 'matters.sqlite'));
+  db.exec(`DROP TABLE matter_reviews;
+    CREATE TABLE matter_reviews (id TEXT, a TEXT, b TEXT, c TEXT, d TEXT, e TEXT, f TEXT, payload TEXT);
+    INSERT INTO matter_reviews VALUES ('op', '', '', '', '', '', '', '{"verdict":{"approved":true}}');`);
+  db.close();
+  f.reopen();
+  const review = f.begin();
+  assert.equal(review.verdict, undefined);
+  assert.throws(() => f.store.settle(f.m.id, f.activation, f.input, 'op', review));
+  assert.equal(f.store.get(f.m.id).matter.status, 'active');
+  f.store.recordReview(review, approved);
+  f.store.settle(f.m.id, f.activation, f.input, 'op', review);
+});
