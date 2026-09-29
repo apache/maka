@@ -98,6 +98,7 @@ test('retries target detection through the POSIX login shell when Node is not on
       launches.push({ args, pty });
       return pty as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
   });
   t.after(() => terminal.close());
 
@@ -955,6 +956,7 @@ test('does not launch a management process after the terminal owner closes', asy
       launches.push(args);
       return new FakePty() as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
   });
   await terminal.close();
   await assert.rejects(
@@ -1025,6 +1027,7 @@ test('uploads a development release archive before running the same remote setup
       launches.push({ file, args, pty });
       return pty as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
   });
   t.after(() => terminal.close());
 
@@ -1063,6 +1066,46 @@ test('uploads a development release archive before running the same remote setup
   await assert.rejects(setup, /exited with code 255/u);
 });
 
+test('launches the resolved terminal executable instead of the bare name', async (t) => {
+  const launches: Array<{ file: string; pty: FakePty }> = [];
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: { handle: () => undefined, removeHandler: () => undefined },
+    send: () => undefined,
+    spawnPty: ((file: string) => {
+      const pty = new FakePty();
+      launches.push({ file, pty });
+      return pty as unknown as IPty;
+    }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: () => 'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
+  });
+  t.after(() => terminal.close());
+
+  const detection = terminal.resolveNodeIdentity({ destination: 'operator@example.com' });
+  await waitFor(() => launches.length === 1);
+  assert.deepEqual(
+    launches.map(({ file }) => file),
+    ['C:\\Windows\\System32\\OpenSSH\\ssh.exe'],
+  );
+  launches[0]?.pty.exit(0);
+  await assert.rejects(detection, /no result/u);
+});
+
+test('surfaces an actionable error when the terminal executable cannot be resolved', async (t) => {
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: { handle: () => undefined, removeHandler: () => undefined },
+    send: () => undefined,
+    resolveTerminalExecutable: () => {
+      throw new Error('Unable to find ssh.exe for the interactive SSH session.');
+    },
+  });
+  t.after(() => terminal.close());
+
+  await assert.rejects(
+    terminal.resolveNodeIdentity({ destination: 'operator@example.com' }),
+    /Unable to find ssh\.exe/u,
+  );
+});
+
 function createHarness(
   mode: 'pending' | 'exit',
   options: { readonly managementTimeoutMs?: number } = {},
@@ -1087,6 +1130,7 @@ function createHarness(
       launchArgs.push(args);
       return pty as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
     revealDelayMs: 0,
     ...options,
     processStopGraceMs: 1,

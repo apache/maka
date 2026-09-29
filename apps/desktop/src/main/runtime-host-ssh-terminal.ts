@@ -76,6 +76,10 @@ import type {
 } from '../preload/bridge-contract.js';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
 import {
+  resolveSshTerminalExecutable,
+  type RuntimeHostSshTerminalExecutable,
+} from './runtime-host-ssh-executable.js';
+import {
   runtimeHostSetupPackageVersion,
   type DesktopRuntimeHostDevelopmentPeerTarget,
   type DesktopRuntimeHostSetupPackage,
@@ -260,6 +264,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly send: (channel: string, event: DesktopRuntimeHostSshTerminalEvent) => void;
   readonly spawnPty?: typeof spawnPty;
+  readonly resolveTerminalExecutable?: (executable: RuntimeHostSshTerminalExecutable) => string;
   readonly openSshTunnel?: typeof openRuntimeHostSshTunnel;
   readonly activateSshOperator?: typeof activateRuntimeHostSshOperator;
   readonly revealDelayMs?: number;
@@ -368,7 +373,8 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     if (closed) throw new Error('Runtime Host SSH terminal is closed');
     if (active) throw new Error('Another Runtime Host SSH terminal is already active');
     const sessionId = randomUUID();
-    const pty = (input.spawnPty ?? spawnPty)(executable, [...args], {
+    const executablePath = (input.resolveTerminalExecutable ?? resolveSshTerminalExecutable)(executable);
+    const pty = (input.spawnPty ?? spawnPty)(executablePath, [...args], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
