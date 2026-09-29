@@ -209,7 +209,7 @@ Apache License
 
 ================================================================================
 
-Package: @ai-sdk/anthropic@4.0.53
+Package: @ai-sdk/anthropic@4.0.68
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/anthropic
@@ -231,7 +231,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/code-mode@1.0.56
+Package: @ai-sdk/code-mode@1.0.79
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/code-mode
@@ -253,7 +253,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/cohere@4.0.41
+Package: @ai-sdk/cohere@4.0.52
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/cohere
@@ -275,7 +275,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/gateway@4.0.80
+Package: @ai-sdk/gateway@4.0.100
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/gateway
@@ -297,7 +297,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/google@4.0.69
+Package: @ai-sdk/google@4.0.85
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/google
@@ -319,7 +319,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/open-responses@2.0.44
+Package: @ai-sdk/open-responses@2.0.56
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/open-responses
@@ -341,7 +341,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai@4.0.66
+Package: @ai-sdk/openai@4.0.80
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai
@@ -363,7 +363,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai-compatible@3.0.48
+Package: @ai-sdk/openai-compatible@3.0.59
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai-compatible
@@ -385,7 +385,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider@4.0.14
+Package: @ai-sdk/provider@4.0.19
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider
@@ -407,7 +407,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider-utils@5.0.40
+Package: @ai-sdk/provider-utils@5.0.51
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider-utils
@@ -5585,7 +5585,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: ai@7.0.99
+Package: ai@7.0.122
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/ai
@@ -10804,7 +10804,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: ip-address@10.4.0
+Package: ip-address@10.7.2
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/beaugunderson/ip-address.git
@@ -15022,7 +15022,7 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: undici@6.28.0
+Package: undici@6.29.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -15052,7 +15052,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@7.29.0
+Package: undici@7.30.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -15082,7 +15082,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@8.10.2
+Package: undici@8.11.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -15680,7 +15680,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: quickjs-emscripten (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.56
+Embedded by: @ai-sdk/code-mode@1.0.79
 Selected license: MIT
 Repository: https://github.com/justjake/quickjs-emscripten
 
@@ -15710,7 +15710,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: QuickJS JavaScript engine (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.56
+Embedded by: @ai-sdk/code-mode@1.0.79
 Selected license: MIT
 Repository: https://github.com/bellard/quickjs
 

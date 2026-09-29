@@ -1754,7 +1754,7 @@ test("reports a Host-blocked Skill send as a Skill failure", async () => {
   );
 });
 
-test("queues explicit Desktop follow-ups", async () => {
+const verifyExplicitDesktopFollowup = async () => {
   const submits: unknown[] = [];
   let sequence = 0;
   const skillInvocation = {
@@ -1847,8 +1847,8 @@ test("queues explicit Desktop follow-ups", async () => {
       placement: "next_turn",
     },
   ]);
-});
-
+};
+test('queues explicit Desktop follow-ups', verifyExplicitDesktopFollowup);
 test('keeps an unknown Desktop follow-up admission available for reconciliation', async () => {
   const ipc = ipcHarness();
   registerExecutionIpc(
@@ -1889,6 +1889,18 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   const retractions: unknown[] = [];
   const stopLifecycle: string[] = [];
   let sequence = 0;
+  const retractQueueEntry: ExecutionClient['retractQueueEntry'] = async (input) => {
+    retractions.push(input);
+    if (retractions.length === 1) {
+      throw new RuntimeHostRequestInterruptedError(
+        'queue.retract',
+        'command',
+        'dispatched',
+        'connection_lost',
+      );
+    }
+    return Object.freeze({ queueRevision: 1 + 2 });
+  };
   const client = executionClient({
     getSession: async () => sideConversationSession(),
     submitMessage: async (input) => {
@@ -1928,18 +1940,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
         },
       };
     },
-    retractQueueEntry: async (input) => {
-      retractions.push(input);
-      if (retractions.length === 1) {
-        throw new RuntimeHostRequestInterruptedError(
-          'queue.retract',
-          'command',
-          'dispatched',
-          'connection_lost',
-        );
-      }
-      return { queueRevision: 3 };
-    },
+    retractQueueEntry,
   });
   const observer = observerWithSnapshot({
     queue: {
@@ -2221,6 +2222,14 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
   const unavailable = async (): Promise<never> => {
     throw new Error("Unexpected Runtime Host Session execution operation");
   };
+  const queueOperations = Object.fromEntries(
+    ['retractQueueEntry', 'promoteQueueEntry', 'updateQueueEntry', 'reorderQueueEntries'].map(
+      (name) => [name, unavailable],
+    ),
+  ) as unknown as Pick<
+    ExecutionClient,
+    'retractQueueEntry' | 'promoteQueueEntry' | 'updateQueueEntry' | 'reorderQueueEntries'
+  >;
   return {
     answerInteraction: unavailable,
     compactContext: unavailable,
@@ -2236,10 +2245,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     openSession: unavailable,
-    retractQueueEntry: unavailable,
-    promoteQueueEntry: unavailable,
-    updateQueueEntry: unavailable,
-    reorderQueueEntries: unavailable,
+    ...queueOperations,
     setSessionReadMarker: unavailable,
     startTurnResume: unavailable,
     submitMessage: unavailable,

@@ -98,8 +98,8 @@
     "package:linux": "node scripts/package-linux.mjs",
     "verify:linux": "node scripts/verify-linux.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
-    "astryx:surface-inventory": "node scripts/check-astryx-surface-inventory.mjs",
-    "astryx:surface-inventory:write": "node scripts/generate-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory": "node --enable-source-maps scripts/check-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory:write": "node --enable-source-maps scripts/generate-astryx-surface-inventory.mjs",
     "astryx:surface-inventory:test": "node --test scripts/generate-astryx-surface-inventory.test.mjs scripts/check-astryx-surface-inventory.test.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "refresh:model-metadata": "node scripts/sync-model-metadata.mjs --refresh",
@@ -113,7 +113,7 @@
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
-    "@ai-sdk/provider-utils": "5.0.40",
+    "@ai-sdk/provider-utils": "5.0.51",
     "@astryxdesign/cli": "0.6.2",
     "@astryxdesign/core": "0.6.2",
     "@biomejs/biome": "2.5.13",

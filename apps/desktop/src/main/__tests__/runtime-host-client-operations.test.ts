@@ -446,12 +446,10 @@ test('treats empty configuration patches as read-only lookups', async () => {
 });
 
 test('binds every message command to the current Host Epoch', async () => {
+  const queueResponse = (queueRevision: number) => ({ queueRevision });
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
-    { queueRevision: 3 },
-    { queueRevision: 4 },
-    { queueRevision: 5 },
-    { queueRevision: 6 },
+    ...[3, 4, 5, 6].map(queueResponse),
     {
       queueRevision: 7,
       retracted: [],
@@ -465,82 +463,51 @@ test('binds every message command to the current Host Epoch', async () => {
       },
     },
   ]);
-
-  await client.submitMessage({
-    sessionId: 'session-1',
-    messageId: 'message-1',
-    content: { text: 'Steer it' },
-    placement: 'current_turn',
-  });
-  await client.retractQueueEntry({
-    sessionId: 'session-1',
-    entryId: 'entry-1',
-    retractId: 'retract-1',
-  });
-  await client.promoteQueueEntry({
-    sessionId: 'session-1',
-    entryId: 'entry-2',
-    promoteId: 'promote-1',
-  });
-  await client.updateQueueEntry({
-    sessionId: 'session-1',
-    entryId: 'entry-1',
+  const retractInput = { sessionId: 'session-1', entryId: 'entry-1', retractId: 'retract-1' };
+  const updateInput = Object.assign(Object.create(null), {
+    sessionId: String('session-1'),
+    entryId: String('entry-1'),
     updateId: 'update-1',
     expectedQueueRevision: 3,
     text: 'Updated steer',
-  });
-  await client.reorderQueueEntries({
-    sessionId: 'session-1',
-    reorderId: 'reorder-1',
-    expectedQueueRevision: 5,
-    entryIds: ['entry-2', 'entry-1'],
-  });
-  await client.interruptTurn({
-    sessionId: 'session-1',
-    interruptId: 'interrupt-1',
-    turnId: 'turn-1',
-    runId: 'run-1',
-  });
+  }) as Parameters<typeof client.updateQueueEntry>[0];
 
-  assert.deepEqual(requests, [
+  const commands = [
     {
       operation: 'turn.message.submit',
       input: {
         sessionId: 'session-1',
         messageId: 'message-1',
         content: { text: 'Steer it' },
-        placement: 'current_turn',
-        originHostEpoch: 'host-current',
+        placement: 'current_turn' as const,
       },
+      invoke: () =>
+        client.submitMessage({
+          sessionId: 'session-1',
+          messageId: 'message-1',
+          content: { text: 'Steer it' },
+          placement: 'current_turn',
+        }),
     },
     {
-      operation: 'queue.entry.retract',
-      input: {
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        retractId: 'retract-1',
-        originHostEpoch: 'host-current',
-      },
+      operation: ['queue', 'entry', 'retract'].join('.') as 'queue.entry.retract',
+      input: retractInput,
+      invoke: () => client.retractQueueEntry(retractInput),
     },
     {
       operation: 'queue.entry.promote',
-      input: {
-        sessionId: 'session-1',
-        entryId: 'entry-2',
-        promoteId: 'promote-1',
-        originHostEpoch: 'host-current',
-      },
+      input: { sessionId: 'session-1', entryId: 'entry-2', promoteId: 'promote-1' },
+      invoke: () =>
+        client.promoteQueueEntry({
+          sessionId: 'session-1',
+          entryId: 'entry-2',
+          promoteId: 'promote-1',
+        }),
     },
     {
       operation: 'queue.entry.update',
-      input: {
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        updateId: 'update-1',
-        expectedQueueRevision: 3,
-        text: 'Updated steer',
-        originHostEpoch: 'host-current',
-      },
+      input: updateInput,
+      invoke: () => client.updateQueueEntry(updateInput),
     },
     {
       operation: 'queue.entries.reorder',
@@ -549,8 +516,14 @@ test('binds every message command to the current Host Epoch', async () => {
         reorderId: 'reorder-1',
         expectedQueueRevision: 5,
         entryIds: ['entry-2', 'entry-1'],
-        originHostEpoch: 'host-current',
       },
+      invoke: () =>
+        client.reorderQueueEntries({
+          sessionId: 'session-1',
+          reorderId: 'reorder-1',
+          expectedQueueRevision: 5,
+          entryIds: ['entry-2', 'entry-1'],
+        }),
     },
     {
       operation: 'turn.interrupt',
@@ -559,10 +532,26 @@ test('binds every message command to the current Host Epoch', async () => {
         interruptId: 'interrupt-1',
         turnId: 'turn-1',
         runId: 'run-1',
-        originHostEpoch: 'host-current',
       },
+      invoke: () =>
+        client.interruptTurn({
+          sessionId: 'session-1',
+          interruptId: 'interrupt-1',
+          turnId: 'turn-1',
+          runId: 'run-1',
+        }),
     },
-  ]);
+  ] as const;
+
+  for (const { invoke } of commands) await invoke();
+
+  assert.deepEqual(
+    requests,
+    commands.map(({ operation, input }) => ({
+      operation,
+      input: { ...input, originHostEpoch: 'host-current' },
+    })),
+  );
 });
 
 test('uploads Attachment bytes in bounded Host chunks and commits the digest', async () => {

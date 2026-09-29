@@ -343,10 +343,8 @@ describe('Host Agent Graph coordinator', () => {
   test('projects only allowlisted Runtime fields onto the wire', () => {
     const source = graphSnapshot();
     Object.assign(source.operators[0]!, { privatePrompt: 'operator-secret' });
-    Object.assign(source.operators[0]!.readiness[0]!, {
-      policyKind: 'map',
-      privatePolicy: 'readiness-secret',
-    });
+    const hiddenReadinessFields = { policyKind: 'map', privatePolicy: 'readiness-secret' };
+    Object.assign(source.operators[0]!.readiness[0]!, hiddenReadinessFields);
     Object.assign(source.recentActivity[0]!, { privatePayload: 'activity-secret' });
 
     const projected = projectAgentGraphClientSnapshot(source);

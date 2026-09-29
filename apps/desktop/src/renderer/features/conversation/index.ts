@@ -74,9 +74,13 @@ export { activeHostTurn, chatTurnActivity } from '../../application/contracts/se
 export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
-export { composerSend, composerFollowUp, type ComposerMessageContext } from './controller/composer-follow-up.js';
+export { composerFollowUp, type ComposerMessageContext } from './controller/composer-follow-up.js';
 export { composerMessageRecovery } from './controller/composer-message-recovery.js';
 export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
+export {
+  createRevisionAwareOnSend,
+  type RevisionSendPorts,
+} from './controller/composer-submit.js';
 export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';

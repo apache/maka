@@ -449,8 +449,7 @@ test('retracted queue attachments can be restored and submitted without re-inges
   );
 
   await probe.render('session-1');
-  await act(() =>
-    probe.latest().restoreAttachments('session-1', [
+  const retained = [
       {
         kind: 'other',
         name: 'notes.txt',
@@ -462,8 +461,8 @@ test('retracted queue attachments can be restored and submitted without re-inges
           relativePath: 'attachments/notes.txt',
         },
       },
-    ]),
-  );
+    ] as const;
+  await act(() => probe.latest().restoreAttachments('session-1', retained));
 
   assert.equal(probe.latest().pendingAttachments[0]?.source.type, 'retained');
 });

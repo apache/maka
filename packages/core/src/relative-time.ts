@@ -18,11 +18,9 @@
  */
 
 /**
- * Locale-aware relative-time formatter shared across Maka surfaces. Pure
- * (optional `now`) so tests can pin a clock. The first minute stays on one
- * just-now label instead of counting seconds, then buckets widen from minute
- * to hour to day; past ~7 days we fall back to an absolute date, which is more
- * useful than a relative label like "300 天前".
+ * Locale-aware relative-time formatter shared across Maka surfaces. The
+ * public formatting functions are pure for a supplied clock; formatter caches
+ * are an internal performance detail and never affect the result.
  */
 
 import { uiLocaleToIntlLocale, type UiLocale } from './ui-locale.js';
@@ -83,19 +81,21 @@ export function formatAbsoluteTimestamp(ts: number, locale: UiLocale): string {
  */
 export function formatRelativeTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
-  if (diffMs < JUST_NOW_MS) {
-    return JUST_NOW[locale];
-  }
-  if (diffMs > RELATIVE_HORIZON_MS) {
-    return getAbsoluteFormat(locale).format(new Date(ts));
-  }
-  const diffSeconds = Math.round(diffMs / 1000);
-  const diffMinutes = Math.round(diffSeconds / 60);
-  if (diffMinutes < 60) return getRelativeFormat(locale).format(-diffMinutes, 'minute');
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 24) return getRelativeFormat(locale).format(-diffHours, 'hour');
-  const diffDays = Math.round(diffHours / 24);
-  return getRelativeFormat(locale).format(-diffDays, 'day');
+  if (diffMs < JUST_NOW_MS) return JUST_NOW[locale];
+  if (diffMs > RELATIVE_HORIZON_MS) return formatAbsoluteTimestamp(ts, locale);
+  const bucket = relativeBucket(diffMs);
+  return getRelativeFormat(locale).format(-bucket.value, bucket.unit);
+}
+
+function relativeBucket(diffMs: number): {
+  readonly value: number;
+  readonly unit: Intl.RelativeTimeFormatUnit;
+} {
+  const minutes = Math.round(Math.round(diffMs / 1000) / 60);
+  if (minutes < 60) return { value: minutes, unit: 'minute' };
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return { value: hours, unit: 'hour' };
+  return { value: Math.round(hours / 24), unit: 'day' };
 }
 
 let cachedCompactSameYearFormat: Intl.DateTimeFormat | null = null;
@@ -132,7 +132,9 @@ function getCompactFormats(uiLocale: UiLocale): {
  */
 export function formatCompactTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
-  if (diffMs <= RELATIVE_HORIZON_MS) return formatRelativeTimestamp(ts, now, locale);
+  if (diffMs <= RELATIVE_HORIZON_MS) {
+    return formatRelativeTimestamp(ts, now, locale);
+  }
   const { sameYear, otherYear } = getCompactFormats(locale);
   const date = new Date(ts);
   const nowDate = new Date(now);
