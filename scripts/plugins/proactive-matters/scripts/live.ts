@@ -166,7 +166,8 @@ try {
   f = await platformFixture({
     root,
     driver,
-    timeout: 120000,
+    // Match the plugin default; reviewer reasoning counts toward activation time.
+    timeout: 600000,
     review: createLiveReviewer(reviewModel, modelId, {
       beforeRequest: () => {
         if (++requests > 85) throw Error('Live model request budget exceeded');
@@ -226,37 +227,64 @@ try {
     await current;
     driver.end();
   };
-  const request = `帮我持续跟进品牌升级项目 brand-refresh 的设计交付（项目任务 BRAND-42）。当前最终稿文件完整、设计负责人视觉验收通过后，在 ${world.date} 15:00–17:00（Asia/Shanghai）找一个我和设计负责人都空闲的半小时，在我的日历里创建一场验收会议，附上那份已确认的稿件，再把项目任务更新为 ready_for_review，并关联稿件和会议。现在只安排，不发送邀请或其他消息。资料没齐先继续跟进；重要进展再告诉我，六分钟内还没全部办好就说明卡在哪里。`;
+  const request = `帮我持续跟进品牌升级项目 brand-refresh 的设计交付（项目任务 BRAND-42）。当前最终稿文件完整、设计负责人视觉验收通过后，在 ${world.date} 15:00–17:00（Asia/Shanghai）找一个我和设计负责人都空闲的半小时，在我的日历里创建一场验收会议，附上那份已确认的稿件，再把项目任务更新为 ready_for_review，并关联稿件和会议。现在只安排，不发送邀请或其他消息。资料没齐先继续跟进；重要进展再告诉我，六分钟内还没全部办好就说明卡在哪里。本次验收截止时间是 ${new Date(startedAt + 360000).toISOString()}；等待外部条件时每隔 20 秒复查一次，唤醒登记和进展说明中的时间须一致。`;
   current = run(request, 'turn-initial');
   let amended = false;
   while (Date.now() - startedAt < 420000) {
     await sleep(250);
     const view = await f.remote('matters.list');
     const m = view.matters[0];
-    if (!amended && Date.now() - startedAt >= 60000 && m && !m.activation) {
-      amended = true;
-      await current;
-      const turn = randomUUID();
-      driver.sessions.get('session-1').running = true;
-      driver.sessions.get('session-1').turnId = turn;
-      current = run(
-        '验收加上无障碍检查，必须针对最新稿通过。前面那个旧版别用了。会议时间范围不变，不要发邀请。',
-        turn,
-      );
-      log('user-amendment');
+    if (m?.status === 'paused') throw Error('Matter paused: ' + m.lastError);
+    if (!amended && Date.now() - startedAt >= 60000 && m) {
+      const amendment =
+        '验收加上无障碍检查，必须针对最新稿通过。前面那个旧版别用了。会议时间范围不变，不要发邀请。';
+      if (m.activation && !m.activation.settled) {
+        // Model a direct human input during an active turn, not another model run.
+        // Record the source message and adopt it through the existing plugin API.
+        const turn = driver.sessions.get('session-1').turnId;
+        ledger.push({
+          id: randomUUID(),
+          sessionId: 'session-1',
+          turnId: turn,
+          ts: Date.now(),
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: amendment },
+        });
+        await f.invoke('MatterMessage', { text: amendment }, turn);
+        amended = true;
+      } else if (!m.activation) {
+        await current;
+        const turn = randomUUID();
+        driver.sessions.get('session-1').running = true;
+        driver.sessions.get('session-1').turnId = turn;
+        current = run(amendment, turn);
+        amended = true;
+      }
+      if (amended) {
+        report.amendmentDeliveredAt = Date.now() - startedAt;
+        log('user-amendment', { duringActivation: Boolean(m.activation) });
+      }
     }
     if (m?.status === 'completed' && !m.activation) break;
-    if (m?.status === 'paused') {
-      throw Error('Matter paused: ' + m.lastError);
-    }
     const latestTurn = report.turns.at(-1);
     if (latestTurn?.endedAt && !m)
       throw Error('Agent turn ended without enrolling a follow-up; inspect its tool errors.');
+  }
+  if (Date.now() - startedAt >= 420000) {
+    await backend.stop?.();
+    await current;
+    throw Error('Live scenario exceeded its seven-minute wall-clock budget');
   }
   await current;
   report.final = await f.remote('matters.list');
   const m = report.final.matters[0];
   const w = world.snapshot();
+  assert.ok(
+    amended && report.amendmentDeliveredAt < 65000,
+    'User amendment must actually arrive near 60s',
+  );
   assert.equal(m?.status, 'completed');
   assert.equal(w.events.length, 1);
   assert.equal(w.events[0].fileId, 'design-v3');

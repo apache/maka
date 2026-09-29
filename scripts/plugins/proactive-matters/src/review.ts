@@ -65,6 +65,32 @@ export function reviewPrompt(review: MatterReview, transcript: unknown, inbox: u
   return prompt;
 }
 
+// Host StoredMessage uses type=user; RuntimeEvent uses role=user.
+// Only actual user messages affect this boundary. Streaming tool-call/result
+// bookkeeping is review evidence, not a new user requirement. Compare identities
+// and content, never array position or an assumed "last message".
+function userInputBasis(transcript: unknown): string {
+  return JSON.stringify(
+    Array.isArray(transcript)
+      ? transcript
+          .filter((entry) => entry?.role === 'user' || entry?.type === 'user')
+          .map((entry) => ({
+            id: entry.id,
+            content:
+              entry.type === 'user'
+                ? {
+                    text: entry.text,
+                    attachments: entry.attachments,
+                    directoryReferences: entry.directoryReferences,
+                    quotes: entry.quotes,
+                    inlineReferences: entry.inlineReferences,
+                  }
+                : entry.content,
+          }))
+      : [],
+  );
+}
+
 export async function reviewMatter(
   ctx: any,
   review: MatterReview,
@@ -74,9 +100,13 @@ export async function reviewMatter(
   if (!agent) throw new Error('Settlement review requires an active session');
   const transcript = await agent.transcript();
   const inbox = await agent.inbox();
-  const evidence = JSON.stringify({ transcript, inbox });
+  const userInputs = userInputBasis(transcript);
   if (review.verdict) {
-    if (JSON.stringify(review.verdict.execution) !== evidence) throw new MatterReviewInvalidated();
+    if (
+      review.verdict.execution &&
+      userInputBasis(review.verdict.execution.transcript) !== userInputs
+    )
+      throw new MatterReviewInvalidated();
     return review.verdict;
   }
   const prompt = reviewPrompt(review, transcript, inbox);
@@ -103,10 +133,7 @@ export async function reviewMatter(
       timeout,
     ]);
   } catch (error) {
-    if (
-      JSON.stringify({ transcript: await agent.transcript(), inbox: await agent.inbox() }) !==
-      evidence
-    )
+    if (userInputBasis(await agent.transcript()) !== userInputs)
       throw new MatterReviewInvalidated();
     // This channel comes from the Host API throwing, never from model output.
     if (
@@ -118,11 +145,7 @@ export async function reviewMatter(
   } finally {
     clearTimeout(timer!);
   }
-  if (
-    JSON.stringify({ transcript: await agent.transcript(), inbox: await agent.inbox() }) !==
-    evidence
-  )
-    throw new MatterReviewInvalidated();
+  if (userInputBasis(await agent.transcript()) !== userInputs) throw new MatterReviewInvalidated();
   return {
     ...reviewVerdict.parse(JSON.parse(result.text)),
     execution: { transcript, inbox },

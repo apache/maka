@@ -31,13 +31,16 @@ import { fixture, until } from './platform-helper.js';
 test('plugin finish hook and four review rejections keep the same Maka turn running until approval', async (t) => {
   let reviewCalls = 0;
   const f = await fixture({
-    review: async () => ({
-      text: JSON.stringify({
-        approved: ++reviewCalls > 4,
-        feedback: reviewCalls <= 4 ? 'Need explicit confirmation before waiting' : 'Confirmed',
-      }),
-      modelId: 'independent-review-fixture',
-    }),
+    review: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        text: JSON.stringify({
+          approved: ++reviewCalls > 4,
+          feedback: reviewCalls <= 4 ? 'Need explicit confirmation before waiting' : 'Confirmed',
+        }),
+        modelId: 'independent-review-fixture',
+      };
+    },
   });
   t.after(async () => {
     f.driver.end();
@@ -184,6 +187,8 @@ test('plugin finish hook and four review rejections keep the same Maka turn runn
     loadTurnRuntimeEvents: async () => [...ledger],
   });
 
+  // Use real streamed records, including the current tool call arriving during review.
+  f.driver.runtime.transcript = async () => structuredClone(ledger);
   const events = [];
   for await (const event of backend.send({
     turnId,

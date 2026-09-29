@@ -239,12 +239,19 @@ test('Host invalidation retries without a rejection; model JSON cannot request t
   db.close();
 });
 
-test('transcript changes while the independent model runs invalidate its result', async (t) => {
+test('a new identified user message during review invalidates its result', async (t) => {
   const f = setup(t);
   const review = f.begin();
   let changed = false;
   const agent = {
-    transcript: async () => (changed ? ['new user input'] : ['initial evidence']),
+    transcript: async () =>
+      changed
+        ? [
+            { id: 'user-1', role: 'user', content: 'initial evidence' },
+            { id: 'user-2', role: 'user', content: 'new requirement' },
+            { id: 'call-1', role: 'model', content: { kind: 'function_call' } },
+          ]
+        : [{ id: 'user-1', role: 'user', content: 'initial evidence' }],
     inbox: async () => [],
   };
   await assert.rejects(
@@ -339,9 +346,12 @@ test('legacy eight-column review journal is archived verbatim and never reused',
     .run('old', 'new', '{}');
 });
 
-test('review input is bounded and complete transcript still controls invalidation', async (t) => {
+test('review input is bounded but omitted user requirements still control invalidation', async (t) => {
   const f = setup(t);
-  let transcript = [{ text: 'old'.repeat(50000) }, { text: 'recent evidence' }];
+  let transcript = [
+    { id: 'user-1', role: 'user', content: 'old'.repeat(50000) },
+    { id: 'call-1', role: 'model', content: 'recent evidence' },
+  ];
   const original = structuredClone(transcript);
   const ctx = {
     agents: { current: () => ({ transcript: async () => transcript, inbox: async () => [] }) },
@@ -353,7 +363,10 @@ test('review input is bounded and complete transcript still controls invalidatio
         assert.equal(evidence.truncated, true);
         assert.ok(evidence.recentTranscript.includes('recent evidence'));
         // Change omitted history, not the visible tail.
-        transcript = [{ text: 'NEW' + original[0].text.slice(3) }, original[1]];
+        transcript = [
+          { ...original[0], content: 'NEW' + original[0].content.slice(3) },
+          original[1],
+        ];
         return { text: JSON.stringify(approved), modelId: 'test' };
       },
     },
@@ -421,3 +434,82 @@ test('a legacy approval with the same operation ID cannot authorize a new settle
   f.store.recordReview(review, approved);
   f.store.settle(f.m.id, f.activation, f.input, 'op', review);
 });
+
+test('a user amendment through MatterMessage during model review prevents the old approval committing', async (t) => {
+  let f: any;
+  f = await fixture({
+    review: async () => {
+      await f.invoke('MatterMessage', {
+        text: 'New requirement: verify accessibility before completion',
+      });
+      return { text: JSON.stringify(approved), modelId: 'review-test' };
+    },
+  });
+  t.after(async () => {
+    f.driver.end();
+    await f.close();
+    rmSync(f.root, { recursive: true, force: true });
+  });
+  const view = await f.invoke('MatterStart', { title: 'Review', request: 'Deliver design' });
+  const result = await f.invoke('MatterSettle', {
+    expectedRevision: view.revision,
+    stateFile: view.files.draft,
+    disposition: 'complete',
+    summary: 'Done',
+    reason: 'Delivered',
+  });
+  assert.equal(result.code, 'MATTER_REVIEW_INVALIDATED');
+  assert.equal((await f.remote('matters.list')).matters[0].status, 'active');
+  const db = new DatabaseSync(join(f.root, 'data', 'matters.sqlite'));
+  try {
+    assert.equal(
+      JSON.parse(String(db.prepare('SELECT payload FROM matter_reviews').get()!.payload)).verdict,
+      undefined,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+for (const newRequirement of [false, true]) {
+  test(`Host StoredMessage ignores submission bookkeeping but protects user input: new=${newRequirement}`, async (t) => {
+    const f = setup(t);
+    const transcript: any[] = [{ id: 'human-1', type: 'user', text: 'Deliver design' }];
+    const ctx = {
+      agents: {
+        current: () => ({
+          transcript: async () => structuredClone(transcript),
+          inbox: async () => ({ kind: 'active' }),
+        }),
+      },
+      llm: {
+        generate: async () => {
+          if (newRequirement)
+            transcript.push({
+              id: 'human-2',
+              type: 'user',
+              text: 'Require accessibility approval',
+            });
+          transcript.push({
+            id: 'own-call',
+            type: 'tool_call',
+            toolCallId: 'settle-1',
+            toolName: 'MatterSettle',
+          });
+          transcript.push({ id: 'other-metadata', type: 'token_usage', outputTokens: 12 });
+          return { text: JSON.stringify(approved), modelId: 'fixture' };
+        },
+      },
+    };
+    const review = f.begin();
+    if (newRequirement) {
+      await assert.rejects(reviewMatter(ctx, review), MatterReviewInvalidated);
+      assert.equal(f.begin().verdict, undefined);
+    } else {
+      const verdict = await reviewMatter(ctx, review);
+      f.store.recordReview(review, verdict);
+      f.store.settle(f.m.id, f.activation, f.input, 'op', review);
+      assert.equal(f.store.get(f.m.id).matter.activation!.settled, true);
+    }
+  });
+}
