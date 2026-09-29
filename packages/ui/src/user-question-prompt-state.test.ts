@@ -23,6 +23,7 @@ import type { UserQuestion } from '@maka/core/user-question';
 import {
   buildUserQuestionResponse,
   clearUserQuestionWizardState,
+  completeUserQuestionWizardState,
   createQuestionDrafts,
   createUserQuestionWizardState,
   readUserQuestionWizardState,
@@ -65,7 +66,14 @@ test('wizard store restores and clears progress keyed by requestId', () => {
   remembered!.drafts[0] = null;
   assert.deepEqual(readUserQuestionWizardState(requestId)?.drafts, [{ kind: 'option', optionIndex: 0 }, null]);
 
-  clearUserQuestionWizardState(requestId);
+  completeUserQuestionWizardState(requestId);
+  assert.equal(readUserQuestionWizardState(requestId), undefined);
+
+  rememberUserQuestionWizardState(requestId, {
+    questionIndex: 1,
+    drafts: [{ kind: 'option', optionIndex: 0 }, null],
+    answerText: 'custom',
+  });
   assert.equal(readUserQuestionWizardState(requestId), undefined);
 });
 

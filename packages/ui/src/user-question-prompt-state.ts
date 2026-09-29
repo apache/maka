@@ -31,6 +31,7 @@ export interface UserQuestionWizardState {
 }
 
 const wizardStateByRequestId = new Map<string, UserQuestionWizardState>();
+const completedWizardRequestIds = new Set<string>();
 
 export function createQuestionDrafts(questions: readonly UserQuestion[]): QuestionAnswerDraft[] {
   return questions.map(() => null);
@@ -55,6 +56,7 @@ export function readUserQuestionWizardState(requestId: string): UserQuestionWiza
 }
 
 export function rememberUserQuestionWizardState(requestId: string, state: UserQuestionWizardState): void {
+  if (completedWizardRequestIds.has(requestId)) return;
   wizardStateByRequestId.set(requestId, {
     questionIndex: state.questionIndex,
     drafts: [...state.drafts],
@@ -64,6 +66,12 @@ export function rememberUserQuestionWizardState(requestId: string, state: UserQu
 
 export function clearUserQuestionWizardState(requestId: string): void {
   wizardStateByRequestId.delete(requestId);
+  completedWizardRequestIds.delete(requestId);
+}
+
+export function completeUserQuestionWizardState(requestId: string): void {
+  wizardStateByRequestId.delete(requestId);
+  completedWizardRequestIds.add(requestId);
 }
 
 export function buildUserQuestionResponse(

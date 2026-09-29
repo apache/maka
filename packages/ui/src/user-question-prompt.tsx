@@ -31,7 +31,7 @@ import { ChoicePanel } from './choice-panel.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
-  clearUserQuestionWizardState,
+  completeUserQuestionWizardState,
   createQuestionDrafts,
   createUserQuestionWizardState,
   readUserQuestionWizardState,
@@ -150,7 +150,7 @@ export function UserQuestionPrompt(props: {
     setResponseError(undefined);
     try {
       await props.onRespond(buildUserQuestionResponse(props.request, committed));
-      clearUserQuestionWizardState(requestId);
+      completeUserQuestionWizardState(requestId);
     } catch (reason) {
       if (mountedRef.current && activeRequestIdRef.current === requestId) setResponseError(reason instanceof Error ? reason.message : String(reason));
     } finally {
