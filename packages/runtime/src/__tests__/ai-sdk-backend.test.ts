@@ -3590,22 +3590,22 @@ describe('AiSdkBackend model history', () => {
                   { type: 'response.output_item.done', output_index, item: entry },
                 ]
               : entry.type === 'message'
-              ? [
-                  {
-                    type: 'response.output_item.added',
-                    output_index,
-                    item: { ...entry, status: 'in_progress', content: [] },
-                  },
-                  {
-                    type: 'response.output_text.delta',
-                    output_index,
-                    item_id: entry.id,
-                    content_index: 0,
-                    delta: requests.length === 1 ? 'Maka result.' : 'Done.',
-                  },
-                  { type: 'response.output_item.done', output_index, item: entry },
-                ]
-              : [{ type: 'response.output_item.done', output_index, item: entry }],
+                ? [
+                    {
+                      type: 'response.output_item.added',
+                      output_index,
+                      item: { ...entry, status: 'in_progress', content: [] },
+                    },
+                    {
+                      type: 'response.output_text.delta',
+                      output_index,
+                      item_id: entry.id,
+                      content_index: 0,
+                      delta: requests.length === 1 ? 'Maka result.' : 'Done.',
+                    },
+                    { type: 'response.output_item.done', output_index, item: entry },
+                  ]
+                : [{ type: 'response.output_item.done', output_index, item: entry }],
           ),
           { type: 'response.completed', response },
         ]
