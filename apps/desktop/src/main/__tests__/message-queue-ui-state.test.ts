@@ -18,6 +18,13 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { IpcMainInvokeEvent } from 'electron';
+import { DesktopSessionLocalStore } from '../session-local-store.js';
+import { DesktopSessionLocalService, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from '../session-local-service.js';
+import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
@@ -165,6 +172,75 @@ for (const refusal of ['unmounted', 'new-draft'] as const) {
     assert.equal(resumes, 1);
   });
 }
+
+for (const text of ['original text', '']) {
+  test(`deleting an edited paused original is blocked and its ${text ? 'text and attachment' : 'attachment-only'} replacement remains sendable`, async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-paused-delete-'));
+    const store = new DesktopSessionLocalStore(join(directory, 'client.sqlite'));
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    };
+    const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
+    t.after(async () => { service.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
+    const staged = [{ name: 'note.txt', mimeType: 'text/plain', base64: Buffer.from('retained bytes').toString('base64') }];
+    store.enqueue(target.partition, {
+      command: { sessionId: 'session-1', messageId: 'original', placement: 'next_turn', content: { text } }, staged,
+    });
+    type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+    const handlers = new Map<string, Parameters<Ipc['handle']>[1]>();
+    registerDesktopSessionLocalIpc({
+      ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler); } },
+      service, approvals: createAttachmentApprovalRegistry(), resizeImage: async (bytes) => bytes,
+      resolveWorkspace: async () => { throw new Error('Unexpected workspace request'); }, changed() {},
+    });
+    const event = { sender: { id: 7 } } as IpcMainInvokeEvent;
+    const harness = localDeliveryHarness(service.listMessages(target, 'session-1'));
+    let deletes = 0;
+    harness.services.cancelMessage = async (sessionId, messageId, options) => {
+      if (!options?.restoreDraft) deletes++;
+      return handlers.get('session-local:cancel')!(event, target.scope, sessionId, messageId, options);
+    };
+    await harness.render('session-1');
+    const action = (label: string) => harness.transient.get('session-1:original')!.deliveryActions!.find((item) => item.label === label)!;
+    await act(async () => { await action('Edit').onClick(); });
+    // The live context changes without a render, including a bodyless attachment edit.
+    harness.draftState.empty = false;
+    await act(async () => { await action('Delete unsent message').onClick(); });
+    assert.equal(deletes, 0);
+    assert.equal(store.get(target.partition, 'original')?.state, 'paused');
+    const storedBytes = (messageId: string) => store.stagedAttachments(target.partition, messageId)
+      .map(({ content, ...metadata }) => ({ ...metadata, base64: Buffer.from(content).toString('base64') }));
+    assert.deepEqual(storedBytes('original'), staged);
+    assert.match(harness.transient.get('session-1:original')!.deliveryDetail!, /before deleting/);
+    const draft = harness.restored[0]![1];
+    const sent = await handlers.get('session-local:submit')!(event, target.scope, 'session-1', 'next_turn', {
+      messageId: 'edited', text, replacesLocalMessageId: draft.replacesLocalMessageId,
+      attachmentItems: draft.stagedAttachments,
+    });
+    assert.equal(sent.ok, true);
+    assert.equal(store.get(target.partition, 'original'), undefined);
+    assert.equal(store.get(target.partition, 'edited')?.state, 'saved');
+    assert.deepEqual(storedBytes('edited'), staged);
+  });
+}
+
+test('a paused original can be deleted after the draft and context are cleared', async () => {
+  const harness = localDeliveryHarness([{
+    sessionId: 'session-1', messageId: 'paused', createdAt: 1, state: 'paused', canCancel: true,
+    placement: 'next_turn', text: 'original', attachments: [], inlineReferences: [],
+  }]);
+  let deletes = 0;
+  harness.services.cancelMessage = async () => { deletes++; };
+  await harness.render('session-1');
+  const remove = () => harness.transient.get('session-1:paused')!.deliveryActions!.find((item) => item.label === 'Delete unsent message')!;
+  harness.draftState.empty = false;
+  await act(async () => { await remove().onClick(); });
+  assert.equal(deletes, 0);
+  harness.draftState.empty = true;
+  await act(async () => { await remove().onClick(); });
+  assert.equal(deletes, 1);
+  assert.equal(harness.transient.has('session-1:paused'), false);
+});
 
 test('a failed unsent withdrawal leaves the row and draft untouched', async () => {
   const harness = localDeliveryHarness([{

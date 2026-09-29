@@ -120,6 +120,11 @@ export function SessionLocalMessages(props: {
         });
       };
       const remove = async () => {
+        // An edited draft still needs this durable original for atomic replacement.
+        // Read live context at activation, just as resuming the original does.
+        if (message.state === 'paused' && (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.())) {
+          setFeedback((current) => ({ ...current, [key]: copy.removeBlocked })); return;
+        }
         await services.cancelMessage(sessionId, message.messageId);
         states.set(message.messageId, 'retired');
         setSnapshot((current) => current?.sessionId === sessionId
