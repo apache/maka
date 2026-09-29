@@ -18,42 +18,43 @@
  */
 
 import type { FollowUpMode, InlineReference, QuoteRef } from '@maka/core/events';
+import type { ParsedGraphCommand } from '@maka/core/graph-command';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type { UiLocale } from '@maka/core/ui-locale';
+import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { ParsedSwarmCommand } from '@maka/core/swarm-command';
 import type {
   ComposerHandle,
   ComposerSendMetadata,
-  ToastDiagnosticTarget,
   TransientUserMessageProjection,
 } from '@maka/ui';
-import type * as Conversation from './features/conversation/index.js';
-import type { AppShellChatActions } from './app-shell-chat-actions.js';
-import type {
-  ContextCompactionPresentation,
-} from './app-shell-context-compaction.js';
-import {
-  completeTurnRevisionCopyAttempt,
-  type TurnRevisionDraft,
-} from './app-shell-revision-actions.js';
-import { parseDesktopSlashCommand } from './desktop-slash-command.js';
-import {
-  mergeWorkspaceReferences,
-  rebaseWorkspaceFileReferences,
-} from './follow-up-submit-routing.js';
-import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
-import {
-  isSessionWorkspaceUnavailableError,
-  showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors.js';
-import { presentContextCompactionResult } from './app-shell-context-compaction.js';
+import type { PendingAttachment } from '@maka/ui/composer-attachments';
 
 type RefBox<T> = { current: T };
+type WorkspaceFileReference = NonNullable<ComposerSendMetadata['workspaceFileReferences']>[number];
+
+export type ComposerSlashCommand =
+  | { kind: 'compact' }
+  | { kind: 'side'; command: { prompt: string } }
+  | { kind: 'graph'; command: ParsedGraphCommand }
+  | { kind: 'swarm'; command: ParsedSwarmCommand };
+
+export interface RevisionDraftIdentity {
+  sourceSessionId: string;
+  draftSessionId: string;
+}
+
+type SubmitOptions = {
+  directoryReferences?: NonNullable<TransientUserMessageProjection['directoryReferences']>;
+  quotes?: readonly QuoteRef[];
+  workspaceFileReferences?: readonly WorkspaceFileReference[];
+  waitForHostAdmission?: boolean;
+  targetSessionId?: string;
+  turnOrchestration?: TurnOrchestration;
+  onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
+};
 
 /** The shell-copy fields this send path reads. Structural so tests do not need the full copy. */
 export interface RevisionSendShellCopy {
-  compactErrorTitle: string;
-  compactErrorFallback: string;
   sideChatUnavailableTitle: string;
   sideChatUnavailableDescription: string;
   sideChatContextPendingTitle: string;
@@ -73,25 +74,18 @@ export interface RevisionSendShellCopy {
  * readings; tests pass doubles. The function below is the production path —
  * tests must call it rather than re-implementing its ordering.
  */
-export interface RevisionSendPorts {
-  uiLocale: UiLocale;
+export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
   shellCopy: RevisionSendShellCopy;
   toastApi: {
     info(title: string, description?: string): void;
-    error(
-      title: string,
-      description?: string,
-      diagnosticDetails?: string,
-      diagnosticTarget?: ToastDiagnosticTarget,
-    ): void;
   };
   activeIdRef: RefBox<string | undefined>;
-  revisionDraftRef: RefBox<TurnRevisionDraft | null>;
+  revisionDraftRef: RefBox<TDraft | null>;
   composerRef: RefBox<ComposerHandle | null>;
   retractedWorkspaceReferencesRef: RefBox<Record<string, InlineReference[]>>;
   hasPendingContext: boolean;
   hasStagedQuotes: boolean;
-  submittableAttachments: readonly Conversation.PendingAttachment[] | undefined;
+  submittableAttachments: readonly PendingAttachment[] | undefined;
   directoryOptions: {
     directoryReferences?: NonNullable<
       TransientUserMessageProjection['directoryReferences']
@@ -99,11 +93,11 @@ export interface RevisionSendPorts {
   };
   quotesForSend: () => QuoteRef[] | undefined;
   clearSubmittedContext: (
-    submitted?: readonly Conversation.PendingAttachment[],
+    submitted?: readonly PendingAttachment[],
   ) => void;
   clearQuotes: () => void;
   prepareRevisionSend: (text: string) => Promise<boolean>;
-  send: AppShellChatActions['send'];
+  send: (text: string, pending?: readonly PendingAttachment[], options?: SubmitOptions) => Promise<boolean>;
   enqueueFollowUp: (
     sessionId: string,
     text: string,
@@ -111,7 +105,25 @@ export interface RevisionSendPorts {
     metadata?: ComposerSendMetadata,
   ) => Promise<boolean>;
   settleNewTaskImageNoticeOwner: (sourceSessionId?: string) => void;
-  commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
+  commitRevisionDraft: (draft: TDraft | null) => void;
+  completeRevisionCopyAttempt: (draft: TDraft) => void;
+  parseSlashCommand: (text: string) => ComposerSlashCommand | null;
+  mergeWorkspaceReferences: (
+    text: string,
+    live: readonly WorkspaceFileReference[] | undefined,
+    restored: readonly InlineReference[] | undefined,
+  ) => WorkspaceFileReference[];
+  rebaseWorkspaceFileReferences: (
+    sourceText: string,
+    projectedText: string,
+    references: readonly WorkspaceFileReference[],
+  ) => WorkspaceFileReference[];
+  revisionUnavailableCopy: {
+    revisionUnavailableTitle: string;
+    revisionAttachmentsUnsupported: string;
+    revisionCommandUnsupported: string;
+  };
+  compactSession: (sessionId: string) => Promise<boolean>;
   resolveNewTaskSessionHandler: () => (
     sessionId: string,
     newTaskDraftKey?: string,
@@ -122,15 +134,9 @@ export interface RevisionSendPorts {
     mode: Exclude<OrchestrationMode, 'default'>,
     active: boolean,
   ) => Promise<boolean>;
-  contextCompactionPresentation: ContextCompactionPresentation;
-  showSessionError: (
-    sessionId: string,
-    title: string,
-    description?: string,
-  ) => void;
 }
 
-export interface RevisionAwareOnSendPorts extends RevisionSendPorts {
+export interface RevisionAwareOnSendPorts<TDraft extends RevisionDraftIdentity> extends RevisionSendPorts<TDraft> {
   setNewTaskSendPending: (pending: boolean) => void;
 }
 
@@ -144,8 +150,8 @@ export interface RevisionAwareOnSendPorts extends RevisionSendPorts {
  * the submission one owner, and ChatComposerRegion defers its carry until it
  * drops.
  */
-export function createRevisionAwareOnSend(
-  ports: RevisionAwareOnSendPorts,
+export function createRevisionAwareOnSend<TDraft extends RevisionDraftIdentity>(
+  ports: RevisionAwareOnSendPorts<TDraft>,
 ): (text: string, metadata?: ComposerSendMetadata) => Promise<boolean | void> {
   return async function sendOwningItsTarget(
     text: string,
@@ -169,8 +175,8 @@ export function createRevisionAwareOnSend(
  * Moved from AppShellContent.sendWithAttachments; AppShell uses this same
  * function through createRevisionAwareOnSend.
  */
-export async function revisionAwareSend(
-  ports: RevisionSendPorts,
+export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
+  ports: RevisionSendPorts<TDraft>,
   text: string,
   metadata?: ComposerSendMetadata,
 ): Promise<boolean | void> {
@@ -178,10 +184,10 @@ export async function revisionAwareSend(
   const revisionSend = Boolean(
     revision && ports.activeIdRef.current === revision.draftSessionId,
   );
-  const slashCommand = parseDesktopSlashCommand(text);
+  const slashCommand = ports.parseSlashCommand(text);
   // Message placement expresses user intent; Host decides admission.
   const sessionId = ports.activeIdRef.current;
-  const workspaceFileReferences = mergeWorkspaceReferences(
+  const workspaceFileReferences = ports.mergeWorkspaceReferences(
     text,
     metadata?.workspaceFileReferences,
     sessionId ? ports.retractedWorkspaceReferencesRef.current[sessionId] : undefined,
@@ -196,7 +202,7 @@ export async function revisionAwareSend(
     return queued;
   }
   if (revisionSend && revision) {
-    const actionCopy = getDesktopConversationCopy(ports.uiLocale).actions;
+    const actionCopy = ports.revisionUnavailableCopy;
     if (ports.hasPendingContext) {
       ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
       return false;
@@ -210,27 +216,7 @@ export async function revisionAwareSend(
   if (slashCommand?.kind === 'compact') {
     const compactSessionId = ports.activeIdRef.current;
     if (!compactSessionId) return true;
-    try {
-      const result = await window.maka.sessions.compact(compactSessionId);
-      return presentContextCompactionResult(
-        ports.contextCompactionPresentation,
-        compactSessionId,
-        result,
-        ports.uiLocale,
-      );
-    } catch (error) {
-      if (ports.activeIdRef.current !== compactSessionId) return false;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(ports.toastApi, ports.uiLocale, { sessionId: compactSessionId });
-      } else {
-        ports.showSessionError(
-          compactSessionId,
-          ports.shellCopy.compactErrorTitle,
-          localizedShellErrorMessage(error, ports.shellCopy.compactErrorFallback, ports.uiLocale),
-        );
-      }
-      return false;
-    }
+    return ports.compactSession(compactSessionId);
   }
   if (slashCommand?.kind === 'side') {
     if (!ports.activeIdRef.current) {
@@ -288,7 +274,7 @@ export async function revisionAwareSend(
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
-            workspaceFileReferences: rebaseWorkspaceFileReferences(
+            workspaceFileReferences: ports.rebaseWorkspaceFileReferences(
               text,
               swarmCommand.task,
               metadata.workspaceFileReferences,
@@ -337,7 +323,7 @@ export async function revisionAwareSend(
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
-            workspaceFileReferences: rebaseWorkspaceFileReferences(
+            workspaceFileReferences: ports.rebaseWorkspaceFileReferences(
               text,
               graphCommand.task,
               metadata.workspaceFileReferences,
@@ -375,7 +361,7 @@ export async function revisionAwareSend(
   }
   if (ok !== false && revisionSend) {
     if (expectedRevisionDraft) {
-      completeTurnRevisionCopyAttempt(expectedRevisionDraft);
+      ports.completeRevisionCopyAttempt(expectedRevisionDraft);
       ports.composerRef.current?.clearDraft(expectedRevisionDraft.draftSessionId);
       if (expectedRevisionDraft.sourceSessionId !== expectedRevisionDraft.draftSessionId) {
         ports.composerRef.current?.clearDraft(expectedRevisionDraft.sourceSessionId);

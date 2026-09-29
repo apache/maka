@@ -96,7 +96,8 @@ import type { OverlaysShellProjection } from './features/overlays/index.js';
 import * as SessionCollaboration from './features/session-collaboration';
 import type { SessionCollaborationDialogProjection } from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
-import { desktopSlashCommandAvailability } from './desktop-slash-command';
+import { desktopSlashCommandAvailability, parseDesktopSlashCommand } from './desktop-slash-command';
+import { mergeWorkspaceReferences, rebaseWorkspaceFileReferences } from './follow-up-submit-routing';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -124,7 +125,7 @@ import { readNavigationState, selectNavigation } from './nav-selection';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
-import { createContextCompactionPresentation } from './app-shell-context-compaction';
+import { createContextCompactionPresentation, presentContextCompactionResult } from './app-shell-context-compaction';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
@@ -150,9 +151,12 @@ import {
   createAppShellRevisionActions,
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
-import { createRevisionAwareOnSend } from './desktop-composer-submit.js';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
+import {
+  isSessionWorkspaceUnavailableError,
+  showSessionWorkspaceUnavailableToast,
+} from './session-workspace-errors';
 import {
   useActiveSessionEvents,
   useAppShellBootstrapSubscriptions,
@@ -1359,12 +1363,35 @@ function AppShellContent({
     }
   }
 
+  async function compactSession(sessionId: string): Promise<boolean> {
+    try {
+      const result = await window.maka.sessions.compact(sessionId);
+      return presentContextCompactionResult(
+        contextCompactionPresentation,
+        sessionId,
+        result,
+        uiLocale,
+      );
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return false;
+      if (isSessionWorkspaceUnavailableError(error)) {
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+      } else {
+        showSessionError(
+          sessionId,
+          shellCopy.compactErrorTitle,
+          localizedShellErrorMessage(error, shellCopy.compactErrorFallback, uiLocale),
+        );
+      }
+      return false;
+    }
+  }
+
   // The composer's submit callback. Built by the shared factory (same one the
   // regression test drives), so there is no local submit logic here that could
   // bypass the covered path.
-  const sendOwningItsTarget = createRevisionAwareOnSend(
+  const sendOwningItsTarget = Conversation.createRevisionAwareOnSend(
     {
-      uiLocale,
       shellCopy,
       toastApi,
       activeIdRef,
@@ -1380,6 +1407,12 @@ function AppShellContent({
       clearQuotes,
       prepareRevisionSend,
       send,
+      completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
+      parseSlashCommand: parseDesktopSlashCommand,
+      mergeWorkspaceReferences,
+      rebaseWorkspaceFileReferences,
+      revisionUnavailableCopy: desktopConversationCopy.actions,
+      compactSession,
       enqueueFollowUp,
       settleNewTaskImageNoticeOwner,
       commitRevisionDraft,
@@ -1388,8 +1421,6 @@ function AppShellContent({
       openSideChat: (options) => commands.openTool('side-chat', 'right', options),
       getActiveOrchestrationMode: () => activeOrchestrationMode,
       setOrchestrationModeActive,
-      contextCompactionPresentation,
-      showSessionError,
       setNewTaskSendPending,
     },
   );

@@ -46,13 +46,20 @@ import {
 } from '@maka/ui';
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
+  completeTurnRevisionCopyAttempt,
   createAppShellRevisionActions,
   type TurnRevisionDraft,
 } from '../../renderer/app-shell-revision-actions.js';
+import { parseDesktopSlashCommand } from '../../renderer/desktop-slash-command.js';
+import {
+  mergeWorkspaceReferences,
+  rebaseWorkspaceFileReferences,
+} from '../../renderer/follow-up-submit-routing.js';
+import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import {
   createRevisionAwareOnSend,
   type RevisionSendPorts,
-} from '../../renderer/desktop-composer-submit.js';
+} from '../../renderer/features/conversation/index.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 const SESSION_2 = JSON.stringify(['host-1', 'session-2']);
@@ -220,11 +227,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
 
   let pendingSend: Promise<boolean | void> | undefined;
   const sendPendingFlags: boolean[] = [];
-  const ports: RevisionSendPorts = {
-    uiLocale: 'en' as never,
+  const ports: RevisionSendPorts<TurnRevisionDraft> = {
     shellCopy: {
-      compactErrorTitle: '',
-      compactErrorFallback: '',
       sideChatUnavailableTitle: '',
       sideChatUnavailableDescription: '',
       sideChatContextPendingTitle: '',
@@ -238,7 +242,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
       graphHistoryTitle: '',
       graphHistoryDescription: '',
     },
-    toastApi: { info: () => {}, error: () => {} },
+    toastApi: { info: () => {} },
     activeIdRef,
     revisionDraftRef,
     composerRef: composer,
@@ -251,6 +255,14 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     clearSubmittedContext: () => {},
     clearQuotes: () => {},
     prepareRevisionSend: (text: string) => revisionActions.prepareRevisionSend(text),
+    completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
+    parseSlashCommand: parseDesktopSlashCommand,
+    mergeWorkspaceReferences,
+    rebaseWorkspaceFileReferences,
+    revisionUnavailableCopy: getDesktopConversationCopy('en').actions,
+    compactSession: async () => {
+      assert.fail('an unchanged revision send must not compact');
+    },
     send: (async (
       text: string,
       _pending?: unknown,
@@ -264,7 +276,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
         },
       });
       return true;
-    }) as RevisionSendPorts['send'],
+    }) as RevisionSendPorts<TurnRevisionDraft>['send'],
     enqueueFollowUp: async () => false,
     settleNewTaskImageNoticeOwner: () => {},
     commitRevisionDraft: (draft: TurnRevisionDraft | null) => {
@@ -276,11 +288,6 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     },
     getActiveOrchestrationMode: () => 'default',
     setOrchestrationModeActive: async () => true,
-    contextCompactionPresentation:
-      {} as RevisionSendPorts['contextCompactionPresentation'],
-    showSessionError: () => {
-      assert.fail('an unchanged revision send must not report a session error');
-    },
   };
 
   // The exact callback construction AppShell uses: the shared factory owns

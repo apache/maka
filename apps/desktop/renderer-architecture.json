@@ -41,7 +41,6 @@
     "src/renderer/custom-pet-companion-model.ts",
     "src/renderer/custom-pet-companion.tsx",
     "src/renderer/daily-review-actions.ts",
-    "src/renderer/desktop-composer-submit.ts",
     "src/renderer/desktop-execution-boundary-surface.ts",
     "src/renderer/desktop-slash-command.ts",
     "src/renderer/error-boundary.tsx",
@@ -649,7 +648,7 @@
         "nonTriviaTokens": 571
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 54,
+        "importDeclarations": 55,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -657,6 +656,7 @@
           "window.maka.diagnostics.copyReport": 1,
           "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
           "window.maka.onboarding.setMilestone": 1,
+          "window.maka.sessions.compact": 1,
           "window.maka.sessions.listActiveInteractions": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
           "window.maka.sessions.subscribeActiveInteractions": 1,
@@ -728,7 +728,6 @@
           "./composer-mentions": 1,
           "./custom-pet-companion": 1,
           "./custom-pet-companion-model": 1,
-          "./desktop-composer-submit.js": 1,
           "./desktop-execution-boundary-surface": 1,
           "./desktop-slash-command": 1,
           "./error-boundary": 1,
@@ -745,6 +744,7 @@
           "./features/task-entry": 1,
           "./features/workbar": 1,
           "./features/workhub": 1,
+          "./follow-up-submit-routing": 1,
           "./locales/shell-copy": 1,
           "./locales/shell-remaining-copy.js": 1,
           "./model-connection-errors": 1,
@@ -754,6 +754,7 @@
           "./plan-mode-panel": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
+          "./session-workspace-errors": 1,
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
@@ -781,8 +782,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 86,
-        "nonTriviaTokens": 10987
+        "importSpecifiers": 91,
+        "nonTriviaTokens": 11129
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -1139,25 +1140,6 @@
         "dependencyPaths": {
           "@maka/core/daily-review": 1,
           "@maka/core/redaction": 1
-        }
-      },
-      "src/renderer/desktop-composer-submit.ts": {
-        "bridgePaths": {
-          "window.maka.sessions.compact": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./app-shell-context-compaction.js": 1,
-          "./app-shell-revision-actions.js": 1,
-          "./application/contracts/conversation-copy.js": 1,
-          "./desktop-slash-command.js": 1,
-          "./follow-up-submit-routing.js": 1,
-          "./locales/shell-copy.js": 1,
-          "./session-workspace-errors.js": 1
         }
       },
       "src/renderer/desktop-execution-boundary-surface.ts": {
