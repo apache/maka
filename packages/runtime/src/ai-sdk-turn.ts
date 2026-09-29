@@ -48,6 +48,7 @@ import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import { applySideConversationUserMessageBoundary } from '@maka/core/side-conversation';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
   resolveEffectiveOrchestration,
@@ -1292,7 +1293,7 @@ export class AiSdkTurn {
               input.quotes,
               input.headAnchorRuntimeEvent?.id,
             );
-        const messages =
+        const messages = applySideConversationUserMessageBoundary(
           currentUserContent === undefined
             ? [...priorReplay.messages]
             : [
@@ -1301,7 +1302,12 @@ export class AiSdkTurn {
                   role: 'user' as const,
                   content: currentUserContent,
                 } as ModelMessage,
-              ];
+              ],
+          {
+            inheritedPrefixLength: priorReplay.messages.length,
+            labels: this.deps.backend.header.labels,
+          },
+        );
         const loadDurableTurnEvents = async (): Promise<RuntimeEvent[]> => {
           const loadTurnRuntimeEvents = this.deps.backend.loadTurnRuntimeEvents;
           if (!loadTurnRuntimeEvents) {
@@ -1403,9 +1409,15 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
-          return effectiveProjectionCheckpoint
-            ? currentTurnMessages
-            : [...priorReplay.messages, ...currentTurnMessages];
+          return applySideConversationUserMessageBoundary(
+            effectiveProjectionCheckpoint
+              ? currentTurnMessages
+              : [...priorReplay.messages, ...currentTurnMessages],
+            {
+              inheritedPrefixLength: priorReplay.messages.length,
+              labels: this.deps.backend.header.labels,
+            },
+          );
         };
         // Tool Availability describes the provider-visible (active) subset. A
         // group loaded this turn expands that subset on later requests, so the
