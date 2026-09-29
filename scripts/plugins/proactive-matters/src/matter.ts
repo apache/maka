@@ -118,8 +118,37 @@ export interface MatterRun {
   outcome: string | null;
 }
 
+export interface MatterReviewVerdict {
+  approved: boolean;
+  feedback: string;
+  execution?: { transcript: unknown; inbox: unknown };
+  modelId?: string;
+}
+export interface MatterReview {
+  operationId: string;
+  fingerprint: string;
+  basis: string;
+  submittedAt: number;
+  matterId: string;
+  activationId: string;
+  input: MatterSettleInput;
+  snapshot: MatterSnapshot;
+  userInputs: unknown[];
+  draftPath: string;
+  verdict?: MatterReviewVerdict;
+  committed?: boolean;
+}
+
 /** A single transaction owns state, event acknowledgement, wakes and updates. */
 export interface MatterStore {
+  beginReview(
+    id: string,
+    activationId: string,
+    input: MatterSettleInput,
+    operationId: string,
+    draftPath: string,
+  ): MatterReview;
+  recordReview(review: MatterReview, verdict: MatterReviewVerdict): void;
   authorizeSession(sessionId: string): void;
   isAuthorizedSession(sessionId: string): boolean;
   consumeAuthorizedSession(sessionId: string): void;
@@ -151,7 +180,13 @@ export interface MatterStore {
     text: string,
     operationId: string,
   ): Matter;
-  settle(id: string, activationId: string, input: MatterSettleInput, operationId: string): Matter;
+  settle(
+    id: string,
+    activationId: string,
+    input: MatterSettleInput,
+    operationId: string,
+    review?: MatterReview,
+  ): Matter;
   finish(id: string, activationId: string, error?: string): void;
   control(id: string, action: 'pause' | 'resume' | 'cancel' | 'check'): Matter;
   edit(id: string, revision: number, stateText: string): Matter;

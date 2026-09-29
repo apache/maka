@@ -19,6 +19,7 @@
 
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { MatterReviewInvalidated } from './review.js';
 import { MatterFiles } from './files.js';
 import { join, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
@@ -28,6 +29,8 @@ import {
   MATTER_REQUEST_MAX_LENGTH,
   MATTER_STATE_MAX_BYTES,
   type Matter,
+  type MatterReview,
+  type MatterReviewVerdict,
   type MatterFileContext,
   type MatterCreateInput,
   type MatterEvent,
@@ -85,6 +88,7 @@ class SqliteMatterStore implements MatterStore {
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, matter_id TEXT NOT NULL REFERENCES matters(id),
         event_key TEXT NOT NULL, source TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL,
         created_at INTEGER NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, UNIQUE(matter_id,event_key));
+      CREATE TABLE IF NOT EXISTS matter_reviews (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS matter_operations (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS matter_runs (id TEXT PRIMARY KEY, matter_id TEXT NOT NULL, turn_id TEXT NOT NULL,
         started_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT);
@@ -122,10 +126,14 @@ class SqliteMatterStore implements MatterStore {
   authorizeSession(sessionId: string): void {
     const id = text(sessionId, 200, 'session');
     if (this.forSession(id)) throw new Error('This session already has a follow-up');
-    this.db.prepare('INSERT OR IGNORE INTO plugin_authorized_sessions VALUES(?,?)').run(id, this.now());
+    this.db
+      .prepare('INSERT OR IGNORE INTO plugin_authorized_sessions VALUES(?,?)')
+      .run(id, this.now());
   }
   isAuthorizedSession(sessionId: string): boolean {
-    return Boolean(this.db.prepare('SELECT 1 FROM plugin_authorized_sessions WHERE session_id=?').get(sessionId));
+    return Boolean(
+      this.db.prepare('SELECT 1 FROM plugin_authorized_sessions WHERE session_id=?').get(sessionId),
+    );
   }
   consumeAuthorizedSession(sessionId: string): void {
     this.db.prepare('DELETE FROM plugin_authorized_sessions WHERE session_id=?').run(sessionId);
@@ -448,7 +456,7 @@ class SqliteMatterStore implements MatterStore {
   enqueueDue(): void {
     this.transaction(() => {
       for (const m of this.list()) {
-        if (terminal(m) || m.status === 'paused') continue;
+        if (terminal(m) || m.status === 'paused' || m.activation) continue;
         for (const wake of m.wakes) {
           if (wake.kind === 'at' && wake.at <= this.now()) {
             this.insertEvent(m.id, {
@@ -554,6 +562,7 @@ class SqliteMatterStore implements MatterStore {
     fn: (m: Matter) => void,
     kind = 'checkpoint',
     detail: Record<string, unknown> = {},
+    validate?: () => void,
   ): Matter {
     fingerprint = createHash('sha256').update(fingerprint).digest('hex');
     return this.transaction(() => {
@@ -565,6 +574,7 @@ class SqliteMatterStore implements MatterStore {
           throw new Error('Operation identity reused with different arguments');
         return this.decode(previous.result as string);
       }
+      validate?.();
       const m = this.assertActive(id, activationId);
       if (m.revision !== revision)
         throw new Error('State revision changed. Call MatterRead, reassess, and retry.');
@@ -595,7 +605,116 @@ class SqliteMatterStore implements MatterStore {
       },
     );
   }
-  settle(id: string, activationId: string, input: MatterSettleInput, operationId: string): Matter {
+  private reviewBasis(id: string, activationId: string, draftPath: string): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          matter: this.read(id),
+          events: this.events(id),
+          historySequence: this.db
+            .prepare('SELECT MAX(sequence) AS sequence FROM matter_history WHERE matter_id=?')
+            .get(id)?.sequence,
+          draft: this.readDraft(id, activationId, draftPath),
+        }),
+      )
+      .digest('hex');
+  }
+  beginReview(
+    id: string,
+    activationId: string,
+    input: MatterSettleInput,
+    operationId: string,
+    draftPath: string,
+  ): MatterReview {
+    return this.transaction(() => {
+      const fingerprint = createHash('sha256')
+        .update(JSON.stringify(['settle', id, activationId, input]))
+        .digest('hex');
+      const previous = this.db
+        .prepare('SELECT fingerprint,payload FROM matter_reviews WHERE id=?')
+        .get(operationId);
+      if (previous) {
+        if (previous.fingerprint !== fingerprint)
+          throw new Error('Operation identity reused with different arguments');
+        const review = JSON.parse(String(previous.payload)) as MatterReview;
+        const committed = this.db
+          .prepare('SELECT fingerprint FROM matter_operations WHERE id=?')
+          .get(operationId);
+        if (!committed) this.assertReviewCurrent(review);
+        return { ...review, committed: Boolean(committed) };
+      }
+      const m = this.assertActive(id, activationId);
+      if (m.revision !== input.expectedRevision) throw new MatterReviewInvalidated();
+      const submittedAt = this.now();
+      for (const w of input.wakes ?? []) {
+        if (
+          w.kind !== 'at' ||
+          !Number.isFinite(w.at) ||
+          w.at <= submittedAt ||
+          w.at > submittedAt + 366 * 86400000
+        )
+          throw new Error('Wake time must be in the next year');
+      }
+      const review: MatterReview = {
+        operationId,
+        fingerprint,
+        basis: this.reviewBasis(id, activationId, draftPath),
+        submittedAt,
+        matterId: id,
+        activationId,
+        input,
+        draftPath,
+        snapshot: { matter: m, events: this.events(id), pendingEventCount: this.events(id).length },
+        userInputs: this.db
+          .prepare(
+            "SELECT text,created_at FROM matter_events WHERE matter_id=? AND source='user' ORDER BY sequence",
+          )
+          .all(id)
+          .map((row) => ({
+            at: row.created_at,
+            text: String(row.text).startsWith('@file:')
+              ? this.files.get(String(row.text).slice(6))
+              : row.text,
+          })),
+      };
+      this.db
+        .prepare('INSERT INTO matter_reviews VALUES(?,?,?)')
+        .run(operationId, fingerprint, JSON.stringify(review));
+      return review;
+    });
+  }
+  private assertReviewCurrent(review: MatterReview): void {
+    try {
+      this.assertActive(review.matterId, review.activationId);
+      if (this.reviewBasis(review.matterId, review.activationId, review.draftPath) === review.basis)
+        return;
+    } catch {
+      /* An ownership change invalidates the review too. */
+    }
+    throw new MatterReviewInvalidated();
+  }
+  recordReview(review: MatterReview, verdict: MatterReviewVerdict): void {
+    this.transaction(() => {
+      this.assertReviewCurrent(review);
+      const row = this.db
+        .prepare('SELECT payload FROM matter_reviews WHERE id=?')
+        .get(review.operationId);
+      const saved = row && (JSON.parse(String(row.payload)) as MatterReview);
+      if (!saved || saved.fingerprint !== review.fingerprint)
+        throw new Error('Unknown review submission');
+      if (saved.verdict) throw new Error('Review already decided');
+      this.db
+        .prepare('UPDATE matter_reviews SET payload=? WHERE id=?')
+        .run(JSON.stringify({ ...saved, verdict }), review.operationId);
+    });
+  }
+  settle(
+    id: string,
+    activationId: string,
+    input: MatterSettleInput,
+    operationId: string,
+    review?: MatterReview,
+  ): Matter {
     const fingerprint = JSON.stringify(['settle', id, activationId, input]);
     return this.mutate(
       id,
@@ -604,6 +723,18 @@ class SqliteMatterStore implements MatterStore {
       operationId,
       fingerprint,
       (m) => {
+        let validationTime = this.now();
+        if (review) {
+          const row = this.db
+            .prepare('SELECT payload FROM matter_reviews WHERE id=?')
+            .get(operationId);
+          const saved = row && (JSON.parse(String(row.payload)) as MatterReview);
+          const hash = createHash('sha256').update(fingerprint).digest('hex');
+          if (!saved || saved.fingerprint !== hash || !saved.verdict?.approved)
+            throw new Error('Settlement requires approval for this exact submission');
+          this.assertReviewCurrent(saved);
+          validationTime = saved.submittedAt;
+        }
         stateText(input.stateText);
         text(input.reason, 2000, 'reason');
         text(input.summary, 4000, 'summary');
@@ -614,7 +745,11 @@ class SqliteMatterStore implements MatterStore {
         if (wakes.length > 10) throw new Error('Too many wake conditions');
         for (const w of wakes) {
           if (w.kind !== 'at') throw new Error('Only time wakes are supported');
-          if (!Number.isFinite(w.at) || w.at <= this.now() || w.at > this.now() + 366 * 86400000)
+          if (
+            !Number.isFinite(w.at) ||
+            w.at <= validationTime ||
+            w.at > validationTime + 366 * 86400000
+          )
             throw new Error('Wake time must be in the next year');
         }
         if (input.disposition === 'wait' && !wakes.length)
@@ -668,6 +803,7 @@ class SqliteMatterStore implements MatterStore {
         ...(input.waitingFor ? { waitingFor: input.waitingFor } : {}),
         operationId,
       },
+      review ? () => this.assertReviewCurrent(review) : undefined,
     );
   }
   private publish(m: Matter, value: string, key: string): void {

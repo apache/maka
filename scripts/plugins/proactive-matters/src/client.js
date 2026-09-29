@@ -25,6 +25,20 @@ window.__MakaModuleLoader__.load({
     const { SideNavItem } = require('@maka/ui/client-plugin');
     return {
       apply(ctx) {
+        const runtimeSessionId = (id) => {
+          try {
+            const key = JSON.parse(id);
+            if (
+              Array.isArray(key) &&
+              key.length === 2 &&
+              key.every((v) => typeof v === 'string' && v)
+            )
+              return key[1];
+          } catch {
+            /* Standalone clients already use runtime IDs. */
+          }
+          return id;
+        };
         let opened = false;
         const listeners = new Set();
         const toggle = () => {
@@ -200,7 +214,9 @@ window.__MakaModuleLoader__.load({
                   labels: ['proactive-matters'],
                 });
                 sessionId = created.id;
-                await ctx.remote.call('matters.authorize-session', { sessionId });
+                await ctx.remote.call('matters.authorize-session', {
+                  sessionId: runtimeSessionId(sessionId),
+                });
                 setChatSessionId(sessionId);
               }
               const result = await sessions.send(sessionId, {
@@ -220,6 +236,24 @@ window.__MakaModuleLoader__.load({
               setSending(false);
             }
           };
+          const openTask = async (item) => {
+            try {
+              const host = await window.maka.runtimeHostProfiles?.getDefaultHost?.();
+              const catalog = await window.maka.sessions.list();
+              const matches = catalog.filter(
+                (session) =>
+                  runtimeSessionId(session.id) === item.sessionId &&
+                  (!host || session.runtimeHostId === host.hostId),
+              );
+              if (matches.length !== 1) throw new Error('Session unavailable or ambiguous');
+              setChatSessionId(matches[0].id);
+              setMessages([]);
+              setError('');
+              if (draftRef.current) draftRef.current.value = '';
+            } catch {
+              setError('无法找到对应的桌面对话，请检查 Host 连接后重试。');
+            }
+          };
           if (!visible) return null;
           const rank = { active: 0, waiting: 1, paused: 2, completed: 3, cancelled: 4 };
           const matters = [...data.matters].sort(
@@ -227,7 +261,7 @@ window.__MakaModuleLoader__.load({
               (rank[a.status] ?? 5) - (rank[b.status] ?? 5) ||
               (nextAt(a) || Infinity) - (nextAt(b) || Infinity),
           );
-          const m = matters.find((m) => m.sessionId === chatSessionId);
+          const m = matters.find((m) => m.sessionId === runtimeSessionId(chatSessionId));
           const handoff = m?.handoff;
           const ended = m && ['completed', 'cancelled'].includes(m.status);
           const block = (title, content) =>
@@ -391,11 +425,7 @@ window.__MakaModuleLoader__.load({
                       {
                         key: item.id,
                         className: 'mt-row',
-                        onClick: () => {
-                          setChatSessionId(item.sessionId);
-                          setMessages([]);
-                          if (draftRef.current) draftRef.current.value = '';
-                        },
+                        onClick: () => void openTask(item),
                         'aria-label': '查看任务：' + item.title,
                       },
                       h('i', { className: 'mt-dot', 'data-status': item.status }),

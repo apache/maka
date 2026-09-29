@@ -28,8 +28,17 @@ import {
 } from '../.artifacts/live-api.mjs';
 import { fixture, until } from './platform-helper.js';
 
-test('plugin finish hook resumes the same Maka turn and lets MatterSettle finish it', async (t) => {
-  const f = await fixture();
+test('plugin finish hook and four review rejections keep the same Maka turn running until approval', async (t) => {
+  let reviewCalls = 0;
+  const f = await fixture({
+    review: async () => ({
+      text: JSON.stringify({
+        approved: ++reviewCalls > 4,
+        feedback: reviewCalls <= 4 ? 'Need explicit confirmation before waiting' : 'Confirmed',
+      }),
+      modelId: 'independent-review-fixture',
+    }),
+  });
   t.after(async () => {
     f.driver.end();
     await f.close();
@@ -54,7 +63,9 @@ test('plugin finish hook resumes the same Maka turn and lets MatterSettle finish
   const tools = f.tools.resolve('session-1', []).tools;
   let modelCalls = 0;
   const model = new MockLanguageModelV4({
-    doStream: async () => {
+    doStream: async (request) => {
+      if (modelCalls >= 2 && modelCalls <= 5)
+        assert.match(JSON.stringify(request.prompt), /Need explicit confirmation/);
       modelCalls += 1;
       const chunks =
         modelCalls === 1
@@ -72,12 +83,12 @@ test('plugin finish hook resumes the same Maka turn and lets MatterSettle finish
                 },
               },
             ]
-          : modelCalls === 2
+          : modelCalls >= 2 && modelCalls <= 6
             ? [
                 { type: 'stream-start', warnings: [] },
                 {
                   type: 'tool-call',
-                  toolCallId: 'settle-call',
+                  toolCallId: 'settle-call-' + modelCalls,
                   toolName: 'MatterSettle',
                   input: JSON.stringify({
                     expectedRevision: matter.revision,
@@ -200,7 +211,8 @@ test('plugin finish hook resumes the same Maka turn and lets MatterSettle finish
   f.driver.end();
   await until(async () => !(await f.remote('matters.list')).matters[0].activation);
   const result = await f.remote('matters.list');
-  assert.equal(modelCalls, 3);
+  assert.equal(modelCalls, 7);
+  assert.equal(reviewCalls, 5);
   assert.equal(events.filter((event: any) => event.type === 'complete').length, 1);
   assert.equal(result.matters[0].status, 'waiting');
   assert.equal(result.matters[0].waitingFor, '设计负责人完成验收');

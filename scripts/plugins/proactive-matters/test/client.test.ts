@@ -63,15 +63,24 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
     configurable: true,
   });
   const root = new MakaClientRoot();
+  const snapshotIds: string[] = [];
   const sent: Array<{ sessionId: string; text: string }> = [];
   (window as any).maka = {
+    runtimeHostProfiles: { getDefaultHost: async () => ({ hostId: 'host-one' }) },
     sessions: {
-      create: async () => ({ id: 'dialog-session' }),
+      create: async () => ({ id: JSON.stringify(['host-one', 'dialog-session']) }),
+      list: async () => [
+        { id: JSON.stringify(['host-two', 'session-1']), runtimeHostId: 'host-two' },
+        { id: JSON.stringify(['host-one', 'session-1']), runtimeHostId: 'host-one' },
+      ],
       send: async (sessionId: string, command: any) => {
         sent.push({ sessionId, text: command.text });
         return { ok: true, turnId: command.turnId };
       },
-      readSnapshot: async () => ({ items: [] }),
+      readSnapshot: async (id: string) => {
+        snapshotIds.push(id);
+        return { items: [] };
+      },
     },
   };
   const streams = new Map<string, any>();
@@ -170,6 +179,8 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
     assert.match(window.document.body.textContent!, /下次检查/);
     assert.doesNotMatch(window.document.body.textContent!, /状态：等待外部结果/);
     await click('查看任务：面板测试');
+    assert.ok(snapshotIds.includes(JSON.stringify(['host-one', 'session-1'])));
+    assert.ok(!snapshotIds.includes(JSON.stringify(['host-two', 'session-1'])));
     assert.match(window.document.body.textContent!, /已经做了什么/);
     assert.match(window.document.body.textContent!, /已检查/);
     assert.match(window.document.body.textContent!, /检查审核结果，通过后安排验收会议/);
@@ -207,7 +218,9 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
       form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
       await sleep(60);
     });
-    assert.deepEqual(sent, [{ sessionId: 'dialog-session', text: '明天检查评审状态' }]);
+    assert.deepEqual(sent, [
+      { sessionId: JSON.stringify(['host-one', 'dialog-session']), text: '明天检查评审状态' },
+    ]);
     const pending = f.tools
       .resolve('dialog-session', [])
       .tools.find((t: any) => t.name === 'MatterStart');

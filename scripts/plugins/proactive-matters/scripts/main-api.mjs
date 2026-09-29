@@ -45,6 +45,7 @@ const exports = [
   ['runtime', 'plan-mode', 'selectCollaborationTools'],
   ['runtime', 'plugin-kernel', 'Context'],
   ['runtime', 'plugin-agent-service', 'PluginAgentService'],
+  ['runtime', 'plugin-llm-service', 'PluginLlmService'],
   ['runtime', 'plugin-tool-service', 'PluginToolService'],
   ['runtime', 'plugin-system-prompt-service', 'PluginSystemPromptService'],
   ['runtime', 'plugin-turn-finish-service', 'PluginTurnFinishService'],

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { reviewMatter } from './review.js';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
@@ -39,7 +40,7 @@ export default {
   packageId: PACKAGE_ID,
   host: {
     name: 'proactive-matters',
-    inject: ['tools', 'agents', 'storage', 'systemPrompt', 'clientBridge', 'turns'],
+    inject: ['tools', 'agents', 'storage', 'systemPrompt', 'clientBridge', 'turns', 'llm'],
     async apply(ctx: any, config: any = {}) {
       if (
         !Number.isSafeInteger(config.tickMs ?? 5000) ||
@@ -100,6 +101,7 @@ export default {
       });
       for (const tool of buildMatterTools({
         store,
+        review: (submission) => reviewMatter(ctx, submission),
         changed() {},
         authorize() {
           controller.assertReady();
@@ -149,7 +151,8 @@ export default {
             return { allow: true };
           return {
             allow: false,
-            feedback: 'This follow-up turn has no exit decision yet. Keep doing useful work, or write draft.md and call MatterSettle with continue, wait (a concrete waitingFor condition and future check time), or complete.',
+            feedback:
+              'This follow-up turn has no exit decision yet. Keep doing useful work, or write draft.md and call MatterSettle with continue, wait (a concrete waitingFor condition and future check time), or complete.',
           };
         },
       });
@@ -166,7 +169,9 @@ export default {
       ctx.clientBridge.rpc({
         name: 'matters.authorize-session',
         invoke: (input: any) => {
-          const { sessionId } = z.object({ sessionId: z.string().trim().min(1).max(200) }).parse(input);
+          const { sessionId } = z
+            .object({ sessionId: z.string().trim().min(1).max(200) })
+            .parse(input);
           store.authorizeSession(sessionId);
           return { authorized: true };
         },

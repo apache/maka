@@ -101,3 +101,15 @@ Maka runtime 增加通用 `ctx.turns.beforeFinish` 插件接口。在模型自�
 随后新增插件 + Maka 模型循环端到端用例：由真实 PluginPlatform 安装插件并授权长任务 session，受控模型先尝试自然结束，结束钩子拒绝后在同一 turn 调用真实 `MatterSettle`，第三次模型响应才结束；最终事项为 waiting，激活正常收尾，完成事件恰好一次。完整插件验证共 31 项全部通过。
 
 另用 Flash 启动原跨应用模拟场景。首次运行暴露场景漏掉浮窗 session 授权的问题，已补齐后重跑；模型成功注册事项并提交 wait，但它选择的复查时刻晚于六分钟测试窗口，因此我停止了场景，未计为完整 Flash 成功。该轮还观察到模型将互斥的 `MatterRead` 与 `MatterStart` 放在同一批工具调用中，runtime拒绝后模型重试；这说明真实模型行为仍需继续验证，不能用受控模型测试替代。
+
+## 2026-09-29：Session ID 对接与独立提交审核
+
+Client 将桌面 `[hostId, runtimeSessionId]` 转为 runtime ID 用于授权和事项匹配；重新打开已有事项时从桌面 session catalog 找回当前 Host 的完整 ID，聊天读取与发送仍使用完整桌面 ID。DOM 集成测试包含两个 Host 下相同 runtime ID，检查不会串到另一 Host。
+
+MatterSettle 通过现有 `ctx.llm.generate` 调用独立审核，包含原始目标、所有用户补充、旧状态、新草稿、待处理事件以及当前会话 transcript / inbox。SQLite 保存提交指纹、审核开始时间、依据快照和模型结果；拒绝保持 active，反馈回普通 loop，无拒绝次数上限。Host 抛出的 `MATTER_REVIEW_INVALIDATED` 或审核前后执行记录/状态变化要求刷新重试，不写成拒绝；模型返回的 JSON 使用严格 verdict schema，不能触发 Host 失效通道。
+
+定时合法性以该操作、该内容的审核开始时间判断。审核中到期的时间可提交，但 activation 结束前扫描不入队；结束后的扫描只产生一个定时事件。审核前后及最终 SQLite 提交事务内校验状态、事件、草稿和历史版本；重复操作不能换内容或借用其他提交时间。
+
+新增覆盖：审核跨 store 重启、定时过期与去重、操作指纹绑定、四次拒绝后通过、持久拒绝幂等重放、输入/草稿/checkpoint/暂停竞态、执行记录变化、Host 失效与模型伪造失效字段。真实 Maka AiSdkBackend loop 使用受控模型连续四次被审核打回，在同一 turn 中继续，批准后仅产生一次完成事件。此次未调用付费模型，未做新的 Electron 人工操作；本次测试证明协议与集成行为，不衡量审核模型判断质量。
+
+最终 `npm run verify` 通过：43 项测试，含真实插件安装包导入、Client DOM 集成、SQLite 竞态/重启、Maka loop 端到端测试；插件构建与类型检查通过。

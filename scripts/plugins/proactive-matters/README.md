@@ -103,3 +103,9 @@ node --import tsx scripts/live.ts
 ```
 
 本次结果及覆盖边界见 `TEST-REPORT.md`。
+
+### Settlement review
+
+Every `MatterSettle` submission is independently reviewed through Maka's existing `llm` plugin service using the session's model connection. The review sees the objective and user amendments, previous state, proposed draft, pending inputs, and session execution evidence. Rejections return concrete feedback and keep the same activation running, without a rejection-count limit. Model/transport failures do not commit the exit either; the ordinary runtime limits still apply.
+
+SQLite retains each operation's submission, evidence fingerprint, start time and verdict. Replays must match the original payload. Changed state or execution evidence produces the Host-only `MATTER_REVIEW_INVALIDATED` retry result, requiring a fresh read and decision. A wake time that expires during review remains valid only for that exact submission, and the scheduler admits it after the current activation finishes.

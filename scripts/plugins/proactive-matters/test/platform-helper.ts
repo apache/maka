@@ -103,6 +103,19 @@ export async function fixture(options: any = {}) {
   const driver = options.driver ?? new AgentDriver();
   if (!options.driver) driver.add();
   agents.bindRuntime(driver.runtime);
+  const reviewCalls: any[] = [];
+  const llm = new Main.PluginLlmService(ctx, agents);
+  llm.bindRuntime({
+    generate: async (input: any) => {
+      reviewCalls.push(JSON.parse(input.prompt));
+      return options.review
+        ? options.review(input)
+        : {
+            text: JSON.stringify({ approved: true, feedback: 'Fixture evidence accepted' }),
+            modelId: 'fixture-review',
+          };
+    },
+  });
   const storage = new Main.PluginStorageService(ctx);
   const dataRuntime = new Main.HostPluginDataRuntime(control);
   storage.bindRuntime(dataRuntime);
@@ -171,6 +184,7 @@ export async function fixture(options: any = {}) {
     ctx,
     platform,
     driver,
+    reviewCalls,
     tools,
     systemPrompt,
     turns,

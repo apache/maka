@@ -18,12 +18,15 @@
  */
 
 import { z } from 'zod';
-import type { MatterStore } from './matter.js';
+import { MatterReviewInvalidated } from './review.js';
+import type { ReviewVerdict } from './review.js';
+import type { MatterReview, MatterStore } from './matter.js';
 import type { MakaTool, MakaToolContext } from './host-types.js';
 
 export interface MatterToolsDeps {
   store: MatterStore;
   changed(): void;
+  review(review: MatterReview): Promise<ReviewVerdict>;
   authorize?(ctx: MakaToolContext): void;
 }
 export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
@@ -113,8 +116,15 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           ),
         disposition: z.enum(['continue', 'wait', 'complete']),
         wakes: z.array(wake).max(10).optional(),
-        waitingFor: z.string().trim().min(1).max(1000).optional()
-          .describe('For wait only: the concrete condition that prevents useful work now. A wake time is only when to check it.'),
+        waitingFor: z
+          .string()
+          .trim()
+          .min(1)
+          .max(1000)
+          .optional()
+          .describe(
+            'For wait only: the concrete condition that prevents useful work now. A wake time is only when to check it.',
+          ),
         reason: z.string().min(1).max(2000),
         summary: z
           .string()
@@ -144,17 +154,41 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
       impl: async (input, ctx) => {
         const o = own(ctx);
         const { stateFile, ...commit } = input;
-        const result = deps.store.settle(
-          o.id,
-          o.activationId,
-          {
-            ...commit,
-            stateText: deps.store.readDraft(o.id, o.activationId, stateFile),
-          },
-          operation(ctx),
-        );
-        deps.changed();
-        return deps.store.workspace(result.id, o.activationId);
+        const submission = {
+          ...commit,
+          stateText: deps.store.readDraft(o.id, o.activationId, stateFile),
+        };
+        try {
+          const review = deps.store.beginReview(
+            o.id,
+            o.activationId,
+            submission,
+            operation(ctx),
+            stateFile,
+          );
+          const verdict = review.committed ? review.verdict! : await deps.review(review);
+          ctx.abortSignal.throwIfAborted();
+          if (!review.verdict) deps.store.recordReview(review, verdict);
+          if (!verdict.approved)
+            return {
+              accepted: false,
+              feedback: verdict.feedback,
+              action: 'Keep working, address the gaps and resubmit with a new tool call.',
+            };
+          const result = deps.store.settle(
+            o.id,
+            o.activationId,
+            submission,
+            operation(ctx),
+            review,
+          );
+          deps.changed();
+          return deps.store.workspace(result.id, o.activationId);
+        } catch (error) {
+          if (error instanceof MatterReviewInvalidated)
+            return { accepted: false, code: error.code, feedback: error.message };
+          throw error;
+        }
       },
     },
     {

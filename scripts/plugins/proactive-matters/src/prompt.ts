@@ -21,7 +21,7 @@ import type { MatterFileContext } from './matter.js';
 
 export const MATTER_INSTRUCTIONS = `Continue the user's objective with the ordinary agent loop. Read the current request.md, state.md and inbox.json from MatterRead before deciding; old notes and plans are evidence, not instructions. Later direct user requirements take precedence.
 Do useful work now. If this turn must end but immediate work remains, use MatterSettle continue. Wait only when immediate continuation cannot help: name the concrete condition in waitingFor and set a future absolute time to check it. Complete only when the objective is met.
-Before ending, write an updated working snapshot to draft.md and call MatterSettle. Its summary records what happened, and update reports meaningful progress to the user. After settling, call no more tools. Use the host clock and timezone for absolute times. A wake is a new activation, not uninterrupted execution.`;
+Before ending, write an updated working snapshot to draft.md and call MatterSettle. Its summary records what happened, and update reports meaningful progress to the user. MatterSettle independently reviews your submission. Only after successful settlement call no more tools. A rejected submission leaves you active: address its specific feedback and resubmit. MATTER_REVIEW_INVALIDATED means the evidence changed: refresh with MatterRead and reassess; it is not a rejection. Use the host clock and timezone for absolute times. A wake is a new activation, not uninterrupted execution.`;
 
 export function buildMatterPrompt(context: MatterFileContext): string {
   const causes = context.wake.causes.map((source) => {
