@@ -167,11 +167,12 @@ Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 ## `@ai-sdk/provider-utils@5.0.51`
 
 Upstream now associates streamed calls across reused or omitted `index` / `id`.
-Maka still fails closed when a delta ambiguously addresses multiple calls;
-the published tracker silently drops that delta. See #1967 / #1976 and
+Maka still fails closed when a delta ambiguously addresses multiple calls or
+starts a new call with a blank name; the published tracker silently drops those
+deltas. See #1967 / #1976 and
 `packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts`.
 
-Delete when the ambiguity tests pass against an unpatched package.
+Delete when the ambiguity and blank-name tests pass against an unpatched package.
 
 ## `@astryxdesign/core@0.6.2`
 
