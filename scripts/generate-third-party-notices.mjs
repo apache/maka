@@ -100,14 +100,14 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
 const APACHE_TEXT_OVERRIDE_KEYS = new Set([
-  '@ai-sdk/provider-utils@5.0.40',
+  '@ai-sdk/provider-utils@5.0.51',
   '@sigstore/verify@4.1.2',
 ]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',
     {
-      version: '1.0.56',
+      version: '1.0.79',
       components: [
         {
           name: 'quickjs-emscripten (embedded runtime)',

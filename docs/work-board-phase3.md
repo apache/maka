@@ -99,12 +99,11 @@ verified the project-item -> resolved Host/project target -> normal first-send
 -> durable link -> restart/reopen mechanism on a development renderer.
 
 Because creation and revisit happened in the same sitting, this run does not
-establish the Phase 1 delayed return-use assumption. The [Phase 3 update comment
-on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658)
-records the contributor evidence and request; the maintainer go/stop decision
-remains pending on [#2560](https://github.com/apache/maka/issues/2560).
-Phase 2 and Phase 4 remain paused pending that decision and a delayed return-use
-observation.
+establish the Phase 1 delayed return-use assumption. The [Phase 3 maintainer
+decision on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5873486343)
+records **mechanism verified (GO); delayed return-use pending; Phase 2/4
+paused**. A later-day return-use observation is still required before either
+phase resumes.
 
 A few React development-time warnings for unknown DOM props and ResizeObserver
 notifications were observed; they do not affect the mechanism above.

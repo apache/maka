@@ -1549,25 +1549,25 @@ function continuitySnapshot(
 }
 
 const textStream = (messageId: string): SessionAssistantStreamIdentity => ({
-    kind: 'text',
-    turnId: 'turn-1',
-    messageId,
+  kind: 'text',
+  turnId: 'turn-1',
+  messageId,
 });
 
-function restorableObservation(
+type RendererRecord = Readonly<{ channel: string; payload: unknown }>;
+
+const restorableObservation = (
   overrides: {
     assistantStreams?: readonly SessionAssistantStreamIdentity[];
     subscribeFailure?: Error;
   } = {},
-) {
-  return {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-    ...overrides,
-  };
-}
-
-type RendererRecord = { channel: string; payload: unknown };
+) => {
+  const base = Object.fromEntries([
+    ['sessionId', 'session-1'],
+    ['subscriptionSnapshot', continuitySnapshot()],
+  ]);
+  return { ...base, ...overrides };
+};
 
 const createRendererTimeline = () => {
   const records: RendererRecord[] = [];

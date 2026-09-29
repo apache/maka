@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: read
+  contents: read # Checkout only; every write-capable action declares its own scope.
 
 jobs:
   # One job, not three. A runner slot is scarcer than a minute on shared
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: false # Do not leave the checkout token in git config.
 
       - id: comparison
         name: Resolve checked-out comparison

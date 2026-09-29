@@ -117,9 +117,9 @@ def publish_ready_task(namespace: Path, target: Path) -> None:
 
 
 async def run_trial(framework: str, expected_version: str, config_file: Path) -> None:
-    from eval_framework import install
+    from eval_framework import install as select_framework
 
-    install(framework)
+    select_framework(framework)
     await _run_selected_trial(framework, expected_version, config_file)
 
 
