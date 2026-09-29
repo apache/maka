@@ -553,6 +553,7 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /greater than the context length/i, // LM Studio
   /context window exceeds limit/i, // MiniMax
   /exceeded model token limit/i, // Kimi For Coding
+  /exceeded [\w.-]+ model token limit:\s*[\d,]+/i, // Kimi model-qualified limit
   /too large for model with \d+ maximum context length/i, // Mistral
   /prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i, // DS4 server
   /model_context_window_exceeded/i, // z.ai non-standard finish_reason surfaced as error text

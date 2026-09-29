@@ -19,7 +19,7 @@
 
 # Work Board Phase 0 Contract
 
-Status: Phase 0 contract shipped; Phase 1 capture/list MVP shipped in [#3135](https://github.com/apache/maka/pull/3135). Scope: `packages/core` (contract) + `packages/storage` (store and migration).
+Status: Phase 0 contract shipped; Phase 1 capture/list MVP shipped in [#3135](https://github.com/apache/maka/pull/3135). The Phase 3 spike evidence and contributor request are in the [Phase 3 update comment on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658); the maintainer go/stop decision remains pending on [#2560](https://github.com/apache/maka/issues/2560). Scope: `packages/core` (contract) + `packages/storage` (store and migration).
 
 Tracking: [Work Board delivery #2560](https://github.com/apache/maka/issues/2560)
 

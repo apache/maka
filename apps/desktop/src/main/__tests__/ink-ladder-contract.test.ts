@@ -57,6 +57,7 @@ const RETIRED_INK = ['--foreground-secondary', '--foreground-dimmed'];
 const LAYOUT_DECLARATION_READS = new Set([
   '--maka-session-workbar-width', // Restore the inline width declaration after a drag.
   '--maka-focused-composer-space', // Assert the measured pixel clearance in the layout story.
+  '--agents-content-area-gap', // Assert the titlebar gutter reserves the plate seam in the shell story.
 ]);
 
 function unapprovedCustomPropertyReads(source: string): string[] {
