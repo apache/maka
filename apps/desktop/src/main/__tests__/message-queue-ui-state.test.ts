@@ -211,7 +211,9 @@ for (const text of ['original text', '']) {
     const storedBytes = (messageId: string) => store.stagedAttachments(target.partition, messageId)
       .map(({ content, ...metadata }) => ({ ...metadata, base64: Buffer.from(content).toString('base64') }));
     assert.deepEqual(storedBytes('original'), staged);
-    assert.match(harness.transient.get('session-1:original')!.deliveryDetail!, /before deleting/);
+    const blockedDetail = harness.transient.get('session-1:original')!.deliveryDetail!;
+    assert.match(blockedDetail, /Unable to delete this paused message/);
+    assert.match(blockedDetail, /composer is available and has no draft, attachments or references/);
     const draft = harness.restored[0]![1];
     const sent = await handlers.get('session-local:submit')!(event, target.scope, 'session-1', 'next_turn', {
       messageId: 'edited', text, replacesLocalMessageId: draft.replacesLocalMessageId,
