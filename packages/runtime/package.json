@@ -157,7 +157,7 @@
     "@ai-sdk/code-mode": "1.0.56",
     "@ai-sdk/cohere": "4.0.41",
     "@ai-sdk/google": "4.0.69",
-    "@ai-sdk/open-responses": "2.0.44",
+    "@ai-sdk/open-responses": "2.0.56",
     "@ai-sdk/openai": "4.0.66",
     "@ai-sdk/openai-compatible": "3.0.48",
     "@ai-sdk/provider": "4.0.14",
