@@ -336,45 +336,50 @@ export async function exportSessionBundleState(
   return withOfflineContextSnapshot(
     input.stateRoot,
     (contextLocked) =>
-      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
-        const destinationRoot = resolve(input.destinationRoot);
-        await assertDestinationMissing(destinationRoot);
-        const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-        try {
-          await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-          // Take the private copy BEFORE anything is read. `lease.backup()` is
-          // what freezes the content; every decision after this -- schema, the
-          // subtree, the artifact list, quiescence, the manifest -- is made
-          // against this one file, so the bundle cannot describe two moments.
-          const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
-          await backupOperationalState(stateRoot, databasePath);
-          const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
-          for (const entry of plan.entries) {
-            if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
-              continue;
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) =>
+        runWithContextValueMutation(stateRoot, async () => {
+          const destinationRoot = resolve(input.destinationRoot);
+          await assertDestinationMissing(destinationRoot);
+          const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
+          try {
+            await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+            // Take the private copy BEFORE anything is read. `lease.backup()` is
+            // what freezes the content; every decision after this -- schema, the
+            // subtree, the artifact list, quiescence, the manifest -- is made
+            // against this one file, so the bundle cannot describe two moments.
+            const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+            await backupOperationalState(stateRoot, databasePath);
+            const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
+            for (const entry of plan.entries) {
+              if (
+                entry.source === 'context_snapshot' ||
+                entry.source === 'filtered_runtime_sqlite'
+              ) {
+                continue;
+              }
+              const destination = resolveInside(stagingRoot, entry.relativePath);
+              if (entry.kind === 'directory') {
+                await mkdir(destination, { recursive: true });
+                continue;
+              }
+              await mkdir(dirname(destination), { recursive: true });
+              await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
             }
-            const destination = resolveInside(stagingRoot, entry.relativePath);
-            if (entry.kind === 'directory') {
-              await mkdir(destination, { recursive: true });
-              continue;
-            }
-            await mkdir(dirname(destination), { recursive: true });
-            await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
+            await filterBackedUpDatabase(databasePath, plan.sessionIds, {
+              omitDiagnostics: input.omitDiagnostics === true,
+              requireQuiescent: input.requireQuiescent === true,
+            });
+            await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
+            await validateContextSnapshot(stagingRoot);
+            await mkdir(dirname(plan.destinationRoot), { recursive: true });
+            await rename(stagingRoot, plan.destinationRoot);
+            return plan;
+          } catch (error) {
+            await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+            throw error;
           }
-          await filterBackedUpDatabase(databasePath, plan.sessionIds, {
-            omitDiagnostics: input.omitDiagnostics === true,
-            requireQuiescent: input.requireQuiescent === true,
-          });
-          await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
-          await validateContextSnapshot(stagingRoot);
-          await mkdir(dirname(plan.destinationRoot), { recursive: true });
-          await rename(stagingRoot, plan.destinationRoot);
-          return plan;
-        } catch (error) {
-          await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-          throw error;
-        }
-      }),
+        }),
+      ),
     input.lease ? { lease: input.lease } : {},
   );
 }
