@@ -144,9 +144,6 @@
     "@electron/get": {
       "undici": "7.30.0"
     },
-    "@slack/socket-mode": {
-      "undici": "7.30.0"
-    },
     "@jackwener/opencli": {
       "undici": "6.29.0"
     },
