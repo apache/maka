@@ -143,3 +143,71 @@ describe('session rail width persistence', () => {
     });
   });
 });
+
+describe('session rail compact spell', () => {
+  const COLLAPSED_KEY = 'maka-chat-list-collapsed-v1';
+
+  it('hides the rail on a compact window without touching the stored preference', () => {
+    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createSessionRailLayoutStore();
+
+      store.setCompact(true);
+      assert.equal(store.getState().collapsed, true);
+      store.setCompact(false);
+      assert.equal(store.getState().collapsed, false);
+      assert.equal(storage.getItem(COLLAPSED_KEY), 'false');
+    });
+  });
+
+  it('promotes a rail opened while compact into the stored preference', () => {
+    withLocalStorage({ [COLLAPSED_KEY]: 'true' }, (storage) => {
+      const store = createSessionRailLayoutStore();
+
+      store.setCompact(true);
+      store.setCollapsed(false);
+      assert.equal(store.getState().collapsed, false);
+      store.setCompact(false);
+      assert.equal(store.getState().collapsed, false);
+      assert.equal(storage.getItem(COLLAPSED_KEY), 'false');
+    });
+  });
+
+  it('keeps a rail the user closed while compact closed when the window widens', () => {
+    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createSessionRailLayoutStore();
+
+      store.setCompact(true);
+      store.setCollapsed(false);
+      assert.equal(store.getState().collapsed, false);
+      store.setCollapsed(true);
+      assert.equal(store.getState().collapsed, true);
+      store.setCompact(false);
+      assert.equal(store.getState().collapsed, true);
+      assert.equal(storage.getItem(COLLAPSED_KEY), 'true');
+    });
+  });
+
+  it('conceals the rail for the Workbar without touching the stored preference', () => {
+    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createSessionRailLayoutStore();
+
+      // The Workbar's compact band is wider than the rail's own: concealment
+      // must also work while the rail itself is not compact.
+      store.setSpaceConcealed(true);
+      assert.equal(store.getState().collapsed, true);
+      store.setSpaceConcealed(false);
+      assert.equal(store.getState().collapsed, false);
+      assert.equal(storage.getItem(COLLAPSED_KEY), 'false');
+    });
+  });
+
+  it('lets a user toggle end a space concealment', () => {
+    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, () => {
+      const store = createSessionRailLayoutStore();
+
+      store.setSpaceConcealed(true);
+      store.setCollapsed(false);
+      assert.equal(store.getState().collapsed, false);
+    });
+  });
+});

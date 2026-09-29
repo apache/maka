@@ -71,7 +71,6 @@ import {
   orderRootTurnAdmissionChain,
   rootTurnAdmissionPayloadsEqual,
   rootTurnSourceMessagePayloadsEqual,
-  sanitizeJson,
 } from './agent-run-store-contract.js';
 export {
   ROOT_TURN_ADMISSION_SCHEMA_VERSION,
@@ -146,7 +145,13 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     this.#lease.transaction('write', () => {
       const anchor = readSqliteRunAnchor(this.#lease.database, sessionId, runId);
       this.#openLedgerStream(sessionId, runId, anchor.openedAt);
-      const normalized = decodeAgentRunEvent(JSON.parse(JSON.stringify(event, sanitizeJson)), {
+      // One serialization serves both the validated clone and the ledger row.
+      // `decodeAgentRunEvent` only validates — it injects no fields — so the
+      // string form of the caller's event and of the decoded clone are
+      // identical, and the JSON round-trip stays what detaches the store's
+      // copy from an object the caller may still hold.
+      const json = JSON.stringify(event);
+      const normalized = decodeAgentRunEvent(JSON.parse(json), {
         sessionId,
         runId,
         turnId: anchor.turnId,
@@ -170,7 +175,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       const projection = projectsCheckpoint
         ? inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type)
         : undefined;
-      insertAgentRunEvent(this.#lease.database, normalized);
+      insertAgentRunEvent(this.#lease.database, normalized, json);
       if (projection && projection.state !== 'malformed') {
         const current = projectionValue(projection);
         const row = shouldPreserveCheckpointProjectionDuringAppend(current, normalized)
@@ -852,7 +857,10 @@ function readBoundedSqliteAgentRunEvents(
   };
 }
 
-function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
+/** `recordJson` lets the append path hand in the serialization it already
+ *  produced: the decoded event and the caller's event stringify identically,
+ *  so the row reuses the string instead of paying for it a second time. */
+function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent, recordJson?: string): void {
   const row = db
     .prepare(`
       SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
@@ -874,7 +882,7 @@ function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
     event.id,
     event.type,
     event.ts,
-    JSON.stringify(event, sanitizeJson),
+    recordJson ?? JSON.stringify(event),
   );
   if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
     const updated = db
@@ -953,7 +961,7 @@ function writeSqliteAgentRunProjection(
     INSERT INTO core_agent_run_projections(session_id, event_type, event_json)
     VALUES (?, ?, ?)
     ON CONFLICT(session_id, event_type) DO UPDATE SET event_json = excluded.event_json
-  `).run(sessionId, type, event === null ? null : JSON.stringify(event, sanitizeJson));
+  `).run(sessionId, type, event === null ? null : JSON.stringify(event));
 }
 
 function readSqliteRootTurnAdmission(

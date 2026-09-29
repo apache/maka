@@ -3921,6 +3921,46 @@ test('successor admission failure retains the terminal transition and its confir
   }
 });
 
+test('Host close records its own stop source on an active root Turn', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-host-shutdown-source',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    assert.ok(backend);
+    await backend.externalHoldStarted.promise;
+    await fixture.coordinator.close();
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
+    const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
+    const terminal = classifyTerminalRuntimeLedger(run, events);
+    assert.equal(terminal.kind, 'fact');
+    if (terminal.kind === 'fact') {
+      assert.equal(terminal.fact.runStatus, 'cancelled');
+      assert.equal(terminal.fact.abortSource, 'runtime_host.shutdown');
+    }
+  } finally {
+    backend?.release();
+    await fixture.dispose();
+  }
+});
+
 test('shutdown contains a successor backend start rejected by Interaction drain', {
   timeout: 20_000,
 }, async () => {

@@ -524,7 +524,7 @@ async function createExecutionStoresForWrite(
           Reflect.apply(persistence.graphControlStore[name], persistence.graphControlStore, args),
         ),
     ]),
-  ) as Omit<ExecutionGraphStore, 'close'>;
+  ) as Pick<ExecutionGraphStore, (typeof EXECUTION_GRAPH_METHODS)[number]>;
   const graphControlStore: ExecutionGraphStore = Object.freeze({
     ...graphMethods,
     ...(persistence.graphControlStore.listAgentGraphScheduleRecoveryGraphIds

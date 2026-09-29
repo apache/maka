@@ -3381,11 +3381,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   private async stopActiveTurn(sessionId: string, active: ActiveRootTurn): Promise<void> {
-    await this.stopRoot({
-      sessionId,
-      turnId: active.turnId,
-      runId: active.runId,
-    });
+    await this.stopRoot(
+      {
+        sessionId,
+        turnId: active.turnId,
+        runId: active.runId,
+      },
+      { source: 'host_shutdown' },
+    );
   }
 
   private async readCanonicalSnapshot(
