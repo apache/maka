@@ -24,8 +24,46 @@ export type QuestionAnswerDraft =
   | { kind: 'other'; value: string }
   | null;
 
+export interface UserQuestionWizardState {
+  questionIndex: number;
+  drafts: QuestionAnswerDraft[];
+  answerText: string;
+}
+
+const wizardStateByRequestId = new Map<string, UserQuestionWizardState>();
+
 export function createQuestionDrafts(questions: readonly UserQuestion[]): QuestionAnswerDraft[] {
   return questions.map(() => null);
+}
+
+export function createUserQuestionWizardState(questions: readonly UserQuestion[]): UserQuestionWizardState {
+  return {
+    questionIndex: 0,
+    drafts: createQuestionDrafts(questions),
+    answerText: '',
+  };
+}
+
+export function readUserQuestionWizardState(requestId: string): UserQuestionWizardState | undefined {
+  const remembered = wizardStateByRequestId.get(requestId);
+  if (!remembered) return undefined;
+  return {
+    questionIndex: remembered.questionIndex,
+    drafts: [...remembered.drafts],
+    answerText: remembered.answerText,
+  };
+}
+
+export function rememberUserQuestionWizardState(requestId: string, state: UserQuestionWizardState): void {
+  wizardStateByRequestId.set(requestId, {
+    questionIndex: state.questionIndex,
+    drafts: [...state.drafts],
+    answerText: state.answerText,
+  });
+}
+
+export function clearUserQuestionWizardState(requestId: string): void {
+  wizardStateByRequestId.delete(requestId);
 }
 
 export function buildUserQuestionResponse(

@@ -31,7 +31,11 @@ import { ChoicePanel } from './choice-panel.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
+  clearUserQuestionWizardState,
   createQuestionDrafts,
+  createUserQuestionWizardState,
+  readUserQuestionWizardState,
+  rememberUserQuestionWizardState,
   type QuestionAnswerDraft,
 } from './user-question-prompt-state.js';
 import { useUiLocale } from './locale-context.js';
@@ -45,25 +49,37 @@ export function UserQuestionPrompt(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).questions;
   const titleId = useId();
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [drafts, setDrafts] = useState<QuestionAnswerDraft[]>(() => createQuestionDrafts(props.request.questions));
-  const [answerText, setAnswerText] = useState('');
+  const requestId = props.request.requestId;
+  const [questionIndex, setQuestionIndex] = useState(() =>
+    readUserQuestionWizardState(requestId)?.questionIndex ?? 0);
+  const [drafts, setDrafts] = useState<QuestionAnswerDraft[]>(() =>
+    readUserQuestionWizardState(requestId)?.drafts ?? createQuestionDrafts(props.request.questions));
+  const [answerText, setAnswerText] = useState(() =>
+    readUserQuestionWizardState(requestId)?.answerText ?? '');
   const [responseError, setResponseError] = useState<string>();
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
-  const activeRequestIdRef = useRef(props.request.requestId);
+  const activeRequestIdRef = useRef(requestId);
+  const previousRequestIdRef = useRef(requestId);
   const inputRef = useRef<ChatComposerInputHandle>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
-    activeRequestIdRef.current = props.request.requestId;
+    rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
+  }, [requestId, questionIndex, drafts, answerText]);
+
+  useEffect(() => {
+    activeRequestIdRef.current = requestId;
+    if (previousRequestIdRef.current === requestId) return;
+    previousRequestIdRef.current = requestId;
+    const next = createUserQuestionWizardState(props.request.questions);
     setResponseError(undefined);
-    setQuestionIndex(0);
-    setDrafts(createQuestionDrafts(props.request.questions));
-    setAnswerText('');
+    setQuestionIndex(next.questionIndex);
+    setDrafts(next.drafts);
+    setAnswerText(next.answerText);
     responsePendingRef.current = false;
     setResponsePending(false);
-  }, [props.request.requestId, props.request.questions]);
+  }, [requestId, props.request.questions]);
 
   const question = props.request.questions[questionIndex];
   if (!question) return null;
@@ -127,6 +143,7 @@ export function UserQuestionPrompt(props: {
     setResponseError(undefined);
     try {
       await props.onRespond(buildUserQuestionResponse(props.request, committed));
+      clearUserQuestionWizardState(requestId);
     } catch (reason) {
       if (mountedRef.current && activeRequestIdRef.current === requestId) setResponseError(reason instanceof Error ? reason.message : String(reason));
     } finally {
