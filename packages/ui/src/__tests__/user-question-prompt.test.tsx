@@ -23,7 +23,10 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { UserQuestionRequestEvent } from '@maka/core/events';
-import { clearUserQuestionWizardState } from '../user-question-prompt-state.js';
+import {
+  clearUserQuestionWizardState,
+  readUserQuestionWizardState,
+} from '../user-question-prompt-state.js';
 import { UserQuestionPrompt } from '../user-question-prompt.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -116,6 +119,135 @@ test('remounting the same request restores wizard progress after a session switc
   } finally {
     clearUserQuestionWizardState(request.requestId);
     clearUserQuestionWizardState('question-2');
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
+test('switching between pending requests without unmounting restores each wizard', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const requestA = request;
+  const requestB: UserQuestionRequestEvent = {
+    ...request,
+    id: 'event-2',
+    requestId: 'question-2',
+    toolUseId: 'tool-2',
+  };
+  clearUserQuestionWizardState(requestA.requestId);
+  clearUserQuestionWizardState(requestB.requestId);
+
+  const render = async (active: UserQuestionRequestEvent) => {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <UserQuestionPrompt request={active} onRespond={() => undefined} onStop={() => undefined} />
+      </LocaleProvider>,
+    ));
+  };
+
+  const clickNext = async () => {
+    const beta = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Beta'));
+    assert.ok(beta);
+    await act(() => beta.click());
+    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Next');
+    assert.ok(nextButton);
+    await act(() => nextButton.click());
+  };
+
+  try {
+    await render(requestA);
+    await clickNext();
+    assert.match(container.textContent ?? '', /2 \/ 2/);
+
+    await render(requestB);
+    assert.match(container.textContent ?? '', /1 \/ 2/);
+    assert.deepEqual(readUserQuestionWizardState(requestA.requestId)?.questionIndex, 1);
+
+    await render(requestA);
+    assert.match(container.textContent ?? '', /2 \/ 2/);
+
+    await render(requestB);
+    assert.match(container.textContent ?? '', /1 \/ 2/);
+  } finally {
+    clearUserQuestionWizardState(requestA.requestId);
+    clearUserQuestionWizardState(requestB.requestId);
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
+test('failed responses keep wizard progress for retry', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  clearUserQuestionWizardState(request.requestId);
+  let shouldFail = true;
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <UserQuestionPrompt
+          request={request}
+          onRespond={async () => {
+            if (shouldFail) throw new Error('host rejected');
+          }}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+
+    const beta = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Beta'));
+    assert.ok(beta);
+    await act(() => beta.click());
+    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Next');
+    assert.ok(nextButton);
+    await act(() => nextButton.click());
+    assert.match(container.textContent ?? '', /2 \/ 2/);
+
+    const yes = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Yes'));
+    assert.ok(yes);
+    await act(() => yes.click());
+
+    const submitButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Submit answers');
+    assert.ok(submitButton);
+    await act(async () => {
+      try {
+        await submitButton.click();
+      } catch {
+        // UserQuestionPrompt handles the rejection internally.
+      }
+    });
+
+    assert.match(container.textContent ?? '', /2 \/ 2/);
+    assert.ok(readUserQuestionWizardState(request.requestId));
+    shouldFail = false;
+  } finally {
+    clearUserQuestionWizardState(request.requestId);
     await act(() => root.unmount());
     Object.assign(globalThis, original);
   }

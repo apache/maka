@@ -73,7 +73,11 @@ test('buildUserQuestionResponse maps committed drafts to option labels', () => {
   const drafts = createQuestionDrafts(questions);
   drafts[0] = { kind: 'option', optionIndex: 1 };
   drafts[1] = { kind: 'other', value: 'maybe' };
-  assert.deepEqual(buildUserQuestionResponse({ requestId: 'question-1', questions }, drafts), {
+  assert.deepEqual(buildUserQuestionResponse({
+    requestId: 'question-1',
+    toolUseId: 'tool-1',
+    questions,
+  }, drafts), {
     requestId: 'question-1',
     answers: ['B', 'maybe'],
   });

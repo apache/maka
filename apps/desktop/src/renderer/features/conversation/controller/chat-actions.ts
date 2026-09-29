@@ -518,6 +518,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
           { sessionId },
         );
       }
+      throw error;
     }
   }
 

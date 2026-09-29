@@ -60,26 +60,33 @@ export function UserQuestionPrompt(props: {
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(requestId);
-  const previousRequestIdRef = useRef(requestId);
+  const skipRememberRef = useRef(false);
   const inputRef = useRef<ChatComposerInputHandle>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
-    rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
-  }, [requestId, questionIndex, drafts, answerText]);
-
-  useEffect(() => {
     activeRequestIdRef.current = requestId;
-    if (previousRequestIdRef.current === requestId) return;
-    previousRequestIdRef.current = requestId;
-    const next = createUserQuestionWizardState(props.request.questions);
+    const restored = readUserQuestionWizardState(requestId)
+      ?? createUserQuestionWizardState(props.request.questions);
     setResponseError(undefined);
-    setQuestionIndex(next.questionIndex);
-    setDrafts(next.drafts);
-    setAnswerText(next.answerText);
+    setQuestionIndex(restored.questionIndex);
+    setDrafts(restored.drafts);
+    setAnswerText(restored.answerText);
     responsePendingRef.current = false;
     setResponsePending(false);
+    skipRememberRef.current = true;
   }, [requestId, props.request.questions]);
+
+  useEffect(() => {
+    if (skipRememberRef.current) {
+      skipRememberRef.current = false;
+      return;
+    }
+    rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
+    return () => {
+      rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
+    };
+  }, [requestId, questionIndex, drafts, answerText]);
 
   const question = props.request.questions[questionIndex];
   if (!question) return null;
