@@ -35,7 +35,9 @@ owners:
 > static chain recorded as accepted debt below is now cut. `isRetiredProvider` was
 > extracted into `packages/core/src/provider-retirement.ts` (a metadata-free module
 > whose only `provider-registry` import is `import type`), and
-> `command-palette-commands.ts` now imports it from `@maka/core/provider-retirement`,
+> `command-palette-commands.ts` now imports it through
+> `application/contracts/provider-retirement.ts`, which re-exports only the predicate
+> from `@maka/core/provider-retirement`,
 > so the `AppShellOverlays → … → command-palette-commands → provider-registry` hop
 > no longer reaches the generated tables. A separate static chain still does —
 > `main.tsx → @maka/ui → maka-uri → core/settings → core/onboarding →
@@ -131,8 +133,9 @@ Acceptance criteria:
 > **审计更新（2026-09-08，#4711 后续）：** 下面记录为遗留债务的
 > `command-palette-commands.ts` 静态链路现已切断。`isRetiredProvider` 被抽取到
 > `packages/core/src/provider-retirement.ts`（一个不含元数据的模块，对
-> `provider-registry` 仅有 `import type`），`command-palette-commands.ts` 改从
-> `@maka/core/provider-retirement` 引入，因此
+> `provider-registry` 仅有 `import type`），`command-palette-commands.ts` 改通过
+> `application/contracts/provider-retirement.ts` 引入；该契约仅从
+> `@maka/core/provider-retirement` 转导出此谓词，因此
 > `AppShellOverlays → … → command-palette-commands → provider-registry` 这一段不再触达
 > 生成表。另有一条静态链路仍然存在——`main.tsx → @maka/ui → maka-uri → core/settings →
 > core/onboarding → core/llm-connections → provider-registry`——属“期望结果”中已列出的
