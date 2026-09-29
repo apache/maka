@@ -130,6 +130,25 @@ test('side conversation fork preserves the parent provider prefix before the for
     );
     assert.equal(parentTerminal.status, 'completed');
 
+    // A second parent turn gives the fork an inherited parent prefix of TWO
+    // turns, so a later revision of the side conversation copies both parent
+    // turns and the fork's own first turn into one replay.
+    const parentTurnId2 = 'parent-turn-2';
+    const parentTerminal2 = await waitForTerminal(
+      composition,
+      parentSession.id,
+      parentTurnId2,
+      await startTurn(
+        composition,
+        parentSession.id,
+        parentTurnId2,
+        'Name the top-level files of this project.',
+        context,
+      ),
+      context,
+    );
+    assert.equal(parentTerminal2.status, 'completed');
+
     const parentStreamRequests = streamProviderRequests(provider.requests);
 
     const forkSessionId = 'side-conversation-fork';
@@ -139,7 +158,7 @@ test('side conversation fork preserves the parent provider prefix before the for
       execution,
       sourceSessionId: parentSession.id,
       targetSessionId: forkSessionId,
-      sourceTurnId: parentTurnId,
+      sourceTurnId: parentTurnId2,
     });
     assert.ok(branch.labels.includes(SIDE_CONVERSATION_SESSION_LABEL));
 
@@ -244,6 +263,110 @@ test('side conversation fork preserves the parent provider prefix before the for
       1,
       'boundary must stay on exactly one user message across follow-up turns',
     );
+
+    // A revision of the side conversation slices the revised turn out, so the
+    // copy replays the inherited TWO-parent-turn prefix AND the fork's own
+    // first turn. The boundary must stay on that fork-owned first user turn,
+    // not on a user event inside the inherited parent prefix, so the revision
+    // replays the fork's exact cached prefix byte-for-byte.
+    const streamRequestsBeforeRevision = streamProviderRequests(provider.requests).length;
+    const revisionSessionId = 'side-conversation-revision';
+    const revision = await reviseSideConversation({
+      composition,
+      context,
+      execution,
+      sourceSessionId: forkSessionId,
+      targetSessionId: revisionSessionId,
+      sourceTurnId: forkTurnId2,
+    });
+    assert.ok(revision.labels.includes(SIDE_CONVERSATION_SESSION_LABEL));
+
+    const revisionTurnId = 'revision-turn-1';
+    const revisionTerminal = await waitForTerminal(
+      composition,
+      revisionSessionId,
+      revisionTurnId,
+      await startTurn(
+        composition,
+        revisionSessionId,
+        revisionTurnId,
+        'Rewrite the side answer more concisely.',
+        context,
+      ),
+      context,
+    );
+    assert.equal(revisionTerminal.status, 'completed');
+
+    const revisionFirstRequest = firstMainTurnStreamRequest(
+      streamProviderRequests(provider.requests),
+      streamRequestsBeforeRevision,
+    );
+    const revisionMessages = withoutRuntimeEnvironmentContext(
+      providerMessages(revisionFirstRequest.body),
+    );
+    assert.ok(
+      revisionMessages.length > forkMessages.length,
+      'revision must replay the fork prefix plus its new revised turn',
+    );
+    assert.deepEqual(
+      revisionMessages.slice(0, forkMessages.length),
+      forkMessages,
+      'revision must replay the fork cached prefix unchanged',
+    );
+    const revisionBoundaryUsers = revisionMessages.filter(
+      (message) =>
+        message.role === 'user' && messageText(message).includes(SIDE_CONVERSATION_BOUNDARY_MARKER),
+    );
+    assert.equal(
+      revisionBoundaryUsers.length,
+      1,
+      'revision must keep the boundary on exactly the fork first user message',
+    );
+    const revisedMessage = revisionMessages.at(-1);
+    assert.equal(revisedMessage?.role, 'user');
+    assert.match(messageText(revisedMessage), /Rewrite the side answer more concisely\./);
+    assert.doesNotMatch(messageText(revisedMessage), new RegExp(SIDE_CONVERSATION_BOUNDARY_MARKER));
+
+    // A follow-up on the revision session must keep the boundary on the SAME
+    // fork first user message, never on the newest turn.
+    const streamRequestsBeforeRevisionTurn2 = streamProviderRequests(provider.requests).length;
+    const revisionTurnId2 = 'revision-turn-2';
+    const revisionTerminal2 = await waitForTerminal(
+      composition,
+      revisionSessionId,
+      revisionTurnId2,
+      await startTurn(
+        composition,
+        revisionSessionId,
+        revisionTurnId2,
+        'Now shorten it to a single sentence.',
+        context,
+      ),
+      context,
+    );
+    assert.equal(revisionTerminal2.status, 'completed');
+
+    const revisionSecondRequest = firstMainTurnStreamRequest(
+      streamProviderRequests(provider.requests),
+      streamRequestsBeforeRevisionTurn2,
+    );
+    const revisionSecondMessages = withoutRuntimeEnvironmentContext(
+      providerMessages(revisionSecondRequest.body),
+    );
+    assert.deepEqual(
+      revisionSecondMessages.slice(0, revisionMessages.length),
+      revisionMessages,
+      'revision follow-up must replay the revision prefix unchanged',
+    );
+    const revisionSecondBoundaryUsers = revisionSecondMessages.filter(
+      (message) =>
+        message.role === 'user' && messageText(message).includes(SIDE_CONVERSATION_BOUNDARY_MARKER),
+    );
+    assert.equal(
+      revisionSecondBoundaryUsers.length,
+      1,
+      'revision follow-up must keep the boundary on exactly the fork first user message',
+    );
   } finally {
     await composition?.close();
     await owner?.close();
@@ -288,6 +411,43 @@ async function branchSideConversation(input: {
     assert.fail(`Side conversation branch failed: ${JSON.stringify(branch.result)}`);
   }
   assert.fail('Side conversation branch never observed a stable source revision');
+}
+
+async function reviseSideConversation(input: {
+  composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>;
+  context: ConnectionContext;
+  execution: InteractiveExecutionStoresWriter;
+  sourceSessionId: string;
+  targetSessionId: string;
+  sourceTurnId: string;
+}): Promise<SessionCatalogProjection> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const record = await input.execution.sessionStore.readCatalogRecord(input.sourceSessionId);
+    const revision = await input.composition.handlers['session.revision.create'](
+      {
+        sourceSessionId: input.sourceSessionId,
+        targetSessionId: input.targetSessionId,
+        sourceTurnId: input.sourceTurnId,
+        expectedSourceRevision: record.revision,
+      },
+      input.context,
+    );
+    if (!revision.ok) {
+      assert.fail(`Side conversation revision failed: ${JSON.stringify(revision)}`);
+    }
+    if (revision.result.kind === 'committed') {
+      if ('kind' in revision.result.session) {
+        assert.fail('Revision Session catalog projection was unsupported');
+      }
+      return revision.result.session;
+    }
+    if (revision.result.kind === 'source_revision_conflict') {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      continue;
+    }
+    assert.fail(`Side conversation revision failed: ${JSON.stringify(revision.result)}`);
+  }
+  assert.fail('Side conversation revision never observed a stable source revision');
 }
 
 async function startTurn(
