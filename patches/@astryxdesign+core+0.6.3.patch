@@ -903,15 +903,29 @@ index b56c9d5..463f665 100644
        role: "group",
        "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
-index 0c81fd3..cd61fc7 100644
+index 0c81fd3..51e9632 100644
 --- a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
 +++ b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
-@@ -205,8 +205,19 @@ function syncRotationPhase(svg) {
+@@ -174,11 +174,8 @@ function pinRingsToTimelineOrigin() {
+   flushScheduled = false;
+   const animations = [];
+   for (const svg of pendingRings) {
+-    // The animation now runs on the arc <circle>, a descendant of the ring
+-    // this ref sits on (#6253), so it needs subtree:true to be found here.
+-    animations.push(...svg.getAnimations({
+-      subtree: true
+-    }));
++    // The rotation runs on the ring's host span, not on the svg itself.
++    animations.push(...(svg.parentElement ?? svg).getAnimations());
+   }
+   pendingRings.clear();
+   for (const animation of animations) {
+@@ -205,8 +202,19 @@ function syncRotationPhase(svg) {
      flushScheduled = true;
      requestAnimationFrame(pinRingsToTimelineOrigin);
    }
-+  // Moving a mounted spinner (a list re-sorting its rows) restarts the arc's
-+  // CSS animation without running this ref again; pin the restarted one too.
++  // Moving a mounted spinner (a list re-sorting its rows) restarts its CSS
++  // animation without running this ref again; pin the restarted one too.
 +  const host = svg.parentElement ?? svg;
 +  const repin = (event) => {
 +    if (event.target !== host) return;
@@ -926,7 +940,27 @@ index 0c81fd3..cd61fc7 100644
    };
  }
  
-@@ -247,6 +258,16 @@ const styles = {
+@@ -214,18 +222,7 @@ function syncRotationPhase(svg) {
+ // Animation
+ // =============================================================================
+ 
+-/**
+- * Moves the dash around a stationary circle instead of rotating the whole
+- * ring. WebKit re-antialiases a rotating stroked shape's rounded cap
+- * (`strokeLinecap: 'round'`, below) slightly differently at each intermediate
+- * angle, which reads as a visible wobble on iOS Safari independent of
+- * compositing (#6253) — confirmed by a real-device test against this exact
+- * fix, since `willChange`/layer promotion alone (the earlier fix for #3617)
+- * only smooths the rotation's motion, not the per-frame stroke rasterization.
+- * A static circle with an animated `stroke-dashoffset` never rotates, so
+- * WebKit never re-rasterizes the cap at an intermediate angle at all.
+- */
+-const dashMotion = "x1wbvqyn-B";
++const rotation = "xqng64z-B";
+ 
+ // =============================================================================
+ // Styles
+@@ -247,6 +244,16 @@ const styles = {
      "--_spinner-ring-stroke": "x10qssua",
      "--_spinner-box-size": "x69vvuq",
      kmuXW: "x2lah0s",
@@ -943,6 +977,15 @@ index 0c81fd3..cd61fc7 100644
      $$css: true
    },
    circle: {
+@@ -464,7 +471,7 @@ export function Spinner({
+         ,
+         strokeDasharray: `${arcLength} ${circumference - arcLength}`,
+         ...{
+-          className: "xbh8q5q x1764fhq x1g0ag68 x1owpc8m xio8zfp xgw3ha0 x14qxm4i xnh0sag xa4qsjk x1nlxm0d x1esw782 xtve3lm x9tu13d xdv9ggb"
++          className: "xbh8q5q x1764fhq x1g0ag68 x1owpc8m xio8zfp xgw3ha0 xtve3lm x9tu13d xdv9ggb"
+         }
+       })]
+     })
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
 index 69573c6..a32e7a4 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
@@ -2101,15 +2144,27 @@ index 6c581d4..d3a9857 100644
          <div
            id={`${id}-children`}
 diff --git a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
-index 7f7dedd..27dfa76 100644
+index 7f7dedd..0a8720a 100644
 --- a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
 +++ b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
-@@ -199,8 +199,19 @@ function syncRotationPhase(
+@@ -168,9 +168,8 @@ function pinRingsToTimelineOrigin(): void {
+   flushScheduled = false;
+   const animations: Animation[] = [];
+   for (const svg of pendingRings) {
+-    // The animation now runs on the arc <circle>, a descendant of the ring
+-    // this ref sits on (#6253), so it needs subtree:true to be found here.
+-    animations.push(...svg.getAnimations({subtree: true}));
++    // The rotation runs on the ring's host span, not on the svg itself.
++    animations.push(...(svg.parentElement ?? svg).getAnimations());
+   }
+   pendingRings.clear();
+   for (const animation of animations) {
+@@ -199,8 +198,19 @@ function syncRotationPhase(
      flushScheduled = true;
      requestAnimationFrame(pinRingsToTimelineOrigin);
    }
-+  // Moving a mounted spinner (a list re-sorting its rows) restarts the arc's
-+  // CSS animation without running this ref again; pin the restarted one too.
++  // Moving a mounted spinner (a list re-sorting its rows) restarts its CSS
++  // animation without running this ref again; pin the restarted one too.
 +  const host = svg.parentElement ?? svg;
 +  const repin = (event: AnimationEvent) => {
 +    if (event.target !== host) return;
@@ -2124,7 +2179,31 @@ index 7f7dedd..27dfa76 100644
    };
  }
  
-@@ -273,9 +284,24 @@ const styles = stylex.create({
+@@ -208,20 +218,9 @@ function syncRotationPhase(
+ // Animation
+ // =============================================================================
+ 
+-/**
+- * Moves the dash around a stationary circle instead of rotating the whole
+- * ring. WebKit re-antialiases a rotating stroked shape's rounded cap
+- * (`strokeLinecap: 'round'`, below) slightly differently at each intermediate
+- * angle, which reads as a visible wobble on iOS Safari independent of
+- * compositing (#6253) — confirmed by a real-device test against this exact
+- * fix, since `willChange`/layer promotion alone (the earlier fix for #3617)
+- * only smooths the rotation's motion, not the per-frame stroke rasterization.
+- * A static circle with an animated `stroke-dashoffset` never rotates, so
+- * WebKit never re-rasterizes the cap at an intermediate angle at all.
+- */
+-const dashMotion = stylex.keyframes({
+-  '0%': {strokeDashoffset: '0px'},
+-  '100%': {strokeDashoffset: `calc(var(${RESOLVED_DIAMETER}) * -${PI})`},
++const rotation = stylex.keyframes({
++  '0%': {transform: 'rotate(0deg)'},
++  '100%': {transform: 'rotate(360deg)'},
+ });
+ 
+ // =============================================================================
+@@ -273,9 +272,24 @@ const styles = stylex.create({
      // moment it sets `min-width: 0` on its items. A spinner that does not fit
      // overflows its host visibly instead of being silently sliced.
      flexShrink: 0,
@@ -2150,6 +2229,23 @@ index 7f7dedd..27dfa76 100644
      display: 'block',
      // The frame is the box, read from the same composed var the span is sized
      // from — not from the size constant, which a theme cannot reach, and not
+@@ -330,16 +344,6 @@ const styles = stylex.create({
+   // `0` the way the registered length pair guards against, so it needs no
+   // registration.
+   arc: {
+-    // Slow the motion dramatically under reduced-motion rather than freezing
+-    // it (a frozen spinner reads as broken), matching ProgressBar's approach.
+-    // The role="status" + "Loading" label still convey busy state (obs-6).
+-    animationDuration: {
+-      default: durationVars['--duration-slow-min'],
+-      '@media (prefers-reduced-motion: reduce)': '3s',
+-    },
+-    animationIterationCount: 'infinite',
+-    animationName: dashMotion,
+-    animationTimingFunction: 'linear',
+     stroke: 'var(--spinner-color)',
+     transform: 'rotate(-90deg)',
+     strokeDasharray: `calc(var(${RESOLVED_DIAMETER}) * ${PI} * var(--spinner-arc-fraction)) calc(var(${RESOLVED_DIAMETER}) * ${PI} * (1 - var(--spinner-arc-fraction)))`,
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 55b441e..7aa4174 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
