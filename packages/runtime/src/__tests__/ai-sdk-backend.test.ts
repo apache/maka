@@ -3535,6 +3535,13 @@ describe('AiSdkBackend model history', () => {
       const output =
         requests.length === 1
           ? [
+              {
+                type: 'reasoning',
+                id: 'reasoning-before-search',
+                status: 'completed',
+                content: [{ type: 'reasoning_text', text: 'Search for the latest Maka release.' }],
+                summary: [],
+              },
               item,
               {
                 type: 'message',
@@ -3566,7 +3573,23 @@ describe('AiSdkBackend model history', () => {
         [
           { type: 'response.created', response: { id: responseId } },
           ...output.flatMap((entry, output_index) =>
-            entry.type === 'message'
+            entry.type === 'reasoning'
+              ? [
+                  {
+                    type: 'response.output_item.added',
+                    output_index,
+                    item: { ...entry, status: 'in_progress', content: [] },
+                  },
+                  {
+                    type: 'response.reasoning_text.delta',
+                    output_index,
+                    item_id: entry.id,
+                    content_index: 0,
+                    delta: 'Search for the latest Maka release.',
+                  },
+                  { type: 'response.output_item.done', output_index, item: entry },
+                ]
+              : entry.type === 'message'
               ? [
                   {
                     type: 'response.output_item.added',
@@ -3655,6 +3678,15 @@ describe('AiSdkBackend model history', () => {
       replay.filter((entry) => entry.type === 'web_search_call'),
       [item],
     );
+    const reasoningIndex = replay.findIndex((entry) => entry.type === 'reasoning');
+    const searchIndex = replay.findIndex((entry) => entry.type === 'web_search_call');
+    const answerIndex = replay.findIndex(
+      (entry) => entry.type === 'message' && entry.role === 'assistant',
+    );
+    assert.equal(replay.filter((entry) => entry.type === 'reasoning').length, 1);
+    assert.match(JSON.stringify(replay[reasoningIndex]), /Search for the latest Maka release/);
+    assert.ok(reasoningIndex >= 0 && reasoningIndex < searchIndex);
+    assert.ok(searchIndex < answerIndex);
     assert.equal(
       replay.some((entry) => entry.type === 'function_call_output'),
       false,
