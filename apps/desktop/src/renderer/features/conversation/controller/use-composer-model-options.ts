@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useRef } from 'react';
+import { useToast } from '@maka/ui';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   modelOverride,
@@ -26,8 +27,9 @@ import {
   type ModelOverride,
 } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopRuntimeHostRef } from '../../../../preload/bridge-contract.js';
-import { getProviderSettingsCopy } from '../../connection-settings/settings-provider-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import type { ConversationRuntimeHost } from '../ports.js';
+import { useConversationServices } from '../services.js';
 
 export interface ComposerModelOptionTarget {
   connectionId: string;
@@ -44,22 +46,23 @@ export function useComposerModelOptions(options: {
   uiLocale: UiLocale;
   connections: readonly ProjectedLlmConnection[];
   model: ComposerModelOptionTarget | undefined;
-  host: DesktopRuntimeHostRef | undefined;
-  refresh(): Promise<void>;
-  reportError(message: string): void;
+  host: ConversationRuntimeHost | undefined;
 }): {
-  onFastChange(enabled: boolean): Promise<void>;
+  onFastChange?(enabled: boolean): Promise<void>;
 } {
-  const latest = useRef(options);
-  latest.current = options;
+  const services = useConversationServices();
+  const toast = useToast();
+  const latest = useRef({ ...options, services, toast });
+  latest.current = { ...options, services, toast };
   const tailRef = useRef<Promise<void>>(Promise.resolve());
   const rememberedRef = useRef<{ key: string; override: ModelOverride | null } | null>(null);
 
   const onFastChange = useCallback((enabled: boolean) => {
     // Everything this write targets is fixed at click time: a queued write must
     // not follow the composer to another Session's Host or connection list.
-    const { model, host, uiLocale, refresh, reportError } = latest.current;
-    if (!model) return Promise.resolve();
+    const { model, host, uiLocale, services, toast } = latest.current;
+    const update = services.connections?.updateModelOverride;
+    if (!model || !update) return Promise.resolve();
     const connection = latest.current.connections.find(
       (candidate) => candidate.connectionId === model.connectionId && candidate.slug === model.slug,
     );
@@ -75,20 +78,24 @@ export function useComposerModelOptions(options: {
       const normalized = (entry: ModelOverride | null | undefined) =>
         JSON.stringify(normalizeModelOverrides({ model: entry ?? {} })?.model ?? {});
       if (normalized(value) === normalized(expected)) return;
-      const saved = await window.maka.connections.update(
-        { connectionId: model.connectionId, slug: model.slug },
-        { modelOverride: { modelId: model.model, expected, value } },
+      const saved = await update({
         host,
-      );
-      rememberedRef.current = { key, override: saved.modelOverrides?.[model.model] ?? null };
-      await refresh();
+        connection: { connectionId: model.connectionId, slug: model.slug },
+        modelId: model.model,
+        expected,
+        value,
+      });
+      rememberedRef.current = { key, override: saved };
     });
     tailRef.current = task.then(() => undefined, () => undefined);
     return task.catch((error: unknown) => {
-      reportError(getProviderSettingsCopy(uiLocale).detail.saveFailed);
+      toast.error(
+        getDesktopConversationCopy(uiLocale).actions.modelOptionSaveFailedTitle,
+        error instanceof Error ? error.message : undefined,
+      );
       throw error;
     });
   }, []);
 
-  return { onFastChange };
+  return services.connections ? { onFastChange } : {};
 }

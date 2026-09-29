@@ -108,4 +108,23 @@ export interface ConversationServices extends Pick<
   readonly mcp: {
     subscribeChanges(handler: () => void): () => void;
   };
+  /**
+   * Per-model connection overrides the composer menu writes (Fast). `expected`
+   * is the override the write was computed from; the Host rejects a stale one.
+   * Resolves with the override now stored for that model.
+   */
+  readonly connections?: {
+    updateModelOverride(input: {
+      readonly host: ConversationRuntimeHost | undefined;
+      readonly connection: { readonly connectionId: string; readonly slug: string };
+      readonly modelId: string;
+      readonly expected: import('@maka/core/model-thinking').ModelOverride | null;
+      readonly value: import('@maka/core/model-thinking').ModelOverride;
+    }): Promise<import('@maka/core/model-thinking').ModelOverride | null>;
+  };
+}
+
+export interface ConversationRuntimeHost {
+  readonly profileId: string;
+  readonly hostId: string;
 }
