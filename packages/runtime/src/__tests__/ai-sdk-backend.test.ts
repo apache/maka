@@ -13486,9 +13486,11 @@ describe('AiSdkBackend thinking persistence', () => {
               type: record.type ?? (typeof record.role === 'string' ? 'message' : undefined),
               role: record.role,
               text:
-                firstContent && typeof firstContent === 'object' && !Array.isArray(firstContent)
-                  ? (firstContent as Record<string, unknown>).text
-                  : undefined,
+                typeof record.content === 'string'
+                  ? record.content
+                  : firstContent && typeof firstContent === 'object' && !Array.isArray(firstContent)
+                    ? (firstContent as Record<string, unknown>).text
+                    : undefined,
               callId: record.call_id,
               name: record.name,
               arguments: record.arguments,

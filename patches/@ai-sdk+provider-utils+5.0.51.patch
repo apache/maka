@@ -1,0 +1,32 @@
+diff --git a/node_modules/@ai-sdk/provider-utils/dist/index.js b/node_modules/@ai-sdk/provider-utils/dist/index.js
+index af46d0c..4dc8339 100644
+--- a/node_modules/@ai-sdk/provider-utils/dist/index.js
++++ b/node_modules/@ai-sdk/provider-utils/dist/index.js
+@@ -4348,7 +4348,10 @@ var StreamingToolCallTracker = class {
+       hasExplicitCallStart: name3 != null && startsWithStructuredValue(toolCallDelta.function?.arguments)
+     });
+     if (resolution.kind === "ambiguous") {
+-      return;
++      throw new InvalidResponseDataError({
++        data: toolCallDelta,
++        message: "Ambiguous streamed tool call delta."
++      });
+     }
+     let toolCall;
+     if (resolution.kind === "new") {
+diff --git a/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts b/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts
+index 1d0bf42..e4d183e 100644
+--- a/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts
++++ b/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts
+@@ -140,7 +140,10 @@ export class StreamingToolCallTracker<
+     });
+ 
+     if (resolution.kind === 'ambiguous') {
+-      return;
++      throw new InvalidResponseDataError({
++        data: toolCallDelta,
++        message: 'Ambiguous streamed tool call delta.',
++      });
+     }
+ 
+     let toolCall: TrackedToolCall;

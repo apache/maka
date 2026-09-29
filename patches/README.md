@@ -44,7 +44,7 @@ withdrawn candidate is never offered or downloaded. Remove the patch when
 electron-updater ships equivalent missing-metadata candidate selection. The
 provider regression is in `scripts/desktop-nightly.test.mjs`.
 
-## `run@2.1.4` and `@ai-sdk/code-mode@1.0.56`
+## `run@2.1.4` and `@ai-sdk/code-mode@1.0.79`
 
 Code Mode awaits normal Runtime tools, including user interactions. The upstream
 wall deadline aborts those waits. The opt-in `timeoutMode: 'execution'` instead
@@ -164,13 +164,14 @@ the queue at the native exit fence. See #2978.
 
 Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 
-## `@ai-sdk/provider-utils@5.0.40`
+## `@ai-sdk/provider-utils@5.0.51`
 
-Streaming tool-call association for gateways that reuse or omit `index` / `id`
-(Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and
+Upstream now associates streamed calls across reused or omitted `index` / `id`.
+Maka still fails closed when a delta ambiguously addresses multiple calls;
+the published tracker silently drops that delta. See #1967 / #1976 and
 `packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts`.
 
-Delete when that guard passes against an unpatched package.
+Delete when the ambiguity tests pass against an unpatched package.
 
 ## `@astryxdesign/core@0.6.2`
 

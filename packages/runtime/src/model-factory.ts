@@ -119,9 +119,6 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           finalizeBody,
         })
       : requestFetch;
-    // open-responses@2.0.56 uses @ai-sdk/provider@4.0.19 while the other
-    // providers in this workspace still use 4.0.14. The V4 runtime contract
-    // is compatible; the two JSONValue declarations differ in readonlyness.
     return createOpenResponses({
       name: connection.providerType,
       apiKey,
@@ -130,7 +127,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       ...(connection.providerType === 'deepseek'
         ? { experimental_extensions: [deepSeekWebSearchCodec] }
         : {}),
-    })(modelId) as unknown as LanguageModelV4;
+    })(modelId);
   };
 
   switch (adapter.kind) {

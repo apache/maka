@@ -786,7 +786,10 @@ function validateStaging(publishable) {
     'node_modules/node-pty/lib/unixTerminal.js',
     'CustomWriteStream.prototype._ownsFileDescriptor',
   );
-  assertPatchedFile('node_modules/@ai-sdk/provider-utils/dist/index.js', 'function absentIfBlank');
+  assertPatchedFile(
+    'node_modules/@ai-sdk/provider-utils/dist/index.js',
+    'Ambiguous streamed tool call delta.',
+  );
 
   const manifest = readJson(join(stageRoot, 'package.json'));
   for (const [name, specifier] of Object.entries(manifest.dependencies ?? {})) {
