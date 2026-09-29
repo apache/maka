@@ -154,7 +154,7 @@
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
 
-.maka-quote-chip { display: inline-flex; gap: 4px; padding-inline: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
+.maka-quote-chip { background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
 .maka-quote-chip-expanded { width: 100%; max-width: 100%; align-items: flex-start; padding-block: 4px; border-radius: var(--radius-surface); }
 /* #1879: measured 24px natural — a 20px line box plus 2 x 2px padding — and
    `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
@@ -227,7 +227,6 @@
   flex: 1;
   padding-block: 0 var(--space-1-5);
 }
-.maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 /* Holds the answer's place, unseen and unannounced, until the Host names the Turn. */
 .maka-pending-turn[data-awaiting-host] .maka-assistant-answer { visibility: hidden; }
