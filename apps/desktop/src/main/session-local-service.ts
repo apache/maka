@@ -113,7 +113,11 @@ export class DesktopSessionLocalService {
   >();
   readonly #catalogTasks = new Map<string, Promise<void>>();
   readonly #catalogConnections = new Map<string, SessionCatalogConnection>();
-  readonly #catalogFresh = new Map<string, { connection: SessionCatalogConnection; at: number }>();
+  readonly #catalogFresh = new Map<string, {
+    connection: SessionCatalogConnection;
+    at: number;
+    invalidationVersion: number;
+  }>();
   readonly #revoked = new Set<string>();
   #scheduled = false;
   #closed = false;
@@ -160,7 +164,8 @@ export class DesktopSessionLocalService {
             target.scope.hostId === scope.hostId && target.scope.targetEpoch === scope.targetEpoch,
         );
       if (target) {
-        this.#catalogFresh.delete(target.partition);
+        // A change asks for another observation; it does not revoke a live
+        // connection's last successful observation while that read is pending.
         const connection = this.#catalogConnections.get(target.partition);
         if (connection) connection.invalidationVersion += 1;
       }
@@ -290,7 +295,9 @@ export class DesktopSessionLocalService {
           );
         if (
           target.client &&
-          (!authoritative || !fresh || Date.now() - fresh.at > 5000)
+          (!authoritative || !fresh ||
+            fresh.invalidationVersion !== connection.invalidationVersion ||
+            Date.now() - fresh.at > 5000)
         )
           this.#refreshCatalog(target, connection);
         return { scope: target.scope, sessions, authoritative };
@@ -340,11 +347,13 @@ export class DesktopSessionLocalService {
     const task = abortable(() => client.listSessions(), connection.controller.signal)
       .then((sessions) => {
         if (!this.#currentCatalogConnection(target, connection)) return;
-        if (connection.invalidationVersion !== invalidationVersion) return;
         // A late catalog cannot erase a Session created/removed while it read.
         if (this.store.revision !== revision) return;
         this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
-        this.#catalogFresh.set(target.partition, { connection, at: Date.now() });
+        // Publish successful observations even under continuous Host events.
+        // The captured version keeps this observation dirty if another change
+        // arrived while reading, so one trailing refresh can converge.
+        this.#catalogFresh.set(target.partition, { connection, at: Date.now(), invalidationVersion });
         this.deps.changed(target.scope);
       })
       .catch((error: unknown) => {
@@ -363,17 +372,15 @@ export class DesktopSessionLocalService {
         if (this.#catalogTasks.get(target.partition) === task)
           this.#catalogTasks.delete(target.partition);
         if (!this.#currentCatalogConnection(target, connection)) return;
-        if (connection.invalidationVersion !== invalidationVersion) {
-          // Host events do not change the local store revision. Consume all
-          // invalidations received during this read with one fresh request.
-          this.#refreshCatalog(target, connection);
-          return;
-        }
         if (
           freshnessRevoked ||
           (!this.#catalogFresh.has(target.partition) && this.store.revision !== revision)
         )
           this.deps.changed(target.scope);
+        if (connection.invalidationVersion !== invalidationVersion) {
+          // Consume all changes received during this read with one request.
+          this.#refreshCatalog(target, connection);
+        }
       });
     this.#catalogTasks.set(target.partition, task);
   }
