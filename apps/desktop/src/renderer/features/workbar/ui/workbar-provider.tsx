@@ -48,7 +48,9 @@ export function WorkbarProvider(props: {
   useLayoutEffect(() => () => props.bridge.disconnect(), [props.bridge]);
   // Shell columns and the titlebar reserve both size from the Workbar width.
   // An inherited custom property carries it to them without re-rendering the
-  // shell on every resize step.
+  // shell on every resize step. The cap is not published here: its expression
+  // reads --maka-sidenav-width, which only .appFrame defines — see WORKBAR_CAP
+  // in frame-style.ts.
   const style = {
     '--maka-session-workbar-width': `${controller.host.rightWidth}px`,
   } as CSSProperties;

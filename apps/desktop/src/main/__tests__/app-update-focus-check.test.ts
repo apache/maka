@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { describe, test } from 'node:test';
 import type { AppUpdater } from 'electron-updater';
 import { createAppUpdateService } from '../app-update-service.js';
@@ -50,6 +51,7 @@ function createHarness(options: { start: number }) {
     currentVersion: '0.1.8',
     isPackaged: true,
     updater,
+    nativeUpdater: new EventEmitter(),
     verifyDownloadedUpdate: async () => {},
     prepareInstall: async () => ({ kind: 'prepared', rollback() {} }),
     clock: {

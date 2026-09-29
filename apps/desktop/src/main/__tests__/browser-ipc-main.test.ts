@@ -88,6 +88,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
   class FakeWindow extends EventEmitter {
     visible = true;
     minimized = false;
+    contentView: Electron.View | undefined;
     isVisible(): boolean { return this.visible; }
     isMinimized(): boolean { return this.minimized; }
     isDestroyed(): boolean { return false; }
@@ -115,13 +116,13 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     const workHub = new FakeRenderer('workhub-document-frame', 1.25);
     const mainWindow = new FakeWindow();
     const floatingWindow = new FakeWindow();
+    const mainParent = { getVisible: () => true } as unknown as Electron.View;
+    mainWindow.contentView = mainParent;
     windows.set(main, mainWindow);
     windows.set(workHub, mainWindow);
     let workHubVisible = true;
-    const mainParent = { getVisible: () => true } as unknown as Electron.View;
     const workHubParent = { getVisible: () => workHubVisible } as unknown as Electron.View;
     const owned = new Map<Electron.WebContents, Electron.View>([
-      [main as unknown as Electron.WebContents, mainParent],
       [workHub as unknown as Electron.WebContents, workHubParent],
     ]);
     let hostActive = true;
@@ -152,14 +153,18 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       },
     };
     const mainWindowController = {
-      getBrowserViews: () => manager,
+      getBrowserViews: (resolve: typeof parentResolver) => {
+        parentResolver = resolve;
+        return manager;
+      },
       isMainRenderer: (contents: Electron.WebContents) => contents === main as unknown as Electron.WebContents,
-      ownsRenderer: (contents: Electron.WebContents) => !contents.isDestroyed() && owned.has(contents),
-      browserParentForRenderer: (contents: Electron.WebContents) => owned.get(contents),
-      setBrowserViewParentResolver: (resolve: typeof parentResolver) => { parentResolver = resolve; },
     };
     const browserIpc = registerBrowserIpc({
       mainWindowController: mainWindowController as never,
+      auxiliaryWindowRegistry: {
+        rendererParent: (contents: Electron.WebContents) =>
+          !contents.isDestroyed() ? owned.get(contents) : undefined,
+      },
       isHostActive: (candidate) => hostActive && candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
     });
 

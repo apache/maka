@@ -63,8 +63,8 @@ async function run() {
   await main.loadURL(url);
   let owner;
   let ownerParent;
-  let parentResolver;
-  const views = new BrowserViewManager({ create: (id) => new BrowserViewController(parentResolver(id), id, () => {}) });
+  let parentForSession;
+  const views = new BrowserViewManager({ create: (id) => new BrowserViewController(parentForSession(id), id, () => {}) });
   const presentation = createWorkHubPresentation({
     mainWindow: () => main.isDestroyed() ? undefined : main,
     ensureMainWindow: async () => main,
@@ -75,11 +75,14 @@ async function run() {
   presentation.attachMainWindow(main);
   registerBrowserIpc({
     mainWindowController: {
-      getBrowserViews: () => views,
-      ownsRenderer: (wc) => !wc.isDestroyed() && (wc === owner || (!main.isDestroyed() && wc === main.webContents)),
+      getBrowserViews: (resolve) => {
+        parentForSession = resolve;
+        return views;
+      },
       isMainRenderer: (wc) => !main.isDestroyed() && wc === main.webContents,
-      browserParentForRenderer: (wc) => wc === owner ? ownerParent : main.contentView,
-      setBrowserViewParentResolver: (resolve) => { parentResolver = resolve; },
+    },
+    auxiliaryWindowRegistry: {
+      rendererParent: (wc) => wc === owner ? ownerParent : undefined,
     },
     isHostActive: (ref) => ref.hostId === scope.hostId && ref.targetEpoch === scope.targetEpoch,
   });
@@ -164,8 +167,13 @@ async function run() {
     await capture('background-restored', true);
     await command(owner, 'dock');
     await capture('redocked', true);
-    await command(owner, 'detach');
-    main.close();
+    // Leave the conversation docked so the close handler exercises its
+    // production path for moving the live view to the floating window.
+    // Dispatch the close handlers directly before destroying the synthetic
+    // fixture window; BrowserWindow.close() can block in Xvfb while reparenting
+    // WebContentsView children during the native close handshake.
+    main.emit('close');
+    main.destroy();
     await wait(100);
     assert.ok(controller.hasParent(ownerParent));
     assert.equal(controller.state().hasPage, true);
