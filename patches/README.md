@@ -102,7 +102,7 @@ painted on resume without another write. It fails against the unpatched bundle.
 Delete when upstream routes selection changes through its paused-render
 contract and both bundle regressions pass without the patch.
 
-## `@earendil-works/pi-tui@0.85.1`
+## `@earendil-works/pi-tui@0.87.1`
 
 
 Editor undo snapshots deep-clone all stored paste strings for each typed word,
@@ -130,7 +130,7 @@ Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle
 identity against the new memoizer and container implementations.
 The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
-## `@modelcontextprotocol/client@2.0.0`
+## `@modelcontextprotocol/client@2.1.0`
 
 Pending transport sends retain settled request arguments and results through
 error observers, even after response, abort, timeout, or connection close.
@@ -174,7 +174,7 @@ deltas. See #1967 / #1976 and
 
 Delete when the ambiguity and blank-name tests pass against an unpatched package.
 
-## `@astryxdesign/core@0.6.2`
+## `@astryxdesign/core@0.6.3`
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short

@@ -127,8 +127,8 @@
     "yaml": "2.9.1"
   },
   "allowScripts": {
-    "esbuild@0.27.7": true,
-    "@jackwener/opencli@1.8.4": true,
+    "esbuild@0.28.2": true,
+    "@jackwener/opencli@1.8.8": true,
     "node-pty@1.2.0-beta.15": true
   },
   "overrides": {
@@ -137,6 +137,9 @@
     },
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.12"
+    },
+    "@jackwener/opencli@1.8.8": {
+      "undici": "7.29.1"
     }
   }
 }
