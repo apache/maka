@@ -396,6 +396,12 @@ async function branchSideConversation(input: {
       input.context,
     );
     if (!branch.ok) {
+      if (branch.error.code === 'session_busy') {
+        // `session.branch.create` waits for the source session root state to
+        // return to idle, which can lag a beat behind a terminal `turn.query`.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        continue;
+      }
       assert.fail(`Side conversation branch failed: ${JSON.stringify(branch)}`);
     }
     if (branch.result.kind === 'committed') {
@@ -433,6 +439,13 @@ async function reviseSideConversation(input: {
       input.context,
     );
     if (!revision.ok) {
+      if (revision.error.code === 'session_busy') {
+        // `turn.query` reports a terminal snapshot as soon as the turn is
+        // persisted, but `session.revision.create` separately waits for the
+        // root state to flip back to idle and can observe it briefly active.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        continue;
+      }
       assert.fail(`Side conversation revision failed: ${JSON.stringify(revision)}`);
     }
     if (revision.result.kind === 'committed') {
