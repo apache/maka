@@ -39,6 +39,7 @@ import { join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
@@ -249,6 +250,7 @@ import {
 } from './client-plugin-transport.js';
 import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
+import { createClientNetworkProxyApplier } from "./client-network-proxy.js";
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
@@ -1647,11 +1649,30 @@ function registerHostClientIpc(
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
+  // Client-owned outbound traffic (the bot bridges) is proxied here, not in the
+  // Host: it runs in this process and the Host never sees it.
+  const clientNetworkProxy = createClientNetworkProxyApplier({
+    profileKind: target.kind,
+    resolve: () => client.resolveNetworkProxy(),
+    // Reported on the same redacted support-log channel as the bot connection
+    // failures this causes, so the two appear together when a user attaches
+    // their log. Retries continue, so this states what is degraded meanwhile.
+    onError: (error) =>
+      console.warn(
+        `[bots:proxy] proxy_unresolved: bot traffic stays direct until the Runtime Host answers — ${redactSecrets(
+          error instanceof Error ? error.message : String(error),
+        )}`,
+      ),
+  });
+  void clientNetworkProxy.refresh();
   const runtimeHostSettings = createRuntimeHostSettingsModule({
     client,
     settingsStore,
     applyClientSettings: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
+    },
+    onNetworkProxyChanged: () => {
+      void clientNetworkProxy.refresh();
     },
   });
   registerRuntimeHostSettingsIpc({

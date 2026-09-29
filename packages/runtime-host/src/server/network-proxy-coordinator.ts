@@ -23,10 +23,12 @@ import { testProxyConnection } from '@maka/runtime/network/proxy-test';
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import type { NetworkProxyTestInput, OperationOutcome } from '../protocol/index.js';
 import type { NetworkProxyOperationHandlerMap } from './operation-dispatcher.js';
+import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 export class HostNetworkProxyCoordinator {
   readonly handlers: NetworkProxyOperationHandlerMap = {
     'network-proxy.test': (input) => this.#test(input),
+    'network-proxy.resolve': () => this.#resolve(),
   };
 
   constructor(
@@ -69,6 +71,44 @@ export class HostNetworkProxyCoordinator {
         error: {
           code: 'internal_failure',
           message: 'Network proxy test failed',
+        },
+      };
+    }
+  }
+
+  /**
+   * Serves the effective proxy to a Client that owns outbound traffic the Host
+   * never sees. Model execution resolves this Host-side and injects a
+   * transport; the bot bridges run in the Client process, so without this the
+   * configured proxy cannot reach them at all.
+   */
+  async #resolve(): Promise<OperationOutcome<'network-proxy.resolve'>> {
+    try {
+      const resolved = await this.policy.resolveNetworkProxyExecution();
+      if (resolved.kind === 'credential_not_configured') {
+        return { ok: true, result: { kind: 'credential_not_configured' } };
+      }
+      const proxy = toRuntimePolicyProxy(
+        resolved.networkProxy,
+        resolved.secretMaterial.networkProxy?.secret,
+      );
+      return {
+        ok: true,
+        result: {
+          kind: 'ready',
+          ...(proxy === null
+            ? {}
+            : { proxy: { ...proxy, enabled: true, bypassList: [...proxy.bypassList] } }),
+        },
+      };
+    } catch {
+      // The message is deliberately fixed: the underlying failure can carry
+      // proxy credential material.
+      return {
+        ok: false,
+        error: {
+          code: 'internal_failure',
+          message: 'Network proxy resolution failed',
         },
       };
     }
