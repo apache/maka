@@ -28,6 +28,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { ResizableProps } from '@astryxdesign/core/Resizable';
+import { SHELL_CONTENT_AREA_GAP_PX } from '../../../application/contracts/shell-layout-contract.js';
 import {
   loadWorkbarLayout,
   isSessionWorkbarCollapsed,
@@ -53,8 +54,7 @@ const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
  * `compact` is the shell's narrow-window reading; see `withCompact`.
  *
  * `layoutContainerRef` is the grid holding both the conversation column and the
- * rail. Measuring it and reading its seam spacing is what makes the rail's
- * ceiling a function of the available space.
+ * rail. Its width and the shell's shared seam size determine the ceiling.
  */
 export function useWorkbarLayoutState(
   activeSessionId: string | undefined,
@@ -99,12 +99,9 @@ export function useWorkbarLayoutState(
     const measure = () => {
       const available = container.getBoundingClientRect().width;
       if (available <= 0) return;
-      const layoutGap = Number.parseFloat(
-        getComputedStyle(container).getPropertyValue('--agents-content-area-gap'),
-      ) || 0;
       dispatch({
         type: 'measure-right-ceiling',
-        ceiling: sessionWorkbarCeiling(available, layoutGap),
+        ceiling: sessionWorkbarCeiling(available, SHELL_CONTENT_AREA_GAP_PX),
       });
     };
     measure();

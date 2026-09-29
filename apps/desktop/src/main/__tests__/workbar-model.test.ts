@@ -22,6 +22,11 @@ import { sessionIdSetsEqual } from '../../renderer/features/conversation/index.j
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
+  SHELL_CONTENT_AREA_GAP_PX,
+  shellWorkbarGridRoom,
+} from '../../renderer/application/contracts/shell-layout-contract.js';
+import { SHELL_WINDOW_MIN_WIDTH } from '../../shared/shell-layout-contract.js';
+import {
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
   loadWorkbarLayout,
@@ -147,6 +152,9 @@ describe('Workbar topology', () => {
       panels: createSessionWorkbarPanelsState(),
       activeSessionId: 'session-a',
       collapsedBySession: {},
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: false,
       rightWidthPreference: 900,
       // The hook measures the container; a test states the ceiling the layout
@@ -187,31 +195,46 @@ describe('Workbar topology', () => {
     assert.equal(sessionWorkbarDisplayWidth(state), SESSION_WORKBAR_MIN_WIDTH);
   });
 
-  it('keeps the rail at its floor when the container cannot fit both columns', () => {
+  it('lets an explicitly opened Workbar fit below its drag minimum at the window floor', () => {
     cleanups.push(installMemoryLocalStorage());
     let state: WorkbarLayoutState = {
       panels: createSessionWorkbarPanelsState(),
       activeSessionId: 'session-a',
       collapsedBySession: {},
+      compact: true,
+      compactCollapsed: { 'session-a': false },
+      spaceCollapsed: false,
       bottomOpen: false,
       rightWidthPreference: 900,
       rightWidthCeiling: undefined,
       bottomHeight: 300,
     };
-    // The ceiling leaves the conversation column exactly its target; the plan's
-    // worked example is a 1600px container with a 12px gap leaving 1108px.
-    assert.equal(sessionWorkbarCeiling(1600, 12), 1108);
+    // The measured ceiling and the shell's CSS cap share the 400px conversation
+    // floor and two 4px seams (one outside and one inside the detail grid).
+    assert.equal(sessionWorkbarCeiling(1600, 12), 1188);
     assert.equal(
       1600 - 12 - sessionWorkbarCeiling(1600, 12),
       SESSION_CONVERSATION_MIN_WIDTH,
     );
-    // 700px of container minus a 4px gap leaves 216 for the rail — below its
-    // floor, so the rail keeps 340 and the conversation column is the one that
-    // gives way.
-    assert.equal(sessionWorkbarCeiling(700, 4), 216);
-    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: sessionWorkbarCeiling(700, 4) });
-    assert.equal(sessionWorkbarMaxWidth(state), SESSION_WORKBAR_MIN_WIDTH);
-    assert.equal(sessionWorkbarDisplayWidth(state), SESSION_WORKBAR_MIN_WIDTH);
+    const compactRoom = shellWorkbarGridRoom(SHELL_WINDOW_MIN_WIDTH, 0);
+    assert.equal(compactRoom, 192);
+    assert.equal(
+      sessionWorkbarCeiling(
+        SHELL_WINDOW_MIN_WIDTH - SHELL_CONTENT_AREA_GAP_PX,
+        SHELL_CONTENT_AREA_GAP_PX,
+      ),
+      compactRoom,
+    );
+    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: compactRoom });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    assert.equal(sessionWorkbarMaxWidth(state), 192);
+    assert.equal(sessionWorkbarDisplayWidth(state), 192);
+    assert.equal(state.rightWidthPreference, 900);
+    assert.equal(reduceWorkbarLayout(state, { type: 'resize', placement: 'right', size: 192 }), state);
+    state = reduceWorkbarLayout(state, { type: 'measure-right-ceiling', ceiling: 1188 });
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    assert.equal(sessionWorkbarDisplayWidth(state), 900);
   });
 
   it('ignores an unreadable or unchanged measurement', () => {
@@ -220,6 +243,9 @@ describe('Workbar topology', () => {
       panels: createSessionWorkbarPanelsState(),
       activeSessionId: 'session-a',
       collapsedBySession: {},
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: false,
       rightWidthPreference: 480,
       rightWidthCeiling: 1108,

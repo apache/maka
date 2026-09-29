@@ -19,10 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  appShellFrameStyle,
-  APP_SHELL_CONTENT_AREA_GAP,
-} from '../../renderer/shell/frame-style.js';
+import { appShellFrameStyle } from '../../renderer/shell/frame-style.js';
 
 test('every published width stays a <length>, collapsed included', () => {
   const collapsed = appShellFrameStyle({
@@ -71,19 +68,4 @@ test('the Workbar cap is published on the frame that owns --maka-sidenav-width',
   // element that defines it — see WORKBAR_CAP in frame-style.ts.
   assert.ok(cap.includes('var(--maka-sidenav-width)'), cap);
   assert.ok(cap.includes('100cqi'), cap);
-});
-
-test('the gap the rail is measured against is the gap the shell draws', () => {
-  const style = appShellFrameStyle({
-    sessionListCollapsed: false,
-    sessionListWidth: 291,
-  }) as Record<string, string>;
-
-  // One source, two readers: the CSS rules that draw the seam and the Workbar
-  // that subtracts it from the container. A second hand-kept copy would let the
-  // conversation column lose pixels to a gap the layout does not draw.
-  assert.equal(
-    style['--agents-content-area-gap'],
-    `${APP_SHELL_CONTENT_AREA_GAP}px`,
-  );
 });
