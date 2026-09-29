@@ -527,6 +527,7 @@ export function createAppShellChatActions(deps: {
           { sessionId },
         );
       }
+      throw error;
     }
   }
 

@@ -364,6 +364,7 @@ export function ChatComposerRegion({
         )}
         {activeQuestion && (
           <UserQuestionPrompt
+            key={activeQuestion.requestId}
             request={activeQuestion}
             onRespond={respondToUserQuestion}
             onStop={stop}
