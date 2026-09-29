@@ -1969,8 +1969,15 @@ export function buildComputerUseTools(deps: {
             } catch {
               final = undefined;
             }
-            const headline = stopped
-              ? `maka_computer.element_sequence stopped at step ${done.length} of ${input.steps.length}: ${stopped}`
+            const stoppedError = stopped
+              ? (publicBindingFailureCode(stopped) ?? 'outcome_unknown')
+              : undefined;
+            const stoppedRecovery =
+              stopped && stopped in BINDING_FAILURE_RECOVERY
+                ? BINDING_FAILURE_RECOVERY[stopped as BindingFailureReason]
+                : undefined;
+            const headline = stoppedError
+              ? `maka_computer.element_sequence stopped at step ${done.length} of ${input.steps.length}: ${stoppedError}${stoppedRecovery ? ` — ${stoppedRecovery}` : ''}`
               : closingBlock
                 ? `maka_computer.element_sequence failed after ${done.length} of ${input.steps.length} steps: ${closingBlock} — ${SESSION_BLOCK_RECOVERY[closingBlock]}`
                 : `maka_computer.element_sequence ok (${done.length} of ${input.steps.length} steps)`;
@@ -1987,10 +1994,8 @@ export function buildComputerUseTools(deps: {
             return {
               text: `${headline}${persistedTail}`,
               modelText: `${headline}\n${stepLines}${modelTail}`,
-              ...(stopped
-                ? {
-                    error: publicBindingFailureCode(stopped) ?? 'outcome_unknown',
-                  }
+              ...(stoppedError
+                ? { error: stoppedError }
                 : closingBlock
                   ? { error: closingBlock }
                   : {}),

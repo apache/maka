@@ -1358,7 +1358,14 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       ctx(undefined, { toolCallId: 'sequence' }),
     )) as { error?: string; text: string };
     assert.equal(sequence.error, 'duplicate_action');
-    assert.match(sequence.text, /stopped at step 0 of 1: retired_action/);
+    const modelOutput = tool.toModelOutput?.({
+      toolCallId: 'sequence',
+      input: {},
+      output: sequence,
+    });
+    assert.match(JSON.stringify(modelOutput), /stopped at step 0 of 1: duplicate_action/);
+    assert.match(JSON.stringify(modelOutput), /Address a different element/);
+    assert.doesNotMatch(JSON.stringify(modelOutput), /retired_action/);
     assert.equal(dispatches, 1);
   });
 
