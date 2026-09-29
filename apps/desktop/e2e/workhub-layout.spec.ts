@@ -60,6 +60,44 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       return conversation.left >= 0 && conversation.right <= innerWidth + 1;
     })).toBe(true);
   }
+  const shellFloor = await page.locator('.maka-shell-astryx').evaluate((element) =>
+    Math.round(parseFloat(getComputedStyle(element).minWidth)));
+  const nativeMinWidth = await mainWindow.evaluate((window) => window.getMinimumSize()[0]);
+  // The renderer's shell floor can be below the native safety floor when both
+  // panels are hidden. Requests below the native floor must clamp the whole
+  // host and its docked WorkHub together instead of reducing the main window
+  // to an unusable titlebar sliver.
+  expect(nativeMinWidth).toBe(600);
+  const desktopConversationFloor = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  const workhubConversationFloor = await workhub.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  expect(workhubConversationFloor).toBe(desktopConversationFloor);
+  await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+    getComputedStyle(element).minWidth)).toBe(desktopConversationFloor);
+  const dockLeft = await page.locator('.workHubDock').evaluate((element) =>
+    Math.round(element.getBoundingClientRect().left));
+  let frozenDockWidth: number | undefined;
+  for (const width of [shellFloor - 10, shellFloor - 40]) {
+    const contentWidth = await mainWindow.evaluate((window, nextWidth) => {
+      window.setBounds({ width: nextWidth });
+      return window.getContentSize()[0];
+    }, width);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(nativeMinWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(shellFloor);
+    const dockWidth = await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width));
+    expect(await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(dockLeft);
+    frozenDockWidth ??= dockWidth;
+    expect(dockWidth).toBe(frozenDockWidth);
+    await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width))).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(0);
+  }
   const restoredContentWidth = await mainWindow.evaluate((window, bounds) => {
     window.setBounds(bounds);
     return window.getContentSize()[0];

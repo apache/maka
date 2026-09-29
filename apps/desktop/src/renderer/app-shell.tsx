@@ -96,14 +96,8 @@ import type { OverlaysShellProjection } from './features/overlays/index.js';
 import * as SessionCollaboration from './features/session-collaboration';
 import type { SessionCollaborationDialogProjection } from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
-import {
-  desktopSlashCommandAvailability,
-  parseDesktopSlashCommand,
-} from './desktop-slash-command';
-import {
-  mergeWorkspaceReferences,
-  rebaseWorkspaceFileReferences,
-} from './follow-up-submit-routing';
+import { desktopSlashCommandAvailability, parseDesktopSlashCommand } from './desktop-slash-command';
+import { mergeWorkspaceReferences, rebaseWorkspaceFileReferences } from './follow-up-submit-routing';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -131,10 +125,7 @@ import { readNavigationState, selectNavigation } from './nav-selection';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
-import {
-  createContextCompactionPresentation,
-  presentContextCompactionResult,
-} from './app-shell-context-compaction';
+import { createContextCompactionPresentation, presentContextCompactionResult } from './app-shell-context-compaction';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
@@ -162,6 +153,10 @@ import {
 } from './app-shell-revision-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
+import {
+  isSessionWorkspaceUnavailableError,
+  showSessionWorkspaceUnavailableToast,
+} from './session-workspace-errors';
 import {
   useActiveSessionEvents,
   useAppShellBootstrapSubscriptions,
@@ -191,10 +186,6 @@ import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
 
 import { useSystemUiLocale } from './use-system-ui-locale';
-import {
-  isSessionWorkspaceUnavailableError,
-  showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 
 type ComposerImportOwner = {
@@ -1340,26 +1331,6 @@ function AppShellContent({
     return !sharedSessionActive && (!!activeIdRef.current || !!taskEntry.selectors.target);
   }
 
-  /**
-   * The send the composer calls, wrapped so the new-task target cannot move
-   * out from under it (#3408). `sendCurrent` captures the draft key it
-   * submitted from and clears exactly that key once this resolves; the picker
-   * stays live throughout, and the catalog can settle on its own. Holding the
-   * flag for the whole call gives the submission one owner, and
-   * ChatComposerRegion defers its carry until it drops.
-   */
-  async function sendOwningItsTarget(
-    text: string,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean | void> {
-    setNewTaskSendPending(true);
-    try {
-      return await sendWithAttachments(text, metadata);
-    } finally {
-      setNewTaskSendPending(false);
-    }
-  }
-
   function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
     const createdSessionId = activeIdRef.current;
     if (!sourceSessionId && createdSessionId)
@@ -1392,231 +1363,67 @@ function AppShellContent({
     }
   }
 
-  async function sendWithAttachments(
-    text: string,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean | void> {
-    const revision = revisionDraftRef.current;
-    const revisionSend = Boolean(
-      revision && activeIdRef.current === revision.draftSessionId,
-    );
-    const slashCommand = parseDesktopSlashCommand(text);
-    // Message placement expresses user intent; Host decides admission.
-    const sessionId = activeIdRef.current;
-    const workspaceFileReferences = mergeWorkspaceReferences(
-      text,
-      metadata?.workspaceFileReferences,
-      sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
-    );
-    const followUpAtSubmit = slashCommand ? undefined : metadata?.followUpMode;
-    if (sessionId && followUpAtSubmit) {
-      const queued = await enqueueFollowUp(sessionId, text, followUpAtSubmit, {
-        ...metadata,
-        workspaceFileReferences,
-      });
-      if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
-      return queued;
-    }
-    if (
-      revisionSend &&
-      revision &&
-      text.trim() === revision.originalText.trim() &&
-      !hasPendingContext
-    ) {
-      const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
+  async function compactSession(sessionId: string): Promise<boolean> {
+    try {
+      const result = await window.maka.sessions.compact(sessionId);
+      return presentContextCompactionResult(
+        contextCompactionPresentation,
+        sessionId,
+        result,
+        uiLocale,
+      );
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return false;
+      if (isSessionWorkspaceUnavailableError(error)) {
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+      } else {
+        showSessionError(
+          sessionId,
+          shellCopy.compactErrorTitle,
+          localizedShellErrorMessage(error, shellCopy.compactErrorFallback, uiLocale),
+        );
+      }
       return false;
     }
-    if (revisionSend && revision) {
-      const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (hasPendingContext) {
-        toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
-        return false;
-      }
-      if (slashCommand) {
-        toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
-        return false;
-      }
-      if (!(await prepareRevisionSend(text))) return false;
-    }
-    if (slashCommand?.kind === 'compact') {
-      const sessionId = activeIdRef.current;
-      if (!sessionId) return true;
-      try {
-        const result = await window.maka.sessions.compact(sessionId);
-        return presentContextCompactionResult(
-          contextCompactionPresentation,
-          sessionId,
-          result,
-          uiLocale,
-        );
-      } catch (error) {
-        if (activeIdRef.current !== sessionId) return false;
-        if (isSessionWorkspaceUnavailableError(error)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
-        } else {
-          showSessionError(
-            sessionId,
-            shellCopy.compactErrorTitle,
-            localizedShellErrorMessage(error, shellCopy.compactErrorFallback, uiLocale),
-          );
-        }
-        return false;
-      }
-    }
-    if (slashCommand?.kind === 'side') {
-      if (!activeIdRef.current) {
-        toastApi.info(
-          shellCopy.sideChatUnavailableTitle,
-          shellCopy.sideChatUnavailableDescription,
-        );
-        return false;
-      }
-      if (
-        hasPendingContext ||
-        hasStagedQuotes ||
-        metadata?.workspaceFileReferences?.length
-      ) {
-        toastApi.info(
-          shellCopy.sideChatContextPendingTitle,
-          shellCopy.sideChatContextPendingDescription,
-        );
-        return false;
-      }
-      commands.openTool('side-chat', 'right', {
-        ...(slashCommand.command.prompt
-          ? { initialPrompt: slashCommand.command.prompt }
-          : {}),
-      });
-      return true;
-    }
-    if (slashCommand?.kind === 'swarm') {
-      const swarmCommand = slashCommand.command;
-      if (swarmCommand.kind === 'status') {
-        const active = activeOrchestrationMode === 'swarm';
-        toastApi.info(
-          active ? shellCopy.swarmModeEnabledTitle : shellCopy.swarmModeDisabledTitle,
-          shellCopy.swarmModeStatusDescription,
-        );
-        return true;
-      }
-      if (swarmCommand.kind === 'set_mode') {
-        const changed = await setOrchestrationModeActive('swarm', swarmCommand.mode === 'swarm');
-        if (changed) {
-          toastApi.info(
-            swarmCommand.mode === 'swarm'
-              ? shellCopy.swarmModeEnabledTitle
-              : shellCopy.swarmModeDisabledTitle,
-            shellCopy.swarmModeStatusDescription,
-          );
-        }
-        return changed;
-      }
-      const pending = submittableAttachments;
-      const quotes = quotesForSend();
-      const ok = await send(swarmCommand.task, pending, {
-        turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-        ...directoryOptions,
-        ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
-          ? {
-              workspaceFileReferences: rebaseWorkspaceFileReferences(
-                text,
-                swarmCommand.task,
-                metadata.workspaceFileReferences,
-              ),
-            }
-          : {}),
-      });
-      if (ok !== false) {
-        clearSubmittedContext(pending);
-        if (quotes) clearQuotes();
-        settleNewTaskImageNoticeOwner(sessionId);
-      }
-      return ok;
-    }
-    if (slashCommand?.kind === 'graph') {
-      const graphCommand = slashCommand.command;
-      if (graphCommand.kind === 'status') {
-        const active = activeOrchestrationMode === 'graph';
-        toastApi.info(
-          active ? shellCopy.graphModeEnabledTitle : shellCopy.graphModeDisabledTitle,
-          shellCopy.graphModeStatusDescription,
-        );
-        return true;
-      }
-      if (graphCommand.kind === 'history') {
-        toastApi.info(shellCopy.graphHistoryTitle, shellCopy.graphHistoryDescription);
-        return true;
-      }
-      if (graphCommand.kind === 'set_mode') {
-        const changed = await setOrchestrationModeActive('graph', graphCommand.mode === 'graph');
-        if (changed) {
-          toastApi.info(
-            graphCommand.mode === 'graph'
-              ? shellCopy.graphModeEnabledTitle
-              : shellCopy.graphModeDisabledTitle,
-            shellCopy.graphModeStatusDescription,
-          );
-        }
-        return changed;
-      }
-      const pending = submittableAttachments;
-      const quotes = quotesForSend();
-      const ok = await send(graphCommand.task, pending, {
-        turnOrchestration: { mode: 'graph', source: 'slash_command' },
-        ...directoryOptions,
-        ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
-          ? {
-              workspaceFileReferences: rebaseWorkspaceFileReferences(
-                text,
-                graphCommand.task,
-                metadata.workspaceFileReferences,
-              ),
-            }
-          : {}),
-      });
-      if (ok !== false) {
-        clearSubmittedContext(pending);
-        if (quotes) clearQuotes();
-        settleNewTaskImageNoticeOwner(sessionId);
-      }
-      return ok;
-    }
-    const pending = submittableAttachments;
-    const expectedRevisionDraft = revisionSend
-      ? revisionDraftRef.current
-      : undefined;
-    const quotes = quotesForSend();
-    const ok = await send(text, pending, {
-      waitForHostAdmission: revisionSend,
-      targetSessionId: expectedRevisionDraft?.draftSessionId,
-      onSessionResolved: commands.bindNewTaskSessionResolver(readSelectionRevision()),
-      ...directoryOptions,
-      ...(quotes ? { quotes } : {}),
-      ...(workspaceFileReferences.length
-        ? { workspaceFileReferences }
-        : {}),
-    });
-    if (ok !== false) {
-      clearSubmittedContext(pending);
-      if (quotes) clearQuotes();
-      settleNewTaskImageNoticeOwner(sessionId);
-      if (sessionId) delete retractedWorkspaceReferencesRef.current[sessionId];
-    }
-    if (ok !== false && revisionSend) {
-      if (expectedRevisionDraft) {
-        completeTurnRevisionCopyAttempt(expectedRevisionDraft);
-        composerRef.current?.clearDraft(expectedRevisionDraft.draftSessionId);
-        if (expectedRevisionDraft.sourceSessionId !== expectedRevisionDraft.draftSessionId) {
-          composerRef.current?.clearDraft(expectedRevisionDraft.sourceSessionId);
-        }
-      }
-      commitRevisionDraft(null);
-    }
-    return ok;
   }
+
+  // The composer's submit callback. Built by the shared factory (same one the
+  // regression test drives), so there is no local submit logic here that could
+  // bypass the covered path.
+  const sendOwningItsTarget = Conversation.createRevisionAwareOnSend(
+    {
+      shellCopy,
+      toastApi,
+      activeIdRef,
+      revisionDraftRef,
+      composerRef,
+      retractedWorkspaceReferencesRef,
+      hasPendingContext,
+      hasStagedQuotes,
+      submittableAttachments,
+      directoryOptions,
+      quotesForSend,
+      clearSubmittedContext,
+      clearQuotes,
+      prepareRevisionSend,
+      send,
+      completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
+      parseSlashCommand: parseDesktopSlashCommand,
+      mergeWorkspaceReferences,
+      rebaseWorkspaceFileReferences,
+      revisionUnavailableCopy: desktopConversationCopy.actions,
+      compactSession,
+      enqueueFollowUp,
+      settleNewTaskImageNoticeOwner,
+      commitRevisionDraft,
+      resolveNewTaskSessionHandler: () =>
+        commands.bindNewTaskSessionResolver(readSelectionRevision()),
+      openSideChat: (options) => commands.openTool('side-chat', 'right', options),
+      getActiveOrchestrationMode: () => activeOrchestrationMode,
+      setOrchestrationModeActive,
+      setNewTaskSendPending,
+    },
+  );
 
   const stop = createAppShellStopAction({
     uiLocale,
@@ -2237,9 +2044,9 @@ function AppShellContent({
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />
               <WorkHubMainNavigation workbarReady={workHubActive && selectors.ready}
-                onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRight}
+                onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRightPanel}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock workbarTogglePosition={workbarTogglePosition} workbarCollapsed={selectors.rightCollapsed} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one

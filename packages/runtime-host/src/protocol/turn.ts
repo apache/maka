@@ -166,18 +166,19 @@ interface TurnSnapshotBase {
   runId: string;
 }
 
-export type LiveTurnSnapshot = TurnSnapshotBase & {
-  status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
-  providerRetry?: TurnProviderRetry;
-  /**
-   * Set when this live Turn is a host-owned explicit context-compaction run, so
-   * the renderer can show a "compacting" transcript row while it is in flight.
-   * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
-   * emits no assistant text, and this survives a Desktop reconnect because the
-   * Host re-projects the live snapshot.
-   */
-  rootExecutionKind?: 'context_compact';
-};
+export type LiveTurnSnapshot = TurnSnapshotBase &
+  Readonly<{
+    status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
+    providerRetry?: TurnProviderRetry;
+    /**
+     * Set when this live Turn is a host-owned explicit context-compaction run, so
+     * the renderer can show a "compacting" transcript row while it is in flight.
+     * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
+     * emits no assistant text, and this survives a Desktop reconnect because the
+     * Host re-projects the live snapshot.
+     */
+    rootExecutionKind?: 'context_compact';
+  }>;
 
 export type TurnSnapshot =
   | LiveTurnSnapshot
@@ -607,7 +608,11 @@ export function decodeTurnStartResult(value: unknown): TurnStartResult {
   }
   if (record.kind === 'started') {
     assertExactKeys(record, 'started Turn result', ['kind', 'turn', 'skillInvocation']);
-    return { kind: 'started', turn: decodeTurnSnapshot(record.turn), skillInvocation };
+    return {
+      kind: 'started',
+      turn: decodeTurnSnapshot(record.turn),
+      skillInvocation,
+    };
   }
   if (record.kind === 'blocked') {
     assertExactKeys(record, 'blocked Turn result', ['kind', 'skillInvocation']);
@@ -706,15 +711,20 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     ['sessionId', 'turnId', 'runId', 'status'],
     ['providerRetry', 'rootExecutionKind'],
   );
+  const liveFields = {
+    ...(record.providerRetry === undefined
+      ? {}
+      : { providerRetry: decodeTurnProviderRetry(record.providerRetry) }),
+    ...(record.rootExecutionKind === undefined
+      ? {}
+      : {
+          rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind),
+        }),
+  };
   return {
     ...base,
     status,
-    ...(record.providerRetry !== undefined
-      ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
-      : {}),
-    ...(record.rootExecutionKind !== undefined
-      ? { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }
-      : {}),
+    ...liveFields,
   };
 }
 
@@ -723,7 +733,10 @@ export function decodeContextCompactionOutcome(value: unknown): ContextCompactio
   const kind = requireString(record.kind, 'kind', 32);
   if (kind === 'compacted') {
     assertExactKeys(record, 'compacted context outcome', ['kind', 'checkpointId']);
-    return { kind, checkpointId: requireEntityId(record.checkpointId, 'checkpointId') };
+    return {
+      kind,
+      checkpointId: requireEntityId(record.checkpointId, 'checkpointId'),
+    };
   }
   if (kind === 'unchanged' || kind === 'failed') {
     assertExactKeys(record, `${kind} context outcome`, ['kind', 'reason']);

@@ -58,6 +58,10 @@
   position: relative;
   height: 100dvh;
   width: 100%;
+  /* The query container for the column caps `appShellFrameStyle` publishes
+     (`100cqi`), so they measure the frame rather than the viewport — the same
+     thing in the app, and the story's own frame width in Storybook. */
+  container-type: inline-size;
   padding: 0;
   /* PR-APPFRAME-FILL-0: pin `width:100%` so the frame always spans the
      window regardless of inner content's max-content — without it, narrow
@@ -83,7 +87,11 @@
    paint to the window top (Codex / Claude Desktop / Cursor). */
 .maka-shell-astryx {
   width: 100%;
-  min-width: 0;
+  /* Include the nav column. The published column widths are already capped so
+     this sum fits the frame; the floor only engages if the frame itself is
+     narrower than the conversation minimum, which the native window minimum
+     rules out. */
+  min-width: calc(var(--maka-sidenav-width) + var(--maka-conversation-min-width) + var(--agents-content-area-gap));
   min-height: 0;
   overflow: hidden;
 }
@@ -92,6 +100,15 @@
    step, and the plate edge is the single seam. */
 .maka-shell-astryx .astryx-app-shell-sidenav {
   background: var(--agents-layout-bg);
+  /* AppShell's LayoutPanel otherwise sizes itself from its child's intrinsic
+     width. SideNav also carries its own resizable width, so the two boxes can
+     diverge and the panel clips the wider nav on a narrow window. Both must
+     consume the frame-published sidebar width, including the animated target
+     while the rail opens or closes. */
+  width: var(--maka-sidenav-width);
+  max-width: var(--maka-sidenav-max-width);
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 
@@ -195,6 +212,10 @@
    the ease dead for every collapse after the handle had once been touched. */
 .maka-shell-astryx .maka-sidenav-motion {
   display: flex;
+  /* The sidebar is the coordinate origin for the Desktop content and the
+     native WorkHub host. Its width is the frame-published one, which already
+     yields to the conversation minimum; flex must not shrink it further. */
+  flex: 0 0 auto;
   min-width: 0;
   min-height: 0;
   /* The nav sizes itself against a definite height (`.maka-session-panel`
@@ -202,7 +223,13 @@
      content and the footer leaves the window — the geometry
      the OverflowingSidebar shell story locks. */
   height: 100%;
-  width: var(--maka-sidenav-width);
+  /* The user's width eases; the room the frame leaves does not, so a window
+     resize moves the rail with the window edge. The width therefore reads the
+     UNCAPPED preference: folding the cap into this transitioned property made
+     every resize tick restart the ease, the rail trailed the window edge, and
+     the conversation column sawtoothed under it (frame-style.ts). */
+  width: var(--maka-sidenav-user-width, var(--maka-sidenav-width));
+  max-width: var(--maka-sidenav-max-width);
   /* Clip the expanded content while the sidebar width catches up. */
   overflow: clip;
   transition: width var(--duration-large) var(--ease-out-strong);
@@ -237,6 +264,18 @@
   /* !important: beats SideNav's inline width — see the note above. */
   width: 100% !important;
   min-width: 0;
+}
+
+/* When SideNav is resizable, Astryx puts the nav inside an additional handle
+   container and writes the dragged width on the nav itself. Constraining only
+   the motion wrapper's direct child leaves that inline width wider than the
+   LayoutPanel, so the panel clips the nav at the narrow breakpoint. The nav
+   root must follow the same box as its wrapper. */
+.maka-shell-astryx .maka-sidenav-motion .astryx-side-nav {
+  width: 100% !important;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .maka-panel {
@@ -345,8 +384,13 @@
   .appFrame:has(.maka-session-workbar[data-placement='right']:not([data-collapsed]))
 )
   .maka-window-titlebar {
+  /* The reserve owes the DRAWN column: on a window too narrow for the
+     configured Workbar the frame caps the element, and reserving the
+     configured width would squeeze the identity against space nobody
+     occupies. */
   --maka-titlebar-workbar-reserve: calc(
-    var(--maka-session-workbar-width) + var(--agents-content-area-gap)
+    min(var(--maka-session-workbar-width), var(--maka-session-workbar-max-width)) +
+      var(--agents-content-area-gap)
   );
 }
 

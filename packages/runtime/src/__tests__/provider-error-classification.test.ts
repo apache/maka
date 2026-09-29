@@ -515,6 +515,7 @@ describe('Provider error classification', () => {
       'Prompt contains 5000 tokens; too large for model with 4096 maximum context length',
       'invalid params, context window exceeds limit',
       'Your request exceeded model token limit: 200000',
+      'Your request exceeded k3-256k model token limit: 262144',
       'prompt token count of 21000 exceeds the limit of 16384',
       'the prompt contains too many tokens',
       'Input token limit exceeded: 250000 tokens > 200000 maximum',

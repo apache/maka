@@ -75,6 +75,10 @@ export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selector
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
 export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
+export {
+  createRevisionAwareOnSend,
+  type RevisionSendPorts,
+} from './controller/composer-submit.js';
 export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';

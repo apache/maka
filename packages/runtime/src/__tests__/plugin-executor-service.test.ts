@@ -155,6 +155,37 @@ test('executor bindings pin one provider generation', async () => {
   await root.fiber.dispose();
 });
 
+test('executor acknowledgement is bound to one Session and provider generation', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const owner = plugin(root, 'profile', 'provider', 1);
+  const acknowledged: string[] = [];
+  const abandoned: string[] = [];
+  const dispose = owner.executors.register({
+    id: 'remote',
+    execute: async () => ({ status: 'completed', text: 'ok' }),
+    acknowledgeExecution: async (conversationKey, turnId) => {
+      acknowledged.push(`${conversationKey}:${turnId}`);
+    },
+    abandonExecution: async (conversationKey, turnId) => {
+      abandoned.push(`${conversationKey}:${turnId}`);
+    },
+  });
+  const binding = service.bind('session-a', 'remote');
+  await binding.acknowledgeExecution!('session-a', 'turn-a');
+  await assert.rejects(binding.acknowledgeExecution!('session-b', 'turn-b'));
+  await binding.abandonExecution!('session-a', 'turn-b');
+  await assert.rejects(binding.abandonExecution!('session-b', 'turn-c'));
+  assert.deepEqual(acknowledged, ['session-a:turn-a']);
+  assert.deepEqual(abandoned, ['session-a:turn-b']);
+  await dispose();
+  await assert.rejects(binding.acknowledgeExecution!('session-a', 'turn-c'));
+  await assert.rejects(binding.abandonExecution!('session-a', 'turn-c'));
+  assert.deepEqual(acknowledged, ['session-a:turn-a']);
+  assert.deepEqual(abandoned, ['session-a:turn-b']);
+  await root.fiber.dispose();
+});
+
 test('executor completion after caller cancellation is normalized to cancelled', async () => {
   const root = new Context();
   const service = new PluginExecutorService(root);

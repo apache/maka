@@ -28,6 +28,7 @@ export interface WorkbarShellState {
   /** Companion Sessions the rail and palette hide (mounted side-chat forks). */
   readonly hiddenSessionIds: ReadonlySet<string>;
   readonly rightCollapsed: boolean;
+  readonly bottomOpen: boolean;
   /** Whether the Workbar is available with a Session to show; WorkHub's
    * navigation waits for it before opening a tool. */
   readonly ready: boolean;
@@ -36,6 +37,7 @@ export interface WorkbarShellState {
 const EMPTY_STATE: WorkbarShellState = {
   hiddenSessionIds: new Set(),
   rightCollapsed: true,
+  bottomOpen: false,
   ready: false,
 };
 
@@ -52,6 +54,7 @@ function readonlyStringSetEqual(
 
 function shellStateEqual(left: WorkbarShellState, right: WorkbarShellState): boolean {
   return left.rightCollapsed === right.rightCollapsed &&
+    left.bottomOpen === right.bottomOpen &&
     left.ready === right.ready &&
     readonlyStringSetEqual(left.hiddenSessionIds, right.hiddenSessionIds);
 }
@@ -82,6 +85,7 @@ export function createWorkbarShellBridge() {
     respondToUserForm: (sessionId, response) =>
       controller?.commands.respondToUserForm(sessionId, response) ?? Promise.resolve(),
     toggleRight: () => controller?.commands.toggleRight(),
+    toggleRightPanel: () => controller?.commands.toggleRightPanel(),
     toggleTool: (kind) => controller?.commands.toggleTool(kind),
     setWorkbarCollapsed: (collapsed) => controller?.commands.setWorkbarCollapsed(collapsed),
     bindNewTaskSessionResolver: (surfaceOwnerToken) =>
@@ -101,6 +105,7 @@ export function createWorkbarShellBridge() {
       publishState({
         hiddenSessionIds: next.selectors.hiddenSessionIds,
         rightCollapsed: next.selectors.rightCollapsed,
+        bottomOpen: next.host.bottomOpen,
         ready: Boolean(next.host.activeId),
       });
     },
