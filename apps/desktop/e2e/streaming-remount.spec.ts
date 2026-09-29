@@ -52,8 +52,7 @@ async function submitSteeringDraft(
   composer: Locator,
   text: string,
 ): Promise<void> {
-  await composer.press("ControlOrMeta+A");
-  await composer.insertText(text);
+  await composer.fill(text);
   await composer.press("ControlOrMeta+Enter");
 }
 
