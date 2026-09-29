@@ -1396,6 +1396,54 @@ test('editing a never-dispatched draft retains a paused durable original and its
   assert.throws(() => service.attachmentRecovery.prepare(owner, draft.stagedAttachments), AttachmentIngestBlockedError);
 });
 
+test('paused storage is inert to legacy readers while new readers retain pause semantics', async (t) => {
+  const db = await database(t);
+  const original = db.store.enqueue('authority', intent());
+  db.store.update({ ...original, state: 'paused' });
+  const raw = new DatabaseSync(db.path);
+  db.beforeClose.push(() => raw.close());
+  const row = () => raw.prepare('SELECT state, payload FROM outbox WHERE message_id = ?').get('message-1')!;
+  assert.equal(row().state, 'failed', 'older delivery workers already skip failed records');
+  assert.equal(JSON.parse(String(row().payload)).state, 'paused', 'the payload retains the new semantic state');
+  assert.equal(db.store.get('authority', 'message-1')?.state, 'paused');
+  assert.equal(db.store.list('authority')[0]?.state, 'paused');
+  db.reopen();
+  assert.equal(db.store.get('authority', 'message-1')?.state, 'paused');
+  // A genuine failure, including an explicit write by an older reader, must
+  // not inherit a pause marker from an earlier version of the record.
+  const legacyRecord = { ...JSON.parse(String(row().payload)), state: row().state };
+  raw.prepare('UPDATE outbox SET payload = ? WHERE message_id = ?').run(JSON.stringify(legacyRecord), 'message-1');
+  assert.equal(db.store.get('authority', 'message-1')?.state, 'failed');
+  db.store.update({ ...original, state: 'paused' });
+  db.store.update({ ...db.store.get('authority', 'message-1')!, state: 'saved' });
+  assert.equal(row().state, 'saved');
+  assert.equal(JSON.parse(String(row().payload)).state, 'saved');
+  assert.equal(db.reopen().get('authority', 'message-1')?.state, 'saved');
+});
+
+test('opening an existing paused database migrates only its storage state and preserves bytes', async (t) => {
+  const db = await database(t);
+  const original = db.store.enqueue('authority', intent());
+  db.store.update({ ...original, state: 'paused' });
+  const failed = db.store.enqueue('authority', intent('failed'));
+  db.store.update({ ...failed, state: 'failed', error: 'real failure' });
+  const raw = new DatabaseSync(db.path);
+  db.beforeClose.push(() => raw.close());
+  // Simulate the previously shipped paused representation.
+  raw.prepare("UPDATE outbox SET state = 'paused' WHERE message_id = ?").run('message-1');
+  const before = db.store.get('authority', 'message-1');
+  const bytes = db.store.stagedAttachments('authority', 'message-1');
+  db.reopen();
+  assert.equal(raw.prepare('SELECT state FROM outbox WHERE message_id = ?').get('message-1')?.state, 'failed');
+  assert.deepEqual(db.store.get('authority', 'message-1'), before);
+  assert.deepEqual(db.store.stagedAttachments('authority', 'message-1'), bytes);
+  assert.equal(db.store.get('authority', 'failed')?.state, 'failed');
+  assert.equal(db.store.get('authority', 'failed')?.error, 'real failure');
+  assert.deepEqual(db.reopen().get('authority', 'message-1'), before, 'migration is idempotent');
+  db.store.cancel('authority', 'message-1');
+  assert.equal(db.reopen().get('authority', 'message-1'), undefined);
+});
+
 test('paused originals survive approval expiry and restart without dispatching until explicitly resumed', async (t) => {
   const db = await database(t);
   let now = Date.now();

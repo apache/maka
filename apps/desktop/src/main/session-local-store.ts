@@ -66,6 +66,17 @@ export interface LocalOutboxRecord {
   readonly error?: string;
 }
 
+function readOutboxRecord(row: Record<string, unknown>): LocalOutboxRecord {
+  const record = JSON.parse(String(row.payload)) as LocalOutboxRecord;
+  return {
+    ...record,
+    // Older readers take the column state and ignore the payload state. Keep
+    // pauses inert for them, while preserving the distinction from real failures.
+    state: row.state === 'failed' && record.state === 'paused'
+      ? 'paused' : row.state as DesktopLocalMessageState,
+  };
+}
+
 /** A Client-owned database, never the Host's operational database. */
 export class DesktopSessionLocalStore {
   readonly #db: DatabaseSync;
@@ -109,6 +120,9 @@ export class DesktopSessionLocalStore {
       );
       CREATE TABLE IF NOT EXISTS authorities (profile_id TEXT PRIMARY KEY, partition TEXT NOT NULL);
     `);
+    // Upgrade the earlier paused encoding atomically, without touching content
+    // or attachment rows. This must run before a later downgrade opens the DB.
+    this.#db.exec("UPDATE outbox SET state = 'failed', payload = json_set(payload, '$.state', 'paused') WHERE state = 'paused'");
     // A crash may have happened anywhere after persisting dispatch intent.
     // Recovery probes the original epoch instead of assuming the send failed.
     this.#db.exec("UPDATE outbox SET state = 'unknown' WHERE state = 'sending'");
@@ -239,9 +253,7 @@ export class DesktopSessionLocalStore {
     const row = this.#db
       .prepare('SELECT state, payload FROM outbox WHERE partition = ? AND message_id = ?')
       .get(partition, messageId);
-    return row
-      ? ({ ...JSON.parse(String(row.payload)), state: row.state } as LocalOutboxRecord)
-      : undefined;
+    return row ? readOutboxRecord(row) : undefined;
   }
 
   list(partition: string, sessionId?: string): LocalOutboxRecord[] {
@@ -257,9 +269,7 @@ export class DesktopSessionLocalStore {
               'SELECT state, payload FROM outbox WHERE partition = ? AND session_id = ? ORDER BY created_at, rowid',
             )
             .all(partition, sessionId);
-    return rows.map(
-      (row) => ({ ...JSON.parse(String(row.payload)), state: row.state }) as LocalOutboxRecord,
-    );
+    return rows.map(readOutboxRecord);
   }
 
   update(record: LocalOutboxRecord): void {
@@ -273,7 +283,7 @@ export class DesktopSessionLocalStore {
     this.#transaction(() => {
       this.#db
         .prepare('UPDATE outbox SET state = ?, payload = ? WHERE partition = ? AND message_id = ?')
-        .run(record.state, JSON.stringify(record), record.partition, record.messageId);
+        .run(record.state === 'paused' ? 'failed' : record.state, JSON.stringify(record), record.partition, record.messageId);
       // Host references and local bytes change ownership in the same commit.
       if (record.intent.attachmentsPrepared)
         this.#db
