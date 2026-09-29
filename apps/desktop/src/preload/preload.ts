@@ -251,12 +251,15 @@ import type { OnboardingMilestoneId } from '@maka/core/onboarding';
 import {
   decodeSharedSessionCatalogProjection,
   SCHEDULED_TASK_CATALOG_MAX_ITEMS,
+  STORAGE_USAGE_SESSION_MAX_ITEMS,
   type OperationInput,
   type OperationOutcome,
   type OperationOutput,
   type CollaborationTurnRequestQueryResult,
   type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
+  type SessionStorageUsage,
+  type StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -1245,6 +1248,48 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
     >;
   },
 };
+
+/**
+ * Per-task storage keyed by Desktop session id. Tasks are grouped by the Host
+ * that owns them; a task whose Host is unavailable is left out rather than
+ * failing the rest.
+ */
+async function loadSessionStorageUsage(
+  sessionIds: readonly string[],
+): Promise<Record<string, SessionStorageUsage>> {
+  const byScope = new Map<
+    RuntimeHostScopeKey,
+    { scope: DesktopTargetScope; desktopIds: Map<string, string> }
+  >();
+  for (const sessionId of new Set(sessionIds)) {
+    let ref: Awaited<ReturnType<typeof runtimeHostSessionRef>>;
+    try {
+      ref = await runtimeHostSessionRef(sessionId);
+    } catch {
+      continue;
+    }
+    const key = runtimeHostScopeKey(ref.scope);
+    const group = byScope.get(key) ?? { scope: ref.scope, desktopIds: new Map<string, string>() };
+    group.desktopIds.set(ref.sessionId, sessionId);
+    byScope.set(key, group);
+  }
+  const usage: Record<string, SessionStorageUsage> = {};
+  await Promise.all(
+    [...byScope.values()].map(async ({ scope, desktopIds }) => {
+      const hostIds = [...desktopIds.keys()];
+      for (let offset = 0; offset < hostIds.length; offset += STORAGE_USAGE_SESSION_MAX_ITEMS) {
+        const result = await scopedRuntimeHost(scope).query('storage.usage.query', {
+          sessionIds: hostIds.slice(offset, offset + STORAGE_USAGE_SESSION_MAX_ITEMS),
+        });
+        for (const session of result.sessions ?? []) {
+          const desktopId = desktopIds.get(session.sessionId);
+          if (desktopId) usage[desktopId] = session;
+        }
+      }
+    }),
+  );
+  return usage;
+}
 
 async function listScheduledTasks(target?: DesktopRuntimeHostRef): Promise<ScheduledTask[]> {
   const host = scopedRuntimeHost(await selectedRuntimeHostScope(target));
@@ -3693,6 +3738,14 @@ const makaBridge = {
         },
         'INSPECTOR_CONTEXT_FAILED',
       );
+    },
+  },
+  storage: {
+    async usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.usage.query', {});
+    },
+    sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>> {
+      return loadSessionStorageUsage(sessionIds);
     },
   },
   dailyReview: {

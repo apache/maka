@@ -28,12 +28,28 @@ import { openInteractiveLongTermMemoryStoreForWrite } from './long-term-memory-s
 import { openInteractiveMemoryBundleStoreForWrite } from './memory-bundle-store.js';
 import { openInteractivePlanStoreForWrite } from './plan-authority.js';
 import { openInteractiveProjectCatalogForWrite } from './project-catalog-authority.js';
-import { assertStorageRootLease, type StorageRootLease } from './root-authority.js';
+import {
+  assertStorageRootLease,
+  runWithStorageRootLease,
+  type StorageRootLease,
+} from './root-authority.js';
 import { openInteractiveRuntimePolicyStoresForWrite } from './runtime-policy-stores.js';
 import { openInteractiveScheduledTaskStoreForWrite } from './scheduled-task-store.js';
 import { openInteractiveSessionTodoStoreForWrite } from './session-todo-authority.js';
 import { openInteractiveShellRunStoreForWrite } from './shell-run-authority.js';
+import {
+  openStorageFootprintReader,
+  type SessionStorageFootprint,
+  type StorageFootprint,
+} from './storage-footprint.js';
 import { openInteractiveUsageStoresForWrite } from './usage-stores.js';
+
+export type {
+  SessionStorageFootprint,
+  StorageFootprint,
+  StorageFootprintKind,
+  StorageFootprintTotal,
+} from './storage-footprint.js';
 
 export interface OpenStorageWriterCompositionOptions {
   /** One trusted backend for the complete execution transaction domain. */
@@ -63,7 +79,14 @@ export interface StorageWriterComposition {
   readonly contextOffloadUnavailable?: { readonly cause: unknown };
   readonly usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
   readonly shellRuns: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
+  readonly footprint: InteractiveStorageFootprintReader;
   close(): Promise<void>;
+}
+
+/** Read-only State Root size measurement, bound to the composition's write lease. */
+export interface InteractiveStorageFootprintReader {
+  measure(): Promise<StorageFootprint>;
+  measureSessions(sessionIds: readonly string[]): Promise<readonly SessionStorageFootprint[]>;
 }
 
 const activeCompositions = new WeakSet<object>();
@@ -178,6 +201,21 @@ async function createComposition(
     () => openInteractiveShellRunStoreForWrite(lease),
     closeWriter,
   );
+  const footprintReader = await openWriter(
+    async () =>
+      openStorageFootprintReader(lease.canonicalPath, {
+        ...(contextOffload ? { contextOffload } : {}),
+      }),
+    (reader) => reader.close(),
+  );
+  const footprint: InteractiveStorageFootprintReader = Object.freeze({
+    measure: () =>
+      runWithStorageRootLease(lease, 'interactive', 'write', () => footprintReader.measure()),
+    measureSessions: (sessionIds: readonly string[]) =>
+      runWithStorageRootLease(lease, 'interactive', 'write', () =>
+        footprintReader.measureSessions(sessionIds),
+      ),
+  });
   return Object.freeze({
     execution,
     projectCatalog,
@@ -194,6 +232,7 @@ async function createComposition(
     ...(contextOffloadUnavailable ? { contextOffloadUnavailable } : {}),
     usage,
     shellRuns,
+    footprint,
     close,
   });
 }
