@@ -1,0 +1,10 @@
+[
+  {
+    "type": "insert",
+    "rootId": "profile",
+    "entry": {
+      "id": "memory-network-host",
+      "packageId": "dev.maka.memory-network"
+    }
+  }
+]

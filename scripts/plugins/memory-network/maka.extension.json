@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.maka.memory-network",
+  "displayName": "历史信息网",
+  "description": "多维 index、原文引用和未覆盖增量；与持续任务独立。",
+  "runtime": {
+    "entry": "dist/host.mjs"
+  },
+  "configuration": {
+    "properties": {
+      "dataDirectory": {
+        "type": "string",
+        "description": "独立 SQLite 数据目录，留空自动创建。"
+      }
+    }
+  },
+  "composition": {
+    "patch": "maka.composition.json"
+  }
+}

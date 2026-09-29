@@ -53,6 +53,7 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
+import { listRecallHistorySessions } from '@maka/core/recall';
 import { buildRecallTools, type RecallToolDeps } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { createRecallMaterialFetch } from './recall-material-fetch.js';
@@ -1706,6 +1707,30 @@ export async function createExecutionRuntimeHostComposition(
       caller.invocation ??
       (caller.scopeSessionId ? Object.freeze({ sessionId: caller.scopeSessionId }) : undefined);
     pluginSessionQuery.bindRuntime({
+      historyList: async (caller) => {
+        if (!caller.invocation) throw new Error('History requires an Agent invocation');
+        return (await listRecallHistorySessions(recallDeps, caller.invocation.sessionId)).map(
+          pluginSessionSummary,
+        );
+      },
+      historyRead: async (sessionId, caller) => {
+        if (!caller.invocation) throw new Error('History requires an Agent invocation');
+        const session = (
+          await listRecallHistorySessions(recallDeps, caller.invocation.sessionId)
+        ).find((item) => item.id === sessionId);
+        if (!session) return undefined;
+        const messages = await recallDeps.readMessages(sessionId, caller.invocation.abortSignal);
+        if (!messages)
+          throw new Error('History source unavailable; retry without advancing coverage');
+        // Recheck privacy after the asynchronous read before releasing its contents.
+        if (
+          !(await listRecallHistorySessions(recallDeps, caller.invocation.sessionId)).some(
+            (item) => item.id === sessionId,
+          )
+        )
+          return undefined;
+        return { session: pluginSessionSummary(session), messages };
+      },
       list: async (caller) =>
         Object.freeze(
           (await visibleAgentSessions(sessionQueryInitiator(caller))).map(pluginSessionSummary),

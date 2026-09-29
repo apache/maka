@@ -58,6 +58,12 @@ export interface PluginSessionQueryCaller {
 }
 
 export interface PluginSessionQueryRuntime {
+  /** Optional Recall-compatible cross-Session history capability. */
+  historyList?(caller: PluginSessionQueryCaller): Promise<readonly PluginSessionSummary[]>;
+  historyRead?(
+    sessionId: string,
+    caller: PluginSessionQueryCaller,
+  ): Promise<PluginSessionSnapshot | undefined>;
   list(caller: PluginSessionQueryCaller): Promise<readonly PluginSessionSummary[]>;
   read(
     sessionId: string,
@@ -112,6 +118,20 @@ export class PluginSessionQueryService extends Service {
       Object.freeze({ ...request, query: request.query.trim() }),
       this.caller(),
     );
+  }
+
+  historyList(): Promise<readonly PluginSessionSummary[]> {
+    this.agents.requireInvocation();
+    const runtime = this.runtime();
+    if (!runtime.historyList) throw new Error('Host does not support cross-Session history');
+    return runtime.historyList(this.caller());
+  }
+
+  historyRead(sessionId: string): Promise<PluginSessionSnapshot | undefined> {
+    this.agents.requireInvocation();
+    const runtime = this.runtime();
+    if (!runtime.historyRead) throw new Error('Host does not support cross-Session history');
+    return runtime.historyRead(assertSessionId(sessionId), this.caller());
   }
 
   private runtime(): PluginSessionQueryRuntime {

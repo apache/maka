@@ -959,9 +959,28 @@ function optionalTimestamp(value: unknown): number | undefined | null {
   return value;
 }
 
+/** Complete read-only history corpus for plugin organizers; same privacy and
+ * revision rules as Recall, without the search query's scan-count cap. */
+export async function listRecallHistorySessions(
+  deps: Pick<RecallDeps, 'listSessions' | 'getPrivacyContext'>,
+  activeSessionId: string,
+): Promise<SessionSummary[]> {
+  const privacy = validateWorkspacePrivacyContext(await deps.getPrivacyContext());
+  if (!privacy.ok || privacy.value.incognitoActive)
+    throw new Error(
+      'History is unavailable while workspace privacy cannot be verified or incognito is active',
+    );
+  return eligibleSessions(
+    collapseSessionRevisions(await deps.listSessions(), activeSessionId),
+    { includeArchived: false },
+    Number.POSITIVE_INFINITY,
+  );
+}
+
 function eligibleSessions(
   sessions: readonly SessionSummary[],
   filter: { readonly sessionId?: string; readonly includeArchived: boolean },
+  limit = MAX_SESSIONS_SCANNED,
 ): SessionSummary[] {
   return sessions
     .filter(
@@ -976,7 +995,7 @@ function eligibleSessions(
       const byTime = (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0);
       return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
     })
-    .slice(0, MAX_SESSIONS_SCANNED);
+    .slice(0, limit);
 }
 
 async function readFacts(
