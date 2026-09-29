@@ -56,14 +56,16 @@ export function useComposerModelOptions(options: {
   const rememberedRef = useRef<{ key: string; override: ModelOverride | null } | null>(null);
 
   const onFastChange = useCallback((enabled: boolean) => {
-    const model = latest.current.model;
+    // Everything this write targets is fixed at click time: a queued write must
+    // not follow the composer to another Session's Host or connection list.
+    const { model, host, uiLocale, refresh, reportError } = latest.current;
     if (!model) return Promise.resolve();
-    const key = `${model.connectionId}\u0000${model.model}`;
+    const connection = latest.current.connections.find(
+      (candidate) => candidate.connectionId === model.connectionId && candidate.slug === model.slug,
+    );
+    const key = [host?.profileId ?? '', host?.hostId ?? '', model.connectionId, model.model].join('\u0000');
     const task = tailRef.current.then(async () => {
-      const connection = latest.current.connections.find(
-        (candidate) => candidate.connectionId === model.connectionId && candidate.slug === model.slug,
-      );
-      if (!connection) return;
+      if (!connection) throw new Error(`Connection is no longer available: ${model.slug}`);
       const stored = modelOverride(connection, model.model) ?? null;
       const remembered = rememberedRef.current?.key === key ? rememberedRef.current.override : undefined;
       const expected = remembered !== undefined && JSON.stringify(stored) !== JSON.stringify(remembered)
@@ -76,14 +78,14 @@ export function useComposerModelOptions(options: {
       const saved = await window.maka.connections.update(
         { connectionId: model.connectionId, slug: model.slug },
         { modelOverride: { modelId: model.model, expected, value } },
-        latest.current.host,
+        host,
       );
       rememberedRef.current = { key, override: saved.modelOverrides?.[model.model] ?? null };
-      await latest.current.refresh();
+      await refresh();
     });
     tailRef.current = task.then(() => undefined, () => undefined);
     return task.catch((error: unknown) => {
-      latest.current.reportError(getProviderSettingsCopy(latest.current.uiLocale).detail.saveFailed);
+      reportError(getProviderSettingsCopy(uiLocale).detail.saveFailed);
       throw error;
     });
   }, []);
