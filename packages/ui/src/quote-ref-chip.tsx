@@ -106,6 +106,10 @@ export function QuoteRefChip(props: { quote: QuoteRef }) {
     <HStack
       gap={1}
       paddingInline={2}
+      paddingBlock={expanded ? 1 : 0.5}
+      align={expanded ? 'start' : 'center'}
+      width={expanded ? '100%' : undefined}
+      maxWidth={expanded ? '100%' : '240px'}
       className={cn(
         'maka-quote-chip',
         expanded ? 'maka-quote-chip-expanded' : 'maka-quote-chip-collapsed',
