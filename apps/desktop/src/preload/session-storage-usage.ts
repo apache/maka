@@ -33,15 +33,48 @@ export interface SessionStorageUsageRouting<Scope> {
   query(scope: Scope, sessionIds: readonly string[]): Promise<readonly SessionStorageUsage[]>;
 }
 
+/** A Host whose storage query failed is not asked again this soon. */
+export const SESSION_STORAGE_HOST_FAILURE_COOLDOWN_MS = 60_000;
+
+export type SessionStorageUsageReader = (
+  sessionIds: readonly string[],
+) => Promise<Record<string, SessionStorageUsage>>;
+
 /**
  * Per-task storage keyed by Desktop session id. Tasks are grouped by the Host
  * that holds them and each Host is paged one bounded request at a time. A task
  * whose Host cannot be resolved, or a Host whose query fails, is left out
  * rather than failing the other Hosts' tasks.
+ *
+ * A failing Host is skipped for a cooldown. An older Host that predates the
+ * operation rejects it by closing the connection, as it does for any unknown
+ * operation, so asking again for every newly visible row would keep dropping
+ * that connection.
  */
-export async function loadSessionStorageUsage<Scope>(
+export function createSessionStorageUsageReader<Scope>(
+  routing: SessionStorageUsageRouting<Scope>,
+  options: { readonly now?: () => number } = {},
+): SessionStorageUsageReader {
+  const now = options.now ?? Date.now;
+  const failedScopes = new Map<string, number>();
+  const isCoolingDown = (scopeKey: string) => {
+    const failedAt = failedScopes.get(scopeKey);
+    if (failedAt === undefined) return false;
+    if (now() - failedAt < SESSION_STORAGE_HOST_FAILURE_COOLDOWN_MS) return true;
+    failedScopes.delete(scopeKey);
+    return false;
+  };
+  return (sessionIds) =>
+    loadSessionStorageUsage(sessionIds, routing, {
+      skip: isCoolingDown,
+      failed: (scopeKey) => failedScopes.set(scopeKey, now()),
+    });
+}
+
+async function loadSessionStorageUsage<Scope>(
   sessionIds: readonly string[],
   routing: SessionStorageUsageRouting<Scope>,
+  hosts: { skip(scopeKey: string): boolean; failed(scopeKey: string): void },
 ): Promise<Record<string, SessionStorageUsage>> {
   const byScope = new Map<string, { scope: Scope; desktopIds: Map<string, string> }>();
   for (const sessionId of new Set(sessionIds)) {
@@ -51,6 +84,7 @@ export async function loadSessionStorageUsage<Scope>(
     } catch {
       continue;
     }
+    if (hosts.skip(ref.scopeKey)) continue;
     const group = byScope.get(ref.scopeKey) ?? {
       scope: ref.scope,
       desktopIds: new Map<string, string>(),
@@ -60,7 +94,7 @@ export async function loadSessionStorageUsage<Scope>(
   }
   const usage: Record<string, SessionStorageUsage> = {};
   await Promise.all(
-    [...byScope.values()].map(async ({ scope, desktopIds }) => {
+    [...byScope.entries()].map(async ([scopeKey, { scope, desktopIds }]) => {
       const hostIds = [...desktopIds.keys()];
       try {
         for (let offset = 0; offset < hostIds.length; offset += STORAGE_USAGE_SESSION_MAX_ITEMS) {
@@ -75,6 +109,7 @@ export async function loadSessionStorageUsage<Scope>(
         }
       } catch {
         // This Host's remaining tasks stay unknown; the other Hosts still answer.
+        hosts.failed(scopeKey);
       }
     }),
   );

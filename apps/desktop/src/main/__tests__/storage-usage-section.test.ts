@@ -27,6 +27,7 @@ import type { StorageUsageQueryResult } from '@maka/runtime-host/protocol';
 import {
   StorageUsageSection,
   StorageUsageServicesProvider,
+  TaskStorageSize,
   type StorageUsageHostTarget,
 } from '../../renderer/features/storage-usage/index.js';
 import { RuntimeHostSettingsTarget } from '../../renderer/settings/runtime-host-settings-target.js';
@@ -36,6 +37,7 @@ const originalGlobals = {
   window: globalThis.window,
   HTMLElement: globalThis.HTMLElement,
   getComputedStyle: globalThis.getComputedStyle,
+  IntersectionObserver: globalThis.IntersectionObserver,
   IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
     .IS_REACT_ACT_ENVIRONMENT,
 };
@@ -108,6 +110,80 @@ test('the Storage section reads the selected Host once and states its caveats', 
   // Only measured kinds are listed; nothing offers to delete or compact.
   assert.doesNotMatch(text, /Offloaded context/);
   assert.doesNotMatch(text, /Delete|Compact|Vacuum/);
+
+  await act(async () => root.unmount());
+});
+
+test('a task row is measured only after it scrolls into view', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  const observers: Array<{
+    readonly callback: (entries: Array<{ isIntersecting: boolean }>) => void;
+    disconnected: boolean;
+  }> = [];
+  class FakeIntersectionObserver {
+    readonly #record: (typeof observers)[number];
+    constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+      this.#record = { callback, disconnected: false };
+      observers.push(this.#record);
+    }
+    observe() {}
+    disconnect() {
+      this.#record.disconnected = true;
+    }
+  }
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    getComputedStyle: (element: Element) =>
+      ({ color: (element as HTMLElement).style?.color || 'currentColor' }) as CSSStyleDeclaration,
+    IntersectionObserver: FakeIntersectionObserver,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const requested: string[][] = [];
+  const services = {
+    loadUsage: async (): Promise<StorageUsageQueryResult> => {
+      throw new Error('not used');
+    },
+    loadSessionUsage: async (sessionIds: readonly string[]) => {
+      requested.push([...sessionIds]);
+      return Object.fromEntries(
+        sessionIds.map((sessionId) => [
+          sessionId,
+          {
+            sessionId,
+            bytes: { transcript: 1024, runtime: 1024, artifacts: 0 },
+            worktreeCount: 0,
+          },
+        ]),
+      );
+    },
+  };
+  const container = document.getElementById('root') as unknown as HTMLElement;
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(StorageUsageServicesProvider, {
+          services,
+          children: [
+            createElement(TaskStorageSize, { key: 'seen', sessionId: 'seen' }),
+            createElement(TaskStorageSize, { key: 'unseen', sessionId: 'unseen' }),
+          ],
+        }),
+      }),
+    );
+  });
+  assert.equal(observers.length, 2);
+  assert.deepEqual(requested, [], 'nothing is measured before a row is visible');
+
+  await act(async () => {
+    observers[0]!.callback([{ isIntersecting: true }]);
+  });
+  assert.deepEqual(requested, [['seen']]);
+  assert.equal(observers[0]!.disconnected, true);
+  assert.match(container.textContent ?? '', /Uses 2\.0 KB/);
 
   await act(async () => root.unmount());
 });

@@ -23,6 +23,7 @@
  */
 export {
   createSessionStorageLoader,
+  SESSION_STORAGE_CACHE_MAX_ENTRIES,
   SESSION_STORAGE_FAILURE_COOLDOWN_MS,
   SESSION_STORAGE_RESULT_TTL_MS,
 } from './model/session-storage-loader.js';

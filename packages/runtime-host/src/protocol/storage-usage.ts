@@ -32,9 +32,9 @@ export const STORAGE_USAGE_SESSION_MAX_ITEMS = 25;
  * State Root parts the Host can size without scanning database rows.
  *
  * `database` is the operational SQLite file set. `artifacts` sums recorded
- * artifact sizes. `context_offload` is stored blob bytes plus its own SQLite
- * file set. `memory` is the long-term memory SQLite file set. Worktrees are
- * counted separately and never sized.
+ * artifact sizes. `context_offload` is its SQLite file set, which holds inline
+ * blobs, plus the managed value files beside it. `memory` is the long-term
+ * memory SQLite file set. Worktrees are counted separately and never sized.
  */
 export const STORAGE_USAGE_KINDS = ['database', 'artifacts', 'context_offload', 'memory'] as const;
 

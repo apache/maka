@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -27,6 +27,11 @@ import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from '../operational-state-store.js';
+import {
+  CONTEXT_OFFLOAD_DATABASE_NAME,
+  CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+  SqliteContextOffloadStore,
+} from '../sqlite-context-offload-store.js';
 import { openStorageFootprintReader } from '../storage-footprint.js';
 
 test('storage footprint measures known Sessions from their rows and totals from files', async () => {
@@ -69,6 +74,21 @@ test('storage footprint measures known Sessions from their rows and totals from 
          payload_json, committed_at
        ) VALUES ('event-1', 'parent', 'invocation-1', 'run-1', 'turn-1', 1, 'kind', ?, 1)`,
     ).run('z'.repeat(40));
+    // Every runtime source contributes, so a wrong table or column fails here.
+    db.prepare(
+      `INSERT INTO runtime_partial_snapshots(
+         stream_key, session_id, invocation_id, run_id, turn_id, after_event_id,
+         payload_json, text_content, updated_at
+       ) VALUES ('stream-1', 'parent', 'invocation-1', 'run-1', 'turn-1', NULL, ?, ?, 1)`,
+    ).run('p'.repeat(7), 'é'.repeat(3));
+    db.prepare(
+      `INSERT INTO core_agent_runs(session_id, run_id, created_at) VALUES ('parent', 'run-1', 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO core_agent_run_events(
+         session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+       ) VALUES ('parent', 'run-1', 0, 'agent-event-1', 'kind', 1, ?)`,
+    ).run('r'.repeat(11));
     db.prepare('INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?)').run(
       'artifact-1',
       'parent',
@@ -76,12 +96,8 @@ test('storage footprint measures known Sessions from their rows and totals from 
       'parent/artifact-1-file',
       JSON.stringify({ sizeBytes: 1234 }),
     );
-    db.prepare(
-      'INSERT INTO usage_llm_calls(storage_key, id, ts, record_json, session_id) VALUES (?, ?, ?, ?, ?)',
-    ).run('usage-1', 'usage-1', 1, 'u'.repeat(30), 'gone');
     await writeFile(join(root, 'memory.sqlite'), Buffer.alloc(2048));
     await writeFile(join(root, 'memory.sqlite-journal'), Buffer.alloc(16));
-    await writeFile(join(root, 'context-offload.sqlite'), Buffer.alloc(4096));
     await mkdir(join(root, 'subagent-worktrees', 'lease-a'), { recursive: true });
     await mkdir(join(root, 'subagent-worktrees', 'lease-b'), { recursive: true });
 
@@ -89,8 +105,14 @@ test('storage footprint measures known Sessions from their rows and totals from 
     assert.deepEqual(sessions, [
       {
         sessionId: 'parent',
-        // 'x' * 100 + JSON quotes, 'é' * 10 as 20 bytes + quotes, one 300-byte chunk.
-        bytes: { transcript: 102 + 22 + 300, runtime: 40, artifacts: 1234, context: 700 },
+        bytes: {
+          // 'x' * 100 + JSON quotes, 'é' * 10 as 20 bytes + quotes, one 300-byte chunk.
+          transcript: 102 + 22 + 300,
+          // runtime event 40, partial snapshot 7 + 6, agent-run event 11.
+          runtime: 40 + 7 + 6 + 11,
+          artifacts: 1234,
+          context: 700,
+        },
         worktreeCount: 1,
       },
       {
@@ -110,14 +132,14 @@ test('storage footprint measures known Sessions from their rows and totals from 
     );
     assert.deepEqual(totals.get('database'), {
       kind: 'database',
-      bytes: await databaseFileBytes(root),
+      bytes: await fileSetBytes(join(root, OPERATIONAL_STATE_DATABASE_NAME)),
       exact: true,
     });
     assert.deepEqual(totals.get('artifacts'), { kind: 'artifacts', bytes: 1234, exact: false });
     assert.deepEqual(totals.get('context_offload'), {
       kind: 'context_offload',
-      bytes: 400 + 4096,
-      exact: false,
+      bytes: 0,
+      exact: true,
     });
     assert.deepEqual(totals.get('memory'), { kind: 'memory', bytes: 2048 + 16, exact: true });
     assert.equal(footprint.worktreeCount, 2);
@@ -135,7 +157,85 @@ test('storage footprint measures known Sessions from their rows and totals from 
   }
 });
 
-test('storage footprint omits context usage when the Store is unavailable', async () => {
+test('context offload counts inline blobs once and managed value files once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-storage-footprint-context-'));
+  const owner = acquireOperationalStateDatabase(root);
+  const store = new SqliteContextOffloadStore(join(root, CONTEXT_OFFLOAD_DATABASE_NAME), {
+    limits: {
+      ownerMaxBytes: { read_image_snapshot: 4 * 1024 * 1024, tool_result_archive: 4 * 1024 * 1024 },
+      sessionLogicalBytes: 16 * 1024 * 1024,
+      workspacePhysicalBytes: 32 * 1024 * 1024,
+    },
+  });
+  const reader = openStorageFootprintReader(root, { contextOffload: store });
+  try {
+    const inlineBytes = 1_000_000;
+    const managedBytes = 300_000;
+    const inline = await store.put({
+      sessionId: 'session-1',
+      owner: { kind: 'tool_result_archive', ownerId: 'tool-1' },
+      bytes: new Uint8Array(inlineBytes).fill(1),
+      mediaType: 'application/octet-stream',
+    });
+    const managed = await store.put({
+      sessionId: 'session-1',
+      owner: { kind: 'read_image_snapshot', ownerId: 'read-1' },
+      bytes: new Uint8Array(managedBytes).fill(2),
+      mediaType: 'image/png',
+    });
+    assert.equal(inline.ok && managed.ok, true);
+    assert.equal((await store.usage()).physicalBytes, inlineBytes + managedBytes);
+
+    const sqliteFiles = await fileSetBytes(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
+    const valueFiles = await treeBytes(join(root, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME));
+    assert.equal(valueFiles, managedBytes);
+    // The inline blob already sits inside the SQLite file set.
+    assert.ok(sqliteFiles >= inlineBytes);
+
+    const context = (await reader.measure()).totals.find(
+      (total) => total.kind === 'context_offload',
+    );
+    assert.deepEqual(context, {
+      kind: 'context_offload',
+      bytes: sqliteFiles + managedBytes,
+      exact: true,
+    });
+  } finally {
+    reader.close();
+    store.close();
+    owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('multi-Session measurement yields to the event loop between statements', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-storage-footprint-yield-'));
+  const owner = acquireOperationalStateDatabase(root);
+  const reader = openStorageFootprintReader(root);
+  try {
+    const sessionIds = ['session-a', 'session-b', 'session-c'];
+    for (const sessionId of sessionIds) insertSession(owner.database, sessionId, {});
+    let turns = 0;
+    let measuring = true;
+    const tick = () => {
+      if (!measuring) return;
+      turns += 1;
+      setImmediate(tick);
+    };
+    setImmediate(tick);
+    const measured = await reader.measureSessions(sessionIds);
+    measuring = false;
+    assert.equal(measured.length, 3);
+    // Per Session: existence, 2 transcript, 3 runtime, 1 artifact and 1 worktree statement.
+    assert.ok(turns >= sessionIds.length * 8, `only ${turns} event-loop turns ran`);
+  } finally {
+    reader.close();
+    owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('storage footprint omits per-Session context when the Store is unavailable', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-footprint-no-context-'));
   const owner = acquireOperationalStateDatabase(root);
   const reader = openStorageFootprintReader(root);
@@ -144,10 +244,6 @@ test('storage footprint omits context usage when the Store is unavailable', asyn
     const [session] = await reader.measureSessions(['alone']);
     assert.deepEqual(session?.bytes, { transcript: 0, runtime: 0, artifacts: 0 });
     const footprint = await reader.measure();
-    assert.equal(
-      footprint.totals.some((total) => total.kind === 'context_offload'),
-      false,
-    );
     assert.equal(footprint.worktreeCount, 0);
   } finally {
     reader.close();
@@ -184,12 +280,20 @@ function insertMessage(db: DatabaseSync, sessionId: string, sequence: number, te
   ).run(sessionId, sequence, `${sessionId}-${sequence}`, JSON.stringify(text));
 }
 
-async function databaseFileBytes(root: string): Promise<number> {
+async function fileSetBytes(path: string): Promise<number> {
   let total = 0;
   for (const suffix of ['', '-wal', '-shm', '-journal']) {
     try {
-      total += (await stat(join(root, `${OPERATIONAL_STATE_DATABASE_NAME}${suffix}`))).size;
+      total += (await stat(`${path}${suffix}`)).size;
     } catch {}
+  }
+  return total;
+}
+
+async function treeBytes(path: string): Promise<number> {
+  let total = 0;
+  for (const entry of await readdir(path, { withFileTypes: true, recursive: true })) {
+    if (entry.isFile()) total += (await stat(join(entry.parentPath, entry.name))).size;
   }
   return total;
 }

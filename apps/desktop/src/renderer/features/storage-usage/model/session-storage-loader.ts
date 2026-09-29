@@ -26,10 +26,14 @@ import {
 export const SESSION_STORAGE_RESULT_TTL_MS = 60_000;
 /** A task that could not be measured is not asked about again this soon. */
 export const SESSION_STORAGE_FAILURE_COOLDOWN_MS = 30_000;
+/** Settled entries kept at most; the oldest are dropped first. */
+export const SESSION_STORAGE_CACHE_MAX_ENTRIES = 1_000;
 
 export interface SessionStorageLoader {
   /** Resolves undefined when the size is unknown: unmeasurable or not on its Host. */
   load(sessionId: string): Promise<SessionStorageUsage | undefined>;
+  /** Entries currently cached, settled or in flight. */
+  size(): number;
 }
 
 interface Entry {
@@ -39,10 +43,10 @@ interface Entry {
 }
 
 /**
- * Turns row requests into Host queries. Rows that mount together are queued
- * and measured one request at a time, `STORAGE_USAGE_SESSION_MAX_ITEMS` per
- * request, so a long list never puts more than one measurement on a Host at
- * once. Results and failures are both remembered for a while, so remounting a
+ * Turns row requests into Host queries. Rows that scroll into view together
+ * are queued and measured one request at a time, at most
+ * `STORAGE_USAGE_SESSION_MAX_ITEMS` per request, so a long list never puts
+ * more than one measurement on a Host at once. Results and failures are both remembered for a while, so remounting a
  * list neither re-measures every row nor hammers a Host that just failed.
  */
 export function createSessionStorageLoader(
@@ -64,7 +68,28 @@ export function createSessionStorageLoader(
     }
   };
 
+  const isFresh = (entry: Entry): boolean => {
+    if (entry.settledAt === undefined) return true;
+    const ttl = entry.measured ? SESSION_STORAGE_RESULT_TTL_MS : SESSION_STORAGE_FAILURE_COOLDOWN_MS;
+    return now() - entry.settledAt < ttl;
+  };
+
+  /** Drops expired entries, then the oldest settled ones beyond the cap. */
+  const prune = () => {
+    for (const [sessionId, entry] of entries) {
+      if (!isFresh(entry)) entries.delete(sessionId);
+    }
+    let excess = entries.size - SESSION_STORAGE_CACHE_MAX_ENTRIES;
+    for (const [sessionId, entry] of entries) {
+      if (excess <= 0) break;
+      if (entry.settledAt === undefined) continue;
+      entries.delete(sessionId);
+      excess -= 1;
+    }
+  };
+
   const drain = async () => {
+    prune();
     while (queue.size > 0) {
       const chunk = [...queue.entries()].slice(0, STORAGE_USAGE_SESSION_MAX_ITEMS);
       for (const [sessionId] of chunk) queue.delete(sessionId);
@@ -81,12 +106,7 @@ export function createSessionStorageLoader(
       }
     }
     draining = false;
-  };
-
-  const isFresh = (entry: Entry): boolean => {
-    if (entry.settledAt === undefined) return true;
-    const ttl = entry.measured ? SESSION_STORAGE_RESULT_TTL_MS : SESSION_STORAGE_FAILURE_COOLDOWN_MS;
-    return now() - entry.settledAt < ttl;
+    prune();
   };
 
   return {
@@ -104,6 +124,7 @@ export function createSessionStorageLoader(
       }
       return result;
     },
+    size: () => entries.size,
   };
 }
 

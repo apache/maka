@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { Dirent } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ContextOffloadStore } from '@maka/core/context-offload';
@@ -27,7 +28,10 @@ import {
   OPERATIONAL_STATE_DATABASE_NAME,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
-import { CONTEXT_OFFLOAD_DATABASE_NAME } from './sqlite-context-offload-store.js';
+import {
+  CONTEXT_OFFLOAD_DATABASE_NAME,
+  CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+} from './sqlite-context-offload-store.js';
 import { sqliteDatabaseSidecars } from './sqlite-file-set.js';
 
 /**
@@ -76,8 +80,8 @@ export interface StorageFootprintReader {
   measure(): Promise<StorageFootprint>;
   /**
    * Measures the Sessions that exist, in input order; unknown ids are omitted.
-   * Callers bound the list (the Host protocol admits 25 per request), which
-   * keeps every `IN (...)` far below SQLite's bound-parameter limit.
+   * Each Session is measured by its own statements, so the cost of one request
+   * is bounded by the caller's list (the Host protocol admits 25).
    */
   measureSessions(sessionIds: readonly string[]): Promise<readonly SessionStorageFootprint[]>;
   close(): void;
@@ -88,8 +92,8 @@ export interface OpenStorageFootprintReaderOptions {
 }
 
 /**
- * Per-Session payload sums. Each statement is a range scan over an index that
- * leads with `session_id`, so its cost grows with the requested Sessions' rows
+ * Per-Session payload sums. Each statement covers one Session through an index
+ * that leads with `session_id`, so its cost grows with that Session's rows
  * rather than with the table. `octet_length` on TEXT and `length` on BLOB skip
  * the overflow pages of large values, but every matching row is still read.
  */
@@ -145,25 +149,17 @@ class SqliteStorageFootprintReader implements StorageFootprintReader {
     // One small metadata row per artifact file, so the whole table stays cheap.
     const artifacts = this.#readAllArtifactBytes();
     await yieldToEventLoop();
-    const contextUsage = await this.contextOffload?.usage();
-    const contextFileBytes = contextUsage
-      ? await fileSetBytes(join(this.root, CONTEXT_OFFLOAD_DATABASE_NAME))
-      : 0;
+    // Inline blobs live inside the SQLite file set, so only the managed value
+    // files outside it are added; the Store's physical-byte counter covers both.
+    const contextBytes =
+      (await fileSetBytes(join(this.root, CONTEXT_OFFLOAD_DATABASE_NAME))) +
+      (await directoryBytes(join(this.root, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME)));
     const memoryBytes = await fileSetBytes(join(this.root, LONG_TERM_MEMORY_DATABASE_NAME));
     const worktreeCount = await countDirectories(join(this.root, SUBAGENT_WORKTREE_DIRECTORY));
     const totals: StorageFootprintTotal[] = [
       { kind: 'database', bytes: databaseBytes, exact: true },
       { kind: 'artifacts', bytes: artifacts, exact: false },
-      ...(contextUsage
-        ? [
-            {
-              kind: 'context_offload' as const,
-              // Inline blobs are counted in both terms, so this can overstate.
-              bytes: contextUsage.physicalBytes + contextFileBytes,
-              exact: false,
-            },
-          ]
-        : []),
+      { kind: 'context_offload', bytes: contextBytes, exact: true },
       { kind: 'memory', bytes: memoryBytes, exact: true },
     ];
     return { totals, reclaimableBytes, worktreeCount };
@@ -173,29 +169,27 @@ class SqliteStorageFootprintReader implements StorageFootprintReader {
     sessionIds: readonly string[],
   ): Promise<readonly SessionStorageFootprint[]> {
     this.#assertOpen();
-    const requested = [...new Set(sessionIds)];
-    if (requested.length === 0) return [];
-    const known = await this.#readKnownSessions(requested);
-    const sessions = requested.filter((sessionId) => known.has(sessionId));
-    if (sessions.length === 0) return [];
-    const transcript = await this.#sumBySession(TRANSCRIPT_SOURCES, sessions);
-    const runtime = await this.#sumBySession(RUNTIME_SOURCES, sessions);
-    const artifacts = await this.#sumBySession([ARTIFACT_SOURCE], sessions);
-    const worktrees = await this.#countWorktreesBySession(sessions);
     const results: SessionStorageFootprint[] = [];
-    for (const sessionId of sessions) {
+    // One Session per statement, with a yield after each: a large task's sum
+    // is still a long range scan, and the Host serves other work between them.
+    for (const sessionId of new Set(sessionIds)) {
+      if (!(await this.#sessionExists(sessionId))) continue;
+      const transcript = await this.#sumForSession(TRANSCRIPT_SOURCES, sessionId);
+      const runtime = await this.#sumForSession(RUNTIME_SOURCES, sessionId);
+      const artifacts = await this.#sumForSession([ARTIFACT_SOURCE], sessionId);
+      const worktreeCount = await this.#countWorktrees(sessionId);
       const context = this.contextOffload
         ? (await this.contextOffload.usage(sessionId)).logicalBytes
         : undefined;
       results.push({
         sessionId,
         bytes: {
-          transcript: transcript.get(sessionId) ?? 0,
-          runtime: runtime.get(sessionId) ?? 0,
-          artifacts: artifacts.get(sessionId) ?? 0,
+          transcript,
+          runtime,
+          artifacts,
           ...(context === undefined ? {} : { context }),
         },
-        worktreeCount: worktrees.get(sessionId) ?? 0,
+        worktreeCount,
       });
     }
     return results;
@@ -207,55 +201,42 @@ class SqliteStorageFootprintReader implements StorageFootprintReader {
     this.lease.close();
   }
 
-  async #readKnownSessions(sessionIds: readonly string[]): Promise<Set<string>> {
-    const rows = this.lease.database
-      .prepare(
-        `SELECT session_id AS sessionId FROM session_metadata
-         WHERE session_id IN (${placeholders(sessionIds)})`,
-      )
-      .all(...sessionIds) as Array<{ sessionId: string }>;
+  async #sessionExists(sessionId: string): Promise<boolean> {
+    const row = this.lease.database
+      .prepare('SELECT 1 AS present FROM session_metadata WHERE session_id = ?')
+      .get(sessionId);
     await yieldToEventLoop();
-    return new Set(rows.map((row) => row.sessionId));
+    return row !== undefined;
   }
 
-  async #sumBySession(
-    sources: readonly SqlByteSource[],
-    sessionIds: readonly string[],
-  ): Promise<Map<string, number>> {
-    const totals = new Map<string, number>();
+  async #sumForSession(sources: readonly SqlByteSource[], sessionId: string): Promise<number> {
+    let total = 0;
     for (const source of sources) {
-      const rows = this.lease.database
+      const row = this.lease.database
         .prepare(
-          `SELECT session_id AS sessionId, COALESCE(SUM(${source.bytes}), 0) AS bytes
+          `SELECT COALESCE(SUM(${source.bytes}), 0) AS bytes
            FROM ${source.table}
-           WHERE session_id IN (${placeholders(sessionIds)})
-           GROUP BY session_id`,
+           WHERE session_id = ?`,
         )
-        .all(...sessionIds) as Array<{ sessionId: string; bytes: number | bigint }>;
-      for (const row of rows) {
-        totals.set(row.sessionId, (totals.get(row.sessionId) ?? 0) + toSafeCount(row.bytes));
-      }
+        .get(sessionId) as { bytes: number | bigint };
+      total += toSafeCount(row.bytes);
       await yieldToEventLoop();
     }
-    return totals;
+    return total;
   }
 
-  async #countWorktreesBySession(sessionIds: readonly string[]): Promise<Map<string, number>> {
-    const list = placeholders(sessionIds);
-    const rows = this.lease.database
+  async #countWorktrees(sessionId: string): Promise<number> {
+    const row = this.lease.database
       .prepare(
-        `SELECT owner AS sessionId, COUNT(*) AS count FROM (
-           SELECT session_id AS owner FROM session_metadata
-           WHERE session_id IN (${list}) AND ${HAS_WORKTREE}
-           UNION ALL
-           SELECT subagent_parent_session_id AS owner FROM session_metadata
-           WHERE subagent_parent_session_id IN (${list}) AND ${HAS_WORKTREE}
-         )
-         GROUP BY owner`,
+        `SELECT
+           (SELECT COUNT(*) FROM session_metadata
+            WHERE session_id = ? AND ${HAS_WORKTREE})
+           + (SELECT COUNT(*) FROM session_metadata
+              WHERE subagent_parent_session_id = ? AND ${HAS_WORKTREE}) AS count`,
       )
-      .all(...sessionIds, ...sessionIds) as Array<{ sessionId: string; count: number | bigint }>;
+      .get(sessionId, sessionId) as { count: number | bigint };
     await yieldToEventLoop();
-    return new Map(rows.map((row) => [row.sessionId, toSafeCount(row.count)]));
+    return toSafeCount(row.count);
   }
 
   #readAllArtifactBytes(): number {
@@ -287,10 +268,6 @@ interface SqlByteSource {
   readonly bytes: string;
 }
 
-function placeholders(values: readonly unknown[]): string {
-  return values.map(() => '?').join(', ');
-}
-
 async function fileSetBytes(databasePath: string): Promise<number> {
   let total = 0;
   for (const path of [databasePath, ...sqliteDatabaseSidecars(databasePath)]) {
@@ -298,6 +275,32 @@ async function fileSetBytes(databasePath: string): Promise<number> {
       total += (await stat(path)).size;
     } catch (error) {
       if (!isMissingFile(error)) throw error;
+    }
+  }
+  return total;
+}
+
+/** Files under the managed context value tree (`sha256/<xx>/<blob>`), stat'ed asynchronously. */
+async function directoryBytes(path: string, depth = 0): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(path, { withFileTypes: true });
+  } catch (error) {
+    if (isMissingFile(error)) return 0;
+    throw error;
+  }
+  let total = 0;
+  for (const entry of entries) {
+    const child = join(path, entry.name);
+    if (entry.isDirectory() && depth < 3) {
+      total += await directoryBytes(child, depth + 1);
+    } else if (entry.isFile()) {
+      try {
+        total += (await stat(child)).size;
+      } catch (error) {
+        // A value file deleted mid-walk simply no longer counts.
+        if (!isMissingFile(error)) throw error;
+      }
     }
   }
   return total;

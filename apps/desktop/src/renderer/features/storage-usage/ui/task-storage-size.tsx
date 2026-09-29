@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Text } from '@astryxdesign/core/Text';
 import { formatBytes, useUiLocale } from '@maka/ui';
 import type { SessionStorageUsage } from '@maka/runtime-host/protocol';
@@ -25,20 +25,47 @@ import { getStorageUsageCopy } from '../../../locales/storage-usage-copy.js';
 import { sessionStorageBytes } from '../model/session-storage-loader.js';
 import { useOptionalSessionStorageLoader } from '../services-context.js';
 
+/** Starts measuring slightly before a row scrolls in, so its size is ready on arrival. */
+const VISIBILITY_MARGIN = '200px 0px';
+
 /**
  * A task's measured size, or nothing while unknown. Never a guess.
  *
- * Each mounted row asks for its own size. The archived-task list is not
- * virtualized, so every row that passes the search mounts; the shared loader
- * measures them sequentially, one bounded Host request at a time.
+ * The archived-task list is not virtualized, so every matching row mounts. A
+ * row asks for its size only once it scrolls into view; rows never seen are
+ * never measured. The shared loader batches the rows that become visible
+ * together into bounded Host requests, one at a time.
  */
 export function TaskStorageSize(props: { readonly sessionId: string }) {
   const loader = useOptionalSessionStorageLoader();
   const locale = useUiLocale();
+  const anchor = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
   const [usage, setUsage] = useState<SessionStorageUsage | undefined>(undefined);
 
   useEffect(() => {
-    if (!loader) return;
+    const element = anchor.current;
+    if (!loader || !element || visible) return;
+    // Without an observer (a non-browser host) there is no scroll to wait for.
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          observer.disconnect();
+          setVisible(true);
+        }
+      },
+      { rootMargin: VISIBILITY_MARGIN },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [loader, visible]);
+
+  useEffect(() => {
+    if (!loader || !visible) return;
     let current = true;
     setUsage(undefined);
     void loader.load(props.sessionId).then((measured) => {
@@ -47,12 +74,15 @@ export function TaskStorageSize(props: { readonly sessionId: string }) {
     return () => {
       current = false;
     };
-  }, [loader, props.sessionId]);
+  }, [loader, props.sessionId, visible]);
 
-  if (!usage) return null;
   return (
-    <Text type="supporting" size="sm" color="secondary">
-      {getStorageUsageCopy(locale).taskSize(formatBytes(sessionStorageBytes(usage), locale))}
-    </Text>
+    <span ref={anchor}>
+      {usage ? (
+        <Text type="supporting" size="sm" color="secondary">
+          {getStorageUsageCopy(locale).taskSize(formatBytes(sessionStorageBytes(usage), locale))}
+        </Text>
+      ) : null}
+    </span>
   );
 }
