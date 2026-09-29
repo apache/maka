@@ -1,0 +1,387 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { FollowUpMode, InlineReference, QuoteRef } from '@maka/core/events';
+import type { OrchestrationMode } from '@maka/core/orchestration';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type {
+  ComposerHandle,
+  ComposerSendMetadata,
+  ToastDiagnosticTarget,
+  TransientUserMessageProjection,
+} from '@maka/ui';
+import type * as Conversation from './features/conversation/index.js';
+import type { AppShellChatActions } from './app-shell-chat-actions.js';
+import type {
+  ContextCompactionPresentation,
+} from './app-shell-context-compaction.js';
+import {
+  completeTurnRevisionCopyAttempt,
+  type TurnRevisionDraft,
+} from './app-shell-revision-actions.js';
+import { parseDesktopSlashCommand } from './desktop-slash-command.js';
+import {
+  mergeWorkspaceReferences,
+  rebaseWorkspaceFileReferences,
+} from './follow-up-submit-routing.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
+import { localizedShellErrorMessage } from './locales/shell-copy.js';
+import {
+  isSessionWorkspaceUnavailableError,
+  showSessionWorkspaceUnavailableToast,
+} from './session-workspace-errors.js';
+import { presentContextCompactionResult } from './app-shell-context-compaction.js';
+
+type RefBox<T> = { current: T };
+
+/** The shell-copy fields this send path reads. Structural so tests do not need the full copy. */
+export interface RevisionSendShellCopy {
+  compactErrorTitle: string;
+  compactErrorFallback: string;
+  sideChatUnavailableTitle: string;
+  sideChatUnavailableDescription: string;
+  sideChatContextPendingTitle: string;
+  sideChatContextPendingDescription: string;
+  swarmModeEnabledTitle: string;
+  swarmModeDisabledTitle: string;
+  swarmModeStatusDescription: string;
+  graphModeEnabledTitle: string;
+  graphModeDisabledTitle: string;
+  graphModeStatusDescription: string;
+  graphHistoryTitle: string;
+  graphHistoryDescription: string;
+}
+
+/**
+ * Dependencies of the composer's submit path. AppShell passes its live
+ * readings; tests pass doubles. The function below is the production path —
+ * tests must call it rather than re-implementing its ordering.
+ */
+export interface RevisionSendPorts {
+  uiLocale: UiLocale;
+  shellCopy: RevisionSendShellCopy;
+  toastApi: {
+    info(title: string, description?: string): void;
+    error(
+      title: string,
+      description?: string,
+      diagnosticDetails?: string,
+      diagnosticTarget?: ToastDiagnosticTarget,
+    ): void;
+  };
+  activeIdRef: RefBox<string | undefined>;
+  revisionDraftRef: RefBox<TurnRevisionDraft | null>;
+  composerRef: RefBox<ComposerHandle | null>;
+  retractedWorkspaceReferencesRef: RefBox<Record<string, InlineReference[]>>;
+  hasPendingContext: boolean;
+  hasStagedQuotes: boolean;
+  submittableAttachments: readonly Conversation.PendingAttachment[] | undefined;
+  directoryOptions: {
+    directoryReferences?: NonNullable<
+      TransientUserMessageProjection['directoryReferences']
+    >;
+  };
+  quotesForSend: () => QuoteRef[] | undefined;
+  clearSubmittedContext: (
+    submitted?: readonly Conversation.PendingAttachment[],
+  ) => void;
+  clearQuotes: () => void;
+  prepareRevisionSend: (text: string) => Promise<boolean>;
+  send: AppShellChatActions['send'];
+  enqueueFollowUp: (
+    sessionId: string,
+    text: string,
+    mode: FollowUpMode,
+    metadata?: ComposerSendMetadata,
+  ) => Promise<boolean>;
+  settleNewTaskImageNoticeOwner: (sourceSessionId?: string) => void;
+  commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
+  resolveNewTaskSessionHandler: () => (
+    sessionId: string,
+    newTaskDraftKey?: string,
+  ) => void;
+  openSideChat: (options: { initialPrompt?: string }) => void;
+  getActiveOrchestrationMode: () => OrchestrationMode;
+  setOrchestrationModeActive: (
+    mode: Exclude<OrchestrationMode, 'default'>,
+    active: boolean,
+  ) => Promise<boolean>;
+  contextCompactionPresentation: ContextCompactionPresentation;
+  showSessionError: (
+    sessionId: string,
+    title: string,
+    description?: string,
+  ) => void;
+}
+
+export interface RevisionAwareOnSendPorts extends RevisionSendPorts {
+  setNewTaskSendPending: (pending: boolean) => void;
+}
+
+/**
+ * The exact callback AppShell hands to the composer, built by the same
+ * factory in production and in tests. It wraps {@link revisionAwareSend} so
+ * the new-task target cannot move out from under a send (#3408).
+ * `sendCurrent` captures the draft key it submitted from and clears exactly
+ * that key once this resolves; the picker stays live throughout, and the
+ * catalog can settle on its own. Holding the flag for the whole call gives
+ * the submission one owner, and ChatComposerRegion defers its carry until it
+ * drops.
+ */
+export function createRevisionAwareOnSend(
+  ports: RevisionAwareOnSendPorts,
+): (text: string, metadata?: ComposerSendMetadata) => Promise<boolean | void> {
+  return async function sendOwningItsTarget(
+    text: string,
+    metadata?: ComposerSendMetadata,
+  ): Promise<boolean | void> {
+    ports.setNewTaskSendPending(true);
+    try {
+      return await revisionAwareSend(ports, text, metadata);
+    } finally {
+      ports.setNewTaskSendPending(false);
+    }
+  };
+}
+
+/**
+ * The submit AppShell hands to the composer, extracted so the unchanged-text
+ * edit-and-resend regression test can drive the production ordering
+ * (revision prepare -> normal send with the child target) through a real
+ * Composer submit instead of calling the prepare helper directly.
+ *
+ * Moved from AppShellContent.sendWithAttachments; AppShell uses this same
+ * function through createRevisionAwareOnSend.
+ */
+export async function revisionAwareSend(
+  ports: RevisionSendPorts,
+  text: string,
+  metadata?: ComposerSendMetadata,
+): Promise<boolean | void> {
+  const revision = ports.revisionDraftRef.current;
+  const revisionSend = Boolean(
+    revision && ports.activeIdRef.current === revision.draftSessionId,
+  );
+  const slashCommand = parseDesktopSlashCommand(text);
+  // Message placement expresses user intent; Host decides admission.
+  const sessionId = ports.activeIdRef.current;
+  const workspaceFileReferences = mergeWorkspaceReferences(
+    text,
+    metadata?.workspaceFileReferences,
+    sessionId ? ports.retractedWorkspaceReferencesRef.current[sessionId] : undefined,
+  );
+  const followUpAtSubmit = slashCommand ? undefined : metadata?.followUpMode;
+  if (sessionId && followUpAtSubmit) {
+    const queued = await ports.enqueueFollowUp(sessionId, text, followUpAtSubmit, {
+      ...metadata,
+      workspaceFileReferences,
+    });
+    if (queued) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
+    return queued;
+  }
+  if (revisionSend && revision) {
+    const actionCopy = getDesktopConversationCopy(ports.uiLocale).actions;
+    if (ports.hasPendingContext) {
+      ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
+      return false;
+    }
+    if (slashCommand) {
+      ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
+      return false;
+    }
+    if (!(await ports.prepareRevisionSend(text))) return false;
+  }
+  if (slashCommand?.kind === 'compact') {
+    const compactSessionId = ports.activeIdRef.current;
+    if (!compactSessionId) return true;
+    try {
+      const result = await window.maka.sessions.compact(compactSessionId);
+      return presentContextCompactionResult(
+        ports.contextCompactionPresentation,
+        compactSessionId,
+        result,
+        ports.uiLocale,
+      );
+    } catch (error) {
+      if (ports.activeIdRef.current !== compactSessionId) return false;
+      if (isSessionWorkspaceUnavailableError(error)) {
+        showSessionWorkspaceUnavailableToast(ports.toastApi, ports.uiLocale, { sessionId: compactSessionId });
+      } else {
+        ports.showSessionError(
+          compactSessionId,
+          ports.shellCopy.compactErrorTitle,
+          localizedShellErrorMessage(error, ports.shellCopy.compactErrorFallback, ports.uiLocale),
+        );
+      }
+      return false;
+    }
+  }
+  if (slashCommand?.kind === 'side') {
+    if (!ports.activeIdRef.current) {
+      ports.toastApi.info(
+        ports.shellCopy.sideChatUnavailableTitle,
+        ports.shellCopy.sideChatUnavailableDescription,
+      );
+      return false;
+    }
+    if (
+      ports.hasPendingContext ||
+      ports.hasStagedQuotes ||
+      metadata?.workspaceFileReferences?.length
+    ) {
+      ports.toastApi.info(
+        ports.shellCopy.sideChatContextPendingTitle,
+        ports.shellCopy.sideChatContextPendingDescription,
+      );
+      return false;
+    }
+    ports.openSideChat(
+      slashCommand.command.prompt
+        ? { initialPrompt: slashCommand.command.prompt }
+        : {},
+    );
+    return true;
+  }
+  if (slashCommand?.kind === 'swarm') {
+    const swarmCommand = slashCommand.command;
+    if (swarmCommand.kind === 'status') {
+      const active = ports.getActiveOrchestrationMode() === 'swarm';
+      ports.toastApi.info(
+        active ? ports.shellCopy.swarmModeEnabledTitle : ports.shellCopy.swarmModeDisabledTitle,
+        ports.shellCopy.swarmModeStatusDescription,
+      );
+      return true;
+    }
+    if (swarmCommand.kind === 'set_mode') {
+      const changed = await ports.setOrchestrationModeActive('swarm', swarmCommand.mode === 'swarm');
+      if (changed) {
+        ports.toastApi.info(
+          swarmCommand.mode === 'swarm'
+            ? ports.shellCopy.swarmModeEnabledTitle
+            : ports.shellCopy.swarmModeDisabledTitle,
+          ports.shellCopy.swarmModeStatusDescription,
+        );
+      }
+      return changed;
+    }
+    const pending = ports.submittableAttachments;
+    const quotes = ports.quotesForSend();
+    const ok = await ports.send(swarmCommand.task, pending, {
+      turnOrchestration: { mode: 'swarm', source: 'slash_command' },
+      ...ports.directoryOptions,
+      ...(quotes ? { quotes } : {}),
+      ...(metadata?.workspaceFileReferences?.length
+        ? {
+            workspaceFileReferences: rebaseWorkspaceFileReferences(
+              text,
+              swarmCommand.task,
+              metadata.workspaceFileReferences,
+            ),
+          }
+        : {}),
+    });
+    if (ok !== false) {
+      ports.clearSubmittedContext(pending);
+      if (quotes) ports.clearQuotes();
+      ports.settleNewTaskImageNoticeOwner(sessionId);
+    }
+    return ok;
+  }
+  if (slashCommand?.kind === 'graph') {
+    const graphCommand = slashCommand.command;
+    if (graphCommand.kind === 'status') {
+      const active = ports.getActiveOrchestrationMode() === 'graph';
+      ports.toastApi.info(
+        active ? ports.shellCopy.graphModeEnabledTitle : ports.shellCopy.graphModeDisabledTitle,
+        ports.shellCopy.graphModeStatusDescription,
+      );
+      return true;
+    }
+    if (graphCommand.kind === 'history') {
+      ports.toastApi.info(ports.shellCopy.graphHistoryTitle, ports.shellCopy.graphHistoryDescription);
+      return true;
+    }
+    if (graphCommand.kind === 'set_mode') {
+      const changed = await ports.setOrchestrationModeActive('graph', graphCommand.mode === 'graph');
+      if (changed) {
+        ports.toastApi.info(
+          graphCommand.mode === 'graph'
+            ? ports.shellCopy.graphModeEnabledTitle
+            : ports.shellCopy.graphModeDisabledTitle,
+          ports.shellCopy.graphModeStatusDescription,
+        );
+      }
+      return changed;
+    }
+    const pending = ports.submittableAttachments;
+    const quotes = ports.quotesForSend();
+    const ok = await ports.send(graphCommand.task, pending, {
+      turnOrchestration: { mode: 'graph', source: 'slash_command' },
+      ...ports.directoryOptions,
+      ...(quotes ? { quotes } : {}),
+      ...(metadata?.workspaceFileReferences?.length
+        ? {
+            workspaceFileReferences: rebaseWorkspaceFileReferences(
+              text,
+              graphCommand.task,
+              metadata.workspaceFileReferences,
+            ),
+          }
+        : {}),
+    });
+    if (ok !== false) {
+      ports.clearSubmittedContext(pending);
+      if (quotes) ports.clearQuotes();
+      ports.settleNewTaskImageNoticeOwner(sessionId);
+    }
+    return ok;
+  }
+  const pending = ports.submittableAttachments;
+  const expectedRevisionDraft = revisionSend
+    ? ports.revisionDraftRef.current
+    : undefined;
+  const quotes = ports.quotesForSend();
+  const ok = await ports.send(text, pending, {
+    waitForHostAdmission: revisionSend,
+    targetSessionId: expectedRevisionDraft?.draftSessionId,
+    onSessionResolved: ports.resolveNewTaskSessionHandler(),
+    ...ports.directoryOptions,
+    ...(quotes ? { quotes } : {}),
+    ...(workspaceFileReferences.length
+      ? { workspaceFileReferences }
+      : {}),
+  });
+  if (ok !== false) {
+    ports.clearSubmittedContext(pending);
+    if (quotes) ports.clearQuotes();
+    ports.settleNewTaskImageNoticeOwner(sessionId);
+    if (sessionId) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
+  }
+  if (ok !== false && revisionSend) {
+    if (expectedRevisionDraft) {
+      completeTurnRevisionCopyAttempt(expectedRevisionDraft);
+      ports.composerRef.current?.clearDraft(expectedRevisionDraft.draftSessionId);
+      if (expectedRevisionDraft.sourceSessionId !== expectedRevisionDraft.draftSessionId) {
+        ports.composerRef.current?.clearDraft(expectedRevisionDraft.sourceSessionId);
+      }
+    }
+    ports.commitRevisionDraft(null);
+  }
+  return ok;
+}
