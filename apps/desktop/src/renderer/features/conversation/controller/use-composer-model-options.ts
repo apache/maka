@@ -37,10 +37,15 @@ export interface ComposerModelOptionTarget {
   model: string;
 }
 
+const normalizedOverride = (entry: ModelOverride | null | undefined) =>
+  JSON.stringify(normalizeModelOverrides({ model: entry ?? {} })?.model ?? {});
+
 /**
  * Writes the composer's Fast toggle onto the connection's model override — the
- * value the runtime already reads for the next request. Picks are serialized so
- * the second save's expected override is the first save's result.
+ * value the runtime already reads for the next request. Picks are serialized.
+ * A pick made before the previous save's refresh reached the connection list
+ * still sees that save's `before`; only then is its `after` the expected value.
+ * Any other difference is an edit made elsewhere, and the list is authoritative.
  */
 export function useComposerModelOptions(options: {
   uiLocale: UiLocale;
@@ -55,29 +60,31 @@ export function useComposerModelOptions(options: {
   const latest = useRef({ ...options, services, toast });
   latest.current = { ...options, services, toast };
   const tailRef = useRef<Promise<void>>(Promise.resolve());
-  const rememberedRef = useRef<{ key: string; override: ModelOverride | null } | null>(null);
+  const rememberedRef = useRef<{
+    key: string;
+    before: ModelOverride | null;
+    after: ModelOverride | null;
+  } | null>(null);
 
   const onFastChange = useCallback((enabled: boolean) => {
     // Everything this write targets is fixed at click time: a queued write must
     // not follow the composer to another Session's Host or connection list.
     const { model, host, uiLocale, services, toast } = latest.current;
     const update = services.connections?.updateModelOverride;
-    if (!model || !update) return Promise.resolve();
+    if (!model || !host || !update) return Promise.resolve();
     const connection = latest.current.connections.find(
       (candidate) => candidate.connectionId === model.connectionId && candidate.slug === model.slug,
     );
-    const key = [host?.profileId ?? '', host?.hostId ?? '', model.connectionId, model.model].join('\u0000');
+    const key = [host.profileId, host.hostId, model.connectionId, model.model].join('\u0000');
     const task = tailRef.current.then(async () => {
       if (!connection) throw new Error(`Connection is no longer available: ${model.slug}`);
       const stored = modelOverride(connection, model.model) ?? null;
-      const remembered = rememberedRef.current?.key === key ? rememberedRef.current.override : undefined;
-      const expected = remembered !== undefined && JSON.stringify(stored) !== JSON.stringify(remembered)
-        ? remembered
+      const remembered = rememberedRef.current?.key === key ? rememberedRef.current : undefined;
+      const expected = remembered && normalizedOverride(stored) === normalizedOverride(remembered.before)
+        ? remembered.after
         : stored;
       const value = modelOverrideForServiceTier(expected ?? undefined, enabled);
-      const normalized = (entry: ModelOverride | null | undefined) =>
-        JSON.stringify(normalizeModelOverrides({ model: entry ?? {} })?.model ?? {});
-      if (normalized(value) === normalized(expected)) return;
+      if (normalizedOverride(value) === normalizedOverride(expected)) return;
       const saved = await update({
         host,
         connection: { connectionId: model.connectionId, slug: model.slug },
@@ -85,10 +92,11 @@ export function useComposerModelOptions(options: {
         expected,
         value,
       });
-      rememberedRef.current = { key, override: saved };
+      rememberedRef.current = { key, before: expected, after: saved };
     });
     tailRef.current = task.then(() => undefined, () => undefined);
     return task.catch((error: unknown) => {
+      rememberedRef.current = null;
       toast.error(
         getDesktopConversationCopy(uiLocale).actions.modelOptionSaveFailedTitle,
         error instanceof Error ? error.message : undefined,
@@ -97,5 +105,7 @@ export function useComposerModelOptions(options: {
     });
   }, []);
 
-  return services.connections ? { onFastChange } : {};
+  // Without a known Host the write could land on a Host whose connections the
+  // menu is not showing, so Fast is not offered at all.
+  return services.connections && options.host && options.model ? { onFastChange } : {};
 }

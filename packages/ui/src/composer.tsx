@@ -1876,6 +1876,8 @@ export const Composer = forwardRef<
       : undefined);
   const renderComposerOptions = (): ReactNode => (
     <ComposerOptionsMenu
+      // A pick still settling belongs to the Session it was made in.
+      key={props.activeSession?.id ?? 'new-task'}
       label={(props.activeSession ? props.activeModelLabel?.trim() : undefined) || modelChipLabel}
       disabled={props.activeSession ? !modelSwitchAvailability.available : false}
       disabledReason={props.activeSession ? modelSwitcherDisabledReason : undefined}
