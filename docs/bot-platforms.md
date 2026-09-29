@@ -190,9 +190,32 @@ Changing `enabled`, `token`, `appId`, `appSecret`, `domain` or `webhookUrl`
 restarts the bridge; any other settings change is applied in place
 (`botSettingsRequireRestart` in `base-adapter.ts`).
 
-Every channel supports `proxyUrl`, and all outbound HTTP goes through
-`proxiedFetch`, which honors the active proxy and its bypass list with a 15s
-default timeout.
+### Network routing
+
+**No bot traffic on `main` goes through a Maka proxy setting.** Two things
+look like they should route it, and neither does:
+
+- The per-channel **`proxyUrl`** field is stored with every channel but read by
+  no bridge.
+- The Telegram, Discord, QQ, DingTalk and WeChat bridges send their REST calls
+  through `proxiedFetch`, which asks `resolveActiveProxy()` for the app's
+  network proxy. Nothing in the product ever calls `setActiveProxy()`, so that
+  lookup always returns `null` and every request goes direct.
+
+Three paths would stay outside `proxiedFetch` even if it were wired: the
+gateway WebSockets that Discord, QQ and DingTalk open through
+`WsBridgeBase.createWebSocket()`, which passes no dispatcher; and the Slack,
+Feishu/Lark and WeCom channels, whose vendor SDKs make their own connections.
+
+Where a provider is unreachable directly, what works today is a system-level
+route — a TUN-mode proxy or equivalent — that intercepts traffic below the
+application. Every live verification in this document ran with one active, so
+none of them demonstrates Maka-level proxy support.
+
+apache/maka#5159 connects the app's network proxy to `proxiedFetch` for a
+local Host. It covers the REST paths above but not the gateway sockets or the
+SDK channels, and it does not make `proxyUrl` meaningful. Once it merges, this
+section should be narrowed rather than removed.
 
 ## Message limits
 
@@ -242,6 +265,11 @@ longer schedule would silently no-op.
    which the bridge never captures. Reproduced against a live app, along with
    the send that does succeed; see the DingTalk setup section. A fix is open as
    apache/maka#5112.
+9. **No Maka proxy setting reaches bot traffic.** The per-channel `proxyUrl` is
+   read by no bridge, and the app's network proxy is never handed to
+   `proxiedFetch`. A blocked provider needs a system-level route. See
+   [Network routing](#network-routing); a partial fix is open as
+   apache/maka#5159.
 
 ## Security considerations
 
@@ -268,9 +296,10 @@ written to logs.
 opening a public inbound endpoint, and there is no webhook signature to verify.
 WeChat's `webhookUrl` is a *local* bridge address, not a public callback.
 
-**Outbound requests are proxy-aware.** All bridge HTTP flows through
-`proxiedFetch`, so an egress proxy configured for the app also covers bot
-traffic.
+**Outbound requests do not honour the app's proxy.** An egress proxy
+configured in Maka does not currently cover bot traffic, so it cannot be relied
+on to confine or observe what the bridges send. See
+[Network routing](#network-routing).
 
 ## Setup
 
@@ -307,9 +336,11 @@ Open `https://t.me/<your_bot_username>`, press **Start**, and send a message.
 messages it first the channel receives nothing — which looks identical to a
 broken connection.
 
-**3. Set a proxy if Telegram is not directly reachable.** The channel's
-`proxyUrl` is used for every Bot API call through `proxiedFetch`. Without it,
-startup fails at the network layer rather than with an API error.
+**3. Make Telegram reachable.** Where `api.telegram.org` is blocked, neither
+the channel's `proxyUrl` nor Maka's network proxy setting helps on `main` —
+see [Network routing](#network-routing). Use a system-level route such as a
+TUN-mode proxy. Without one, startup fails at the network layer rather than
+with an API error, typically as a fetch timeout from `getMe`.
 
 **4. Verify.** Startup calls `getMe`. Success records the bot's ID, username
 and display name, and moves the channel to `credentials_valid` — deliberately
@@ -393,14 +424,12 @@ Discord channel ID with no prefix.
 
 Messages are chunked at 2000 characters, Discord's own per-message limit.
 
-> **The channel proxy does not cover the gateway socket.** REST calls go
-> through `proxiedFetch` and honour `proxyUrl`, but `WsBridgeBase.createWebSocket()`
-> constructs the WebSocket with no dispatcher, so the gateway connection
-> ignores that setting. This was *not* reproduced during verification — the
-> unproxied socket connected normally — which is the expected outcome whenever
-> a system-wide or TUN-mode proxy is transparently carrying raw sockets. It
-> would matter on a host where Discord is reachable only through Maka's own
-> proxy setting. The same applies to the QQ and DingTalk gateways.
+> **Discord needs a system-level route where it is blocked.** No Maka proxy
+> setting reaches this channel on `main` — see
+> [Network routing](#network-routing). Verification connected because a
+> TUN-mode proxy was carrying all traffic, including the gateway socket. Even
+> once the app proxy is wired to REST calls, the gateway WebSocket is opened
+> without a dispatcher and would still need that system-level route.
 
 ### Slack
 
@@ -472,10 +501,10 @@ posts never reach the handler.
 > from Telegram, where `getUpdates` returns messages that arrived while the
 > bridge was down.
 
-> **This channel ignores `proxyUrl` entirely.** Both `WebClient` and
-> `SocketModeClient` are constructed without any agent, so neither the REST
-> calls nor the socket use the configured proxy — not even the partial REST
-> coverage the Discord channel gets from `proxiedFetch`.
+> **This channel sits outside `proxiedFetch` entirely.** Both `WebClient` and
+> `SocketModeClient` are constructed without an agent, so wiring the app's
+> network proxy into `proxiedFetch` would not reach Slack either. Where Slack
+> is blocked, use a system-level route. See [Network routing](#network-routing).
 
 ### DingTalk 钉钉
 
@@ -770,6 +799,13 @@ refused by design.
 > as the status reason. No real WeChat account was involved, so message
 > delivery through WeChat itself remains unverified, as does the iLink route,
 > whose token is only obtainable through the in-app QR flow.
+
+> **iLink replies are sent without a conversation context.** The iLink send
+> body hardcodes `context_token: ''`, and `mapWechatIlinkMessage` does not keep
+> the `context_token` an inbound iLink message carries, so a reply can never
+> refer back to the message it answers. Whether iLink rejects or misroutes such
+> replies has not been tested; treat iLink replies as unproven until it is.
+> (First identified in apache/maka#5115.)
 
 > **The Official Account fields are collected but unused.** The settings UI
 > exposes an Official Account App ID and App Secret, described there as being
