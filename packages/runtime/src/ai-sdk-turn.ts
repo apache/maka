@@ -1415,9 +1415,28 @@ export class AiSdkTurn {
           ) {
             throw new Error('durable current-run projection is not replayable');
           }
+          // The durable current-run projection rebuilds messages from raw
+          // events, so the side-conversation boundary transform must ride
+          // along (#4543 review): pin the owner on the replay item by event
+          // id before materialization, exactly like the pre-turn composer and
+          // the compaction replacement. `replayEvents` is the effective view
+          // the plan was built from — it carries the inherited parent prefix
+          // and the fork's own early turns, but only until a mid-turn fold
+          // truncates it.
+          const ownerEventId =
+            this.sideConversationForkBoundaryEventId(replayEvents) ??
+            priorReplay.forkBoundaryEventId;
+          const boundedReplayPlanItems = applySideConversationReplayItemBoundary(replayPlan.items, {
+            boundaryEventId: ownerEventId,
+            labels: this.deps.backend.header.labels,
+          });
+          const boundedReplayPlan =
+            boundedReplayPlanItems === replayPlan.items
+              ? replayPlan
+              : { ...replayPlan, items: boundedReplayPlanItems };
           const currentTurnMessages =
             await this.deps.messageProjection.materializeRuntimeReplayPlan(
-              replayPlan,
+              boundedReplayPlan,
               this.imageBudget,
               effectiveProjectionCheckpoint,
               compatibleProviderReasoningReplayEventIds(
@@ -1428,17 +1447,17 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
-          // Same rule as the composer above: on follow-up turns the
-          // replayed first fork user message already carries the boundary and
-          // the projection must not prefix anything new; on the first send the
-          // inherited prefix ends at the new fork turn, which owns the
-          // boundary.
+          // The pinned owner already carries the boundary on the replayed
+          // item, so the appended current content never owns a second
+          // boundary (same rule as the composer above). On a first send
+          // without a fold the owner is the new fork user message itself,
+          // which is appended after the inherited prefix and prefixed here.
           return applySideConversationUserMessageBoundary(
             effectiveProjectionCheckpoint
               ? currentTurnMessages
               : [...priorReplay.messages, ...currentTurnMessages],
             {
-              inheritedPrefixLength: priorReplay.forkBoundaryEventId
+              inheritedPrefixLength: ownerEventId
                 ? Number.MAX_SAFE_INTEGER
                 : priorReplay.messages.length,
               labels: this.deps.backend.header.labels,

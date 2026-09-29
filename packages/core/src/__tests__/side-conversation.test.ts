@@ -47,17 +47,24 @@ describe('side-conversation prompt cache helpers', () => {
     assert.match(String(messages[1]?.content), /side question/);
   });
 
-  it('is idempotent when the boundary is already present', () => {
-    const boundary = buildSideConversationUserMessageBoundary();
+  it('still prefixes the real boundary when a fork first message itself mentions the marker', () => {
+    // #4543 review P3: whether the boundary is applied must be decided
+    // structurally (first user message after the inherited prefix), never by
+    // searching user-controlled text for the marker. A message that quotes the
+    // marker must not suppress the real boundary.
     const messages = applySideConversationUserMessageBoundary(
-      [{ role: 'user', content: `${boundary}\n\nalready there` }],
+      [{ role: 'user', content: 'What does "Side conversation boundary:" mean?' }],
       {
         inheritedPrefixLength: 0,
         labels: [SIDE_CONVERSATION_SESSION_LABEL],
       },
     );
 
-    assert.equal(messages[0]?.content, `${boundary}\n\nalready there`);
+    assert.match(
+      String(messages[0]?.content),
+      new RegExp(`^${buildSideConversationUserMessageBoundary()}\n\n`),
+    );
+    assert.match(String(messages[0]?.content), /What does "Side conversation boundary:" mean\?/);
   });
 
   it('routes OpenAI prompt cache keys through the parent session id', () => {
@@ -87,7 +94,7 @@ describe('side-conversation prompt cache helpers', () => {
     );
   });
 
-  it('prefixes the boundary onto exactly the owning replay item, idempotently', () => {
+  it('prefixes the boundary onto exactly the owning replay item, structurally', () => {
     const boundary = buildSideConversationUserMessageBoundary();
     const items = [
       {
@@ -99,7 +106,7 @@ describe('side-conversation prompt cache helpers', () => {
       {
         kind: 'text' as const,
         role: 'user' as const,
-        content: 'fork question',
+        content: 'fork question mentioning Side conversation boundary: inline',
         eventId: 'fork-user-1',
       },
     ];
@@ -108,16 +115,10 @@ describe('side-conversation prompt cache helpers', () => {
       labels: [SIDE_CONVERSATION_SESSION_LABEL],
     });
     assert.match(String(once[0]?.content), /^inherited parent question$/);
-    assert.match(String(once[1]?.content), /^Side conversation boundary:\n/);
-    assert.match(String(once[1]?.content), /fork question/);
-
-    // The boundary never persists to RuntimeEvents: every later request
-    // re-applies it to the SAME item and the bytes stay identical.
-    const twice = applySideConversationReplayItemBoundary(once, {
-      boundaryEventId: 'fork-user-1',
-      labels: [SIDE_CONVERSATION_SESSION_LABEL],
-    });
-    assert.equal(String(twice[1]?.content), String(once[1]?.content));
-    assert.match(String(once[1]?.content), new RegExp(`^${boundary}`));
+    assert.match(String(once[1]?.content), new RegExp(`^${boundary}\n\n`));
+    assert.match(
+      String(once[1]?.content),
+      /fork question mentioning Side conversation boundary: inline/,
+    );
   });
 });

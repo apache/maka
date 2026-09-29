@@ -107,11 +107,6 @@ export function applySideConversationUserMessageBoundary<T extends SideConversat
     if (message?.role !== 'user') {
       continue;
     }
-    if (
-      userContentIncludesSideConversationBoundary(message.content as SideConversationUserContent)
-    ) {
-      return [...messages];
-    }
     const next = [...messages];
     next[index] = {
       ...message,
@@ -129,10 +124,14 @@ export function applySideConversationUserMessageBoundary<T extends SideConversat
  * Prefix the boundary onto exactly the replay item that owns it (by event id)
  * and leave every other item untouched.
  *
- * Idempotent: an item already carrying the marker passes through unchanged.
- * The boundary is a provider-request transform that never persists to
- * RuntimeEvents, so the owner item replays un-prefixed on every request and is
- * re-prefixed here — the same bytes on the same message, every time.
+ * The owner is named structurally by `eventId`, never by searching user text
+ * for the marker: a fork whose first message itself contains
+ * `SIDE_CONVERSATION_BOUNDARY_MARKER` must still receive the real boundary
+ * (`userContentIncludesSideConversationBoundary` is a test-only probe, not a
+ * decision input). Because the boundary is a provider-request transform that
+ * never persists to RuntimeEvents, the owner item replays un-prefixed on every
+ * request and is re-prefixed here — the same bytes on the same message, every
+ * time.
  */
 export function applySideConversationReplayItemBoundary<
   T extends { role?: string; content?: unknown; eventId?: string },
@@ -147,7 +146,6 @@ export function applySideConversationReplayItemBoundary<
     if (item.eventId !== input.boundaryEventId) return item;
     const content = item.content as SideConversationUserContent | undefined;
     if (content === undefined) return item;
-    if (userContentIncludesSideConversationBoundary(content)) return item;
     return { ...item, content: prependSideConversationBoundaryToUserContent(content) };
   });
 }
