@@ -41,10 +41,13 @@ export function formatBytes(bytes: number): string {
 export function formatDuration(ms: number | undefined): string | null {
   if (ms === undefined || ms < 0) return null;
   if (ms < 1000) return `${ms} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.round((ms % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
+  // Round once, before splitting into units, so a value just under a unit
+  // boundary carries into the next unit instead of printing `60s`.
+  const tenths = Math.round(ms / 100);
+  if (tenths < 100) return `${(tenths / 10).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
 export function formatUserVisibleToolText(text: string, locale: UiLocale): string {

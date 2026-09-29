@@ -28,6 +28,7 @@ import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from '../tool-activity/copy.js';
+import { formatDuration } from '../tool-activity/preview-utils.js';
 import {
   computerActionLabel,
   computerRunningLabel,
@@ -954,4 +955,12 @@ it('uses WorkHub status once in the collapsed row and retains arguments in detai
     const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
     assert.match(detail, /status/);
   }
+});
+
+it('carries rounded tool durations into the next unit', () => {
+  assert.equal(formatDuration(9_949), '9.9s');
+  assert.equal(formatDuration(9_960), '10s');
+  assert.equal(formatDuration(59_600), '1m 0s');
+  assert.equal(formatDuration(119_600), '2m 0s');
+  assert.equal(formatDuration(125_000), '2m 5s');
 });

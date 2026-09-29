@@ -35,6 +35,7 @@ export * from '../../application/contracts/session-inspector/session-inspector-p
 export { SessionReviewPanel } from './tools/review/session-review-panel.js';
 export { SessionReviewBaseBranchPicker } from './tools/review/session-review-base-branch-picker.js';
 export {
+  formatDuration,
   InspectorCompositionSection,
   RING_ACTIVE_MIN_SWEEP,
   RING_MIN_SWEEP,
