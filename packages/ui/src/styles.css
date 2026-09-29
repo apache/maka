@@ -55,6 +55,31 @@
    Astryx's public spinner target without inventing a completed/failed tool. */
 .maka-tool-activity-card[data-activity-observed='false'] .astryx-spinner { display: none; }
 
+/* Fade the transcript's top scroll edge, matching the composer's frosted dock
+   at the bottom (same blur, same per-density ramp: 24/36/48px). The ChatLayout
+   root is the scroller, so a sticky ::before pinned at top:0 works — negative
+   margin-top keeps it zero-layout. `flex: none` is required: this flex column
+   shrinks overflowing items to height:0. The mask must live on ::before, not
+   the scroller — a mask on the ancestor breaks the dock's backdrop-filter. */
+.maka-chat-layout.compact { --_transcript-top-fade: 24px; }
+.maka-chat-layout.balanced { --_transcript-top-fade: 36px; }
+.maka-chat-layout.spacious { --_transcript-top-fade: 48px; }
+.maka-chat-layout::before {
+  content: '';
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  flex: none;
+  height: var(--_transcript-top-fade, 36px);
+  margin-top: calc(-1 * var(--_transcript-top-fade, 36px));
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+
 /* An Item row draws a focus ring for ITS OWN tab stop, never for a control
    that already draws one.
 
