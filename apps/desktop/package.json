@@ -70,9 +70,9 @@
     "@sigstore/verify": "4.1.2",
     "electron-updater": "^6.8.9",
     "node-pty": "^1.2.0-beta.15",
-    "opencli-mcp": "0.0.22",
+    "opencli-mcp": "0.0.23",
     "qrcode": "^1.5.4",
-    "ws": "^8.21.3",
+    "ws": "^8.22.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
@@ -98,7 +98,7 @@
     "linkedom": "^0.18.13",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "simple-icons": "16.32.0",
+    "simple-icons": "16.33.0",
     "storybook": "^10.4.6",
     "vite": "^8.3.1"
   },
