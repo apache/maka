@@ -22,8 +22,6 @@ import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import type { SessionPendingClaim } from './features/conversation/index.js';
 
-type RefBox<T> = { current: T };
-
 type ToastApi = {
   error(
     title: string,
@@ -35,7 +33,7 @@ type ToastApi = {
 
 export function createAppShellStopAction(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: { readonly current: string | undefined };
   stopPending: SessionPendingClaim;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   toastApi: ToastApi;

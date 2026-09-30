@@ -204,16 +204,16 @@ export interface RevisionActionsEnv<
   TDraft extends TurnRevisionDraftBase<Phase>,
 > {
   uiLocale: UiLocale;
-  activeIdRef: { current: string | undefined };
+  activeIdRef: { readonly current: string | undefined };
   captureSelection(): () => boolean;
-  composerRef: { current: ComposerHandle | null };
-  messages: readonly StoredMessage[];
+  composerRef: { readonly current: ComposerHandle | null };
+  readMessages(): readonly StoredMessage[];
   hasPendingAttachments(): boolean;
   stagedContext(): RevisionStagedContext;
   openSessionInChat(sessionId: string, turnId?: string): void;
   refreshSessions(): Promise<unknown[]>;
   commitRevisionDraft(draft: TurnRevisionDraftBase<Phase> | null): void;
-  revisionDraftRef: { current: TDraft | null };
+  revisionDraftRef: { readonly current: TDraft | null };
   toastApi: RevisionToastApi;
   copy: RevisionEditCopy;
   reviseBeforeTurn(
@@ -266,7 +266,7 @@ export function createRevisionActions<
     activeIdRef,
     captureSelection,
     composerRef,
-    messages,
+    readMessages,
     hasPendingAttachments,
     stagedContext,
     openSessionInChat,
@@ -293,7 +293,7 @@ export function createRevisionActions<
       toastApi.info(copy.revisionUnavailableTitle, copy.revisionDraftAttachmentConflict);
       return;
     }
-    const userMessage = messages.find(
+    const userMessage = readMessages().find(
       (message): message is Extract<StoredMessage, { type: 'user' }> =>
         message.type === 'user' && message.turnId === turnId,
     );

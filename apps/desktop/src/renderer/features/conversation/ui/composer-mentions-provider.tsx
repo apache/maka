@@ -31,7 +31,7 @@ import {
   type SessionCatalogState,
 } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
-import { shellSessionRowEqual } from '../controller/use-app-shell-session-ui-state.js';
+import { shellSessionRowEqual } from '../model/conversation-catalog-row.js';
 import {
   useSessionReferenceComposer,
   type SessionReferenceSession,

@@ -87,7 +87,7 @@ test('the in-flight revision send still reads the re-keyed plate (#5274 review)'
         clearDraft: () => {},
       } as never,
     },
-    messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+    readMessages: () => [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
     hasPendingAttachments: () => false,
     stagedContext: () => ({
       quotes: surface.pendingQuotes,

@@ -29,12 +29,12 @@ import {
   TOOL_STREAM_MAX_TOTAL_CHARS,
 } from '@maka/ui';
 import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues } from '@maka/ui';
-import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
-import { deriveMessageQueueProjection } from './application/contracts/message-queue-projection.js';
-import type { MessageQueueUiState } from './features/conversation/index.js';
-import * as modelConnectionErrors from './model-connection-errors.js';
-import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
-import { createConversationDisplayFrameScheduler } from './features/conversation/index.js';
+import type { RefreshMessagesOptions } from '../../../application/contracts/transcript-refresh.js';
+import { deriveMessageQueueProjection } from '../../../application/contracts/message-queue-projection.js';
+import type { MessageQueueUiState } from './session-ui-state.js';
+import * as modelConnectionErrors from '../../../application/contracts/model-connection-errors.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import { createConversationDisplayFrameScheduler } from '../controller/display-frame-scheduler.js';
 
 type RefBox<T> = { current: T };
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -72,7 +72,7 @@ export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch
 
 export function createAppShellSessionEventHandlers(options: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   liveTurnBySessionRef: RefBox<Record<string, LiveTurnBuffer>>;
   refreshMessages: (sessionId: string, options?: RefreshMessagesOptions) => Promise<boolean>;
   refreshSessions: () => Promise<unknown>;

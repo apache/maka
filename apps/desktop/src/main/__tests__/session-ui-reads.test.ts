@@ -24,16 +24,18 @@ import { LocaleProvider, ToastProvider, type LiveTurnBuffer } from '@maka/ui';
 import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 import {
   ConversationServicesProvider,
-  useAppShellSessionUiState,
+  ConversationProvider,
   type AppShellSessionUiStateController,
 } from '../../renderer/features/conversation/index.js';
 import * as conversation from '../../renderer/features/conversation/index.js';
 import {
   createProductionSessionUiStateController as createController,
   stubConversationServices,
+  useConversationOwner,
+  useConversationQueue,
 } from '../../renderer/features/conversation/testing.js';
 import { useAppShellSessionUiReads } from '../../renderer/use-app-shell-session-ui-reads.js';
-import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 function interaction(requestId: string): SandboxBoundaryRequestEvent {
@@ -259,12 +261,12 @@ describe('production Session UI consumers', () => {
   it('scopes the workspace publication hook queue read to its published Session', async () => {
     const { root } = installReactRenderer();
     const catalog = createSessionCatalogController();
-    const activeId = { current: 'A' as string | undefined };
-    let value!: ReturnType<typeof useAppShellSessionUiState>;
+    let value!: ReturnType<typeof useConversationOwner>['workspace'];
     let renders = 0;
     function Workspace() {
       renders += 1;
-      value = useAppShellSessionUiState(catalog, 'A', activeId, () => true);
+      value = useConversationOwner().workspace;
+      useConversationQueue();
       return null;
     }
     try {
@@ -272,13 +274,13 @@ describe('production Session UI consumers', () => {
         locale: 'en',
         children: createElement(ToastProvider, {
           children: createElement(ConversationServicesProvider, {
-            services: stubConversationServices(), children: createElement(Workspace),
+            services: stubConversationServices(), children: createElement(SessionCatalogContext.Provider, { value: catalog, children: createElement(ConversationProvider, { children: createElement(Workspace) }) }),
           }),
         }),
       })));
-      await act(async () => { value.publication.setMessagesState([]); });
+      await act(async () => { value.commands.setActiveId('A'); });
       const initial = renders;
-      const c = value.controller;
+      const c = value.ui;
       await act(async () => { c.setMessageQueueBySession((s) => ({ ...s, B: { ts: 1, entries: [] } })); });
       assert.equal(renders, initial);
       await act(async () => { c.setMessageQueueBySession((s) => ({ ...s, A: { ts: 2, entries: [] } })); });

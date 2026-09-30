@@ -117,7 +117,7 @@ function createEnv(input: { messages: StoredMessage[]; staged: StagedLog }) {
         },
       } as never,
     },
-    messages: input.messages,
+    readMessages: () => input.messages,
     hasPendingAttachments: () => false,
     stagedContext: () => fakeStaged(input.staged),
     openSessionInChat: (sessionId) => {

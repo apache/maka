@@ -19,7 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement } from 'react';
+import { act, createElement, useSyncExternalStore } from 'react';
 import { LocaleProvider, ToastProvider } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
@@ -28,8 +28,8 @@ import {
   SessionCatalogContext,
 } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { useAppShellSessionWorkspace } from '../../renderer/use-app-shell-session-workspace.js';
-import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
-import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
+import { ConversationServicesProvider, ConversationProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 
@@ -42,7 +42,14 @@ import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
  * for a single session switch. Identity is a contract, not an implementation
  * detail, so it is asserted here rather than left to review.
  */
-type Workspace = ReturnType<typeof useAppShellSessionWorkspace>;
+function useTestWorkspace() {
+  const target = useAppShellSessionWorkspace({ error: () => {} });
+  const { workspace } = useConversationOwner();
+  const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
+  return { ...target, ...workspace, messages: view.messages, publishedTranscriptRange: view.range, messageLoadPending: view.loading,
+    get requestedSessionId() { return target.sessionCatalogController.getState().activeSessionId; } };
+}
+type Workspace = ReturnType<typeof useTestWorkspace>;
 
 /**
  * Every function the hook returns, read off the first render rather than
@@ -69,7 +76,7 @@ describe('session workspace action identity', () => {
     const displays: Array<{ id: string | undefined; messages: StoredMessage[] }> = [];
     const services = stubConversationServices();
     function Probe(): null {
-      workspace = useAppShellSessionWorkspace({ error: () => {} });
+      workspace = useTestWorkspace();
       displays.push({ id: workspace.activeId, messages: workspace.messages });
       return null;
     }
@@ -79,7 +86,7 @@ describe('session workspace action identity', () => {
         children: createElement(ConversationServicesProvider, {
           services,
           children: createElement(SessionCatalogContext.Provider, {
-            value: catalog, children: createElement(Probe),
+            value: catalog, children: createElement(ConversationProvider, { children: createElement(Probe) }),
           }),
         }),
       }),
@@ -186,7 +193,7 @@ describe('session workspace action identity', () => {
     const reads: Workspace[] = [];
 
     function Probe(): null {
-      reads.push(useAppShellSessionWorkspace({ error: () => {} }));
+      reads.push(useTestWorkspace());
       return null;
     }
 
@@ -198,7 +205,7 @@ describe('session workspace action identity', () => {
             children: createElement(ConversationServicesProvider, {
               services: stubConversationServices(),
               children: createElement(SessionCatalogContext.Provider, {
-                value: catalog, children: createElement(Probe),
+                value: catalog, children: createElement(ConversationProvider, { children: createElement(Probe) }),
               }),
             }),
           }),
@@ -209,8 +216,8 @@ describe('session workspace action identity', () => {
 
     // Three unrelated state changes, each of which re-renders the hook.
     act(() => reads[0]!.setActiveId('session-a'));
-    act(() => reads[0]!.setMessages([]));
-    act(() => reads[0]!.setMessageLoadPending(true));
+    act(() => reads[0]!.setActiveId('session-b'));
+    act(() => reads[0]!.setLoading(true));
     assert.ok(reads.length > 1, 'the probe should have re-rendered');
 
     const first = reads[0]!;

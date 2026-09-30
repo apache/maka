@@ -27,6 +27,9 @@ import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import { z } from 'zod';
 import { decodeHostedExecutionStartInput } from '../protocol/index.js';
+import { createWorkHubInspectionTool } from '../server/workhub-inspection-tool.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { transcriptReader } from './fixtures/session-transcript-reader.js';
 import {
   bindWorkHubRoutingDecisionPrompt,
   hostedExecutionRunProfile,
@@ -184,6 +187,32 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
     tasks,
     makeTool('AskUserQuestion'),
     makeTool('WorkHubResult'),
+    createWorkHubInspectionTool({
+      listSessions: async () => [
+        {
+          id: 'inspect-target',
+          name: 'Existing work',
+          cwd: '/workspace',
+          createdAt: 1,
+          statusUpdatedAt: 1,
+          status: 'active',
+          labels: [],
+          isArchived: false,
+        },
+      ],
+      reader: transcriptReader([
+        {
+          type: 'assistant',
+          id: 'source-reply',
+          turnId: 'source-turn',
+          ts: 2,
+          text: 'Source reply, not a new task.',
+          modelId: 'test',
+        },
+      ]),
+      admission: new SessionAdmissionGate(),
+      readExecution: async () => null,
+    }),
   ];
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
@@ -195,6 +224,7 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
       'Read',
       'AskUserQuestion',
       'WorkHubResult',
+      'WorkHubInspect',
     ],
   );
   const read = projected.find(({ name }) => name === 'Read')!;
@@ -307,7 +337,8 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
                 [name in tools, typeof tools[name]]),
               forbidden: ['Bash', 'Write'].map(name =>
                 [name in tools, typeof tools[name]]),
-              result: await tools.mcp__desktop_browser__browser_navigate({ url: 'https://example.com/' })
+              result: await tools.mcp__desktop_browser__browser_navigate({ url: 'https://example.com/' }),
+              inspection: (await tools.WorkHubInspect({ sessionId: 'inspect-target', view: 'latest_reply' })).transcript.messages.map(m => [m.messageId, m.text])
             };`,
                 }),
               });
@@ -364,8 +395,12 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
           [false, 'undefined'],
         ],
         result: 'navigated:https://example.com/',
+        inspection: [['source-reply', 'Source reply, not a new task.']],
       },
-      toolCalls: [{ index: 1, name: browserNavigate.name }],
+      toolCalls: [
+        { index: 1, name: browserNavigate.name },
+        { index: 2, name: 'WorkHubInspect' },
+      ],
     },
   });
 });

@@ -133,6 +133,22 @@ function compareExactString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function searchableToolNames(
+  tools: readonly Pick<MakaTool, 'name'>[],
+  config: ToolAvailabilityConfig | undefined,
+): Set<string> {
+  if (config === undefined) return new Set();
+  return new Set(tools.map(({ name }) => name).filter((name) => !DIRECT_TOOL_NAMES.has(name)));
+}
+
+/** Returns the synthetic connector names injected by ToolAvailabilityRuntime. */
+export function toolAvailabilityConnectorNames(
+  tools: readonly Pick<MakaTool, 'name'>[],
+  config: ToolAvailabilityConfig | undefined,
+): string[] {
+  return searchableToolNames(tools, config).size > 0 ? [TOOL_SEARCH_NAME] : [];
+}
+
 /** Everything the backend needs for one turn. */
 export interface ToolAvailabilityPlan {
   /** Full dispatch set (sorted bound tools + search connector + repair fallback). */
@@ -196,10 +212,7 @@ export class ToolAvailabilityRuntime {
     this.activationKeysByName = new Map(tools.map((tool) => [tool.name, toolActivationKey(tool)]));
 
     const known = new Set(this.toolsByName.keys());
-    const searchable =
-      config === undefined
-        ? new Set<string>()
-        : new Set([...known].filter((name) => !DIRECT_TOOL_NAMES.has(name)));
+    const searchable = searchableToolNames(this.tools, config);
     const claimed = new Set<string>();
     const groups: SearchGroup[] = [];
     for (const group of config?.groups ?? []) {

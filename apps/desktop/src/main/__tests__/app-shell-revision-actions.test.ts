@@ -75,7 +75,7 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
         clearDraft: () => {},
       } as never,
     },
-    messages: input.messages,
+    readMessages: () => input.messages,
     hasPendingAttachments: () => false,
     stagedContext: () => ({
       quotes: staged.quotes,
@@ -317,7 +317,7 @@ describe('revision draft lifecycle over a prepared send', () => {
           },
         },
       },
-      messages: [userMessage('turn-1', 'original message')],
+      readMessages: () => [userMessage('turn-1', 'original message')],
       hasPendingAttachments: () => false,
       stagedContext: () => ({
         quotes: [],

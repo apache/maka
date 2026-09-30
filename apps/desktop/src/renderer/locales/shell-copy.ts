@@ -155,8 +155,6 @@ type ShellCopy = {
   };
   paths: Record<'workspace' | 'project', string>;
   errors: {
-    messageRead: string;
-    messageRefresh: string;
     openPath(path: string): string;
     workspaceUnavailableTitle: string;
     workspaceUnavailableDescription: string;
@@ -180,7 +178,6 @@ type ShellCopy = {
     >;
     responseFailedTitle: string;
     responseFailedFallback: string;
-    refreshFailedTitle: string;
     sessionStartFailedTitle: string;
     sessionStartFailedFallback: string;
   };
@@ -757,8 +754,6 @@ const SHELL_COPY_BY_LOCALE = {
       project: '项目目录',
     },
     errors: {
-      messageRead: '任务内容暂时无法读取，请稍后重试。',
-      messageRefresh: '任务内容暂时无法刷新，请稍后重试。',
       openPath: (path: string) => `无法打开${path}，请稍后重试。`,
       workspaceUnavailableTitle: '工作目录不可用',
       workspaceUnavailableDescription: '工作目录不存在或无法访问。请选择有效目录创建新任务。',
@@ -781,7 +776,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: '响应失败',
       responseFailedFallback: '任务操作失败，请稍后重试。',
-      refreshFailedTitle: '刷新任务失败',
       sessionStartFailedTitle: '开始任务失败',
       sessionStartFailedFallback: '任务暂时无法开始，请稍后重试。',
     },
@@ -1284,8 +1278,6 @@ const SHELL_COPY_BY_LOCALE = {
       project: '專案目錄',
     },
     errors: {
-      messageRead: '任務內容暫時無法讀取，請稍後重試。',
-      messageRefresh: '任務內容暫時無法重新整理，請稍後重試。',
       openPath: (path: string) => `無法開啟${path}，請稍後重試。`,
       workspaceUnavailableTitle: '工作目錄不可用',
       workspaceUnavailableDescription: '工作目錄不存在或無法存取。請選擇有效目錄建立新任務。',
@@ -1308,7 +1300,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: '響應失敗',
       responseFailedFallback: '任務操作失敗，請稍後重試。',
-      refreshFailedTitle: '重新整理任務失敗',
       sessionStartFailedTitle: '開始任務失敗',
       sessionStartFailedFallback: '任務暫時無法開始，請稍後重試。',
     },
@@ -1811,8 +1802,6 @@ const SHELL_COPY_BY_LOCALE = {
       project: 'project folder',
     },
     errors: {
-      messageRead: 'Task content is temporarily unavailable. Try again later.',
-      messageRefresh: 'Task content could not be refreshed. Try again later.',
       openPath: (path: string) => `Could not open the ${path}. Try again later.`,
       workspaceUnavailableTitle: 'Working directory unavailable',
       workspaceUnavailableDescription:
@@ -1837,7 +1826,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: 'Response failed',
       responseFailedFallback: 'The task action failed. Try again later.',
-      refreshFailedTitle: 'Could not refresh task',
       sessionStartFailedTitle: 'Could not start task',
       sessionStartFailedFallback: 'The task could not be started. Try again later.',
     },
