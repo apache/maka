@@ -1,8 +1,0 @@
-{
-  "epoch": 198,
-  "files": [
-    "packages/runtime-host/src/protocol/storage-usage.ts",
-    "packages/runtime-host/src/protocol/operations.ts"
-  ],
-  "reason": "Adds the storage.usage.query and storage.usage.sessions.query operation specs and registers their keys, including the remote-owner grant list. Two new operation keys are an additive extension: a peer that predates them never sends either operation and never receives a response for one, so every existing request and response decodes byte-for-byte as before. Nothing already on the wire changes shape or meaning."
-}

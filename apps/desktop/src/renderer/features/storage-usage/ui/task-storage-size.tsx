@@ -58,7 +58,7 @@ export function TaskStorageSize(props: { readonly sessionId: string }) {
           setVisible(true);
         }
       },
-      { rootMargin: VISIBILITY_MARGIN },
+      { root: scrollParent(element), rootMargin: VISIBILITY_MARGIN },
     );
     observer.observe(element);
     return () => observer.disconnect();
@@ -85,4 +85,17 @@ export function TaskStorageSize(props: { readonly sessionId: string }) {
       ) : null}
     </span>
   );
+}
+
+/**
+ * The nearest scrolling ancestor. `rootMargin` only prefetches relative to the
+ * observer root, and the Settings list scrolls inside its own container rather
+ * than the viewport.
+ */
+function scrollParent(element: Element): Element | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const overflowY = node.ownerDocument.defaultView?.getComputedStyle?.(node).overflowY;
+    if (overflowY === 'auto' || overflowY === 'scroll') return node;
+  }
+  return null;
 }

@@ -46,10 +46,8 @@ export type SessionStorageUsageReader = (
  * whose Host cannot be resolved, or a Host whose query fails, is left out
  * rather than failing the other Hosts' tasks.
  *
- * A failing Host is skipped for a cooldown. An older Host that predates the
- * operation rejects it by closing the connection, as it does for any unknown
- * operation, so asking again for every newly visible row would keep dropping
- * that connection.
+ * A failing Host is skipped for a cooldown, so a Host that is draining or
+ * failing is not asked again for every newly visible row.
  */
 export function createSessionStorageUsageReader<Scope>(
   routing: SessionStorageUsageRouting<Scope>,
