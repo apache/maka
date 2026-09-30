@@ -1564,6 +1564,51 @@ test('production composition enables an explicit resume after user Stop by defau
       if (!started.ok || started.result.kind !== 'started') return;
       const startedTurn = started.result.turn;
       await backendEntered.promise;
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const sourceEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
+        session.id,
+        startedTurn.runId,
+      );
+      const sourceIdentity = sourceEvents[0];
+      assert.ok(sourceIdentity, 'the running invocation should have a durable RuntimeEvent');
+      const toolCallId = 'resume-tool-search-call';
+      const eventTs = Math.max(Date.now(), ...sourceEvents.map((event) => event.ts)) + 1;
+      const eventIdentity = {
+        invocationId: sourceIdentity.invocationId,
+        runId: startedTurn.runId,
+        sessionId: session.id,
+        turnId: startedTurn.turnId,
+        partial: false,
+      };
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, startedTurn.runId, {
+        id: 'resume-tool-search-call-event',
+        ...eventIdentity,
+        ts: eventTs,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: toolCallId,
+          name: 'tool_search',
+          args: { query: 'docs' },
+        },
+        refs: { toolCallId },
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, startedTurn.runId, {
+        id: 'resume-tool-search-result-event',
+        ...eventIdentity,
+        ts: eventTs + 1,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: toolCallId,
+          name: 'tool_search',
+          result: { kind: 'json', value: { activated: ['fixture_deferred_tool'] } },
+          isError: false,
+        },
+        refs: { toolCallId },
+      });
       const stopped = await composition.handlers['turn.stop'](
         {
           sessionId: session.id,

@@ -55,6 +55,7 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
+import { toolAvailabilityConnectorNames } from '@maka/runtime/tool-availability';
 import { buildRecallTools, type RecallToolDeps } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { createRecallMaterialFetch } from './recall-material-fetch.js';
@@ -1327,7 +1328,7 @@ export async function createExecutionRuntimeHostComposition(
           parentAgentTools: childAgentTools.parentTools,
         });
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
-        return createInteractiveRunComposer({
+        const composer = createInteractiveRunComposer({
           runtimePolicy,
           shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
           skills,
@@ -1346,7 +1347,11 @@ export async function createExecutionRuntimeHostComposition(
             mode: header.collaborationMode ?? 'agent',
             permissionMode: header.permissionMode,
           },
-        }).tools.map((tool) => tool.name);
+        });
+        return [
+          ...composer.tools.map((tool) => tool.name),
+          ...toolAvailabilityConnectorNames(composer.tools, composer.toolAvailability),
+        ];
       } finally {
         capabilitySnapshot?.release();
       }
