@@ -372,6 +372,12 @@ export interface SessionSummary {
   name: string;
   isFlagged: boolean;
   isArchived: boolean;
+  /**
+   * When the Session last entered the archive. Absent when it is not archived,
+   * and when it was archived before the Host recorded the time — unknown, not
+   * a time that can be derived from anything else.
+   */
+  archivedAt?: number;
   labels: string[];
   hasUnread: boolean;
   /** Host-owned recency, including creation before the first message; present on catalog rows. */

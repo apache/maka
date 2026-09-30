@@ -1653,6 +1653,7 @@ export function projectSessionCatalogRecord(
     name: header.name,
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,
+    ...(summary.archivedAt === undefined ? {} : { archivedAt: summary.archivedAt }),
     labels: projectedLabels.labels,
     labelsTruncated: projectedLabels.truncated,
     hasUnread: header.hasUnread,

@@ -37,6 +37,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import {
   archivedTaskRows,
+  archivedTaskTimeLabel,
   isOrphanedSubagentTask,
   matchesArchivedTaskQuery,
 } from './task-catalog-rows';
@@ -105,8 +106,7 @@ export function TasksSettingsPage(
     [copy.noProject, projectNames],
   );
 
-  // Store order is already recency-first with a stable id tie-break, and the
-  // projection preserves it, so there is nothing left to sort here.
+  // Most recently archived first; `archivedTaskRows` owns the order.
   const archived = useMemo(() => archivedTaskRows(props.sessions), [props.sessions]);
   const knownSessionIds = useMemo(
     () => new Set(props.sessions.map((session) => session.id)),
@@ -221,8 +221,9 @@ export function TasksSettingsPage(
         ) : (
           <List density="balanced" hasDividers aria-label={copy.listAria}>
             {visible.map((session) => {
+              const now = Date.now();
               const updated = session.lastMessageAt
-                ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
+                ? formatCompactTimestamp(session.lastMessageAt, now, locale)
                 : undefined;
               const description = [
                 isOrphanedSubagentTask(session, knownSessionIds)
@@ -230,6 +231,9 @@ export function TasksSettingsPage(
                   : undefined,
                 projectLabelOf(session),
                 updated,
+                archivedTaskTimeLabel(session, copy, (timestamp) =>
+                  formatCompactTimestamp(timestamp, now, locale),
+                ),
               ]
                 .filter(Boolean)
                 .join(' · ');

@@ -38,9 +38,31 @@ import { deriveSessionRail } from '../features/session-navigation/index.js';
  * position here for a reason this page never shows. The rail additionally hides
  * in-flight companion forks, another property of its own view rather than of
  * the archived catalog.
+ *
+ * Rows are then ordered by when they were archived, most recent first: this
+ * page is where you look for what you just put away. A task archived before
+ * the Host recorded the time has no place in that order, so those go last,
+ * and any tie keeps the rail's store order (`sort` is stable).
  */
 export function archivedTaskRows<T extends SessionSummary>(sessions: readonly T[]): T[] {
-  return deriveSessionRail(sessions, undefined, (session) => session.isArchived).sessions;
+  const rows = deriveSessionRail(sessions, undefined, (session) => session.isArchived).sessions;
+  return [...rows].sort((a, b) => (b.archivedAt ?? -1) - (a.archivedAt ?? -1));
+}
+
+/**
+ * "Archived 3 days ago", or a plain statement that the time is unknown. An
+ * unknown time is said as such rather than guessed from the last message,
+ * which is a different fact that the row already shows. The page supplies
+ * its copy and the timestamp format it uses for the rest of the row.
+ */
+export function archivedTaskTimeLabel(
+  session: Pick<SessionSummary, 'archivedAt'>,
+  copy: { archivedAt(when: string): string; readonly archiveTimeUnknown: string },
+  formatTimestamp: (timestamp: number) => string,
+): string {
+  return session.archivedAt === undefined
+    ? copy.archiveTimeUnknown
+    : copy.archivedAt(formatTimestamp(session.archivedAt));
 }
 
 /** Whether an archived row remains because its ordinary parent task was deleted. */
