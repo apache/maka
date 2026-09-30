@@ -364,10 +364,19 @@ describe('Host Session retirement coordinator', () => {
       // The read-only preview reports the same deduped count the confirm warns
       // off, before the delete executes.
       const preview = await harness.coordinator.handlers['session.remove.preview'](
-        { sessionId: harness.revisionId },
+        { sessionIds: [harness.revisionId] },
         CONNECTION_CONTEXT,
       );
-      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 32 } });
+      assert.deepEqual(preview, {
+        ok: true,
+        result: {
+          archivableSubtaskCount: 32,
+          removedSubtaskCount: 0,
+          worktreeCount: 0,
+          // Archived subtasks are kept, so only the revision family is sized.
+          bytes: MEASURED_SESSION_TOTAL * harness.familyIds.length,
+        },
+      });
 
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
@@ -568,12 +577,20 @@ describe('Host Session retirement coordinator', () => {
 
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
       // Graph operators retire with the root rather than archive, so the delete
-      // preview promises nothing — the renderer must not warn about them.
+      // preview promises no archived subtask; it counts them as deleted.
       const preview = await harness.coordinator.handlers['session.remove.preview'](
-        { sessionId: harness.revisionId },
+        { sessionIds: [harness.revisionId] },
         CONNECTION_CONTEXT,
       );
-      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 0 } });
+      assert.deepEqual(preview, {
+        ok: true,
+        result: {
+          archivableSubtaskCount: 0,
+          removedSubtaskCount: childSessionIds.length,
+          worktreeCount: 0,
+          bytes: MEASURED_SESSION_TOTAL * (harness.familyIds.length + childSessionIds.length),
+        },
+      });
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
         CONNECTION_CONTEXT,
@@ -850,6 +867,69 @@ describe('Host Session retirement coordinator', () => {
         'Worktree cleanup did not run',
       );
       assert.deepEqual(harness.actions.retiredWorktrees, [binding.leaseId]);
+    });
+  });
+
+  test('previews a batch as the union of the removals it names', async () => {
+    await withHarness(async (harness) => {
+      const archivedChildren = [
+        await createClosedSubagent(harness, harness.rootId, 0),
+        await createClosedSubagent(harness, harness.revisionId, 1),
+      ];
+      const operatorId = await createClosedGraphOperator(harness, harness.rootId, 'a');
+      // An ordinary subtask of the root that is also a requested removal: the
+      // root's plan would archive it, but the batch deletes it outright.
+      const worktreeChildId = await createClosedSubagent(harness, harness.rootId, 2, {
+        schemaVersion: 1,
+        kind: 'git_worktree',
+        leaseId: `subagent_worktree_${'d'.repeat(32)}`,
+        gitCommonDir: '/tmp/project/.git',
+        worktreePath: '/tmp/maka-subagent-worktree-d',
+        branch: `maka/subagent/${'d'.repeat(32)}`,
+        baseCommit: 'e'.repeat(40),
+      });
+
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        // The revision repeats the root's family, the operator has no delete of
+        // its own, and an unknown id previews nothing.
+        { sessionIds: [harness.rootId, harness.revisionId, worktreeChildId, operatorId, 'gone'] },
+        CONNECTION_CONTEXT,
+      );
+
+      const removedIds = [...harness.familyIds, operatorId, worktreeChildId].sort();
+      assert.deepEqual(preview, {
+        ok: true,
+        result: {
+          archivableSubtaskCount: archivedChildren.length,
+          removedSubtaskCount: 1,
+          worktreeCount: 1,
+          bytes: MEASURED_SESSION_TOTAL * removedIds.length,
+        },
+      });
+      assert.deepEqual(
+        harness.actions.measuredSessions.map((ids) => [...ids].sort()),
+        [removedIds],
+      );
+      // A preview reads; it neither removes nor archives anything.
+      for (const sessionId of [...removedIds, ...archivedChildren]) {
+        const probe = await harness.store.probeSessionRemoval(sessionId);
+        assert.equal(probe.kind, 'present');
+        if (probe.kind === 'present') assert.equal(probe.record.header.isArchived, false);
+      }
+      assert.deepEqual(harness.actions.disposed, []);
+    });
+  });
+
+  test('fails a batch preview whose removed Sessions cannot be measured', async () => {
+    await withHarness(async (harness) => {
+      harness.failMeasurement = true;
+      // A figure measured as zero would read as "nothing to free"; it is unknown.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionIds: [harness.rootId] },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(preview.ok, false);
+      if (!preview.ok) assert.equal(preview.error.code, 'persistence_failed');
     });
   });
 
@@ -1207,6 +1287,10 @@ describe('Host Session retirement coordinator', () => {
   });
 });
 
+/** What the fake footprint reports for any Session: 124 bytes in all. */
+const MEASURED_SESSION_BYTES = { transcript: 100, runtime: 20, artifacts: 3, context: 1 };
+const MEASURED_SESSION_TOTAL = 124;
+
 interface RetirementActions {
   readonly disposed: string[];
   readonly refreshed: string[];
@@ -1221,6 +1305,8 @@ interface RetirementActions {
   readonly retiredWorktrees: string[];
   readonly finalizedWorkspacePatches: string[];
   readonly retiredGraphWakes: string[];
+  /** Each `measureSessions` call the removal preview made. */
+  readonly measuredSessions: string[][];
   goalCommits: number;
   goalRollbacks: number;
   scheduledTaskCommits: number;
@@ -1260,6 +1346,7 @@ async function withHarness(
       retiredWorktrees: [],
       finalizedWorkspacePatches: [],
       retiredGraphWakes: [],
+      measuredSessions: [],
       goalCommits: 0,
       goalRollbacks: 0,
       scheduledTaskCommits: 0,
@@ -1302,6 +1389,7 @@ async function withHarness(
       disposeBackend: undefined,
       finalizeWorkspacePatches: undefined,
       retireWorktree: undefined,
+      failMeasurement: false,
       coordinator: undefined as unknown as HostSessionRetirementCoordinator,
     };
     harness.coordinator = new HostSessionRetirementCoordinator({
@@ -1447,6 +1535,18 @@ async function withHarness(
           actions.retiredWorktrees.push(binding.leaseId);
         },
       },
+      footprint: {
+        // Every Session measures the same, so a total is a count of Sessions.
+        measureSessions: async (sessionIds) => {
+          if (harness.failMeasurement) throw new Error('injected measurement failure');
+          actions.measuredSessions.push([...sessionIds]);
+          return sessionIds.map((sessionId) => ({
+            sessionId,
+            bytes: { ...MEASURED_SESSION_BYTES },
+            worktreeCount: 0,
+          }));
+        },
+      },
       requestDrain: () => {
         actions.drains += 1;
       },
@@ -1485,6 +1585,7 @@ interface RetirementHarness {
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
   coordinator: HostSessionRetirementCoordinator;
   failRemoveCommit: boolean;
+  failMeasurement: boolean;
   failRemovalPublication: boolean;
   failArtifactCleanup: boolean;
   purgeArtifact: ((sessionId: string) => Promise<void>) | undefined;
@@ -1553,10 +1654,12 @@ async function createClosedSubagent(
   harness: RetirementHarness,
   parentSessionId: string,
   index: number,
+  workspace?: import('@maka/core/subagent-workspace').SubagentWorkspaceBinding,
 ): Promise<string> {
   const seed = index.toString(16).padStart(64, '0');
   const { header } = await harness.store.createSubagent(
     sessionInput(`Subagent ${index}`, {
+      ...(workspace ? { cwd: workspace.worktreePath, subagentWorkspace: workspace } : {}),
       permissionMode: 'ask',
       subagentParent: {
         kind: 'subagent',

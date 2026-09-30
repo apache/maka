@@ -216,6 +216,18 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
             });
             return { ok: true, result: projected };
           },
+          'session.remove.preview': async (input) => {
+            assert.deepEqual(input, { sessionIds: ['session-ipc'] });
+            return {
+              ok: true,
+              result: {
+                archivableSubtaskCount: 1,
+                removedSubtaskCount: 2,
+                worktreeCount: 3,
+                bytes: 4096,
+              },
+            };
+          },
           'session.remove': async (input) => {
             assert.ok(projected);
             if (restoreUnderNextRemove) {
@@ -325,6 +337,14 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     assert.equal(updatedSession.revision, 2);
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
+    // The confirm's preview crosses the wire as one page of this Host's ids.
+    assert.deepEqual(await ipc.invoke('sessions:removePreview', ['session-ipc']), {
+      archivableSubtaskCount: 1,
+      removedSubtaskCount: 2,
+      worktreeCount: 3,
+      bytes: 4096,
+    });
+    await assert.rejects(ipc.invoke('sessions:removePreview', 'session-ipc'), /Invalid session ids/);
     // A purge sweep asks for the task it saw archived. Restored under it, the
     // deletion is called off rather than replayed at the fresh revision (#3050).
     restoreUnderNextRemove = true;

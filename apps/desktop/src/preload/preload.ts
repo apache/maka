@@ -257,11 +257,13 @@ import {
   type CollaborationTurnRequestQueryResult,
   type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
+  type SessionRemovePreviewResult,
   type SessionStorageUsage,
   type StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import { createSessionStorageUsageReader } from './session-storage-usage.js';
+import { createSessionRemovalPreviewReader } from './session-removal-preview.js';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
   desktopSessionKey,
@@ -1260,6 +1262,17 @@ const loadDesktopSessionStorageUsage = createSessionStorageUsageReader({
         sessionIds: hostIds,
       })
     ).sessions,
+});
+
+const previewDesktopSessionRemoval = createSessionRemovalPreviewReader({
+  resolve: async (sessionId) => {
+    const ref = await runtimeHostSessionRef(sessionId);
+    return { ...ref, scopeKey: runtimeHostScopeKey(ref.scope) };
+  },
+  query: (scope: DesktopTargetScope, hostIds) =>
+    invokeWhenReady('sessions:removePreview', scope, hostIds) as Promise<
+      SessionRemovePreviewResult
+    >,
 });
 
 async function listScheduledTasks(target?: DesktopRuntimeHostRef): Promise<ScheduledTask[]> {
@@ -2704,8 +2717,11 @@ const makaBridge = {
       }
       return invokeSessionRuntimeHost('sessions:remove', sessionId, options);
     },
-    previewRemoval(sessionId: string): Promise<number> {
-      return invokeSessionRuntimeHost('sessions:removePreview', sessionId);
+    async previewRemoval(sessionId: string): Promise<number> {
+      return (await previewDesktopSessionRemoval([sessionId])).archivableSubtaskCount;
+    },
+    previewRemovals(sessionIds: readonly string[]): Promise<SessionRemovePreviewResult> {
+      return previewDesktopSessionRemoval(sessionIds);
     },
     cleanupSessionCopy(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:cleanupSessionCopy', sessionId);

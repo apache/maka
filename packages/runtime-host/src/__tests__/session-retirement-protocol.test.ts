@@ -24,6 +24,7 @@ import {
   decodeClientFrame,
   decodeHostFrame,
   HOST_OPERATION_SPECS,
+  SESSION_REMOVE_PREVIEW_MAX_ITEMS,
   type SessionCatalogProjection,
 } from '../protocol/index.js';
 
@@ -137,39 +138,73 @@ describe('Session retirement protocol', () => {
     );
   });
 
-  test('round-trips the removal preview query and rejects a malformed count', () => {
+  test('round-trips the removal preview query and rejects a malformed result', () => {
     const request = {
       requestId: 'request-preview',
       operation: 'session.remove.preview' as const,
-      input: { sessionId: 'session-1' },
+      input: { sessionIds: ['session-1', 'session-2'] },
     };
     assert.deepEqual(decodeClientFrame(request), request);
+    const result = {
+      archivableSubtaskCount: 4,
+      removedSubtaskCount: 2,
+      worktreeCount: 1,
+      bytes: 2048,
+    };
     const response = {
       requestId: 'request-preview',
       operation: 'session.remove.preview' as const,
       ok: true as const,
-      result: { archivableSubtaskCount: 4 },
+      result,
     };
     assert.deepEqual(decodeHostFrame(response), response);
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          requestId: 'request-preview',
-          operation: 'session.remove.preview',
-          ok: true,
-          result: { archivableSubtaskCount: -1 },
-        }),
-      isInvalidFrame,
+    const previewResult = (value: unknown) => () =>
+      decodeHostFrame({
+        requestId: 'request-preview',
+        operation: 'session.remove.preview',
+        ok: true,
+        result: value,
+      });
+    for (const key of Object.keys(result) as Array<keyof typeof result>) {
+      assert.throws(previewResult({ ...result, [key]: -1 }), isInvalidFrame, key);
+      const { [key]: _omitted, ...missing } = result;
+      assert.throws(previewResult(missing), isInvalidFrame, `missing ${key}`);
+    }
+    // The epoch-201 shape: a peer that still answers it must not decode.
+    assert.throws(previewResult({ archivableSubtaskCount: 4 }), isInvalidFrame);
+  });
+
+  test('bounds the removal preview request to a page of unique Sessions', () => {
+    const previewInput = (input: unknown) => () =>
+      decodeClientFrame({
+        requestId: 'request-preview',
+        operation: 'session.remove.preview',
+        input,
+      });
+    const ids = (count: number) => Array.from({ length: count }, (_, index) => `session-${index}`);
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-preview',
+        operation: 'session.remove.preview',
+        input: { sessionIds: ids(SESSION_REMOVE_PREVIEW_MAX_ITEMS) },
+      }),
+      {
+        requestId: 'request-preview',
+        operation: 'session.remove.preview',
+        input: { sessionIds: ids(SESSION_REMOVE_PREVIEW_MAX_ITEMS) },
+      },
     );
     assert.throws(
-      () =>
-        decodeClientFrame({
-          requestId: 'request-preview',
-          operation: 'session.remove.preview',
-          input: { sessionId: 'session-1', expectedRevision: 2 },
-        }),
+      previewInput({ sessionIds: ids(SESSION_REMOVE_PREVIEW_MAX_ITEMS + 1) }),
       isInvalidFrame,
     );
+    assert.throws(previewInput({ sessionIds: [] }), isInvalidFrame);
+    assert.throws(previewInput({ sessionIds: ['session-1', 'session-1'] }), isInvalidFrame);
+    assert.throws(previewInput({ sessionIds: ['session-1', ''] }), isInvalidFrame);
+    assert.throws(previewInput({ sessionIds: 'session-1' }), isInvalidFrame);
+    // The epoch-201 single-Session shape is no longer accepted.
+    assert.throws(previewInput({ sessionId: 'session-1' }), isInvalidFrame);
+    assert.throws(previewInput({ sessionIds: ['session-1'], expectedRevision: 2 }), isInvalidFrame);
   });
 });
 

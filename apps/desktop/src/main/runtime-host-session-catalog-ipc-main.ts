@@ -262,9 +262,13 @@ export function registerRuntimeHostSessionCatalogIpc(
     if (outcome.disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
     return outcome;
   });
-  ipcMain.handle('sessions:removePreview', async (_event, sessionId: string) => {
-    // Read-only: how many subtasks the delete would archive, for the confirm.
-    return deps.client.previewSessionRemoval(sessionId);
+  ipcMain.handle('sessions:removePreview', async (_event, sessionIds: unknown) => {
+    // Read-only: what deleting these would remove and archive, for the confirm.
+    // One bounded page of this Host's ids; the protocol codec enforces the cap.
+    if (!Array.isArray(sessionIds) || !sessionIds.every((id) => typeof id === 'string')) {
+      throw new Error('Invalid session ids');
+    }
+    return deps.client.previewSessionRemoval(sessionIds);
   });
   ipcMain.handle(
     'sessions:moveToProject',

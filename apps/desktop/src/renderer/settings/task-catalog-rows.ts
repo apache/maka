@@ -58,22 +58,3 @@ export function isOrphanedSubagentTask(
     session.subagent?.parentSessionId ?? session.subagentParent?.parentSessionId;
   return parentSessionId !== undefined && !knownSessionIds.has(parentSessionId);
 }
-
-/**
- * Whether a task answers to what was typed in the search box.
- *
- * The project name is searchable because it is on screen: a row reads "name"
- * over "project · date", so both halves answer to the same box. They are
- * joined by a newline rather than a space so a query can never match across
- * the seam and produce a row whose highlight the reader cannot find. A task
- * whose project could not be resolved answers to its name alone — `join`
- * renders the missing half as nothing, never as the word "undefined".
- */
-export function matchesArchivedTaskQuery<T extends SessionSummary>(
-  session: T,
-  query: string,
-  projectLabelOf: (session: T) => string | undefined,
-): boolean {
-  const haystack = [session.name, projectLabelOf(session)].join('\n');
-  return haystack.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-}

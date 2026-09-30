@@ -33,13 +33,31 @@ export type SettingsTasksCopy = {
   /** Row detail for a task archived before the time was recorded. */
   archiveTimeUnknown: string;
   searchLabel: string;
+  ageFilterLabel: string;
+  ageAny: string;
+  /** Age filter entry: archived more than this many days ago. */
+  ageOlderThan(days: number): string;
+  projectFilterLabel: string;
+  allProjects: string;
+  /** Under an age filter: rows left out because their archive time is unknown. */
+  unknownArchiveTimeExcluded(count: number): string;
   purgeAll: string;
-  purgeMatches(count: number): string;
+  /** The bulk delete while a search or filter narrows the list. */
+  purgeShown(count: number): string;
   purgeAllConfirmTitle(count: number): string;
-  purgeMatchesConfirmTitle(count: number): string;
+  purgeShownConfirmTitle(count: number): string;
   purgeConfirmBody: string;
-  /** Appended to the purge confirm: a bulk delete keeps linked subtasks. */
+  /**
+   * Appended to the purge confirm when the preview could not say how many
+   * linked subtasks it keeps: a bulk delete keeps them all the same.
+   */
   purgeSubtaskNote: string;
+  purgePreviewLoading: string;
+  /** The Host's preview: what else goes, and an estimate of the data it held. */
+  purgePreview(childTasks: number, worktrees: number, size: string): string;
+  /** Linked subtasks the delete keeps and moves to the archive, per the preview. */
+  purgeArchivableNote(count: number): string;
+  purgePreviewFailed: string;
   purgeConfirmAction: string;
   purgedToast(count: number): string;
   /** Toast suffix after a purge that moved linked subtasks to the archive. */
@@ -71,12 +89,25 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     archivedAt: (when: string) => `${when}归档`,
     archiveTimeUnknown: '归档时间未知',
     searchLabel: '搜索已归档任务',
+    ageFilterLabel: '归档时间',
+    ageAny: '任何时间',
+    ageOlderThan: (days: number) => `超过 ${days} 天`,
+    projectFilterLabel: '项目',
+    allProjects: '全部项目',
+    unknownArchiveTimeExcluded: (count: number) =>
+      `另有 ${count} 条任务归档时间未知，未包含在内。`,
     purgeAll: '清空全部',
-    purgeMatches: (count: number) => `删除这 ${count} 条`,
+    purgeShown: (count: number) => `删除显示的 ${count} 条`,
     purgeAllConfirmTitle: (count: number) => `清空全部 ${count} 条已归档任务？`,
-    purgeMatchesConfirmTitle: (count: number) => `删除搜索到的 ${count} 条任务？`,
+    purgeShownConfirmTitle: (count: number) => `删除当前显示的 ${count} 条任务？`,
     purgeConfirmBody: '这些任务及其全部消息会被永久删除，无法撤销。',
     purgeSubtaskNote: '其中的普通子任务不会被删除，将保留并移入归档。',
+    purgePreviewLoading: '正在计算将一并删除的内容…',
+    purgePreview: (childTasks: number, worktrees: number, size: string) =>
+      `将一并删除 ${childTasks} 个子任务和 ${worktrees} 个子代理工作树。任务数据约 ${size}（估算值）。`,
+    purgeArchivableNote: (count: number) =>
+      `其中 ${count} 个普通子任务不会被删除，将保留并移入归档。`,
+    purgePreviewFailed: '无法计算将一并删除的内容。',
     purgeConfirmAction: '永久删除',
     purgedToast: (count: number) => `已删除 ${count} 条任务`,
     purgedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
@@ -85,7 +116,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeFailedBody: (count: number) => `${count} 条仍在，请重试。`,
     purgeUnverified: '任务已删除，但无法读取列表确认结果。请重新打开本页查看。',
     noMatchTitle: '没有匹配的任务',
-    noMatchBody: '换个关键词试试。',
+    noMatchBody: '换个关键词或筛选条件试试。',
     unarchive: '取消归档',
     unarchiveTask: (name: string) => `取消归档「${name}」`,
     delete: '彻底删除',
@@ -100,12 +131,25 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     archivedAt: (when: string) => `${when}歸檔`,
     archiveTimeUnknown: '歸檔時間未知',
     searchLabel: '搜尋已歸檔任務',
+    ageFilterLabel: '歸檔時間',
+    ageAny: '任何時間',
+    ageOlderThan: (days: number) => `超過 ${days} 天`,
+    projectFilterLabel: '專案',
+    allProjects: '全部專案',
+    unknownArchiveTimeExcluded: (count: number) =>
+      `另有 ${count} 條任務歸檔時間未知，未包含在內。`,
     purgeAll: '清空全部',
-    purgeMatches: (count: number) => `刪除這 ${count} 條`,
+    purgeShown: (count: number) => `刪除顯示的 ${count} 條`,
     purgeAllConfirmTitle: (count: number) => `清空全部 ${count} 條已歸檔任務？`,
-    purgeMatchesConfirmTitle: (count: number) => `刪除搜尋到的 ${count} 條任務？`,
+    purgeShownConfirmTitle: (count: number) => `刪除目前顯示的 ${count} 條任務？`,
     purgeConfirmBody: '這些任務及其全部訊息會被永久刪除，無法撤銷。',
     purgeSubtaskNote: '其中的普通子任務不會被刪除，將保留並移入歸檔。',
+    purgePreviewLoading: '正在計算將一併刪除的內容…',
+    purgePreview: (childTasks: number, worktrees: number, size: string) =>
+      `將一併刪除 ${childTasks} 個子任務和 ${worktrees} 個子代理工作樹。任務資料約 ${size}（估算值）。`,
+    purgeArchivableNote: (count: number) =>
+      `其中 ${count} 個普通子任務不會被刪除，將保留並移入歸檔。`,
+    purgePreviewFailed: '無法計算將一併刪除的內容。',
     purgeConfirmAction: '永久刪除',
     purgedToast: (count: number) => `已刪除 ${count} 條任務`,
     purgedSubtaskNote: (count: number) => `${count} 個子任務已移入歸檔`,
@@ -114,7 +158,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeFailedBody: (count: number) => `${count} 條仍在，請重試。`,
     purgeUnverified: '任務已刪除，但無法讀取列表確認結果。請重新開啟本頁檢視。',
     noMatchTitle: '沒有符合的任務',
-    noMatchBody: '換個關鍵詞試試。',
+    noMatchBody: '換個關鍵詞或篩選條件試試。',
     unarchive: '取消歸檔',
     unarchiveTask: (name: string) => `取消歸檔「${name}」`,
     delete: '徹底刪除',
@@ -129,15 +173,34 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     archivedAt: (when: string) => `Archived ${when}`,
     archiveTimeUnknown: 'Archive time unknown',
     searchLabel: 'Search archived tasks',
+    ageFilterLabel: 'Archived',
+    ageAny: 'Any time',
+    ageOlderThan: (days: number) => `More than ${days} days`,
+    projectFilterLabel: 'Project',
+    allProjects: 'All projects',
+    unknownArchiveTimeExcluded: (count: number) =>
+      count === 1
+        ? '1 task with an unknown archive time is not included.'
+        : `${count} tasks with an unknown archive time are not included.`,
     purgeAll: 'Clear all',
-    purgeMatches: (count: number) => (count === 1 ? 'Delete this 1' : `Delete these ${count}`),
+    purgeShown: (count: number) => `Delete ${count} shown`,
     purgeAllConfirmTitle: (count: number) =>
       count === 1 ? 'Clear the 1 archived task?' : `Clear all ${count} archived tasks?`,
-    purgeMatchesConfirmTitle: (count: number) =>
-      count === 1 ? 'Delete the 1 task you searched for?' : `Delete the ${count} tasks you searched for?`,
+    purgeShownConfirmTitle: (count: number) =>
+      count === 1 ? 'Delete the 1 task shown?' : `Delete the ${count} tasks shown?`,
     purgeConfirmBody:
       'The tasks and all of their messages are removed permanently. This cannot be undone.',
     purgeSubtaskNote: 'Any ordinary subtasks are kept and moved to Archived.',
+    purgePreviewLoading: 'Working out what else will be removed…',
+    purgePreview: (childTasks: number, worktrees: number, size: string) =>
+      `Also deleted: ${childTasks === 1 ? '1 child task' : `${childTasks} child tasks`} and ${
+        worktrees === 1 ? '1 subagent worktree' : `${worktrees} subagent worktrees`
+      }. About ${size} of task data (an estimate).`,
+    purgeArchivableNote: (count: number) =>
+      count === 1
+        ? '1 ordinary subtask is kept and moved to Archived.'
+        : `${count} ordinary subtasks are kept and moved to Archived.`,
+    purgePreviewFailed: 'Could not work out what else will be removed.',
     purgeConfirmAction: 'Delete permanently',
     purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
     purgedSubtaskNote: (count: number) =>
@@ -151,7 +214,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
       count === 1 ? '1 task is still there. Try again.' : `${count} tasks are still there. Try again.`,
     purgeUnverified: 'The tasks were deleted, but the list could not be read back to confirm. Reopen this page to check.',
     noMatchTitle: 'No matching tasks',
-    noMatchBody: 'Try a different search.',
+    noMatchBody: 'Try a different search or filter.',
     unarchive: 'Unarchive',
     unarchiveTask: (name: string) => `Unarchive ${name}`,
     delete: 'Delete',

@@ -156,6 +156,7 @@ import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 import type {
   ContextDiagnosticsResult,
+  SessionRemovePreviewResult,
   SessionStorageUsage,
   StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
@@ -1426,6 +1427,13 @@ export interface MakaBridge {
      * of estimating from the catalog projection.
      */
     previewRemoval(sessionId: string): Promise<number>;
+    /**
+     * What deleting these tasks, one `remove` each, would take with them, per
+     * each Host's removal plans: linked subtasks archived, child tasks and
+     * worktrees deleted, and an estimate of the bytes stored. Paged per Host;
+     * rejects when any task's Host cannot answer rather than under-reporting.
+     */
+    previewRemovals(sessionIds: readonly string[]): Promise<SessionRemovePreviewResult>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };

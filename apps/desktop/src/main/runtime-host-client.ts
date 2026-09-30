@@ -133,6 +133,7 @@ import {
   type ExecutionBoundarySummary,
   type SessionLifecycleState,
   type SessionMetadataPatch,
+  type SessionRemovePreviewResult,
   type SessionUpdateResult,
   type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
@@ -1194,14 +1195,13 @@ export class DesktopRuntimeHostClient {
   }
 
   /**
-   * How many linked subtasks a delete of this parent would move to the archive,
-   * per the Host's own removal plan. The delete confirm warns off this so the
-   * renderer never re-derives the plan from a catalog projection that omits the
-   * operator marker and copy state.
+   * What deleting these Sessions, one `removeSession` each, would remove and
+   * archive, per the Host's own removal plans. A delete confirm states this so
+   * the renderer never re-derives a plan from a catalog projection that omits
+   * the operator marker and copy state. One bounded page; callers page.
    */
-  async previewSessionRemoval(sessionId: string): Promise<number> {
-    const result = await this.request("session.remove.preview", { sessionId });
-    return result.archivableSubtaskCount;
+  previewSessionRemoval(sessionIds: readonly string[]): Promise<SessionRemovePreviewResult> {
+    return this.request("session.remove.preview", { sessionIds: [...sessionIds] });
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {

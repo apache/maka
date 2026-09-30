@@ -51,6 +51,8 @@ import { createDesktopSessionCollaborationServices } from '../platform/desktop/c
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
 import { SessionBundleServicesProvider } from '../features/session-bundle';
 import { StorageUsageServicesProvider } from '../features/storage-usage';
+import { ArchivedTaskCleanupServicesProvider } from '../features/archived-task-cleanup';
+import { createDesktopArchivedTaskCleanupServices } from '../platform/desktop/create-archived-task-cleanup-services.js';
 import { createDesktopStorageUsageServices } from '../platform/desktop/create-storage-usage-services.js';
 import { createDesktopSessionBundleServices } from '../platform/desktop/create-session-bundle-services.js';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
@@ -76,6 +78,7 @@ export function createDesktopFeatureServices() {
     // drilled through the shell.
     sessionCatalog: createSessionCatalogController(),
     appUpdate: createDesktopAppUpdateServices(),
+    archivedTaskCleanup: createDesktopArchivedTaskCleanupServices(),
     clientPlugins: createDesktopClientPluginServices(),
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
@@ -123,7 +126,11 @@ export function DesktopFeatureServicesProvider(props: {
                               <SessionBundleServicesProvider services={props.services.sessionBundle}>
                                 <OverlaysServicesProvider services={props.services.overlays}>
                                   <StorageUsageServicesProvider services={props.services.storageUsage}>
-                                    {props.children}
+                                    <ArchivedTaskCleanupServicesProvider
+                                      services={props.services.archivedTaskCleanup}
+                                    >
+                                      {props.children}
+                                    </ArchivedTaskCleanupServicesProvider>
                                   </StorageUsageServicesProvider>
                                 </OverlaysServicesProvider>
                               </SessionBundleServicesProvider>

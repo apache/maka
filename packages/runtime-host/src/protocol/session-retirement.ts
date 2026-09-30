@@ -27,6 +27,7 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
+import { STORAGE_USAGE_SESSION_MAX_ITEMS } from './storage-usage.js';
 
 const LIFECYCLE_ERRORS = [
   'host_not_ready',
@@ -52,18 +53,45 @@ export interface SessionRemoveInput {
   readonly expectedRevision: number;
 }
 
+/**
+ * Sessions previewed by one `session.remove.preview`. The preview measures
+ * every Session the removals would delete with the same per-Session statements
+ * as `storage.usage.sessions.query`, so it keeps that query's bound and a
+ * Client pages a longer selection one request at a time.
+ */
+export const SESSION_REMOVE_PREVIEW_MAX_ITEMS = STORAGE_USAGE_SESSION_MAX_ITEMS;
+
 export interface SessionRemovePreviewInput {
-  readonly sessionId: string;
+  /** Each Session is previewed as its own `session.remove` would remove it. */
+  readonly sessionIds: readonly string[];
 }
 
+/**
+ * What removing every requested Session, one `session.remove` each, would do,
+ * read from the same removal plans those commands execute. A Session that is
+ * already gone, or that cannot be removed on its own, contributes nothing.
+ */
 export interface SessionRemovePreviewResult {
   /**
-   * How many ordinary linked subagent subtasks a delete of this parent would
-   * move to the archive rather than destroy, deduplicated by revision family.
-   * The Host owns the removal plan, so the confirm warns off this rather than
+   * How many ordinary linked subagent subtasks the deletes would move to the
+   * archive rather than destroy, deduplicated by revision family. The Host
+   * owns the removal plan, so the confirm warns off this rather than
    * re-deriving it from a catalog projection that lacks the operator marker.
    */
   readonly archivableSubtaskCount: number;
+  /**
+   * Child tasks deleted together with their root — Agent Graph operators —
+   * deduplicated by revision family.
+   */
+  readonly removedSubtaskCount: number;
+  /** Subagent worktrees whose checkout the deletes retire. */
+  readonly worktreeCount: number;
+  /**
+   * Logical bytes stored for every Session the deletes remove, revisions and
+   * removed child tasks included. An estimate: context-offload bytes count
+   * once per referencing Session although the blobs are shared.
+   */
+  readonly bytes: number;
 }
 
 export type SessionRemoveResult =
@@ -164,16 +192,33 @@ export function decodeSessionRemoveInput(value: unknown): SessionRemoveInput {
 }
 
 export function decodeSessionRemovePreviewInput(value: unknown): SessionRemovePreviewInput {
-  const input = requireExactRecord(value, 'Session remove preview input', ['sessionId']);
-  return { sessionId: requireEntityId(input.sessionId, 'sessionId') };
+  const input = requireExactRecord(value, 'Session remove preview input', ['sessionIds']);
+  if (
+    !Array.isArray(input.sessionIds) ||
+    input.sessionIds.length === 0 ||
+    input.sessionIds.length > SESSION_REMOVE_PREVIEW_MAX_ITEMS
+  ) {
+    throw invalidProtocolFrame('Invalid Session remove preview sessionIds');
+  }
+  const sessionIds = input.sessionIds.map((sessionId) => requireEntityId(sessionId, 'sessionId'));
+  if (new Set(sessionIds).size !== sessionIds.length) {
+    throw invalidProtocolFrame('Duplicate Session remove preview sessionId');
+  }
+  return { sessionIds };
 }
 
 export function decodeSessionRemovePreviewResult(value: unknown): SessionRemovePreviewResult {
   const result = requireExactRecord(value, 'Session remove preview result', [
     'archivableSubtaskCount',
+    'removedSubtaskCount',
+    'worktreeCount',
+    'bytes',
   ]);
   return {
     archivableSubtaskCount: requireCount(result.archivableSubtaskCount, 'archivableSubtaskCount'),
+    removedSubtaskCount: requireCount(result.removedSubtaskCount, 'removedSubtaskCount'),
+    worktreeCount: requireCount(result.worktreeCount, 'worktreeCount'),
+    bytes: requireCount(result.bytes, 'bytes'),
   };
 }
 

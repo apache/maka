@@ -3122,8 +3122,6 @@
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useMountedRef": 1,
-          "useState": 2,
           "useToast": 1,
           "useUiLocale": 1
         },
@@ -3131,16 +3129,14 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/archived-task-cleanup/index.js": 1,
           "../features/storage-usage/index.js": 1,
-          "../locales/settings-shared-copy.js": 1,
           "../locales/settings-tasks-copy.js": 1,
           "../locales/storage-usage-copy.js": 1,
           "./settings-error-copy": 1,
           "./settings-section": 1,
           "./task-catalog-rows": 1,
-          "@astryxdesign/core": 1,
           "@astryxdesign/core/List": 1,
-          "@astryxdesign/core/TextInput": 1,
           "@maka/core/relative-time": 1,
           "@maka/runtime-host/profile-kind": 1,
           "@maka/ui": 1,
