@@ -1976,10 +1976,12 @@ describe('SqliteSessionMetadataStore', () => {
   });
 
   test('stamps every Session archived in one lifecycle write with one time', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-session-archived-at-batch-'));
+    const path = join(directory, 'state.sqlite');
     let clock = 1_000;
     // Every read of the clock moves it, so Sessions stamped from separate
     // reads could not share a time.
-    const store = createSqliteSessionMetadataStore(':memory:', { now: () => clock++ });
+    const store = createSqliteSessionMetadataStore(path, { now: () => clock++ });
     try {
       for (const id of ['root', 'revision', 'deleted', 'orphaned-child']) {
         await store.create(fullHeader({ id }));
@@ -2002,10 +2004,20 @@ describe('SqliteSessionMetadataStore', () => {
       );
       const child = await store.readCatalogRecord('orphaned-child');
       assert.equal(child.header.isArchived, true);
-      assert.equal(typeof child.archivedAt, 'number');
-      assert.ok(child.archivedAt! > root!);
+      const inspect = new DatabaseSync(path, { readOnly: true });
+      try {
+        const tombstone = inspect
+          .prepare(
+            'SELECT deleted_at AS deletedAt FROM session_metadata_tombstones WHERE session_id = ?',
+          )
+          .get('deleted') as { deletedAt: number };
+        assert.equal(child.archivedAt, tombstone.deletedAt);
+      } finally {
+        inspect.close();
+      }
     } finally {
       store.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

@@ -49,22 +49,6 @@ export function archivedTaskRows<T extends SessionSummary>(sessions: readonly T[
   return [...rows].sort((a, b) => (b.archivedAt ?? -1) - (a.archivedAt ?? -1));
 }
 
-/**
- * "Archived 3 days ago", or a plain statement that the time is unknown. An
- * unknown time is said as such rather than guessed from the last message,
- * which is a different fact that the row already shows. The page supplies
- * its copy and the timestamp format it uses for the rest of the row.
- */
-export function archivedTaskTimeLabel(
-  session: Pick<SessionSummary, 'archivedAt'>,
-  copy: { archivedAt(when: string): string; readonly archiveTimeUnknown: string },
-  formatTimestamp: (timestamp: number) => string,
-): string {
-  return session.archivedAt === undefined
-    ? copy.archiveTimeUnknown
-    : copy.archivedAt(formatTimestamp(session.archivedAt));
-}
-
 /** Whether an archived row remains because its ordinary parent task was deleted. */
 export function isOrphanedSubagentTask(
   session: SessionSummary,

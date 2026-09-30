@@ -37,7 +37,6 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import {
   archivedTaskRows,
-  archivedTaskTimeLabel,
   isOrphanedSubagentTask,
   matchesArchivedTaskQuery,
 } from './task-catalog-rows';
@@ -231,9 +230,11 @@ export function TasksSettingsPage(
                   : undefined,
                 projectLabelOf(session),
                 updated,
-                archivedTaskTimeLabel(session, copy, (timestamp) =>
-                  formatCompactTimestamp(timestamp, now, locale),
-                ),
+                // An unknown time is said as such, never borrowed from the
+                // last message, which the row already shows as its own fact.
+                session.archivedAt === undefined
+                  ? copy.archiveTimeUnknown
+                  : copy.archivedAt(formatCompactTimestamp(session.archivedAt, now, locale)),
               ]
                 .filter(Boolean)
                 .join(' · ');

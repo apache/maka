@@ -19,13 +19,9 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { formatCompactTimestamp } from '@maka/core/relative-time';
 import type { SessionSummary } from '@maka/core/session';
-import type { UiLocale } from '@maka/core/ui-locale';
-import { getSettingsTasksCopy } from '../../renderer/locales/settings-tasks-copy.js';
 import {
   archivedTaskRows,
-  archivedTaskTimeLabel,
   isOrphanedSubagentTask,
   matchesArchivedTaskQuery,
 } from '../../renderer/settings/task-catalog-rows.js';
@@ -151,25 +147,6 @@ describe('archived task order', () => {
       archivedTaskRows(sessions).map((session) => session.id),
       ['v2', 'solo'],
     );
-  });
-});
-
-describe('archivedTaskTimeLabel', () => {
-  const now = Date.UTC(2026, 8, 30, 12);
-  const label = (session: Pick<SessionSummary, 'archivedAt'>, locale: UiLocale) =>
-    archivedTaskTimeLabel(session, getSettingsTasksCopy(locale), (timestamp) =>
-      formatCompactTimestamp(timestamp, now, locale),
-    );
-
-  it('says when a task was archived', () => {
-    const threeDaysAgo = now - 3 * 24 * 60 * 60 * 1000;
-    assert.equal(label({ archivedAt: threeDaysAgo }, 'en'), 'Archived 3 days ago');
-    assert.equal(label({ archivedAt: threeDaysAgo }, 'zh-CN'), '3天前归档');
-  });
-
-  it('says the time is unknown rather than borrowing another timestamp', () => {
-    assert.equal(label({}, 'en'), 'Archive time unknown');
-    assert.equal(label({}, 'zh-TW'), '歸檔時間未知');
   });
 });
 
