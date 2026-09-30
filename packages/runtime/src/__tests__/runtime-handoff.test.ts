@@ -259,8 +259,9 @@ for (const decision of [
         prepareConversationRuntimeLedgerCopy({
           sourceSessionId: session.id,
           sourceEvents,
-          // The paused run carries no terminal status yet, so the read model
-          // refuses to project the Session; the copy only reads the Turn its
+          // The read model classifies the pause as handed_off, but the copy
+          // preflight deliberately refuses handoff lineage until typed
+          // identity rewriting lands; the copy only reads the Turn its
           // messages name.
           copiedMessages: sourceEvents
             .map((event) => projectRuntimeEventUserMessage(event, event.id))

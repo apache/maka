@@ -812,13 +812,13 @@ export async function cloneConversationRuntimeLedger(
       await input.runStore.appendEvent(input.referenceMap.targetSessionId, runId, clonedEvent);
     }
 
-    // A handed-off run's pause terminal travels with the run's imported events
-    // and carries no committable status by design; the copy keeps it as-is.
-    if (
-      plan.terminal.kind === 'fact' &&
-      plan.terminal.fact.runStatus !== 'handed_off' &&
-      terminalEvent
-    ) {
+    if (plan.terminal.kind === 'fact' && terminalEvent) {
+      // The preflight rejects handoff lineage before a plan reaches cloning,
+      // so a handed-off run never gets here; the guard keeps the outcome type
+      // honest at the boundary.
+      if (plan.terminal.fact.runStatus === 'handed_off') {
+        throw new Error(`Copied AgentRun ${plan.run.runId} carries unresolved handoff lineage`);
+      }
       await commitTerminalRunWithRuntimeFact({
         runtimeEventStore: input.runtimeEventStore,
         newId: input.newId,

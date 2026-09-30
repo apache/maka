@@ -40,6 +40,7 @@ import {
   type ConversationRuntimeLedgerCopyPlan,
 } from '@maka/runtime/conversation-copy';
 import { type SessionManager } from '@maka/runtime/session-manager';
+import { RuntimeReadModelError } from '@maka/runtime/runtime-read-model';
 import {
   authenticateInteractiveArtifactStoreWriter,
   type InteractiveArtifactStoreWriter,
@@ -348,7 +349,7 @@ export class HostSessionRevisionCoordinator {
           : await this.options.manager.readConversationCopySnapshot(input.sourceSessionId);
     } catch (error) {
       console.error(
-        `[runtime-host] session conversation copy could not read the source ledger (${input.sourceSessionId}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+        `[runtime-host] session conversation copy could not read the source ledger (${input.sourceSessionId}): ${redactSecrets(describeConversationCopyFailure(error))}`,
       );
       return copyFailure('persistence_failed', 'Source conversation ledger is unavailable');
     }
@@ -389,7 +390,7 @@ export class HostSessionRevisionCoordinator {
         );
       }
       console.error(
-        `[runtime-host] session conversation copy could not prepare the source lineage (${input.sourceSessionId}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+        `[runtime-host] session conversation copy could not prepare the source lineage (${input.sourceSessionId}): ${redactSecrets(describeConversationCopyFailure(error))}`,
       );
       return copyFailure('persistence_failed', 'Source conversation lineage is unavailable');
     }
@@ -842,6 +843,32 @@ function isEmptySideConversation(
 
 function persistedConversationCopyKind(kind: ConversationCopySemanticKind): ConversationCopyKind {
   return kind === 'revision' ? 'revision' : 'branch';
+}
+
+const LOGGED_COPY_FAILURE_DIAGNOSTICS = 5;
+
+/**
+ * The identity a RuntimeReadModelError carries in its diagnostics, not in its
+ * message: a bounded, redacted list of codes and event/run/turn ids.
+ */
+function describeConversationCopyFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof RuntimeReadModelError) || error.diagnostics.length === 0) {
+    return message;
+  }
+  const shown = error.diagnostics.slice(0, LOGGED_COPY_FAILURE_DIAGNOSTICS);
+  const summary = shown
+    .map((diagnostic) =>
+      [
+        diagnostic.code,
+        ...(diagnostic.eventId ? [`event=${diagnostic.eventId}`] : []),
+        ...(diagnostic.runId ? [`run=${diagnostic.runId}`] : []),
+        ...(diagnostic.turnId ? [`turn=${diagnostic.turnId}`] : []),
+      ].join(' '),
+    )
+    .join('; ');
+  const rest = error.diagnostics.length - shown.length;
+  return `${message} [${summary}${rest > 0 ? `; +${rest} more` : ''}]`;
 }
 
 function copySuccess(result: SessionConversationCopyResult): ConversationCopyOutcome {
