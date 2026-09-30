@@ -1080,6 +1080,7 @@ function SettingsSurfaceContent(
                             archivedTasks={props.archivedTasks}
                             onTaskImported={props.onTaskImported}
                             onRemoteHostAdded={props.onRemoteHostAdded}
+                            snapshotCache={snapshotCache}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
                             initialCreateProviderType={createProviderRequest}
@@ -1142,6 +1143,7 @@ function SettingsPageBody(props: {
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
+  snapshotCache: SettingsSnapshotCache;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -1275,9 +1277,9 @@ function SettingsPageBody(props: {
         />
       );
     case 'permissions':
-      return <PermissionCenterPage />;
+      return <PermissionCenterPage snapshotCache={props.snapshotCache} />;
     case 'health':
-      return <HealthCenterPage />;
+      return <HealthCenterPage snapshotCache={props.snapshotCache} />;
     case 'memory':
       // PR-SETTINGS-REVIEW-0 (WAWQAQ msg `886f6406`): the merged
       // memory-review page was too dense; 记忆 is its own page again.

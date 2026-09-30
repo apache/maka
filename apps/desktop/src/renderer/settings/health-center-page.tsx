@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type {
   HealthSignal,
   HealthSignalLayer,
@@ -35,7 +35,12 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { dotForStatus } from '@maka/ui';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  RuntimeHostSettingsGenerationBoundary,
+  runtimeHostSettingsKey,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
+import type { SettingsSnapshotCache } from './settings-snapshot-cache.js';
 import {
   SettingsStatusSummaryFilter,
   type SettingsStatusSummaryOption,
@@ -56,23 +61,45 @@ import {
  * Read-only boundary: no test buttons, no repair flows. Test/repair entries
  * will be wired in PR-HC-2 once typed actions are exposed.
 */
-export function HealthCenterPage() {
+interface HealthCenterPageProps {
+  snapshotCache: SettingsSnapshotCache;
+}
+
+export function HealthCenterPage(props: HealthCenterPageProps) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      {(generationKey) => <HealthCenterContent {...props} generationKey={generationKey} />}
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function HealthCenterContent(props: HealthCenterPageProps & { generationKey: string }) {
   const host = useRuntimeHostSettingsTarget();
+  const { generationKey } = props;
+  const snapshotTarget = useMemo(
+    () => ({ hostKey: runtimeHostSettingsKey(host), generationKey }),
+    [host, generationKey],
+  );
   const locale = useUiLocale();
   const copy = getHealthCenterCopy(locale);
-  const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(
+    () => props.snapshotCache.readRuntimeHostHealth(snapshotTarget) ?? null,
+  );
+  const [loading, setLoading] = useState(snapshot === null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [signalFilter, setSignalFilter] = useState<HealthSignalStatus | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    const commitSnapshot = props.snapshotCache.beginRuntimeHostHealthRead(snapshotTarget);
     setLoading(true);
     setError(null);
     window.maka.health
       .getSnapshot(host)
       .then((next) => {
+        // Keep successful reads in this Host's cache after navigation.
+        commitSnapshot(next);
         if (cancelled) return;
         setSnapshot(next);
         setLoading(false);
@@ -85,7 +112,7 @@ export function HealthCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, refreshTick]);
+  }, [host, locale, props.snapshotCache, snapshotTarget, refreshTick]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -95,17 +122,18 @@ export function HealthCenterPage() {
     });
   }, [snapshot]);
 
-  if (loading) {
+  if (loading && !snapshot) {
     return (
       <SettingsSkeletonStack label={copy.loading} />
     );
   }
 
-  if (error || !snapshot) {
+  if (!snapshot) {
     return (
       <SettingsPage>
         <Banner
           status="error"
+          role="alert"
           title={copy.readFailed}
           description={error ?? copy.noData}
           endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />} />
@@ -130,6 +158,15 @@ export function HealthCenterPage() {
 
   return (
     <SettingsPage>
+      {error ? (
+        <Banner
+          status="error"
+          role="alert"
+          title={copy.readFailed}
+          description={error}
+          endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />}
+        />
+      ) : null}
       <SettingsSection
         /* The header used to name the internal layer taxonomy — 配置 · 验证 ·
            权限 · 功能 · 操作审批 · 记忆 · 运行态 · 存储 — and then draw the
@@ -147,6 +184,7 @@ export function HealthCenterPage() {
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
+              isLoading={loading}
               label={copy.refresh}
             />
           </div>

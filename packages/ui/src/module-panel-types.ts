@@ -178,7 +178,9 @@ export type ScheduledTaskDeliveryMethod = ScheduledTaskDelivery['channel'] | 'ag
  * (e.g. a desktop notification renderer).
  */
 export interface DailyReviewBridge {
-  fetchDay(offsetDays: number, daySpan?: number): Promise<DailyReviewSummary>;
+  /** A controller-owned last-good snapshot; reads still revalidate on mount. */
+  readCachedDay?(offsetDays: number, daySpan?: number): DailyReviewSummary | undefined;
+  fetchDay(offsetDays: number, daySpan?: number, signal?: AbortSignal): Promise<DailyReviewSummary>;
   /**
    * PR-DAILY-REVIEW-FULL-0 — optional pipeline methods. Renderer checks
    * for presence before exposing the matching UI. When undefined, the

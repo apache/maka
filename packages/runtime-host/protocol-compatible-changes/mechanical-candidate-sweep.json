@@ -1,8 +1,8 @@
 {
-  "epoch": 198,
+  "epoch": 199,
   "files": [
     "packages/runtime-host/src/protocol/operations.ts",
     "packages/runtime-host/src/protocol/turn.ts"
   ],
-  "reason": "This sweep only adds type-only re-exports, changes a local snapshot type to Readonly, renames decoder locals, and reformats existing object literals. No wire field, key, error code, or accepted value changes."
+  "reason": "Against the cumulative protocol through epoch 199, this sweep only adds type-only re-exports, changes a local snapshot type to Readonly, renames decoder locals, and reformats existing object literals. No wire field, key, error code, or accepted value changes."
 }

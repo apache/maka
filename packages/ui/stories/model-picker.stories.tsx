@@ -237,6 +237,7 @@ export const ExecutorCatalogLoading: Story = {
   },
 };
 
+// Real path: new-task composer → model picker → Antigravity, after its catalog loads.
 export const ExecutorCatalogReady: Story = {
   render: () => <ExecutorPickerFrame loading={false} />,
   play: async () => {

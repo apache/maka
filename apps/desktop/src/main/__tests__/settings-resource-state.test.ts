@@ -23,6 +23,11 @@ import {
   createDefaultSettings,
   type RuntimeHostAppSettings,
 } from '@maka/core/settings';
+import type {
+  CapabilitySnapshotCollection,
+  PermissionSnapshot,
+} from '@maka/core/capabilities';
+import type { HealthSnapshot } from '@maka/core/health';
 import {
   beginSettingsResourceLoad,
   completeSettingsResourceLoad,
@@ -36,12 +41,15 @@ import {
 import {
   createSettingsSnapshotCache,
   settingsSnapshotCacheFor,
+  type SettingsSnapshotTarget,
 } from '../../renderer/settings/settings-snapshot-cache.js';
 import type { DesktopRuntimeHostProfileSnapshot } from '../../preload/bridge-contract.js';
 import { createSettingsRequestAuthority } from '../../renderer/settings/settings-request-authority.js';
 
 const LOCAL_KEY = 'local:host-local-1';
 const REMOTE_KEY = 'remote:host-remote-1';
+const LOCAL_TARGET = { hostKey: LOCAL_KEY, generationKey: `${LOCAL_KEY}@epoch-1` };
+const REMOTE_TARGET = { hostKey: REMOTE_KEY, generationKey: `${REMOTE_KEY}@epoch-1` };
 
 function runtimeHostSettings(): RuntimeHostAppSettings {
   const settings = createDefaultSettings();
@@ -202,7 +210,7 @@ describe('Settings snapshot cache', () => {
     assert.equal(settingsSnapshotCacheFor(secondBridge).readClient(), undefined);
   });
 
-  it('isolates settings and connections by selected Runtime Host key', () => {
+  it('isolates every Runtime Host snapshot by selected Host key', () => {
     const cache = createSettingsSnapshotCache();
     const localSettings = runtimeHostSettings();
     const remoteSettings = {
@@ -213,15 +221,30 @@ describe('Settings snapshot cache', () => {
       },
     };
     const localConnections = { connections: [], defaultSlug: 'local-default' };
+    const localHealth: HealthSnapshot = {
+      checkedAt: 1,
+      signals: [],
+      summary: { ok: 0, info: 0, warning: 0, error: 0, unknown: 0 },
+    };
+    const localPermissionCenter = {
+      permissions: { checkedAt: 1, platform: 'darwin', permissions: {} } as PermissionSnapshot,
+      capabilities: { checkedAt: 1, capabilities: [] } as CapabilitySnapshotCollection,
+    };
 
     cache.commitRuntimeHostSettingsRead(LOCAL_KEY, localSettings);
     cache.commitRuntimeHostSettingsRead(REMOTE_KEY, remoteSettings);
     cache.commitRuntimeHostConnectionsRead(LOCAL_KEY, localConnections);
+    cache.beginRuntimeHostHealthRead(LOCAL_TARGET)(localHealth);
+    cache.beginRuntimeHostPermissionCenterRead(LOCAL_TARGET)(localPermissionCenter);
 
     assert.equal(cache.readRuntimeHostSettings(LOCAL_KEY), localSettings);
     assert.equal(cache.readRuntimeHostSettings(REMOTE_KEY), remoteSettings);
     assert.equal(cache.readRuntimeHostConnections(LOCAL_KEY), localConnections);
     assert.equal(cache.readRuntimeHostConnections(REMOTE_KEY), undefined);
+    assert.equal(cache.readRuntimeHostHealth(LOCAL_TARGET), localHealth);
+    assert.equal(cache.readRuntimeHostHealth(REMOTE_TARGET), undefined);
+    assert.equal(cache.readRuntimeHostPermissionCenter(LOCAL_TARGET), localPermissionCenter);
+    assert.equal(cache.readRuntimeHostPermissionCenter(REMOTE_TARGET), undefined);
   });
 
   it('prunes snapshots when a profile reconnects with a new host id', () => {
@@ -230,6 +253,15 @@ describe('Settings snapshot cache', () => {
     cache.commitRuntimeHostConnectionsRead(LOCAL_KEY, {
       connections: [],
       defaultSlug: null,
+    });
+    cache.beginRuntimeHostHealthRead(LOCAL_TARGET)({
+      checkedAt: 1,
+      signals: [],
+      summary: { ok: 0, info: 0, warning: 0, error: 0, unknown: 0 },
+    });
+    cache.beginRuntimeHostPermissionCenterRead(LOCAL_TARGET)({
+      permissions: { checkedAt: 1, platform: 'darwin', permissions: {} } as PermissionSnapshot,
+      capabilities: { checkedAt: 1, capabilities: [] },
     });
 
     cache.commitRuntimeHostCatalogRead(catalog([
@@ -244,6 +276,8 @@ describe('Settings snapshot cache', () => {
 
     assert.equal(cache.readRuntimeHostSettings(LOCAL_KEY), undefined);
     assert.equal(cache.readRuntimeHostConnections(LOCAL_KEY), undefined);
+    assert.equal(cache.readRuntimeHostHealth(LOCAL_TARGET), undefined);
+    assert.equal(cache.readRuntimeHostPermissionCenter(LOCAL_TARGET), undefined);
   });
 
   it('stores settings and connection reads independently', () => {
@@ -260,6 +294,75 @@ describe('Settings snapshot cache', () => {
     assert.equal(cache.readRuntimeHostSettings(LOCAL_KEY), settings);
     assert.equal(cache.readRuntimeHostConnections(LOCAL_KEY), connections);
   });
+});
+
+describe('Settings snapshot read authority', () => {
+  for (const resource of ['health', 'permissions'] as const) {
+    function subject() {
+      const cache = createSettingsSnapshotCache();
+      return {
+        cache,
+        read: (target: SettingsSnapshotTarget) => resource === 'health'
+          ? cache.readRuntimeHostHealth(target)?.checkedAt
+          : cache.readRuntimeHostPermissionCenter(target)?.capabilities.checkedAt,
+        begin: (target: SettingsSnapshotTarget) => {
+          if (resource === 'health') {
+            const commit = cache.beginRuntimeHostHealthRead(target);
+            return (checkedAt: number) => commit({
+              checkedAt, signals: [],
+              summary: { ok: 0, info: 0, warning: 0, error: 0, unknown: 0 },
+            });
+          }
+          const commit = cache.beginRuntimeHostPermissionCenterRead(target);
+          return (checkedAt: number) => commit({
+            permissions: { checkedAt, platform: 'darwin', permissions: {} } as PermissionSnapshot,
+            capabilities: { checkedAt, capabilities: [] },
+          });
+        },
+      };
+    }
+
+    it(`${resource}: rejects a slow read after a newer read commits`, () => {
+      const { begin, read } = subject();
+      const old = begin(LOCAL_TARGET);
+      const latest = begin(LOCAL_TARGET);
+      latest(2);
+      old(1);
+      assert.equal(read(LOCAL_TARGET), 2);
+    });
+
+    it(`${resource}: never serves or restores the previous incarnation`, () => {
+      const { begin, read } = subject();
+      begin(LOCAL_TARGET)(1);
+      const old = begin(LOCAL_TARGET);
+      const next = { ...LOCAL_TARGET, generationKey: `${LOCAL_KEY}@epoch-2` };
+      assert.equal(read(next), undefined);
+      const latest = begin(next);
+      old(2);
+      assert.equal(read(next), undefined);
+      assert.equal(read(LOCAL_TARGET), undefined);
+      latest(3);
+      assert.equal(read(next), 3);
+    });
+
+    it(`${resource}: retains last-good data when the newest read fails`, () => {
+      const { begin, read } = subject();
+      begin(LOCAL_TARGET)(1);
+      const old = begin(LOCAL_TARGET);
+      begin(LOCAL_TARGET); // The newer request rejects without a successful commit.
+      old(2);
+      assert.equal(read(LOCAL_TARGET), 1);
+    });
+
+    it(`${resource}: an in-flight read cannot repopulate a removed Host`, () => {
+      const { cache, begin, read } = subject();
+      begin(LOCAL_TARGET)(1);
+      const old = begin(LOCAL_TARGET);
+      cache.commitRuntimeHostCatalogRead(catalog([]));
+      old(2);
+      assert.equal(read(LOCAL_TARGET), undefined);
+    });
+  }
 });
 
 describe('Settings Runtime Host request authority', () => {

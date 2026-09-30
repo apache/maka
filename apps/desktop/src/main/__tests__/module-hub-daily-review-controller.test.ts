@@ -85,6 +85,216 @@ test('stable page bridge retries rather than exposing a stale default-Host read'
   assert.deepEqual(reads, ['host-a', 'host-b']);
 });
 
+test('page bridge keeps the last successful today snapshot through a failed refresh', async () => {
+  let fail = false;
+  let reads = 0;
+  const services = createFakeModuleHubServices({
+    dailyReview: dailyReviewService(async () => {
+      reads += 1;
+      if (fail) throw new Error('offline');
+      return { ok: true, data: summary(reads) };
+    }),
+  });
+  const bridge = createDailyReviewBridge(services, 'en');
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+  const first = await bridge.fetchDay(0, 1);
+  assert.equal(bridge.readCachedDay?.(0, 1), first);
+  assert.equal(bridge.readCachedDay?.(-1, 1), undefined);
+  assert.equal(bridge.readCachedDay?.(0, 7), undefined);
+  await bridge.fetchDay(-1, 1);
+  assert.equal(bridge.readCachedDay?.(0, 1), first);
+  fail = true;
+  await assert.rejects(bridge.fetchDay(0, 1), /offline/);
+  assert.equal(bridge.readCachedDay?.(0, 1), first);
+  fail = false;
+  const fresh = await bridge.fetchDay(0, 1);
+  assert.equal(bridge.readCachedDay?.(0, 1), fresh);
+  assert.equal(reads, 4);
+});
+
+test('cancelled and superseded reads cannot overwrite a newer cached summary', async () => {
+  const reads = Array.from({ length: 3 }, () => deferred<{ ok: true; data: DailyReviewSummary }>());
+  let index = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(async () => reads[index++]!.promise),
+  }), 'en');
+  const oldRead = bridge.fetchDay(0, 1);
+  const newRead = bridge.fetchDay(0, 1);
+  reads[1]!.resolve({ ok: true, data: summary(8) });
+  const fresh = await newRead;
+  reads[0]!.resolve({ ok: true, data: summary(1) });
+  await oldRead;
+  assert.equal(bridge.readCachedDay?.(0, 1), fresh);
+
+  const request = new AbortController();
+  const cancelled = bridge.fetchDay(0, 1, request.signal);
+  await Promise.resolve();
+  request.abort();
+  reads[2]!.resolve({ ok: true, data: summary(99) });
+  await assert.rejects(cancelled, { name: 'AbortError' });
+  assert.equal(bridge.readCachedDay?.(0, 1), fresh);
+});
+
+test('a superseded completion cannot retire the newer pending Host read', async () => {
+  const pending = Array.from({ length: 2 }, () => deferred<{ ok: true; data: DailyReviewSummary }>());
+  const started = pending.map(() => deferred<void>());
+  let index = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(() => {
+      const current = index++;
+      started[current]!.resolve();
+      return pending[current]!.promise;
+    }),
+  }), 'en');
+  const old = bridge.fetchDay(0, 1);
+  const latest = bridge.fetchDay(0, 1);
+  await Promise.all(started.map(read => read.promise));
+
+  pending[0]!.resolve({ ok: true, data: summary(1) });
+  await old;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+  bridge.handleHostChange({ profileId: 'local', readiness: 'ready', isDefault: false });
+  pending[1]!.resolve({ ok: true, data: summary(2) });
+  await latest;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
+test('a failed newest refresh retains last-good data after an older refresh completes', async () => {
+  const oldResult = deferred<{ ok: true; data: DailyReviewSummary }>();
+  const latestResult = deferred<{ ok: true; data: DailyReviewSummary }>();
+  let reads = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(async () => {
+      reads += 1;
+      if (reads === 1) return { ok: true, data: summary(1) };
+      return reads === 2 ? oldResult.promise : latestResult.promise;
+    }),
+  }), 'en');
+  const lastGood = await bridge.fetchDay(0, 1);
+  const old = bridge.fetchDay(0, 1);
+  const latest = bridge.fetchDay(0, 1);
+  latestResult.reject(new Error('offline'));
+  await assert.rejects(latest, /offline/);
+  oldResult.resolve({ ok: true, data: summary(2) });
+  await old;
+  assert.equal(bridge.readCachedDay?.(0, 1), lastGood);
+});
+
+test('a new local day cannot reuse yesterday as today or cache an overnight read', async (t) => {
+  let now = new Date(2026, 8, 18, 23, 59).getTime();
+  t.mock.method(Date, 'now', () => now);
+  const pending = deferred<{ ok: true; data: DailyReviewSummary }>();
+  let reads = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(async () => {
+      reads += 1;
+      return reads === 1 ? { ok: true, data: summary() } : pending.promise;
+    }),
+  }), 'en');
+  await bridge.fetchDay(0, 1);
+  assert.ok(bridge.readCachedDay?.(0, 1));
+  const overnight = bridge.fetchDay(0, 1);
+  now = new Date(2026, 8, 19, 0, 1).getTime();
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+  pending.resolve({ ok: true, data: summary(99) });
+  await overnight;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
+test('unrelated Host events preserve both the cached day and an in-flight refresh', async () => {
+  const pending = deferred<{ ok: true; data: DailyReviewSummary }>();
+  let reads = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(async () => ++reads === 1
+      ? { ok: true, data: summary(1) }
+      : pending.promise),
+  }), 'en');
+  const first = await bridge.fetchDay(0, 1);
+  const refresh = bridge.fetchDay(0, 1);
+  await Promise.resolve();
+  for (const readiness of ['connecting', 'ready', 'reconnecting', 'unavailable'] as const) {
+    bridge.handleHostChange({ profileId: 'unrelated', readiness, isDefault: false });
+    assert.equal(bridge.readCachedDay?.(0, 1), first);
+  }
+  bridge.handleHostChange({ profileId: 'unrelated', readiness: 'unavailable', isDefault: false, removed: true });
+  pending.resolve({ ok: true, data: summary(2) });
+  const fresh = await refresh;
+  assert.equal(bridge.readCachedDay?.(0, 1), fresh);
+
+  bridge.handleHostChange({ profileId: 'local', readiness: 'unavailable', isDefault: false, removed: true });
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
+test('a former default Host event fences a cold read before there is a cached day', async () => {
+  const pending = deferred<{ ok: true; data: DailyReviewSummary }>();
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(() => pending.promise),
+  }), 'en');
+  const loading = bridge.fetchDay(0, 1);
+  await Promise.resolve();
+  bridge.handleHostChange({ profileId: 'local', readiness: 'ready', isDefault: false });
+  pending.resolve({ ok: true, data: summary(1) });
+  await loading;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
+test('the controller invalidates cached and pending reads on Host changes and disposes its subscription', async () => {
+  const { root } = installReactRenderer();
+  const hostA = { profileId: 'a', hostId: 'a' };
+  const hostB = { profileId: 'b', hostId: 'b' };
+  let currentHost = hostA;
+  let listener: Parameters<ModuleHubServices['runtimeHosts']['subscribeChanges']>[0] | undefined;
+  const pending = deferred<{ ok: true; data: DailyReviewSummary }>();
+  let reads = 0;
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      getDefault: async () => currentHost,
+      subscribeChanges: (handler) => {
+        listener = handler;
+        return () => { listener = undefined; };
+      },
+    },
+    dailyReview: dailyReviewService(async () => {
+      reads += 1;
+      return reads === 2 ? pending.promise : { ok: true, data: summary(reads) };
+    }),
+  });
+  let controller: DailyReviewController | undefined;
+  function Probe() {
+    controller = useDailyReviewController({
+      services, uiLocale: 'en',
+      toastApi: { success: () => undefined, error: () => undefined },
+      appendComposerText: () => undefined,
+      captureActiveComposerClaim: () => undefined,
+      isDailyReviewSurfaceActive: () => false,
+    });
+    return null;
+  }
+  await act(async () => root.render(createElement(Probe)));
+  const bridge = controller!.bridge;
+  await bridge.fetchDay(0, 1);
+  await act(async () => root.render(createElement(Probe)));
+  assert.equal(controller!.bridge, bridge);
+  assert.ok(bridge.readCachedDay?.(0, 1));
+  assert.ok(listener);
+  listener({ profileId: 'unrelated', readiness: 'reconnecting', isDefault: false });
+  assert.ok(bridge.readCachedDay?.(0, 1));
+  const loading = bridge.fetchDay(0, 1);
+  await Promise.resolve();
+  currentHost = hostB;
+  assert.ok(listener);
+  listener({ ...hostB, readiness: 'ready', isDefault: true });
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+  pending.resolve({ ok: true, data: summary(99) });
+  await loading;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+  const fresh = await bridge.fetchDay(0, 1);
+  assert.equal(bridge.readCachedDay?.(0, 1), fresh);
+  await act(async () => root.unmount());
+  assert.equal(listener, undefined);
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
 test('today paste captures its composer claim before reading and drops a late result', async () => {
   const { root } = installReactRenderer();
   const pendingDay = deferred<{ ok: true; data: DailyReviewSummary }>();

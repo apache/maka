@@ -94,8 +94,11 @@ export function DailyReviewPanel(props: {
 
   const [activityState, dispatchActivity] = useReducer(
     dailyReviewActivityReducer,
-    { range: 1, offsetDays: 0 },
-    createDailyReviewActivityState,
+    { range: 1, offsetDays: 0 } satisfies DailyReviewScope,
+    (scope) => createDailyReviewActivityState(
+      scope,
+      props.bridge.readCachedDay?.(scope.offsetDays, scope.range),
+    ),
   );
   const [reloadToken, setReloadToken] = useState(0);
   const [archiveState, setArchiveState] = useState<DailyReviewArchiveState>({ status: 'loading' });
@@ -124,9 +127,10 @@ export function DailyReviewPanel(props: {
 
   useEffect(() => {
     let cancelled = false;
+    const request = new AbortController();
     const requestedScope = { range, offsetDays };
     dispatchActivity({ type: 'selected', scope: requestedScope });
-    bridgeRef.current.fetchDay(offsetDays, range).then((next) => {
+    bridgeRef.current.fetchDay(offsetDays, range, request.signal).then((next) => {
       if (cancelled) return;
       dispatchActivity({ type: 'resolved', scope: requestedScope, summary: next });
     }).catch((nextError: unknown) => {
@@ -139,6 +143,7 @@ export function DailyReviewPanel(props: {
     });
     return () => {
       cancelled = true;
+      request.abort();
     };
   }, [locale, offsetDays, range, reloadToken]);
 
@@ -335,7 +340,7 @@ export function DailyReviewPanel(props: {
       ) : null}
 
       {!displayedSummary && loading ? (
-        <VStack gap={3} aria-busy="true">
+        <VStack gap={3} aria-busy="true" data-daily-review-loading="true">
           <Skeleton width="100%" height={64} radius="rounded" index={0} />
           <Skeleton width="100%" height={48} radius="rounded" index={1} />
           <Skeleton width="100%" height={48} radius="rounded" index={2} />

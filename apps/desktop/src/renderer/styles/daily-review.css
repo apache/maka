@@ -24,7 +24,6 @@
 .maka-daily-review-report,
 .maka-daily-review-content {
   min-width: 0;
-  animation: maka-daily-review-enter var(--duration-base) var(--ease-out-strong) both;
 }
 
 .maka-daily-review-content {
@@ -37,23 +36,6 @@
      1fr)` makes the row shrink and truncate instead. */
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
-}
-
-@keyframes maka-daily-review-enter {
-  from {
-    opacity: 0.9;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-daily-review-report,
-  .maka-daily-review-content {
-    animation: none;
-  }
 }
 
 .maka-daily-review-range-label {
