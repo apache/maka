@@ -126,7 +126,7 @@ def public_trajectory_repository(host: str, path_query: str) -> bool:
 
 try:
     from mitmproxy import http
-except ImportError:
+except ImportError as missing_http_dependency:
     http = None
 
 try:
@@ -134,7 +134,7 @@ try:
     from mitmproxy.proxy.layer import Layer
     from mitmproxy.proxy.layers import ClientTLSLayer, ServerTLSLayer
     from mitmproxy.proxy.layers.tcp import TCPLayer
-except ImportError:
+except ImportError as missing_proxy_dependency:
     proxy_commands = None
     Layer = object
     ClientTLSLayer = None
@@ -177,52 +177,47 @@ def response(flow: object) -> None:
     reject_raw_transport(flow, close=False)
 
 
-def http_connect(flow: object) -> None:
+def http_connect(flow: object, /) -> None:
     request = getattr(flow, "request", None)
-    try:
-        target = parse_connect_target(
-            getattr(request, "host", None),
-            getattr(request, "port", None),
-        ).url
-    except (TypeError, ValueError):
-        target = ""
+    target = _safe_connect_url(
+        getattr(request, "host", None),
+        getattr(request, "port", None),
+    )
     enforce_url_policy(flow, target)
 
 
-def tcp_start(flow: object) -> None:
+def tcp_start(flow: object, /) -> None:
     # This is a last-resort hook for a raw layer admitted by an override.
     reject_raw_transport(flow)
 
 
-def tcp_message(flow: object) -> None:
-    messages = getattr(flow, "messages", None)
-    if messages and hasattr(messages[-1], "content"):
-        messages[-1].content = b""
+def tcp_message(flow: object, /) -> None:
+    _clear_latest_tcp_message(getattr(flow, "messages", None))
     close_flow(flow)
 
 
 def next_layer(nextlayer: object) -> None:
-    current = getattr(nextlayer, "layer", None)
-    context = getattr(nextlayer, "context", None)
-    if current is None:
+    active_layer = getattr(nextlayer, "layer", None)
+    layer_context = getattr(nextlayer, "context", None)
+    if active_layer is None:
         data_client = _next_layer_bytes(nextlayer, "data_client")
         if _is_fragmented_tls_record_prefix(data_client):
             if ClientTLSLayer is None or ServerTLSLayer is None:
                 return
-            server_tls = ServerTLSLayer(context)
-            server_tls.child_layer = ClientTLSLayer(context)
+            server_tls = ServerTLSLayer(layer_context)
+            server_tls.child_layer = ClientTLSLayer(layer_context)
             nextlayer.layer = server_tls
             return
         if not initial_stream_is_raw(nextlayer):
             return
-        reject_raw_transport(context, close=False)
-        nextlayer.layer = RejectRawTransport(context, proxy_commands)
+        reject_raw_transport(layer_context, close=False)
+        nextlayer.layer = RejectRawTransport(layer_context, proxy_commands)
         return
-    if TCPLayer is None or not isinstance(current, TCPLayer):
+    if TCPLayer is None or not isinstance(active_layer, TCPLayer):
         return
-    reject_raw_transport(context, close=False)
-    closer = RejectRawTransport(context, proxy_commands)
-    replace_layer(context, current, closer)
+    reject_raw_transport(layer_context, close=False)
+    closer = RejectRawTransport(layer_context, proxy_commands)
+    replace_layer(layer_context, active_layer, closer)
     nextlayer.layer = closer
 
 
@@ -230,10 +225,10 @@ def enforce_url_policy(flow: object, raw_url: str) -> None:
     if http is None:
         raise RuntimeError("mitmproxy is required to run the Eval egress filter")
     try:
-        matched = contamination_rule(raw_url)
-        if not matched:
+        match = contamination_rule(raw_url)
+        if not match:
             return
-        rule_id, host, normalized_path = matched
+        rule_id, host, normalized_path = match
         audit_event(rule_id, host, normalized_path)
         flow.response = blocked_response(rule_id)
     except Exception as error:
@@ -253,6 +248,21 @@ def enforce_url_policy(flow: object, raw_url: str) -> None:
 
 def connect_url(host: object, port: object) -> str:
     return parse_connect_target(host, port).url
+
+
+def _safe_connect_url(host: object, port: object) -> str:
+    try:
+        return connect_url(host, port)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _clear_latest_tcp_message(messages: object) -> None:
+    if not isinstance(messages, list) or not messages:
+        return
+    latest = messages[-1]
+    if hasattr(latest, "content"):
+        latest.content = b""
 
 
 def parse_connect_target(host: object, port: object) -> ConnectTarget:
@@ -343,22 +353,28 @@ def _next_layer_bytes(nextlayer: object, name: str) -> bytes:
 
 def peer_label(owner: object) -> tuple[str, str]:
     server = getattr(owner, "server_conn", None) or getattr(owner, "server", None)
-    address = getattr(server, "address", None)
-    if isinstance(address, (tuple, list)) and address:
-        host = str(address[0])[:255]
-        port = address[1] if len(address) > 1 else ""
-        return host, f":{port}" if port != "" else ""
-    return "", ""
+    peer_address = getattr(server, "address", None)
+    return _format_peer_address(peer_address)
+
+
+def _format_peer_address(address: object) -> tuple[str, str]:
+    if not isinstance(address, (tuple, list)) or not address:
+        return "", ""
+    host = str(address[0])[:255]
+    port = address[1] if len(address) > 1 else ""
+    return host, f":{port}" if port != "" else ""
 
 
 def reject_raw_transport(owner: object, *, close: bool = True) -> None:
     host, port = peer_label(owner)
-    try:
-        audit_event("raw_tunnel", host, port)
-    except Exception:
-        pass
+    _audit_safely("raw_tunnel", host, port)
     if close:
         close_flow(owner)
+
+
+def _audit_safely(rule_id: str, host: str, normalized_path: str) -> None:
+    with suppress(Exception):
+        audit_event(rule_id, host, normalized_path)
 
 
 def close_flow(flow: object) -> None:
@@ -366,8 +382,8 @@ def close_flow(flow: object) -> None:
     if callable(terminate) and getattr(flow, "killable", True):
         try:
             terminate()
-        except Exception:
-            pass
+        except Exception as close_error:
+            del close_error
 
 
 def replace_layer(context: object, current: object, closer: object) -> None:
@@ -400,11 +416,11 @@ class RejectRawTransport(Layer):
     def handle_event(self, event: object):
         if self._close_connection is None:
             return
-            yield
-        for name in ("client", "server"):
-            connection = getattr(self.context, name, None)
-            if connection is not None:
-                yield self._close_connection(connection)
+        yield from (
+            self._close_connection(connection)
+            for name in ("client", "server")
+            if (connection := getattr(self.context, name, None)) is not None
+        )
 
 
 def blocked_response(rule_id: str):
@@ -456,7 +472,8 @@ class AuditJournal:
             return None
         size = self.path.stat().st_size
         with self.path.open("rb") as stream:
-            stream.seek(max(0, size - 4096))
+            tail_offset = max(0, size - 4096)
+            stream.seek(tail_offset)
             lines = stream.read().decode("utf-8", errors="ignore").splitlines()
         for line in reversed(lines):
             if not line.strip():

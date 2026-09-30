@@ -17,139 +17,104 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { describe, it, mock } from 'node:test';
-import { createSessionRailLayoutStore } from '../../renderer/features/session-navigation/testing.js';
+import { strict as assert } from 'node:assert';
+import * as testing from 'node:test';
+import { createSessionRailLayoutStore as createLayoutStore } from '../../renderer/features/session-navigation/testing.js';
+const STORAGE_KEYS = Object.freeze({
+  mode: 'maka-chat-list-view-mode-v1',
+  width: 'maka-chat-list-width-v1',
+});
+const { mode: VIEW_MODE_KEY, width: WIDTH_KEY } = STORAGE_KEYS;
+const memoryStorage = (seed: Readonly<Record<string, string>> = {}): Storage => {
+  const values = new Map(Object.entries(seed));
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(String(key)) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => values.delete(key),
+    setItem: (key, value) => values.set(key, value),
+  };
+};
 
-const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
-const WIDTH_KEY = 'maka-chat-list-width-v1';
-
-class TestStorage implements Storage {
-  readonly #values: Map<string, string>;
-
-  constructor(seed: Record<string, string>) {
-    this.#values = new Map(Object.entries(seed));
-  }
-
-  get length(): number {
-    return this.#values.size;
-  }
-
-  clear(): void {
-    this.#values.clear();
-  }
-
-  getItem(key: string): string | null {
-    return this.#values.get(key) ?? null;
-  }
-
-  key(index: number): string | null {
-    return [...this.#values.keys()][index] ?? null;
-  }
-
-  removeItem(key: string): void {
-    this.#values.delete(key);
-  }
-
-  setItem(key: string, value: string): void {
-    this.#values.set(key, value);
-  }
-}
-
-function withLocalStorage<T>(seed: Record<string, string>, run: (storage: TestStorage) => T): T {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  const storage = new TestStorage(seed);
+function withStorage<T>(seed: Readonly<Record<string, string>>, run: (storage: Storage) => T): T {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const storage = memoryStorage(seed);
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
   try {
     return run(storage);
   } finally {
-    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor);
-    else Reflect.deleteProperty(globalThis, 'localStorage');
+    if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+    if (!previous) Reflect.deleteProperty(globalThis, 'localStorage');
   }
 }
 
-function withMockedTimeouts(run: () => void): void {
-  mock.timers.enable({ apis: ['setTimeout'] });
-  try {
-    run();
-  } finally {
-    mock.timers.reset();
-  }
-}
-
-describe('session grouping persistence', () => {
-  it('hydrates only the two supported grouping values', () => {
-    const cases = [
-      { expected: 'conversation', stored: undefined },
-      { expected: 'conversation', stored: 'conversation' },
-      { expected: 'project', stored: 'project' },
-      { expected: 'conversation', stored: '' },
-      { expected: 'conversation', stored: 'time' },
-      { expected: 'conversation', stored: 'PROJECT' },
-      { expected: 'conversation', stored: 'conversation\n' },
-    ] as const;
-    for (const { expected, stored } of cases) {
-      const seed: Record<string, string> = {};
-      if (stored !== undefined) seed[VIEW_MODE_KEY] = stored;
-      withLocalStorage(seed, () => {
-        assert.equal(
-          createSessionRailLayoutStore().getState().viewMode,
-          expected,
-          `stored=${JSON.stringify(stored)}`,
-        );
-      });
-    }
+testing.describe('session rail grouping persistence', () => {
+  testing.it('accepts exactly the serialized public modes', () => {
+    const projection = (stored: string | undefined) =>
+      withStorage(stored === undefined ? {} : { [VIEW_MODE_KEY]: stored }, () =>
+        createLayoutStore().getState().viewMode,
+      );
+    assert.deepEqual(
+      [undefined, 'conversation', 'project', '', 'time', 'PROJECT', 'conversation\n'].map(projection),
+      ['conversation', 'conversation', 'project', 'conversation', 'conversation', 'conversation', 'conversation'],
+    );
   });
 
-  it('persists each change and a new store hydrates the latest grouping', () => {
-    withLocalStorage({}, (storage) => {
-      const current = createSessionRailLayoutStore();
-      current.setViewMode('project');
-      assert.equal(storage.getItem(VIEW_MODE_KEY), 'project');
-      assert.equal(createSessionRailLayoutStore().getState().viewMode, 'project');
-
-      current.setViewMode('conversation');
-      assert.equal(storage.getItem(VIEW_MODE_KEY), 'conversation');
-      assert.equal(createSessionRailLayoutStore().getState().viewMode, 'conversation');
+  testing.it('round-trips every supported mode through a fresh store', () => {
+    withStorage({}, (storage) => {
+      const store = createLayoutStore();
+      for (const mode of ['project', 'conversation', 'project'] as const) {
+        store.setViewMode(mode);
+        assert.equal(storage.getItem(VIEW_MODE_KEY), mode);
+        assert.equal(createLayoutStore().getState().viewMode, mode);
+      }
     });
   });
 });
 
-describe('session rail width persistence', () => {
-  it('writes a debounced user width', () => {
-    withLocalStorage({}, (storage) => {
-      withMockedTimeouts(() => {
-        const rail = createSessionRailLayoutStore();
-        rail.setWidth(400);
-        mock.timers.tick(200);
-        assert.equal(rail.getState().width, 400);
+testing.describe('session rail width persistence', () => {
+  testing.it('coalesces a resize burst into the final expanded width', () => {
+    withStorage({}, (storage) => {
+      testing.mock.timers.enable({ apis: ['setTimeout'] });
+      try {
+        const store = createLayoutStore();
+        for (const width of [320, 360, 400]) store.setWidth(width);
+        assert.equal(storage.getItem(WIDTH_KEY), null);
+        testing.mock.timers.tick(200);
+        assert.equal(store.getState().width, 400);
         assert.equal(storage.getItem(WIDTH_KEY), '400');
-      });
+      } finally {
+        testing.mock.timers.reset();
+      }
     });
   });
 
-  it('does not replace the expanded width with the collapse sentinel', () => {
-    withLocalStorage({}, (storage) => {
-      withMockedTimeouts(() => {
-        const rail = createSessionRailLayoutStore();
-        rail.setWidth(400);
-        mock.timers.tick(200);
-        rail.setCollapsed(true);
-        rail.setWidth(0);
-        mock.timers.tick(200);
-        assert.equal(rail.getState().width, 400);
+  testing.it('treats collapse width zero as presentation state, not persisted geometry', () => {
+    withStorage({ [WIDTH_KEY]: '400' }, (storage) => {
+      testing.mock.timers.enable({ apis: ['setTimeout'] });
+      try {
+        const store = createLayoutStore();
+        store.setCollapsed(true);
+        store.setWidth(0);
+        testing.mock.timers.tick(200);
+        assert.equal(store.getState().width, 400);
         assert.equal(storage.getItem(WIDTH_KEY), '400');
-      });
+      } finally {
+        testing.mock.timers.reset();
+      }
     });
   });
 });
 
-describe('session rail compact spell', () => {
+testing.describe('session rail compact spell', () => {
   const COLLAPSED_KEY = 'maka-chat-list-collapsed-v1';
 
-  it('hides the rail on a compact window without touching the stored preference', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('hides the rail on a compact window without touching the stored preference', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createLayoutStore();
 
       store.setCompact(true);
       assert.equal(store.getState().collapsed, true);
@@ -159,9 +124,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('promotes a rail opened while compact into the stored preference', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'true' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('promotes a rail opened while compact into the stored preference', () => {
+    withStorage({ [COLLAPSED_KEY]: 'true' }, (storage) => {
+      const store = createLayoutStore();
 
       store.setCompact(true);
       store.setCollapsed(false);
@@ -172,9 +137,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('keeps a rail the user closed while compact closed when the window widens', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('keeps a rail the user closed while compact closed when the window widens', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createLayoutStore();
 
       store.setCompact(true);
       store.setCollapsed(false);
@@ -187,9 +152,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('conceals the rail for the Workbar without touching the stored preference', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
-      const store = createSessionRailLayoutStore();
+  testing.it('conceals the rail for the Workbar without touching the stored preference', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, (storage) => {
+      const store = createLayoutStore();
 
       // The Workbar's compact band is wider than the rail's own: concealment
       // must also work while the rail itself is not compact.
@@ -201,9 +166,9 @@ describe('session rail compact spell', () => {
     });
   });
 
-  it('lets a user toggle end a space concealment', () => {
-    withLocalStorage({ [COLLAPSED_KEY]: 'false' }, () => {
-      const store = createSessionRailLayoutStore();
+  testing.it('lets a user toggle end a space concealment', () => {
+    withStorage({ [COLLAPSED_KEY]: 'false' }, () => {
+      const store = createLayoutStore();
 
       store.setSpaceConcealed(true);
       store.setCollapsed(false);

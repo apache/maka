@@ -104,10 +104,13 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 199 as const;
-// 199: Client Capability results require a tri-state outcome; session tool
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 200 as const;
+// 200: Client Capability results require a tri-state outcome; session tool
 // continuity and trace steps carry interrupted results. Older peers cannot
 // decode the changed strict shapes.
+// 199: `storage.usage.query` and `storage.usage.sessions.query` report storage
+// usage. An epoch-198 Host rejects the unknown operation and drops the
+// connection, so the pair must fail admission instead.
 // 198: Executor readiness exposes explicit restore, restore-failed and history-gap states.
 // 197: Queue reorder requests carry the expected queue revision. Epoch-196
 // peers reject the required field or send an unfenced reorder request.

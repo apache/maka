@@ -17,44 +17,47 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import test from 'node:test';
+import { strict as assert } from 'node:assert';
+import { spawnSync as runProcess } from 'node:child_process';
+import { createHash as hash, randomUUID as uuid } from 'node:crypto';
+import * as files from 'node:fs/promises';
+import { tmpdir as temporaryDirectory } from 'node:os';
+import { dirname as parentDirectory, join as joinPath } from 'node:path';
+import { fileURLToPath as pathFromFileUrl } from 'node:url';
+import { test as verify } from 'node:test';
 import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
-import {
-  readCandidateStartupDiagnostic,
-  resolveCandidateStartupDiagnosticPath,
-} from '../control/startup-diagnostic.js';
-
-const CANDIDATE_ENTRYPOINT = fileURLToPath(
-  new URL('../execution-candidate-main.js', import.meta.url),
-);
-const ROOT_ID = 'a'.repeat(64);
+import * as candidateStartup from '../control/startup-diagnostic.js';
+const candidateEntrypointUrl = new URL('../execution-candidate-main.js', import.meta.url);
+const CANDIDATE_ENTRYPOINT = pathFromFileUrl(candidateEntrypointUrl);
+const ROOT_ID = Array.from({ length: 64 }, () => 'a').join('');
 const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
+const runCandidate = (args: readonly string[]) =>
+  runProcess(process.execPath, [CANDIDATE_ENTRYPOINT, ...args], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    windowsHide: true,
+  });
 
-test('execution imports happen after local admission and are skipped by losing candidates', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-candidate-import-'));
-  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const executionModule = new URL('../server/execution-composition.js', import.meta.url).href;
-  // Replace the expensive module with an import that checks the externally
-  // observable listener before failing. An eager import fails before the
-  // candidate's startup error handling or owner election is installed.
-  const probe = `
-    import assert from 'node:assert/strict';
+verify(
+  'execution imports happen after local admission and are skipped by losing candidates',
+  async () => {
+    const root = await files.mkdtemp(joinPath(temporaryDirectory(), 'maka-candidate-import-'));
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+    const executionModule = new URL('../server/execution-composition.js', import.meta.url).href;
+    // Replace the expensive module with an import that checks the externally
+    // observable listener before failing. An eager import fails before the
+    // candidate's startup error handling or owner election is installed.
+    const probe = `
+    import nodeAssert from 'node:assert/strict';
     import { readFile } from 'node:fs/promises';
     import { connect } from 'node:net';
-    const registration = JSON.parse(await readFile(${JSON.stringify(join(controlDirectory, 'registration.json'))}, 'utf8'));
-    assert.equal(registration.state, 'recovering');
+    const registration = JSON.parse(await readFile(${JSON.stringify(joinPath(controlDirectory, 'registration.json'))}, 'utf8'));
+    nodeAssert.equal(registration.state, 'recovering');
     await new Promise((resolve, reject) => {
       const socket = connect(registration.endpoint);
       socket.once('error', reject);
@@ -64,7 +67,7 @@ test('execution imports happen after local admission and are skipped by losing c
     throw new Error('injected execution import failure');
     export const createExecutionRuntimeHostComposition = undefined;
   `;
-  const bootstrap = `
+    const bootstrap = `
     import { registerHooks } from 'node:module';
     registerHooks({ load(url, context, nextLoad) {
       return url === ${JSON.stringify(executionModule)}
@@ -74,51 +77,54 @@ test('execution imports happen after local admission and are skipped by losing c
     process.argv.splice(1, 0, ${JSON.stringify(CANDIDATE_ENTRYPOINT)});
     await import(${JSON.stringify(new URL('../execution-candidate-main.js', import.meta.url).href)});
   `;
-  const run = () =>
-    spawnSync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '-e',
-        bootstrap,
-        '--',
-        '--root',
-        root,
-        '--expected-root-id',
-        capability.rootId,
-        '--startup-attempt-id',
-        randomUUID(),
-      ],
-      { encoding: 'utf8', timeout: 20_000, windowsHide: true },
-    );
-  try {
-    const winner = run();
-    assert.equal(winner.status, 70, winner.stderr);
-    assert.match(winner.stdout, /listener reachable before execution import/u);
-    assert.match(winner.stderr, /\[runtime-host\] startup failed:/u);
-    assert.match(winner.stderr, /injected execution import failure/u);
-
-    const owner = await tryAcquireInteractiveRootOwner(capability);
-    assert.ok(owner);
+    const run = () =>
+      runProcess(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          bootstrap,
+          '--',
+          '--root',
+          root,
+          '--expected-root-id',
+          capability.rootId,
+          '--startup-attempt-id',
+          uuid(),
+        ],
+        { encoding: 'utf8', timeout: 20_000, windowsHide: true },
+      );
     try {
-      const loser = run();
-      assert.equal(loser.status, 2, loser.stderr);
-      assert.equal(loser.stderr, '');
-      assert.equal(loser.stdout, '');
-    } finally {
-      await owner.close();
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(controlDirectory, { recursive: true, force: true });
-  }
-});
+      const winner = run();
+      assert.equal(winner.status, 70, winner.stderr);
+      assert.match(winner.stdout, /listener reachable before execution import/u);
+      assert.match(winner.stderr, /\[runtime-host\] startup failed:/u);
+      assert.match(winner.stderr, /injected execution import failure/u);
 
-test('candidate entry does not evaluate the Host kernel or domain composition before bootstrap runs', () => {
-  const candidateEntry = new URL('../candidate-entry.js', import.meta.url).href;
-  const kernelModule = new URL('../server/host-kernel.js', import.meta.url).href;
-  const domainCompositionModule = new URL('../server/host-composition.js', import.meta.url).href;
-  const bootstrap = `
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      try {
+        const loser = run();
+        assert.equal(loser.status, 2, loser.stderr);
+        assert.equal(loser.stderr, '');
+        assert.equal(loser.stdout, '');
+      } finally {
+        await owner.close();
+      }
+    } finally {
+      await files.rm(root, { recursive: true, force: true });
+      await files.rm(controlDirectory, { recursive: true, force: true });
+    }
+  },
+);
+
+verify(
+  'candidate entry does not evaluate the Host kernel or domain composition before bootstrap runs',
+  () => {
+    const candidateEntry = new URL('../candidate-entry.js', import.meta.url).href;
+    const kernelModule = new URL('../server/host-kernel.js', import.meta.url).href;
+    const domainCompositionModule = new URL('../server/host-composition.js', import.meta.url).href;
+    const bootstrap = `
     import { registerHooks } from 'node:module';
     registerHooks({ load(url, context, nextLoad) {
       return url === ${JSON.stringify(kernelModule)} || url === ${JSON.stringify(domainCompositionModule)}
@@ -127,71 +133,85 @@ test('candidate entry does not evaluate the Host kernel or domain composition be
     } });
     await import(${JSON.stringify(candidateEntry)});
   `;
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', bootstrap], {
-    encoding: 'utf8',
-    timeout: 10_000,
-  });
+    const result = runProcess(process.execPath, ['--input-type=module', '-e', bootstrap], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
 
-  assert.equal(result.status, 0, result.stderr);
-});
+    assert.equal(result.status, 0, result.stderr);
+  },
+);
 
-test('classifies invalid candidate arguments as an internal startup failure', () => {
-  const result = spawnSync(
-    process.execPath,
-    [
-      CANDIDATE_ENTRYPOINT,
-      '--root',
-      '/tmp/workspace',
-      '--expected-root-id',
-      ROOT_ID,
-      '--startup-attempt-id',
-      STARTUP_ATTEMPT_ID,
-      '--desktop-e2e',
-      '1',
-    ],
-    { encoding: 'utf8', timeout: 10_000 },
+function verifyParserFailureBoundary() {
+  const validInvocation = Object.entries({
+    root: '/tmp/workspace',
+    'expected-root-id': ROOT_ID,
+    'startup-attempt-id': STARTUP_ATTEMPT_ID,
+  }).flatMap(([flag, value]) => [`--${flag}`, value]);
+  const invalidSuffixes = new Map<readonly string[], RegExp>([
+    [['--desktop-e2e', '1'], /Invalid Runtime Host candidate argument: --desktop-e2e/],
+    [['--idle-grace-ms'], /Invalid Runtime Host candidate arguments/],
+  ]);
+  for (const [suffix, message] of invalidSuffixes) {
+    const result = runCandidate(validInvocation.concat(suffix));
+    assert.deepEqual(
+      {
+        status: result.status,
+        crossedBoundary: /\[runtime-host\] startup failed:/.test(result.stderr),
+      },
+      { status: 70, crossedBoundary: true },
+      result.stderr,
+    );
+    assert.match(result.stderr, message);
+  }
+}
+verify(
+  'maps every parser failure to the candidate startup-failure boundary',
+  verifyParserFailureBoundary,
+);
+
+async function verifyDetachedStartupDiagnostic() {
+  const root = await files.mkdtemp(joinPath(temporaryDirectory(), 'maka-candidate-diagnostic-'));
+  const mismatchedRootId = hash('sha256').update(uuid()).digest('hex');
+  const startupAttemptId = uuid();
+  const diagnosticPath = candidateStartup.resolveCandidateStartupDiagnosticPath(
+    mismatchedRootId,
+    startupAttemptId,
   );
-
-  assert.equal(result.status, 70, result.stderr);
-  assert.match(result.stderr, /\[runtime-host\] startup failed:/);
-  assert.match(result.stderr, /Invalid Runtime Host candidate argument: --desktop-e2e/);
-});
-
-test('preserves a valid Candidate invocation failure across the detached stderr boundary', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-candidate-diagnostic-'));
-  const mismatchedRootId = createHash('sha256').update(randomUUID()).digest('hex');
-  const startupAttemptId = randomUUID();
-  const diagnosticPath = resolveCandidateStartupDiagnosticPath(mismatchedRootId, startupAttemptId);
-  const controlDirectory = dirname(diagnosticPath);
+  const controlDirectory = parentDirectory(diagnosticPath);
   try {
     await resolveStorageRoot({ path: root, kind: 'interactive' });
-    await mkdir(controlDirectory, { recursive: true, mode: 0o700 });
-    const result = spawnSync(
-      process.execPath,
-      [
-        CANDIDATE_ENTRYPOINT,
-        '--root',
-        root,
-        '--expected-root-id',
-        mismatchedRootId,
-        '--startup-attempt-id',
-        startupAttemptId,
-      ],
-      { encoding: 'utf8', timeout: 10_000 },
+    await files.mkdir(controlDirectory, { recursive: true, mode: 0o700 });
+    const result = runCandidate([
+      '--root',
+      root,
+      '--expected-root-id',
+      mismatchedRootId,
+      '--startup-attempt-id',
+      startupAttemptId,
+    ]);
+    assert.deepEqual({ status: result.status }, { status: 70 }, result.stderr);
+    const diagnostic = await candidateStartup.readCandidateStartupDiagnostic(
+      mismatchedRootId,
+      startupAttemptId,
     );
-
-    assert.equal(result.status, 70, result.stderr);
-    const diagnostic = await readCandidateStartupDiagnostic(mismatchedRootId, startupAttemptId);
     assert.ok(diagnostic);
-    assert.equal(diagnostic.reason, 'internal_startup_failure');
-    assert.equal(diagnostic.startupAttemptId, startupAttemptId);
+    assert.deepEqual(
+      { reason: diagnostic.reason, startupAttemptId: diagnostic.startupAttemptId },
+      { reason: 'internal_startup_failure', startupAttemptId },
+    );
     assert.ok(diagnostic.logs.every((entry) => !entry.includes('startup failed')));
     assert.ok(diagnostic.errorChain.some((entry) => entry.code === 'root_identity_changed'));
   } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(controlDirectory, { recursive: true, force: true });
+    await files.rm(root, { recursive: true, force: true });
+    await files.rm(controlDirectory, { recursive: true, force: true });
   }
-});
+}
+
+verify(
+  'preserves a valid Candidate invocation failure across the detached stderr boundary',
+  verifyDetachedStartupDiagnostic,
+);
 
 /**
  * Release packaging drops every `test-only/` module, so the production
@@ -199,7 +219,7 @@ test('preserves a valid Candidate invocation failure across the detached stderr 
  * runtime. Walk the built module graph across the bundled `@maka/*` packages
  * and report every test-only module it can reach.
  */
-test('the production candidate entry never reaches a test-only module', async () => {
+verify('the production candidate entry never reaches a test-only module', async () => {
   const entry = new URL('../execution-candidate-main.js', import.meta.url).href;
   const seen = new Set<string>([entry]);
   const queue: string[] = [entry];
@@ -214,7 +234,7 @@ test('the production candidate entry never reaches a test-only module', async ()
     }
     let source: string;
     try {
-      source = await readFile(new URL(current), 'utf8');
+      source = await files.readFile(new URL(current), 'utf8');
     } catch {
       continue;
     }

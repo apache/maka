@@ -3515,6 +3515,188 @@ describe('AiSdkBackend model history', () => {
     assert.equal(JSON.stringify(prompt).includes('tool-result'), false);
   });
 
+  test('persists a completed DeepSeek web_search_call and replays its original item once', async () => {
+    const item = {
+      type: 'web_search_call',
+      id: 'ws-deepseek-1',
+      status: 'completed',
+      action: {
+        type: 'search',
+        queries: ['latest Maka'],
+        sources: [{ type: 'url', url: 'https://maka.example/' }],
+      },
+    };
+    const durable = durableTurnHarness('turn-search', 'search', { runId: 'run-search' });
+    const requests: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(body);
+      const responseId = `response-${requests.length}`;
+      const output =
+        requests.length === 1
+          ? [
+              {
+                type: 'reasoning',
+                id: 'reasoning-before-search',
+                status: 'completed',
+                content: [{ type: 'reasoning_text', text: 'Search for the latest Maka release.' }],
+                summary: [],
+              },
+              item,
+              {
+                type: 'message',
+                id: 'msg-search',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'Maka result.', annotations: [] }],
+              },
+            ]
+          : [
+              {
+                type: 'message',
+                id: 'msg-followup',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'Done.', annotations: [] }],
+              },
+            ];
+      const response = {
+        id: responseId,
+        object: 'response',
+        created_at: 1,
+        model: 'deepseek-v4-flash',
+        status: 'completed',
+        output,
+        usage: { input_tokens: 5, output_tokens: 3 },
+      };
+      return new Response(
+        [
+          { type: 'response.created', response: { id: responseId } },
+          ...output.flatMap((entry, output_index) =>
+            entry.type === 'reasoning'
+              ? [
+                  {
+                    type: 'response.output_item.added',
+                    output_index,
+                    item: { ...entry, status: 'in_progress', content: [] },
+                  },
+                  {
+                    type: 'response.reasoning_text.delta',
+                    output_index,
+                    item_id: entry.id,
+                    content_index: 0,
+                    delta: 'Search for the latest Maka release.',
+                  },
+                  { type: 'response.output_item.done', output_index, item: entry },
+                ]
+              : entry.type === 'message'
+                ? [
+                    {
+                      type: 'response.output_item.added',
+                      output_index,
+                      item: { ...entry, status: 'in_progress', content: [] },
+                    },
+                    {
+                      type: 'response.output_text.delta',
+                      output_index,
+                      item_id: entry.id,
+                      content_index: 0,
+                      delta: requests.length === 1 ? 'Maka result.' : 'Done.',
+                    },
+                    { type: 'response.output_item.done', output_index, item: entry },
+                  ]
+                : [{ type: 'response.output_item.done', output_index, item: entry }],
+          ),
+          { type: 'response.completed', response },
+        ]
+          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+          .join('') + 'data: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof globalThis.fetch;
+    const options = {
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek' as const,
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'offline-only',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: (input: Parameters<typeof getAIModel>[0]) => getAIModel({ ...input, fetch }),
+      tools: [],
+    };
+    const first = createBackend({
+      ...options,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    const firstEvents = await drainDurably(first.send(durable.input()), durable);
+    assert.equal(
+      firstEvents.some((event) => event.type === 'error'),
+      false,
+      JSON.stringify(firstEvents),
+    );
+    const call = durable.ledger.find((event) => event.content?.kind === 'function_call');
+    assert.equal(
+      call?.content?.kind === 'function_call' ? call.content.providerExecuted : false,
+      true,
+    );
+    assert.deepEqual(
+      call?.content?.kind === 'function_call'
+        ? (call.content.providerOptions?.deepseek as Record<string, unknown> | undefined)
+            ?.makaWebSearchItem
+        : undefined,
+      item,
+    );
+    const results = durable.ledger.filter((event) => event.content?.kind === 'function_response');
+    assert.equal(results.length, 1);
+    assert.equal(
+      results[0]?.content?.kind === 'function_response'
+        ? results[0].content.providerExecuted
+        : false,
+      true,
+    );
+
+    const second = createBackend(options);
+    const secondEvents: SessionEvent[] = [];
+    for await (const event of second.send({
+      turnId: 'turn-followup',
+      text: 'summarize',
+      context: [],
+      runtimeContext: JSON.parse(JSON.stringify(durable.ledger)) as RuntimeEvent[],
+      ...sameRouteReplayProvenance('deepseek-v4-flash', 'run-search'),
+    }))
+      secondEvents.push(event);
+    assert.equal(
+      secondEvents.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]?.tools, undefined);
+    assert.equal(requests[1]?.tools, undefined);
+    const replay = requests[1]?.input as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      replay.filter((entry) => entry.type === 'web_search_call'),
+      [item],
+    );
+    const reasoningIndex = replay.findIndex((entry) => entry.type === 'reasoning');
+    const searchIndex = replay.findIndex((entry) => entry.type === 'web_search_call');
+    const answerIndex = replay.findIndex(
+      (entry) => entry.type === 'message' && entry.role === 'assistant',
+    );
+    assert.equal(replay.filter((entry) => entry.type === 'reasoning').length, 1);
+    assert.match(JSON.stringify(replay[reasoningIndex]), /Search for the latest Maka release/);
+    assert.ok(reasoningIndex >= 0 && reasoningIndex < searchIndex);
+    assert.ok(searchIndex < answerIndex);
+    assert.equal(
+      replay.some((entry) => entry.type === 'function_call_output'),
+      false,
+    );
+    assert.ok(
+      replay.findIndex((entry) => entry.type === 'web_search_call') <
+        replay.findIndex((entry) => entry.type === 'message' && entry.role === 'assistant'),
+    );
+  });
+
   test('keeps unrelated client tool history when degrading a hosted tool pair', async () => {
     const model = completionModel();
     const backend = createBackend({
@@ -13304,9 +13486,11 @@ describe('AiSdkBackend thinking persistence', () => {
               type: record.type ?? (typeof record.role === 'string' ? 'message' : undefined),
               role: record.role,
               text:
-                firstContent && typeof firstContent === 'object' && !Array.isArray(firstContent)
-                  ? (firstContent as Record<string, unknown>).text
-                  : undefined,
+                typeof record.content === 'string'
+                  ? record.content
+                  : firstContent && typeof firstContent === 'object' && !Array.isArray(firstContent)
+                    ? (firstContent as Record<string, unknown>).text
+                    : undefined,
               callId: record.call_id,
               name: record.name,
               arguments: record.arguments,

@@ -240,6 +240,7 @@ import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js'
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
+import { HostStorageUsageCoordinator } from './storage-usage-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
@@ -2828,6 +2829,7 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
+    const storageUsage = new HostStorageUsageCoordinator({ footprint: storage.footprint });
     const storageMaintenance = new HostStorageMaintenance({
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
@@ -2839,6 +2841,11 @@ export async function createExecutionRuntimeHostComposition(
         id: 'storage-maintenance',
         drain: [() => storageMaintenance.beginDrain()],
         close: [() => storageMaintenance.close()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'storage-usage',
+        handlers: [storageUsage.handlers],
+        drain: [() => storageUsage.beginDrain()],
       }),
       createRuntimeHostDomainModule({
         id: 'plugin-platform',
