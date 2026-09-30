@@ -302,7 +302,12 @@ export async function seedE2eFixture(input: {
       await runStore.close?.();
       // Fold the appended attempts into the read model so the page's first read
       // sees canonical usage (production's readCanonicalUsage also repairs).
-      await usage.modelCalls.catchUpModelCallProjection();
+      // One pass bounds how many lagging runs it processes, and the padded
+      // fixture creates hundreds of runs, so fold until nothing is pending.
+      for (;;) {
+        const projection = await usage.modelCalls.catchUpModelCallProjection();
+        if (projection.pendingRuns === 0) break;
+      }
       await usage.flush();
     } finally {
       await usage.close();
