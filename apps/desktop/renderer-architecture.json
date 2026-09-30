@@ -569,7 +569,7 @@
           "@maka/core/session": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2028
+        "nonTriviaTokens": 2020
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
@@ -784,7 +784,7 @@
           "react": 1
         },
         "importSpecifiers": 91,
-        "nonTriviaTokens": 12125
+        "nonTriviaTokens": 11126
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
