@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
   TOOL_BOUNDARY_PROTOCOL_V1,
@@ -1564,6 +1565,51 @@ test('production composition enables an explicit resume after user Stop by defau
       if (!started.ok || started.result.kind !== 'started') return;
       const startedTurn = started.result.turn;
       await backendEntered.promise;
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const sourceEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
+        session.id,
+        startedTurn.runId,
+      );
+      const sourceIdentity = sourceEvents[0];
+      assert.ok(sourceIdentity, 'the running invocation should have a durable RuntimeEvent');
+      const toolCallId = 'resume-tool-search-call';
+      const eventTs = Math.max(Date.now(), ...sourceEvents.map((event) => event.ts)) + 1;
+      const eventIdentity = {
+        invocationId: sourceIdentity.invocationId,
+        runId: startedTurn.runId,
+        sessionId: session.id,
+        turnId: startedTurn.turnId,
+        partial: false,
+      };
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, startedTurn.runId, {
+        id: 'resume-tool-search-call-event',
+        ...eventIdentity,
+        ts: eventTs,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: toolCallId,
+          name: 'tool_search',
+          args: { query: 'docs' },
+        },
+        refs: { toolCallId },
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, startedTurn.runId, {
+        id: 'resume-tool-search-result-event',
+        ...eventIdentity,
+        ts: eventTs + 1,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: toolCallId,
+          name: 'tool_search',
+          result: { kind: 'json', value: { activated: ['fixture_deferred_tool'] } },
+          isError: false,
+        },
+        refs: { toolCallId },
+      });
       const stopped = await composition.handlers['turn.stop'](
         {
           sessionId: session.id,
@@ -1624,6 +1670,191 @@ test('production composition preserves an explicit interactive resume kill switc
         reason: 'resume_feature_disabled',
       });
     } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production WorkHub inspects an independent Session through its provider tool surface without starting target work', async (t) => {
+  const sourceText = 'Tests passed.\nPublishing is still pending. 😀';
+  let targetSessionId = '';
+  let inspecting = false;
+  const inspectionRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  const providerErrors: unknown[] = [];
+  const server = createServer((request, response) => {
+    void (async () => {
+      let body = '';
+      for await (const chunk of request) body += chunk.toString();
+      const input = JSON.parse(body);
+      if (inspecting) inspectionRequests.push(input);
+      const call = inspecting && inspectionRequests.length === 1;
+      if (call) assert.match(body, /WorkHubInspect/);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      const chunk = (delta: unknown, finish: string | null) =>
+        `data: ${JSON.stringify({
+          id: `inspection-${inspectionRequests.length}`,
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fake-model',
+          choices: [{ index: 0, delta, finish_reason: finish }],
+        })}\n\n`;
+      response.write(
+        chunk(
+          call
+            ? {
+                role: 'assistant',
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'inspect-existing',
+                    type: 'function',
+                    function: {
+                      name: 'WorkHubInspect',
+                      arguments: JSON.stringify({
+                        sessionId: targetSessionId,
+                        view: 'latest_reply',
+                      }),
+                    },
+                  },
+                ],
+              }
+            : {
+                role: 'assistant',
+                content: inspecting ? 'Read the existing source reply.' : sourceText,
+              },
+          null,
+        ),
+      );
+      response.write(chunk({}, call ? 'tool_calls' : 'stop'));
+      response.end('data: [DONE]\n\n');
+    })().catch((error) => {
+      providerErrors.push(error);
+      response.destroy(error as Error);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(
+      owner,
+      ['fake-model'],
+      `http://127.0.0.1:${address.port}/v1`,
+    );
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const context: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'inspection-client',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    const desktop = composition.clientCapabilities!.attachConnection(
+      clientCapabilityConnectionIdentity(context.connectionId),
+      { send: async () => {} },
+    );
+    try {
+      await composition.recover();
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const target = await stores.sessionStore.create({
+        cwd: root,
+        name: 'Independent release',
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      targetSessionId = target.id;
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: target.id,
+          turnId: 'independent-turn',
+          content: { text: 'Report release progress' },
+        },
+        context,
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      if (!started.ok || started.result.kind !== 'started') return;
+      const targetRunId = started.result.turn.runId;
+      const completed = async (sessionId: string, turnId: string) => {
+        const turn = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+        return turn.ok && turn.result.status === 'completed';
+      };
+      await waitFor(() => completed(target.id, 'independent-turn'), 10000);
+      const sourceMessages = await readLedgerMessages(stores.runtimeEventStore, target.id);
+      const source = sourceMessages.find(
+        (message) => message.type === 'assistant' && message.text === sourceText,
+      );
+      assert.ok(source);
+      // The terminal fact precedes the target's unread/last-message projection.
+      // Let its own bookkeeping settle before measuring inspection side effects.
+      await waitFor(async () => {
+        const header = await stores.sessionStore.readHeaderSnapshot(target.id);
+        return header.hasUnread && (header.lastMessageAt ?? 0) >= source.ts;
+      });
+      const registered = await composition.handlers['client.capability.replace'](
+        {
+          registrationId: randomUUID(),
+          offers: workHubDesktopCapabilityOffers(),
+        },
+        context,
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
+      const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
+      assert.ok(resolved.ok, JSON.stringify(resolved));
+      const before = {
+        header: await stores.sessionStore.readHeaderRecordSnapshot(target.id),
+        events: await stores.runtimeEventStore.readImmutableRuntimeEvents(target.id, targetRunId),
+        sessions: (await stores.sessionStore.listHeaders()).map(({ id }) => id).sort(),
+      };
+      inspecting = true;
+      const answer = await composition.handlers['workhub.coordination.answer'](
+        {
+          turnId: 'inspection-turn',
+          text: 'Read the latest reply from the existing release Session.',
+        },
+        context,
+      );
+      assert.ok(answer.ok, JSON.stringify(answer));
+      await waitFor(() => completed(WORKHUB_COORDINATION_SESSION_ID, 'inspection-turn'), 10000);
+      assert.deepEqual(providerErrors, []);
+      assert.equal(inspectionRequests.length, 2);
+      const resultMessage = inspectionRequests[1]!.messages.find(({ role }) => role === 'tool');
+      assert.ok(resultMessage);
+      assert.ok(resultMessage.content.startsWith('{'), resultMessage.content);
+      const output = { result: JSON.parse(resultMessage.content) };
+      assert.equal(output.result.status, 'ok');
+      assert.equal(output.result.sessionId, target.id);
+      assert.equal(output.result.transcript.messages[0].messageId, source.id);
+      assert.equal(output.result.transcript.messages[0].text, sourceText);
+      assert.equal(output.result.executionEvidence.turnId, 'independent-turn');
+      assert.equal(output.result.executionEvidence.runId, targetRunId);
+      assert.equal(output.result.executionEvidence.status, 'completed');
+      assert.equal(output.result.executionEvidence.artifactsVerified, false);
+      assert.deepEqual(
+        await readLedgerMessages(stores.runtimeEventStore, target.id),
+        sourceMessages,
+      );
+      assert.deepEqual(
+        await stores.sessionStore.readHeaderRecordSnapshot(target.id),
+        before.header,
+      );
+      assert.deepEqual(
+        await stores.runtimeEventStore.readImmutableRuntimeEvents(target.id, targetRunId),
+        before.events,
+      );
+      assert.deepEqual(
+        (await stores.sessionStore.listHeaders()).map(({ id }) => id).sort(),
+        before.sessions,
+      );
+    } finally {
+      await desktop.close();
       await composition.close();
     }
   });
@@ -3759,6 +3990,7 @@ function compositionContext(owner: InteractiveRootOwner) {
 async function configureFakeDefaultTarget(
   owner: InteractiveRootOwner,
   modelIds: readonly string[] = ['fake-model'],
+  baseUrl?: string,
 ): Promise<string> {
   const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
   const created = await policy.connectionCatalog.create({
@@ -3767,6 +3999,7 @@ async function configureFakeDefaultTarget(
       slug: 'fake',
       name: 'Fake',
       providerType: 'ollama',
+      ...(baseUrl ? { baseUrl } : {}),
       enabled: true,
       enabledModelIds: [...modelIds],
     },

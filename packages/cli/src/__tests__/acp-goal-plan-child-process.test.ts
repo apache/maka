@@ -582,7 +582,7 @@ describe('ACP Goal/Plan real Host routes', () => {
   });
 
   test('submits and executes a Plan through the model, ACP, and real Host', {
-    timeout: 60_000,
+    timeout: 45_000,
   }, async () => {
     let modelCalls = 0;
     const modelToolNames: string[][] = [];

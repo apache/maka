@@ -263,7 +263,7 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
     createFixtureComposer({
       toolProfile: 'workhub-coordination-v2',
       clientCapabilities,
-      hostTools: [tool('WorkHubResult')],
+      hostTools: [tool('WorkHubResult'), tool('WorkHubInspect')],
       resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
     }).tools.map(({ name }) => name),
     [
@@ -273,6 +273,7 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
       'Read',
       'AskUserQuestion',
       'WorkHubResult',
+      'WorkHubInspect',
     ],
   );
   assert.deepEqual(

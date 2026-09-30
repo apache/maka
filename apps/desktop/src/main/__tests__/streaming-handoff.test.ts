@@ -33,7 +33,7 @@ import {
 import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
-} from '../../renderer/app-shell-session-events.js';
+} from '../../renderer/features/conversation/testing.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
 

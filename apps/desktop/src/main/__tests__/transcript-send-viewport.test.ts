@@ -33,7 +33,7 @@ import {
 import {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 
 type VirtualizerHandle = NonNullable<Parameters<typeof useChatScroll>[0]['virtualizerRef']['current']>;
@@ -194,8 +194,9 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   };
   const sessionUi = createAppShellSessionUiStateController();
   const commands = createRef<TranscriptReadingPositionCommands>();
+  const currentSessionId = { current: 'session-a' };
   const props: ComponentProps<typeof TranscriptReadingPositionController> = {
-    commands, sessionId: 'session-a', currentSessionId: { current: 'session-a' },
+    commands, sessionId: 'session-a', currentSessionId,
     rangeController: { current: controller }, messages, sessionUi,
     searchTarget: undefined, clearSearchTarget: () => {},
     landmarkSessionId: null, listTurnLandmarks: async () => ({ landmarks: [] }), setTurnIndex: () => {},
@@ -249,7 +250,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     },
     async switchSession(sessionId: string) {
       props.sessionId = sessionId;
-      props.currentSessionId.current = sessionId;
+      currentSessionId.current = sessionId;
       props.rangeController.current = {
         ...controller, store: { ...controller.store, range: () => ({ sessionId, hasOlder: false, ready: true }) },
       };
