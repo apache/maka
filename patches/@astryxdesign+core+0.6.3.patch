@@ -1,8 +1,8 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
-index 90022b3..36c0637 100644
+index ce86b88..68b40e4 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
-@@ -62,6 +62,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+@@ -72,6 +72,8 @@ export type ChatComposerTriggerItem = SearchableItem;
  export type ChatComposerTrigger = {
      /** Character that activates this trigger menu (e.g. '@', '/') */
      character: string;
@@ -12,10 +12,10 @@ index 90022b3..36c0637 100644
       * Search source providing items for this trigger.
       * Reuses the same SearchSource interface as Typeahead \u2014
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
-index 87dfdea..e3982e9 100644
+index c4d7fc6..e25aed3 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
-@@ -22,7 +22,7 @@
+@@ -26,7 +26,7 @@
   * - /apps/storybook/stories/ChatComposer.stories.tsx
   * - /packages/cli/assets/templates/blocks/components/ChatComposerInput/ (block examples)
   */
@@ -24,7 +24,7 @@ index 87dfdea..e3982e9 100644
  import { createPortal } from 'react-dom';
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
-@@ -30,7 +30,7 @@ import { colorVars, spacingVars, typeScaleVars, typographyVars } from "../theme/
+@@ -34,7 +34,7 @@ import { colorVars, spacingVars, typeScaleVars, typographyVars } from "../theme/
  import { mergeProps, isImeKeyEvent } from "../utils/index.js";
  import { useTriggerMenu } from "./useTriggerMenu.js";
  import { useChatComposerTokens, isCustomToken } from "./useChatComposerTokens.js";
@@ -33,7 +33,7 @@ index 87dfdea..e3982e9 100644
  import { ChatPastedTextToken } from "./ChatPastedTextToken.js";
  import { useChatPasteAsToken } from "./useChatPasteAsToken.js";
  import { Badge } from "../Badge/index.js";
-@@ -261,7 +261,7 @@ export function ChatComposerInput(props) {
+@@ -270,7 +270,7 @@ export function ChatComposerInput(props) {
        inputControlRef.current = null;
      };
    }, [inputControlRef, focusEditableAtEnd]);
@@ -42,7 +42,7 @@ index 87dfdea..e3982e9 100644
      if (controlledValue === undefined || !editableRef.current) {
        return;
      }
-@@ -293,6 +293,7 @@ export function ChatComposerInput(props) {
+@@ -302,6 +302,7 @@ export function ChatComposerInput(props) {
            const range = document.createRange();
            range.selectNodeContents(editable);
            range.collapse(false);
@@ -269,7 +269,7 @@ index 97b1a3b..e50f680 100644
    selection.removeAllRanges();
    selection.addRange(range);
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/index.d.ts b/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
-index a650ae4..aafef4b 100644
+index ecc438e..5a8a145 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
 @@ -31,6 +31,7 @@ export { useChatPasteAsToken } from './useChatPasteAsToken';
@@ -595,7 +595,7 @@ index 95e7519..3680732 100644
 -import { useCallback, useEffect, useRef } from 'react';
 +import { useCallback, useEffect, useMemo, useRef } from 'react';
  import { getInteractionModality, useInteractionModalityTracking } from "../utils/interactionModality.js";
-
+ 
  /**
 @@ -229,11 +229,11 @@ export function useTouchTrigger(options) {
      }
@@ -635,10 +635,10 @@ index 8753b5f..43a5abe 100644
      // unconditionally would erase a label a consumer pointed at their own
      // heading.
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
-index 6b3b7e1..c529123 100644
+index 96babc5..881f060 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
-@@ -98,6 +98,10 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+@@ -99,6 +99,10 @@ export interface MarkdownProps<Plugins extends ReadonlyArray<MarkdownPluginEntry
       */
      headingLevelStart?: 1 | 2 | 3 | 4 | 5 | 6;
      isStreaming?: boolean;
@@ -649,29 +649,20 @@ index 6b3b7e1..c529123 100644
      onLinkClick?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void | false;
      /**
       * Citation sources keyed by ID. When provided, `[id]` and `【id】` markers
-@@ -163,7 +167,7 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
-  * </Markdown>
-  * ```
-  */
--export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, ...props }: MarkdownProps): React.ReactElement;
-+export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, settledText, transformSource, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, ...props }: MarkdownProps): React.ReactElement;
- export declare namespace Markdown {
-     var displayName: string;
- }
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
-index 3432f13..898e131 100644
+index 2a294a5..052de46 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 @@ -8,7 +8,7 @@
   * @output Exports Markdown component, MarkdownProps, and renderer contracts
   * @position Core implementation; renders markdown as Astryx components
   */
--import { useMemo, useRef } from 'react';
-+import { useMemo, useRef, useState } from 'react';
+-import { Component, Suspense, useMemo, useRef } from 'react';
++import { Component, Suspense, useMemo, useRef, useState } from 'react';
  import { Fragment } from 'react';
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
-@@ -1087,6 +1087,8 @@ export function Markdown({
+@@ -1205,6 +1205,8 @@ export function Markdown({
    density = 'default',
    headingLevelStart = 1,
    isStreaming = false,
@@ -680,7 +671,7 @@ index 3432f13..898e131 100644
    onLinkClick,
    sources,
    citationStyle = 'label',
-@@ -1118,7 +1120,10 @@ export function Markdown({
+@@ -1251,7 +1253,10 @@ export function Markdown({
  
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
@@ -692,34 +683,49 @@ index 3432f13..898e131 100644
    const incrementalStateRef = useRef(createIncrementalState());
    // Reset incremental cache when parser-affecting component options toggle —
    // cached settled blocks were parsed with the previous setting.
-@@ -1139,11 +1144,11 @@ export function Markdown({
+@@ -1267,21 +1272,21 @@ export function Markdown({
+       return [];
+     }
+     if (isStreaming) {
+-      if (smoothedText === '') {
++      if (parsedText === '') {
+         incrementalStateRef.current = createIncrementalState();
          return [];
        }
        const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
 -      const input = trimStreamingArtifacts(smoothedText, options);
 +      const input = trimStreamingArtifacts(parsedText, options);
-       return hasMathRenderer ? parseMarkdownIncremental(input, incrementalStateRef.current, mathParseOptions) : parseMarkdownIncremental(input, incrementalStateRef.current, legacyParseOptions);
+       return (hasMathRenderer ? parseMarkdownAstIncremental(input, incrementalStateRef.current, mathParseOptions) : parseMarkdownAstIncremental(input, incrementalStateRef.current, legacyParseOptions)).children;
      }
--    return hasMathRenderer ? parseMarkdown(children, mathParseOptions) : parseMarkdown(children, legacyParseOptions);
+-    return (hasMathRenderer ? parseMarkdownAst(children, mathParseOptions) : parseMarkdownAst(children, legacyParseOptions)).children;
 -  }, [display, smoothedText, children, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
-+    return hasMathRenderer ? parseMarkdown(parsedText, mathParseOptions) : parseMarkdown(parsedText, legacyParseOptions);
+-  const transformSource = isStreaming ? trimStreamingArtifacts(smoothedText, hasMathRenderer ? mathParseOptions : legacyParseOptions) : children;
++    return (hasMathRenderer ? parseMarkdownAst(parsedText, mathParseOptions) : parseMarkdownAst(parsedText, legacyParseOptions)).children;
 +  }, [display, parsedText, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
++  const streamingSource = isStreaming ? trimStreamingArtifacts(parsedText, hasMathRenderer ? mathParseOptions : legacyParseOptions) : parsedText;
+   const blocks = useMemo(() => applyMarkdownTransforms({
+     type: 'root',
+     children: parsedBlocks
+-  }, preparedPlugins, transformSource, !isStreaming, 'block').children, [parsedBlocks, preparedPlugins, transformSource, isStreaming]);
++  }, preparedPlugins, streamingSource, !isStreaming, 'block').children, [parsedBlocks, preparedPlugins, streamingSource, isStreaming]);
  
    // Assign each top-level heading the slug that parseOutlineFromMarkdown
    // would derive for it, so Outline hash links built from the same source
-@@ -1170,9 +1175,9 @@ export function Markdown({
+@@ -1308,10 +1313,10 @@ export function Markdown({
        return [];
      }
      const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
 -    const input = isStreaming ? trimStreamingArtifacts(smoothedText, options) : children;
 +    const input = isStreaming ? trimStreamingArtifacts(parsedText, options) : parsedText;
-     return hasMathRenderer ? parseInline(input, mathParseOptions) : parseInline(input, legacyParseOptions);
+     return hasMathRenderer ? parseInlineAst(input, mathParseOptions) : parseInlineAst(input, legacyParseOptions);
 -  }, [display, smoothedText, children, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
+-  const inlineTransformSource = isStreaming ? trimStreamingArtifacts(smoothedText, hasMathRenderer ? mathParseOptions : legacyParseOptions) : children;
 +  }, [display, parsedText, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
- 
-   // Track recent boundaries for stacked fade-in animation.
-   // The number of spans needed = ceil(animationDuration / tickInterval).
-@@ -1189,17 +1194,25 @@ export function Markdown({
++  const inlineTransformSource = isStreaming ? trimStreamingArtifacts(parsedText, hasMathRenderer ? mathParseOptions : legacyParseOptions) : parsedText;
+   const inlineNodes = useMemo(() => {
+     if (display !== 'inline') {
+       return [];
+@@ -1342,17 +1347,25 @@ export function Markdown({
      const tickMs = tick != null ? Math.max(4, Math.round(tick / 10)) : 50;
      return Math.min(Math.ceil(duration / tickMs), 12);
    }, [token]);
@@ -756,8 +762,8 @@ index 3432f13..898e131 100644
    const cursor = {
      offset: 0,
      boundaries,
-@@ -1227,9 +1240,6 @@ export function Markdown({
-       children: inlineNodes.map((node, i) => renderInline(node, i, onLinkClick, cursor, citationCtx, LinkComponent, inlinePlugins, components))
+@@ -1380,9 +1393,6 @@ export function Markdown({
+       children: inlineNodes.map((node, i) => renderInline(node, i, onLinkClick, cursor, citationCtx, LinkComponent, inlinePlugins, components, preparedPlugins))
      });
  
 -    // Store current inline nodes for next render's boundary calculation.
@@ -766,8 +772,8 @@ index 3432f13..898e131 100644
      return renderedInline;
    }
    const rendered = /*#__PURE__*/_jsx("div", {
-@@ -1246,11 +1256,6 @@ export function Markdown({
-     children: blocks.map((block, i) => renderBlock(block, i, blocks.length, density, headingLevelStart, onLinkClick, cursor, citationCtx, contentWidth ? typeof contentWidth === 'number' ? `${contentWidth}px` : contentWidth : null, contentAlign, LinkComponent, inlinePlugins, components, t, headingIdMap))
+@@ -1399,11 +1409,6 @@ export function Markdown({
+     children: blocks.map((block, i) => renderBlock(block, i, blocks.length, density, headingLevelStart, onLinkClick, cursor, citationCtx, contentWidth ? typeof contentWidth === 'number' ? `${contentWidth}px` : contentWidth : null, contentAlign, LinkComponent, inlinePlugins, components, preparedPlugins, t, headingIdMap))
    });
  
 -  // Store current blocks for next render's boundary calculation.
@@ -780,10 +786,10 @@ index 3432f13..898e131 100644
  Markdown.displayName = 'Markdown';
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/parser.js b/node_modules/@astryxdesign/core/dist/Markdown/parser.js
-index 55ac179..971f1fc 100644
+index 107ef3f..5c4dede 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/parser.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/parser.js
-@@ -1741,6 +1741,7 @@ export function trimStreamingArtifacts(input, options) {
+@@ -2264,6 +2264,7 @@ export function trimStreamingArtifacts(input, options) {
    const lastNL = displayTrimmed.lastIndexOf('\n');
    const prefix = lastNL === -1 ? '' : displayTrimmed.slice(0, lastNL + 1);
    let tail = lastNL === -1 ? displayTrimmed : displayTrimmed.slice(lastNL + 1);
@@ -791,7 +797,7 @@ index 55ac179..971f1fc 100644
    if (options?.math) {
      // Hold an unmatched inline opener so raw TeX syntax does not flash while
      // streaming. If another unescaped dollar is already present but fails the
-@@ -1755,6 +1756,7 @@ export function trimStreamingArtifacts(input, options) {
+@@ -2278,6 +2279,7 @@ export function trimStreamingArtifacts(input, options) {
        }
        const close = findInlineMathEnd(tail, index);
        if (close !== -1) {
@@ -799,7 +805,7 @@ index 55ac179..971f1fc 100644
          index = close;
          continue;
        }
-@@ -1772,10 +1774,23 @@ export function trimStreamingArtifacts(input, options) {
+@@ -2295,10 +2297,23 @@ export function trimStreamingArtifacts(input, options) {
        index = laterDollar;
      }
    }
@@ -824,7 +830,7 @@ index 55ac179..971f1fc 100644
    if (lastBracket !== -1) {
      const afterBracket = tail.slice(lastBracket);
      // A closed link/image has ](...)  somewhere after the [
-@@ -1834,8 +1849,9 @@ export function trimStreamingArtifacts(input, options) {
+@@ -2357,8 +2372,9 @@ export function trimStreamingArtifacts(input, options) {
        while (idx + markerLen < tail.length && tail[idx + markerLen] === '*') {
          markerLen++;
        }
@@ -836,7 +842,7 @@ index 55ac179..971f1fc 100644
          searchFrom = idx + markerLen;
          continue;
        }
-@@ -1903,8 +1919,10 @@ export function trimStreamingArtifacts(input, options) {
+@@ -2426,8 +2442,10 @@ export function trimStreamingArtifacts(input, options) {
        if (idx === -1) {
          break;
        }
@@ -897,27 +903,31 @@ index b56c9d5..463f665 100644
        role: "group",
        "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
-index ea27c3a..b99db05 100644
+index 0c81fd3..51e9632 100644
 --- a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
 +++ b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
-@@ -173,7 +173,8 @@ function pinRingsToTimelineOrigin() {
+@@ -174,11 +174,8 @@ function pinRingsToTimelineOrigin() {
    flushScheduled = false;
    const animations = [];
    for (const svg of pendingRings) {
--    animations.push(...svg.getAnimations());
+-    // The animation now runs on the arc <circle>, a descendant of the ring
+-    // this ref sits on (#6253), so it needs subtree:true to be found here.
+-    animations.push(...svg.getAnimations({
+-      subtree: true
+-    }));
 +    // The rotation runs on the ring's host span, not on the svg itself.
 +    animations.push(...(svg.parentElement ?? svg).getAnimations());
    }
    pendingRings.clear();
    for (const animation of animations) {
-@@ -200,8 +201,19 @@ function syncRotationPhase(svg) {
+@@ -205,8 +202,19 @@ function syncRotationPhase(svg) {
      flushScheduled = true;
      requestAnimationFrame(pinRingsToTimelineOrigin);
    }
 +  // Moving a mounted spinner (a list re-sorting its rows) restarts its CSS
 +  // animation without running this ref again; pin the restarted one too.
 +  const host = svg.parentElement ?? svg;
-+  const repin = event => {
++  const repin = (event) => {
 +    if (event.target !== host) return;
 +    for (const animation of host.getAnimations()) {
 +      animation.startTime = 0;
@@ -930,7 +940,27 @@ index ea27c3a..b99db05 100644
    };
  }
  
-@@ -231,6 +243,16 @@ const styles = {
+@@ -214,18 +222,7 @@ function syncRotationPhase(svg) {
+ // Animation
+ // =============================================================================
+ 
+-/**
+- * Moves the dash around a stationary circle instead of rotating the whole
+- * ring. WebKit re-antialiases a rotating stroked shape's rounded cap
+- * (`strokeLinecap: 'round'`, below) slightly differently at each intermediate
+- * angle, which reads as a visible wobble on iOS Safari independent of
+- * compositing (#6253) — confirmed by a real-device test against this exact
+- * fix, since `willChange`/layer promotion alone (the earlier fix for #3617)
+- * only smooths the rotation's motion, not the per-frame stroke rasterization.
+- * A static circle with an animated `stroke-dashoffset` never rotates, so
+- * WebKit never re-rasterizes the cap at an intermediate angle at all.
+- */
+-const dashMotion = "x1wbvqyn-B";
++const rotation = "xqng64z-B";
+ 
+ // =============================================================================
+ // Styles
+@@ -247,6 +244,16 @@ const styles = {
      "--_spinner-ring-stroke": "x10qssua",
      "--_spinner-box-size": "x69vvuq",
      kmuXW: "x2lah0s",
@@ -947,20 +977,28 @@ index ea27c3a..b99db05 100644
      $$css: true
    },
    circle: {
-@@ -429,7 +451,7 @@ export function Spinner({
-       height: frameSize,
-       "aria-hidden": "true",
-       ...{
--        className: "xlp1x4z x1lliihq x6v0vjy x7yyq19 x1so62im x1rea2x4 x14qxm4i xnh0sag xa4qsjk x1ka1v4i x1esw782"
-+        className: "x1lliihq x6v0vjy x7yyq19 x1rea2x4"
-       },
-       children: [/*#__PURE__*/_jsx("circle", {
-         cx: "50%",
+@@ -464,7 +471,7 @@ export function Spinner({
+         ,
+         strokeDasharray: `${arcLength} ${circumference - arcLength}`,
+         ...{
+-          className: "xbh8q5q x1764fhq x1g0ag68 x1owpc8m xio8zfp xgw3ha0 x14qxm4i xnh0sag xa4qsjk x1nlxm0d x1esw782 xtve3lm x9tu13d xdv9ggb"
++          className: "xbh8q5q x1764fhq x1g0ag68 x1owpc8m xio8zfp xgw3ha0 xtve3lm x9tu13d xdv9ggb"
+         }
+       })]
+     })
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
-index 465aaab..2499c49 100644
+index 69573c6..a32e7a4 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
 +++ b/node_modules/@astryxdesign/core/dist/astryx.css
-@@ -578,7 +578,7 @@
+@@ -65,6 +65,7 @@
+   @keyframes xv1hr86-B{from{opacity:0;transform:translateY(calc(-1 * var(--spacing-2))) scale(.95);}to{opacity:1;transform:translateY(0) scale(1);}}
+   @keyframes x1b6yrix-B{from{opacity:0;transform:translateY(var(--spacing-2));}to{opacity:1;transform:translateY(0);}}
+   @keyframes xiylxmw-B{from{opacity:0;transform:translateY(calc(-1 * var(--spacing-2)));}to{opacity:1;transform:translateY(0);}}
++  @keyframes xqng64z-B{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
+   @keyframes x1wbvqyn-B{0%{stroke-dashoffset:0;}100%{stroke-dashoffset:calc(var(--_spinner-ring-diameter) * -3.141592653589793);}}
+   @keyframes x1c2q33o-B{0%{transform:translateX(100%);}100%{transform:translateX(-250%);}}
+   @keyframes xr3m334-B{0%{transform:translateX(-100%);}100%{transform:translateX(250%);}}
+@@ -577,7 +578,7 @@
    .xk2sxw7:focus-within:not(#\#):not(#\#){border-color:var(--color-error)}
    .xyq33ac:focus-within:not(#\#):not(#\#){border-color:var(--color-success)}
    .xa1yw2k:focus-within:not(#\#):not(#\#){border-color:var(--color-warning)}
@@ -969,7 +1007,15 @@ index 465aaab..2499c49 100644
    .x1dordxg:focus-within:not(#\#):not(#\#){overflow:visible}
    .xb0m1lw:has(> div > .astryx-layout-content):not(#\#):not(#\#){margin-inline:0}
    .x16s19ga:has(:focus-visible):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
-@@ -664,6 +664,7 @@
+@@ -650,6 +651,7 @@
+   .x3psbcj:not(#\#):not(#\#):not(#\#){animation-name:x1ahk7ht-B}
+   .x1dvww92:not(#\#):not(#\#):not(#\#){animation-name:x1b6yrix-B}
+   .x97zbip:not(#\#):not(#\#):not(#\#){animation-name:x1k48ry3-B}
++  .x1ka1v4i:not(#\#):not(#\#):not(#\#){animation-name:xqng64z-B}
+   .x1nlxm0d:not(#\#):not(#\#):not(#\#){animation-name:x1wbvqyn-B}
+   .x1gbn2au:not(#\#):not(#\#):not(#\#){animation-name:x1xhkexc-B}
+   .xeuoslp:not(#\#):not(#\#):not(#\#){animation-name:xgnty7z-B}
+@@ -663,6 +665,7 @@
    .x4hg4is:not(#\#):not(#\#):not(#\#){animation-timing-function:ease-in-out}
    .x1esw782:not(#\#):not(#\#):not(#\#){animation-timing-function:linear}
    .x193epu2:not(#\#):not(#\#):not(#\#){animation-timing-function:steps(10,end)}
@@ -977,8 +1023,8 @@ index 465aaab..2499c49 100644
    .x128ha8g:not(#\#):not(#\#):not(#\#){animation-timing-function:var(--ease-standard)}
    .xjyslct:not(#\#):not(#\#):not(#\#){appearance:none}
    .x1plog1:not(#\#):not(#\#):not(#\#){aspect-ratio:1}
-@@ -1365,7 +1366,7 @@
-   .x7s97pk:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:2px}
+@@ -1367,7 +1370,7 @@
+   .x1l5jwag:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:calc(0px - var(--focus-outline-width))}
    .x13aywxo:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--button-focus-offset)}
    .x1vwwbsn:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
 -  .xwz5zln.xwz5zln:where(.x1iwu4tg:has(:focus-visible) *):not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
@@ -986,7 +1032,7 @@ index 465aaab..2499c49 100644
    .x1jhp3zv:focus-visible:not(#\#):not(#\#):not(#\#){outline-style:var(--focus-outline-style)}
    .x1vidyx5:focus-visible:not(#\#):not(#\#):not(#\#){outline-width:var(--focus-outline-width)}
    .x1n6uwha:is([dir="rtl"] *):not(#\#):not(#\#):not(#\#){padding-inline-end:max(var(--spacing-4),env(safe-area-inset-left,0px))}
-@@ -1844,8 +1845,8 @@
+@@ -1850,8 +1853,8 @@
    .x5lhr3w:not(#\#):not(#\#):not(#\#):not(#\#){width:var(--x-width)}
    .x1wp2rvj.x1wp2rvj:where(.x139im0d:last-child *):not(#\#):not(#\#):not(#\#):not(#\#){border-bottom-width:0}
    .x132qfvm:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){height:auto}
@@ -1167,10 +1213,10 @@ index 693d728..7d5724e 100644
  }
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
-index a45cc2f..f676118 100644
+index e63c86f..ea489b3 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
-@@ -28,6 +28,7 @@ import {
+@@ -32,6 +32,7 @@ import {
    useState,
    useCallback,
    useEffect,
@@ -1178,7 +1224,7 @@ index a45cc2f..f676118 100644
    useImperativeHandle,
    type ReactNode,
    type KeyboardEvent,
-@@ -51,6 +52,7 @@ import {
+@@ -56,6 +57,7 @@ import {
    insertTextAtCursor,
    isSelectionAtStart,
    isSelectionAtEnd,
@@ -1186,7 +1232,7 @@ index a45cc2f..f676118 100644
    placeCaretAtEnd,
    getSelectionRangeInside,
    restoreSelectionRange,
-@@ -114,6 +116,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+@@ -126,6 +128,8 @@ export type ChatComposerTriggerItem = SearchableItem;
  export type ChatComposerTrigger = {
    /** Character that activates this trigger menu (e.g. '@', '/') */
    character: string;
@@ -1195,7 +1241,7 @@ index a45cc2f..f676118 100644
    /**
     * Search source providing items for this trigger.
     * Reuses the same SearchSource interface as Typeahead \u2014
-@@ -465,7 +469,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+@@ -485,7 +489,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
      };
    }, [inputControlRef, focusEditableAtEnd]);
  
@@ -1204,7 +1250,7 @@ index a45cc2f..f676118 100644
      if (controlledValue === undefined || !editableRef.current) {
        return;
      }
-@@ -497,6 +501,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+@@ -517,6 +521,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
            const range = document.createRange();
            range.selectNodeContents(editable);
            range.collapse(false);
@@ -1438,10 +1484,10 @@ index 0f31ca8..7fa3a89 100644
    selection.removeAllRanges();
    selection.addRange(range);
 diff --git a/node_modules/@astryxdesign/core/src/Chat/index.ts b/node_modules/@astryxdesign/core/src/Chat/index.ts
-index 7239e18..db3ca04 100644
+index f778b8b..4d8bcbf 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/index.ts
 +++ b/node_modules/@astryxdesign/core/src/Chat/index.ts
-@@ -80,6 +80,7 @@ export type {
+@@ -81,6 +81,7 @@ export type {
    UseChatComposerTokensReturn,
    TokenPortal,
  } from './useChatComposerTokens';
@@ -1730,7 +1776,7 @@ index cb027d3..8f0e5e6 100644
 @@ -26,7 +26,7 @@
   * icon-button whose only job is to reveal the layer needs.
   */
-
+ 
 -import {useCallback, useEffect, useRef, type RefObject} from 'react';
 +import {useCallback, useEffect, useMemo, useRef, type RefObject} from 'react';
  import {
@@ -1739,7 +1785,7 @@ index cb027d3..8f0e5e6 100644
 @@ -354,11 +354,14 @@ export function useTouchTrigger(
      wasOpenRef.current = isOpen;
    }, [isOpen, disarmOutsideDismiss]);
-
+ 
 -  return {
 -    isTouchPointerRef,
 -    isTouchInteraction,
@@ -1779,19 +1825,19 @@ index 5b63cd6..76627fe 100644
        // unconditionally would erase a label a consumer pointed at their own
        // heading.
 diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
-index 75e68af..ca671d4 100644
+index 45ec33b..be7b53f 100644
 --- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 +++ b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 @@ -9,7 +9,7 @@
   * @position Core implementation; renders markdown as Astryx components
   */
  
--import {useMemo, useRef} from 'react';
-+import {useMemo, useRef, useState} from 'react';
+-import {Component, Suspense, useMemo, useRef} from 'react';
++import {Component, Suspense, useMemo, useRef, useState} from 'react';
  import type React from 'react';
  import {Fragment} from 'react';
  import * as stylex from '@stylexjs/stylex';
-@@ -159,6 +159,10 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+@@ -178,6 +178,10 @@ export interface MarkdownProps<
     */
    headingLevelStart?: 1 | 2 | 3 | 4 | 5 | 6;
    isStreaming?: boolean;
@@ -1802,7 +1848,7 @@ index 75e68af..ca671d4 100644
    onLinkClick?: (
      href: string,
      event: React.MouseEvent<HTMLAnchorElement>,
-@@ -1656,6 +1660,8 @@ export function Markdown({
+@@ -1860,6 +1864,8 @@ export function Markdown<
    density = 'default',
    headingLevelStart = 1,
    isStreaming = false,
@@ -1811,7 +1857,7 @@ index 75e68af..ca671d4 100644
    onLinkClick,
    sources,
    citationStyle = 'label',
-@@ -1690,7 +1696,10 @@ export function Markdown({
+@@ -1911,7 +1917,10 @@ export function Markdown<
  
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
@@ -1823,23 +1869,30 @@ index 75e68af..ca671d4 100644
  
    const incrementalStateRef = useRef<IncrementalState<boolean>>(
      createIncrementalState<boolean>(),
-@@ -1718,7 +1727,7 @@ export function Markdown({
+@@ -1934,12 +1943,12 @@ export function Markdown<
+       return [];
+     }
+     if (isStreaming) {
+-      if (smoothedText === '') {
++      if (parsedText === '') {
+         incrementalStateRef.current = createIncrementalState<boolean>();
          return [];
        }
        const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
 -      const input = trimStreamingArtifacts(smoothedText, options);
 +      const input = trimStreamingArtifacts(parsedText, options);
-       return hasMathRenderer
-         ? parseMarkdownIncremental(
-             input,
-@@ -1732,12 +1741,11 @@ export function Markdown({
-           );
+       return (
+         hasMathRenderer
+           ? parseMarkdownAstIncremental(
+@@ -1956,35 +1965,34 @@ export function Markdown<
      }
-     return hasMathRenderer
--      ? parseMarkdown(children, mathParseOptions)
--      : parseMarkdown(children, legacyParseOptions);
-+      ? parseMarkdown(parsedText, mathParseOptions)
-+      : parseMarkdown(parsedText, legacyParseOptions);
+     return (
+       hasMathRenderer
+-        ? parseMarkdownAst(children, mathParseOptions)
+-        : parseMarkdownAst(children, legacyParseOptions)
++        ? parseMarkdownAst(parsedText, mathParseOptions)
++        : parseMarkdownAst(parsedText, legacyParseOptions)
+     ).children;
    }, [
      display,
 -    smoothedText,
@@ -1848,7 +1901,34 @@ index 75e68af..ca671d4 100644
      isStreaming,
      hasMathRenderer,
      mathParseOptions,
-@@ -1771,15 +1779,14 @@ export function Markdown({
+     legacyParseOptions,
+   ]);
+ 
+-  const transformSource = isStreaming
++  const streamingSource = isStreaming
+     ? trimStreamingArtifacts(
+-        smoothedText,
++        parsedText,
+         hasMathRenderer ? mathParseOptions : legacyParseOptions,
+       )
+-    : children;
++    : parsedText;
+   const blocks = useMemo(
+     () =>
+       applyMarkdownTransforms(
+         {type: 'root', children: parsedBlocks},
+         preparedPlugins,
+-        transformSource,
++        streamingSource,
+         !isStreaming,
+         'block',
+       ).children,
+-    [parsedBlocks, preparedPlugins, transformSource, isStreaming],
++    [parsedBlocks, preparedPlugins, streamingSource, isStreaming],
+   );
+ 
+   // Assign each top-level heading the slug that parseOutlineFromMarkdown
+@@ -2016,15 +2024,14 @@ export function Markdown<
      }
      const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
      const input = isStreaming
@@ -1857,8 +1937,8 @@ index 75e68af..ca671d4 100644
 +      ? trimStreamingArtifacts(parsedText, options)
 +      : parsedText;
      return hasMathRenderer
-       ? parseInline(input, mathParseOptions)
-       : parseInline(input, legacyParseOptions);
+       ? parseInlineAst(input, mathParseOptions)
+       : parseInlineAst(input, legacyParseOptions);
    }, [
      display,
 -    smoothedText,
@@ -1867,12 +1947,25 @@ index 75e68af..ca671d4 100644
      isStreaming,
      hasMathRenderer,
      mathParseOptions,
-@@ -1800,20 +1807,43 @@ export function Markdown({
+@@ -2033,10 +2040,10 @@ export function Markdown<
+ 
+   const inlineTransformSource = isStreaming
+     ? trimStreamingArtifacts(
+-        smoothedText,
++        parsedText,
+         hasMathRenderer ? mathParseOptions : legacyParseOptions,
+       )
+-    : children;
++    : parsedText;
+   const inlineNodes = useMemo(() => {
+     if (display !== 'inline') {
+       return [];
+@@ -2077,20 +2084,41 @@ export function Markdown<
      return Math.min(Math.ceil(duration / tickMs), 12);
    }, [token]);
  
--  const prevBlocksRef = useRef<BlockNodeWithMath[]>([]);
--  const prevInlineNodesRef = useRef<InlineNodeWithMath[]>([]);
+-  const prevBlocksRef = useRef<ReadonlyArray<RenderBlockNode>>([]);
+-  const prevInlineNodesRef = useRef<ReadonlyArray<RenderInlineNode>>([]);
 -  const boundariesRef = useRef<number[]>([]);
 -  const smoothedLen = smoothedText.length;
 -  const boundaries = useMemo(() => {
@@ -1885,9 +1978,10 @@ index 75e68af..ca671d4 100644
 -    boundariesRef.current = next;
 -    return next;
 -  }, [display, smoothedLen, maxSpans]);
-+  const visibleLength = display === 'inline'
-+    ? countInlineTextLength(inlineNodes)
-+    : countBlockTextLength(blocks);
++  const visibleLength =
++    display === 'inline'
++      ? countInlineTextLength(inlineNodes)
++      : countBlockTextLength(blocks);
 +  const [fadeState, setFadeState] = useState(() => ({
 +    display,
 +    settledText,
@@ -1895,24 +1989,21 @@ index 75e68af..ca671d4 100644
 +    visibleLength,
 +    boundaries: settledText === undefined ? [0] : [visibleLength],
 +  }));
-+  const resetBoundaries = fadeState.display !== display
-+    || fadeState.settledText !== settledText
-+    || !smoothedText.startsWith(fadeState.smoothedText);
++  const resetBoundaries =
++    fadeState.display !== display ||
++    fadeState.settledText !== settledText ||
++    !smoothedText.startsWith(fadeState.smoothedText);
 +  const boundaries = resetBoundaries
 +    ? [visibleLength]
 +    : fadeState.smoothedText === smoothedText
 +      ? fadeState.boundaries
-+      : computeBoundaries(
-+        fadeState.boundaries,
-+        fadeState.visibleLength,
-+        maxSpans,
-+      );
++      : computeBoundaries(fadeState.boundaries, fadeState.visibleLength, maxSpans);
 +  if (
-+    fadeState.display !== display
-+    || fadeState.settledText !== settledText
-+    || fadeState.smoothedText !== smoothedText
-+    || fadeState.visibleLength !== visibleLength
-+    || fadeState.boundaries !== boundaries
++    fadeState.display !== display ||
++    fadeState.settledText !== settledText ||
++    fadeState.smoothedText !== smoothedText ||
++    fadeState.visibleLength !== visibleLength ||
++    fadeState.boundaries !== boundaries
 +  ) {
 +    setFadeState({
 +      display,
@@ -1925,7 +2016,7 @@ index 75e68af..ca671d4 100644
  
    const cursor: StreamingCursor = {
      offset: 0,
-@@ -1855,10 +1885,6 @@ export function Markdown({
+@@ -2133,10 +2161,6 @@ export function Markdown<
        </span>
      );
  
@@ -1936,7 +2027,7 @@ index 75e68af..ca671d4 100644
      return renderedInline;
    }
  
-@@ -1902,12 +1928,6 @@ export function Markdown({
+@@ -2181,12 +2205,6 @@ export function Markdown<
      </div>
    );
  
@@ -1950,10 +2041,10 @@ index 75e68af..ca671d4 100644
  }
  
 diff --git a/node_modules/@astryxdesign/core/src/Markdown/parser.ts b/node_modules/@astryxdesign/core/src/Markdown/parser.ts
-index 6dee3b2..3717b78 100644
+index 418c30b..a7f533a 100644
 --- a/node_modules/@astryxdesign/core/src/Markdown/parser.ts
 +++ b/node_modules/@astryxdesign/core/src/Markdown/parser.ts
-@@ -2149,6 +2149,7 @@ export function trimStreamingArtifacts(
+@@ -3013,6 +3013,7 @@ export function trimStreamingArtifacts(
    const prefix = lastNL === -1 ? '' : displayTrimmed.slice(0, lastNL + 1);
    let tail = lastNL === -1 ? displayTrimmed : displayTrimmed.slice(lastNL + 1);
  
@@ -1961,7 +2052,7 @@ index 6dee3b2..3717b78 100644
    if (options?.math) {
      // Hold an unmatched inline opener so raw TeX syntax does not flash while
      // streaming. If another unescaped dollar is already present but fails the
-@@ -2169,6 +2170,7 @@ export function trimStreamingArtifacts(
+@@ -3033,6 +3034,7 @@ export function trimStreamingArtifacts(
        }
        const close = findInlineMathEnd(tail, index);
        if (close !== -1) {
@@ -1969,7 +2060,7 @@ index 6dee3b2..3717b78 100644
          index = close;
          continue;
        }
-@@ -2186,10 +2188,23 @@ export function trimStreamingArtifacts(
+@@ -3050,10 +3052,23 @@ export function trimStreamingArtifacts(
        index = laterDollar;
      }
    }
@@ -1994,7 +2085,7 @@ index 6dee3b2..3717b78 100644
    if (lastBracket !== -1) {
      const afterBracket = tail.slice(lastBracket);
      // A closed link/image has ](...)  somewhere after the [
-@@ -2251,8 +2266,9 @@ export function trimStreamingArtifacts(
+@@ -3115,8 +3130,9 @@ export function trimStreamingArtifacts(
        while (idx + markerLen < tail.length && tail[idx + markerLen] === '*') {
          markerLen++;
        }
@@ -2006,7 +2097,7 @@ index 6dee3b2..3717b78 100644
          searchFrom = idx + markerLen;
          continue;
        }
-@@ -2317,8 +2333,10 @@ export function trimStreamingArtifacts(
+@@ -3181,8 +3197,10 @@ export function trimStreamingArtifacts(
        if (idx === -1) {
          break;
        }
@@ -2053,20 +2144,22 @@ index 6c581d4..d3a9857 100644
          <div
            id={`${id}-children`}
 diff --git a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
-index e6a5837..430de71 100644
+index 7f7dedd..0a8720a 100644
 --- a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
 +++ b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
-@@ -167,7 +167,8 @@ function pinRingsToTimelineOrigin(): void {
+@@ -168,9 +168,8 @@ function pinRingsToTimelineOrigin(): void {
    flushScheduled = false;
    const animations: Animation[] = [];
    for (const svg of pendingRings) {
--    animations.push(...svg.getAnimations());
+-    // The animation now runs on the arc <circle>, a descendant of the ring
+-    // this ref sits on (#6253), so it needs subtree:true to be found here.
+-    animations.push(...svg.getAnimations({subtree: true}));
 +    // The rotation runs on the ring's host span, not on the svg itself.
 +    animations.push(...(svg.parentElement ?? svg).getAnimations());
    }
    pendingRings.clear();
    for (const animation of animations) {
-@@ -196,8 +197,19 @@ function syncRotationPhase(
+@@ -199,8 +198,19 @@ function syncRotationPhase(
      flushScheduled = true;
      requestAnimationFrame(pinRingsToTimelineOrigin);
    }
@@ -2086,7 +2179,31 @@ index e6a5837..430de71 100644
    };
  }
  
-@@ -259,9 +271,24 @@ const styles = stylex.create({
+@@ -208,20 +218,9 @@ function syncRotationPhase(
+ // Animation
+ // =============================================================================
+ 
+-/**
+- * Moves the dash around a stationary circle instead of rotating the whole
+- * ring. WebKit re-antialiases a rotating stroked shape's rounded cap
+- * (`strokeLinecap: 'round'`, below) slightly differently at each intermediate
+- * angle, which reads as a visible wobble on iOS Safari independent of
+- * compositing (#6253) — confirmed by a real-device test against this exact
+- * fix, since `willChange`/layer promotion alone (the earlier fix for #3617)
+- * only smooths the rotation's motion, not the per-frame stroke rasterization.
+- * A static circle with an animated `stroke-dashoffset` never rotates, so
+- * WebKit never re-rasterizes the cap at an intermediate angle at all.
+- */
+-const dashMotion = stylex.keyframes({
+-  '0%': {strokeDashoffset: '0px'},
+-  '100%': {strokeDashoffset: `calc(var(${RESOLVED_DIAMETER}) * -${PI})`},
++const rotation = stylex.keyframes({
++  '0%': {transform: 'rotate(0deg)'},
++  '100%': {transform: 'rotate(360deg)'},
+ });
+ 
+ // =============================================================================
+@@ -273,9 +272,24 @@ const styles = stylex.create({
      // moment it sets `min-width: 0` on its items. A spinner that does not fit
      // overflows its host visibly instead of being silently sliced.
      flexShrink: 0,
@@ -2112,19 +2229,11 @@ index e6a5837..430de71 100644
      display: 'block',
      // The frame is the box, read from the same composed var the span is sized
      // from — not from the size constant, which a theme cannot reach, and not
-@@ -271,7 +298,6 @@ const styles = stylex.create({
-     // One expression, one source of truth, resolves in any layout.
-     width: `var(${BOX_SIZE})`,
-     height: `var(${BOX_SIZE})`,
--    willChange: 'transform',
-     // The svg is sized in CSS (100% of the span) rather than from the size
-     // constant, so one user unit is one CSS pixel AND the frame follows a
-     // themed diameter: the span's box is `diameter + 2 x stroke`, both public
-@@ -280,16 +306,6 @@ const styles = stylex.create({
-     // diameter — an overflowing grid item aligns to start rather than centre,
-     // which put the ring 1.5-3.3px off across the four sizes.
-     overflow: 'visible',
--    // Slow the rotation dramatically under reduced-motion rather than freezing
+@@ -330,16 +344,6 @@ const styles = stylex.create({
+   // `0` the way the registered length pair guards against, so it needs no
+   // registration.
+   arc: {
+-    // Slow the motion dramatically under reduced-motion rather than freezing
 -    // it (a frozen spinner reads as broken), matching ProgressBar's approach.
 -    // The role="status" + "Loading" label still convey busy state (obs-6).
 -    animationDuration: {
@@ -2132,11 +2241,11 @@ index e6a5837..430de71 100644
 -      '@media (prefers-reduced-motion: reduce)': '3s',
 -    },
 -    animationIterationCount: 'infinite',
--    animationName: rotation,
+-    animationName: dashMotion,
 -    animationTimingFunction: 'linear',
-   },
-   circle: {
-     fill: 'none',
+     stroke: 'var(--spinner-color)',
+     transform: 'rotate(-90deg)',
+     strokeDasharray: `calc(var(${RESOLVED_DIAMETER}) * ${PI} * var(--spinner-arc-fraction)) calc(var(${RESOLVED_DIAMETER}) * ${PI} * (1 - var(--spinner-arc-fraction)))`,
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 55b441e..7aa4174 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts

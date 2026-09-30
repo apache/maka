@@ -185,11 +185,29 @@ export function useExecutorSelection(input: {
     }
   };
   const entry = catalog.find((candidate) => candidate.id === selection?.executorId);
+  const restore = async () => {
+    if (!sessionId || !executorId) throw new Error('Executor Session is unavailable');
+    if (inFlight.current === key) throw new Error('Executor configuration is pending');
+    const model = input.session?.executorConfig?.model ?? inspected?.currentModel;
+    if (!model) throw new Error('Executor model is unavailable');
+    setSnapshot((previous) =>
+      previous?.key === key
+        ? {
+            ...previous,
+            catalog: previous.catalog.map((entry) =>
+              entry.id === executorId ? { ...entry, readiness: 'restoring' } : entry,
+            ),
+          }
+        : previous,
+    );
+    await select({ executorId, configuration: { model } });
+  };
   return {
     selection,
     catalog,
     entry,
     select,
+    restore,
     refresh,
     changing: changingKey === key,
     loading: snapshot?.key !== key || snapshot.loading,

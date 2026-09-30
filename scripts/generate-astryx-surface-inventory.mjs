@@ -611,8 +611,8 @@ function analyzeCss(rel, text) {
 }
 
 function analyze(repoRoot, rel, ctx) {
-  const full = join(repoRoot, rel);
-  const text = readFileSync(full, 'utf8');
+  const absolutePath = join(repoRoot, rel);
+  const text = readFileSync(absolutePath, 'utf8');
   const role = roleFor(rel);
   if (rel.endsWith('.css')) {
     const a = analyzeCss(rel, text);
@@ -630,13 +630,20 @@ function withFinalNewline(text) {
   return text.endsWith('\n') ? text : `${text}\n`;
 }
 
-function buildInventoryArtifacts({ bySeverity, excluded, files, lines, rows, version }) {
+function buildInventoryArtifacts({
+  bySeverity,
+  excluded: excludedFiles,
+  files,
+  lines,
+  rows,
+  version,
+}) {
   return {
     blockers: rows.flatMap((row) => [
       ...(row.severity === 'blocker' ? [{ path: row.path, gaps: row.gaps }] : []),
       ...(row.admissionGaps || []).map((gaps) => ({ path: row.path, gaps })),
     ]),
-    excluded,
+    excluded: excludedFiles,
     files,
     markdown: withFinalNewline(lines.join('\n')),
     paths: withFinalNewline(files.join('\n')),
@@ -645,12 +652,12 @@ function buildInventoryArtifacts({ bySeverity, excluded, files, lines, rows, ver
   };
 }
 
-export function renderAstryxSurfaceInventory(repoRoot = root) {
+function renderSurfaceInventory(repoRoot = root) {
   const { version, components } = loadAstryxComponents();
   const { reexports, shadowsByFile } = loadMakaUiBarrel(repoRoot);
   const ctx = { astryxComponents: components, makaUiReexports: reexports, shadowsByFile };
 
-  const { files, excluded } = listProductSurfaceFiles(repoRoot);
+  const { files, excluded: excludedFiles } = listProductSurfaceFiles(repoRoot);
   const rows = files.map((rel) => analyze(repoRoot, rel, ctx));
 
   const bySev = { blocker: 0, reimplementation: 0, polish: 0, aligned: 0 };
@@ -692,10 +699,10 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
   lines.push('');
   lines.push('| Path | Why |');
   lines.push('|------|-----|');
-  for (const e of excluded) {
+  for (const e of excludedFiles) {
     lines.push(`| \`${e.path}\` | ${e.reason} |`);
   }
-  if (excluded.length === 0) lines.push('| — | — |');
+  if (excludedFiles.length === 0) lines.push('| — | — |');
   lines.push('');
 
   lines.push('## Files');
@@ -724,13 +731,15 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
 
   return buildInventoryArtifacts({
     bySeverity: bySev,
-    excluded,
+    excluded: excludedFiles,
     files,
     lines,
     rows,
     version,
   });
 }
+
+export const renderAstryxSurfaceInventory = renderSurfaceInventory;
 
 export function assertNoAstryxBlockers(rendered, legacyBaseline = new Map()) {
   const blockers = rendered.blockers.filter(

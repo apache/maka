@@ -368,20 +368,27 @@ export const ComposerRetainsFailedAttachment: Story = {
 async function expectPromptRailClearance(canvasElement: HTMLElement) {
   await waitFor(() => {
     const rail = canvasElement.querySelector<HTMLElement>('.maka-prompt-rail')!;
-    expect(rail).toBeVisible();
-    const box = rail.getBoundingClientRect();
-    const edge = canvasElement.querySelector('.maka-workbar-edge')!.getBoundingClientRect();
-    const scroller = canvasElement.querySelector('[data-chat-scroll-container]')!.getBoundingClientRect();
-    const composer = canvasElement.querySelector('.maka-composer')!.getBoundingClientRect();
-    expect(box.width).toBeGreaterThan(0);
-    expect(box.right).toBeLessThan(edge.left);
-    expect(box.top).toBeGreaterThanOrEqual(scroller.top);
-    expect(box.bottom).toBeLessThanOrEqual(composer.top);
+    expect(rail).not.toBeNull();
     const ticks = rail.querySelectorAll<HTMLElement>('[data-prompt-turn-id]');
     expect(ticks).toHaveLength(4);
-    for (const tick of ticks) {
-      const hit = tick.getBoundingClientRect();
-      expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
+    if (window.innerWidth < 825) {
+      expect(rail.closest('.maka-prompt-rail-host')).toHaveStyle({ display: 'none' });
+      expect(rail).not.toBeVisible();
+      expect(rail.getClientRects()).toHaveLength(0);
+    } else {
+      expect(rail).toBeVisible();
+      const box = rail.getBoundingClientRect();
+      const edge = canvasElement.querySelector('.maka-workbar-edge')!.getBoundingClientRect();
+      const scroller = canvasElement.querySelector('[data-chat-scroll-container]')!.getBoundingClientRect();
+      const composer = canvasElement.querySelector('.maka-composer')!.getBoundingClientRect();
+      expect(box.width).toBeGreaterThan(0);
+      expect(box.right).toBeLessThan(edge.left);
+      expect(box.top).toBeGreaterThanOrEqual(scroller.top);
+      expect(box.bottom).toBeLessThanOrEqual(composer.top);
+      for (const tick of ticks) {
+        const hit = tick.getBoundingClientRect();
+        expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
+      }
     }
     const body = canvasElement.querySelector('.workHubHistory')!;
     expect(body.scrollWidth - body.clientWidth).toBeLessThanOrEqual(1);

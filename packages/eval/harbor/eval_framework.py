@@ -17,7 +17,7 @@
 
 """Process-local framework authority shared by the trial runner and relay."""
 
-from __future__ import annotations
+from __future__ import annotations  # Keep framework metadata importable on Python 3.9.
 
 from typing import NamedTuple
 
@@ -39,7 +39,7 @@ def framework_spec(name: str) -> FrameworkSpec:
     try:
         return _FRAMEWORKS[name]
     except KeyError:
-        raise RuntimeError("framework must be harbor or pier")
+        raise RuntimeError("framework must be harbor or pier") from None
 
 
 def install(name: str) -> None:
@@ -51,7 +51,7 @@ def install(name: str) -> None:
 
 def current_framework() -> str:
     if _active is None:
-        raise RuntimeError("Eval framework selection is not installed")
+        raise RuntimeError("Eval framework selection is not installed") from None
     return _active.name
 
 

@@ -298,7 +298,10 @@ describe('agent graph client read model', () => {
     assert.equal(operator.readiness.length, 8);
     assert.equal(operator.omitted.readiness, 72);
     assert.equal(operator.readiness[0]?.waitingFor.length, 64);
-    assert.equal('policyKind' in operator.readiness[0]!, false);
+    assert.deepEqual(
+      operator.readiness.map((entry) => Object.hasOwn(entry, 'policyKind')),
+      Array.from({ length: operator.readiness.length }, () => false),
+    );
     assert.equal(operator.omitted.readinessWaits, 80 * 236);
 
     const inspection = inspectAgentGraphOperator(input, operatorId);

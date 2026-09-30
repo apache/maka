@@ -140,6 +140,13 @@ export type {
   TurnMessageSubmitResult,
 } from './message.js';
 export type {
+  QueueEntriesReorderInput,
+  QueueEntryPromoteInput,
+  QueueEntryRetractInput,
+  QueueEntryUpdateInput,
+  QueueMutationResult,
+} from './message.js';
+export type {
   LiveTurnSnapshot,
   TurnQueryInput,
   TurnResumeParkReason,

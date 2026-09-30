@@ -260,7 +260,7 @@ function runtimeContinuationAuthority(
 
 export type StopSessionInput =
   | {
-      source?: 'stop_button' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor' | 'host_shutdown';
       workHubActionId?: never;
       mode?: BackendStopMode;
     }

@@ -368,9 +368,9 @@ function copyDependencyClosure(cli) {
   };
   visit(cli, stageRoot);
 
-  const evalUndici = findDependency(cli, 'undici', '8.10.2');
+  const evalUndici = findDependency(cli, 'undici', '8.11.2');
   if (!evalUndici?.path || !existsSync(evalUndici.path)) {
-    throw new Error('The installed CLI closure does not contain undici@8.10.2');
+    throw new Error('The installed CLI closure does not contain undici@8.11.2');
   }
   copyThirdPartyPackage(realpathSync(evalUndici.path), join(stageRoot, 'node_modules/undici'));
   copiedDestinations.set(join(stageRoot, 'node_modules/undici'), realpathSync(evalUndici.path));
@@ -664,7 +664,7 @@ function writeReleaseManifest(cli, publishable) {
       `CLI manifest and installed lockfile disagree: ${source.version} vs ${cli.version}`,
     );
   }
-  const undici = findDependency(cli, 'undici', '8.10.2');
+  const undici = findDependency(cli, 'undici', '8.11.2');
   const dependencies = { ...source.dependencies, undici: undici.version };
   const updateCompatibility = source.maka?.managedRuntimeHostUpdateCompatibility;
   if (!Number.isSafeInteger(updateCompatibility) || updateCompatibility < 1) {
@@ -786,7 +786,10 @@ function validateStaging(publishable) {
     'node_modules/node-pty/lib/unixTerminal.js',
     'CustomWriteStream.prototype._ownsFileDescriptor',
   );
-  assertPatchedFile('node_modules/@ai-sdk/provider-utils/dist/index.js', 'function absentIfBlank');
+  assertPatchedFile(
+    'node_modules/@ai-sdk/provider-utils/dist/index.js',
+    'Ambiguous streamed tool call delta.',
+  );
 
   const manifest = readJson(join(stageRoot, 'package.json'));
   for (const [name, specifier] of Object.entries(manifest.dependencies ?? {})) {
