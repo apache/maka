@@ -24,8 +24,6 @@ apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/app-update/services-context.tsx
 apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
-apps/desktop/src/renderer/features/archived-task-cleanup/services-context.tsx
-apps/desktop/src/renderer/features/archived-task-cleanup/ui/archived-task-scope-surface.tsx
 apps/desktop/src/renderer/features/client-plugins/client-plugin-root.tsx
 apps/desktop/src/renderer/features/client-plugins/services-context.tsx
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
@@ -85,6 +83,7 @@ apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboratio
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/archived-task-scope.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-history-navigation.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/session-settings/services-context.tsx

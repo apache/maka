@@ -48,16 +48,18 @@ export type SettingsTasksCopy = {
   purgeShownConfirmTitle(count: number): string;
   purgeConfirmBody: string;
   /**
-   * Appended to the purge confirm when the preview could not say how many
-   * linked subtasks it keeps: a bulk delete keeps them all the same.
+   * Appended to the purge confirm when the Host could not preview it: a bulk
+   * delete keeps linked subtasks all the same.
    */
   purgeSubtaskNote: string;
-  purgePreviewLoading: string;
-  /** The Host's preview: what else goes, and an estimate of the data it held. */
-  purgePreview(childTasks: number, worktrees: number, size: string): string;
-  /** Linked subtasks the delete keeps and moves to the archive, per the preview. */
+  /** Preview: Agent Graph subtasks, which are deleted with their task. */
+  purgeGraphSubtaskNote(count: number): string;
+  /** Preview: subagent worktrees the delete removes. */
+  purgeWorktreeNote(count: number): string;
+  /** Preview: ordinary subtasks the delete keeps and moves to the archive. */
   purgeArchivableNote(count: number): string;
-  purgePreviewFailed: string;
+  /** Preview: an estimate of the task data the delete removes. */
+  purgeSizeNote(size: string): string;
   purgeConfirmAction: string;
   purgedToast(count: number): string;
   /** Toast suffix after a purge that moved linked subtasks to the archive. */
@@ -68,6 +70,8 @@ export type SettingsTasksCopy = {
    * and reporting what it deliberately left alone.
    */
   purgeKeptRestored(count: number): string;
+  /** Tasks the Host kept: by its clock, archived too recently for the age filter. */
+  purgeKeptTooRecent(count: number): string;
   purgeFailedTitle: string;
   purgeFailedBody(count: number): string;
   purgeUnverified: string;
@@ -102,16 +106,16 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeShownConfirmTitle: (count: number) => `删除当前显示的 ${count} 条任务？`,
     purgeConfirmBody: '这些任务及其全部消息会被永久删除，无法撤销。',
     purgeSubtaskNote: '其中的普通子任务不会被删除，将保留并移入归档。',
-    purgePreviewLoading: '正在计算将一并删除的内容…',
-    purgePreview: (childTasks: number, worktrees: number, size: string) =>
-      `将一并删除 ${childTasks} 个子任务和 ${worktrees} 个子代理工作树。任务数据约 ${size}（估算值）。`,
+    purgeGraphSubtaskNote: (count: number) => `${count} 个 Agent Graph 子任务将一并删除。`,
+    purgeWorktreeNote: (count: number) => `${count} 个子代理工作树将被移除。`,
     purgeArchivableNote: (count: number) =>
-      `其中 ${count} 个普通子任务不会被删除，将保留并移入归档。`,
-    purgePreviewFailed: '无法计算将一并删除的内容。',
+      `${count} 个普通子任务不会被删除，将保留并移入归档。`,
+    purgeSizeNote: (size: string) => `任务数据约 ${size}（估算值）。`,
     purgeConfirmAction: '永久删除',
     purgedToast: (count: number) => `已删除 ${count} 条任务`,
     purgedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
     purgeKeptRestored: (count: number) => `另有 ${count} 条在此期间被恢复，已保留。`,
+    purgeKeptTooRecent: (count: number) => `另有 ${count} 条归档时间未达所选期限，已保留。`,
     purgeFailedTitle: '删除任务失败',
     purgeFailedBody: (count: number) => `${count} 条仍在，请重试。`,
     purgeUnverified: '任务已删除，但无法读取列表确认结果。请重新打开本页查看。',
@@ -144,16 +148,16 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeShownConfirmTitle: (count: number) => `刪除目前顯示的 ${count} 條任務？`,
     purgeConfirmBody: '這些任務及其全部訊息會被永久刪除，無法撤銷。',
     purgeSubtaskNote: '其中的普通子任務不會被刪除，將保留並移入歸檔。',
-    purgePreviewLoading: '正在計算將一併刪除的內容…',
-    purgePreview: (childTasks: number, worktrees: number, size: string) =>
-      `將一併刪除 ${childTasks} 個子任務和 ${worktrees} 個子代理工作樹。任務資料約 ${size}（估算值）。`,
+    purgeGraphSubtaskNote: (count: number) => `${count} 個 Agent Graph 子任務將一併刪除。`,
+    purgeWorktreeNote: (count: number) => `${count} 個子代理工作樹將被移除。`,
     purgeArchivableNote: (count: number) =>
-      `其中 ${count} 個普通子任務不會被刪除，將保留並移入歸檔。`,
-    purgePreviewFailed: '無法計算將一併刪除的內容。',
+      `${count} 個普通子任務不會被刪除，將保留並移入歸檔。`,
+    purgeSizeNote: (size: string) => `任務資料約 ${size}（估算值）。`,
     purgeConfirmAction: '永久刪除',
     purgedToast: (count: number) => `已刪除 ${count} 條任務`,
     purgedSubtaskNote: (count: number) => `${count} 個子任務已移入歸檔`,
     purgeKeptRestored: (count: number) => `另有 ${count} 條在此期間被恢復，已保留。`,
+    purgeKeptTooRecent: (count: number) => `另有 ${count} 條歸檔時間未達所選期限，已保留。`,
     purgeFailedTitle: '刪除任務失敗',
     purgeFailedBody: (count: number) => `${count} 條仍在，請重試。`,
     purgeUnverified: '任務已刪除，但無法讀取列表確認結果。請重新開啟本頁檢視。',
@@ -191,20 +195,25 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeConfirmBody:
       'The tasks and all of their messages are removed permanently. This cannot be undone.',
     purgeSubtaskNote: 'Any ordinary subtasks are kept and moved to Archived.',
-    purgePreviewLoading: 'Working out what else will be removed…',
-    purgePreview: (childTasks: number, worktrees: number, size: string) =>
-      `Also deleted: ${childTasks === 1 ? '1 child task' : `${childTasks} child tasks`} and ${
-        worktrees === 1 ? '1 subagent worktree' : `${worktrees} subagent worktrees`
-      }. About ${size} of task data (an estimate).`,
+    purgeGraphSubtaskNote: (count: number) =>
+      count === 1
+        ? '1 Agent Graph subtask is deleted with them.'
+        : `${count} Agent Graph subtasks are deleted with them.`,
+    purgeWorktreeNote: (count: number) =>
+      count === 1 ? '1 subagent worktree is removed.' : `${count} subagent worktrees are removed.`,
     purgeArchivableNote: (count: number) =>
       count === 1
         ? '1 ordinary subtask is kept and moved to Archived.'
         : `${count} ordinary subtasks are kept and moved to Archived.`,
-    purgePreviewFailed: 'Could not work out what else will be removed.',
+    purgeSizeNote: (size: string) => `About ${size} of task data (an estimate).`,
     purgeConfirmAction: 'Delete permanently',
     purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
     purgedSubtaskNote: (count: number) =>
       count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
+    purgeKeptTooRecent: (count: number) =>
+      count === 1
+        ? '1 more was archived too recently for the chosen age and kept.'
+        : `${count} more were archived too recently for the chosen age and kept.`,
     purgeKeptRestored: (count: number) =>
       count === 1
         ? '1 more was restored meanwhile and kept.'

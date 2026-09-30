@@ -133,6 +133,7 @@ import {
   type ExecutionBoundarySummary,
   type SessionLifecycleState,
   type SessionMetadataPatch,
+  type SessionRemovePreviewInput,
   type SessionRemovePreviewResult,
   type SessionUpdateResult,
   type SkillCatalogWorkspaceContext,
@@ -177,7 +178,7 @@ type QueueMutationInput<K extends QueueMutationOperation> = Omit<
  * How a remove settled. `restored` is not a failure: the task left the state
  * the caller decided against, so nothing was destroyed and nothing is wrong.
  */
-export type SessionRemoveDisposition = "removed" | "restored";
+export type SessionRemoveDisposition = "removed" | "restored" | "too_recent";
 
 /**
  * How a remove settled together with what it archived. `archivedSubtaskCount`
@@ -1176,7 +1177,7 @@ export class DesktopRuntimeHostClient {
    */
   async removeSession(
     sessionId: string,
-    options: { requireArchived?: boolean } = {},
+    options: { requireArchived?: boolean; requireArchivedForMs?: number } = {},
   ): Promise<SessionRemoveOutcome> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
@@ -1186,9 +1187,16 @@ export class DesktopRuntimeHostClient {
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
+        ...(options.requireArchivedForMs === undefined
+          ? {}
+          : { requireArchivedForMs: options.requireArchivedForMs }),
       });
       if (result.kind === "removed") {
         return { disposition: "removed", archivedSubtaskCount: result.archivedSubtaskCount ?? 0 };
+      }
+      // The Host's clock says it was archived too recently: kept, not failed.
+      if (result.kind === "too_recent") {
+        return { disposition: "too_recent", archivedSubtaskCount: 0 };
       }
     }
     throw revisionConflict("remove", sessionId);
@@ -1200,8 +1208,8 @@ export class DesktopRuntimeHostClient {
    * the renderer never re-derives a plan from a catalog projection that omits
    * the operator marker and copy state. One bounded page; callers page.
    */
-  previewSessionRemoval(sessionIds: readonly string[]): Promise<SessionRemovePreviewResult> {
-    return this.request("session.remove.preview", { sessionIds: [...sessionIds] });
+  previewSessionRemoval(input: SessionRemovePreviewInput): Promise<SessionRemovePreviewResult> {
+    return this.request("session.remove.preview", input);
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {

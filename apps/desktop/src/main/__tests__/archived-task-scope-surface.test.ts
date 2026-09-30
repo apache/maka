@@ -23,25 +23,23 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import type { SessionSummary } from '@maka/core/session';
-import type { SessionRemovePreviewResult } from '@maka/runtime-host/protocol';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import {
-  ArchivedTaskCleanupServicesProvider,
   ArchivedTaskScopeSurface,
-} from '../../renderer/features/archived-task-cleanup/index.js';
+  type SessionNavigationRowActions,
+  type SessionNavigationSession,
+} from '../../renderer/features/session-navigation/testing.js';
+import type { ArchivedPurgeRequest } from '../../renderer/features/session-navigation/testing.js';
+import { runtimeHostProjectKey } from '../../renderer/application/contracts/runtime-host-project-key.js';
 
 const originalGlobals = {
   document: globalThis.document,
   window: globalThis.window,
   HTMLElement: globalThis.HTMLElement,
-  HTMLIFrameElement: globalThis.HTMLIFrameElement,
   Event: globalThis.Event,
   Node: globalThis.Node,
   CSS: globalThis.CSS,
   matchMedia: globalThis.matchMedia,
-  requestAnimationFrame: globalThis.requestAnimationFrame,
-  cancelAnimationFrame: globalThis.cancelAnimationFrame,
   IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
     .IS_REACT_ACT_ENVIRONMENT,
 };
@@ -54,69 +52,47 @@ afterEach(async () => {
   Object.assign(globalThis, originalGlobals);
 });
 
-const PREVIEW: SessionRemovePreviewResult = {
-  archivableSubtaskCount: 1,
-  removedSubtaskCount: 2,
-  worktreeCount: 1,
-  bytes: 2048,
-};
-
-test('deletes exactly the shown tasks the confirm previewed', async () => {
-  const answer = deferred<SessionRemovePreviewResult>();
-  const harness = installSurface((ids) => {
-    harness.previewed.push([...ids]);
-    return answer.promise;
-  });
+test('hands the bulk delete exactly the shown ids, and retires it when the scope changes', async () => {
+  const harness = installScope();
   await harness.render();
-  assert.deepEqual(harness.shownIds(), ['alpha-old', 'alpha-new', 'loose']);
+  // Most recently archived first, unknown times last.
+  assert.deepEqual(harness.shownIds(), ['alpha-new', 'alpha-old', 'loose']);
   assert.ok(harness.findButton('Clear all'), 'nothing narrowed keeps the whole-list label');
 
   await harness.search('alpha');
-  assert.deepEqual(harness.shownIds(), ['alpha-old', 'alpha-new']);
+  assert.deepEqual(harness.shownIds(), ['alpha-new', 'alpha-old']);
   await harness.click('Delete 2 shown');
 
-  assert.deepEqual(harness.previewed, [['alpha-old', 'alpha-new']]);
-  assert.match(harness.dialogText(), /Delete the 2 tasks shown\?/);
-  assert.match(harness.dialogText(), /Working out what else will be removed/);
-  // The action shows as busy until the preview arrives, and deletes nothing.
-  assert.equal(harness.dialogAction()?.disabled, true);
-  await act(async () => harness.dialogAction()?.click());
-  assert.deepEqual(harness.purged, [], 'no delete before the preview arrives');
+  const [request] = harness.requests;
+  assert.ok(request);
+  assert.deepEqual(request.sessionIds, ['alpha-new', 'alpha-old']);
+  assert.equal(request.narrowed, true);
+  // No age filter, so the Host is asked to hold no age.
+  assert.equal('requireArchivedForMs' in request, false);
+  assert.equal(request.isCurrent(), true);
+  assert.equal(harness.findButton('Delete 2 shown')?.disabled, true, 'busy while it runs');
 
-  // The list widening under the open dialog does not widen the delete.
-  await harness.search('');
-  assert.deepEqual(harness.shownIds(), ['alpha-old', 'alpha-new', 'loose']);
-  await act(async () => answer.resolve(PREVIEW));
-  assert.equal(harness.dialogAction()?.disabled, false);
-  assert.match(harness.dialogText(), /Also deleted: 2 child tasks and 1 subagent worktree\./);
-  assert.match(harness.dialogText(), /About 2\.0 KB of task data \(an estimate\)\./);
-  assert.match(harness.dialogText(), /1 ordinary subtask is kept and moved to Archived\./);
-
-  await harness.click('Delete permanently');
-  assert.deepEqual(harness.purged, [['alpha-old', 'alpha-new']]);
-  assert.equal(harness.dialogText(), '', 'the confirm closes once the delete starts');
+  // A scope change retires the pending confirm: a late preview asks nothing.
+  await harness.search('alp');
+  assert.equal(request.isCurrent(), false);
+  await act(async () => harness.settle());
+  assert.equal(harness.findButton('Delete 2 shown')?.disabled, false);
 });
 
-test('a failed preview still names the count and lets the reader cancel or delete', async () => {
-  const harness = installSurface(async () => {
-    throw new Error('Runtime Host unavailable');
-  });
+test('a pending bulk delete asks nothing once the page is gone', async () => {
+  const harness = installScope();
   await harness.render();
   await harness.click('Clear all');
-  assert.match(harness.dialogText(), /Clear all 3 archived tasks\?/);
-  assert.match(harness.dialogText(), /Could not work out what else will be removed\./);
-  assert.doesNotMatch(harness.dialogText(), /child task|of task data/);
-
-  await harness.click('Cancel');
-  assert.equal(harness.dialogText(), '');
-  assert.deepEqual(harness.purged, []);
-
-  await harness.click('Clear all');
-  await harness.click('Delete permanently');
-  assert.deepEqual(harness.purged, [['alpha-old', 'alpha-new', 'loose']]);
+  const [request] = harness.requests;
+  assert.ok(request);
+  assert.equal(request.narrowed, false);
+  assert.equal(request.isCurrent(), true);
+  await act(async () => mountedRoot?.unmount());
+  mountedRoot = undefined;
+  assert.equal(request.isCurrent(), false);
 });
 
-function row(id: string, overrides: Partial<SessionSummary>): SessionSummary {
+function session(id: string, overrides: Partial<SessionNavigationSession>): SessionNavigationSession {
   return {
     id,
     name: id,
@@ -130,90 +106,87 @@ function row(id: string, overrides: Partial<SessionSummary>): SessionSummary {
     connectionLocked: true,
     model: 'test',
     permissionMode: 'ask',
+    runtimeHostId: 'host-1',
+    profileId: 'profile-1',
+    profileName: 'This Mac',
+    profileKind: 'local',
     ...overrides,
   };
 }
 
-function installSurface(
-  previewRemovals: (sessionIds: readonly string[]) => Promise<SessionRemovePreviewResult>,
-) {
+function installScope() {
   const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
-  const matchMedia = (media: string) => ({
+  const matchMedia = () => ({
     matches: false,
-    media,
-    onchange: null,
     addListener() {},
     removeListener() {},
     addEventListener() {},
     removeEventListener() {},
-    dispatchEvent: () => false,
   });
-  Object.assign(window, { matchMedia, scrollTo() {} });
-  Object.assign(window.HTMLElement.prototype, {
-    showModal(this: HTMLElement) {
-      this.setAttribute('open', '');
-    },
-    close(this: HTMLElement) {
-      this.removeAttribute('open');
-    },
-  });
+  Object.assign(window, { matchMedia });
   Object.assign(globalThis, {
     document,
     window,
     matchMedia,
     HTMLElement: window.HTMLElement,
-    HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
     Event: window.Event,
     Node: window.Node,
     CSS: { escape: (value: string) => value },
-    requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
-    cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
   mountedRoot = root;
-  const rows = [
-    row('alpha-old', { projectId: 'alpha', archivedAt: Date.now() - 40 * 86_400_000 }),
-    row('alpha-new', { projectId: 'alpha', archivedAt: Date.now() - 86_400_000 }),
-    row('loose', {}),
+  const sessions = [
+    session('alpha-old', { projectId: 'alpha', archivedAt: Date.now() - 40 * 86_400_000 }),
+    session('alpha-new', { projectId: 'alpha', archivedAt: Date.now() - 86_400_000 }),
+    session('loose', {}),
   ];
-  const projectOf = (session: SessionSummary) =>
-    session.projectId ? { key: session.projectId, label: 'Alpha project' } : null;
-  const previewed: string[][] = [];
-  const purged: string[][] = [];
+  const projectScopes = [
+    {
+      key: runtimeHostProjectKey('host-1', 'alpha'),
+      hostId: 'host-1',
+      profileName: 'This Mac',
+      project: { id: 'alpha', name: 'Alpha project' },
+    },
+  ];
+  const requests: ArchivedPurgeRequest[] = [];
+  const pending = deferred<void>();
+  const commands = {
+    current: {
+      purgeArchived: async (request: ArchivedPurgeRequest) => {
+        requests.push(request);
+        await pending.promise;
+      },
+    } as unknown as SessionNavigationRowActions,
+  };
   const findButton = (label: string) =>
-    [...document.querySelectorAll('button')].find(
-      (candidate) => candidate.textContent?.trim() === label,
+    [...document.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes(label),
     ) as HTMLButtonElement | undefined;
   return {
-    previewed,
-    purged,
+    requests,
     findButton,
+    settle: () => pending.resolve(),
     async render() {
       await act(async () => {
         root.render(
           createElement(LocaleProvider, {
             locale: 'en',
             children: createElement(AstryxLocaleProvider, {
-              children: createElement(ArchivedTaskCleanupServicesProvider, {
-                services: { previewRemovals },
-                children: createElement(ArchivedTaskScopeSurface<SessionSummary>, {
-                  rows,
-                  projectOf,
-                  onPurge: async (ids) => {
-                    purged.push([...ids]);
-                  },
-                  children: ({ visible }) =>
-                    createElement(
-                      'ul',
-                      { 'data-testid': 'shown' },
-                      visible.map((session) =>
-                        createElement('li', { key: session.id, 'data-id': session.id }),
-                      ),
-                    ),
-                }),
+              children: createElement(ArchivedTaskScopeSurface<SessionNavigationSession>, {
+                sessions,
+                projectScopes,
+                commands,
+                children: ({ visible, controls }) => [
+                  createElement('div', { key: 'controls' }, controls),
+                  createElement(
+                    'ul',
+                    { key: 'shown', 'data-testid': 'shown' },
+                    visible.map((row) => createElement('li', { key: row.id, 'data-id': row.id })),
+                  ),
+                ],
               }),
             }),
           }),
@@ -226,20 +199,10 @@ function installSurface(
         item.getAttribute('data-id'),
       );
     },
-    dialogAction() {
-      return [...document.querySelectorAll('[role="alertdialog"] button')].find((button) =>
-        button.textContent?.includes('Delete permanently'),
-      ) as HTMLButtonElement | undefined;
-    },
-    dialogText() {
-      return [...document.querySelectorAll('[role="alertdialog"]')]
-        .map((dialog) => dialog.textContent ?? '')
-        .join('');
-    },
     async search(value: string) {
-      const input = document.querySelector('input[placeholder="Search archived tasks"]') as
-        | HTMLInputElement
-        | null;
+      const input = document.querySelector(
+        'input[placeholder="Search archived tasks"]',
+      ) as HTMLInputElement | null;
       assert.ok(input, 'missing search box');
       await act(async () => {
         input.value = value;

@@ -27,7 +27,6 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
-import { STORAGE_USAGE_SESSION_MAX_ITEMS } from './storage-usage.js';
 
 const LIFECYCLE_ERRORS = [
   'host_not_ready',
@@ -51,25 +50,36 @@ export interface SessionLifecycleSetInput {
 export interface SessionRemoveInput {
   readonly sessionId: string;
   readonly expectedRevision: number;
+  /**
+   * Remove only a Session archived more than this many milliseconds ago by
+   * the Host's clock; otherwise it is kept and answers `too_recent`. A
+   * Session whose archive time is unknown is kept too.
+   */
+  readonly requireArchivedForMs?: number;
 }
 
 /**
- * Sessions previewed by one `session.remove.preview`. The preview measures
- * every Session the removals would delete with the same per-Session statements
- * as `storage.usage.sessions.query`, so it keeps that query's bound and a
- * Client pages a longer selection one request at a time.
+ * Sessions one `session.remove.preview` accepts. Each target expands to its
+ * whole removal plan, which the Host reads and may size, so a request stays
+ * as small as a per-task storage page (also 25) and a Client pages a longer
+ * selection one request at a time.
  */
-export const SESSION_REMOVE_PREVIEW_MAX_ITEMS = STORAGE_USAGE_SESSION_MAX_ITEMS;
+export const SESSION_REMOVE_PREVIEW_MAX_ITEMS = 25;
 
 export interface SessionRemovePreviewInput {
   /** Each Session is previewed as its own `session.remove` would remove it. */
   readonly sessionIds: readonly string[];
+  /** Size the removed Sessions too. Off by default: it costs range scans. */
+  readonly measureBytes?: boolean;
+  /** Skip targets that are not archived, as a `requireArchived` delete would. */
+  readonly requireArchived?: boolean;
 }
 
 /**
- * What removing every requested Session, one `session.remove` each, would do,
- * read from the same removal plans those commands execute. A Session that is
- * already gone, or that cannot be removed on its own, contributes nothing.
+ * What removing the Sessions of one request, one `session.remove` each, would
+ * do, read from the same removal plans those commands execute. A Session that
+ * is already gone, that cannot be removed on its own, or that a
+ * `requireArchived` preview skips contributes nothing.
  */
 export interface SessionRemovePreviewResult {
   /**
@@ -89,9 +99,10 @@ export interface SessionRemovePreviewResult {
   /**
    * Logical bytes stored for every Session the deletes remove, revisions and
    * removed child tasks included. An estimate: context-offload bytes count
-   * once per referencing Session although the blobs are shared.
+   * once per referencing Session although the blobs are shared. Absent unless
+   * `measureBytes` asked for it and the measurement succeeded.
    */
-  readonly bytes: number;
+  readonly bytes?: number;
 }
 
 export type SessionRemoveResult =
@@ -110,7 +121,9 @@ export type SessionRemoveResult =
       readonly kind: 'revision_conflict';
       readonly expectedRevision: number;
       readonly actualRevision: number;
-    };
+    }
+  /** Kept: `requireArchivedForMs` was not met by the Host's clock. */
+  | { readonly kind: 'too_recent'; readonly sessionId: string };
 
 export const SESSION_RETIREMENT_OPERATION_SPECS = {
   'session.lifecycle.set': defineOperation<
@@ -145,7 +158,7 @@ export const SESSION_RETIREMENT_OPERATION_SPECS = {
     decodeInput: decodeSessionRemoveInput,
     decodeOutput: decodeSessionRemoveResult,
     assertOutputForInput: (input, output) => {
-      if (output.kind === 'removed' && output.sessionId !== input.sessionId) {
+      if (output.kind !== 'revision_conflict' && output.sessionId !== input.sessionId) {
         throw invalidProtocolFrame('Session remove result belongs to another Session');
       }
       if (
@@ -181,18 +194,35 @@ export function decodeSessionLifecycleSetInput(value: unknown): SessionLifecycle
 }
 
 export function decodeSessionRemoveInput(value: unknown): SessionRemoveInput {
-  const input = requireExactRecord(value, 'Session remove input', [
-    'sessionId',
-    'expectedRevision',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'Session remove input',
+    ['sessionId', 'expectedRevision'],
+    ['requireArchivedForMs'],
+  );
+  const { requireArchivedForMs } = input;
+  if (
+    requireArchivedForMs !== undefined &&
+    (!Number.isSafeInteger(requireArchivedForMs) || (requireArchivedForMs as number) < 1)
+  ) {
+    throw invalidProtocolFrame('requireArchivedForMs must be a positive safe integer');
+  }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     expectedRevision: positiveRevision(input.expectedRevision),
+    ...(requireArchivedForMs === undefined
+      ? {}
+      : { requireArchivedForMs: requireArchivedForMs as number }),
   };
 }
 
 export function decodeSessionRemovePreviewInput(value: unknown): SessionRemovePreviewInput {
-  const input = requireExactRecord(value, 'Session remove preview input', ['sessionIds']);
+  const input = requireShapedRecord(
+    value,
+    'Session remove preview input',
+    ['sessionIds'],
+    ['measureBytes', 'requireArchived'],
+  );
   if (
     !Array.isArray(input.sessionIds) ||
     input.sessionIds.length === 0 ||
@@ -204,21 +234,30 @@ export function decodeSessionRemovePreviewInput(value: unknown): SessionRemovePr
   if (new Set(sessionIds).size !== sessionIds.length) {
     throw invalidProtocolFrame('Duplicate Session remove preview sessionId');
   }
-  return { sessionIds };
+  const flags: { measureBytes?: boolean; requireArchived?: boolean } = {};
+  for (const flag of ['measureBytes', 'requireArchived'] as const) {
+    const flagValue = input[flag];
+    if (flagValue === undefined) continue;
+    if (typeof flagValue !== 'boolean') {
+      throw invalidProtocolFrame(`Invalid Session remove preview ${flag}`);
+    }
+    flags[flag] = flagValue;
+  }
+  return { sessionIds, ...flags };
 }
 
 export function decodeSessionRemovePreviewResult(value: unknown): SessionRemovePreviewResult {
-  const result = requireExactRecord(value, 'Session remove preview result', [
-    'archivableSubtaskCount',
-    'removedSubtaskCount',
-    'worktreeCount',
-    'bytes',
-  ]);
+  const result = requireShapedRecord(
+    value,
+    'Session remove preview result',
+    ['archivableSubtaskCount', 'removedSubtaskCount', 'worktreeCount'],
+    ['bytes'],
+  );
   return {
     archivableSubtaskCount: requireCount(result.archivableSubtaskCount, 'archivableSubtaskCount'),
     removedSubtaskCount: requireCount(result.removedSubtaskCount, 'removedSubtaskCount'),
     worktreeCount: requireCount(result.worktreeCount, 'worktreeCount'),
-    bytes: requireCount(result.bytes, 'bytes'),
+    ...(result.bytes === undefined ? {} : { bytes: requireCount(result.bytes, 'bytes') }),
   };
 }
 
@@ -240,6 +279,10 @@ export function decodeSessionRemoveResult(value: unknown): SessionRemoveResult {
             archivedSubtaskCount: requireCount(exact.archivedSubtaskCount, 'archivedSubtaskCount'),
           }),
     };
+  }
+  if (result.kind === 'too_recent') {
+    const exact = requireExactRecord(result, 'Too-recent Session result', ['kind', 'sessionId']);
+    return { kind: 'too_recent', sessionId: requireEntityId(exact.sessionId, 'sessionId') };
   }
   if (result.kind !== 'revision_conflict') {
     throw invalidProtocolFrame('Invalid Session remove result kind');

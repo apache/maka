@@ -912,7 +912,6 @@ function AppShellContent({
     projects,
     projectCapabilities,
     activeProjectCapabilities,
-    localProjects,
     currentProjectId,
     currentProject,
     projectPickerPendingRef,
@@ -1098,15 +1097,10 @@ function AppShellContent({
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
       catalog: sessionCatalogController,
-      projects: localProjects,
-      onRestore: (sessionId) =>
-        void sessionNavigationCommandsRef.current?.unarchiveSession(sessionId),
-      onDelete: (sessionId) =>
-        void sessionNavigationCommandsRef.current?.deleteSession(sessionId),
-      onPurge: (sessionIds) =>
-        sessionNavigationCommandsRef.current!.purgeSessions(sessionIds),
+      projectScopes: taskEntry.selectors.projectScopes,
+      commands: sessionNavigationCommandsRef,
     }),
-    [sessionCatalogController, localProjects],
+    [sessionCatalogController, taskEntry.selectors.projectScopes],
   );
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {

@@ -21,14 +21,11 @@ import {
   STORAGE_USAGE_SESSION_MAX_ITEMS,
   type SessionStorageUsage,
 } from '@maka/runtime-host/protocol';
+import { forEachHostSessionPage, type HostSessionRef } from './host-session-pages.js';
 
 export interface SessionStorageUsageRouting<Scope> {
   /** Resolves a Desktop session id to its Host scope; rejects when the Host is gone. */
-  resolve(sessionId: string): Promise<{
-    readonly scope: Scope;
-    readonly scopeKey: string;
-    readonly sessionId: string;
-  }>;
+  resolve(sessionId: string): Promise<HostSessionRef<Scope>>;
   /** One `storage.usage.sessions.query` against one Host. */
   query(scope: Scope, sessionIds: readonly string[]): Promise<readonly SessionStorageUsage[]>;
 }
@@ -62,54 +59,26 @@ export function createSessionStorageUsageReader<Scope>(
     failedScopes.delete(scopeKey);
     return false;
   };
-  return (sessionIds) =>
-    loadSessionStorageUsage(sessionIds, routing, {
-      skip: isCoolingDown,
-      failed: (scopeKey) => failedScopes.set(scopeKey, now()),
-    });
-}
-
-async function loadSessionStorageUsage<Scope>(
-  sessionIds: readonly string[],
-  routing: SessionStorageUsageRouting<Scope>,
-  hosts: { skip(scopeKey: string): boolean; failed(scopeKey: string): void },
-): Promise<Record<string, SessionStorageUsage>> {
-  const byScope = new Map<string, { scope: Scope; desktopIds: Map<string, string> }>();
-  for (const sessionId of new Set(sessionIds)) {
-    let ref: Awaited<ReturnType<SessionStorageUsageRouting<Scope>['resolve']>>;
-    try {
-      ref = await routing.resolve(sessionId);
-    } catch {
-      continue;
-    }
-    if (hosts.skip(ref.scopeKey)) continue;
-    const group = byScope.get(ref.scopeKey) ?? {
-      scope: ref.scope,
-      desktopIds: new Map<string, string>(),
-    };
-    group.desktopIds.set(ref.sessionId, sessionId);
-    byScope.set(ref.scopeKey, group);
-  }
-  const usage: Record<string, SessionStorageUsage> = {};
-  await Promise.all(
-    [...byScope.entries()].map(async ([scopeKey, { scope, desktopIds }]) => {
-      const hostIds = [...desktopIds.keys()];
-      try {
-        for (let offset = 0; offset < hostIds.length; offset += STORAGE_USAGE_SESSION_MAX_ITEMS) {
-          const sessions = await routing.query(
-            scope,
-            hostIds.slice(offset, offset + STORAGE_USAGE_SESSION_MAX_ITEMS),
-          );
-          for (const session of sessions) {
-            const desktopId = desktopIds.get(session.sessionId);
-            if (desktopId) usage[desktopId] = session;
-          }
-        }
-      } catch {
+  return async (sessionIds) => {
+    const usage: Record<string, SessionStorageUsage> = {};
+    await forEachHostSessionPage(
+      sessionIds,
+      {
+        resolve: routing.resolve,
+        pageSize: STORAGE_USAGE_SESSION_MAX_ITEMS,
         // This Host's remaining tasks stay unknown; the other Hosts still answer.
-        hosts.failed(scopeKey);
-      }
-    }),
-  );
-  return usage;
+        tolerate: {
+          skip: isCoolingDown,
+          failed: (scopeKey) => failedScopes.set(scopeKey, now()),
+        },
+      },
+      async ({ scope, hostIds, desktopIds }) => {
+        for (const session of await routing.query(scope, hostIds)) {
+          const desktopId = desktopIds.get(session.sessionId);
+          if (desktopId) usage[desktopId] = session;
+        }
+      },
+    );
+    return usage;
+  };
 }

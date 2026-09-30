@@ -142,9 +142,25 @@ describe('Session retirement protocol', () => {
     const request = {
       requestId: 'request-preview',
       operation: 'session.remove.preview' as const,
-      input: { sessionIds: ['session-1', 'session-2'] },
+      input: { sessionIds: ['session-1', 'session-2'], measureBytes: true, requireArchived: true },
     };
     assert.deepEqual(decodeClientFrame(request), request);
+    // Bytes are optional: absent when not asked for or not measurable.
+    const counts = { archivableSubtaskCount: 1, removedSubtaskCount: 0, worktreeCount: 0 };
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-preview',
+        operation: 'session.remove.preview',
+        ok: true,
+        result: counts,
+      }),
+      {
+        requestId: 'request-preview',
+        operation: 'session.remove.preview',
+        ok: true,
+        result: counts,
+      },
+    );
     const result = {
       archivableSubtaskCount: 4,
       removedSubtaskCount: 2,
@@ -167,6 +183,7 @@ describe('Session retirement protocol', () => {
       });
     for (const key of Object.keys(result) as Array<keyof typeof result>) {
       assert.throws(previewResult({ ...result, [key]: -1 }), isInvalidFrame, key);
+      if (key === 'bytes') continue;
       const { [key]: _omitted, ...missing } = result;
       assert.throws(previewResult(missing), isInvalidFrame, `missing ${key}`);
     }
@@ -205,6 +222,57 @@ describe('Session retirement protocol', () => {
     // The epoch-201 single-Session shape is no longer accepted.
     assert.throws(previewInput({ sessionId: 'session-1' }), isInvalidFrame);
     assert.throws(previewInput({ sessionIds: ['session-1'], expectedRevision: 2 }), isInvalidFrame);
+    assert.throws(previewInput({ sessionIds: ['session-1'], measureBytes: 1 }), isInvalidFrame);
+    assert.throws(
+      previewInput({ sessionIds: ['session-1'], requireArchived: 'yes' }),
+      isInvalidFrame,
+    );
+  });
+
+  test('carries the archive-age guard on remove and its too_recent answer', () => {
+    const removeInput = (input: unknown) =>
+      decodeClientFrame({ requestId: 'request-remove', operation: 'session.remove', input });
+    const guarded = {
+      sessionId: 'session-1',
+      expectedRevision: 2,
+      requireArchivedForMs: 604_800_000,
+    };
+    assert.deepEqual(removeInput(guarded), {
+      requestId: 'request-remove',
+      operation: 'session.remove',
+      input: guarded,
+    });
+    for (const requireArchivedForMs of [0, -1, 1.5, '7d']) {
+      assert.throws(
+        () => removeInput({ sessionId: 'session-1', expectedRevision: 2, requireArchivedForMs }),
+        isInvalidFrame,
+        String(requireArchivedForMs),
+      );
+    }
+    const kept = {
+      requestId: 'request-remove',
+      operation: 'session.remove' as const,
+      ok: true as const,
+      result: { kind: 'too_recent' as const, sessionId: 'session-1' },
+    };
+    assert.deepEqual(decodeHostFrame(kept), kept);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...kept,
+          result: { kind: 'too_recent', sessionId: 'session-1', archivedAt: 1 },
+        }),
+      isInvalidFrame,
+    );
+    const spec = HOST_OPERATION_SPECS['session.remove'];
+    assert.throws(
+      () =>
+        spec.assertOutputForInput?.(
+          { sessionId: 'session-1', expectedRevision: 2 },
+          { kind: 'too_recent', sessionId: 'session-2' },
+        ),
+      isInvalidFrame,
+    );
   });
 });
 

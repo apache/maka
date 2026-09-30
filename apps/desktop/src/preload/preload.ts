@@ -1269,8 +1269,8 @@ const previewDesktopSessionRemoval = createSessionRemovalPreviewReader({
     const ref = await runtimeHostSessionRef(sessionId);
     return { ...ref, scopeKey: runtimeHostScopeKey(ref.scope) };
   },
-  query: (scope: DesktopTargetScope, hostIds) =>
-    invokeWhenReady('sessions:removePreview', scope, hostIds) as Promise<
+  query: (scope: DesktopTargetScope, input) =>
+    invokeWhenReady('sessions:removePreview', scope, input) as Promise<
       SessionRemovePreviewResult
     >,
 });
@@ -2709,8 +2709,12 @@ const makaBridge = {
     },
     async remove(
       sessionId: string,
-      options?: { revisionFamily?: boolean; requireArchived?: boolean },
-    ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }> {
+      options?: {
+        revisionFamily?: boolean;
+        requireArchived?: boolean;
+        requireArchivedForMs?: number;
+      },
+    ): Promise<{ disposition: 'removed' | 'restored' | 'too_recent'; archivedSubtaskCount: number }> {
       const session = await runtimeHostSessionRef(sessionId);
       if (await invokeWhenReady('session-local:discard', session.scope, session.sessionId)) {
         return { disposition: 'removed', archivedSubtaskCount: 0 };
@@ -2720,8 +2724,11 @@ const makaBridge = {
     async previewRemoval(sessionId: string): Promise<number> {
       return (await previewDesktopSessionRemoval([sessionId])).archivableSubtaskCount;
     },
-    previewRemovals(sessionIds: readonly string[]): Promise<SessionRemovePreviewResult> {
-      return previewDesktopSessionRemoval(sessionIds);
+    previewRemovals(
+      sessionIds: readonly string[],
+      options?: { measureBytes?: boolean; requireArchived?: boolean },
+    ): Promise<SessionRemovePreviewResult> {
+      return previewDesktopSessionRemoval(sessionIds, options);
     },
     cleanupSessionCopy(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:cleanupSessionCopy', sessionId);

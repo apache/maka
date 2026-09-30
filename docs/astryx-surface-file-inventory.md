@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 323 files — blocker 0, reimplementation 0, polish 4, aligned 319.
+**Totals:** 322 files — blocker 0, reimplementation 0, polish 4, aligned 318.
 
 ## Exclusions (explicit)
 
@@ -54,8 +54,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/error-boundary.tsx` | other | Button, Card | aligned — uses Astryx (Button, Card) | aligned |
 | `apps/desktop/src/renderer/features/app-update/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/features/archived-task-cleanup/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/features/archived-task-cleanup/ui/archived-task-scope-surface.tsx` | other | AlertDialog, Button, HStack, Selector, StackItem, Text, TextInput, VStack | aligned — uses Astryx (AlertDialog, Button, HStack, Selector, StackItem, Text, TextInput, VStack) | aligned |
 | `apps/desktop/src/renderer/features/client-plugins/client-plugin-root.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/client-plugins/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -115,6 +113,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx` | shell-chrome-or-panel | Banner, Button, HoverCard | aligned — uses Astryx (Banner, Button, HoverCard) | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx` | shell-chrome-or-panel | Badge | aligned — uses Astryx (Badge) | aligned |
 | `apps/desktop/src/renderer/features/session-navigation/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/session-navigation/ui/archived-task-scope.tsx` | shell-chrome-or-panel | Button, HStack, Selector, StackItem, Text, TextInput, VStack | aligned — uses Astryx (Button, HStack, Selector, StackItem, Text, TextInput, VStack) | aligned |
 | `apps/desktop/src/renderer/features/session-navigation/ui/session-history-navigation.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-settings/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
