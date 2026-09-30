@@ -91,6 +91,10 @@ export interface McpToolInvocationContext {
 }
 
 export interface BuildMcpToolsOptions {
+  /** Only a trusted adapter with a validated result envelope installs this reader. */
+  resultOutcome?: (
+    output: McpCallResult,
+  ) => import('@maka/core/tool-result-status').ToolCallOutcome;
   callTimeoutMs?: number;
   categoryHint?: ToolCategory;
   hostAdmission?: MakaTool['hostAdmission'];
@@ -144,6 +148,7 @@ export function buildMcpToolsWithIdentities(
         // The MCP server remains the sole authority for the complete JSON
         // Schema. Runtime only carries the declaration to the AI SDK.
         parameters: jsonSchema(inputSchema),
+        ...(options.resultOutcome ? { resultOutcome: options.resultOutcome } : {}),
         ...(provider.prepareTool
           ? {
               prepareExecution: async (args: unknown, context) => {
