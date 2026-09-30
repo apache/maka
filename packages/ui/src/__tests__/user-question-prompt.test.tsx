@@ -304,6 +304,54 @@ test('late rejection after unmount keeps remembered progress', async () => {
   }
 });
 
+test('stop clears saved wizard progress for the request', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  clearUserQuestionWizardState(request.requestId);
+  let stopped = false;
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <UserQuestionPrompt
+          request={request}
+          onRespond={() => undefined}
+          onStop={() => {
+            stopped = true;
+          }}
+        />
+      </LocaleProvider>,
+    ));
+
+    const beta = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Beta'));
+    assert.ok(beta);
+    await act(() => beta.click());
+
+    const stopButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Stop');
+    assert.ok(stopButton);
+    await act(() => stopButton.click());
+
+    assert.equal(stopped, true);
+    assert.equal(readUserQuestionWizardState(request.requestId), undefined);
+  } finally {
+    clearUserQuestionWizardState(request.requestId);
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
 test('failed responses keep wizard progress for retry', async () => {
   const original = {
     document: globalThis.document,

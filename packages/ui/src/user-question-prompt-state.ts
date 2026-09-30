@@ -32,6 +32,9 @@ export interface UserQuestionWizardState {
 
 const wizardStateByRequestId = new Map<string, UserQuestionWizardState>();
 
+/** Bounds memory for long-running Desktop sessions. */
+export const MAX_USER_QUESTION_WIZARD_STATES = 32;
+
 export function createQuestionDrafts(questions: readonly UserQuestion[]): QuestionAnswerDraft[] {
   return questions.map(() => null);
 }
@@ -55,6 +58,13 @@ export function readUserQuestionWizardState(requestId: string): UserQuestionWiza
 }
 
 export function rememberUserQuestionWizardState(requestId: string, state: UserQuestionWizardState): void {
+  if (
+    !wizardStateByRequestId.has(requestId)
+    && wizardStateByRequestId.size >= MAX_USER_QUESTION_WIZARD_STATES
+  ) {
+    const oldest = wizardStateByRequestId.keys().next().value;
+    if (oldest !== undefined) wizardStateByRequestId.delete(oldest);
+  }
   wizardStateByRequestId.set(requestId, {
     questionIndex: state.questionIndex,
     drafts: [...state.drafts],

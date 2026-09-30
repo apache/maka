@@ -25,6 +25,7 @@ import {
   clearUserQuestionWizardState,
   createQuestionDrafts,
   createUserQuestionWizardState,
+  MAX_USER_QUESTION_WIZARD_STATES,
   readUserQuestionWizardState,
   rememberUserQuestionWizardState,
 } from './user-question-prompt-state.js';
@@ -67,6 +68,24 @@ test('wizard store restores and clears progress keyed by requestId', () => {
 
   clearUserQuestionWizardState(requestId);
   assert.equal(readUserQuestionWizardState(requestId), undefined);
+});
+
+test('wizard store evicts the oldest entry when it exceeds the bound', () => {
+  for (let index = 0; index < MAX_USER_QUESTION_WIZARD_STATES; index += 1) {
+    rememberUserQuestionWizardState(`question-${index}`, createUserQuestionWizardState(questions));
+  }
+  assert.equal(readUserQuestionWizardState('question-0')?.questionIndex, 0);
+  rememberUserQuestionWizardState('question-overflow', {
+    questionIndex: 1,
+    drafts: createQuestionDrafts(questions),
+    answerText: 'overflow',
+  });
+  assert.equal(readUserQuestionWizardState('question-0'), undefined);
+  assert.equal(readUserQuestionWizardState('question-overflow')?.answerText, 'overflow');
+  for (let index = 0; index < MAX_USER_QUESTION_WIZARD_STATES; index += 1) {
+    clearUserQuestionWizardState(`question-${index}`);
+  }
+  clearUserQuestionWizardState('question-overflow');
 });
 
 test('buildUserQuestionResponse maps committed drafts to option labels', () => {
