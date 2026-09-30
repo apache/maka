@@ -22,6 +22,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useSyncExternalStore,
   type ComponentType,
   type ReactNode,
 } from 'react';
@@ -37,7 +38,9 @@ import {
   type SessionRowActions,
 } from '@maka/ui';
 import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
+import { SessionHistoryNavigation } from './session-history-navigation.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
+import { useSessionSelection } from '../controller/use-session-selection.js';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
@@ -49,6 +52,7 @@ import {
   projectGroupId,
   ungroupedGroupId,
 } from '../model/session-navigation-groups.js';
+import { sessionMoveTargets } from '../model/session-navigation-move-targets.js';
 import type {
   SessionNavigationPorts,
   SessionNavigationProjectScope,
@@ -59,6 +63,7 @@ import { selectStaleSessionIds } from '../../../application/contracts/session-ca
 import { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
+import type { SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -82,12 +87,15 @@ export interface SessionNavigationChromeInput {
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
+  /** Settings and modal overlays suspend conversation history input. */
+  historyBlocked?: boolean;
   /** The rail subscribes the catalog itself: its rows are the churn it displays. */
   catalog: SessionCatalogController;
   activeSessionId: string | undefined;
   hiddenSessionIds: ReadonlySet<string>;
   projectScopes: readonly SessionNavigationProjectScope[];
-  streamingSessionIds: ReadonlySet<string>;
+  /** The activity projection subscribes here, without publishing through AppShell. */
+  streamingSessions: SnapshotReader<ReadonlySet<string>>;
   sessionSendOutcomes?: Readonly<Record<string, SessionSendProjection>>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
@@ -112,6 +120,11 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  * first, the few dozen fibers of permanent chrome on the second.
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
+  const streamingSessionIds = useSyncExternalStore(
+    props.streamingSessions.subscribe,
+    props.streamingSessions.getSnapshot,
+    props.streamingSessions.getSnapshot,
+  );
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
   const staleSessionIds = useExternalStoreSelector(
     props.catalog,
@@ -131,6 +144,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     projectScopes: props.projectScopes,
     ports: props.ports,
   });
+  const openRowId = props.workHubActive ? undefined : rail.activeRowId;
+  const selection = useSessionSelection({
+    sessions: rail.sessions,
+    commands: controller.commands,
+    activeId: openRowId,
+  });
 
   useLayoutEffect(() => {
     props.commandsRef.current = controller.commands;
@@ -143,9 +162,6 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       },
       onArchive: (sessionId) => {
         void controller.commands.archiveSession(sessionId);
-      },
-      onUnarchive: (sessionId) => {
-        void controller.commands.unarchiveSession(sessionId);
       },
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
@@ -181,27 +197,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     (sessionId: string): readonly SessionMoveTarget[] => {
       const session = rail.sessions.find((candidate) => candidate.id === sessionId);
       if (!session) return [];
-      const targets: SessionMoveTarget[] = props.projectScopes
-        .filter(
-          (scope) =>
-            scope.hostId === session.runtimeHostId &&
-            scope.project.available &&
-            scope.project.archivedAt === undefined,
-        )
-        .map((scope) => ({
-          groupKey: projectGroupId(scope.key),
-          projectId: scope.project.id,
-          name: scope.project.name,
-        }));
-      if (session.projectId) {
-        // The one row that means "leave every project". Its name is the rail's
-        // to say, so none is given here.
-        targets.push({
-          groupKey: ungroupedGroupId(session.runtimeHostId),
-          projectId: null,
-        });
-      }
-      return targets;
+      return sessionMoveTargets(session, props.projectScopes);
     },
     [props.projectScopes, rail.sessions],
   );
@@ -257,13 +253,14 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   const data = useMemo<SessionRailData>(
     () => ({
       sessions: rail.sessions,
-      activeId: props.workHubActive ? undefined : rail.activeRowId,
-      streamingSessionIds: props.streamingSessionIds,
+      activeId: openRowId,
+      streamingSessionIds,
       staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
       sessionProjectName: controller.selectors.sessionProjectName,
+      sessionLocation: controller.selectors.sessionLocation,
       sessionMeta: controller.selectors.sessionMeta,
       sessionBadge,
       onSelectSession: props.onSelectSession,
@@ -277,6 +274,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     [
       controller.layout.viewMode,
       controller.selectors.groups,
+      controller.selectors.sessionLocation,
       controller.selectors.sessionMeta,
       controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,
@@ -284,12 +282,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNewProject,
       moveDropGroupKeys,
       moveTargets,
+      openRowId,
       projectActions,
       relinkableProjectIds,
       rail,
       staleSessionIds,
-      props.streamingSessionIds,
-      props.workHubActive,
+      streamingSessionIds,
       rowActions,
       sessionBadge,
     ],
@@ -329,8 +327,14 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     <SessionRailProvider
       data={data}
       chrome={chrome}
-      selection={controller.selection}
+      selection={selection}
     >
+      <SessionHistoryNavigation
+        catalog={props.catalog}
+        visible={!props.historyBlocked && props.selection.section === 'sessions' && !props.workHubActive}
+        blocked={props.historyBlocked ?? false}
+        openSession={props.onSelectSession}
+      />
       {props.children}
     </SessionRailProvider>
   );

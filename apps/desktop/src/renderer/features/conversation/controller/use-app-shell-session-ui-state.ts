@@ -23,6 +23,8 @@ import { valuesEqual, type TransientUserMessageProjection } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../../../shared/desktop-session-projection.js';
 import { currentTranscriptRange } from './transcript-reading-position.js';
 import { createAppShellSessionUiStateController, type AppShellSessionUiStateController } from '../model/session-ui-state.js';
+import { useSessionUiRead } from './use-session-ui-read.js';
+import { useSessionMessageQueue } from './use-session-message-queue.js';
 import {
   selectSessionById,
   type SessionCatalogController,
@@ -132,6 +134,13 @@ export function useAppShellSessionUiState<
     },
   }));
 
+  const queue = useSessionUiRead(controller.reads, 'queue', view.sessionId);
+  const messageQueueSurface = useSessionMessageQueue({
+    sessionId: view.sessionId,
+    queue,
+    transientMessages,
+    activeSessionId: activeIdRef,
+  });
   const activeCatalogSession = useExternalStoreSelector(
     catalog,
     selectSessionById,
@@ -172,6 +181,7 @@ export function useAppShellSessionUiState<
       sharedSessionActive,
       ownerActiveId: sharedSessionActive ? undefined : activeHostSession?.id,
       switchingSession: view.sessionId !== requestedSessionId,
+      queueSurface: messageQueueSurface,
     },
   };
 }

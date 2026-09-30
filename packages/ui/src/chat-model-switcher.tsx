@@ -47,11 +47,11 @@ import {
   providerMarkIcon,
   renderChatModelPickerOption,
   renderModelPickerOption,
-  renderModelPickerValue,
 } from './model-picker-internals.js';
 import { type ProviderType } from '@maka/core/llm-connections';
 import { type SessionSummary } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
+import { ComposerModelLabel } from './composer-model-label.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -65,6 +65,11 @@ const DEFAULT_THINKING_LEVEL = '__default__';
  * reaches the pending selection or `onChange`.
  */
 const SWITCH_WARNING_VALUE = '__maka_model_switch_warning__';
+
+/** Composer triggers show only the model name; provider marks belong in the menu. */
+function renderComposerModelValue(option: SelectorOptionData): ReactNode {
+  return <ComposerModelLabel text={option.label ?? option.value} />;
+}
 
 const exactChoiceValue = (choice: ChatModelChoice) =>
   exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model);
@@ -398,7 +403,7 @@ export function ChatModelSwitcher(props: {
       className="maka-model-switcher-trigger"
       onChange={onSelect}
       renderOption={renderOption}
-      renderValue={renderModelPickerValue}
+      renderValue={renderComposerModelValue}
     />
   );
 }
@@ -516,7 +521,7 @@ export function NewChatModelPicker(props: {
       className="maka-new-chat-model-selector"
       onChange={pick}
       renderOption={renderChatModelPickerOption}
-      renderValue={renderModelPickerValue}
+      renderValue={renderComposerModelValue}
     />
   );
 }

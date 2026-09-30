@@ -112,6 +112,14 @@
   padding: var(--space-3) 0 var(--space-6);
 }
 
+.maka-status-label-dot {
+  display: inline-flex;
+}
+
+.maka-module-section-heading {
+  font: var(--maka-text-heading-3);
+}
+
 /* LayoutContent supplies the page inset, so the header, control bar and rows
    share one left edge and read as a single column. */
 .maka-module-page-rows {
@@ -152,7 +160,7 @@
   }
 }
 
-/* Skill browse-row icon plate. */
+/* Row mark plate: an MCP brand mark or a Skill initial. */
 .maka-module-market-icon {
   width: 28px;
   height: 28px;
@@ -169,22 +177,9 @@
   letter-spacing: var(--tracking-normal);
 }
 
-/* A browse row's supporting line is ONE truncating line, on both module
-   pages: metadata joined with `·`, clipped rather than wrapped, so rows keep
-   a predictable height and the column reads as a list instead of ragged
-   paragraphs. */
-.maka-module-row-description {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* Module-list loading skeleton (DESIGN.md §10): rows in the ready rows' own
-   geometry — 28px tile column + title/secondary lines, 36px row height — so
-   the load → ready switch causes zero layout shift. Shared by both module
-   pages; the row metrics mirror the market/installed rows above. */
+   geometry — 28px mark column + title/secondary lines, 36px row height — so
+   the load → ready switch causes zero layout shift. */
 .maka-module-list-skeleton {
   display: grid;
   gap: var(--space-1);

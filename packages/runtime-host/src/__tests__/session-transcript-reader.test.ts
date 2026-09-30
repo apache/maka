@@ -33,6 +33,7 @@ import {
   type StoredMessage,
 } from '@maka/core/session';
 import { projectRuntimeEventsToStoredMessages } from '@maka/runtime/runtime-event-read-model';
+import { RuntimeReadModelError } from '@maka/runtime/runtime-read-model';
 import { encodeDurableToolResultOutput } from '@maka/runtime/durable-tool-result-projection';
 import { shapeTerminalResult } from '@maka/runtime/shell-tools';
 import { createLedgerArchiveResourceReader } from '@maka/runtime/ledger-tool-result-archive-reader';
@@ -43,6 +44,7 @@ import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { boundedFailureDiagnostic } from '../server/failure-diagnostic.js';
 import {
   createSessionTranscriptReader,
   createTurnResultReader,
@@ -63,8 +65,12 @@ for (const coordination of [false, true])
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     if (!owner) assert.fail('expected the interactive root owner');
+    let openedStores:
+      | Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>
+      | undefined;
     try {
       const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      openedStores = stores;
       const input = {
         cwd: capability.canonicalPath,
         llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -425,6 +431,7 @@ for (const coordination of [false, true])
         );
       }
     } finally {
+      await openedStores?.sessionStore.close?.();
       await owner.close();
       await rm(base, { recursive: true, force: true });
     }
@@ -435,8 +442,10 @@ test('pages the ledger without materializing Turns it takes no rows from', async
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
+  let openedStores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    openedStores = stores;
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -711,6 +720,7 @@ test('pages the ledger without materializing Turns it takes no rows from', async
     });
     assert.deepEqual(frozen.fragments, tail.fragments);
   } finally {
+    await openedStores?.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -932,6 +942,122 @@ test('does not end a page where a handoff resumes the same Turn', async () => {
   });
 });
 
+for (const scenario of [
+  {
+    code: 'unsupported_event',
+    message: 'thinking content has no assistant text row with a matching message id',
+    event: {
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'thinking', text: 'private transcript content' },
+      refs: { providerEventId: 'orphan-assistant' },
+    } satisfies Partial<RuntimeEvent>,
+  },
+  {
+    code: 'incomplete_event',
+    message: 'permission decision requires refs.toolCallId or a paired permission request',
+    event: {
+      actions: {
+        permissionDecision: {
+          requestId: 'missing-request',
+          decision: 'deny',
+          hint: 'private transcript content',
+        },
+      },
+    } satisfies Partial<RuntimeEvent>,
+  },
+  {
+    code: 'tool_use_id_mismatch',
+    message: 'function_call content.id differs from refs.toolCallId',
+    event: {
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'function_call', id: '', name: 'Read', args: {} },
+      refs: { toolCallId: 'private-diagnostic-detail' },
+    } satisfies Partial<RuntimeEvent>,
+  },
+]) {
+  test(`preserves ${scenario.code} in the durable transcript failure diagnostic`, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-transcript-diagnostic-'));
+    await withNestedTranscript(base, async (read, sessionId) => {
+      await seed(read.stores, sessionId, 'run-1', { turnId: 'turn-1' });
+      const eventId = 'failed-event-api_key=sk-secretvalue123';
+      await read.stores.runtimeEventStore.appendRuntimeEvent(
+        sessionId,
+        'run-1',
+        runtimeEvent(sessionId, { id: eventId, ...scenario.event }),
+      );
+      await read.end('run-1', 'end', 'turn-1');
+      for (const direction of ['older', 'newer'] as const) {
+        await assert.rejects(
+          read.readDurablePage(sessionId, { direction, maxBytes: 64 * 1024, maxMessages: 64 }),
+          (error: unknown) => {
+            assert.ok(error instanceof RuntimeReadModelError);
+            assert.equal(error.diagnostics.length, 1, 'retain hard diagnostics only');
+            const diagnostic = error.diagnostics[0]!;
+            assert.equal(diagnostic.code, scenario.code);
+            assert.equal(diagnostic.eventId, eventId);
+            assert.equal(diagnostic.runId, 'run-1');
+            assert.equal(diagnostic.turnId, 'turn-1');
+            assert.equal(diagnostic.message, scenario.message);
+            if (scenario.code === 'tool_use_id_mismatch') {
+              assert.deepEqual(diagnostic.detail, {
+                contentId: '',
+                refToolCallId: 'private-diagnostic-detail',
+              });
+            }
+            const logged = boundedFailureDiagnostic(error);
+            assert.ok(logged.includes(scenario.code));
+            assert.ok(logged.includes(scenario.message));
+            assert.ok(logged.includes(`"sessionId":"${sessionId}"`));
+            assert.ok(logged.includes('"invocationId":"run-1"'));
+            assert.ok(logged.includes('"runId":"run-1"'));
+            assert.ok(logged.includes('"turnId":"turn-1"'));
+            assert.ok(logged.includes('failed-event-'));
+            assert.match(logged, /\[redacted\]/i);
+            assert.doesNotMatch(logged, /sk-secretvalue123/);
+            assert.doesNotMatch(
+              error.message,
+              /private transcript content|private-diagnostic-detail/,
+            );
+            assert.doesNotMatch(logged, /unclaimed_control_fact/);
+            return true;
+          },
+        );
+      }
+    });
+  });
+}
+
+test('continues serving durable transcript rows with only soft projection diagnostics', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-transcript-soft-diagnostic-'));
+  await withNestedTranscript(base, async (read, sessionId) => {
+    await seed(read.stores, sessionId, 'run-1');
+    const control = runtimeEvent(sessionId, {
+      id: 'unclaimed-control',
+      turnId: 'turn-run-1',
+      actions: { stateDelta: { unclaimed: true } },
+    });
+    const projection = projectRuntimeEventsToStoredMessages([control], {
+      invocations: await read.stores.runtimeEventStore.listSessionInvocations(sessionId),
+    });
+    assert.deepEqual(
+      projection.diagnostics.map(({ code }) => code),
+      ['unclaimed_control_fact'],
+    );
+    await read.stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', control);
+    await read.text('run-1', 'still readable');
+    const page = await read.readDurableRecords(sessionId, {
+      direction: 'newer',
+      maxMessages: 64,
+      maxStoredBytes: 64 * 1024,
+    });
+    assert.equal(page.records.length, 1);
+    assert.ok(page.records[0]!.message.type === 'assistant');
+    assert.equal(page.records[0]!.message.text, 'still readable');
+  });
+});
+
 const seed = (
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
   sessionId: string,
@@ -962,8 +1088,10 @@ async function withNestedTranscript(
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
+  let openedStores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    openedStores = stores;
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -1031,6 +1159,7 @@ async function withNestedTranscript(
       session.id,
     );
   } finally {
+    await openedStores?.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -1041,8 +1170,10 @@ test('cuts a byte-sized page back to the last whole Turn on it', async () => {
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
+  let openedStores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    openedStores = stores;
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
@@ -1099,6 +1230,7 @@ test('cuts a byte-sized page back to the last whole Turn on it', async () => {
       );
     }
   } finally {
+    await openedStores?.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -1109,8 +1241,10 @@ test('cuts a guest page where it cuts an owner page', async () => {
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
+  let openedStores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    openedStores = stores;
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
@@ -1173,6 +1307,7 @@ test('cuts a guest page where it cuts an owner page', async () => {
       assert.ok(pages > 1, `${projection} needs more than one page to be worth cutting`);
     }
   } finally {
+    await openedStores?.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }

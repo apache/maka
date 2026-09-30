@@ -19,13 +19,16 @@
 
 import {
   CATALOG_PROVIDER_TYPES,
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
+import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
 import type { OnboardableProvider } from './pi-tui-contracts.js';
 
 export function listApiKeyOnboardableProviders(): OnboardableProvider[] {
-  // Custom relays have no built-in base URL and stay listed: `requiresBaseUrl`
+  // Custom connections have no built-in base URL and stay listed: `requiresBaseUrl`
   // tells the wizard to collect an endpoint before the API key. The original
   // phase-1 wizard filtered every empty-baseUrl provider out because it had no
   // base-URL step to offer (#1254); that step exists now (#3405). Providers
@@ -36,13 +39,31 @@ export function listApiKeyOnboardableProviders(): OnboardableProvider[] {
     if (!providerAuthSupportsApiKey(providerType)) return false;
     const definition = PROVIDER_REGISTRY[providerType];
     return Boolean(definition.baseUrl) || definition.category === 'custom';
-  }).map((providerType) => {
+  }).flatMap((providerType): OnboardableProvider[] => {
     const definition = PROVIDER_REGISTRY[providerType];
-    return {
+    const entry = {
       providerType,
       label: definition.label,
       requiresBaseUrl: !definition.baseUrl,
       setupMethod: 'api_key' as const,
     };
+    if (providerType !== 'custom') return [entry];
+    return MODEL_API_PROTOCOLS.map((defaultApiProtocol) => ({
+      ...entry,
+      defaultApiProtocol,
+      label: `${definition.label} (${MODEL_API_PROTOCOL_LABELS[defaultApiProtocol]})`,
+    }));
   });
+}
+
+export function onboardingCreateTarget(
+  provider: Pick<OnboardableProvider, 'providerType' | 'defaultApiProtocol'>,
+): Extract<ConnectionOnboardingTarget, { readonly kind: 'create' }> {
+  return {
+    kind: 'create',
+    providerType: provider.providerType,
+    ...(provider.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: provider.defaultApiProtocol }),
+  };
 }

@@ -39,7 +39,13 @@ export {
   resolveTaskReadinessModelTarget,
   type TaskReadinessNotice,
 } from './model/task-readiness-notice.js';
-export * from './model/session-ui-state.js';
+export type {
+  AppShellSessionUiStateController,
+  MessageQueueUiState,
+  SessionPendingClaim,
+} from './model/session-ui-state.js';
+export type { SessionUiReads } from './model/session-ui-reads.js';
+export { useAppShellSessionUiReads } from './controller/use-session-ui-reads.js';
 export type { ConversationHostChange, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
@@ -50,7 +56,7 @@ export {
 } from './controller/use-app-shell-session-ui-state.js';
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
-export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';
+export { type PendingAttachment, toSubmittedAttachments } from '@maka/ui/composer-attachments';
 export {
   NEW_TASK_PENDING_KEY,
   selectPending,
@@ -71,9 +77,14 @@ export {
 } from './ui/composer-mentions-provider.js';
 
 export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
-export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
+export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
+export {
+  createRevisionAwareOnSend,
+  type RevisionSendPorts,
+} from './controller/composer-submit.js';
+export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';
 export * from './model/shell-chat-model-selection.js';
@@ -82,3 +93,8 @@ export * from './controller/use-new-task-choice.js';
 export * from './controller/use-shell-chat-model.js';
 export * from './model/executor-submission.js';
 export * from './model/executor-composer.js';
+
+export { PlanProvider } from './ui/plan-provider.js';
+export { PlanChatView, PlanExecutionSurface } from './ui/plan-surfaces.js';
+export { PlanServicesProvider } from './plan-services.js';
+export type { PlanServices } from './plan-ports.js';

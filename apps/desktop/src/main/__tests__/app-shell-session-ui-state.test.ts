@@ -27,7 +27,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { act, createElement } from 'react';
 import { LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
-import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
+import { normalizeSessionSummaryForDisplay } from '../../renderer/application/contracts/session-status-presentation.js';
 import {
   createSessionCatalogController,
   selectSessionById,
@@ -38,7 +38,7 @@ import {
   createAppShellSessionUiStateController,
   createInitialAppShellSessionUiState,
   type AppShellSessionUiState,
-} from '../../renderer/app-shell-session-ui-state.js';
+} from '../../renderer/features/conversation/testing.js';
 import {
   createTranscriptRestoreLifecycle,
   restoreSessionTranscriptRange,
@@ -79,7 +79,7 @@ it('reconciles late predecessor content after its durable answer is already load
       const next = reconcileLiveTurnBuffer(current.session!, durable);
       return next === current.session ? current : { ...current, session: next ?? [] };
     });
-    await act(async () => { root.render(createElement(LiveTurnReconciler, { controller, activeId: 'session', messages, reconcile })); });
+    await act(async () => { root.render(createElement(LiveTurnReconciler, { readLiveTurns: controller.reads.liveTurns, activeId: 'session', messages, reconcile })); });
     await act(async () => {
       controller.setLiveTurnBySession((current) => ({ ...current, session: applyLiveTurnBufferEvent(current.session, {
         type: 'text_delta', id: 'late-A', turnId: 'A', messageId: 'answer-A', ts: 1, text: 'Alpha',
@@ -166,7 +166,7 @@ describe('app shell session UI state controller', () => {
     controller.setExecution('session', projection);
     const state = controller.getState();
     let notifications = 0;
-    controller.subscribe(() => {
+    controller.reads.summary('session').subscribe(() => {
       notifications += 1;
     });
 
@@ -186,7 +186,8 @@ describe('app shell session UI state controller', () => {
   it('records event-stream health without notifying render subscribers', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    const state = controller.getState();
+    controller.reads.load('session').subscribe(() => {
       notifications += 1;
     });
     const snapshot = healthSnapshot('session');
@@ -194,6 +195,7 @@ describe('app shell session UI state controller', () => {
     controller.setSessionEventHealthBySession((current) => ({ ...current, session: snapshot }));
 
     assert.equal(controller.sessionEventHealthBySessionRef.current.session, snapshot);
+    assert.equal(controller.getState(), state, 'stream health must not replace observable state');
     assert.equal(notifications, 0, 'stream health has no render consumer, so it must not force one');
 
     controller.setMessageLoadErrorBySession((current) => ({ ...current, session: 'failed' }));
@@ -216,12 +218,15 @@ describe('app shell session UI state controller', () => {
   it('owns per-session transcript reading anchors without notifying render subscribers', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    const state = controller.getState();
+    controller.reads.load('drop').subscribe(() => {
       notifications += 1;
     });
 
     controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop' });
+    assert.equal(controller.getState(), state, 'setting an anchor must not replace observable state');
     controller.setTranscriptReadingAnchor('keep', { turnId: 'turn-keep' });
+    assert.equal(controller.getState(), state, 'setting another anchor must not replace observable state');
 
     assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {
       drop: { turnId: 'turn-drop' },
@@ -230,7 +235,9 @@ describe('app shell session UI state controller', () => {
     assert.equal(notifications, 0, 'reading anchors have no live render subscriber');
 
     controller.setTranscriptReadingAnchor('keep', undefined);
+    assert.equal(controller.getState(), state, 'removing an anchor must not replace observable state');
     controller.clearSessionUiState('drop');
+    assert.equal(controller.getState(), state, 'clearing a ref-only Session must not replace observable state');
 
     assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {});
     assert.equal(notifications, 0);
@@ -239,7 +246,7 @@ describe('app shell session UI state controller', () => {
   it('publishes unavailable transcript restores only until they are consumed', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    controller.reads.load('session').subscribe(() => {
       notifications += 1;
     });
 
@@ -371,6 +378,85 @@ describe('shellSessionRowEqual', () => {
     const later = { ...row, fieldAddedNextMonth: 'b' } as DesktopSessionSummary;
     assert.equal(shellSessionRowEqual(future, later), false);
     assert.equal(shellSessionRowEqual(future, row), false);
+  });
+
+  it('orders same-revision rows by the live run epoch (#5713)', async () => {
+    const { root } = installReactRenderer();
+    try {
+      const catalog = createSessionCatalogController();
+      catalog.commitSessions([{
+        ...row,
+        revision: 5,
+        runningTurnIds: ['turn-1'],
+        runHostGeneration: 'host-1',
+        runEpoch: 2,
+      }]);
+
+      // A read taken before the turn started lands after the running patch:
+      // same revision, same host generation, older epoch — it must not flip
+      // the row back to idle.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runHostGeneration: 'host-1',
+          runEpoch: 1,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-1'],
+        'the older live state must not overwrite the newer',
+      );
+
+      // A genuinely newer epoch updates the row even at the same revision.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runHostGeneration: 'host-1',
+          runEpoch: 3,
+        });
+      });
+      assert.deepEqual(selectSessionById(catalog.getState(), row.id)?.runningTurnIds, []);
+
+      // A Host restart is a new generation: the previous host is gone, so
+      // its row cannot out-rank the restarted host's first read, whatever
+      // each side's epoch counter reads — a wall clock is not monotonic
+      // across processes (#5713 review round two).
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: ['turn-2'],
+          runHostGeneration: 'host-2',
+          runEpoch: 1,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-2'],
+        'the restarted host must take over the row',
+      );
+
+      // Within the restarted generation the counter orders reads again.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: ['turn-2'],
+          runHostGeneration: 'host-2',
+          runEpoch: 0,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-2'],
+        'the older read of the restarted generation must not win',
+      );
+    } finally { cleanupFakeDom(); }
   });
 
   it('keeps a catalog row subscriber mounted through rail-only patches', async () => {

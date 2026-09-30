@@ -77,7 +77,13 @@ test('projects root lifecycle without fabricating content events', async (t) => 
   if (seed?.type === 'host_observation_seed') {
     assert.deepEqual(seed.observerIds, ['execution-observer']);
     assert.equal(seed.execution.rootTurn, null);
-    assert.deepEqual(seed.events, []);
+    // The rootless seed carries the authoritative queue once, so a stale
+    // queued card from an earlier observation retires on re-subscription
+    // (apache/maka#5520 review).
+    assert.deepEqual(
+      seed.events.map((event) => event.type),
+      ['queue_update'],
+    );
   }
   const seededCount = messages.length;
   events.push({
@@ -134,7 +140,7 @@ test("joins an active Turn without losing or replaying assistant text", async ()
     },
   ]);
   await Promise.all([watching, observing]);
-  await waitFor(() => target.events.length === 2);
+  await waitFor(() => target.events.length === 3);
 
   assert.deepEqual(
     target.events.map((event) => [
@@ -144,6 +150,7 @@ test("joins an active Turn without losing or replaying assistant text", async ()
     ]),
     [
       ["text_delta", "Hello", 0],
+      ["queue_update", undefined, undefined],
       ["text_delta", " world", 5],
     ],
   );
@@ -234,7 +241,7 @@ test("restores renderer observation after the Host connection is replaced", asyn
   observations.detach(firstObserver);
   await firstObserver.close();
   assert.deepEqual(await observations.attach(secondObserver), ["session-1"]);
-  await waitFor(() => target.events.length === 1);
+  await waitFor(() => target.events.length === 3);
 
   secondEvents.push(deltaFrame(1, 5, " again"));
   secondEvents.push({
@@ -262,7 +269,9 @@ test("restores renderer observation after the Host connection is replaced", asyn
       "text" in event ? event.text : undefined,
     ]),
     [
+      ["queue_update", undefined],
       ["text_delta", "Hello"],
+      ["queue_update", undefined],
       ["text_delta", " again"],
       ["text_complete", "Hello again"],
       ["complete", undefined],
@@ -1902,7 +1911,7 @@ test("ignores a stale seed failure after its replacement succeeds", async () => 
   assert.deepEqual(await attaching, ["session-1"]);
   await observing;
   assert.equal(ready, true);
-  assert.deepEqual(observations.observedSessionIds(), ["session-1"]);
+  assert.deepEqual(observations.observationSessionIds(), ["session-1"]);
   await observations.close();
 });
 
@@ -2228,13 +2237,13 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
   await waitFor(() => openCount === 2);
   assert.equal(target.observations.at(-1)?.type, 'host_observation_pending',
     'observation is invalidated while reopen is still waiting');
-  assert.equal(target.events.length, 1, 'no replacement content is accepted before reopen completes');
+  assert.equal(target.events.length, 2, 'no replacement content is accepted before reopen completes');
   reopen.resolve();
-  await waitFor(() => target.events.length === 2);
+  await waitFor(() => target.events.length === 4);
   assert.equal(target.observations.at(-1)?.type, 'host_observation_seed');
 
   secondEvents.push(deltaFrame(1, 5, " world"));
-  await waitFor(() => target.events.length === 3);
+  await waitFor(() => target.events.length === 5);
   assert.deepEqual(
     target.events.map((event) => [
       event.type,
@@ -2242,8 +2251,10 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
       "startOffset" in event ? event.startOffset : undefined,
     ]),
     [
+      ["queue_update", undefined, undefined],
       ["text_delta", "Hel", 0],
       ["text_delta", "Hello", 0],
+      ["queue_update", undefined, undefined],
       ["text_delta", " world", 5],
     ],
   );
@@ -2532,7 +2543,7 @@ test("seeds a joining observer from the attempt that survives repeated catch-up 
     joiningTarget.events.map((event) =>
       event.type === "text_delta" ? event.text : event.type,
     ),
-    ["Hello"],
+    ["queue_update", "Hello", "queue_update"],
   );
   await observer.close();
 });
@@ -2543,7 +2554,7 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
   const interactionSnapshots: Array<readonly { requestId: string }[]> = [];
   const recoveredSessions: string[] = [];
-  const seedTimeline: string[] = [];
+  const observationPhases: string[] = [];
   const sessionChanges: string[] = [];
   const firstInteraction = pendingQuestion("interaction-1", "turn-1", "run-1");
   const secondInteraction = pendingQuestion("interaction-2", "turn-2", "run-2");
@@ -2612,12 +2623,7 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
     },
     now: () => 50,
   });
-  const target = eventTarget(15);
-  const originalSend = target.send.bind(target);
-  target.send = (channel, event) => {
-    seedTimeline.push(`event:${event.type}`);
-    originalSend(channel, event);
-  };
+  const target = eventTarget(15, (event) => observationPhases.push(event.type));
   await observer.observe("session-1", "observer-1", target);
   await observer.watchTurn("session-1", "turn-1");
 
@@ -2632,10 +2638,12 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
 
   assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
   assert.deepEqual(recoveredSessions, ["session-1"]);
-  const pendingAt = seedTimeline.indexOf('event:host_observation_pending');
-  const readyAt = seedTimeline.lastIndexOf('event:host_observation_seed');
-  assert.ok(pendingAt >= 0);
-  assert.ok(readyAt > pendingAt);
+  const pendingAt = observationPhases.indexOf('host_observation_pending');
+  const readyAt = observationPhases.lastIndexOf('host_observation_seed');
+  assert.deepEqual(
+    { pendingObserved: pendingAt >= 0, readyObservedLater: readyAt > pendingAt },
+    { pendingObserved: true, readyObservedLater: true },
+  );
   assert.ok(sessionChanges.includes("goal-change"));
   assert.deepEqual(
     interactionSnapshots.at(-1)?.map((interaction) => interaction.requestId),
@@ -2873,10 +2881,10 @@ test("shares one Host subscription and one delivery per renderer target", async 
     observer.observe("session-1", "observer-2", target),
   ]);
   events.push(deltaFrame(1, 0, "one"));
-  await waitFor(() => target.events.length === 1);
+  await waitFor(() => target.events.length === 2);
 
   assert.equal(openCount, 1);
-  assert.equal(target.events.length, 1);
+  assert.equal(target.events.length, 2);
   await observer.unobserve("observer-1");
   assert.equal(closeCount, 0);
   await observer.unobserve("observer-2");
@@ -2975,7 +2983,7 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
 
   assert.deepEqual(
     await observer.readActiveInteractions("session-1"),
-    target.events,
+    target.events.filter((event) => event.type !== "queue_update"),
   );
   observer.publishInteractionAnswer(
     {
@@ -3080,7 +3088,7 @@ test("projects Host queue revisions and places steering from the runtime event",
       },
     }),
   });
-  await waitFor(() => target.events.length === 1);
+  await waitFor(() => target.events.length === 2);
   events.push({
     kind: "subscription.session_projection",
     hostEpoch: "host-1",
@@ -3096,7 +3104,7 @@ test("projects Host queue revisions and places steering from the runtime event",
       },
     }),
   });
-  await waitFor(() => target.events.length === 2);
+  await waitFor(() => target.events.length === 3);
   events.push({
     kind: "subscription.session_event",
     hostEpoch: "host-1",
@@ -3113,15 +3121,15 @@ test("projects Host queue revisions and places steering from the runtime event",
       content: { text: "Change direction" },
     },
   });
-  await waitFor(() => target.events.length === 4);
+  await waitFor(() => target.events.length === 5);
 
   assert.deepEqual(
     target.events.map((event) =>
       event.type === "queue_update" ? event.steeringEntries?.map((entry) => entry.state) : event.type,
     ),
-    [["queued"], ["in_flight"], [], "steering_message"],
+    [[], ["queued"], ["in_flight"], [], "steering_message"],
   );
-  assert.deepEqual(target.events[0], {
+  assert.deepEqual(target.events[1], {
     type: "queue_update",
     id: "host-queue:host-1:1",
     turnId: "turn-1",
@@ -3132,7 +3140,7 @@ test("projects Host queue revisions and places steering from the runtime event",
     steeringEntries: [queued],
     followupEntries: [],
   });
-  assert.deepEqual(target.events[3], {
+  assert.deepEqual(target.events[4], {
     type: "steering_message",
     id: "steering-event-1",
     turnId: "turn-1",
@@ -3736,6 +3744,7 @@ function pendingQuestion(interactionId: string, turnId: string, runId: string) {
 
 function eventTarget(
   id: number,
+  onSend?: (event: SessionEvent | SessionObservationMessage) => void,
 ): RuntimeHostSessionObserverTarget & { events: SessionEvent[]; observations: SessionObservationMessage[] } {
   const events: SessionEvent[] = [];
   const observations: SessionObservationMessage[] = [];
@@ -3744,6 +3753,7 @@ function eventTarget(
     events,
     observations,
     send(_channel, event) {
+      onSend?.(event);
       if (event.type === 'host_observation_seed') {
         observations.push(event);
         events.push(...event.events);

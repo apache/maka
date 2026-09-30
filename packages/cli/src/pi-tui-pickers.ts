@@ -1169,7 +1169,7 @@ export function onboardingProviderPickerItems(
 function onboardingProviderKey(provider: OnboardingProviderEntry): string {
   return provider.target.kind === 'existing'
     ? provider.target.connectionId
-    : `create:${provider.target.providerType}`;
+    : `create:${provider.target.providerType}:${provider.target.defaultApiProtocol ?? ''}`;
 }
 
 export function thinkingLevelPickerItems(

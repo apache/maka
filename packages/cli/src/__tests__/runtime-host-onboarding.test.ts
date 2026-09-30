@@ -34,6 +34,7 @@ import {
   projectProviders,
   projectRuntimeHostModelChoices,
 } from '../runtime-host-onboarding.js';
+import { listApiKeyOnboardableProviders, onboardingCreateTarget } from '../onboarding-catalog.js';
 import type { OnboardingOAuthInput } from '../pi-tui-contracts.js';
 
 type StoredConnection = Omit<ConnectionCatalogSnapshot['connections'][number], 'catalogEntries'>;
@@ -1147,7 +1148,8 @@ describe('projectProviders', () => {
     revision: 1,
     slug: 'my-relay',
     name: 'My Relay',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
     baseUrl: 'https://relay.example.test/v1',
     enabled: true,
     enabledModelIds: ['relay/model'],
@@ -1194,26 +1196,59 @@ describe('projectProviders', () => {
 
   test('a Desktop-created relay and add-account action are both explicit', () => {
     const entries = projectProviders(catalog([relay])).filter(
-      ({ providerType }) => providerType === 'openai-compatible',
+      ({ providerType }) => providerType === 'custom',
     );
-    const entry = entries.find(({ target }) => target.kind === 'existing');
+    const existing = entries.filter(({ target }) => target.kind === 'existing');
+    assert.equal(existing.length, 1);
+    const [entry] = existing;
     assert.deepEqual(entry?.target, { kind: 'existing', connectionId: 'relay-custom-id' });
+    assert.equal(entry?.defaultApiProtocol, 'openai-chat');
     assert.equal(entry && 'connectionSlug' in entry ? entry.connectionSlug : undefined, 'my-relay');
     assert.deepEqual(entry?.enabledModelIds, ['relay/model']);
-    assert.deepEqual(entries.find(({ target }) => target.kind === 'create')?.target, {
-      kind: 'create',
-      providerType: 'openai-compatible',
-    });
-    assert.equal(
-      entries.find(({ target }) => target.kind === 'create')?.label,
-      'Custom relay (OpenAI Chat-compatible)',
+    assert.deepEqual(
+      entries.flatMap(({ target, label }) => (target.kind === 'create' ? [{ target, label }] : [])),
+      [
+        {
+          target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+          label: 'Custom connection (OpenAI Chat Completions)',
+        },
+        {
+          target: {
+            kind: 'create',
+            providerType: 'custom',
+            defaultApiProtocol: 'openai-responses',
+          },
+          label: 'Custom connection (OpenAI Responses)',
+        },
+        {
+          target: {
+            kind: 'create',
+            providerType: 'custom',
+            defaultApiProtocol: 'anthropic-messages',
+          },
+          label: 'Custom connection (Anthropic Messages)',
+        },
+      ],
     );
+  });
+
+  test('picking the Anthropic Messages custom entry creates an Anthropic Messages connection', () => {
+    const provider = listApiKeyOnboardableProviders().find(
+      ({ providerType, defaultApiProtocol }) =>
+        providerType === 'custom' && defaultApiProtocol === 'anthropic-messages',
+    );
+    assert.ok(provider);
+    assert.deepEqual(onboardingCreateTarget(provider), {
+      kind: 'create',
+      providerType: 'custom',
+      defaultApiProtocol: 'anthropic-messages',
+    });
   });
 
   test('several non-canonical connections remain independently editable', () => {
     const entries = projectProviders(
       catalog([relay, { ...relay, connectionId: 'relay-2-id', slug: 'my-relay-2' }]),
-    ).filter(({ providerType }) => providerType === 'openai-compatible');
+    ).filter(({ providerType }) => providerType === 'custom');
     assert.deepEqual(
       entries.flatMap(({ target }) => (target.kind === 'existing' ? [target.connectionId] : [])),
       ['relay-custom-id', 'relay-2-id'],
@@ -1243,10 +1278,9 @@ describe('projectProviders', () => {
   });
 
   test('a canonical connection does not hide another account', () => {
-    const canonical = { ...relay, connectionId: 'canonical-id', slug: 'openai-compatible' };
+    const canonical = { ...relay, connectionId: 'canonical-id', slug: 'custom' };
     const entries = projectProviders(catalog([relay, canonical])).filter(
-      ({ providerType, target }) =>
-        providerType === 'openai-compatible' && target.kind === 'existing',
+      ({ providerType, target }) => providerType === 'custom' && target.kind === 'existing',
     );
     assert.deepEqual(
       entries.flatMap(({ target }) => (target.kind === 'existing' ? [target.connectionId] : [])),

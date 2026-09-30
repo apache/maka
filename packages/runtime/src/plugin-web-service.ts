@@ -26,6 +26,7 @@ import {
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentService } from './plugin-agent-service.js';
 import { pluginInvocationSignal } from './plugin-invocation-signal.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -49,25 +50,18 @@ export interface PluginWebRuntime {
 
 /** Provider-policy-aware web search and fetch surface. */
 export class PluginWebService extends Service {
-  private webRuntime?: PluginWebRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginWebRuntime>;
 
   constructor(
     ctx: Context,
     private readonly agents: PluginAgentService,
   ) {
     super(ctx, 'web');
+    this.runtimeBinding = new PluginRuntimeBinding('web', 'Web');
   }
 
   bindRuntime(runtime: PluginWebRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Web Runtime');
-    if (this.webRuntime) throw new Error('Plugin Web Runtime is already bound');
-    this.webRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.webRuntime === runtime) this.webRuntime = undefined;
-      },
-      'web.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   search(query: string, options: { readonly limit?: number; readonly signal?: AbortSignal } = {}) {
@@ -95,7 +89,6 @@ export class PluginWebService extends Service {
   }
 
   private runtime(): PluginWebRuntime {
-    if (!this.webRuntime) throw new Error('Plugin Web Runtime is unavailable');
-    return this.webRuntime;
+    return this.runtimeBinding.get();
   }
 }

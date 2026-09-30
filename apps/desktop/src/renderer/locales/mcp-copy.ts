@@ -24,7 +24,7 @@ export type McpCopy = {
     load: string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
     importJson: string; importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
-    writeDurabilityUnknown: string; writeOutOfSync: string;
+    writeDurabilityUnknown: string; invalidConfigFile: (path: string) => string; writeOutOfSync: string;
   };
   toast: {
     saved: string; savedDetail: string;
@@ -34,20 +34,19 @@ export type McpCopy = {
   remove: { title(id: string): string; description: string; confirm: string; cancel: string };
   page: {
     actionsAria: string; refreshing: string; refresh: string; add: string;
-    metaConnections(count: number): string; metaAttention(count: number): string;
     searchMatches(count: number): string;
-    toolbarAria: string; connections: string; searchPlaceholder: string; searchAria: string;
+    connections: string; searchPlaceholder: string; searchAria: string;
     clearSearch: string; loading: string;
     noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
     recommended: string; addSuggestion(name: string): string;
-    suggestions: Record<'notion' | 'linear' | 'feishu' | 'mcp-docs', { name: string; description: string }>;
+    suggestions: Record<'chrome' | 'notion' | 'linear' | 'feishu' | 'mcp-docs', { name: string; description: string }>;
   };
-  detail: { enabled: string; address: string; stderr: string; tools: string };
+  detail: { enabled: string; authorized: string; address: string; tools: string; chromeDisconnected: string; connectChrome: string };
   row: {
     needsAuth: string; login: string; loginPending: string; authorizing: string; cancelLogin: string; logout: string;
     test: string; edit: string;
     delete: string;
-    disabled: string; disconnected: string; connecting: string; connected(count: number): string; failed: string;
+    disabled: string; disconnected: string; connecting: string; connected(count: number): string; failed: string; awaitingChrome: string;
   };
   editor: {
     importTitle: string; editTitle(id: string): string; addTitle: string;
@@ -68,6 +67,7 @@ const MCP_COPY = {
   'zh-CN': {
     errors: {
       load: '载入 MCP 失败', save: '保存 MCP 失败',
+      invalidConfigFile: (path) => `${path} 中的 JSON 无效，文件未被修改。请关闭应用，备份并修复此文件后重试。`,
       writeDurabilityUnknown: '写入已发布，但无法确认断电后是否保留。请检查刷新后的配置再决定是否重试。',
       writeOutOfSync: '写入的持久性尚未确认，MCP 运行状态也未能与配置同步。请检查配置并重新同步后再重试。',
       import: '导入 MCP 失败', update: '更新 MCP 失败', test: 'MCP 测试失败', remove: '删除 MCP 失败', unavailableStatus: 'Server 没有返回可用状态。',
@@ -82,27 +82,30 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `删除 MCP「${id}」？`, description: '它提供的工具会从下一轮对话中移除；删除后无法自动恢复此连接。', confirm: '删除', cancel: '取消' },
     page: {
-      actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
-      metaConnections: (count) => `${count} 个连接`, metaAttention: (count) => `${count} 个需要处理`,
+      actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加',
       searchMatches: (count) => `${count} 个匹配`,
-      toolbarAria: 'MCP 连接操作', connections: '已添加',
+      connections: '已添加',
       searchPlaceholder: '搜索连接…', searchAria: '搜索 MCP 连接',
       clearSearch: '清空搜索', loading: '正在读取 MCP 连接…',
       noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
       recommended: '推荐', addSuggestion: (name) => `添加 ${name}`,
       suggestions: {
+        chrome: { name: 'Chrome', description: '操作你已登录的 Chrome' },
         notion: { name: 'Notion', description: '访问工作区页面' },
         linear: { name: 'Linear', description: '访问问题与项目' },
         feishu: { name: '飞书', description: '访问飞书文档' },
         'mcp-docs': { name: 'MCP 官方文档', description: '搜索协议文档' },
       },
     },
-    detail: { enabled: '启用', address: '地址', stderr: '错误输出', tools: '工具' },
+    detail: {
+      enabled: '启用', authorized: '已授权', address: '地址', tools: '工具',
+      chromeDisconnected: '还没连上 Chrome。在 Chrome 中添加扩展后，这里会自动更新。', connectChrome: '连接 Chrome',
+    },
     row: {
       needsAuth: '需要登录', login: '登录', loginPending: '请在浏览器中完成授权', authorizing: '等待授权', cancelLogin: '取消登录', logout: '退出授权',
       test: '测试连接', edit: '编辑',
       delete: '删除',
-      disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败',
+      disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败', awaitingChrome: '等待 Chrome',
     },
     editor: {
       idExists: '已有同名连接，请换个名称。', changedElsewhere: '这个连接刚在别处被修改过', changedElsewhereDetail: '保存会用这里的内容覆盖那次修改；想保留那次修改，就取消后重新打开。', removedElsewhere: '这个连接已在别处删除，无法再保存。', oauth: 'OAuth 设置', oauthHelp: '通常无需填写。只有服务提供固定客户端凭据时才配置；填写客户端 ID 时还需要授权服务器地址。', issuer: '授权服务器地址（issuer）', clientId: '客户端 ID', clientSecret: '客户端密钥', scopes: '权限范围（空格分隔）', callbackPort: '回调端口（可选）',
@@ -126,6 +129,7 @@ const MCP_COPY = {
   'zh-TW': {
     errors: {
       load: '載入 MCP 失敗', save: '儲存 MCP 失敗',
+      invalidConfigFile: (path) => `${path} 中的 JSON 無效，檔案未被修改。請關閉應用程式，備份並修復此檔案後重試。`,
       writeDurabilityUnknown: '寫入已發布，但無法確認斷電後是否保留。請檢查重新整理後的設定再決定是否重試。',
       writeOutOfSync: '寫入的持久性尚未確認，MCP 執行狀態也未能與設定同步。請檢查設定並重新同步後再重試。',
       import: '匯入 MCP 失敗', update: '更新 MCP 失敗', test: 'MCP 測試失敗', remove: '刪除 MCP 失敗', unavailableStatus: 'Server 沒有返回可用狀態。',
@@ -140,27 +144,30 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `刪除 MCP「${id}」？`, description: '它提供的工具會從下一輪對話中移除；刪除後無法自動恢復此連線。', confirm: '刪除', cancel: '取消' },
     page: {
-      actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增 MCP',
-      metaConnections: (count) => `${count} 個連線`, metaAttention: (count) => `${count} 個需要處理`,
+      actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增',
       searchMatches: (count) => `${count} 個符合`,
-      toolbarAria: 'MCP 連線操作', connections: '已新增',
+      connections: '已新增',
       searchPlaceholder: '搜尋連線…', searchAria: '搜尋 MCP 連線',
       clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…',
       noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
       recommended: '推薦', addSuggestion: (name) => `新增 ${name}`,
       suggestions: {
+        chrome: { name: 'Chrome', description: '操作你已登入的 Chrome' },
         notion: { name: 'Notion', description: '存取工作區頁面' },
         linear: { name: 'Linear', description: '存取議題與專案' },
         feishu: { name: '飛書', description: '存取飛書文件' },
         'mcp-docs': { name: 'MCP 官方文件', description: '搜尋協議文件' },
       },
     },
-    detail: { enabled: '啟用', address: '位址', stderr: '錯誤輸出', tools: '工具' },
+    detail: {
+      enabled: '啟用', authorized: '已授權', address: '位址', tools: '工具',
+      chromeDisconnected: '尚未連上 Chrome。在 Chrome 中新增擴充功能後，這裡會自動更新。', connectChrome: '連接 Chrome',
+    },
     row: {
       needsAuth: '需要登入', login: '登入', loginPending: '請在瀏覽器中完成授權', authorizing: '等待授權', cancelLogin: '取消登入', logout: '登出授權',
       test: '測試連線', edit: '編輯',
       delete: '刪除',
-      disabled: '已停用', disconnected: '未連線', connecting: '連線中', connected: (count) => `${count} 個工具`, failed: '連線失敗',
+      disabled: '已停用', disconnected: '未連線', connecting: '連線中', connected: (count) => `${count} 個工具`, failed: '連線失敗', awaitingChrome: '等待 Chrome',
     },
     editor: {
       idExists: '已有同名連線，請換個名稱。', changedElsewhere: '這個連線剛在別處被修改過', changedElsewhereDetail: '儲存會用這裡的內容覆蓋那次修改；想保留那次修改，就取消後重新開啟。', removedElsewhere: '這個連線已在別處刪除，無法再儲存。', oauth: 'OAuth 設定', oauthHelp: '通常無需填寫。只有服務提供固定用戶端憑據時才設定；填寫用戶端 ID 時還需要授權伺服器地址。', issuer: '授權伺服器地址（issuer）', clientId: '用戶端 ID', clientSecret: '用戶端密鑰', scopes: '權限範圍（空格分隔）', callbackPort: '回呼連接埠（選填）',
@@ -184,6 +191,7 @@ const MCP_COPY = {
   en: {
     errors: {
       load: 'Failed to load MCP', save: 'Failed to save MCP',
+      invalidConfigFile: (path) => `Invalid JSON in ${path}. The file is unchanged. Close the app, back up and repair this file before retrying.`,
       writeDurabilityUnknown: 'The write was published, but survival after power loss could not be confirmed. Check the refreshed configuration before retrying.',
       writeOutOfSync: 'Write durability could not be confirmed, and MCP runtime state is out of sync with the configuration. Check the configuration and resynchronize before retrying.',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
@@ -198,27 +206,30 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools disappear from the next conversation turn. This connection cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
     page: {
-      actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
-      metaConnections: (count) => `${count} connections`, metaAttention: (count) => `${count} need attention`,
+      actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add',
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
-      toolbarAria: 'MCP connection controls', connections: 'Added',
+      connections: 'Added',
       searchPlaceholder: 'Search connections…', searchAria: 'Search MCP connections',
       clearSearch: 'Clear search', loading: 'Loading MCP connections…',
       noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
       recommended: 'Recommended', addSuggestion: (name) => `Add ${name}`,
       suggestions: {
+        chrome: { name: 'Chrome', description: 'Use your signed-in Chrome' },
         notion: { name: 'Notion', description: 'Access workspace pages' },
         linear: { name: 'Linear', description: 'Access issues and projects' },
         feishu: { name: 'Feishu', description: 'Access Feishu documents' },
         'mcp-docs': { name: 'Official MCP docs', description: 'Search protocol docs' },
       },
     },
-    detail: { enabled: 'Enabled', address: 'Address', stderr: 'Error output', tools: 'Tools' },
+    detail: {
+      enabled: 'Enabled', authorized: 'Signed in', address: 'Address', tools: 'Tools',
+      chromeDisconnected: 'Chrome is not connected yet. Add the extension in Chrome and this updates on its own.', connectChrome: 'Connect Chrome',
+    },
     row: {
       needsAuth: 'Login required', login: 'Log in', loginPending: 'Complete authorization in your browser', authorizing: 'Authorizing', cancelLogin: 'Cancel login', logout: 'Log out',
       test: 'Test connection', edit: 'Edit',
       delete: 'Delete',
-      disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed',
+      disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed', awaitingChrome: 'Waiting for Chrome',
     },
     editor: {
       idExists: 'A connection with this name already exists. Choose another name.', changedElsewhere: 'This connection was just changed elsewhere', changedElsewhereDetail: 'Saving replaces that change with what is here. To keep that change, cancel and open it again.', removedElsewhere: 'This connection was deleted elsewhere and can no longer be saved.', oauth: 'OAuth settings', oauthHelp: 'Usually leave this blank. Configure it only when the service provides fixed client credentials; a client ID also requires the authorization server issuer.', issuer: 'Authorization server issuer', clientId: 'Client ID', clientSecret: 'Client secret', scopes: 'Scopes (space separated)', callbackPort: 'Callback port (optional)',

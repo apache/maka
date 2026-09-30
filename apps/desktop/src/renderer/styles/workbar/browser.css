@@ -72,6 +72,15 @@
   display: grid;
 }
 
+/* The error and retry action must remain reachable in a short Workbar panel. */
+.maka-browser-error {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: safe center;
+  padding: var(--space-4);
+}
+
 .maka-browser-backdrop {
   width: 100%;
   height: 100%;

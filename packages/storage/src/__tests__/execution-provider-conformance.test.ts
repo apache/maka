@@ -30,6 +30,7 @@ import { invocationOpening } from './fixtures/invocation-opening.js';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { AgentGraphScheduleRevisionConflictError } from '@maka/core/agent-graph-schedule';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
@@ -79,6 +80,38 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(backend + ': graph wake exhaustion passes through the execution facade', async () => {
+    await withProvider(make(), async ({ graphControlStore: graph }) => {
+      await graph.claimAgentGraphSupervisorWake({
+        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: 'session-1',
+      });
+      const started = await graph.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        turnId: 'turn-1',
+      });
+      assert.equal(started.acquired, true);
+      await graph.completeAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        status: 'retryable_failed',
+        failureReason: 'provider failure',
+      });
+      const exhausted = await graph.exhaustAgentGraphSupervisorWake(
+        'graph-1',
+        'wake-1',
+        'attempt limit',
+      );
+      assert.equal(exhausted.status, 'exhausted');
+      assert.deepEqual(await graph.listRetryableAgentGraphSupervisorWakes(), []);
+    });
+  });
   test(
     backend + ': plugin executor routes survive configuration and catalog projection',
     async () => {
@@ -1117,6 +1150,100 @@ for (const backend of ['Local', 'Memory'] as const) {
     });
   });
   test(
+    backend + ': nested Code Mode tool progress stays outside the immutable ledger',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: r }) => {
+        const { prepared, outcome } = toolInputs();
+        const parentRefs = {
+          parentToolCallId: 'code-cell',
+          parentOperationId: 'code-cell-operation',
+        };
+        const parentArgs = { code: 'await tools.Read({ path: "/workspace/README.md" })' };
+        const parentEvents: RuntimeEvent[] = [
+          {
+            ...prepared.runtimeEvent,
+            id: 'parent-call',
+            content: {
+              kind: 'function_call',
+              id: parentRefs.parentToolCallId,
+              name: 'CodeMode',
+              args: parentArgs,
+            },
+          },
+          {
+            ...prepared.dispatchRuntimeEvent,
+            id: 'parent-dispatch',
+            refs: {
+              operationId: parentRefs.parentOperationId,
+              toolCallId: parentRefs.parentToolCallId,
+            },
+            actions: {
+              toolDispatch: {
+                ...prepared.dispatchRuntimeEvent.actions!.toolDispatch!,
+                operationId: parentRefs.parentOperationId,
+                providerToolCallId: parentRefs.parentToolCallId,
+                toolName: 'CodeMode',
+                canonicalArgsHash: canonicalToolArgsHash('CodeMode', parentArgs),
+              },
+            },
+          },
+        ];
+        const nested = (event: RuntimeEvent): RuntimeEvent => ({
+          ...event,
+          origin: 'code_mode',
+          modelVisibility: 'hidden',
+          refs: { ...event.refs, ...parentRefs },
+        });
+        prepared.runtimeEvent = nested(prepared.runtimeEvent);
+        prepared.dispatchRuntimeEvent = nested(prepared.dispatchRuntimeEvent);
+        outcome.runtimeEvent = nested(outcome.runtimeEvent);
+        const { sessionId, runId } = prepared.runtimeEvent;
+        const progress: RuntimeEvent = {
+          ...outcome.runtimeEvent,
+          id: 'progress',
+          ts: 11,
+          partial: true,
+          content: undefined,
+          refs: { toolCallId: prepared.providerToolCallId, ...parentRefs },
+        };
+
+        await r.importConversationCopyRuntimeEvents(sessionId, [{ runId, events: parentEvents }]);
+        await r.commitToolPrepared(prepared);
+        for (let index = 0; index < 3; index += 1) {
+          await r.appendRuntimeEvent(sessionId, runId, {
+            ...progress,
+            id: `progress-${index}`,
+            ts: 11 + index,
+          });
+        }
+        const live = (await r.readRuntimeEvents(sessionId, runId)).filter((event) => event.partial);
+        assert.equal(live.length, 1, 'nested progress coalesces into one presentation snapshot');
+        assert.deepEqual(live[0]?.refs, progress.refs);
+        assert.equal(live[0]?.origin, 'code_mode');
+        assert.equal(live[0]?.modelVisibility, 'hidden');
+        assert.deepEqual(await r.readImmutableRuntimeEvents(sessionId, runId), [
+          ...parentEvents,
+          prepared.runtimeEvent,
+          prepared.dispatchRuntimeEvent,
+        ]);
+
+        await r.commitToolOutcome(outcome);
+        await r.appendRuntimeEvent(sessionId, runId, { ...progress, id: 'late-progress', ts: 21 });
+        assert.deepEqual(
+          await r.readRuntimeEvents(sessionId, runId),
+          [
+            ...parentEvents,
+            prepared.runtimeEvent,
+            prepared.dispatchRuntimeEvent,
+            outcome.runtimeEvent,
+          ],
+          'the durable result clears the snapshot and late progress cannot recreate it',
+        );
+        assert.equal((await r.readSessionRuntimeEventEntries(sessionId)).length, 5);
+      });
+    },
+  );
+  test(
     backend + ': conversation copy rebuilds Tool T1/T2 projections and exact retries',
     async () => {
       await withProvider(make(), async ({ runtimeEventStore: r }) => {
@@ -2130,6 +2257,32 @@ for (const backend of ['Local', 'Memory'] as const) {
         (await s.readImmutableRuntimeEvents('tool-session', 'tool-run'))[0]!.author,
         'user',
       );
+    });
+  });
+  test(backend + ': unknown-outcome terminal settles dispatched tools atomically', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const { prepared } = toolInputs();
+      await s.commitToolPrepared(prepared);
+      const terminal: RuntimeEvent = {
+        ...prepared.dispatchRuntimeEvent,
+        id: 'unknown-outcome-terminal',
+        status: 'failed',
+        actions: {
+          endInvocation: true,
+          stateDelta: { recovered: true, recoveryReason: 'outcome_unknown' },
+        },
+      };
+      await assert.rejects(
+        s.ensureTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal),
+      );
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      assert.equal((await s.listUnsettledToolOperations('tool-session')).length, 0);
+      assert.equal((await s.readImmutableRuntimeEvents('tool-session', 'tool-run')).length, 3);
     });
   });
   for (const stage of ['commitToolPrepared', 'commitToolOutcome'] as const) {

@@ -28,17 +28,13 @@ import {
   type LiveTurnProjection,
 } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
-import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
-import type { SessionHealthNoticeView } from './features/conversation/index.js';
+import type { SessionHealthNoticeView, SessionUiReads } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { selectLiveTurns } from './features/conversation/index.js';
+import { PlanChatView } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
-
-const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
-  sessionId ? state.shellRunUpdatesBySession[sessionId] : undefined;
 
 /**
  * The sessions-section message surface (issue #1043): ChatView plus the
@@ -58,6 +54,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
+  | 'conversationItems'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -65,11 +62,11 @@ interface ChatMessageSurfaceProps extends Omit<
    * renderer. It subscribes to them here rather than taking them as props, so
    * a delta never reaches AppShell and re-renders the sidebar and composer.
    */
-  sessionUiController: AppShellSessionUiStateController;
+  sessionUiReads: Pick<SessionUiReads, 'liveTurns' | 'shellRuns'>;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
-  /** Advances after the active session's current observation generation finishes seeding. */
-  liveContentSeedRevision: number;
+  /** Identifies the active session observation whose seed is visible. */
+  liveContentSeedGeneration: number;
   sessionHealthNotice?: SessionHealthNoticeView;
   sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
@@ -98,9 +95,9 @@ function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
 }
 
 export function ChatMessageSurface({
-  sessionUiController,
+  sessionUiReads,
   activeSessionId,
-  liveContentSeedRevision,
+  liveContentSeedGeneration,
   sessionHealthNotice,
   sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
@@ -137,22 +134,22 @@ export function ChatMessageSurface({
         return;
     }
   };
-  const liveTurns = useExternalStoreSelector(sessionUiController, selectLiveTurns, activeSessionId);
+  const liveTurns = useExternalStoreSelector(sessionUiReads.liveTurns, activeSessionId);
   const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
-  const seededLiveTurns = liveContentSeedRevision > 0 ? liveTurns : undefined;
+  const seededLiveTurns = liveContentSeedGeneration > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
-    seedRevision: liveContentSeedRevision,
-    initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
+    seedGeneration: liveContentSeedGeneration,
+    initialLiveContent: liveContentSeedGeneration > 0 ? captureLiveContent(liveTurn) : undefined,
   }));
   if (
     activation.sessionId !== activeSessionId
-    || activation.seedRevision !== liveContentSeedRevision
+    || activation.seedGeneration !== liveContentSeedGeneration
   ) {
     setActivation({
       sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
-      initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
+      seedGeneration: liveContentSeedGeneration,
+      initialLiveContent: liveContentSeedGeneration > 0 ? captureLiveContent(liveTurn) : undefined,
     });
   } else if (
     activation.initialLiveContent
@@ -162,7 +159,7 @@ export function ChatMessageSurface({
   ) {
     setActivation({
       sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
+      seedGeneration: liveContentSeedGeneration,
       initialLiveContent: undefined,
     });
   }
@@ -171,8 +168,7 @@ export function ChatMessageSurface({
   // selector would need a comparator to say the same thing, and would still
   // recompute once per store change.
   const shellRunUpdateRecord = useExternalStoreSelector(
-    sessionUiController,
-    selectShellRunRecord,
+    sessionUiReads.shellRuns,
     activeSessionId,
   );
   const shellRunUpdates = useMemo(
@@ -199,9 +195,8 @@ export function ChatMessageSurface({
     <>
       <ChatViewGoalProjectionConsumer>
         {(goalProjection) => (
-          <ChatView
+          <PlanChatView
             {...chatViewRest}
-            viewportNavigation={sessionUiController.transcriptViewportNavigation}
             liveTurns={seededLiveTurns}
               // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so

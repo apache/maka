@@ -64,6 +64,20 @@ describe('encodeIngestItems', () => {
     assert.equal(payload.base64, btoa(String.fromCharCode(...bytes)));
   });
 
+  test('names a File that cannot be read instead of failing the send generically (#5279)', async () => {
+    // What a folder copied in Finder becomes once pasted: a File whose bytes
+    // can never be read.
+    const folder = {
+      name: 'Project',
+      type: '',
+      size: 96,
+      arrayBuffer: async () => {
+        throw new DOMException('A requested file or directory could not be found', 'NotFoundError');
+      },
+    } as unknown as File;
+    await assert.rejects(encodeIngestItems([{ file: folder }]), { code: 'item_unreadable' });
+  });
+
   test('rejects a raw base64 item that is neither a File nor an approval token', async () => {
     await assert.rejects(
       encodeIngestItems([{ name: 'forged', base64: 'AAAA' }] as never),

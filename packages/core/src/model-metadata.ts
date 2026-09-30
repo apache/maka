@@ -186,7 +186,8 @@ export function openAiAdapterApiProtocol(
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
-    (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
+    (providerType === 'opencode-go' &&
+      (id === 'muse-spark-1.2-contributor' || id === 'muse-spark-1.3-contributor')) ||
     ((providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') &&
       id === 'qwen3.8-max') ||
     /^gpt-[56]/i.test(id) ||

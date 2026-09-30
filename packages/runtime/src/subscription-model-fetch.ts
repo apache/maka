@@ -153,14 +153,25 @@ function buildOpenAiCodexFetch(
       return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers }, refreshOAuthAccessToken);
     }
 
-    return checkedOpenAiCodexFetch(
+    // The Codex backend accepts only streamed requests and rejects
+    // `max_output_tokens`. Tool-free auxiliary calls (titles, goal evaluation,
+    // recap, Daily Review, prompt suggestions) go through `generateText`, so
+    // their request is streamed here and folded back into the one Responses
+    // body a non-streaming caller parses. Their output cap is an internal
+    // constant, so it is dropped. A streaming caller (a main turn) is sent as
+    // is: a cap it carries is the user's model setting and is not discarded
+    // here.
+    const foldStream = parsedBody.stream !== true;
+    const { max_output_tokens: _auxiliaryOutputCap, ...uncappedBody } = parsedBody;
+    const forwardedBody = foldStream ? { ...uncappedBody, stream: true } : parsedBody;
+    const response = await checkedOpenAiCodexFetch(
       fetchFn,
       url,
       {
         ...init,
         headers,
         body: JSON.stringify({
-          ...parsedBody,
+          ...forwardedBody,
           instructions: codexInstructionsFromBody(parsedBody),
           store: false,
           text: {
@@ -178,7 +189,83 @@ function buildOpenAiCodexFetch(
       },
       refreshOAuthAccessToken,
     );
+    return foldStream ? foldOpenAiCodexStream(response) : response;
   };
+}
+
+const OPENAI_CODEX_TERMINAL_EVENTS = new Set([
+  'response.completed',
+  'response.incomplete',
+  'response.failed',
+]);
+
+/**
+ * Folds a Codex Responses event stream into the single response body a
+ * non-streaming Responses caller expects. The backend's terminal event can
+ * carry an empty `output`; the items then arrive only as
+ * `response.output_item.done` events, so they are collected and restored.
+ */
+async function foldOpenAiCodexStream(response: Response): Promise<Response> {
+  // Decide by the body, not `content-type`: against the live backend the
+  // stream did not arrive here with an event-stream content type. A JSON body
+  // passes through unchanged.
+  const text = await response.text();
+  if (text.trimStart().startsWith('{')) {
+    return new Response(text, { status: response.status, headers: response.headers });
+  }
+  const doneItems: unknown[] = [];
+  let terminal: Record<string, unknown> | undefined;
+  let terminalType: string | undefined;
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n');
+    if (!data || data === '[DONE]') continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    if (event === null || typeof event !== 'object') continue;
+    const { type, item, response: eventResponse } = event as Record<string, unknown>;
+    if (type === 'response.output_item.done' && item !== undefined) doneItems.push(item);
+    if (
+      typeof type === 'string' &&
+      OPENAI_CODEX_TERMINAL_EVENTS.has(type) &&
+      eventResponse !== null &&
+      typeof eventResponse === 'object'
+    ) {
+      terminal = eventResponse as Record<string, unknown>;
+      terminalType = type;
+    }
+  }
+  if (!terminal) {
+    throw new Error('Codex OAuth request failed: the stream ended without a terminal response');
+  }
+  if (terminalType === 'response.failed') {
+    const error = terminal.error as { message?: unknown } | null | undefined;
+    throw new Error(
+      `Codex OAuth request failed: ${typeof error?.message === 'string' ? error.message : 'response.failed'}`,
+    );
+  }
+  // An incomplete response carries partial output (e.g. a content filter cut
+  // it off). Folded into a normal body, a caller would take the fragment as
+  // its result, so it is rejected like a failed one.
+  if (terminalType === 'response.incomplete') {
+    const details = terminal.incomplete_details as { reason?: unknown } | null | undefined;
+    throw new Error(
+      `Codex OAuth request incomplete: ${typeof details?.reason === 'string' ? details.reason : 'response.incomplete'}`,
+    );
+  }
+  const output =
+    Array.isArray(terminal.output) && terminal.output.length > 0 ? terminal.output : doneItems;
+  return new Response(JSON.stringify({ ...terminal, output }), {
+    status: response.status,
+    headers: { 'content-type': 'application/json' },
+  });
 }
 
 async function checkedOpenAiCodexFetch(

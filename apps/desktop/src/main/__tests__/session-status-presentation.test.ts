@@ -20,12 +20,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { TurnViewModel } from '@maka/ui';
-import { deriveAppShellTurnPresentation } from '../../renderer/app-shell-turn-view-model.js';
+import { createChatTurnPresentationDerivation, deriveChatTurnPresentation } from '../../renderer/application/contracts/turn-presentation.js';
 import {
   describeFailedTurnExecutionState,
   describeTurnErrorClass,
   deriveFailedTurnSeverity,
-} from '../../renderer/session-status-presentation.js';
+} from '../../renderer/application/contracts/session-status-presentation.js';
 
 const NOTHING_RAN = {
   toolActivityCount: 0,
@@ -33,6 +33,20 @@ const NOTHING_RAN = {
 };
 
 describe('failed turn presentation', () => {
+  it('changes branch availability without losing the shared failure presentation', () => {
+    const turns: TurnViewModel[] = [{
+      turnId: 'failed', status: 'failed', errorClass: 'auth',
+      tools: [], timeline: [], notes: [], startedAt: 1,
+    }];
+    const derivation = createChatTurnPresentationDerivation();
+    const owner = derivation.derive(turns, { uiLocale: 'en', allowBranch: true });
+    const guest = derivation.derive(turns, { uiLocale: 'en', allowBranch: false });
+    assert.deepEqual(owner.footerActionsByTurn.failed?.map(({ id }) => id), ['branch', 'copy']);
+    assert.deepEqual(guest.footerActionsByTurn.failed?.map(({ id }) => id), ['copy']);
+    assert.deepEqual(guest.failedReasonLabels, owner.failedReasonLabels);
+    assert.equal(derivation.derive(turns, { uiLocale: 'en', allowBranch: true }).footerActionsByTurn.failed?.[0]?.id, 'branch');
+  });
+
   it('presents persisted provider server errors as provider failures', () => {
     assert.match(describeTurnErrorClass('server_error', 'zh-CN'), /模型服务返回错误/);
     assert.match(describeTurnErrorClass('server_error', 'zh-TW'), /模型服務回傳錯誤/);
@@ -47,7 +61,7 @@ describe('failed turn presentation', () => {
       retry: { decision: 'declined', because: 'side_effects' },
       tools: [], timeline: [], notes: [], startedAt: 1,
     };
-    const presentation = deriveAppShellTurnPresentation([turn], {
+    const presentation = deriveChatTurnPresentation([turn], {
       activeId: 'session-1', pendingTurnActions: new Set<string>(), uiLocale: 'zh-CN',
     });
     assert.equal(presentation.failedReasonLabels.t1, '网络连接失败，请检查网络。');
@@ -106,6 +120,6 @@ describe('failed turn execution state', () => {
 it('does not hide a terminal diagnostic behind a sandbox tool failure or promote a tool failure to a failed turn', () => {
   const turn: TurnViewModel = { turnId: 't1', status: 'failed', errorClass: 'unknown', failureMessage: 'Provider request failed after the tool result', tools: [{ toolUseId: 'tool-1', toolName: 'Bash', status: 'errored', args: {}, result: { kind: 'text', text: 'Operation not permitted', sandboxDenial: { likely: true } } }], timeline: [], notes: [], startedAt: 1 };
   const context = { activeId: 'session-1', pendingTurnActions: new Set<string>(), uiLocale: 'en' as const };
-  assert.ok(deriveAppShellTurnPresentation([turn], context).failedReasonLabels.t1);
-  assert.equal(deriveAppShellTurnPresentation([{ ...turn, status: 'completed' }], context).failedReasonLabels.t1, undefined);
+  assert.ok(deriveChatTurnPresentation([turn], context).failedReasonLabels.t1);
+  assert.equal(deriveChatTurnPresentation([{ ...turn, status: 'completed' }], context).failedReasonLabels.t1, undefined);
 });

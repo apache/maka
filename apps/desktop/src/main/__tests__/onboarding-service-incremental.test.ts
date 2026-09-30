@@ -27,7 +27,8 @@ import { createOnboardingService } from '../onboarding-service.js';
 
 const storedConnection = {
   connectionId: 'connection-1', slug: 'primary', name: 'Primary',
-  providerType: 'openai-compatible' as const, defaultModel: 'gpt-5',
+  providerType: 'custom' as const, defaultApiProtocol: 'openai-chat' as const,
+  baseUrl: 'https://relay.example/v1', defaultModel: 'gpt-5',
   enabled: true, createdAt: 1, updatedAt: 1,
 };
 const connection: ProjectedLlmConnection = {

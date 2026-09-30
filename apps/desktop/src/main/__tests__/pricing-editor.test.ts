@@ -1226,6 +1226,9 @@ async function renderEditor(options: {
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
     getComputedStyle: (element: Element) => ({
       color: (element as HTMLElement).style?.color || 'currentColor',
+      // Astryx's logical-axis scrolling reads these browser defaults.
+      writingMode: 'horizontal-tb',
+      direction: 'ltr',
     }) as CSSStyleDeclaration,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),

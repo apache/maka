@@ -18,6 +18,7 @@
  */
 
 import { deferred } from '@maka/core/test-only/async-primitives';
+import { PlanServicesProvider } from '../../renderer/features/conversation/index.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -27,7 +28,8 @@ import type { PlanSessionState } from '@maka/core/plan';
 import type { SessionSummary } from '@maka/core/session';
 import type { PlanControlIpcResult } from '../../shared/plan-mode-ipc.js';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
-import { usePlanModeState, type PlanModeState } from '../../renderer/plan-mode-panel.js';
+import { usePlanModeState, type PlanModeState } from '../../renderer/features/conversation/testing.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -96,16 +98,17 @@ test('plan controls stay pending until the bridge promise settles', async () => 
   const root = createRoot(container);
   mountedRoot = root;
 
+  const catalog = createSessionCatalogController();
   let controller: PlanModeState | undefined;
   function Harness() {
-    controller = usePlanModeState({ id: 'session-1' } as SessionSummary);
+    controller = usePlanModeState({ id: 'session-1' } as SessionSummary, catalog);
     return null;
   }
   await act(async () => {
     root.render(createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(AstryxLocaleProvider, {
-        children: createElement(ToastProvider, { children: createElement(Harness) }),
+        children: createElement(ToastProvider, { children: createElement(PlanServicesProvider, { services: window.maka.sessions, children: createElement(Harness) }) }),
       }),
     }));
   });
