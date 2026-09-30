@@ -84,3 +84,7 @@ export function stubConversationServices(
     },
   };
 }
+
+export { usePlanModeState } from './controller/use-plan-mode-state.js';
+export type { PlanModeState } from './model/plan-state.js';
+export { PlanExecutionPanel } from './ui/plan-panels.js';

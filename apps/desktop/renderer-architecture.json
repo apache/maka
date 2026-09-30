@@ -16,7 +16,6 @@
     "src/renderer/app-shell-project-actions.ts",
     "src/renderer/app-shell-revision-actions.ts",
     "src/renderer/app-shell-session-events.ts",
-    "src/renderer/app-shell-session-ui-state.ts",
     "src/renderer/app-shell-stop-action.ts",
     "src/renderer/app-shell-turn-actions.ts",
     "src/renderer/app-shell.tsx",
@@ -89,7 +88,6 @@
     "src/renderer/open-path.ts",
     "src/renderer/pending-items.ts",
     "src/renderer/pending-session-view.ts",
-    "src/renderer/plan-mode-panel.tsx",
     "src/renderer/project-path-display.ts",
     "src/renderer/remote-project-directory-dialog.tsx",
     "src/renderer/scroll-motion-policy.ts",
@@ -233,6 +231,13 @@
       "count": 1
     },
     {
+      "implementation": "src/renderer/features/conversation/controller/use-plan-mode-state.ts",
+      "symbol": "usePlanModeState",
+      "owner": "src/renderer/features/conversation/ui/plan-provider.tsx",
+      "ownerSymbol": "PlanProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/goals/controller/use-goal-controller.ts",
       "symbol": "useGoalController",
       "owner": "src/renderer/features/goals/ui/goal-provider.tsx",
@@ -289,7 +294,10 @@
       "count": 1
     }
   ],
-  "featurePrivateModules": [],
+  "featurePrivateModules": [
+    "src/renderer/features/conversation/model/session-ui-reads.ts",
+    "src/renderer/features/conversation/model/session-ui-state.ts"
+  ],
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-chat-actions.ts": {
@@ -595,20 +603,6 @@
         "importSpecifiers": 1,
         "nonTriviaTokens": 2557
       },
-      "src/renderer/app-shell-session-ui-state.ts": {
-        "importDeclarations": 0,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./features/conversation/index.js": 1
-        },
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 7
-      },
       "src/renderer/app-shell-stop-action.ts": {
         "importDeclarations": 0,
         "bridgePaths": {
@@ -650,7 +644,7 @@
         "nonTriviaTokens": 571
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 54,
+        "importDeclarations": 53,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -686,7 +680,6 @@
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
-          "usePlanModeState": 1,
           "useRef": 12,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -753,7 +746,6 @@
           "./nav-selection": 1,
           "./pending-items": 1,
           "./pending-session-view": 1,
-          "./plan-mode-panel": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
           "./session-workspace-errors": 1,
@@ -784,8 +776,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 79,
-        "nonTriviaTokens": 11089
+        "importSpecifiers": 76,
+        "nonTriviaTokens": 11012
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,
@@ -1021,6 +1013,7 @@
         "dependencyPaths": {
           "./application/contracts/session-catalog/use-external-store-selector.js": 1,
           "./chat-recovery-notice": 1,
+          "./features/conversation/index.js": 1,
           "./locales/shell-copy": 1,
           "./onboarding-hero": 1,
           "@maka/ui": 1,
@@ -1639,36 +1632,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {}
-      },
-      "src/renderer/plan-mode-panel.tsx": {
-        "bridgePaths": {
-          "window.maka.sessions.abandonPlanExecution": 1,
-          "window.maka.sessions.approvePlan": 1,
-          "window.maka.sessions.getPlanState": 1,
-          "window.maka.sessions.requestPlanRevision": 1,
-          "window.maka.sessions.resumePlan": 1,
-          "window.maka.sessions.subscribeEvents": 1,
-          "window.maka.sessions.subscribePlanChanges": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 2,
-          "useState": 4,
-          "useToast": 1,
-          "useUiLocale": 3
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./application/contracts/operation-diagnostics.js": 1,
-          "./locales/plan-mode-copy.js": 1,
-          "@astryxdesign/core/Banner": 1,
-          "@astryxdesign/core/Collapsible": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
       },
       "src/renderer/project-path-display.ts": {
         "bridgePaths": {},
@@ -4013,7 +3976,6 @@
       "targetZone": "features/conversation",
       "legacyPaths": [
         "src/renderer/app-shell-session-events.ts",
-        "src/renderer/app-shell-session-ui-state.ts",
         "src/renderer/use-app-shell-session-ui-reads.ts"
       ]
     },
