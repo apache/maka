@@ -56,8 +56,10 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   const selections = new Map<Electron.WebContents, RendererSelection>();
   const observedRenderers = new WeakSet<Electron.WebContents>();
   const ownsRenderer = (contents: Electron.WebContents): boolean =>
-    deps.mainWindowController.isMainRenderer(contents) || deps.auxiliaryWindowRegistry.rendererParent(contents) !== undefined;
+    !contents.isDestroyed() && (deps.mainWindowController.isMainRenderer(contents) ||
+      deps.auxiliaryWindowRegistry.rendererParent(contents) !== undefined);
   const browserParentForRenderer = (contents: Electron.WebContents): Electron.View | undefined => {
+    if (contents.isDestroyed()) return undefined;
     if (deps.mainWindowController.isMainRenderer(contents)) {
       const window = BrowserWindow.fromWebContents(contents);
       return window && !window.isDestroyed() ? window.contentView : undefined;

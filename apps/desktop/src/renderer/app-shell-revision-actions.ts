@@ -37,7 +37,7 @@ import {
   type SessionCopyAttemptKey,
 } from './session-copy-attempt.js';
 
-type RefBox<T> = { current: T };
+type ReadonlyRef<T> = { readonly current: T };
 
 type ToastApi = {
   info(title: string, description?: string): void;
@@ -85,15 +85,15 @@ export interface AppShellRevisionActions {
  */
 export function createAppShellRevisionActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: ReadonlyRef<string | undefined>;
   captureSelection(): () => boolean;
-  composerRef: RefBox<ComposerHandle | null>;
-  messages: readonly StoredMessage[];
+  composerRef: ReadonlyRef<ComposerHandle | null>;
+  readMessages(): readonly StoredMessage[];
   hasPendingAttachments: () => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
-  revisionDraftRef: RefBox<TurnRevisionDraft | null>;
+  revisionDraftRef: ReadonlyRef<TurnRevisionDraft | null>;
   toastApi: ToastApi;
 }): AppShellRevisionActions {
   const {
@@ -101,7 +101,7 @@ export function createAppShellRevisionActions(deps: {
     activeIdRef,
     captureSelection,
     composerRef,
-    messages,
+    readMessages,
     hasPendingAttachments,
     openSessionInChat,
     refreshSessions,
@@ -135,7 +135,7 @@ export function createAppShellRevisionActions(deps: {
       toastApi.info(copy.revisionUnavailableTitle, copy.revisionDraftAttachmentConflict);
       return;
     }
-    const userMessage = messages.find(
+    const userMessage = readMessages().find(
       (message): message is Extract<StoredMessage, { type: 'user' }> =>
         message.type === 'user' && message.turnId === turnId,
     );
@@ -340,7 +340,7 @@ export function createAppShellRevisionActions(deps: {
     }
   }
 
-  async function cancelRevisionDraft(): Promise<void> {
+  async function cancelRevisionDraft() {
     let selectionIsCurrent = captureSelection();
     const draft = revisionDraftRef.current;
     if (!draft) return;

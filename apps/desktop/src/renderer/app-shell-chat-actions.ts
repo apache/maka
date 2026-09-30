@@ -18,7 +18,6 @@
  */
 
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { StoredMessage } from '@maka/core/session';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type * as DesktopBridge from '../preload/bridge-contract.js';
 import type { QuoteRef } from '@maka/core/events';
@@ -31,12 +30,9 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
-  dequeueInteractionByRequestId,
-  type InteractionQueues,
   type NavSelection,
   type TransientUserMessageProjection,
 } from '@maka/ui';
-import { messageRefreshErrorMessage } from './app-shell-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import { preflightAttachmentItems } from './attachment-preflight.js';
 import {
@@ -44,9 +40,8 @@ import {
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
 import * as skillFeedback from './skill-invocation-feedback.js';
-import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
-import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 import * as Conversation from './features/conversation/index.js';
+import type { NewChatExecutionTarget, PendingAttachment, ExecutorSubmission } from './features/conversation/index.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -57,9 +52,6 @@ import {
   noRealConnectionReasonFromError,
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
-import type { RefreshMessagesOptions } from './platform/desktop/session-message-settlement.js';
-
-export type { RefreshMessagesOptions };
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -68,10 +60,8 @@ type ComposerImportOwner = {
 };
 
 type RefBox<T> = { current: T };
-type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
-type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
-type PendingNewChatModel = Conversation.NewChatExecutionTarget | null;
+type PendingNewChatModel = NewChatExecutionTarget | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
 type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
@@ -114,7 +104,7 @@ function copiedArray<K extends string, T>(
 export interface AppShellChatActions {
   send(
     text: string,
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options?: SendOptions,
   ): Promise<boolean>;
   /**
@@ -126,20 +116,18 @@ export interface AppShellChatActions {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options?: MessageContextOptions,
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   respondToUserForm(response: InteractionFormResponse): Promise<void>;
-  refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
-  retryMessages(sessionId: string): Promise<void>;
 }
 
 export function createAppShellChatActions(deps: {
   uiLocale: UiLocale;
   getRunningTurnId?: (sessionId: string) => string | undefined;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   captureComposerImportOwner: () => ComposerImportOwner;
   captureSelection: () => () => boolean;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
@@ -148,11 +136,10 @@ export function createAppShellChatActions(deps: {
    *  looking at". Both halves matter — the section AND the session id — which
    *  is why the send path asks it instead of comparing the id itself. */
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
-  messageRetryPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   activateSessionForFirstSend: (session: DesktopSessionSummary) => Promise<void>;
   retireSession: (sessionId: string) => void;
-  setMessageLoadErrorBySession: MessageLoadErrorUpdater;
+  clearMessageLoadError(sessionId: string): void;
   addTransientMessage: (
     sessionId: string,
     message: TransientUserMessageProjection,
@@ -162,12 +149,10 @@ export function createAppShellChatActions(deps: {
     message: TransientUserMessageProjection,
   ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
-  transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
-  isMessagePublished: (message: StoredMessage) => boolean;
   onFollowLatest: (sessionId: string) => boolean;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
-  setInteractionBySession: InteractionQueueUpdater;
+  settleInteraction(sessionId: string, requestId: string): void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
@@ -180,7 +165,7 @@ export function createAppShellChatActions(deps: {
   toastApi: ToastApi;
   newChatModel: PendingNewChatModel;
   executorSelection?: { executorId: string; configuration: import('@maka/core/executor-catalog').ExecutorConfiguration };
-  executorEntry?: Conversation.ExecutorSubmission['executorEntry'];
+  executorEntry?: ExecutorSubmission['executorEntry'];
   /** Undefined applies the Host's model default; null explicitly keeps the provider default. */
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
@@ -207,15 +192,13 @@ export function createAppShellChatActions(deps: {
     checkTaskSubmissionReadiness,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend,
     retireSession,
-    setMessageLoadErrorBySession,
+    clearMessageLoadError,
     removeTransientMessage,
-    transcriptRangeRef,
     onFollowLatest,
-    setInteractionBySession,
+    settleInteraction,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     respondToUserForm: submitUserForm,
@@ -295,7 +278,7 @@ export function createAppShellChatActions(deps: {
 
   async function send(
     text: string,
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options: SendOptions = {},
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
@@ -479,7 +462,7 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
@@ -531,9 +514,7 @@ export function createAppShellChatActions(deps: {
       await submit(sessionId, response);
       onInteractionChanged?.(sessionId);
       onApplied?.(sessionId);
-      setInteractionBySession((current) =>
-        dequeueInteractionByRequestId(current, sessionId, response.requestId),
-      );
+      settleInteraction(sessionId, response.requestId);
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
@@ -549,69 +530,6 @@ export function createAppShellChatActions(deps: {
     }
   }
 
-  async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
-    try {
-      if (activeIdRef.current !== sessionId) return false;
-      const controller = transcriptRangeRef.current;
-      if (!controller) return false;
-      await controller.ready();
-      if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) return false;
-      const requiredMessageId = options.requiredAssistantMessageId;
-      if (
-        requiredMessageId !== undefined &&
-        !controller.store.hasDurableMessage(requiredMessageId) &&
-        !(await controller.waitForDurableMessage(requiredMessageId, 480))
-      ) {
-        return false;
-      }
-      if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) {
-        return false;
-      }
-      const snapshot = controller.store.snapshot();
-      if (snapshot.sessionId !== sessionId) return false;
-      // Store changes already publish through its active subscription. A
-      // refresh checks readiness; it must not bypass input-held publication.
-      setMessageLoadErrorBySession((current) => {
-        if (!current[sessionId]) return current;
-        const updated = { ...current };
-        delete updated[sessionId];
-        return updated;
-      });
-      // The live answer stays visible until the durable answer reaches the
-      // published view. Its existing publication effect retries this handoff.
-      return requiredMessageId === undefined || snapshot.messages.some(
-        (message) => message.id === requiredMessageId && deps.isMessagePublished(message),
-      );
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        const message = messageRefreshErrorMessage(error, uiLocale);
-        setMessageLoadErrorBySession((current) => ({
-          ...current,
-          [sessionId]: message,
-        }));
-        toastApi.error(copy.refreshFailedTitle, message, undefined, { sessionId });
-      }
-      return false;
-    }
-  }
-  async function retryMessages(sessionId: string) {
-    if (!messageRetryPending.claim(sessionId)) return;
-    try {
-      if (activeIdRef.current !== sessionId) return;
-      await transcriptRangeRef.current?.reload();
-    } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      const message = messageRefreshErrorMessage(error, uiLocale);
-      setMessageLoadErrorBySession((current) => ({
-        ...current,
-        [sessionId]: message,
-      }));
-      toastApi.error(copy.refreshFailedTitle, message, undefined, { sessionId });
-    } finally {
-      messageRetryPending.release(sessionId);
-    }
-  }
-
   function publishTransientUserMessage(
     sessionId: string,
     message: Omit<TransientUserMessageProjection, 'ts'>,
@@ -619,12 +537,7 @@ export function createAppShellChatActions(deps: {
   ): void {
     (updateOnly ? deps.updateTransientMessage : deps.addTransientMessage)(sessionId, { ...message, ts: Date.now() });
     if (activeIdRef.current !== sessionId) return;
-    setMessageLoadErrorBySession((current) => {
-      if (!current[sessionId]) return current;
-      const cleared = { ...current };
-      delete cleared[sessionId];
-      return cleared;
-    });
+    clearMessageLoadError(sessionId);
   }
 
   return {
@@ -639,7 +552,5 @@ export function createAppShellChatActions(deps: {
     respondToUserQuestion: (response) =>
       respondToInteraction(response, window.maka.sessions.respondToUserQuestion),
     respondToUserForm: (response) => respondToInteraction(response, submitUserForm),
-    refreshMessages,
-    retryMessages,
   };
 }
