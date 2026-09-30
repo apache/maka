@@ -71,6 +71,10 @@ export function useOptionalRuntimeHostSettingsTarget(): SettingsHostTarget | und
   return useContext(RuntimeHostSettingsTargetContext)?.host;
 }
 
+export function useOptionalRuntimeHostSettingsGenerationKey(): string | undefined {
+  return useContext(RuntimeHostSettingsTargetContext)?.generationKey;
+}
+
 export function useRuntimeHostSettingsGenerationKey(): string {
   const target = useContext(RuntimeHostSettingsTargetContext);
   if (!target) throw new Error("Runtime Host Settings target is unavailable");

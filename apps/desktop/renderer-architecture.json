@@ -76,6 +76,7 @@
     "src/renderer/locales/settings-web-search-copy.ts",
     "src/renderer/locales/shell-copy.ts",
     "src/renderer/locales/shell-remaining-copy.ts",
+    "src/renderer/locales/storage-usage-copy.ts",
     "src/renderer/locales/task-readiness-copy.ts",
     "src/renderer/locales/work-board-error-copy.ts",
     "src/renderer/main.tsx",
@@ -1505,6 +1506,15 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
+      "src/renderer/locales/storage-usage-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
       "src/renderer/locales/task-readiness-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -2107,6 +2117,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/storage-usage/index.js": 1,
           "../locales/settings-data-copy": 1,
           "../locales/settings-shared-copy.js": 1,
           "../open-path": 1,
@@ -3218,8 +3229,10 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/storage-usage/index.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "../locales/settings-tasks-copy.js": 1,
+          "../locales/storage-usage-copy.js": 1,
           "./settings-error-copy": 1,
           "./settings-section": 1,
           "./task-catalog-rows": 1,
