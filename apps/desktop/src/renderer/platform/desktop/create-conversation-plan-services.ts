@@ -17,4 +17,11 @@
  * under the License.
  */
 
-export { useAppShellSessionUiReads } from './features/conversation/index.js';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { PlanServices } from '../../features/conversation/index.js';
+
+export function createDesktopConversationPlanServices(
+  bridge: Pick<MakaBridge, 'sessions'> = window.maka,
+): PlanServices {
+  return bridge.sessions;
+}

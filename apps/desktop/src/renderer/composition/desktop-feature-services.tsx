@@ -20,7 +20,8 @@
 import type { ReactNode } from 'react';
 import { WorkHubServicesProvider } from '../features/workhub';
 import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub-services';
-import { ConversationServicesProvider } from '../features/conversation';
+import { ConversationServicesProvider, PlanServicesProvider } from '../features/conversation';
+import { createDesktopConversationPlanServices } from '../platform/desktop/create-conversation-plan-services.js';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
 import {
@@ -77,6 +78,7 @@ export function createDesktopFeatureServices() {
     clientPlugins: createDesktopClientPluginServices(),
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
+    conversationPlan: createDesktopConversationPlanServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     externalAgentSettings: createDesktopExternalAgentSettingsServices(),
     goal: createDesktopGoalServices(),
@@ -113,15 +115,17 @@ export function DesktopFeatureServicesProvider(props: {
                     <GoalServicesProvider services={props.services.goal}>
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
-                          <WorkHubServicesProvider services={props.services.workHub}>
-                            <SessionBundleServicesProvider services={props.services.sessionBundle}>
-                              <OverlaysServicesProvider services={props.services.overlays}>
-                                <StorageUsageServicesProvider services={props.services.storageUsage}>
-                                  {props.children}
-                                </StorageUsageServicesProvider>
-                              </OverlaysServicesProvider>
-                            </SessionBundleServicesProvider>
-                          </WorkHubServicesProvider>
+                          <PlanServicesProvider services={props.services.conversationPlan}>
+                            <WorkHubServicesProvider services={props.services.workHub}>
+                              <SessionBundleServicesProvider services={props.services.sessionBundle}>
+                                <OverlaysServicesProvider services={props.services.overlays}>
+                                  <StorageUsageServicesProvider services={props.services.storageUsage}>
+                                    {props.children}
+                                  </StorageUsageServicesProvider>
+                                </OverlaysServicesProvider>
+                              </SessionBundleServicesProvider>
+                            </WorkHubServicesProvider>
+                          </PlanServicesProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
                     </GoalServicesProvider>

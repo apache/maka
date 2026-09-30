@@ -123,6 +123,16 @@ modes. The schema validation and comparison still run under the current checker;
 changes to those rules remain a review concern. In particular, changes to
 `validateMonotonicDebt` are not protected by the cross-check.
 
+`featurePrivateModules` seals selected feature construction modules. They may
+be consumed inside their owning feature and through its `testing.ts` seam, but
+runtime exports through the public entry, intermediate re-export barrels, and
+runtime imports from outside the feature fail the architecture gate. Public
+type-only exports remain available. The list is monotonic against the base:
+removing a protected path does not silently reopen that boundary. This guard
+checks module edges, not the behavior of arbitrary wrappers; public capability
+shapes and ownership still require review. Conversation uses it to keep raw
+Session UI construction and whole-state inspection out of production consumers.
+
 Dependency-path debt prices only regressive runtime edges. Type-only imports
 are erased at compile time and never count. Edges into a shell, feature public,
 or application public/contract boundary are the direction the migration wants,

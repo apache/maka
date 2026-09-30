@@ -17,4 +17,22 @@
  * under the License.
  */
 
-export { useAppShellSessionUiReads } from './features/conversation/index.js';
+import type { PlanProposal, PlanSessionState } from '@maka/core/plan';
+import type { SessionSummary } from '@maka/core/session';
+
+export interface PlanModeState {
+  state: PlanSessionState | undefined;
+  pending: boolean;
+  error: string | undefined;
+  requestRevision(proposalId: string): Promise<void>;
+  approve(proposal: PlanProposal): Promise<void>;
+  resume(executionId: string): Promise<void>;
+  abandon(executionId: string, title: string): Promise<void>;
+}
+
+export type PlanSession = Pick<SessionSummary, 'id' | 'collaborationMode'>;
+
+export interface PlanAutomaticQueryGate {
+  subscribe(listener: () => void): () => void;
+  isAutomaticQueryBlocked(sessionId: string): boolean;
+}

@@ -17,4 +17,17 @@
  * under the License.
  */
 
-export { useAppShellSessionUiReads } from './features/conversation/index.js';
+import { useSessionUiRead } from './use-session-ui-read.js';
+import type { SessionUiReads } from '../model/session-ui-reads.js';
+
+/** Shell subscribes to low-frequency execution and content summaries, never raw tokens. */
+export function useAppShellSessionUiReads(reads: SessionUiReads, activeId: string | undefined, ownerId: string | undefined) {
+  return {
+    ...useSessionUiRead(reads, 'load', activeId),
+    ...useSessionUiRead(reads, 'summary', activeId),
+    messageRetryPending: useSessionUiRead(reads, 'retry', activeId),
+    stopPending: useSessionUiRead(reads, 'stop', activeId),
+    activeInteraction: useSessionUiRead(reads, 'interaction', ownerId),
+    activeMessageQueue: useSessionUiRead(reads, 'queue', activeId),
+  };
+}

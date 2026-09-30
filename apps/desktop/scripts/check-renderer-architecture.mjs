@@ -173,6 +173,10 @@ function controllerOwnersOf(config) {
   return config.controllerOwners ?? [];
 }
 
+function featurePrivateModulesOf(config) {
+  return config.featurePrivateModules ?? [];
+}
+
 function controllerOwnerKey(owner) {
   return `${owner.implementation}#${owner.symbol}`;
 }
@@ -204,6 +208,14 @@ function validateArchitectureConfig(config, label, violations) {
     if (!isSortedUniqueStrings(config[field])) reject(`${field} must be sorted unique strings`);
   }
   if (!Array.isArray(controllerOwnersOf(config))) reject('controllerOwners must be an array');
+  if (!isSortedUniqueStrings(featurePrivateModulesOf(config))) {
+    reject('featurePrivateModules must be sorted unique strings');
+  } else if (featurePrivateModulesOf(config).some((path) =>
+    !/^src\/renderer\/features\/[^/]+\/.+\.(?:tsx?|jsx?)$/u.test(path)
+    || path.includes('..') || path.includes('\\')
+  )) {
+    reject('featurePrivateModules must contain normalized feature source paths');
+  }
   if (
     !isRecord(config.legacyAppShell) ||
     !isRecord(config.legacyAppShell.files) ||
@@ -1763,6 +1775,29 @@ function isTestConsumer(path) {
   );
 }
 
+/** Construction/selector internals cannot escape through a feature's public entry or another barrel. */
+function validateFeaturePrivateModules({ desktopRoot, config, sourceAnalyses, violations }) {
+  for (const path of featurePrivateModulesOf(config)) {
+    const featureRoot = path.match(/^src\/renderer\/features\/[^/]+/u)[0];
+    const target = normalizePath(resolve(desktopRoot, path)).replace(SOURCE_EXTENSION, '');
+    for (const [fileRelative, { analysis, file }] of sourceAnalyses) {
+      if (isTestConsumer(file) || fileRelative === `${featureRoot}/testing.ts`) continue;
+      const targetsPrivate = (source) => resolveDependency(desktopRoot, file, source) === target;
+      const referenced = [...analysis.moduleImports, ...analysis.moduleReexports, ...analysis.moduleLoads]
+        .some((entry) => targetsPrivate(entry.source));
+      const publicEntry = fileRelative.replace(SOURCE_EXTENSION, '') === `${featureRoot}/index`;
+      if (referenced && (!fileRelative.startsWith(`${featureRoot}/`) || publicEntry)) {
+        violations.push(`${fileRelative}: private feature module ${path} is not a public runtime capability`);
+      }
+      const importedNames = new Set(analysis.moduleImports.filter((entry) => targetsPrivate(entry.source)).map((entry) => entry.local));
+      if (analysis.moduleReexports.some((entry) => targetsPrivate(entry.source))
+        || analysis.moduleLocalExports.some((entry) => importedNames.has(entry.local))) {
+        violations.push(`${fileRelative}: private feature module ${path} cannot be re-exported`);
+      }
+    }
+  }
+}
+
 function validateControllerOwners({
   desktopRoot,
   config,
@@ -3197,6 +3232,7 @@ export function generateArchitectureConfig(desktopRoot, config) {
     legacyFeatureImports: imports.feature,
     legacyPlatformImports: imports.platform,
     controllerOwners: controllerOwnersOf(config),
+    featurePrivateModules: featurePrivateModulesOf(config),
     legacyAppShell: {
       files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path, 'legacyAppShell')])),
       closure: Object.fromEntries(closureFiles.map((path) => [path, capabilityDebtForPath(desktopRoot, path)])),
@@ -3211,6 +3247,12 @@ export function generateArchitectureConfig(desktopRoot, config) {
 
 function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
   if (!baseConfig) return;
+  const currentPrivateModules = new Set(featurePrivateModulesOf(config));
+  for (const path of featurePrivateModulesOf(baseConfig)) {
+    if (!currentPrivateModules.has(path)) {
+      violations.push(`${path}: historical private feature module boundaries cannot be removed`);
+    }
+  }
   const currentControllerOwners = new Map(
     controllerOwnersOf(config).map((owner) => [controllerOwnerKey(owner), owner]),
   );
@@ -3396,6 +3438,12 @@ export function checkRendererArchitecture({
     }
   }
 
+  validateFeaturePrivateModules({
+    desktopRoot: resolvedDesktopRoot,
+    config: resolvedConfig,
+    sourceAnalyses,
+    violations,
+  });
   validateControllerOwners({
     desktopRoot: resolvedDesktopRoot,
     config: resolvedConfig,

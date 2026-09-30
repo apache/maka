@@ -17,19 +17,8 @@
  * under the License.
  */
 
-export function createObservableState<S>(initial: S) {
-  let current = initial;
-  const listeners = new Set<() => void>();
-  return {
-    getState: (): S => current,
-    subscribe(listener: () => void): () => void {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    replaceState(next: S): void {
-      if (next === current) return;
-      current = next;
-      for (const listener of [...listeners]) listener();
-    },
-  };
+/** A read-only projection. Its owner notifies only when this snapshot changes. */
+export interface SnapshotReader<T> {
+  getSnapshot(): T;
+  subscribe(listener: () => void): () => void;
 }

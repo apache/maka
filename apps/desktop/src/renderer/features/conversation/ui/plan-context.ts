@@ -17,4 +17,14 @@
  * under the License.
  */
 
-export { useAppShellSessionUiReads } from './features/conversation/index.js';
+import { createContext, useContext } from 'react';
+import type { PlanModeState } from '../model/plan-state.js';
+
+export const PlanContext = createContext<PlanModeState | undefined>(undefined);
+
+/** Internal reader: no full-model hook is exposed by the feature entry. */
+export function usePlanState(): PlanModeState {
+  const value = useContext(PlanContext);
+  if (!value) throw new Error('Plan reader requires PlanProvider');
+  return value;
+}

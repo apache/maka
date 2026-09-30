@@ -17,4 +17,9 @@
  * under the License.
  */
 
-export { useAppShellSessionUiReads } from './features/conversation/index.js';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
+import type { PlanServices } from './plan-ports.js';
+
+const context = createServicesContext<PlanServices>('PlanServicesProvider');
+export const PlanServicesProvider = context.Provider;
+export const usePlanServices = context.useServices;

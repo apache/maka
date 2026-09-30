@@ -17,4 +17,17 @@
  * under the License.
  */
 
-export * from './features/conversation/index.js';
+import type { ReactNode } from 'react';
+import { usePlanModeState } from '../controller/use-plan-mode-state.js';
+import type { PlanAutomaticQueryGate, PlanSession } from '../model/plan-state.js';
+import { PlanContext } from './plan-context.js';
+
+/** Owns the Plan lifecycle; updates only reach the two regional readers. */
+export function PlanProvider(props: {
+  readonly session: PlanSession | undefined;
+  readonly automaticQueryGate?: PlanAutomaticQueryGate;
+  readonly children?: ReactNode;
+}) {
+  const plan = usePlanModeState(props.session, props.automaticQueryGate);
+  return <PlanContext.Provider value={plan}>{props.children}</PlanContext.Provider>;
+}
