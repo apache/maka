@@ -33,7 +33,7 @@ import type { AgentGraphClientSnapshot } from '../stream-graph-read-model.js';
 import type { AgentGraphScheduleReconciliationResult } from '../stream-graph-schedule-reconcile.js';
 
 describe('Agent Graph supervisor wake delivery', () => {
-  test('projects queued activity synchronously, retains failure after retries, and clears it on recovery', async () => {
+  test('projects queued activity synchronously, retains a coordinator failure, and clears it on recovery', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const releaseSnapshot = deferred();
     let fail = true;
@@ -43,12 +43,10 @@ describe('Agent Graph supervisor wake delivery', () => {
       wakeStore: store,
       readSnapshot: async () => {
         await releaseSnapshot.promise;
+        if (fail) throw new Error('graph snapshot unavailable');
         return snapshot();
       },
-      startTurn: async (_sessionId, input) =>
-        fail
-          ? { kind: 'errored', turnId: input.turnId, reason: 'provider unavailable' }
-          : { kind: 'completed', turnId: input.turnId },
+      startTurn: async (_sessionId, input) => ({ kind: 'completed', turnId: input.turnId }),
       inspectAttempt: async () => 'missing',
       maxDeliveryAttempts: 2,
       newId: sequentialIds(),

@@ -1073,6 +1073,12 @@ export async function createExecutionRuntimeHostComposition(
       interactions: stores.interactionStore,
       sandboxBoundaries: stores.sessionStore,
       onChanged: (sessionId) => graphCoordinator?.refreshSessionInteractionActivity(sessionId),
+      onError: (sessionId, error) =>
+        console.warn(
+          '[runtime-host] Could not refresh Session interaction activity',
+          sessionId,
+          error,
+        ),
     });
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
@@ -1086,6 +1092,7 @@ export async function createExecutionRuntimeHostComposition(
       refreshCanonicalContinuity: async (sessionId, admission, attention) => {
         // This also runs without an open Session subscription; sidebar activity
         // must observe every canonical answer, withdrawal, and Run closure.
+        // The presentation refresh isolates failures so canonical work still runs.
         await interactionActivity.refresh(sessionId);
         await continuityCoordinator.refreshCanonical(sessionId, admission, attention);
         sessionAdmission.detach(() => workHubResults?.notify(sessionId));

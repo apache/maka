@@ -417,6 +417,8 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /** Live Host projection; `idle` is known empty, omission is unknown. Cached values are not execution authority. */
+  backgroundActivity?: SessionBackgroundActivity;
   /**
    * Bumped by the runtime each time a turn of this session starts or ends.
    * `revision` does not move for those transitions, so two same-revision
@@ -437,8 +439,6 @@ export interface SessionSummary {
    * predecessor published, whatever the epoch counters read (#5713).
    */
   runHostGeneration?: string;
-  /** Live Host projection; `idle` is known empty, omission is unknown. Cached values are not execution authority. */
-  backgroundActivity?: SessionBackgroundActivity;
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagent?: SessionSubagentProjection;
