@@ -31,7 +31,7 @@ import { ChoicePanel } from './choice-panel.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
-  completeUserQuestionWizardState,
+  clearUserQuestionWizardState,
   createQuestionDrafts,
   createUserQuestionWizardState,
   readUserQuestionWizardState,
@@ -61,6 +61,7 @@ export function UserQuestionPrompt(props: {
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(requestId);
   const skipRememberRef = useRef(false);
+  const completedRef = useRef(false);
   const inputRef = useRef<ChatComposerInputHandle>(null);
   const mountedRef = useMountedRef();
 
@@ -75,6 +76,7 @@ export function UserQuestionPrompt(props: {
     responsePendingRef.current = false;
     setResponsePending(false);
     skipRememberRef.current = true;
+    completedRef.current = false;
   }, [requestId, props.request.questions]);
 
   useEffect(() => {
@@ -84,7 +86,9 @@ export function UserQuestionPrompt(props: {
     }
     rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
     return () => {
-      rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
+      if (!completedRef.current) {
+        rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
+      }
     };
   }, [requestId, questionIndex, drafts, answerText]);
 
@@ -150,7 +154,8 @@ export function UserQuestionPrompt(props: {
     setResponseError(undefined);
     try {
       await props.onRespond(buildUserQuestionResponse(props.request, committed));
-      completeUserQuestionWizardState(requestId);
+      completedRef.current = true;
+      clearUserQuestionWizardState(requestId);
     } catch (reason) {
       if (mountedRef.current && activeRequestIdRef.current === requestId) setResponseError(reason instanceof Error ? reason.message : String(reason));
     } finally {
