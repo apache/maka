@@ -18,6 +18,7 @@
  */
 
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
+import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
 import { createJevRoutingModel } from './jev-routing-model.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -900,6 +901,7 @@ export async function createExecutionRuntimeHostComposition(
     let rootCoordinator: RootTurnCoordinator | undefined;
     let workHubCoordination: HostWorkHubCoordinationCoordinator;
     let workHubResults: ReturnType<typeof createWorkHubResultRuntime> | undefined;
+    let workHubInspection: MakaTool | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
@@ -1150,8 +1152,8 @@ export async function createExecutionRuntimeHostComposition(
         builtinTools,
         hostTools,
         resolveRootTools: (sessionId) =>
-          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
-            ? Promise.resolve([workHubResults.tool])
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
+            ? Promise.resolve([workHubResults.tool, workHubInspection])
             : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         resolvePluginTools: (sessionId, coreTools) =>
           pluginTools.resolveContributions(sessionId, coreTools),
@@ -1315,8 +1317,8 @@ export async function createExecutionRuntimeHostComposition(
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
         const [graphTools, planState] = await Promise.all([
-          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
-            ? Promise.resolve([workHubResults.tool])
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
+            ? Promise.resolve([workHubResults.tool, workHubInspection])
             : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
           planStore.readState(sessionId),
         ]);
@@ -2661,6 +2663,13 @@ export async function createExecutionRuntimeHostComposition(
         return { ...target, permissionMode: 'explore' };
       },
       requestDrain: context.requestDrain,
+    });
+    workHubInspection = createWorkHubInspectionTool({
+      listSessions: () => stores.sessionStore.listHeaders(),
+      reader: requireTranscriptReader(transcriptReader),
+      admission: sessionAdmission,
+      readExecution: async (sessionId) =>
+        (await canonicalProjectionReader.read(sessionId))?.rootTurn ?? null,
     });
     workHubResults = createWorkHubResultRuntime({
       stores,
