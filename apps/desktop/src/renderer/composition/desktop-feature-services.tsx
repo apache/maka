@@ -38,6 +38,7 @@ import { SessionCollaborationServicesProvider } from '../features/session-collab
 import { SessionNavigationServicesProvider } from '../features/session-navigation';
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
+import { UsagePricingServicesProvider } from '../features/usage';
 import { WorkbarServicesProvider } from '../features/workbar';
 import { OverlaysServicesProvider } from '../features/overlays/index.js';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
@@ -54,6 +55,7 @@ import { createDesktopStorageUsageServices } from '../platform/desktop/create-st
 import { createDesktopSessionBundleServices } from '../platform/desktop/create-session-bundle-services.js';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
+import { createDesktopUsagePricingServices } from '../platform/desktop/create-usage-pricing-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
 import { createDesktopOverlaysServices } from '../platform/desktop/create-overlays-services';
 import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
@@ -91,6 +93,7 @@ export function createDesktopFeatureServices() {
     sessionSettings: createDesktopSessionSettingsServices(),
     storageUsage: createDesktopStorageUsageServices(),
     taskEntry: createDesktopTaskEntryServices(),
+    usagePricing: createDesktopUsagePricingServices(),
     workbar: createDesktopWorkbarServices(),
   };
 }
@@ -120,7 +123,9 @@ export function DesktopFeatureServicesProvider(props: {
                               <SessionBundleServicesProvider services={props.services.sessionBundle}>
                                 <OverlaysServicesProvider services={props.services.overlays}>
                                   <StorageUsageServicesProvider services={props.services.storageUsage}>
-                                    {props.children}
+                                    <UsagePricingServicesProvider services={props.services.usagePricing}>
+                                      {props.children}
+                                    </UsagePricingServicesProvider>
                                   </StorageUsageServicesProvider>
                                 </OverlaysServicesProvider>
                               </SessionBundleServicesProvider>

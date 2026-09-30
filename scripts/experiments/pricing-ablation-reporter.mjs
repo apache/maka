@@ -17,15 +17,20 @@
  * under the License.
  */
 
-// Public API of the Usage settings feature (issue #4425). Legacy consumers
-// import only from this barrel.
-
-export { UsageSettingsView } from './ui/usage-settings-view.js';
-export { UsageFeatureScope, type UsageScopeHandle } from './services-context.js';
-export type { UsageServices } from './ports.js';
-// The editable Pricing surface (#2015) is a Usage tab, but its services are
-// assembled in `composition/desktop-feature-services.tsx` (not the legacy
-// settings-surface that assembles `UsageServices`), so its bridge access stays
-// out of the frozen legacy-AppShell closure.
-export { UsagePricingServicesProvider } from './pricing-services-context.js';
-export type { UsagePricingServices } from './pricing-ports.js';
+import { inspect } from 'node:util';
+export default async function* report(events) {
+  for await (const event of events) {
+    if (event.type === 'test:summary')
+      yield JSON.stringify({ type: event.type, data: event.data }) + '\n';
+    if (event.type === 'test:fail')
+      yield JSON.stringify({
+        type: event.type,
+        name: event.data.name,
+        file: event.data.file,
+        error: inspect(event.data.details.error, { depth: 5 }),
+        failureType: event.data.details.error?.failureType,
+      }) + '\n';
+    if (event.type === 'test:stderr')
+      yield JSON.stringify({ type: event.type, message: event.data.message }) + '\n';
+  }
+}

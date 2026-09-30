@@ -1,0 +1,2775 @@
+{
+  "sourceTree": "2f5459c0fd178790dee756f54316b56027f065c9",
+  "node": "v24.14.0",
+  "lockHash": "4a06931c25a19added5aa29e0754352862208cfcbd470aec5bc4891eee42d475",
+  "sourceHashes": {
+    "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed",
+    "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c",
+    "apps/desktop/src/renderer/features/usage/pricing-view-model.ts": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e",
+    "apps/desktop/src/main/runtime-host-client.ts": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a",
+    "packages/runtime-host/src/protocol/usage-pricing.ts": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977",
+    "apps/desktop/src/main/__tests__/pricing-editor.test.ts": "e738de8eb19984a77782fb36a2d9b0716b06c3d15c935ac666b31a49617e9f89",
+    "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts": "b74f54f0b82dadab344eab05baf83e25ab16231c32334cf1eae1cda33ededea0"
+  },
+  "suite": [
+    "apps/desktop/dist/main/__tests__/pricing-editor.test.js",
+    "apps/desktop/dist/main/__tests__/pricing-view-model.test.js",
+    "apps/desktop/dist/main/__tests__/runtime-host-client-pricing.test.js",
+    "apps/desktop/dist/main/__tests__/runtime-host-pricing-ipc-main.test.js",
+    "apps/desktop/dist/main/__tests__/runtime-host-usage-ipc-main.test.js",
+    "apps/desktop/dist/main/__tests__/usage-settings-view.test.js",
+    "packages/runtime-host/dist/__tests__/usage-pricing-protocol.test.js"
+  ],
+  "variants": [
+    {
+      "id": "baseline",
+      "question": "Unmodified merged control",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "survived",
+      "counts": {
+        "tests": 124,
+        "failed": 0,
+        "passed": 124,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5397,
+      "assertionFailures": [],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/baseline/result.json",
+      "rawSha256": "13969f0cf4107c2e265c666a6394991c75484509a19f3ab7bc323047420116a6",
+      "browserFailures": [],
+      "finalVerdict": "survived"
+    },
+    {
+      "id": "latest-cas-base",
+      "question": "Can every save adopt the current list revision?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 3,
+        "passed": 111,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 3,
+        "passed": 121,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5366,
+      "assertionFailures": [
+        "keeps the viewed CAS base when a background refresh finishes during edit",
+        "keeps the viewed CAS base when a background refresh finishes during reset",
+        "keeps the viewed CAS base when a background refresh finishes during add"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "97301432dbab9680a4d7cbfcf25b768ba4cc83ae731fe4a315d1a7df819df1ef"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/latest-cas-base/result.json",
+      "rawSha256": "21c04df93146a873f8c948924dbc2f11ef5a305af979a36733592864e0c22a99",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "unpinned-validation",
+      "question": "Can an open editor validate against background-refreshed rows?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5369,
+      "assertionFailures": [
+        "keeps the viewed CAS base when a background refresh finishes during add"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "878b086de4d9899edf3333b7cc143ddf9dc30f48ca8925d295716c972d9cf376"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/unpinned-validation/result.json",
+      "rawSha256": "bf2fab45fc580fb05a1b419c4110ab25fc356635098d65de842e4eb10709420f",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-host-witness",
+      "question": "Can render lifecycle alone fence the pre-render Host event gap?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 2,
+        "passed": 112,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 2,
+        "passed": 122,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5162,
+      "assertionFailures": [
+        "ignores an old-Host save result when the Host event fences it before React re-renders",
+        "does not dispatch a write after the Host event fences the still-visible editor"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "93b0f64528cec8ff5d8ff243eed9f28088c92a6da776ca2c2c82a7f269c311fb"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-host-witness/result.json",
+      "rawSha256": "d5298e04cfdc127aa6d4bb02692a5eb752ca034d132afe84d2867748ccb88849",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-lifecycle-fence",
+      "question": "Can the target witness alone handle StrictMode and view disposal?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5365,
+      "assertionFailures": [
+        "ablation: a disposed view cannot dismiss the recovered draft on the same Host"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "9759132f63c4267d8083cdfd4298fb64679da0b4f523cdffee8235e1c9cdadee"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-lifecycle-fence/result.json",
+      "rawSha256": "ed4c361e13645a41249dcbdc800c9e61f33753e19eb0855917bf7c25ad98adcc",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-mutation-read-fence",
+      "question": "May a refresh started before a mutation land afterward?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 6238,
+      "assertionFailures": [
+        "a reload landing after a mutation does not overwrite the committed authority (P1.2)"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "762efa8b6ef92f99dd2c5bc2b4e794ac7976819053a68485fb7a03eee97f64c1"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-mutation-read-fence/result.json",
+      "rawSha256": "eb7514aa5c490d0caf01528e234cb4ef40de7f7a76dc1a8748bd3b605c4fb7ac",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-read-order",
+      "question": "Can same-generation refreshes share a ticket?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 2,
+        "passed": 122,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5524,
+      "assertionFailures": [
+        "ablation: newer refresh wins when the older read succeeds",
+        "ablation: newer refresh wins when the older read fails"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "1bf9fc0610490622d5f5c2e73c4bc5786d5449dfef6c8c6ed92c7fdf07009c20"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-read-order/result.json",
+      "rawSha256": "31c835fbbe007bf28064fcbb750ddce8504f348fe25cec4f2f4b60ab61b0811f",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-persistent-draft",
+      "question": "May editor input live only as long as the disposable view?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 5,
+        "passed": 109,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 6,
+        "passed": 118,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5130,
+      "assertionFailures": [
+        "preserves unblurred rate text 7.25 across a Host gate remount",
+        "preserves unblurred rate text 7. across a Host gate remount",
+        "reviews a recovered Add against an existing override and preserves its rates",
+        "preserves the manual draft across the Settings Host gate unmount and rejects its old save",
+        "ablation: a disposed view cannot dismiss the recovered draft on the same Host"
+      ],
+      "otherFailures": ["retries a recovered draft load inside the modal without losing input"],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "c1a36d61909086f30a7ea496bd8148b3cb63f1022b239c17da926cb6b03f6abc"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/confirmed/runs/no-persistent-draft/result.json",
+      "rawSha256": "e25450116b56098b3a6adf86484acaebddb2f8cc7baf984661e08b66a1acdfb8",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-sync-input-ref",
+      "question": "May submit and late outcomes wait for React to commit input?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5088,
+      "assertionFailures": ["submits the latest text when input and submit happen before a render"],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "2b28eb70a55bfcefdc2727e1c9b371056a003df3c14018f4682f0c4f09938f5a"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-sync-input-ref/result.json",
+      "rawSha256": "f39e4f3d62f1f81021b8166f5bf795e6f7813933990fa66d22a30cb63274ad43",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "close-newer-input",
+      "question": "May successful writes dismiss input typed after dispatch?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 3,
+        "passed": 111,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 3,
+        "passed": 121,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5359,
+      "assertionFailures": [
+        "retains input typed during a pending save and saves it only on the next submit",
+        "retains later input when saved_refresh_failed reconciles the submitted Add",
+        "retains later input when reconciliation_unavailable reconciles the submitted Add"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "7fa204b789e82c8ceb365648ea442c3c97866f054dae4c86d33a7519b50afb21"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/close-newer-input/result.json",
+      "rawSha256": "b07103569cc3f7ffba7f2ef10b725d9dd5fb8213128e81e4bc9f96d6c9bf65cb",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-dialog-ownership",
+      "question": "May late reconciliation control a cancelled or replaced dialog?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 2,
+        "passed": 112,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 2,
+        "passed": 122,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5416,
+      "assertionFailures": [
+        "keeps a reset cancelled while its recovery read is pending closed",
+        "does not apply an earlier model conflict after the pending Add changes keys"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "9befdad463bf400a221539ca901ec133eb86527f61f54ade8c968d7cbe8d5ea7"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-dialog-ownership/result.json",
+      "rawSha256": "232d772074e42a4bb971869d037af586c97b591dbebc31966dac71bcac7a79f4",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-host-review",
+      "question": "May a recovered draft save without new-Host review?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 7,
+        "passed": 107,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 7,
+        "passed": 117,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5052,
+      "assertionFailures": [
+        "retries a recovered draft load inside the modal without losing input",
+        "preserves unblurred rate text 7.25 across a Host gate remount",
+        "preserves unblurred rate text 7. across a Host gate remount",
+        "a Host generation change preserves the draft and requires review after reloading authority (P1.1)",
+        "does not allow Host-change review until fresh authority loads",
+        "preserves the manual draft across the Settings Host gate unmount and rejects its old save",
+        "ignores an old-Host save result after the generation changes"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "2b2f124fd36497f705ac3860942c7f5ead7b62fd5badbadd69e41ad2897ceca6"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-host-review/result.json",
+      "rawSha256": "e0a194499345d4a8f58a47d0963b92ec53ae01b13096b617f1ebfe0acae6e624",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-unknown-write-block",
+      "question": "May a second write proceed before uncertain outcome reconciliation?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 5,
+        "passed": 109,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 5,
+        "passed": 119,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5164,
+      "assertionFailures": [
+        "keeps a saved reset reachable from its dialog until pricing refreshes",
+        "an uncertain outcome blocks writes and explains the required recovery",
+        "keeps a reset cancelled while its recovery read is pending closed",
+        "does not carry a cancelled Add recovery into another model editor",
+        "blocks form submission while an upsert still needs reconciliation"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "b0c7081e69621a5492f0a8631b4026105f2ad554711d6a8cf1620d0f8b3056d2"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-unknown-write-block/result.json",
+      "rawSha256": "0146e2022651eda041f11502f4199d9db1403b431f4c93e5339d6e43dabe0444",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-write-guard",
+      "question": "Can pending React state alone prevent same-tick duplicate submission?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5200,
+      "assertionFailures": ["submits once when the form is submitted twice before a render"],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "d85362817d124f70896f804065384c5a7eeb27dc797394c58d69d28d9d359098"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-write-guard/result.json",
+      "rawSha256": "3335262967ca12b444624cd311f06d58b49ad238db6da43fc4dc0d84a147c9f8",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "all-catalog-duplicates",
+      "question": "Are built-in rows duplicates when adding an override?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 10,
+        "passed": 104,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 10,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5090,
+      "assertionFailures": [
+        "keeps the viewed CAS base when a background refresh finishes during add",
+        "retains later input when saved_refresh_failed reconciles the submitted Add",
+        "retains later input when reconciliation_unavailable reconciles the submitted Add",
+        "selecting a built-in catalog model saves an override",
+        "does not carry a cancelled Add recovery into another model editor",
+        "finishes an unavailable upsert when the refreshed authority matches exactly",
+        "blocks form submission while an upsert still needs reconciliation",
+        "does not mistake equal built-in rates for a reconciled custom override",
+        "submits once when the form is submitted twice before a render",
+        "adding a built-in key that is not yet overridden is a new override, not a duplicate"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "f0674d513c7817100bfd2c3648d6f72db132a1f06f6a79ff03f5dc09c7e9df85"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/all-catalog-duplicates/result.json",
+      "rawSha256": "9688a7e62fe0dea2a6fc65abf53a43ee0a2b9b4eccbda197c637992320d6897e",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-rate-syntax",
+      "question": "Can Number coercion replace decimal syntax validation?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5095,
+      "assertionFailures": [
+        "rate text validates decimal syntax without losing precision or coercing invalid input"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": true,
+          "hash": "e3f9f8e12490578ab4332614bbd8640ba85c5969951cf290c40b533465219076"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-rate-syntax/result.json",
+      "rawSha256": "2232751b71fbd17015cdd59a47725e7418d3cc6f7faded06c0a3cf7d6cd99eda",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-underflow-check",
+      "question": "Can nonzero subnormal text silently become zero?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5060,
+      "assertionFailures": [
+        "rate text validates decimal syntax without losing precision or coercing invalid input"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": true,
+          "hash": "2ad1012a4a113f7d9be0e355ad1f2ec62844a8be97388b1733c80621615adbe6"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-underflow-check/result.json",
+      "rawSha256": "0562515dce7580f478fd5f9d35e67922e08dca15f64ace822f9dc320a1c74d0b",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "negative-rates",
+      "question": "Can finite negative rates be admitted?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 2,
+        "passed": 112,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 2,
+        "passed": 122,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5186,
+      "assertionFailures": [
+        "rejects a negative rate without clamping it to a free price",
+        "validatePricingDraft rejects a negative rate"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": true,
+          "hash": "c03660f634c52f4be04b12dc36e462234ef9fe4f9504fe92a6579b91a6f996a2"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/negative-rates/result.json",
+      "rawSha256": "62298b4387191974b150b3e74a4ea543cd8b0c53efc4270b96728d705a4260a7",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "blank-is-zero",
+      "question": "Are blank optional cache rates equivalent to explicit zero?",
+      "initialVerdict": "invalid-incomplete",
+      "initialCounts": {
+        "tests": 87,
+        "failed": 12,
+        "passed": 75,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 47,
+        "suites": 2
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 13,
+        "passed": 111,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5232,
+      "assertionFailures": [
+        "retains input typed during a pending save and saves it only on the next submit",
+        "submits the latest text when input and submit happen before a render",
+        "retains later input when saved_refresh_failed reconciles the submitted Add",
+        "retains later input when reconciliation_unavailable reconciles the submitted Add",
+        "reviews a recovered Add against an existing override and preserves its rates",
+        "selecting a built-in catalog model saves an override",
+        "keeps an upsert draft reachable and refreshes from inside the editor",
+        "finishes an unavailable upsert when the refreshed authority matches exactly",
+        "prefilled drafts round-trip precision, omitted cache and explicit zero",
+        "validatePricingDraft add flags an empty model key",
+        "validatePricingDraft add builds a canonical config; blank cache is omitted",
+        "validatePricingDraft keeps an explicit 0 cache rate distinct from blank",
+        "rate text validates decimal syntax without losing precision or coercing invalid input"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": true,
+          "hash": "53129f3f289a1f1a0abf53b556778873ba27e03493cb9cd12fd5a2e1d0ef1ea7"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/blank-is-zero/result.json",
+      "rawSha256": "ff72a18cf80c4e631fb3adb8c231ea1c4a0b0619eeaf5321be1f23ee77944ea5",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-custom-provenance",
+      "question": "Is equal built-in pricing enough to confirm an upsert?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 3,
+        "passed": 111,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 3,
+        "passed": 121,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5204,
+      "assertionFailures": [
+        "does not mistake equal built-in rates for a reconciled custom override",
+        "requires custom provenance when an upsert equals the bundled values",
+        "pricing reconciliation captures reset semantics and exact custom provenance"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": true,
+          "hash": "bbf8975adf7abd97298f4575355c2a37198c210c664462033653793d2c060e3a"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-custom-provenance/result.json",
+      "rawSha256": "70dabfffc4061ecc7733371ed5bf52d35152e32d5eca24916c3ada5238876b92",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "reset-means-no-override",
+      "question": "Can reset-to-builtin and become-unpriced share one success predicate?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5155,
+      "assertionFailures": [
+        "ablation: a missing row does not confirm restoration of bundled pricing"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": true,
+          "hash": "70641692928c95cc051aeafbcb04806281b83fc14b1b694bccc7a071f37b887b"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/reset-means-no-override/result.json",
+      "rawSha256": "788f683a897b3c582ec52430b28241263db4085bd05382852072fe9fc0118bd1",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-connection-identity",
+      "question": "Is Host epoch alone enough to identify a write base?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5345,
+      "assertionFailures": [
+        "rejects a Pricing mutation from a previous connection with the same Host Epoch"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": true,
+          "hash": "369e47fb4d2c8b730e74b9d425aadc0a2ad2c8683940faf3bfef2068864082e0"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-connection-identity/result.json",
+      "rawSha256": "bb8df0923730f6f1409807d6da7784eefea93de69ae1816a89d7acfa34b92373",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-page-canonicality",
+      "question": "May pages contain unordered or duplicate model keys?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 1,
+        "passed": 113,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 2,
+        "passed": 122,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5574,
+      "assertionFailures": [
+        "rejects duplicate or non-canonical keys split across Pricing pages",
+        "ablation: rejects a duplicated key at a Pricing page seam"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": true,
+          "hash": "624f3ab593fd25407b1174ebd52999109ebabdaf629ebd75995460484bb49f93"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-page-canonicality/result.json",
+      "rawSha256": "9a1a92b26170af5a38cacc46f67d24b242a8c2e1b656f73f5b1d56de062e008f",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-page-progress-check",
+      "question": "Does response correlation alone stop offset cycles?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 4,
+        "passed": 120,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 6173,
+      "assertionFailures": [
+        "ablation: rejects non-progressing Pricing offsets 0 before dispatch",
+        "ablation: rejects non-progressing Pricing offsets 1 -> 1 before dispatch",
+        "ablation: rejects non-progressing Pricing offsets 1 -> 0 before dispatch",
+        "ablation: rejects non-progressing Pricing offsets 2 -> 1 before dispatch"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": true,
+          "hash": "9d22b2a97d500fb4572fb6c327abeee02c59e32e72ba6a8d1478b09d58ee5a7a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-page-progress-check/result.json",
+      "rawSha256": "f8906f535f4cadd5fde1bd2f5217b9f54db5152c733e5bf5ff107aec9e189327",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-stable-focus-fallback",
+      "question": "Does the removed row trigger suffice for focus restoration?",
+      "initialVerdict": "invalid-incomplete",
+      "initialCounts": {
+        "tests": 84,
+        "failed": 1,
+        "passed": 83,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 47,
+        "suites": 2
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 1,
+        "passed": 123,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 6017,
+      "assertionFailures": ["moves focus to Add after a successful reset removes its trigger row"],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "4096e13398f618e05449723b6cee54c9dd4f23ccb1ef496c7d9651562f8f24b0"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-stable-focus-fallback/result.json",
+      "rawSha256": "ec00a189c425ea5991a800415447f2712c5e3f5934291b343dfd8b6af3db57e7",
+      "browserFailures": ["populated"],
+      "finalVerdict": "killed-browser"
+    },
+    {
+      "id": "no-reveal-cache-error",
+      "question": "Can invalid collapsed cache fields remain hidden after Save?",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 2,
+        "passed": 112,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 2,
+        "passed": 122,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5828,
+      "assertionFailures": [
+        "reveals a collapsed invalid cacheRead field when saving",
+        "reveals a collapsed invalid cacheWrite field when saving"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": true,
+          "hash": "1806b4d447a33a1419817951e25920b2a3e12217c76bde6e2b11a753bcc9cb41"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-reveal-cache-error/result.json",
+      "rawSha256": "47a2896c16c9118c19184b50245df032cf7b96552070c6503c573010b184eff4",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-catalog-aria-binding",
+      "question": "Does Astryx now propagate combobox validation without the Pricing patch?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "survived",
+      "counts": {
+        "tests": 124,
+        "failed": 0,
+        "passed": 124,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5418,
+      "assertionFailures": [],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": true,
+          "hash": "b93440332f87760c2a9d0e2fc27b571f335406e8ac7ab23c1fc8109a3ef1b76b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-catalog-aria-binding/result.json",
+      "rawSha256": "7f16fe0f090675e16abaa1042f21ca7859bc90e8573bc78cf48671013263b819",
+      "browserFailures": ["manual-exact-key"],
+      "finalVerdict": "killed-browser"
+    },
+    {
+      "id": "no-dialog-focus-repair",
+      "question": "Does native dialog focus handle disabled or removed focused controls?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "survived",
+      "counts": {
+        "tests": 124,
+        "failed": 0,
+        "passed": 124,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5173,
+      "assertionFailures": [],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": true,
+          "hash": "e2a7c00d95d283415a75661ad8d08657264438908b0b840753d34c5e78f09f94"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-dialog-focus-repair/result.json",
+      "rawSha256": "4cc7bd5397ee5dd5460d71d7346c301ab8e0f243cb36e4e782f0f5830ecf4100",
+      "browserFailures": ["host-review"],
+      "finalVerdict": "killed-browser"
+    },
+    {
+      "id": "no-offset-history",
+      "question": "Is visited-offset storage redundant with strictly increasing offsets?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "survived",
+      "counts": {
+        "tests": 124,
+        "failed": 0,
+        "passed": 124,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5241,
+      "assertionFailures": [],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": false,
+          "hash": "b9d40a3dfa066363fbf4742f34db6c8c932be5cbb50677dced1f4cbf20b618ed"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": true,
+          "hash": "96150a0efd7be4f81cf7f2796aebe6c74be3a7596a1d759b093dd405b1be341a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-offset-history/result.json",
+      "rawSha256": "f9f30b3cf081376249019f7012fdfb391f61873a4c58f1c3ede4ddf54ed895ba",
+      "browserFailures": [],
+      "finalVerdict": "survived"
+    },
+    {
+      "id": "one-load-error-clear",
+      "question": "Can the same refresh clear its error just once?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "survived",
+      "counts": {
+        "tests": 124,
+        "failed": 0,
+        "passed": 124,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 4904,
+      "assertionFailures": [],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "3d5cf33612535a8c666a2e58e6f8a3c29929c608a5d4f55fa6b79076aa410f81"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/one-load-error-clear/result.json",
+      "rawSha256": "7b0556170cfa67d9ad83c123c35cd112e30e13ca0306f985b3828059e53dd8c3",
+      "browserFailures": [],
+      "finalVerdict": "survived"
+    },
+    {
+      "id": "one-close-conflict-clear",
+      "question": "Does setEditor(null) already retire the settled conflict?",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "survived",
+      "counts": {
+        "tests": 124,
+        "failed": 0,
+        "passed": 124,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 4929,
+      "assertionFailures": [],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "aa54a99e3502732eae2ace57e02a44808c29353d000c9d673cf9abe1de26d384"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/one-close-conflict-clear/result.json",
+      "rawSha256": "39089709f8eadc58ae980f6da05bdfd524d74b39562b7b6ded957dc964b2d459",
+      "browserFailures": [],
+      "finalVerdict": "survived"
+    },
+    {
+      "id": "combined-simplification",
+      "question": "no-offset-history + one-load-error-clear + one-close-conflict-clear",
+      "initialVerdict": "survived",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 0,
+        "passed": 114,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "survived",
+      "counts": {
+        "tests": 124,
+        "failed": 0,
+        "passed": 124,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 4963,
+      "assertionFailures": [],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "2aa8f8d230b0d32a5a5ecf830ba43c0b745ce8c8abe108446b1847b738aa7f15"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": true,
+          "hash": "96150a0efd7be4f81cf7f2796aebe6c74be3a7596a1d759b093dd405b1be341a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/combined-simplification/result.json",
+      "rawSha256": "de08888b2a8aaf32620a6c909959bdd6a1b2a7dbfe36c30ed6c08eb1e17234be",
+      "browserFailures": [],
+      "finalVerdict": "survived"
+    },
+    {
+      "id": "no-host-fences",
+      "question": "no-host-witness + no-lifecycle-fence",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 4,
+        "passed": 110,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 5,
+        "passed": 119,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5189,
+      "assertionFailures": [
+        "preserves the manual draft across the Settings Host gate unmount and rejects its old save",
+        "ignores an old-Host save result after the generation changes",
+        "ignores an old-Host save result when the Host event fences it before React re-renders",
+        "does not dispatch a write after the Host event fences the still-visible editor",
+        "ablation: a disposed view cannot dismiss the recovered draft on the same Host"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "0be5c2039d409fefb5b8f48c568b4d2a3c98a853c151f46ea1a27323c5b3f3b6"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-host-fences/result.json",
+      "rawSha256": "52b332bbc8d085975b68b89750128fd4e9dea6aa40b241bfbbf1331b7e6ab774",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    },
+    {
+      "id": "no-async-ownership",
+      "question": "no-dialog-ownership + close-newer-input",
+      "initialVerdict": "killed",
+      "initialCounts": {
+        "tests": 114,
+        "failed": 5,
+        "passed": 109,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 48,
+        "suites": 4
+      },
+      "verdict": "killed",
+      "counts": {
+        "tests": 124,
+        "failed": 5,
+        "passed": 119,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 58,
+        "suites": 4
+      },
+      "durationMs": 5231,
+      "assertionFailures": [
+        "retains input typed during a pending save and saves it only on the next submit",
+        "retains later input when saved_refresh_failed reconciles the submitted Add",
+        "retains later input when reconciliation_unavailable reconciles the submitted Add",
+        "keeps a reset cancelled while its recovery read is pending closed",
+        "does not apply an earlier model conflict after the pending Add changes keys"
+      ],
+      "otherFailures": [],
+      "loaded": [
+        {
+          "path": "apps/desktop/src/main/__tests__/pricing-editor.test.ts",
+          "changed": true,
+          "hash": "8398f10488ccbf75e5e2559cafc10faf718f76d24adf9f777f0a00b2d324891b"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/pricing-view-model.ts",
+          "changed": false,
+          "hash": "8020af2a69266d9e615c4e560bb0edec6fdb69dd6ed9003270763c211a44790e"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx",
+          "changed": false,
+          "hash": "dcd03f5472d9297b1194387f8c3995c2d1b32da68716546d9c0a8fe8471b9d8c"
+        },
+        {
+          "path": "apps/desktop/src/renderer/features/usage/controller/pricing-controller.ts",
+          "changed": true,
+          "hash": "903cfac199e633bdf73210e33f0cb73aa4b8bf279561ce7b7649b0f452aebf4c"
+        },
+        {
+          "path": "packages/runtime-host/src/protocol/usage-pricing.ts",
+          "changed": false,
+          "hash": "c1dfbb382f2e92170b982582d4cef07eb0e95ebe76f7347fb64bb78f6d6fe977"
+        },
+        {
+          "path": "apps/desktop/src/main/__tests__/runtime-host-client-pricing.test.ts",
+          "changed": true,
+          "hash": "cbc6ff2abb1d7fc4c830b28245e6cac4000f8cf4647fa6ee895d5fea35f787ce"
+        },
+        {
+          "path": "apps/desktop/src/main/runtime-host-client.ts",
+          "changed": false,
+          "hash": "97660978d487774c9145d0528a6863baba6c9988bccf40ecda11d7761d12655a"
+        }
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/augmented/runs/no-async-ownership/result.json",
+      "rawSha256": "bf09b24e0109080a7d593a0155608da34ecbc1bddd0b03c8d7787c48a62229c4",
+      "browserFailures": [],
+      "finalVerdict": "killed"
+    }
+  ],
+  "browser": [
+    {
+      "variant": "baseline",
+      "story": "host-review",
+      "width": 1280,
+      "failures": [],
+      "focusInDialog": true,
+      "finished": true,
+      "probeFailures": [],
+      "rawResult": "perf-results/pricing-ablation-20260930/browser-static/baseline/initial-results.json"
+    },
+    {
+      "variant": "baseline",
+      "story": "host-review",
+      "width": 1280,
+      "failures": [],
+      "focusInDialog": true,
+      "finished": true,
+      "probeFailures": [],
+      "rawResult": "perf-results/pricing-ablation-20260930/browser-static/baseline/results.json"
+    },
+    {
+      "variant": "no-catalog-aria-binding",
+      "story": "manual-exact-key",
+      "width": 1280,
+      "failures": [
+        "Error: [product-settings-pricing--manual-exact-key (light/default/zh-CN/1280px)] console.error: kL: expect(element).toHaveAttribute(\"aria-required\", \"true\") // element.getAttribute(\"aria-required\") === \"true\"\n\nExpected the element to have attribute:\n  aria-required=\"true\"\nReceived:\n  null\n    at Proxy.a (http://127.0.0.1:54727/assets/iframe-DlST7vAK.js:116:674)\n    at Proxy.<anonymous> (http://127.0.0.1:54727/assets/iframe-DlST7vAK.js:90:403)\n    at Proxy.methodWrapper (http://127.0.0.1:54727/assets/iframe-DlST7vAK.js:54:8430)\n    at play (http://127.0.0.1:54727/assets/pricing-editor.stories-BdC9ncGn.js:56:32144)\n    at async rK.runPhase (http://127.0.0.1:54727/assets/iframe-DlST7vAK.js:904:607)\n    at async rK.render (http://127.0.0.1:54727/assets/iframe-DlST7vAK.js:904:3467); playFunctionThrewException: expect(element).toHaveAttribute(\"aria-required\", \"true\") // element.getAttribute(\"aria-required\") === \"true\"\n\nExpected the element to have attribute:\n  aria-required=\"true\"\nReceived:\n  null"
+      ],
+      "focusInDialog": true,
+      "finished": false,
+      "probeFailures": [
+        "playFunctionThrewException: expect(element).toHaveAttribute(\"aria-required\", \"true\") // element.getAttribute(\"aria-required\") === \"true\"\n\nExpected the element to have attribute:\n  aria-required=\"true\"\nReceived:\n  null"
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/browser-static/no-catalog-aria-binding/results.json"
+    },
+    {
+      "variant": "no-dialog-focus-repair",
+      "story": "conflict",
+      "width": 1280,
+      "failures": [],
+      "focusInDialog": true,
+      "finished": true,
+      "probeFailures": [],
+      "rawResult": "perf-results/pricing-ablation-20260930/browser-static/no-dialog-focus-repair/initial-results.json"
+    },
+    {
+      "variant": "no-dialog-focus-repair",
+      "story": "uncertain",
+      "width": 1280,
+      "failures": [],
+      "focusInDialog": true,
+      "finished": true,
+      "probeFailures": [],
+      "rawResult": "perf-results/pricing-ablation-20260930/browser-static/no-dialog-focus-repair/initial-results.json"
+    },
+    {
+      "variant": "no-dialog-focus-repair",
+      "story": "host-review",
+      "width": 1280,
+      "failures": [
+        "Error: [product-settings-pricing--host-review (light/default/zh-CN/1280px)] console.error: AssertionError: expected false to be true // Object.is equality\n    at play (http://127.0.0.1:55117/assets/pricing-editor.stories-alsVpdeT.js:56:36610)\n    at async rK.runPhase (http://127.0.0.1:55117/assets/iframe-JwoX27rS.js:904:607)\n    at async rK.render (http://127.0.0.1:55117/assets/iframe-JwoX27rS.js:904:3467); playFunctionThrewException: expected false to be true // Object.is equality; visible dialog does not own focus after rendering"
+      ],
+      "focusInDialog": false,
+      "finished": false,
+      "probeFailures": [
+        "playFunctionThrewException: expected false to be true // Object.is equality"
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/browser-static/no-dialog-focus-repair/results.json"
+    },
+    {
+      "variant": "no-stable-focus-fallback",
+      "story": "populated",
+      "width": 1280,
+      "failures": [
+        "Error: [product-settings-pricing--populated (light/default/zh-CN/1280px)] console.error: kL: expect(element).toHaveFocus()\n\nExpected element with focus:\n  <button\n  class=\"astryx-button primary sm none x1k57tk5 x1vidyx5 x1t137rt x1jhp3zv xx47ajj x16bblx1 x1wfwxd8 x13aywxo x1n2onr6 x3nfvp2 x6s0dn4 xl56j7k x1txdalj xce4md1 xrrkdod xc342km xng3xce x1jxw6zd xjb2p0i xcr08ib x1kq96og x1e4wzip xuxw1ft x1ypdohk x16khyan xrafxwg xuedmi6 x12w9bfk xlr8y92 x6k0iem x7uyq82 xmvprkv xetgvay x3oybdh x8ppqj x1gnnqk1 x1ewilqj x17wrial\"\n  data-elevation=\"none\"\n  data-size=\"sm\"\n  data-variant=\"primary\"\n  style=\"\"\n  type=\"button\"\n>\n  <span\n    class=\"xjp7ctv\"\n  >\n    <span\n      class=\"x3nfvp2 x6s0dn4 xl56j7k x2lah0s x1kky2od xlup9mm x1j61zf2\"\n    >\n      <svg\n        aria-hidden=\"true\"\n        class=\"lucide lucide-plus\"\n        fill=\"none\"\n        height=\"14\"\n        stroke=\"currentColor\"\n        stroke-linecap=\"round\"\n        stroke-linejoin=\"round\"\n        stroke-width=\"2\"\n        viewBox=\"0 0 24 24\"\n        width=\"14\"\n        xmlns=\"http://www.w3.org/2000/svg\"\n      >\n        <path\n          d=\"M5 12h14\"\n        />\n        <path\n          d=\"M12 5v14\"\n        />\n      </svg>\n    </span>\n    <span\n      class=\"xb3r6kr xlyipyv xeuugli\"\n    >\n      添加定价\n    </span>\n  </span>\n  <span\n    aria-live=\"polite\"\n    class=\"x10l6tqk x1i1rx1s xjm9jq1 xkdpibf x1717udv xb3r6kr xzpqnlu xuxw1ft xng3xce x13vifvy x1o0tod x47corl x87ps6o\"\n    role=\"status\"\n  />\n</button>\nReceived element with focus:\n  <body\n  class=\"sb-main-padded sb-show-main\"\n  style=\"\"\n>········\n  <div\n    class=\"sb-preparing-story sb-wrapper\"\n  >········\n    <div … />······\n  </div>·····\n  <div\n    class=\"sb-preparing-docs sb-wrapper\"\n  >········\n    <div … />········\n    <table … />······\n  </div>·····\n  <div\n    class=\"sb-nopreview sb-wrapper\"\n  >········\n    <div … />······\n  </div>·····\n  <div\n    class=\"sb-errordisplay sb-wrapper\"\n  >········\n    <div … />······\n  </div>·········\n  <div\n    id=\"storybook-root\"\n  >\n    <div … />\n  </div>········\n  <div\n    hidden=\"true\"\n    id=\"storybook-docs\"\n  />········\n  <script>·····\n      function __onViteAppLoadingError(event) {\n        const hostname = globalThis.location.hostname;\n        if (hostname !== 'localhost' && globalThis.CONFIG_TYPE === 'DEVELOPMENT') {\n          const message = `Failed to load the Storybook preview file 'vite-app.js':·\n      It looks like you're visiting the Storybook development server on another hostname than localhost: '${hostname}', but you haven't configured the necessary security features to support this.\n      Please re-run your Storybook development server with the '--host ${hostname}' flag, or manually configure your Vite allowedHosts configuration with viteFinal.·\n      See:`;\n          const docs = [\n            'https://storybook.js.org/docs/api/cli-options#dev',\n            'https://storybook.js.org/docs/api/main-config/main-config-vite-final',\n            'https://vite.dev/config/server-options.html#server-allowedhosts',\n          ];\n          console.error(`${message}\\n${docs.map((doc) =&gt; `- ${doc}`).join('\\n')}`);·\n          document.getElementById('storybook-root').innerHTML =\n            `&lt;p style=\"color: red; max-width: 70ch\"&gt;${message.replaceAll(\n              '\\n',\n              '&lt;br/&gt;'\n            )}&lt;ul&gt;${docs.map((doc) =&gt; `&lt;li&gt;&lt;a href='${doc}' target='_blank'&gt;${doc}&lt;/a&gt;&lt;/li&gt;`).join('')}&lt;/ul&gt;&lt;/p&gt;`;\n          return;\n        }\n      }·····\n  </script>········\n  <div\n    id=\"storybook-highlights-root\"\n  >\n    <div … />\n    <style … />\n  </div>\n</body>\n    at Proxy.a (http://127.0.0.1:54820/assets/iframe-qgZinrsg.js:116:674)\n    at Proxy.<anonymous> (http://127.0.0.1:54820/assets/iframe-qgZinrsg.js:90:403)\n    at Proxy.methodWrapper (http://127.0.0.1:54820/assets/iframe-qgZinrsg.js:54:8430)\n    at play (http://127.0.0.1:54820/assets/pricing-editor.stories-DlQ6yfW3.js:56:31811)\n    at async rK.runPhase (http://127.0.0.1:54820/assets/iframe-qgZinrsg.js:904:607)\n    at async rK.render (http://127.0.0.1:54820/assets/iframe-qgZinrsg.js:904:3467); playFunctionThrewException: expect(element).toHaveFocus()\n\nExpected element with focus:\n  <button\n  class=\"astryx-button primary sm none x1k57tk5 x1vidyx5 x1t137rt x1jhp3zv xx47ajj x16bblx1 x1wfwxd8 x13aywxo x1n2onr6 x3nfvp2 x6s0dn4 xl56j7k x1txdalj xce4md1 xrrkdod xc342km xng3xce x1jxw6zd xjb2p0i xcr08ib x1kq96og x1e4wzip xuxw1ft x1ypdohk x16khyan xrafxwg xuedmi6 x12w9bfk xlr8y92 x6k0iem x7uyq82 xmvprkv xetgvay x3oybdh x8ppqj x1gnnqk1 x1ewilqj x17wrial\"\n  data-elevation=\"none\"\n  data-size=\"sm\"\n  data-variant=\"primary\"\n  style=\"\"\n  type=\"button\"\n>\n  <span\n    class=\"xjp7ctv\"\n  >\n    <span\n      class=\"x3nfvp2 x6s0dn4 xl56j7k x2lah0s x1kky2od xlup9mm x1j61zf2\"\n    >\n      <svg\n        aria-hidden=\"true\"\n        class=\"lucide lucide-plus\"\n        fill=\"none\"\n        height=\"14\"\n        stroke=\"currentColor\"\n        stroke-linecap=\"round\"\n        stroke-linejoin=\"round\"\n        stroke-width=\"2\"\n        viewBox=\"0 0 24 24\"\n        width=\"14\"\n        xmlns=\"http://www.w3.org/2000/svg\"\n      >\n        <path\n          d=\"M5 12h14\"\n        />\n        <path\n          d=\"M12 5v14\"\n        />\n      </svg>\n    </span>\n    <span\n      class=\"xb3r6kr xlyipyv xeuugli\"\n    >\n      添加定价\n    </span>\n  </span>\n  <span\n    aria-live=\"polite\"\n    class=\"x10l6tqk x1i1rx1s xjm9jq1 xkdpibf x1717udv xb3r6kr xzpqnlu xuxw1ft xng3xce x13vifvy x1o0tod x47corl x87ps6o\"\n    role=\"status\"\n  />\n</button>\nReceived element with focus:\n  <body\n  class=\"sb-main-padded sb-show-main\"\n  style=\"\"\n>········\n  <div\n    class=\"sb-preparing-story sb-wrapper\"\n  >········\n    <div … />······\n  </div>·····\n  <div\n    class=\"sb-preparing-docs sb-wrapper\"\n  >········\n    <div … />········\n    <table … />······\n  </div>·····\n  <div\n    class=\"sb-nopreview sb-wrapper\"\n  >········\n    <div … />······\n  </div>·····\n  <div\n    class=\"sb-errordisplay sb-wrapper\"\n  >········\n    <div … />······\n  </div>·········\n  <div\n    id=\"storybook-root\"\n  >\n    <div … />\n  </div>········\n  <div\n    hidden=\"true\"\n    id=\"storybook-docs\"\n  />········\n  <script>·····\n      function __onViteAppLoadingError(event) {\n        const hostname = globalThis.location.hostname;\n        if (hostname !== 'localhost' && globalThis.CONFIG_TYPE === 'DEVELOPMENT') {\n          const message = `Failed to load the Storybook preview file 'vite-app.js':·\n      It looks like you're visiting the Storybook development server on another hostname than localhost: '${hostname}', but you haven't configured the necessary security features to support this.\n      Please re-run your Storybook development server with the '--host ${hostname}' flag, or manually configure your Vite allowedHosts configuration with viteFinal.·\n      See:`;\n          const docs = [\n            'https://storybook.js.org/docs/api/cli-options#dev',\n            'https://storybook.js.org/docs/api/main-config/main-config-vite-final',\n            'https://vite.dev/config/server-options.html#server-allowedhosts',\n          ];\n          console.error(`${message}\\n${docs.map((doc) =&gt; `- ${doc}`).join('\\n')}`);·\n          document.getElementById('storybook-root').innerHTML =\n            `&lt;p style=\"color: red; max-width: 70ch\"&gt;${message.replaceAll(\n              '\\n',\n              '&lt;br/&gt;'\n            )}&lt;ul&gt;${docs.map((doc) =&gt; `&lt;li&gt;&lt;a href='${doc}' target='_blank'&gt;${doc}&lt;/a&gt;&lt;/li&gt;`).join('')}&lt;/ul&gt;&lt;/p&gt;`;\n          return;\n        }\n      }·····\n  </script>········\n  <div\n    id=\"storybook-highlights-root\"\n  >\n    <div … />\n    <style … />\n  </div>\n</body>"
+      ],
+      "focusInDialog": null,
+      "finished": false,
+      "probeFailures": [
+        "playFunctionThrewException: expect(element).toHaveFocus()\n\nExpected element with focus:\n  <button\n  class=\"astryx-button primary sm none x1k57tk5 x1vidyx5 x1t137rt x1jhp3zv xx47ajj x16bblx1 x1wfwxd8 x13aywxo x1n2onr6 x3nfvp2 x6s0dn4 xl56j7k x1txdalj xce4md1 xrrkdod xc342km xng3xce x1jxw6zd xjb2p0i xcr08ib x1kq96og x1e4wzip xuxw1ft x1ypdohk x16khyan xrafxwg xuedmi6 x12w9bfk xlr8y92 x6k0iem x7uyq82 xmvprkv xetgvay x3oybdh x8ppqj x1gnnqk1 x1ewilqj x17wrial\"\n  data-elevation=\"none\"\n  data-size=\"sm\"\n  data-variant=\"primary\"\n  style=\"\"\n  type=\"button\"\n>\n  <span\n    class=\"xjp7ctv\"\n  >\n    <span\n      class=\"x3nfvp2 x6s0dn4 xl56j7k x2lah0s x1kky2od xlup9mm x1j61zf2\"\n    >\n      <svg\n        aria-hidden=\"true\"\n        class=\"lucide lucide-plus\"\n        fill=\"none\"\n        height=\"14\"\n        stroke=\"currentColor\"\n        stroke-linecap=\"round\"\n        stroke-linejoin=\"round\"\n        stroke-width=\"2\"\n        viewBox=\"0 0 24 24\"\n        width=\"14\"\n        xmlns=\"http://www.w3.org/2000/svg\"\n      >\n        <path\n          d=\"M5 12h14\"\n        />\n        <path\n          d=\"M12 5v14\"\n        />\n      </svg>\n    </span>\n    <span\n      class=\"xb3r6kr xlyipyv xeuugli\"\n    >\n      添加定价\n    </span>\n  </span>\n  <span\n    aria-live=\"polite\"\n    class=\"x10l6tqk x1i1rx1s xjm9jq1 xkdpibf x1717udv xb3r6kr xzpqnlu xuxw1ft xng3xce x13vifvy x1o0tod x47corl x87ps6o\"\n    role=\"status\"\n  />\n</button>\nReceived element with focus:\n  <body\n  class=\"sb-main-padded sb-show-main\"\n  style=\"\"\n>········\n  <div\n    class=\"sb-preparing-story sb-wrapper\"\n  >········\n    <div … />······\n  </div>·····\n  <div\n    class=\"sb-preparing-docs sb-wrapper\"\n  >········\n    <div … />········\n    <table … />······\n  </div>·····\n  <div\n    class=\"sb-nopreview sb-wrapper\"\n  >········\n    <div … />······\n  </div>·····\n  <div\n    class=\"sb-errordisplay sb-wrapper\"\n  >········\n    <div … />······\n  </div>·········\n  <div\n    id=\"storybook-root\"\n  >\n    <div … />\n  </div>········\n  <div\n    hidden=\"true\"\n    id=\"storybook-docs\"\n  />········\n  <script>·····\n      function __onViteAppLoadingError(event) {\n        const hostname = globalThis.location.hostname;\n        if (hostname !== 'localhost' && globalThis.CONFIG_TYPE === 'DEVELOPMENT') {\n          const message = `Failed to load the Storybook preview file 'vite-app.js':·\n      It looks like you're visiting the Storybook development server on another hostname than localhost: '${hostname}', but you haven't configured the necessary security features to support this.\n      Please re-run your Storybook development server with the '--host ${hostname}' flag, or manually configure your Vite allowedHosts configuration with viteFinal.·\n      See:`;\n          const docs = [\n            'https://storybook.js.org/docs/api/cli-options#dev',\n            'https://storybook.js.org/docs/api/main-config/main-config-vite-final',\n            'https://vite.dev/config/server-options.html#server-allowedhosts',\n          ];\n          console.error(`${message}\\n${docs.map((doc) =&gt; `- ${doc}`).join('\\n')}`);·\n          document.getElementById('storybook-root').innerHTML =\n            `&lt;p style=\"color: red; max-width: 70ch\"&gt;${message.replaceAll(\n              '\\n',\n              '&lt;br/&gt;'\n            )}&lt;ul&gt;${docs.map((doc) =&gt; `&lt;li&gt;&lt;a href='${doc}' target='_blank'&gt;${doc}&lt;/a&gt;&lt;/li&gt;`).join('')}&lt;/ul&gt;&lt;/p&gt;`;\n          return;\n        }\n      }·····\n  </script>········\n  <div\n    id=\"storybook-highlights-root\"\n  >\n    <div … />\n    <style … />\n  </div>\n</body>"
+      ],
+      "rawResult": "perf-results/pricing-ablation-20260930/browser-static/no-stable-focus-fallback/results.json"
+    }
+  ],
+  "sourceCommit": "b043e2cf20d5889d868eb162c2459d058f03db97",
+  "finalVerification": {
+    "directNodeTests": {
+      "tests": 124,
+      "passed": 124
+    },
+    "electron": {
+      "tests": 1,
+      "passed": 1
+    },
+    "chromiumVersion": "153.0.8010.12",
+    "browser": [
+      {
+        "id": "populated",
+        "width": 1280,
+        "failures": [],
+        "focus": {
+          "active": "BUTTON",
+          "activeText": "",
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "manual-exact-key",
+        "width": 1280,
+        "failures": [],
+        "focus": {
+          "active": "INPUT",
+          "activeText": "",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "validation",
+        "width": 1280,
+        "failures": [],
+        "focus": {
+          "active": "INPUT",
+          "activeText": "",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "conflict",
+        "width": 1280,
+        "failures": [],
+        "focus": {
+          "active": "BUTTON",
+          "activeText": "核对并保存",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "uncertain",
+        "width": 1280,
+        "failures": [],
+        "focus": {
+          "active": "BUTTON",
+          "activeText": "保存",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "host-review",
+        "width": 1280,
+        "failures": [],
+        "focus": {
+          "active": "DIALOG",
+          "activeText": "编辑定价关闭模型键输入价格 ∙ 必填美元 / 每百万 token；0 表示免费（如本地模型）。清除输入价格输出价格 ∙ 必填清除输出价格缓存价格（可选）缓存读取 ∙ 可选留空表示未设置（不计缓存费用）",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "populated",
+        "width": 480,
+        "failures": [],
+        "focus": {
+          "active": "BUTTON",
+          "activeText": "",
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "manual-exact-key",
+        "width": 480,
+        "failures": [],
+        "focus": {
+          "active": "INPUT",
+          "activeText": "",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "validation",
+        "width": 480,
+        "failures": [],
+        "focus": {
+          "active": "INPUT",
+          "activeText": "",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "conflict",
+        "width": 480,
+        "failures": [],
+        "focus": {
+          "active": "BUTTON",
+          "activeText": "核对并保存",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "uncertain",
+        "width": 480,
+        "failures": [],
+        "focus": {
+          "active": "BUTTON",
+          "activeText": "保存",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      },
+      {
+        "id": "host-review",
+        "width": 480,
+        "failures": [],
+        "focus": {
+          "active": "DIALOG",
+          "activeText": "编辑定价关闭模型键输入价格 ∙ 必填美元 / 每百万 token；0 表示免费（如本地模型）。清除输入价格输出价格 ∙ 必填清除输出价格缓存价格（可选）缓存读取 ∙ 可选留空表示未设置（不计缓存费用）",
+          "dialog": true,
+          "probe": {
+            "finished": true,
+            "failures": []
+          }
+        }
+      }
+    ]
+  }
+}

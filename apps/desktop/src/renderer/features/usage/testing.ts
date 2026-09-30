@@ -17,4 +17,21 @@
  * under the License.
  */
 
+// Test-only entry point for the Usage feature (issue #4425 / #2015). External
+// test consumers import feature internals through this barrel so the
+// renderer-architecture ratchet's "features import via index/testing/stories"
+// rule stays satisfied.
+
+export {
+  draftFromPricing,
+  validatePricingDraft,
+  type PricingDraft,
+} from './pricing-view-model.js';
+export { PricingEditor, formatCache, formatUsd } from './ui/pricing-editor.js';
+export { UsagePricingServicesProvider } from './pricing-services-context.js';
+export { UsageFeatureScope } from './services-context.js';
+export type { UsagePricingServices } from './pricing-ports.js';
+export type { UsageHostRef } from './ports.js';
+export { getPricingSettingsCopy } from '../../locales/settings-pricing-copy.js';
+
 export {useUsageStats} from './services-context.js';
